@@ -497,7 +497,7 @@ export function AgentOutcomeReview({
             }
           />
           <EvidenceGate
-            label="Evidence retrieval"
+            label="Case-history scan"
             value={
               data.provenance.truncated
                 ? `${data.provenance.fetched.toLocaleString()} of ${data.provenance.store_total.toLocaleString()} cases scanned · ${excluded.toLocaleString()} excluded · ${data.case_mix.suppressed_strata.toLocaleString()} strata suppressed`

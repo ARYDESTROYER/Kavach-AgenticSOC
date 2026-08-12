@@ -481,7 +481,7 @@ describe('AgentEffectivenessSummary', () => {
     });
     expect(dailyEvidenceTable.parentElement).toHaveClass('sr-only');
     expect(dailyEvidenceTable).not.toHaveClass('sr-only');
-    const evidenceCoverage = screen.getByText('Evidence retrieval').parentElement;
+    const evidenceCoverage = screen.getByText('Case-history scan').parentElement;
     expect(evidenceCoverage).toHaveTextContent(/2 excluded/);
     expect(evidenceCoverage).toHaveTextContent(/1 strata suppressed/);
     expect(evidenceCoverage).toHaveTextContent(/80 of 100 cases scanned/);

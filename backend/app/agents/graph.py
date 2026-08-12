@@ -81,6 +81,8 @@ async def run_investigation(
                 "playbook_consulted": False,
                 "knowledge": [],
                 "retrieval_query_groups": [],
+                "retrieval_status": "not_attempted",
+                "retrieval_reason": "router_benign_shortcut",
                 "consultation_path": "router_benign_shortcut",
             })
         return (
@@ -101,9 +103,10 @@ async def run_investigation(
                 "persona_consulted": persona is not None,
                 "playbook_consulted": playbook is not None and prefs.playbooks.enabled,
                 "consultation_path": "strong_investigator",
+                "retrieval_status": "not_attempted",
+                "retrieval_reason": "pending",
             })
         if prefs.rag.enabled:
-            await rag.ensure_seeded()
             # Base retrieval query + the selected playbook's canned rag_queries.
             # Each retrieve is bounded by top_k; we merge, de-dupe by text and cap
             # the union so prompt size stays bounded (and the cost gate still binds).
@@ -117,8 +120,12 @@ async def run_investigation(
             # Retrieve per explicit query group, then interleave groups so a base
             # query cannot starve every playbook query from the bounded prompt.
             buckets: list[tuple[str, str, list[Any]]] = []
+            unavailable_reasons: list[str] = []
             for group, query in grouped_queries:
-                buckets.append((group, query, list(await rag.retrieve(query, prefs.rag.top_k))))
+                observation = await rag.retrieve_observed(query, prefs.rag.top_k)
+                buckets.append((group, query, list(observation.chunks)))
+                if not observation.measured:
+                    unavailable_reasons.append(observation.reason)
             cap = max(prefs.rag.top_k * 2, prefs.rag.top_k)
             by_text: dict[str, Any] = {}
             groups_by_text: dict[str, set[str]] = {}
@@ -143,6 +150,17 @@ async def run_investigation(
                 )
                 rag_chunks.append(chunk.model_copy(update={"metadata": metadata}))
             if provenance_sink is not None:
+                # A zero is measured only when EVERY configured query completed. A
+                # partial success may still ground the current prompt, but its
+                # coverage observation remains unavailable rather than becoming 0.
+                provenance_sink["retrieval_status"] = (
+                    "unavailable" if unavailable_reasons else "measured"
+                )
+                provenance_sink["retrieval_reason"] = (
+                    "incomplete:" + ",".join(sorted(set(unavailable_reasons)))
+                    if unavailable_reasons
+                    else "completed"
+                )
                 provenance_sink["retrieval_query_groups"] = [
                     {"group": group, "query": truncate(query, 500)}
                     for group, query in grouped_queries
@@ -169,7 +187,12 @@ async def run_investigation(
                     for chunk in rag_chunks
                 ]
         elif provenance_sink is not None:
-            provenance_sink.update({"knowledge": [], "retrieval_query_groups": []})
+            provenance_sink.update({
+                "knowledge": [],
+                "retrieval_query_groups": [],
+                "retrieval_status": "not_attempted",
+                "retrieval_reason": "rag_disabled",
+            })
         return await investigator.investigate(
             cluster, enrichment, rag_chunks, prefs, budget, surface=surface, case_id=case_id,
             persona=persona, playbook=playbook, memory=memory, cost_sink=cost_sink,

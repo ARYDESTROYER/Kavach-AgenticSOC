@@ -25,6 +25,18 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Missing historical retrieval instrumentation no longer becomes a measured zero.**
+  `Case.knowledge_used` keeps its backward-compatible array shape. The new
+  `retrieval_observation_status` (`measured`, `not_measured`, or `unavailable`) is
+  authoritative for interpreting that array: `[]` is a measured zero only when the
+  observation status is `measured`. The separate `retrieval_history_status` lifetime
+  marker remains authoritative for completeness; legacy cases stay `unavailable` even
+  after a modern update or re-investigation because their earlier lifetime cannot be
+  reconstructed. Latest-run audit provenance separately records retrieval as `measured`,
+  `not_attempted`, or `unavailable`, with a machine-readable reason. A fail-soft RAG
+  outage, unverified last-known-good corpus, or partial query-group failure may still
+  provide bounded context to the investigator, but the run remains unavailable and does
+  not manufacture a measured zero or completed Case observation.
 - **Privileged audit writes were impossible on PostgreSQL.** `SqlAuditRepository.write_strict`
   maps an event id to a deterministic negative 63-bit surrogate key, but `audit.id` was a
   32-bit column, so every keyed strict write failed out of int32 range. Proposal approve and
@@ -66,6 +78,23 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **Producing-build provenance on operational records.** Every newly created case carries
+  immutable creation-build `app_version` and `build_sha`; re-investigation preserves those
+  original values. Every new append-only audit and usage row carries the build that first
+  appended it, and idempotent retries preserve the first writer's stamp. The fields reuse
+  the non-secret `/api/health/build-info` identity: the application version comes from the
+  running code, and a missing `TLSOC_BUILD_SHA` remains the honest literal `unknown`.
+  Historical records remain `null` and are never attributed to the build that merely reads
+  or updates them.
+- **Evidence-qualified knowledge-reference coverage in `GET /api/metrics`.** The additive
+  `retrieval_history` block reports case-level reference coverage only: investigated cases
+  that ever recorded at least one reference divided by cases with at least one completed,
+  instrumented retrieval attempt, proven by `retrieval_observation_status=measured`. Array
+  presence alone is never evidence. It is not retrieval quality and not a per-run hit rate.
+  A truncated read or any investigated case with lifetime history unavailable keeps the
+  count/rate `null` and `unavailable`; a history-complete cohort with no measured attempt
+  is `insufficient_evidence`. History-complete `not_measured` cases are excluded rather
+  than counted as zero.
 - **`GET /api/diagnostics/health`** (auth + `settings:read`) — the operator roll-up for the
   conditions that used to fail silently: precedent-corpus size and per-source counts, an
   explicit "0 analyst-confirmed precedents available" flag, the analyst-confirmed ground
@@ -158,6 +187,22 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Upgrade notes
 
+- **No version bump, SQL migration, or historical backfill is required for record
+  provenance or retrieval history.** The change is additive under the existing `0.1.13`
+  source version. PostgreSQL and SQLite keep these fields inside existing JSON documents.
+  Legacy `app_version` and `build_sha` values remain `null`.
+  The Case wire contract continues to return `knowledge_used` as an array. Legacy
+  `retrieval_history_status` remains `unavailable`; the new observation
+  marker starts `unavailable` rather than being inferred from the historical array. A
+  later fully measured modern run may advance `retrieval_observation_status` to
+  `measured`, but it cannot reconstruct or change the lifetime-history marker.
+- **Existing Elasticsearch templates and indices are not automatically remapped.** New
+  installations receive the additive provenance/retrieval fields from the current bundled
+  templates. Existing installations must update the Agentic SOC-owned templates and
+  mappings through their normal Elasticsearch change process if explicit mappings are
+  required; ordinary boot only creates missing templates/indices and does not reindex or
+  mutate existing ones. Dynamic mapping may accept the fields, but that is not equivalent
+  to applying the shipped templates retrospectively.
 - **PostgreSQL deployments are migrated in place at boot** (`audit.id` → `bigint`, with the
   sequence widened); the migration is idempotent, preserves rows, and never blocks boot. If
   it fails it logs at ERROR with the exact remediation SQL and reports a `failed` state on

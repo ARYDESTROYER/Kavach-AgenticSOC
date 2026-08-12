@@ -633,6 +633,17 @@
             "title": "Agent Persona",
             "type": "string"
           },
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version"
+          },
           "assignee": {
             "default": "",
             "title": "Assignee",
@@ -649,6 +660,17 @@
             "default": "",
             "title": "Awaiting Reason",
             "type": "string"
+          },
+          "build_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Sha"
           },
           "campaign_id": {
             "anyOf": [
@@ -895,6 +917,25 @@
           "reproduce_query": {
             "default": "",
             "title": "Reproduce Query",
+            "type": "string"
+          },
+          "retrieval_history_status": {
+            "default": "unavailable",
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Retrieval History Status",
+            "type": "string"
+          },
+          "retrieval_observation_status": {
+            "default": "unavailable",
+            "enum": [
+              "measured",
+              "not_measured",
+              "unavailable"
+            ],
+            "title": "Retrieval Observation Status",
             "type": "string"
           },
           "risk_breakdown": {

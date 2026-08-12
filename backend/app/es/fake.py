@@ -14,9 +14,9 @@ import fnmatch
 import re
 from typing import Any
 
-from .base import BaseESClient
 from ..constants import AUDIT_INDEX, USAGE_INDEX
 from ..utils import coerce_float, dotted_get, new_id, parse_es_timestamp
+from .base import BaseESClient
 
 
 def _to_comparable(value: Any) -> float | None:
@@ -78,9 +78,8 @@ class InMemoryESClient(BaseESClient):
         for part in pattern.split(","):
             part = self.alias_to_index.get(part.strip(), part.strip())
             for name in self.docs:
-                if fnmatch.fnmatch(name, part):
-                    if name not in names:
-                        names.append(name)
+                if fnmatch.fnmatch(name, part) and name not in names:
+                    names.append(name)
         return names
 
     # ----- BaseESClient -----
@@ -141,11 +140,39 @@ class InMemoryESClient(BaseESClient):
             self.alias_to_index[index] = backing
         return self._store(index, doc, doc_id)
 
+    async def create_doc_strict(
+        self,
+        index: str,
+        doc_id: str,
+        doc: dict[str, Any],
+        refresh: bool = False,
+    ) -> bool:
+        """Atomic event-loop create used by strict ledger regressions."""
+
+        if index not in self.alias_to_index and index not in self.docs:
+            backing = f"{index}-000001"
+            self.docs.setdefault(backing, {})
+            self.alias_to_index[index] = backing
+        target = self._resolve(index)
+        bucket = self.docs.setdefault(target, {})
+        if doc_id in bucket:
+            return False
+        # Route the mutation through ``index_doc`` so fault-injection fakes which
+        # model an unavailable ledger keep exercising the same persistence seam.
+        # The bundled implementation contains no await before storing, so the
+        # preceding check + this create remain one atomic event-loop turn.
+        await self.index_doc(index, doc, doc_id=doc_id, refresh=refresh)
+        return True
+
     async def delete_index(self, name: str) -> None:
+        targets = set(self._matching_indices(name))
         target = self._resolve(name)
-        self.docs.pop(target, None)
+        if target in self.docs:
+            targets.add(target)
+        for concrete in targets:
+            self.docs.pop(concrete, None)
         for alias, backing in list(self.alias_to_index.items()):
-            if backing == target or alias == name:
+            if backing in targets or alias == name:
                 self.alias_to_index.pop(alias, None)
 
     async def delete_doc(self, index: str, doc_id: str, refresh: bool = False) -> bool:

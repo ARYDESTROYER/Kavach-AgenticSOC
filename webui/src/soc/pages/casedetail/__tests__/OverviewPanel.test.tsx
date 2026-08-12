@@ -580,6 +580,23 @@ describe('OverviewPanel — entity, story, evidence, reproduce (task 7c)', () =>
     // No cross-source linkage → the "Related cases" disclosure is not rendered.
     expect(screen.queryByText('Related cases')).toBeNull();
   });
+
+  it('shows the immutable case-creation build or an honest unavailable state', async () => {
+    const { rerender } = renderOverview({
+      ...CASE,
+      app_version: '0.1.13',
+      build_sha: 'abcdef1234567890',
+    } as unknown as Case);
+    await userEvent.click(screen.getByRole('button', { name: /Provenance & audit/i }));
+    expect(screen.getByText('Creation build v0.1.13 · abcdef123456')).toBeInTheDocument();
+
+    rerender(
+      <TooltipProvider>
+        <OverviewPanel c={CASE} fpPolicy={null} triage={null} triageLoading={false} />
+      </TooltipProvider>,
+    );
+    expect(screen.getByText('Creation build provenance unavailable')).toBeInTheDocument();
+  });
 });
 
 describe('OverviewPanel — MITRE summary', () => {

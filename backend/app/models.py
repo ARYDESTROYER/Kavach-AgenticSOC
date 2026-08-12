@@ -1255,6 +1255,11 @@ class DetectionRule(BaseModel):
 class Case(BaseModel):
     case_id: str
     cluster_signature: str
+    # Immutable creation-build provenance.  New cases are stamped explicitly by
+    # their producer; legacy rows remain None even when a later build reads or updates
+    # them, so deployment boundaries are never reconstructed from invented history.
+    app_version: str | None = None
+    build_sha: str | None = None
     created_at: str = Field(default_factory=iso_now)
     updated_at: str = Field(default_factory=iso_now)
     source_surface: SourceSurface
@@ -1391,10 +1396,36 @@ class Case(BaseModel):
     # NEVER sets status/disposition (#3): SAFE actions (tag/recommend/notify/run_playbook)
     # apply directly; ``request_approval`` only records that a HITL Proposal was created.
     automation_actions: list[dict[str, Any]] = Field(default_factory=list)
-    # Reusable-knowledge loop (Wave 6 / F11). Append-only record of the retrieved
+    # Reusable-knowledge loop (Wave 6 / F11). Cumulative record of the retrieved
     # knowledge (resolved cases / threat-intel) surfaced for this case — each entry is
-    # ``{source, snippet, score?}``. Additive/defaulted so old cases load unchanged.
+    # ``{source, snippet, score?}``.  Keep the historical array wire shape so older
+    # generated clients never receive a surprise ``null``.  The separate observation
+    # status below is authoritative: an empty list is a measured zero ONLY when that
+    # status is ``measured``.
     knowledge_used: list[dict[str, Any]] = Field(default_factory=list)
+    # Authoritative lifetime-history marker.  New case producers set ``available`` at
+    # creation so a later completed attempt can be interpreted; a pre-marker case stays
+    # ``unavailable`` forever even if a modern reinvestigation adds some references,
+    # because its earlier lifetime cannot be reconstructed.
+    retrieval_history_status: Literal["available", "unavailable"] = "unavailable"
+    # Whether this case has at least one completed, instrumented retrieval attempt.
+    # ``not_measured`` is used for new, history-available cases whose RAG path has not
+    # completed (whether skipped or interrupted); legacy rows default to
+    # ``unavailable``.  This marker—not
+    # list presence—is what makes ``knowledge_used=[]`` an observed zero.
+    retrieval_observation_status: Literal[
+        "measured", "not_measured", "unavailable"
+    ] = "unavailable"
+
+    @field_validator("knowledge_used", mode="before")
+    @classmethod
+    def _legacy_null_knowledge_is_unavailable_empty(cls, value: Any) -> Any:
+        """Keep the array wire shape even if a transitional/handwritten row has null.
+
+        The authoritative status fields remain unavailable by default, so coercing
+        null to an empty array cannot fabricate a measured zero.
+        """
+        return [] if value is None else value
 
 
 # --------------------------------------------------------------------------- #
@@ -1406,6 +1437,10 @@ class AuditDoc(BaseModel):
     # the same evidence row instead of appending a duplicate. Ordinary telemetry
     # keeps the historical auto-id behaviour.
     event_id: str | None = None
+    # Producing build for this immutable append.  None is reserved for historical rows
+    # written before record-level build provenance existed.
+    app_version: str | None = None
+    build_sha: str | None = None
     ts: str = Field(default_factory=iso_now)
     case_id: str | None = None
     # Coverage observability (A5.3): the source this action pertains to (e.g. the poller's
@@ -1436,6 +1471,8 @@ class TraceStep(BaseModel):
     ``prefs.trace.include_prompts`` is false."""
 
     ts: str = ""
+    app_version: str | None = None
+    build_sha: str | None = None
     actor: str = ""
     action_type: str | None = None
     model: str | None = None
@@ -1451,6 +1488,10 @@ class TraceStep(BaseModel):
 # Section 7.3 — tlsoc-agent-usage-* (token & cost ledger)
 # --------------------------------------------------------------------------- #
 class UsageDoc(BaseModel):
+    # Producing build for this immutable ledger append.  Historical rows remain None;
+    # newly persisted rows carry an explicit SHA or the honest literal ``unknown``.
+    app_version: str | None = None
+    build_sha: str | None = None
     ts: str = Field(default_factory=iso_now)
     surface: str = ""
     case_id: str | None = None

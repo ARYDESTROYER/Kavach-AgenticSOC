@@ -954,6 +954,18 @@ export const OverviewPanel: React.FC<{
   const evidence = allEvidence.filter((e) => !isRuledOut(e.summary));
   const mitre = c.mitre || [];
   const ruleIds = (c.rule_ids || []).filter((r) => typeof r === 'string' && r.trim());
+  const appVersion = typeof c.app_version === 'string' ? c.app_version.trim() : '';
+  const buildSha = typeof c.build_sha === 'string' ? c.build_sha.trim() : '';
+  const buildLabel =
+    appVersion || buildSha
+      ? `${appVersion ? `v${appVersion}` : 'version unavailable'} · ${
+          buildSha
+            ? buildSha === 'unknown'
+              ? 'SHA unknown'
+              : buildSha.slice(0, 12)
+            : 'SHA unavailable'
+        }`
+      : '';
 
   const caseEnrichment =
     c.enrichment && typeof c.enrichment === 'object'
@@ -1952,6 +1964,17 @@ export const OverviewPanel: React.FC<{
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
           {c.created_at ? <span>Created {formatTimestamp(c.created_at)}</span> : null}
           {c.updated_at ? <span>Processed {formatTimestamp(c.updated_at)}</span> : null}
+          <span
+            title={
+              buildLabel
+                ? `Creation build ${appVersion || 'unavailable'} · ${buildSha || 'unavailable'}`
+                : undefined
+            }
+          >
+            {buildLabel
+              ? `Creation build ${buildLabel}`
+              : 'Creation build provenance unavailable'}
+          </span>
           {/* UNTRUSTED profile (playbook id / persona) — plain text. */}
           {c.playbook_id ? <span>Playbook {c.playbook_id}</span> : null}
           {c.agent_persona && c.agent_persona !== 'generalist' ? (

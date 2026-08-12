@@ -27,6 +27,8 @@ CASES_MAPPING = {
     "properties": {
         "case_id": {"type": "keyword"},
         "cluster_signature": {"type": "keyword"},
+        "app_version": {"type": "keyword"},
+        "build_sha": {"type": "keyword"},
         "created_at": {"type": "date"},
         "updated_at": {"type": "date"},
         "source_surface": {"type": "keyword"},
@@ -60,6 +62,8 @@ CASES_MAPPING = {
         "history": {"type": "object", "enabled": False},
         "verdict_history": {"type": "object", "enabled": False},
         "origin_surface": {"type": "keyword"},
+        "retrieval_history_status": {"type": "keyword"},
+        "retrieval_observation_status": {"type": "keyword"},
         # Feature 3: not queryable, no mapping explosion.
         "trigger_reason": {"type": "object", "enabled": False},
     }
@@ -69,6 +73,8 @@ AUDIT_MAPPING = {
     "properties": {
         "ts": {"type": "date"},
         "case_id": {"type": "keyword"},
+        "app_version": {"type": "keyword"},
+        "build_sha": {"type": "keyword"},
         # B3 coverage observability: ``source_id`` is used as a term-filter in
         # ``AuditLogger.records(source_id=...)`` (the per-source poll history behind
         # GET /api/audit?source_id=). Without this explicit keyword mapping, real
@@ -96,6 +102,8 @@ USAGE_MAPPING = {
         "ts": {"type": "date"},
         "surface": {"type": "keyword"},
         "case_id": {"type": "keyword"},
+        "app_version": {"type": "keyword"},
+        "build_sha": {"type": "keyword"},
         "role": {"type": "keyword"},
         "model": {"type": "keyword"},
         "prompt_tokens": {"type": "long"},

@@ -60,6 +60,71 @@ describe('WhyPanel — knowledge source fallback (#31)', () => {
   });
 });
 
+describe('WhyPanel — honest retrieval observation states', () => {
+  it('renders missing legacy telemetry as unavailable, never as no retrieval', () => {
+    render(
+      <WhyPanel
+        c={CASE}
+        rationale={{ case_id: 'legacy-case', knowledge: [] }}
+        loading={false}
+        error={null}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Retrieval history unavailable')).toBeInTheDocument();
+    expect(screen.getByText(/never counted as zero/i)).toBeInTheDocument();
+    expect(screen.queryByText('No knowledge retrieved')).toBeNull();
+  });
+
+  it('distinguishes an instrumented empty result from unavailable history', () => {
+    const rationale = {
+      case_id: 'measured-zero',
+      knowledge: [],
+      procedure_provenance: {
+        persona: { selected_id: '', selection_reason: '', consulted: false },
+        playbook: { selected_id: '', selection_reason: '', consulted: false },
+        consultation_path: 'strong_investigator',
+        retrieval_status: 'measured',
+        retrieval_reason: 'completed',
+        retrieval_query_groups: [],
+        knowledge: [],
+      },
+    } as CaseRationale;
+
+    render(
+      <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByText('No references matched')).toBeInTheDocument();
+    expect(screen.getByText(/This is a measured zero/i)).toBeInTheDocument();
+    expect(screen.queryByText('Retrieval history unavailable')).toBeNull();
+  });
+
+  it('labels a skipped path as not run instead of zero', () => {
+    const rationale = {
+      case_id: 'not-attempted',
+      knowledge: [],
+      procedure_provenance: {
+        persona: { selected_id: '', selection_reason: '', consulted: false },
+        playbook: { selected_id: '', selection_reason: '', consulted: false },
+        consultation_path: 'kill_switch',
+        retrieval_status: 'not_attempted',
+        retrieval_reason: 'kill_switch',
+        retrieval_query_groups: [],
+        knowledge: [],
+      },
+    } as CaseRationale;
+
+    render(
+      <WhyPanel c={CASE} rationale={rationale} loading={false} error={null} onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByText('Knowledge retrieval was not run')).toBeInTheDocument();
+    expect(screen.getByText(/not counted as a zero/i)).toBeInTheDocument();
+  });
+});
+
 describe('WhyPanel — latest-run investigation input provenance', () => {
   it('separates runbooks from general knowledge and shows only a consulted playbook', () => {
     const rationale = {

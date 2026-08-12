@@ -5432,6 +5432,8 @@ export interface components {
              * @default
              */
             agent_persona: string;
+            /** App Version */
+            app_version?: string | null;
             /**
              * Assignee
              * @default
@@ -5444,6 +5446,8 @@ export interface components {
              * @default
              */
             awaiting_reason: string;
+            /** Build Sha */
+            build_sha?: string | null;
             /** Campaign Id */
             campaign_id?: string | null;
             /** Case Id */
@@ -5532,6 +5536,18 @@ export interface components {
              * @default
              */
             reproduce_query: string;
+            /**
+             * Retrieval History Status
+             * @default unavailable
+             * @enum {string}
+             */
+            retrieval_history_status: "available" | "unavailable";
+            /**
+             * Retrieval Observation Status
+             * @default unavailable
+             * @enum {string}
+             */
+            retrieval_observation_status: "measured" | "not_measured" | "unavailable";
             risk_breakdown?: components["schemas"]["RiskBreakdown"];
             /**
              * Risk Score

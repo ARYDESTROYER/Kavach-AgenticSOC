@@ -15,6 +15,15 @@
         "case_id": {
           "type": "keyword"
         },
+        "app_version": {
+          "type": "keyword"
+        },
+        "build_sha": {
+          "type": "keyword"
+        },
+        "source_id": {
+          "type": "keyword"
+        },
         "surface": {
           "type": "keyword"
         },
@@ -55,7 +64,7 @@
       }
     }
   },
-  "priority": 200,
+  "priority": 600,
   "_meta": {
     "owner": "tlsoc-agentic-triage",
     "contract": "tlsoc-agent-audit"

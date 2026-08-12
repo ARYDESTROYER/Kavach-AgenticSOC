@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..build_identity import current_record_provenance
 from ..config import ModelConfig, Provider, Secrets
 from ..constants import Role, UsageOutcome
 from ..models import UsageDoc
@@ -541,6 +542,7 @@ class LLMGateway:
                               cache_write_tokens=cache_write_tokens, batch=batch)
             )
         doc = UsageDoc(
+            **current_record_provenance(),
             surface=surface,
             case_id=case_id,
             role=role,

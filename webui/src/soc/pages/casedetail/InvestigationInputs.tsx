@@ -77,6 +77,7 @@ export const InvestigationInputs: React.FC<{
   const memories = (rationale?.memory_used || []).filter((item) => item.trim());
   const playbook = rationale?.playbook;
   const procedure = rationale?.procedure_provenance;
+  const retrievalStatus = procedure?.retrieval_status ?? 'unavailable';
   const selectedPersona = procedure?.persona?.selected_id?.trim() || '';
   const personaConsulted = Boolean(selectedPersona && procedure?.persona?.consulted === true);
   const selectedPlaybook = procedure?.playbook?.selected_id?.trim() || playbook?.id?.trim() || '';
@@ -116,6 +117,31 @@ export const InvestigationInputs: React.FC<{
       icon: BookMarked,
       detail: 'Runbook references retrieved through RAG for the latest investigation run.',
       informed: true,
+    });
+  }
+  if (rationale && !knowledge.length && retrievalStatus === 'unavailable') {
+    items.push({
+      key: 'knowledge-provenance-unavailable',
+      label: 'Knowledge',
+      value: 'Provenance unavailable',
+      icon: BookOpen,
+      detail:
+        'Reliable latest-run retrieval telemetry was not recorded. Missing history is not a measured zero and did not count as an input.',
+      informed: false,
+    });
+  } else if (
+    rationale &&
+    !knowledge.length &&
+    retrievalStatus === 'not_attempted' &&
+    showSelectionStatus
+  ) {
+    items.push({
+      key: 'knowledge-not-attempted',
+      label: 'Knowledge',
+      value: 'Not run',
+      icon: BookOpen,
+      detail: 'Knowledge retrieval did not run on the latest investigation path.',
+      informed: false,
     });
   }
   if (personaConsulted || (showSelectionStatus && selectedPersona)) {
@@ -168,7 +194,10 @@ export const InvestigationInputs: React.FC<{
   }
   const informedItemCount = items.filter((item) => item.informed).length;
   const reviewableItemCount = items.filter(
-    (item) => item.key !== 'platform-tuning-unavailable',
+    (item) =>
+      item.key !== 'platform-tuning-unavailable' &&
+      item.key !== 'knowledge-provenance-unavailable' &&
+      item.key !== 'knowledge-not-attempted',
   ).length;
 
   if (!loading && !error && items.length === 0) return null;

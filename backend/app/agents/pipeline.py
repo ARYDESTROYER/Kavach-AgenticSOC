@@ -16,6 +16,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from ..audit.audit_log import AuditLogger
+from ..build_identity import originating_record_provenance
 from ..cache import Cache
 from ..config import Preferences, Secrets
 from ..connectors.base import PullConnector
@@ -424,6 +425,9 @@ class InvestigationPipeline:
     ) -> Case:
         case_id = new_id("case-")
         existing: Case | None = None
+        # Kept outside the investigation try block so a later failure can preserve a
+        # successfully completed retrieval observation instead of erasing it.
+        procedure_provenance: dict[str, Any] = {}
         try:
             existing = await find_open_case_for_cluster(self._cases, cluster)
             if existing:
@@ -544,12 +548,14 @@ class InvestigationPipeline:
                     memory_entries = []
 
             if budget.kill_switch:
-                procedure_provenance: dict[str, Any] = {
+                procedure_provenance = {
                     "consultation_path": "kill_switch",
                     "persona_consulted": False,
                     "playbook_consulted": False,
                     "knowledge": [],
                     "retrieval_query_groups": [],
+                    "retrieval_status": "not_attempted",
+                    "retrieval_reason": "kill_switch",
                 }
                 verdict = VerdictResult(
                     verdict=Verdict.NEEDS_HUMAN,
@@ -562,6 +568,8 @@ class InvestigationPipeline:
                     "playbook_consulted": False,
                     "knowledge": [],
                     "retrieval_query_groups": [],
+                    "retrieval_status": "not_attempted",
+                    "retrieval_reason": "pending",
                 }
                 # Live progress: handing off to the tool-using investigation graph.
                 self._emit_step(case_id, "tools", status="running",
@@ -615,6 +623,9 @@ class InvestigationPipeline:
                         ),
                         reproduce_query=entity_kql(cluster, prefs),
                     )
+                    if procedure_provenance.get("retrieval_status") != "measured":
+                        procedure_provenance["retrieval_status"] = "unavailable"
+                        procedure_provenance["retrieval_reason"] = "interrupted"
 
             # Selected and consulted are different facts. The cheap router path,
             # kill switch, or a timeout may select a procedure without ever injecting
@@ -642,6 +653,12 @@ class InvestigationPipeline:
                         "consulted": bool(procedure_provenance.get("playbook_consulted")),
                     },
                     "consultation_path": procedure_provenance.get("consultation_path", ""),
+                    "retrieval_status": procedure_provenance.get(
+                        "retrieval_status", "unavailable"
+                    ),
+                    "retrieval_reason": procedure_provenance.get(
+                        "retrieval_reason", "provenance_missing"
+                    ),
                     "retrieval_query_groups": procedure_provenance.get("retrieval_query_groups", []),
                     "knowledge": procedure_provenance.get("knowledge", []),
                 },
@@ -654,11 +671,17 @@ class InvestigationPipeline:
                             detail=verdict.verdict.value)
 
             case_number = await self._allocate_case_number(existing, cluster, prefs)
+            retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
             case = self._assemble_case(
                 case_id, cluster, verdict, source_surface, existing, cost, prefs,
                 persona_id=persona.id, playbook_id=(playbook.id if playbook else ""),
                 case_number=case_number,
-                knowledge_used=list(procedure_provenance.get("knowledge", []) or []),
+                knowledge_used=(
+                    list(procedure_provenance.get("knowledge", []) or [])
+                    if retrieval_measured
+                    else None
+                ),
+                retrieval_measured=retrieval_measured,
             )
             # ``Case.token_cost`` is a rounded cumulative presentation field. Adding
             # a new raw run cost to the previously rounded value can drift by a
@@ -717,7 +740,21 @@ class InvestigationPipeline:
             return case
         except Exception as exc:  # noqa: BLE001 — never drop an alert
             logger.exception("Pipeline failed for cluster %s; failing to human", cluster.signature)
-            case = _fail_to_human_case(case_id, cluster, source_surface, str(exc), existing, prefs)
+            retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
+            case = _fail_to_human_case(
+                case_id,
+                cluster,
+                source_surface,
+                str(exc),
+                existing,
+                prefs,
+                knowledge_used=(
+                    list(procedure_provenance.get("knowledge", []) or [])
+                    if retrieval_measured
+                    else None
+                ),
+                retrieval_measured=retrieval_measured,
+            )
             persist_error: Exception | None = None
             try:
                 await self._cases.save(case)
@@ -779,6 +816,7 @@ class InvestigationPipeline:
             case_id=case_id,
             case_number=case_number,
             cluster_signature=cluster.signature,
+            **originating_record_provenance(existing),
             created_at=existing.created_at if existing else iso_now(),
             updated_at=iso_now(),
             source_surface=_preserved_surface(existing, source_surface),
@@ -804,6 +842,13 @@ class InvestigationPipeline:
             history=(existing.history if existing else []),
             verdict_history=(existing.verdict_history if existing else []),
             trigger_reason=_trigger(existing, cluster),
+            knowledge_used=list(existing.knowledge_used) if existing is not None else [],
+            retrieval_history_status=(
+                existing.retrieval_history_status if existing else "available"
+            ),
+            retrieval_observation_status=(
+                existing.retrieval_observation_status if existing else "not_measured"
+            ),
         )
         await self._cases.save(case)
         await self._audit.record(
@@ -826,6 +871,7 @@ class InvestigationPipeline:
         playbook_id: str = "",
         case_number: str = "",
         knowledge_used: list[dict[str, Any]] | None = None,
+        retrieval_measured: bool = False,
     ) -> Case:
         member_ids = list(dict.fromkeys(
             (existing.member_event_ids if existing else []) + cluster.member_event_ids
@@ -854,23 +900,17 @@ class InvestigationPipeline:
         # entity_kql fallback is already correct; normalize_kql is idempotent on it.
         raw_reproduce = verdict.reproduce_query or entity_kql(cluster, prefs)
         reproduce_query = normalize_kql(raw_reproduce, prefs)
-        prior_knowledge = list(existing.knowledge_used) if existing else []
-        merged_knowledge: list[dict[str, Any]] = []
-        seen_knowledge: set[tuple[str, str, str]] = set()
-        for item in [*prior_knowledge, *(knowledge_used or [])]:
-            key = (
-                str(item.get("source") or ""),
-                str(item.get("document_id") or ""),
-                str(item.get("content_hash") or item.get("snippet") or ""),
-            )
-            if key in seen_knowledge:
-                continue
-            seen_knowledge.add(key)
-            merged_knowledge.append(dict(item))
+        # Partial fail-soft context remains visible in this run's audit provenance,
+        # but only a fully measured retrieval may change the Case-level metric input.
+        merged_knowledge = _merge_knowledge_references(
+            existing.knowledge_used if existing else [],
+            knowledge_used if retrieval_measured else None,
+        )
         return Case(
             case_id=case_id,
             case_number=(existing.case_number if existing and existing.case_number else case_number),
             cluster_signature=cluster.signature,
+            **originating_record_provenance(existing),
             created_at=created_at,
             updated_at=iso_now(),
             source_surface=surface,
@@ -898,7 +938,13 @@ class InvestigationPipeline:
             trigger_reason=_trigger(existing, cluster),
             agent_persona=persona_id or (existing.agent_persona if existing else ""),
             playbook_id=playbook_id or (existing.playbook_id if existing else ""),
-            knowledge_used=merged_knowledge[-100:],
+            knowledge_used=merged_knowledge,
+            retrieval_history_status=(
+                existing.retrieval_history_status if existing else "available"
+            ),
+            retrieval_observation_status=_retrieval_observation_status(
+                existing, retrieval_measured
+            ),
         )
 
 
@@ -976,10 +1022,20 @@ def _fail_to_human_case(
     error: str,
     existing: Case | None,
     prefs: Preferences,
+    *,
+    knowledge_used: list[dict[str, Any]] | None = None,
+    retrieval_measured: bool = False,
 ) -> Case:
+    # Preserve any prior measured references, but do not promote partial/unavailable
+    # context from this failed run into the Case-level measurement history.
+    merged_knowledge = _merge_knowledge_references(
+        existing.knowledge_used if existing else [],
+        knowledge_used if retrieval_measured else None,
+    )
     return Case(
         case_id=case_id,
         cluster_signature=cluster.signature,
+        **originating_record_provenance(existing),
         created_at=existing.created_at if existing else iso_now(),
         updated_at=iso_now(),
         source_surface=_preserved_surface(existing, source_surface),
@@ -1006,7 +1062,45 @@ def _fail_to_human_case(
         history=(existing.history if existing else []),
         verdict_history=(existing.verdict_history if existing else []),
         trigger_reason=_trigger(existing, cluster),
+        knowledge_used=merged_knowledge,
+        retrieval_history_status=(
+            existing.retrieval_history_status if existing else "available"
+        ),
+        retrieval_observation_status=_retrieval_observation_status(
+            existing, retrieval_measured
+        ),
     )
+
+
+def _retrieval_observation_status(
+    existing: Case | None, retrieval_measured: bool
+) -> str:
+    """Preserve cumulative retrieval truth without deriving it from list contents."""
+    if retrieval_measured:
+        return "measured"
+    if existing is not None:
+        return existing.retrieval_observation_status
+    return "not_measured"
+
+
+def _merge_knowledge_references(
+    prior: list[dict[str, Any]], current: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Return the bounded cumulative reference set without duplicate evidence."""
+
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in [*(prior or []), *(current or [])]:
+        key = (
+            str(item.get("source") or ""),
+            str(item.get("document_id") or ""),
+            str(item.get("content_hash") or item.get("snippet") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(item))
+    return merged[-100:]
 
 
 def _preserved_surface(existing: Case | None, source_surface: SourceSurface) -> SourceSurface:

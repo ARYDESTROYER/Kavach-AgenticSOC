@@ -22,7 +22,15 @@ commit SHA, build time, state backend, and OCSF version. A Testing candidate and
 Stable promotion both remain `0.1.13`; `TLSOC_RELEASE_CHANNEL` distinguishes
 `testing` from the accepted `stable` build.
 
-The committed 0.1 OpenAPI snapshot contains 217 paths and 258 operations. It is the
+The same identity is persisted on newly produced operational records. A Case's
+nullable `app_version` and `build_sha` identify the build that created the case and
+remain unchanged across later updates or re-investigation. Each newly appended AuditDoc
+and UsageDoc records the build that first appended it, with idempotent retries preserving
+that first-writer stamp. Legacy records are not backfilled and therefore return `null`;
+an unset current build SHA is the explicit string `unknown`, not `null`. This is additive
+under application version `0.1.13` and requires no SQL migration.
+
+The committed 0.1 OpenAPI snapshot contains 221 paths. It is the
 best source for current request-body models, enums, parameters, and operation IDs.
 Some handlers return plain dictionaries without a FastAPI `response_model`, so their
 generated response schema is intentionally less specific than the runtime payload.
@@ -293,6 +301,16 @@ query groups, and retrieved knowledge source/score/document id/revision/content 
 with a bounded snippet. Rationale and Case Manager Overview project the latest run;
 selected-only inputs are never presented as consulted/applied.
 
+Its `retrieval_status` and `retrieval_reason` describe that run only. `measured` means
+every configured retrieval query group completed, including a measured empty result;
+`not_attempted` means a known path skipped retrieval; `unavailable` means the run's
+retrieval evidence cannot be established, such as interruption, unverified corpus
+seeding, or any failed query group. Retrieval is fail-soft: bounded last-known-good
+chunks or chunks from successful groups may still appear in that run's `knowledge` and
+ground the investigator. They do not turn a partial/unverified run into a measurement.
+These run-level fields do not overwrite the Case's authoritative lifetime
+`retrieval_history_status` or its cumulative `retrieval_observation_status`.
+
 ## Scheduler and telemetry evidence
 
 `GET /api/schedulers/health` (`automation:read`) returns
@@ -381,6 +399,40 @@ the compatibility path can read and lazily migrate that user's entries from the 
 shared document; no reset or new index/table is required. A history read or commit that
 cannot be verified returns `503 chat_history_unavailable` instead of an empty list or a
 false saved result. Existing `404 conversation not found` behavior remains unchanged.
+
+## Base metrics and retrieval-history evidence
+
+`GET /api/metrics` reads at most 2,000 cases and returns its existing deterministic
+dashboard aggregates plus an additive `retrieval_history` object. Retrieval eligibility
+is limited to investigated cases with a verdict. The Case wire contract keeps
+`knowledge_used` as an array. `retrieval_history_status` is authoritative for lifetime
+completeness, while `retrieval_observation_status` (`measured`, `not_measured`, or
+`unavailable`) is authoritative for whether at least one completed observation exists.
+Therefore `knowledge_used=[]` is a measured zero only when the observation status is
+`measured`. A legacy Case starts with both status fields `unavailable`; a later fully
+measured run may advance the observation status, but lifetime history remains
+`unavailable` and is never backfilled. The object reports:
+
+| Field | Contract |
+|---|---|
+| `status`, `available`, `reason` | `available`, `insufficient_evidence`, or `unavailable`, with an explanatory reason whenever no headline can be reported |
+| `loaded_cases`, `total_cases`, `truncated` | Cohort completeness; any truncated read makes the headline unavailable |
+| `eligible_cases` | Investigated cases with a verdict |
+| `history_available_cases`, `history_unavailable_cases` | Split by the authoritative Case lifetime marker `retrieval_history_status` |
+| `completed_attempt_cases` | History-available cases whose `retrieval_observation_status` is `measured`; array presence or emptiness is not used to infer completion |
+| `cases_with_references` | Completed-attempt cases whose cumulative reference list is non-empty; `null` when the cohort cannot support the measure |
+| `reference_coverage` | `cases_with_references / completed_attempt_cases`, rounded to four decimals; otherwise `null` |
+| `formula` | Human-readable definition of the same case-level ratio |
+
+This is case-level reference coverage only. `knowledge_used` is cumulative,
+de-duplicated, and bounded, so the metric is neither retrieval quality nor a per-run hit
+rate. Any investigated case with unavailable lifetime history makes a mixed cohort
+`unavailable`; a truncated read does the same. No eligible cases or no completed,
+instrumented attempt reports `insufficient_evidence`. In all three situations the
+numerator and rate remain `null`. In an otherwise history-complete cohort,
+`not_measured` cases are excluded from the denominator; when at least one measured Case
+exists they do not force the headline unavailable. Absent instrumentation is never
+converted to zero.
 
 ## Agent-improvement evidence
 

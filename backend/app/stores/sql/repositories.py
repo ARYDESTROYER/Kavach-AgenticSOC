@@ -20,6 +20,7 @@ from sqlalchemy import Float, Integer, cast, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from ...build_identity import stamp_new_record
 from ...config import Preferences
 from ...constants import (
     ActionType,
@@ -79,16 +80,34 @@ class SqlCaseRepository(CaseRepository):
         self._sm = _sessionmaker(engine)
 
     async def save(self, case: Case) -> None:
-        doc = case.model_dump(mode="json")
         async with self._sm() as session:
             row = await session.get(CaseRow, case.case_id)
+            # Product constructors stamp at creation and preserve the original values
+            # on reconstruction.  This insert-only fallback covers direct repository
+            # clients without attributing a legacy update to the process that touched it.
+            if row is None:
+                persisted = stamp_new_record(case)
+            else:
+                # Always restore the first row's pair. This covers an unchanged,
+                # unstamped caller object as well as a direct caller that submits two
+                # non-empty but changed values; historical nulls remain null.
+                existing_doc = dict(row.doc or {})
+                persisted = case.model_copy(
+                    update={
+                        "app_version": existing_doc.get("app_version"),
+                        "build_sha": existing_doc.get("build_sha"),
+                    }
+                )
+            doc = persisted.model_dump(mode="json")
             values = dict(
-                cluster_signature=case.cluster_signature,
-                status=case.status.value if case.status else "",
-                source_surface=case.source_surface.value if case.source_surface else "",
-                entity_value=_entity_value(case),
-                created_at=case.created_at or "",
-                updated_at=case.updated_at or "",
+                cluster_signature=persisted.cluster_signature,
+                status=persisted.status.value if persisted.status else "",
+                source_surface=(
+                    persisted.source_surface.value if persisted.source_surface else ""
+                ),
+                entity_value=_entity_value(persisted),
+                created_at=persisted.created_at or "",
+                updated_at=persisted.updated_at or "",
                 doc=doc,
             )
             if row is None:
@@ -201,7 +220,7 @@ class SqlAuditRepository(AuditRepository):
         payload is equivalent (the first append retains its timestamp); a hash
         collision fails closed.
         """
-        payload = doc.model_dump(mode="json")
+        payload = stamp_new_record(doc).model_dump(mode="json")
         row_id: int | None = None
         if doc.event_id:
             digest = hashlib.sha256(doc.event_id.encode("utf-8")).digest()
@@ -224,11 +243,16 @@ class SqlAuditRepository(AuditRepository):
                     raise
                 existing = await session.get(AuditRow, row_id)
                 existing_payload = dict(existing.doc or {}) if existing else {}
+                retry_metadata = {"ts", "app_version", "build_sha"}
                 existing_semantic = {
-                    key: value for key, value in existing_payload.items() if key != "ts"
+                    key: value
+                    for key, value in existing_payload.items()
+                    if key not in retry_metadata
                 }
                 payload_semantic = {
-                    key: value for key, value in payload.items() if key != "ts"
+                    key: value
+                    for key, value in payload.items()
+                    if key not in retry_metadata
                 }
                 if existing is None or existing_semantic != payload_semantic:
                     raise RuntimeError(
@@ -269,16 +293,18 @@ class SqlAuditRepository(AuditRepository):
         )
 
     async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
-        """All audit rows for a case, OLDEST first (ts asc, id asc tiebreaker)."""
+        """Newest bounded audit rows, returned oldest-first for the trace timeline."""
+        cap = max(1, min(int(limit or 500), 500))
         stmt = (
             select(AuditRow)
             .where(AuditRow.case_id == case_id)
-            .order_by(AuditRow.ts.asc(), AuditRow.id.asc())
-            .limit(limit)
+            .order_by(AuditRow.ts.desc(), AuditRow.id.desc())
+            .limit(cap)
         )
         try:
             async with self._sm() as session:
-                rows = (await session.execute(stmt)).scalars().all()
+                rows = list((await session.execute(stmt)).scalars().all())
+            rows.reverse()
             return [r.doc or {} for r in rows]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Audit read for case %s failed: %s", case_id, exc)
@@ -439,7 +465,7 @@ class SqlUsageRepository(UsageRepository):
         await self._write_strict_once(doc)
 
     async def _write_strict_once(self, doc: UsageDoc) -> None:
-        payload = doc.model_dump(mode="json")
+        payload = stamp_new_record(doc).model_dump(mode="json")
         key = str(doc.idempotency_key or "").strip()
         async with self._sm() as session:
             async with session.begin():

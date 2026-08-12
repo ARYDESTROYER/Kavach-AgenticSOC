@@ -107,6 +107,16 @@ Never use `elastic` or `kibana_system`. Mount the appropriate CA certificate rea
 keep certificate verification enabled, and test the exact index patterns before enabling
 background collection. Agentic SOC must not modify the upstream pipeline.
 
+Bootstrap creates only missing Agentic SOC-owned Elasticsearch templates and indices.
+It does **not** overwrite an existing template, update an existing index mapping, or
+reindex stored documents. Therefore the current additive `app_version`, `build_sha`,
+`retrieval_history_status`, and `retrieval_observation_status` mappings are automatic
+for new installations only.
+Existing Elasticsearch-state installations must apply the shipped template/mapping
+changes through their normal controlled Elasticsearch procedure if explicit mappings
+are required. Dynamic field acceptance is not retrospective template application, and
+legacy documents are not backfilled.
+
 ## Own-state lifecycle and archive boundary
 
 The desired default under **Settings → Organization → Storage & retention** is
@@ -150,6 +160,25 @@ always-visible `vX.Y.Z · Testing|Stable` badge reconciles its compiled stamp wi
 backend build-info; open the badge to inspect both identities. Any version,
 channel, or known-SHA mismatch displays Testing. This operator aid complements,
 but does not replace, digest and endpoint verification.
+
+New operational records also preserve this build identity. A Case records immutable
+creation-build `app_version` and `build_sha`; a later update or re-investigation does
+not replace them. Each newly appended audit and usage row records the build that first
+appended it, and an idempotent retry preserves that first-writer stamp. When the build
+SHA is not supplied, new records carry the honest literal `unknown`.
+
+This additive provenance and retrieval-history instrumentation does not change the
+source version from `0.1.13`, does not require a PostgreSQL/SQLite schema migration,
+and performs no historical backfill. SQL backends store the fields in their existing
+JSON documents. Existing records therefore keep `null` provenance and unavailable
+legacy lifetime history rather than acquiring reconstructed history from the upgraded
+reader. The observation marker also starts `unavailable`; a later fully measured run may
+advance that marker, but does not backfill or repair the lifetime-history marker.
+The Elasticsearch and SQL Case repositories also make their defensive fallback
+insert-only: a missing case id/row may be stamped, but an existing row restores its
+persisted provenance (including legacy `null`). Deterministic audit-event and Batch-usage
+retries likewise keep the first append's version/SHA instead of adopting the retrying
+build.
 
 The web artifact's `/release.json` and `/index.html` must be served with no-store
 semantics. A deployment bootstrapped with the external update supervisor may show one

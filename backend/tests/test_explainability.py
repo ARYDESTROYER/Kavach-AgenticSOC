@@ -6,6 +6,7 @@ records (no LLM). All offline (fake ES + mock LLM), mirroring conftest patterns.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from app.api.routes import _build_rationale, case_rationale, case_trace
 from app.config import SourceInstance
@@ -13,6 +14,7 @@ from app.constants import ActionType, EntityType, SourceSurface, SourceType
 from app.engine.correlation import cluster_from_events
 from app.models import RagChunk, TriggerReason
 from app.stores.tuning import TuningRecord
+from app.tools.rag import RagRetrievalObservation
 
 from tests.conftest import make_raw_event
 
@@ -63,12 +65,16 @@ async def _run_investigation(state, mock_provider, *, with_memory=True, with_rag
 
     if with_rag:
         async def _fake_retrieve(query, top_k=None):
-            return [RagChunk(
-                text="Internal vuln scanner runs planned testing; benign scanning is expected.",
-                source="runbook", score=0.9,
-            )]
+            return RagRetrievalObservation(
+                [RagChunk(
+                    text="Internal vuln scanner runs planned testing; benign scanning is expected.",
+                    source="runbook", score=0.9,
+                )],
+                True,
+                "completed",
+            )
         # Patch the live rag service the pipeline holds.
-        state.rag.retrieve = _fake_retrieve  # type: ignore[method-assign]
+        state.rag.retrieve_observed = _fake_retrieve  # type: ignore[method-assign]
 
     mock_provider.push("router", json.dumps(
         {"bucket": "needs_strong_model", "confidence": 0.9, "reason": "serious"}
@@ -271,6 +277,202 @@ def test_rationale_projects_only_latest_investigation_run():
     assert out["playbook"]["id"] == ""
     assert out["playbook"]["consulted"] is False
     assert out["platform_tuning"][0]["record_id"] == "tune-new"
+    # No latest-run procedure telemetry is historical uncertainty, not proof
+    # that a retrieval ran and returned zero references.
+    assert out["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert out["procedure_provenance"]["retrieval_reason"] == "historical_provenance_missing"
+
+
+def test_rationale_preselector_pipeline_failure_does_not_inherit_prior_run():
+    """A newer fail-to-human run cannot present the prior run as its provenance."""
+    rows = [
+        {
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "reason=old selection",
+        },
+        {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "knowledge": [{"source": "runbook", "snippet": "old reference"}],
+            },
+        },
+        {
+            "actor": "investigator",
+            "action_type": ActionType.TOOL_CALL.value,
+            "tool_name": "es_query",
+            "query_text": "old query",
+        },
+        {
+            "actor": "investigator",
+            "action_type": ActionType.VERDICT.value,
+            "result_summary": "reasoning=old reasoning",
+        },
+        {
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "old deterministic decision",
+        },
+        {
+            "actor": "pipeline",
+            "action_type": ActionType.ERROR.value,
+            "result_summary": "pipeline error: failed before procedure selection",
+        },
+    ]
+
+    out = _build_rationale("case-preselector-failure", None, rows)
+
+    assert out["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert (
+        out["procedure_provenance"]["retrieval_reason"]
+        == "pipeline_failed_before_provenance"
+    )
+    assert out["knowledge"] == []
+    assert out["tools"] == []
+    assert out["reasoning"] == ""
+    assert out["decision_rationale"] == ""
+
+
+def test_rationale_error_case_without_new_audit_boundary_fails_closed():
+    """A lost terminal audit append cannot expose an older run as current."""
+    rows = [
+        {
+            "ts": "2026-08-11T01:00:00+00:00",
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+        },
+        {
+            "ts": "2026-08-11T01:00:01+00:00",
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "knowledge": [{"source": "runbook", "snippet": "old reference"}],
+            },
+        },
+        {
+            "ts": "2026-08-11T01:00:02+00:00",
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "old deterministic decision",
+        },
+    ]
+    failed_case = SimpleNamespace(
+        error="new pipeline failure",
+        updated_at="2026-08-11T02:00:00+00:00",
+        verdict=None,
+        confidence=0.0,
+        status=None,
+        decision_by=None,
+        agent_persona="",
+        playbook_id="",
+        mitre=[],
+        evidence=[],
+        history=[],
+    )
+
+    out = _build_rationale("case-missing-error-audit", failed_case, rows)
+
+    assert out["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert (
+        out["procedure_provenance"]["retrieval_reason"]
+        == "pipeline_failure_provenance_missing"
+    )
+    assert out["knowledge"] == []
+    assert out["tools"] == []
+    assert out["reasoning"] == ""
+    assert out["decision_rationale"] == ""
+
+
+def test_rationale_keeps_current_provenance_across_nonterminal_timeout_error():
+    """Timeout telemetry inside a run is not mistaken for a new run boundary."""
+    rows = [
+        {
+            "actor": "playbook_selector",
+            "action_type": ActionType.DECISION.value,
+        },
+        {
+            "actor": "pipeline",
+            "action_type": ActionType.ERROR.value,
+            "result_summary": "investigation timed out after 30s; capped to NEEDS_HUMAN",
+        },
+        {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": {
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
+                "knowledge": [{"source": "runbook", "snippet": "current reference"}],
+            },
+        },
+        {
+            "actor": "case_manager",
+            "action_type": ActionType.DECISION.value,
+            "result_summary": "current deterministic decision",
+        },
+    ]
+
+    out = _build_rationale("case-timeout", None, rows)
+
+    assert out["procedure_provenance"]["retrieval_status"] == "measured"
+    assert out["knowledge"] == [{
+        "source": "runbook",
+        "score": None,
+        "document_id": "",
+        "revision": None,
+        "content_hash": "",
+        "query_groups": [],
+        "snippet": "current reference",
+    }]
+    assert out["decision_rationale"] == "current deterministic decision"
+
+
+def test_rationale_distinguishes_measured_zero_from_not_attempted_and_unavailable():
+    def _procedure_row(status: str | None, reason: str | None = None):
+        tool_input = {
+            "persona": {"selected_id": "generalist", "consulted": False},
+            "playbook": {"selected_id": None, "consulted": False},
+            "consultation_path": "strong_investigator",
+            "knowledge": [],
+            "retrieval_query_groups": [],
+        }
+        if status is not None:
+            tool_input["retrieval_status"] = status
+        if reason is not None:
+            tool_input["retrieval_reason"] = reason
+        return {
+            "actor": "procedure_provenance",
+            "action_type": ActionType.CONTEXT.value,
+            "tool_input": tool_input,
+        }
+
+    measured = _build_rationale(
+        "case-measured-zero", None, [_procedure_row("measured", "completed")]
+    )
+    assert measured["knowledge"] == []
+    assert measured["procedure_provenance"]["retrieval_status"] == "measured"
+    assert measured["procedure_provenance"]["retrieval_reason"] == "completed"
+
+    not_attempted = _build_rationale(
+        "case-not-attempted",
+        None,
+        [_procedure_row("not_attempted", "router_benign_shortcut")],
+    )
+    assert not_attempted["knowledge"] == []
+    assert not_attempted["procedure_provenance"]["retrieval_status"] == "not_attempted"
+    assert (
+        not_attempted["procedure_provenance"]["retrieval_reason"]
+        == "router_benign_shortcut"
+    )
+
+    legacy = _build_rationale("case-legacy", None, [_procedure_row(None)])
+    assert legacy["knowledge"] == []
+    assert legacy["procedure_provenance"]["retrieval_status"] == "unavailable"
+    assert legacy["procedure_provenance"]["retrieval_reason"] == "historical_provenance_missing"
 
 
 def test_rationale_projects_structured_procedure_provenance():
@@ -310,6 +512,8 @@ def test_rationale_projects_structured_procedure_provenance():
                     "consulted": True,
                 },
                 "consultation_path": "strong_investigator",
+                "retrieval_status": "measured",
+                "retrieval_reason": "completed",
                 "retrieval_query_groups": [
                     {"group": "cluster", "query": "ip scanner evidence"},
                     {"group": "playbook:1", "query": "approved scanner ranges"},
@@ -341,6 +545,8 @@ def test_rationale_projects_structured_procedure_provenance():
             "consulted": True,
         },
         "consultation_path": "strong_investigator",
+        "retrieval_status": "measured",
+        "retrieval_reason": "completed",
         "retrieval_query_groups": [
             {"group": "cluster", "query": "ip scanner evidence"},
             {"group": "playbook:1", "query": "approved scanner ranges"},

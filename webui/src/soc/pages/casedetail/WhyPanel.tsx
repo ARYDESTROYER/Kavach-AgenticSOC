@@ -109,6 +109,8 @@ export const WhyPanel: React.FC<{
   const status = r.status ?? c.status;
   const persona = r.persona ?? c.agent_persona;
   const procedure = r.procedure_provenance;
+  const retrievalStatus = procedure?.retrieval_status ?? 'unavailable';
+  const retrievalReason = procedure?.retrieval_reason ?? 'historical_provenance_missing';
   const procedurePersona = procedure?.persona;
   const procedurePlaybook = procedure?.playbook;
   const hasProcedureTrace = Boolean(
@@ -299,10 +301,10 @@ export const WhyPanel: React.FC<{
         </PanelCard>
       ) : null}
 
-      {/* ------------------------------------------- knowledge retrieved */}
+      {/* ------------------------------------------- knowledge references */}
       <PanelCard>
         <SectionHeading icon={BookOpen}>
-          Knowledge retrieved
+          Knowledge references
         </SectionHeading>
         <p className="mb-3 text-xs text-muted-foreground">
           Reference excerpts retrieved through RAG. Runbooks are identified separately;
@@ -312,11 +314,40 @@ export const WhyPanel: React.FC<{
           <EmptyState
             icon={BookOpen}
             compact
-            title="No knowledge retrieved"
-            description="The investigation did not retrieve any knowledge or runbook excerpts."
+            title={
+              retrievalStatus === 'measured'
+                ? 'No references matched'
+                : retrievalStatus === 'not_attempted'
+                  ? 'Knowledge retrieval was not run'
+                  : 'Retrieval history unavailable'
+            }
+            description={
+              retrievalStatus === 'measured'
+                ? 'The instrumented retrieval completed and returned no knowledge or runbook references. This is a measured zero.'
+                : retrievalStatus === 'not_attempted'
+                  ? `This investigation path did not run knowledge retrieval${
+                      retrievalReason ? ` (${humanizeToken(retrievalReason)})` : ''
+                    }. It is not counted as a zero.`
+                  : 'Reliable latest-run retrieval telemetry was not recorded for this case. Missing history is unavailable, never counted as zero.'
+            }
           />
         ) : (
           <div className="space-y-5">
+            {retrievalStatus !== 'measured' ? (
+              <Alert>
+                <CircleDashed className="h-4 w-4" />
+                <AlertTitle>
+                  {retrievalStatus === 'not_attempted'
+                    ? 'Retrieval was not run for this path'
+                    : 'Retrieval history incomplete'}
+                </AlertTitle>
+                <AlertDescription>
+                  {retrievalStatus === 'not_attempted'
+                    ? 'Stored references can be displayed, but they are not evidence of a retrieval attempt on this latest path.'
+                    : 'Stored references can be displayed, but complete latest-run retrieval telemetry is unavailable. They are excluded from reference-coverage calculations rather than treated as a measured result.'}
+                </AlertDescription>
+              </Alert>
+            ) : null}
             {[
               { label: 'Knowledge', items: retrievedKnowledge },
               { label: 'Runbook references', items: runbooks },

@@ -9,7 +9,7 @@ import pytest
 
 from app.config import BrandingConfig, Preferences
 from app.constants import CaseStatus, EntityType, SourceSurface, Verdict
-from app.engine.metrics import compute_metrics, feedback_stats
+from app.engine.metrics import compute_metrics, feedback_stats, retrieval_history
 from app.models import Case, Entity, FeedbackEntry
 
 
@@ -132,6 +132,78 @@ def test_compute_metrics_active_risk_all_terminal() -> None:
     m = compute_metrics(cases)
     assert m["active_risk_index"] == 0.0
     assert m["active_risk_case_count"] == 0
+
+
+def test_retrieval_history_all_unavailable_and_mixed_cohorts_are_null() -> None:
+    legacy = _case("rh-legacy")
+    legacy.knowledge_used = []  # historical default laundering must not become zero
+    all_unavailable = retrieval_history([legacy])
+    assert all_unavailable["status"] == "unavailable"
+    assert all_unavailable["available"] is False
+    assert all_unavailable["history_unavailable_cases"] == 1
+    assert all_unavailable["cases_with_references"] is None
+    assert all_unavailable["reference_coverage"] is None
+
+    observed = _case("rh-observed")
+    observed.retrieval_history_status = "available"
+    observed.retrieval_observation_status = "measured"
+    observed.knowledge_used = [{"source": "runbook", "snippet": "reference"}]
+    mixed = retrieval_history([legacy, observed])
+    assert mixed["status"] == "unavailable"
+    assert mixed["history_available_cases"] == 1
+    assert mixed["history_unavailable_cases"] == 1
+    assert mixed["cases_with_references"] is None
+    assert mixed["reference_coverage"] is None
+
+
+def test_retrieval_history_truncated_or_without_attempt_is_null() -> None:
+    no_attempt = _case("rh-no-attempt")
+    no_attempt.retrieval_history_status = "available"
+    no_attempt.retrieval_observation_status = "not_measured"
+    no_attempt.knowledge_used = []
+
+    incomplete = retrieval_history([no_attempt])
+    assert incomplete["status"] == "insufficient_evidence"
+    assert incomplete["completed_attempt_cases"] == 0
+    assert incomplete["cases_with_references"] is None
+    assert incomplete["reference_coverage"] is None
+
+    measured = _case("rh-truncated")
+    measured.retrieval_history_status = "available"
+    measured.retrieval_observation_status = "measured"
+    measured.knowledge_used = []
+    truncated = retrieval_history([measured], total_cases=2)
+    assert truncated["status"] == "unavailable"
+    assert truncated["truncated"] is True
+    assert truncated["cases_with_references"] is None
+    assert truncated["reference_coverage"] is None
+
+
+def test_retrieval_history_fully_observed_zero_and_half_are_numeric() -> None:
+    zero_a = _case("rh-zero-a")
+    zero_a.retrieval_history_status = "available"
+    zero_a.retrieval_observation_status = "measured"
+    zero_a.knowledge_used = []
+    zero_b = _case("rh-zero-b")
+    zero_b.retrieval_history_status = "available"
+    zero_b.retrieval_observation_status = "measured"
+    zero_b.knowledge_used = []
+
+    zero = retrieval_history([zero_a, zero_b])
+    assert zero["status"] == "available"
+    assert zero["available"] is True
+    assert zero["completed_attempt_cases"] == 2
+    assert zero["cases_with_references"] == 0
+    assert zero["reference_coverage"] == 0.0
+
+    one_hit = zero_b.model_copy(deep=True)
+    one_hit.knowledge_used = [{"source": "runbook", "snippet": "reference"}]
+    half = retrieval_history([zero_a, one_hit])
+    assert half["status"] == "available"
+    assert half["available"] is True
+    assert half["completed_attempt_cases"] == 2
+    assert half["cases_with_references"] == 1
+    assert half["reference_coverage"] == 0.5
 
 
 async def test_metrics_endpoint(client) -> None:

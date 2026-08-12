@@ -23,6 +23,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable
 
+from ..build_identity import stamp_new_record
 from ..config import Preferences
 from ..constants import ActionType
 from ..models import AuditDoc, Case, Cursor, UsageDoc
@@ -329,25 +330,29 @@ class AuditRepository(ABC):
     ) -> None:
         """Build and strictly persist one append-only audit document."""
         await self.write_strict(
-            AuditDoc(
-                event_id=event_id,
-                **({"ts": ts} if ts else {}),
-                action_type=action_type,
-                surface=surface,
-                actor=actor,
-                case_id=case_id,
-                source_id=source_id,
-                model=model,
-                prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
-                query_text=query_text,
-                tool_name=tool_name,
-                tool_input=tool_input,
-                tool_output_summary=(
-                    truncate(tool_output_summary, 1000)
-                    if tool_output_summary
-                    else None
-                ),
-                result_summary=truncate(result_summary, 1000) if result_summary else None,
+            stamp_new_record(
+                AuditDoc(
+                    event_id=event_id,
+                    **({"ts": ts} if ts else {}),
+                    action_type=action_type,
+                    surface=surface,
+                    actor=actor,
+                    case_id=case_id,
+                    source_id=source_id,
+                    model=model,
+                    prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
+                    query_text=query_text,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_output_summary=(
+                        truncate(tool_output_summary, 1000)
+                        if tool_output_summary
+                        else None
+                    ),
+                    result_summary=(
+                        truncate(result_summary, 1000) if result_summary else None
+                    ),
+                )
             )
         )
 

@@ -16,11 +16,13 @@ import logging
 from collections import defaultdict
 from typing import Any
 
+from ..build_identity import stamp_new_record
 from ..constants import CASE_PIPELINE_USAGE_ROLES, USAGE_READ_PATTERN, USAGE_WRITE_ALIAS
 from ..es.base import BaseESClient
 from ..models import UsageDoc
 from ..utils import now_utc, parse_es_timestamp, to_millis
 from .base import UsageRepository
+from .ledger_claims import append_keyed_ledger_row
 
 logger = logging.getLogger("tlsoc.usage")
 
@@ -53,13 +55,25 @@ class UsageStore(UsageRepository):
         """Persist one authoritative ledger row or raise.
 
         A Batch fold supplies ``idempotency_key``; using it as the owned document id
-        makes a retry an overwrite of the same logical ledger row rather than another
-        bill. Ordinary live calls keep their generated document ids.
+        lets a retry confirm and retain the first logical ledger row rather than append
+        another bill or replace its original build provenance. Ordinary live calls keep
+        their generated document ids.
         """
+        stamped = stamp_new_record(doc)
+        if stamped.idempotency_key:
+            await append_keyed_ledger_row(
+                self._es,
+                scope="usage",
+                logical_id=stamped.idempotency_key,
+                payload=stamped.model_dump(mode="json"),
+                write_alias=USAGE_WRITE_ALIAS,
+                read_pattern=USAGE_READ_PATTERN,
+                reject_conflicting_retry=False,
+            )
+            return
         await self._es.index_doc(
             USAGE_WRITE_ALIAS,
-            doc.model_dump(mode="json"),
-            doc_id=doc.idempotency_key or None,
+            stamped.model_dump(mode="json"),
         )
 
     async def records(self, *, limit: int = 1000) -> list[dict[str, Any]]:

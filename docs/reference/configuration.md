@@ -50,7 +50,7 @@ rule. The image/build pipeline passes these names directly:
 |---|---|
 | `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.1.13`) |
 | `TLSOC_RELEASE_CHANNEL` | `testing` by default; set to `stable` only for the accepted `main`/tag build |
-| `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info` and image metadata |
+| `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info`, image metadata, and newly produced operational records; when unset it remains the literal `unknown` |
 | `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata |
 | `TLSOC_SOURCE_URL` | Dockerfile build argument for the canonical source URL embedded in OCI image metadata; the reference Compose files currently use the Dockerfile's repository default |
 
@@ -62,6 +62,13 @@ The Console compiles version/channel/SHA/date into its own build and displays an
 always-visible `vX.Y.Z · Testing|Stable` badge. Opening the badge compares Console
 and `/api/health/build-info` identities. A channel/version/known-SHA mismatch is
 shown as Testing; Stable is never inferred from SemVer or a branch name.
+
+New cases copy this non-secret identity once as immutable creation-build
+`app_version` and `build_sha`. New append-only audit and usage rows copy the build
+that first writes them; idempotent retries preserve that first-writer stamp. Updating
+or re-investigating a case never replaces its creation-build identity, and legacy
+records remain `null` rather than being backfilled by the first upgraded build that
+touches them. These additive fields do not require a version bump or SQL migration.
 
 ## Common backend environment variables
 
@@ -249,7 +256,9 @@ keys.
 4. Configure one model provider and set a daily budget before enabling broad automation.
 5. Review deterministic auto-close thresholds, RBAC, receiver authentication, and notification targets.
 6. Back up state and deployment secrets through separate controlled procedures.
-7. Record `/api/health/build-info` with the deployment inventory.
+7. Record `/api/health/build-info` with the deployment inventory, and confirm a newly
+   created case plus newly appended audit/usage rows carry that build identity. Do not
+   treat `null` legacy provenance or an honest `unknown` SHA as a different build.
 
 See [Operations configuration](../operations/configuration.md),
 [Security](security.md), and [Models and spend](../administration/models-spend.md).

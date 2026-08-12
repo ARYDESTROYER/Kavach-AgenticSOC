@@ -211,6 +211,17 @@ continuous-improvement claim. The audited evidence boundaries are now closed as 
   exact dry-run, bounded coverage/no-match reporting, selected-versus-consulted
   persona/playbook/knowledge provenance, RAG source reconciliation, and
   independently-confirmed resolved-case reuse are shipped.
+- ☑ **Preserve producing-build and retrieval-history evidence** — cases keep immutable
+  creation-build provenance; append-only audit/usage rows keep first-writer build
+  provenance; legacy values are not backfilled. `retrieval_history_status` is the
+  authoritative lifetime-completeness marker, `knowledge_used` remains an array for wire
+  compatibility, and `retrieval_observation_status` alone distinguishes measured-empty
+  retrieval from a skipped, failed, or unavailable observation. Base metrics expose
+  case-level reference coverage only.
+  Mixed legacy/instrumented or truncated cohorts remain `null`; an otherwise complete
+  cohort with no measured observation remains insufficient evidence, while individual
+  `not_measured` cases are excluded. No version bump or SQL migration is required, and
+  existing Elasticsearch templates/indices are not auto-remapped.
 - ☑ **Expose loop health and lifecycle** — the Console/API exposes worker
   enabled/gated/running and last attempt/success/error, tuner confirmed/unconfirmed
   sample eligibility, and query-backed telemetry opportunities; campaigns enforce

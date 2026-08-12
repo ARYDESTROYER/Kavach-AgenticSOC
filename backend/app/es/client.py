@@ -211,6 +211,30 @@ class RealESClient(BaseESClient):
         resp = await client.index(index=index, id=doc_id, document=doc, refresh=refresh)
         return str(resp["_id"])
 
+    async def create_doc_strict(
+        self,
+        index: str,
+        doc_id: str,
+        doc: dict[str, Any],
+        refresh: bool = False,
+    ) -> bool:
+        """Atomically create a document through an owned write alias."""
+
+        client = self._require_mgmt()
+        try:
+            await client.index(
+                index=index,
+                id=doc_id,
+                document=doc,
+                op_type="create",
+                refresh=refresh,
+            )
+            return True
+        except Exception as exc:
+            if _is_conflict(exc):
+                return False
+            raise
+
     async def delete_index(self, name: str) -> None:
         """Drop a management index (used to recreate the RAG vector index on an
         embedding-space change). Missing index is benign."""

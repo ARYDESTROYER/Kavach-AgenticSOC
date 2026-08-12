@@ -15,6 +15,12 @@
         "cluster_signature": {
           "type": "keyword"
         },
+        "app_version": {
+          "type": "keyword"
+        },
+        "build_sha": {
+          "type": "keyword"
+        },
         "created_at": {
           "type": "date"
         },
@@ -106,11 +112,28 @@
         "history": {
           "type": "object",
           "enabled": false
+        },
+        "verdict_history": {
+          "type": "object",
+          "enabled": false
+        },
+        "origin_surface": {
+          "type": "keyword"
+        },
+        "retrieval_history_status": {
+          "type": "keyword"
+        },
+        "retrieval_observation_status": {
+          "type": "keyword"
+        },
+        "trigger_reason": {
+          "type": "object",
+          "enabled": false
         }
       }
     }
   },
-  "priority": 200,
+  "priority": 600,
   "_meta": {
     "owner": "tlsoc-agentic-triage",
     "contract": "tlsoc-agent-cases"

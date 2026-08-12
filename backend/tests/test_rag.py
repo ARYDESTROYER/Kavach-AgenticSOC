@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.config import Preferences, Secrets
 from app.es.fake import InMemoryESClient
 from app.llm.gateway import LLMGateway
@@ -49,6 +51,48 @@ async def test_retrieve_disabled_returns_empty() -> None:
     rag = RagService(_gateway(), prefs)
     await rag.ensure_seeded()
     assert await rag.retrieve("ssh brute force", top_k=3) == []
+
+
+async def test_observed_retrieval_distinguishes_zero_from_store_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rag = RagService(_gateway(), Preferences())
+    await rag.ensure_seeded()
+
+    async def _zero(_vector, _top_k):
+        return []
+
+    monkeypatch.setattr(rag._store, "search", _zero)
+    zero = await rag.retrieve_observed("no matching reference", top_k=3)
+    assert zero.measured is True
+    assert zero.reason == "completed"
+    assert zero.chunks == []
+
+    async def _failed(_vector, _top_k):
+        raise RuntimeError("vector store unavailable")
+
+    monkeypatch.setattr(rag._store, "search", _failed)
+    failed = await rag.retrieve_observed("backend failure", top_k=3)
+    assert failed.measured is False
+    assert failed.reason == "retrieval_failed"
+    assert failed.chunks == []
+
+
+async def test_observed_retrieval_keeps_last_good_context_unmeasured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rag = RagService(_gateway(), Preferences())
+    await rag.ensure_seeded()
+
+    async def _failed_seed() -> None:
+        rag._seeded = False
+        rag._seed_signature = None
+
+    monkeypatch.setattr(rag, "ensure_seeded", _failed_seed)
+    observation = await rag.retrieve_observed("ssh brute force failed login", top_k=3)
+    assert observation.measured is False
+    assert observation.reason == "seeding_failed"
+    assert observation.chunks, "the last known-good corpus should still ground the prompt"
 
 
 async def test_rag_tool_run_returns_list_data() -> None:

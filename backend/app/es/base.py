@@ -101,6 +101,25 @@ class BaseESClient(ABC):
     ) -> str:
         """Index (create or overwrite) a document. Returns the document id."""
 
+    async def create_doc_strict(
+        self,
+        index: str,
+        doc_id: str,
+        doc: dict[str, Any],
+        refresh: bool = False,
+    ) -> bool:
+        """Create one owned-state document, returning False on an id conflict.
+
+        Bundled clients override this atomically.  The compatibility fallback keeps
+        third-party clients working but is only safe under caller-owned serialization.
+        Every backend failure other than an existing id propagates.
+        """
+
+        if await self.get_doc_strict(index, doc_id) is not None:
+            return False
+        await self.index_doc(index, doc, doc_id=doc_id, refresh=refresh)
+        return True
+
     @abstractmethod
     async def get_doc(self, index: str, doc_id: str) -> dict[str, Any] | None: ...
 
