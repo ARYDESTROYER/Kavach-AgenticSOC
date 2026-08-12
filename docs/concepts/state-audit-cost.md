@@ -24,6 +24,45 @@ sessions, collaboration, and knowledge. Selecting it does not select or migrate 
 log source. Switching backends creates a separate state view unless you perform an
 explicit migration.
 
+## Producing-build provenance
+
+Operational records carry the build that produced them, not the build that happens to
+read them later:
+
+- a new case receives `app_version` and `build_sha` once, at creation; those values are
+  immutable creation-build provenance and survive re-investigation or any later update;
+- every new append-only audit or usage row receives the version and SHA of the build that
+  first appended it; an idempotent retry preserves that first-writer identity; and
+- historical rows are not backfilled. A legacy record has `null` provenance rather than
+  being attributed to the first upgraded build that reads or updates it.
+
+The values use the same non-secret release identity as `GET /api/health/build-info`.
+`app_version` comes from the running package, while an unset build SHA is recorded honestly
+as `unknown`. This is record provenance, not proof that an artifact was accepted as Stable.
+
+PostgreSQL and SQLite already store the affected domain records as JSON, so this additive
+metadata requires no SQL migration. It also does not change the source version from
+`0.1.13`.
+
+The repositories enforce the boundary for direct callers as well as the product
+pipeline. Elasticsearch CaseStore checks the document id before applying its defensive
+stamp: it stamps only a missing document and restores an existing document's stored
+provenance on update, including legacy `null`. The SQL Case repository follows the same
+insert-only fallback—stamp when the row is absent, otherwise recover the values already
+inside the JSON document. Re-saving an original unstamped object therefore cannot replace
+the first writer, and updating a legacy row cannot manufacture a creation build.
+
+Retryable append ledgers preserve the same rule. On Elasticsearch, a deterministic audit
+`event_id` or Batch usage `idempotency_key` first reserves the complete first-writer
+payload in the existing non-rolling config index. The rolling ledger row is a recoverable
+projection: retries search the full read pattern, rebuild a genuinely missing projection,
+and never adopt the retrying build. A pre-claim ledger row is adopted verbatim. Conflicting
+audit evidence fails closed; usage keeps the first bill. On SQL, deterministic audit ids
+converge through the audit primary key, while Batch usage reserves its idempotency hash in
+the existing KV table in the same transaction as the ledger insert. These mechanisms add
+no new index or SQL table. Ordinary unkeyed live usage calls remain distinct append-only
+rows.
+
 ## Audit trail
 
 Agentic SOC records agent and operator actions in an append-oriented audit trail. Examples
@@ -40,6 +79,41 @@ Audit records should answer:
 - whether the action succeeded or failed.
 
 The console's Audit page is a review surface, not permission to alter history.
+
+## Retrieval history is evidence-qualified
+
+Knowledge evidence has three separate contracts:
+
+- `retrieval_history_status` is the authoritative lifetime marker. `available` means the
+  case was instrumented for its known lifetime; `unavailable` means some earlier history
+  cannot be reconstructed. A legacy case stays `unavailable` even after a modern
+  re-investigation.
+- `retrieval_observation_status` is the authoritative measurement marker. `measured`
+  means at least one complete, instrumented retrieval finished; `not_measured` means a
+  history-complete new case has not yet completed one; `unavailable` is the legacy
+  default. A genuinely measured modern run may advance a legacy Case's observation marker
+  to `measured`, but its lifetime-history marker remains `unavailable`.
+- `knowledge_used` always remains an array for backward wire compatibility. It is a
+  cumulative, de-duplicated, bounded reference list. Current producers add references to
+  it only from measured runs; legacy contents remain untouched and must be interpreted
+  through the status fields. `[]` is a measured zero only when
+  `retrieval_observation_status=measured`; array presence or emptiness alone proves nothing.
+
+Latest-run audit provenance additionally classifies that run as `measured`,
+`not_attempted`, or `unavailable` and includes a machine-readable reason. This run-level
+evidence must not be used to rewrite the case's authoritative lifetime status. A measured
+run requires every configured query group to complete. Fail-soft RAG behavior can still
+use successful query-group chunks or a last-known-good corpus when another group or
+seeding verification fails; that context remains visible as consulted run evidence, but
+the run is `unavailable` and does not advance the Case observation to `measured`.
+
+The `retrieval_history` block returned by `GET /api/metrics` is deliberately a case-level
+reference-coverage measure: cases with any recorded reference divided by history-complete
+cases whose `retrieval_observation_status` is `measured`. It is neither a retrieval-quality
+score nor a per-run hit rate. Mixed legacy/instrumented cohorts and truncated reads report
+an unavailable `null` count/rate. A history-complete cohort with no measured observation
+reports `insufficient_evidence`; `not_measured` cases are excluded rather than converted
+to zero or silently included in the denominator.
 
 ## Model usage and cost
 

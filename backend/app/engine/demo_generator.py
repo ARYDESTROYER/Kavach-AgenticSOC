@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ..build_identity import current_record_provenance
 from ..config import Preferences
 from ..constants import CaseStatus, DecisionBy, Disposition, EntityType, SourceSurface, Verdict
 from ..models import (
@@ -861,6 +862,7 @@ def _hist_case(
     return Case(
         case_id=cid,
         cluster_signature=sig,
+        **current_record_provenance(),
         created_at=created,
         updated_at=created,
         source_surface=SourceSurface.AUTOMATED_SCAN if idx % 2 == 0 else SourceSurface.INVESTIGATE,
@@ -896,6 +898,8 @@ def _hist_case(
         notifications_sent=notifications_sent,
         automation_actions=automation_actions,
         knowledge_used=knowledge_used,
+        retrieval_history_status="available",
+        retrieval_observation_status="measured",
     )
 
 
@@ -1048,6 +1052,7 @@ def generate_capability_seed_cases(
         hitl_cases.append(Case(
             case_id=f"demo-hitl-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-hitl-{i}",
+            **current_record_provenance(),
             created_at=hitl_iso, updated_at=hitl_iso,
             source_surface=SourceSurface.AUTOMATED_SCAN,
             origin_surface=SourceSurface.AUTOMATED_SCAN,
@@ -1074,6 +1079,8 @@ def generate_capability_seed_cases(
             tags=["demo", "needs-human", "identity"],
             title=f"user:pnair — demo_impossible_travel #{i + 1}",
             summary="Impossible-travel sign-in (NEEDS_HUMAN).",
+            retrieval_history_status="available",
+            retrieval_observation_status="not_measured",
         ))
 
     # --- Tuner noise: N same-rule CLOSED false-positives, DISTINCT benign entities.
@@ -1084,6 +1091,7 @@ def generate_capability_seed_cases(
         tuner_cases.append(Case(
             case_id=f"demo-tune-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-tune-{i}",
+            **current_record_provenance(),
             created_at=tuner_iso, updated_at=tuner_iso,
             source_surface=SourceSurface.AUTOMATED_SCAN,
             origin_surface=SourceSurface.AUTOMATED_SCAN,
@@ -1123,5 +1131,7 @@ def generate_capability_seed_cases(
             tags=["demo", "noise"],
             title=f"ip — {DEMO_TUNER_RULE} #{i + 1}",
             summary="Benign scanner noise (FALSE_POSITIVE).",
+            retrieval_history_status="available",
+            retrieval_observation_status="not_measured",
         ))
     return hitl_cases, tuner_cases

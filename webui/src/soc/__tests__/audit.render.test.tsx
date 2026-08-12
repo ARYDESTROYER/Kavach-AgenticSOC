@@ -51,6 +51,8 @@ describe('Audit viewer (W7c)', () => {
           actor: 'analyst-jo',
           surface: 'case',
           case_id: 'case-001',
+          app_version: '0.1.13',
+          build_sha: 'abcdef1234567890',
           result_summary: 'action=close status open→closed',
         },
         {
@@ -74,6 +76,8 @@ describe('Audit viewer (W7c)', () => {
     expect(screen.getByText('analyst-jo')).toBeInTheDocument();
     expect(screen.getByText('investigator')).toBeInTheDocument();
     expect(screen.getByText(/action=close status open→closed/)).toBeInTheDocument();
+    expect(screen.getByText('v0.1.13 · abcdef1234')).toBeInTheDocument();
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
     // The case deep-link button shows the case id.
     expect(screen.getByText('case-001')).toBeInTheDocument();
   });

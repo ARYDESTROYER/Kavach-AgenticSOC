@@ -157,10 +157,16 @@ backend/app/
                      bounded plain-text white-label [validator rejects any `<`, #9];
                      AutomationRule → CaseAutomationRule (alias kept, wire key
                      `threshold_automation` unchanged))
+  build_identity.py Non-secret current-build normalization plus immutable Case
+                     creation-build and first-append audit/usage stamping; legacy
+                     provenance is never backfilled
   constants.py       enums (incl. SourceType/IngestMode/CursorKind + OCSF_VERSION),
                      index names, verdict/role/action types, untrusted fences
   models.py          Pydantic data contracts (Case/AuditDoc/UsageDoc/Cursor/
-                     RawEvent/...)
+                     RawEvent/...); Case build provenance is nullable+immutable,
+                     `retrieval_history_status` is the authoritative lifetime marker,
+                     `retrieval_observation_status` proves a completed measurement,
+                     and `knowledge_used` retains its backward-compatible array shape
   utils.py           dotted_get, time helpers, extract_json, coerce_float, ...
   ocsf/              OCSF canonical schema: model (OCSFEvent + unmapped/raw_data) ·
                      ecs (ECS→OCSF mapping) · generic_to_ocsf
@@ -212,7 +218,10 @@ backend/app/
                      only, never executable/decision authority) · chunking · case_id (customizable
                      case-XXXX nomenclature; KV sequence + template) ·
                      metrics (verdict/status mix + Round-3 posture: MTTA/MTTR/dwell
-                     p50/p90 from status_history, SLA/aging, period-over-period) ·
+                     p50/p90 from status_history, SLA/aging, period-over-period +
+                     evidence-qualified case-level knowledge-reference coverage;
+                     never quality/per-run; unavailable lifetime history/truncation
+                     stay null, not-measured cases stay out of the denominator) ·
                      mitre_coverage (Case.mitre vs the 697-corpus → per-tactic % +
                      ATT&CK Navigator v4.5 layer export) ·
                      shift_report (deterministic attention queue + SLA/aging + workload
@@ -273,7 +282,9 @@ backend/app/
   agents/            prompts · router · investigator · formatter · chat · standup ·
                      graph (LangGraph) · pipeline · common · personas (multi-agent roster)
   stores/            base (abstract repositories — backend-agnostic StateStore) ·
-                     cases · usage · config_store · cursor_store · users (UserStore
+                     cases · usage · ledger_claims (ES keyed Audit/Usage first-writer
+                     authority in the non-rolling config index; rolling projection
+                     recovery across rollover, no new index) · config_store · cursor_store · users (UserStore
                      over KV — multi-user, no new index/table) · sessions
                      (SessionStore over KV — sid registry, idle/absolute/revocation,
                      refresh rotation) · user_prefs (UserPrefsStore over KV — personal
@@ -440,6 +451,34 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
     scoring or `decide()`).
 11. Spine first & tested (Gate 1); breadth degrades gracefully (Gate 2).
 12. Read-only consumer; upstream untouched; cold-deployable.
+
+### Record provenance and retrieval-evidence contract
+
+- A Case's nullable `app_version` and `build_sha` identify its creation build and are
+  immutable across later updates or re-investigation. Every new append-only AuditDoc
+  and UsageDoc identifies its first append build; idempotent retries preserve that
+  first writer. Elasticsearch CaseStore and the SQL Case repository stamp only an
+  absent document/row as a defensive fallback; updates restore the existing stored
+  provenance, including legacy `null`. Legacy rows are never backfilled.
+- `retrieval_history_status` is authoritative for the Case lifetime. A legacy Case
+  remains `unavailable` after a modern run because missing earlier history cannot be
+  reconstructed. `knowledge_used` always remains an array for wire compatibility;
+  `retrieval_observation_status` (`measured`, `not_measured`, or `unavailable`) is
+  authoritative for whether that array represents a completed observation. Explicit
+  `[]` is a measured zero only when the observation status is `measured`. Latest-run
+  procedure provenance separately reports `measured`, `not_attempted`, or `unavailable`
+  plus a reason. Fail-soft last-known-good or partial-query context may still inform the
+  investigator, but any unverified/failed group keeps that run unavailable and does not
+  advance the Case observation to measured.
+- Retrieval analytics report case-level reference coverage only. They never claim
+  retrieval quality or per-run hit rate. A mixed legacy/instrumented cohort or truncated
+  read keeps the headline `null` and unavailable. A history-complete cohort with no
+  measured observation is insufficient evidence; individual `not_measured` cases are
+  excluded from an otherwise measurable denominator rather than counted as zero.
+- This is an additive `0.1.13` contract: no version bump, SQL migration, or historical
+  backfill. PostgreSQL/SQLite use existing JSON documents. Elasticsearch bootstrap
+  creates missing templates/indices only; it never auto-remaps or reindexes existing
+  templates/indices.
 
 ## 6. Environment (build/dev sandbox AND deploy target)
 

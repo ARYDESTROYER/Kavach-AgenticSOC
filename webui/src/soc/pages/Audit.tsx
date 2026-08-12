@@ -197,6 +197,8 @@ function AuditViewer({ onNavigate }: AuditProps) {
         r.action_type,
         r.surface,
         r.case_id,
+        r.app_version,
+        r.build_sha,
         r.model,
         r.tool_name,
         rowSummary(r),
@@ -277,6 +279,26 @@ function AuditViewer({ onNavigate }: AuditProps) {
         ),
     },
     {
+      id: 'build',
+      header: 'Build',
+      width: '11rem',
+      cell: (r) => {
+        const version = typeof r.app_version === 'string' ? r.app_version.trim() : '';
+        const sha = typeof r.build_sha === 'string' ? r.build_sha.trim() : '';
+        if (!version && !sha) {
+          return <span className="text-muted-foreground">Unavailable</span>;
+        }
+        const label = `${version ? `v${version}` : 'version unavailable'} · ${
+          sha ? (sha === 'unknown' ? 'SHA unknown' : sha.slice(0, 10)) : 'SHA unavailable'
+        }`;
+        return (
+          <InlineCode title={`${version || 'unavailable'} · ${sha || 'unavailable'}`}>
+            {label}
+          </InlineCode>
+        );
+      },
+    },
+    {
       id: 'case',
       header: 'Case',
       width: '9rem',
@@ -333,7 +355,7 @@ function AuditViewer({ onNavigate }: AuditProps) {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search actor, detail, case, tool…"
+            placeholder="Search actor, detail, case, tool, build…"
             aria-label="Search audit records"
             className="pl-9"
           />

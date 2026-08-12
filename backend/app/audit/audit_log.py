@@ -11,10 +11,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..build_identity import stamp_new_record
 from ..constants import AUDIT_READ_PATTERN, AUDIT_WRITE_ALIAS, ActionType
 from ..es.base import BaseESClient
 from ..models import AuditDoc
 from ..stores.base import AuditRepository
+from ..stores.ledger_claims import append_keyed_ledger_row
 from ..utils import truncate
 
 logger = logging.getLogger("tlsoc.audit")
@@ -40,21 +42,17 @@ class AuditLogger(AuditRepository):
         concurrent/retried privileged decisions converge on one immutable evidence
         document.
         """
-        payload = doc.model_dump(mode="json")
+        payload = stamp_new_record(doc).model_dump(mode="json")
         if doc.event_id:
-            existing = await self._es.get_doc_strict(AUDIT_WRITE_ALIAS, doc.event_id)
-            if existing is not None:
-                # The first append owns the event timestamp. A retry of the same
-                # deterministic logical event is equivalent when every semantic
-                # field matches, even though its newly constructed AuditDoc has a
-                # later default timestamp.
-                existing_semantic = {k: v for k, v in existing.items() if k != "ts"}
-                payload_semantic = {k: v for k, v in payload.items() if k != "ts"}
-                if existing_semantic != payload_semantic:
-                    raise RuntimeError(f"audit event id collision: {doc.event_id}")
-                return
-            await self._es.index_doc(
-                AUDIT_WRITE_ALIAS, payload, doc_id=doc.event_id
+            await append_keyed_ledger_row(
+                self._es,
+                scope="audit",
+                logical_id=doc.event_id,
+                payload=payload,
+                write_alias=AUDIT_WRITE_ALIAS,
+                read_pattern=AUDIT_READ_PATTERN,
+                reject_conflicting_retry=True,
+                retry_metadata=frozenset({"ts", "app_version", "build_sha"}),
             )
             return
         await self._es.index_doc(AUDIT_WRITE_ALIAS, payload)
@@ -93,20 +91,26 @@ class AuditLogger(AuditRepository):
         )
 
     async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
-        """Read all audit rows for a case, OLDEST first (C3-3 trace timeline).
+        """Read the newest bounded audit rows, returned OLDEST first (C3-3 trace).
 
         Read-only on the management-scoped audit index. Never raises — returns an
         empty list on any error so the trace endpoint NEVER 404s/500s."""
         try:
+            cap = max(1, min(int(limit or 500), 500))
             resp = await self._es.search(
                 AUDIT_READ_PATTERN,
                 {
                     "query": {"term": {"case_id": case_id}},
-                    "sort": [{"ts": {"order": "asc"}}],
-                    "size": limit,
+                    "sort": [{"ts": {"order": "desc"}}],
+                    "size": cap,
                 },
             )
-            return [h.get("_source", {}) or {} for h in resp.get("hits", {}).get("hits", [])]
+            newest_first = [
+                h.get("_source", {}) or {}
+                for h in resp.get("hits", {}).get("hits", [])
+            ]
+            newest_first.reverse()
+            return newest_first
         except Exception as exc:  # noqa: BLE001
             logger.warning("Audit read for case %s failed: %s", case_id, exc)
             return []

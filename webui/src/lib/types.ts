@@ -2164,6 +2164,10 @@ export interface StatusHistoryEntry {
 
 export interface Case {
   case_id: string;
+  /** Immutable producing build for a newly created case; null/absent on legacy rows. */
+  app_version?: string | null;
+  /** Immutable creating commit SHA; `unknown` is explicit, null/absent is historical. */
+  build_sha?: string | null;
   /** Human-facing DISPLAY id (template-driven, F7). "" → fall back to case_id. */
   case_number?: string;
   cluster_signature?: string;
@@ -2230,8 +2234,18 @@ export interface Case {
    * → render as plain text.
    */
   automation_actions?: AutomationActionRecord[];
-  /** Knowledge sources the investigation drew on (F11; additive, UNTRUSTED text). */
+  /** Cumulative knowledge references (F11; UNTRUSTED text). Always an array. */
   knowledge_used?: Array<Record<string, unknown>>;
+  /**
+   * Whether the case's complete lifetime retrieval history is interpretable. Legacy
+   * cases stay `unavailable`; this marker is authoritative over array presence.
+   */
+  retrieval_history_status?: 'available' | 'unavailable';
+  /**
+   * Whether at least one instrumented retrieval completed for this case. An empty
+   * knowledge array is a measured zero only when this is `measured`.
+   */
+  retrieval_observation_status?: 'measured' | 'not_measured' | 'unavailable';
   /**
    * FP objection-window deadline (Round-7; additive). When the deterministic
    * auto-close policy schedules a false-positive close behind an objection window,
@@ -2352,6 +2366,10 @@ export interface BulkResult {
 /** One append-only audit record (mirrors backend `AuditDoc`). */
 export interface AuditRecord {
   ts?: string;
+  /** Producing application version; null/absent on historical audit rows. */
+  app_version?: string | null;
+  /** Producing commit SHA; `unknown` is explicit, null/absent is historical. */
+  build_sha?: string | null;
   case_id?: string | null;
   surface?: string;
   actor?: string;
@@ -2773,6 +2791,23 @@ export interface VerdictBreakdown {
   [key: string]: number;
 }
 
+/** Honest case-level knowledge-reference coverage from GET /api/metrics. */
+export interface RetrievalHistoryMetrics {
+  status: 'available' | 'unavailable' | 'insufficient_evidence';
+  available: boolean;
+  reason: string;
+  loaded_cases: number;
+  total_cases: number;
+  truncated: boolean;
+  eligible_cases: number;
+  history_available_cases: number;
+  history_unavailable_cases: number;
+  completed_attempt_cases: number;
+  cases_with_references: number | null;
+  reference_coverage: number | null;
+  formula: string;
+}
+
 /** GET /api/metrics — the analytics dashboard payload. */
 export interface Metrics {
   total_cases: number;
@@ -2812,6 +2847,11 @@ export interface Metrics {
    */
   timing_trend?: TimingTrendPoint[];
   feedback: FeedbackStats;
+  /**
+   * Case-level reference coverage only. Missing/mixed/truncated history has a null
+   * headline and is never presented as zero or as retrieval quality.
+   */
+  retrieval_history?: RetrievalHistoryMetrics;
   /** Compact cost summary (shares the UsageSummary shape; fields optional). */
   cost: Partial<UsageSummary> & Record<string, unknown>;
   window_hours?: number;
@@ -3789,6 +3829,10 @@ export interface RationaleProcedureProvenance {
   persona: RationaleProcedureSelection;
   playbook: RationaleProcedureSelection;
   consultation_path: string;
+  /** Latest-run retrieval observation; missing legacy telemetry is unavailable. */
+  retrieval_status?: 'measured' | 'not_attempted' | 'unavailable';
+  /** Stable machine-readable reason for a skipped or unavailable observation. */
+  retrieval_reason?: string;
   retrieval_query_groups: RationaleRetrievalQueryGroup[];
   knowledge: RationaleKnowledge[];
 }

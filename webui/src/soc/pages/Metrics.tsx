@@ -27,6 +27,7 @@ import {
   Activity,
   BarChart3,
   Bot,
+  BookOpen,
   CheckCircle2,
   CircleDollarSign,
   Clock,
@@ -325,6 +326,7 @@ export default function MetricsPage({
   const perDayTotal = React.useMemo(() => perDay.reduce((s, x) => s + x, 0), [perDay]);
 
   const fb = data?.feedback;
+  const retrievalHistory = data?.retrieval_history;
   const cost = data?.cost;
   const currency = (cost?.currency as string | undefined) || undefined;
 
@@ -687,6 +689,44 @@ export default function MetricsPage({
               <BarList items={playbookItems} format={(n) => fmtNumber(n)} showPercent />
             ) : (
               <ChartEmpty>No playbooks selected in this window.</ChartEmpty>
+            )}
+          </ChartCard>
+
+          <ChartCard
+            title="Knowledge reference coverage"
+            icon={BookOpen}
+            accentClass="text-info"
+          >
+            {retrievalHistory?.available &&
+            typeof retrievalHistory.reference_coverage === 'number' ? (
+              <div className="space-y-3">
+                <div className="text-3xl font-bold tabular-nums text-foreground">
+                  {fmtPercent(retrievalHistory.reference_coverage)}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {fmtNumber(retrievalHistory.cases_with_references)} of{' '}
+                  {fmtNumber(retrievalHistory.completed_attempt_cases)} fully observed cases
+                  with a completed retrieval attempt recorded at least one reference.
+                </p>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  Case-level reference coverage only — not per-run hit rate or retrieval
+                  quality.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <ChartEmpty>
+                  {retrievalHistory?.reason ||
+                    'Retrieval-history evidence is unavailable. Missing history is not counted as zero.'}
+                </ChartEmpty>
+                {retrievalHistory ? (
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {fmtNumber(retrievalHistory.history_available_cases)} of{' '}
+                    {fmtNumber(retrievalHistory.eligible_cases)} investigated cases have
+                    complete lifetime retrieval instrumentation.
+                  </p>
+                ) : null}
+              </div>
             )}
           </ChartCard>
 

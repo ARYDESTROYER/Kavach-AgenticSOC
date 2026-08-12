@@ -17,10 +17,11 @@ indices the backend owns (Section 7 of the spec):
 
 ## You normally do NOT need these
 
-The backend **creates these templates and the backing write indices/aliases
-automatically on first boot** (`app/es/indices.py :: bootstrap_indices`, using the
-management API key). These files are provided for transparency and for operators
-who prefer to pre-create the templates, e.g.:
+The backend **creates any missing templates and backing write indices/aliases on first
+boot** (`app/es/indices.py :: bootstrap_indices`, using the management API key). It
+does not overwrite an existing template or remap/reindex an existing index. These files
+are provided for transparency and for operators who prefer to pre-create the templates,
+e.g.:
 
 ```bash
 curl -k -u elastic:$ELASTIC_PASSWORD -X PUT \
@@ -33,3 +34,22 @@ These JSON files are generated directly from the backend's source of truth
 (`app/es/indices.py`), so they always match what the backend creates. The
 single-doc bookkeeping indices `tlsoc-agent-config` and `tlsoc-agent-cursor` are
 created with a dynamic mapping and need no template.
+
+## Upgrade behavior
+
+The current templates add record-producing build fields (`app_version`, `build_sha`),
+the Case lifetime marker (`retrieval_history_status`), and the separate measurement
+marker (`retrieval_observation_status`). A fresh Elasticsearch-state installation
+receives them automatically. An existing installation does not: deploy the updated
+templates and, where explicit field mappings are required, update or roll over/reindex
+the existing Agentic SOC-owned indices using your normal controlled Elasticsearch
+process. Dynamic mapping may accept newly written fields, but that is not the same as
+applying this repository's template to an existing index.
+
+There is intentionally no historical backfill. Legacy provenance stays `null`, legacy
+`retrieval_history_status` remains `unavailable`, and the new observation marker starts
+`unavailable` rather than being inferred from `knowledge_used`. A later fully measured
+run may advance `retrieval_observation_status`, but cannot repair lifetime completeness.
+PostgreSQL and SQLite store these additive fields inside existing JSON documents and
+require no SQL migration. The change also does not bump the application version beyond
+`0.1.13`.

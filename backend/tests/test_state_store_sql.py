@@ -16,6 +16,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
+from app import __version__
 from app.config import Preferences
 from app.constants import ActionType, CaseStatus, EntityType, SourceSurface, Verdict
 from app.models import AuditDoc, BatchJob, Case, Cursor, Entity, EvidenceItem, UsageDoc
@@ -31,7 +32,7 @@ from app.stores.sql import (
     build_async_engine,
     create_all,
 )
-from app.stores.sql.models import AuditRow
+from app.stores.sql.models import AuditRow, CaseRow
 from app.tools.vectorstore import EmbeddingSpaceMismatch, StoredChunk
 from app.utils import iso_now, now_utc, to_millis
 
@@ -83,6 +84,74 @@ async def test_case_round_trip(engine) -> None:
     assert got.verdict == Verdict.TRUE_POSITIVE
     assert got.evidence[0].summary == "brute force"
     assert await repo.get("missing") is None
+
+
+async def test_case_insert_fallback_stamps_new_but_not_legacy_updates(
+    engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repository fallback stamps inserts without inventing history on updates."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    repo = SqlCaseRepository(engine)
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "sql-create-build")
+
+    fresh = _case(case_id="fresh-direct", signature="fresh-direct-signature")
+    assert fresh.app_version is None and fresh.build_sha is None
+    await repo.save(fresh)
+    stored_fresh = await repo.get(fresh.case_id)
+    assert stored_fresh is not None
+    assert stored_fresh.app_version == __version__
+    assert stored_fresh.build_sha == "sql-create-build"
+    # The fallback works on an immutable copy; it does not silently rewrite callers.
+    assert fresh.app_version is None and fresh.build_sha is None
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "later-update-build")
+    await repo.save(fresh.model_copy(update={"status": CaseStatus.CLOSED}))
+    updated_fresh = await repo.get(fresh.case_id)
+    assert updated_fresh is not None
+    assert updated_fresh.status == CaseStatus.CLOSED
+    assert updated_fresh.app_version == __version__
+    assert updated_fresh.build_sha == "sql-create-build"
+
+    await repo.save(
+        updated_fresh.model_copy(
+            update={"app_version": "forged", "build_sha": "forged"}
+        )
+    )
+    protected_fresh = await repo.get(fresh.case_id)
+    assert protected_fresh is not None
+    assert protected_fresh.app_version == __version__
+    assert protected_fresh.build_sha == "sql-create-build"
+
+    legacy = _case(case_id="legacy-direct", signature="legacy-direct-signature")
+    legacy_doc = legacy.model_dump(mode="json")
+    legacy_doc.pop("app_version", None)
+    legacy_doc.pop("build_sha", None)
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    async with sm() as session:
+        session.add(
+            CaseRow(
+                case_id=legacy.case_id,
+                cluster_signature=legacy.cluster_signature,
+                status=legacy.status.value,
+                source_surface=legacy.source_surface.value,
+                entity_value=legacy.entity.value,
+                created_at=legacy.created_at,
+                updated_at=legacy.updated_at,
+                doc=legacy_doc,
+            )
+        )
+        await session.commit()
+
+    loaded_legacy = await repo.get(legacy.case_id)
+    assert loaded_legacy is not None
+    assert loaded_legacy.app_version is None and loaded_legacy.build_sha is None
+    await repo.save(loaded_legacy.model_copy(update={"status": CaseStatus.CLOSED}))
+
+    updated_legacy = await repo.get(legacy.case_id)
+    assert updated_legacy is not None
+    assert updated_legacy.status == CaseStatus.CLOSED
+    assert updated_legacy.app_version is None
+    assert updated_legacy.build_sha is None
 
 
 async def test_case_save_is_idempotent_overwrite(engine) -> None:
@@ -269,6 +338,69 @@ async def test_strict_audit_event_id_is_retry_idempotent(engine) -> None:
     conflicting = doc.model_copy(update={"result_summary": "different"})
     with pytest.raises(RuntimeError, match="audit event id collision"):
         await audit.write_strict(conflicting)
+
+
+async def test_sql_audit_and_usage_stamp_and_retain_first_build_on_retry(
+    engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = SqlAuditRepository(engine)
+    usage = SqlUsageRepository(engine)
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "sql-first-build")
+
+    await audit.record(
+        action_type=ActionType.POLL,
+        case_id="normal-provenance",
+        actor="poller",
+    )
+    await usage.write(
+        UsageDoc(surface="chat", role="chat", model="model-normal", total_tokens=2)
+    )
+
+    strict_audit = AuditDoc(
+        event_id="proposal-decision:provenance:approve",
+        action_type=ActionType.PROPOSAL,
+        case_id="strict-provenance",
+        result_summary="approved",
+    )
+    strict_usage = UsageDoc(
+        surface="batch",
+        role="investigator",
+        model="model-batch",
+        total_tokens=5,
+        batch=True,
+        processing_tier="batch",
+        idempotency_key="batch:provenance:result",
+    )
+    await audit.write_strict(strict_audit)
+    await usage.write_strict(strict_usage)
+
+    monkeypatch.setenv("TLSOC_BUILD_SHA", "sql-retry-build")
+    await audit.write_strict(
+        AuditDoc(
+            event_id=strict_audit.event_id,
+            action_type=ActionType.PROPOSAL,
+            case_id="strict-provenance",
+            result_summary="approved",
+        )
+    )
+    await usage.write_strict(strict_usage.model_copy(update={"ts": iso_now()}))
+
+    normal_audit = await audit.records_for_case("normal-provenance")
+    strict_audit_rows = await audit.records_for_case("strict-provenance")
+    usage_rows = await usage.records_strict(limit=10)
+    assert len(normal_audit) == 1
+    assert len(strict_audit_rows) == 1
+    assert normal_audit[0]["app_version"] == __version__
+    assert normal_audit[0]["build_sha"] == "sql-first-build"
+    assert strict_audit_rows[0]["app_version"] == __version__
+    assert strict_audit_rows[0]["build_sha"] == "sql-first-build"
+
+    normal_usage = next(row for row in usage_rows if row["model"] == "model-normal")
+    batch_usage = next(row for row in usage_rows if row["model"] == "model-batch")
+    assert normal_usage["app_version"] == __version__
+    assert normal_usage["build_sha"] == "sql-first-build"
+    assert batch_usage["app_version"] == __version__
+    assert batch_usage["build_sha"] == "sql-first-build"
 
 
 async def test_audit_write_truncates_via_record(engine) -> None:

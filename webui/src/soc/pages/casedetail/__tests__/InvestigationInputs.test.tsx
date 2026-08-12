@@ -34,6 +34,8 @@ const RATIONALE: CaseRationale = {
       consulted: true,
     },
     consultation_path: 'strong_investigator',
+    retrieval_status: 'measured',
+    retrieval_reason: 'completed',
     retrieval_query_groups: [],
     knowledge: [],
   },
@@ -120,8 +122,8 @@ describe('InvestigationInputs', () => {
     expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });
 
-  it('stays absent when the latest run recorded no supplemental inputs', () => {
-    const { container } = render(
+  it('does not turn missing retrieval telemetry into a false no-input state', () => {
+    render(
       <InvestigationInputs
         rationale={{
           case_id: 'case-3',
@@ -130,9 +132,38 @@ describe('InvestigationInputs', () => {
           platform_tuning_status: 'recorded',
           platform_tuning: [],
         }}
+        onReview={vi.fn()}
       />,
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByText('Provenance unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review inputs' })).toBeNull();
+    expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
+  });
+
+  it('discloses an explicit not-run retrieval path without calling it an input', () => {
+    render(
+      <InvestigationInputs
+        showSelectionStatus
+        rationale={{
+          case_id: 'case-not-run',
+          knowledge: [],
+          procedure_provenance: {
+            persona: { selected_id: '', selection_reason: '', consulted: false },
+            playbook: { selected_id: '', selection_reason: '', consulted: false },
+            consultation_path: 'kill_switch',
+            retrieval_status: 'not_attempted',
+            retrieval_reason: 'kill_switch',
+            retrieval_query_groups: [],
+            knowledge: [],
+          },
+        }}
+        onReview={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Not run')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review inputs' })).toBeNull();
+    expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });
 
   it('does not turn a provenance failure into a false no-input state', async () => {
@@ -157,7 +188,7 @@ describe('InvestigationInputs', () => {
       />,
     );
 
-    expect(screen.getByText('Provenance unavailable')).toBeInTheDocument();
+    expect(screen.getAllByText('Provenance unavailable')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: 'Review inputs' })).toBeNull();
     expect(screen.queryByText(/These inputs informed preprocessing/)).toBeNull();
   });

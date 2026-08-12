@@ -6,7 +6,7 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Working branch:** `Testing`  ·  **Date:** 2026-08-05
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Working branch:** `Testing`  ·  **Date:** 2026-08-11
 - **Status:** Round 10 and the additive Security Command Center / Case Manager work are
   integrated on `Testing`. A **backend deep-audit hardening pass
   (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10 high / 24 med / 13 low)
@@ -163,6 +163,19 @@
   `/api/schedulers/health` reports process-local worker state. Telemetry-source advice
   accepts only versioned query/tool evidence—never merely an absent connector—and the
   current release reports capture unavailable until that controlled producer exists.
+- **Build and retrieval evidence contract:** newly created cases preserve immutable
+  creation-build `app_version`/`build_sha`, while each new append-only audit and usage
+  row preserves its first append-build. Legacy provenance values remain `null` with no
+  backfill.
+  `retrieval_history_status` is the authoritative Case lifetime marker and legacy cases
+  remain `unavailable`. `knowledge_used` keeps its array wire shape, while
+  `retrieval_observation_status` alone makes `[]` a measured empty result; skipped,
+  failed, partial, or historically unavailable retrieval is not converted to zero.
+  Fail-soft last-known-good/partial context may still be consulted without qualifying as
+  a measured observation. Base metrics expose case-level reference coverage only—not
+  quality or per-run hit rate—and keep incomplete-lifetime or truncated cohorts `null`.
+  This is additive under `0.1.13`, needs no SQL migration, and does not auto-remap
+  existing Elasticsearch templates or indices.
 - **Current feature integration:** Cases is still the table-oriented list, but an
   opened row hands the exact case to the canonical Case Manager detail workspace;
   its desktop split is accessible and persisted. Case Manager Overview now
@@ -382,7 +395,10 @@ backend/app/
   connectors/      SPI + registry · elastic/opensearch/wazuh · demo.py · receivers/
   engine/          correlation · risk · case_manager (decide()/apply() — #3) · case_id · poller ·
                    poller_manager (Round-4 — fans out over EVERY enabled PULL source) · ingest ·
-                   metrics (+ Round-3 posture) · mitre_coverage · shift_report · priority ·
+                   metrics (+ Round-3 posture + evidence-qualified case-level knowledge-reference
+                   coverage; unavailable lifetime history/truncation stay null,
+                   not-measured cases stay out of the denominator) · mitre_coverage ·
+                   shift_report · priority ·
                    budget (BudgetGate) · threshold_automation · threat_context · mitre · demo_generator/runtime +
                    Round-4: threshold_tuner (nightly deterministic observer, default ON;
                    analyst-confirmed evidence only and review-first writes) · campaigns

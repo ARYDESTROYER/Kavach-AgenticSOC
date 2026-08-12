@@ -36,6 +36,11 @@ tries the case's stored event identifiers. If the source no longer retains those
 events, it can rebuild a bounded cluster from the evidence already stored on the
 case. The case is updated in place; it is not duplicated.
 
+That update preserves the Case's original nullable `app_version` and `build_sha`:
+they identify the build that created the case, not the build performing the current
+re-investigation. The new audit and usage rows created by the run carry the current
+append-build identity instead. Older cases remain `null`; no provenance is backfilled.
+
 Re-investigation spends model tokens and creates usage-ledger entries. Confirm the
 model and scope before applying it to many cases.
 
@@ -75,6 +80,33 @@ playbook appears only when it was actually injected and consulted; selection alo
 not sufficient. If no applicable input was recorded, the summary stays absent. If
 provenance could not be read, the Console reports that limitation instead of treating
 it as a successful empty result.
+
+Knowledge history has a separate lifetime contract. `retrieval_history_status` is
+authoritative for the whole Case: `available` means its known lifetime was instrumented,
+while `unavailable` means earlier history cannot be reconstructed. Re-investigating a
+legacy case does not change that lifetime marker. Its `knowledge_used` list is cumulative,
+de-duplicated, bounded, and always an array for backward compatibility.
+`retrieval_observation_status` is authoritative for its meaning: `measured` proves at
+least one complete retrieval, `not_measured` means a new history-complete Case has not
+completed one, and `unavailable` is the legacy default. A later fully measured modern
+run may advance the observation marker on a legacy Case, but its lifetime-history marker
+stays `unavailable`. An empty array is a measured zero only when the observation status
+is `measured`.
+
+For the latest run, `procedure_provenance` independently records retrieval as
+`measured`, `not_attempted`, or `unavailable` with a reason. This tells you whether that
+specific run completed retrieval, deliberately skipped it, or could not establish the
+result. It does not repair or replace the Case's lifetime history status, and a populated
+reference list proves reference coverage only—not retrieval quality or whether every run
+retrieved knowledge.
+
+RAG remains fail-soft. If corpus refresh/seeding cannot be verified, the investigator may
+still use bounded last-known-good references. If one configured query group fails, chunks
+from successful groups may still ground the prompt. In either case the latest run records
+`unavailable` with an `incomplete:*` or specific failure reason, and the partial context
+does not advance `retrieval_observation_status` or enter the case-level coverage measure
+as a completed observation. Only completion of every configured query group makes the
+run `measured`; a completed zero-hit result is then an honest measured empty result.
 
 The trace is diagnostic evidence, not a second decision system. Tool calls available
 to the investigator are read-only log search, cached enrichment, and knowledge

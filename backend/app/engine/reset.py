@@ -47,7 +47,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..constants import (
     AUDIT_INDEX,
-    AUDIT_WRITE_ALIAS,
+    AUDIT_READ_PATTERN,
     BASELINE_KEY,
     BASELINE_NS,
     BATCH_JOBS_KEY,
@@ -62,9 +62,9 @@ from ..constants import (
     CASE_THREAD_NS,
     CASES_READ_PATTERN,
     CASES_WRITE_ALIAS,
+    CURSOR_INDEX,
     CUSTOM_ROLES_KEY,
     CUSTOM_ROLES_NS,
-    CURSOR_INDEX,
     INBOX_KEY,
     INBOX_NS,
     MEMORY_KEY,
@@ -73,14 +73,15 @@ from ..constants import (
     NOISE_NS,
     PROPOSALS_KEY,
     PROPOSALS_NS,
-    ResetScope,
     SESSIONS_KEY,
     SESSIONS_NS,
     USER_PREFS_KEY,
     USER_PREFS_NS,
     USERS_KEY,
     USERS_NS,
+    ResetScope,
 )
+from ..stores.ledger_claims import clear_ledger_claims
 
 logger = logging.getLogger("tlsoc.engine.reset")
 
@@ -384,8 +385,17 @@ async def _reset_audit(app_state: Any) -> bool:
         return await _sql_delete_all(app_state, "audit")
     es = app_state.es
     try:
-        # Delete both the write alias' backing index and the base name defensively.
-        await es.delete_index(AUDIT_WRITE_ALIAS)
+        # Clear the stable, non-rolling idempotency authority first. If this fails,
+        # retain the ledger too: deleting rows while old claims survive would allow a
+        # later retry to resurrect pre-reset audit evidence from the recovery payload.
+        await clear_ledger_claims(es, "audit")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit claim reset failed (%s); retaining audit ledger", exc)
+        return False
+    try:
+        # Rollover can leave several concrete backing indices. Delete the full owned
+        # read pattern, then the pre-rollover/base spelling defensively.
+        await es.delete_index(AUDIT_READ_PATTERN)
         await es.delete_index(AUDIT_INDEX)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit index delete failed (%s); continuing", exc)
@@ -395,6 +405,14 @@ async def _reset_audit(app_state: Any) -> bool:
         await bootstrap_indices(es)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit index re-bootstrap failed (%s); continuing", exc)
+    try:
+        # Catch a claim created by an in-flight pre-reset writer between the first
+        # cleanup and index deletion. A post-reset row is left intact and will be
+        # safely adopted if its deterministic id is retried.
+        await clear_ledger_claims(es, "audit")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("post-reset audit claim cleanup failed (%s)", exc)
+        return False
     return True
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..build_identity import stamp_new_record
 from ..constants import (
     CASES_READ_PATTERN,
     CASES_WRITE_ALIAS,
@@ -34,8 +35,25 @@ class CaseStore(CaseRepository):
         self._es = es
 
     async def save(self, case: Case) -> None:
+        # The repository is the final immutability boundary, including for internal
+        # direct callers that submit a complete but changed pair.  New records may
+        # carry an explicit producer hand-off; every update restores the persisted
+        # creation identity (including legacy nulls) before the upsert.
+        existing = await self._es.get_doc_strict(CASES_WRITE_ALIAS, case.case_id)
+        if existing is None:
+            persisted = stamp_new_record(case)
+        else:
+            persisted = case.model_copy(
+                update={
+                    "app_version": existing.get("app_version"),
+                    "build_sha": existing.get("build_sha"),
+                }
+            )
         await self._es.index_doc(
-            CASES_WRITE_ALIAS, case.model_dump(mode="json"), doc_id=case.case_id, refresh=True
+            CASES_WRITE_ALIAS,
+            persisted.model_dump(mode="json"),
+            doc_id=persisted.case_id,
+            refresh=True,
         )
 
     async def get(self, case_id: str) -> Case | None:

@@ -57,6 +57,15 @@ vi.mock('@/lib/api', () => ({
         avg_accuracy: 0, avg_reasoning_quality: 0, avg_action_appropriateness: 0,
         time_saved_minutes: 0, outcome_distribution: {},
       },
+      retrieval_history: {
+        status: 'unavailable', available: false,
+        reason: '3 investigated cases have unavailable historical retrieval instrumentation.',
+        loaded_cases: 8, total_cases: 8, truncated: false, eligible_cases: 7,
+        history_available_cases: 4, history_unavailable_cases: 3,
+        completed_attempt_cases: 2, cases_with_references: null,
+        reference_coverage: null,
+        formula: 'cases with references / completed retrieval attempts',
+      },
       // The compact Operational spend pointer reads these; the FULL ledger is the Cost tab.
       cost: { total_cost: 1.23, total_tokens: 45000, call_count: 12, currency: 'USD' },
     }),
@@ -192,6 +201,18 @@ describe('Analytics consolidation (Round 4 / #10)', () => {
     // (now radiogroups, role="radio") in the same row can't inflate a role="tab" count.
     const strip = screen.getByTestId('metrics-tabs');
     expect(within(strip).getAllByRole('tab')).toHaveLength(5);
+  });
+
+  it('shows unavailable retrieval history without fabricating zero coverage', async () => {
+    render(<Metrics embedded />);
+
+    expect(await screen.findByText('Knowledge reference coverage')).toBeInTheDocument();
+    expect(
+      screen.getByText(/3 investigated cases have unavailable historical retrieval instrumentation/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/4 of 7 investigated cases/i)).toBeInTheDocument();
+    expect(screen.queryByText('0%')).toBeNull();
+    expect(screen.queryByText(/retrieval quality/i)).toBeNull();
   });
 
   it('keeps the time window and refresh ahead of contextual sort controls', async () => {

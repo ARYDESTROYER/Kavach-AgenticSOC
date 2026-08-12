@@ -19,7 +19,7 @@ import logging
 import math
 import re
 from collections import Counter
-from dataclasses import replace as dataclass_replace
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -120,6 +120,21 @@ PRECEDENT_RATIFICATION_ACKNOWLEDGEMENT = (
 # The analyst note is the one operator-authored free-text field that becomes durable
 # model-facing corpus text. Bound it hard.
 _ANALYST_NOTE_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class RagRetrievalObservation:
+    """One retrieval outcome with an explicit measurement boundary.
+
+    ``chunks=[]`` alone is ambiguous because the public fail-soft API historically
+    returned that value for both a valid zero-hit search and an unavailable backend.
+    Investigation metrics consume ``measured`` and ``reason`` instead of guessing
+    from the list.
+    """
+
+    chunks: list[RagChunk]
+    measured: bool
+    reason: str
 
 # Legacy grouping key for pre-fix incrementally indexed precedent (chunks written
 # with a stable ``doc_id`` but no ``metadata.document_id``).
@@ -1616,15 +1631,41 @@ class RagService:
         ``rag.hybrid`` off this is byte-for-byte the prior vector-only behaviour.
 
         On an embedding-space mismatch (model/dim changed) the store is CLEARED +
-        reseeded once, then the query is retried — vectors are never truncated."""
+        reseeded once, then the query is retried — vectors are never truncated.
+
+        Callers that must distinguish a confirmed zero-hit search from an outage use
+        :meth:`retrieve_observed`; this compatibility method deliberately retains the
+        original fail-soft list contract.
+        """
+        return (await self.retrieve_observed(query, top_k=top_k)).chunks
+
+    async def retrieve_observed(
+        self, query: str, top_k: int | None = None
+    ) -> RagRetrievalObservation:
+        """Return chunks plus whether a complete search actually ran.
+
+        A successful search that produces no policy-eligible survivor is measured.
+        Disabled RAG, failed seeding, an empty/unavailable corpus, a missing query
+        embedding, or any store/search failure is explicitly unmeasured.
+        """
         cfg = self._prefs.rag
         if not cfg.enabled:
-            return []
+            return RagRetrievalObservation([], False, "rag_disabled")
         try:
             await self.ensure_seeded()
+            # Seeding is intentionally fail-soft and preserves the last known-good
+            # corpus. Keep using that corpus to ground the investigation, but never
+            # label the resulting count measured when its projection is unverified.
+            unavailable_reason = (
+                None
+                if self._seeded and self._seed_signature == self._source_signature()
+                else "seeding_failed"
+            )
             store_count = await self._store.count()
             if store_count == 0:
-                return []
+                return RagRetrievalObservation(
+                    [], False, unavailable_reason or "corpus_empty"
+                )
             k = top_k or cfg.top_k
             # Over-fetch a candidate pool for hybrid re-ranking; identical to ``k``
             # when hybrid is disabled. Source filtering gets a small bounded cushion
@@ -1637,7 +1678,7 @@ class RagService:
             )
             vectors = batch.vectors
             if not vectors:
-                return []
+                return RagRetrievalObservation([], False, "embedding_unavailable")
             try:
                 space = await self._store.embedding_space()
                 query_space = (batch.model, len(vectors[0]))
@@ -1650,7 +1691,7 @@ class RagService:
                 logger.warning("Embedding-space mismatch (%s); clearing + reseeding", exc)
                 await self._reseed()
                 if await self._store.count() == 0:
-                    return []
+                    return RagRetrievalObservation([], False, "corpus_empty_after_reseed")
                 results = await self._store.search(vectors[0], pool_k)
             # min_score gates on the RAW vector score (so disabling hybrid, or a
             # too-strict threshold, behaves exactly as before).
@@ -1660,19 +1701,23 @@ class RagService:
                 if self._source_enabled(c.source) and float(s) >= cfg.min_score
             ]
             if not survivors:
-                return []
+                return RagRetrievalObservation(
+                    [], unavailable_reason is None, unavailable_reason or "completed"
+                )
             # The lower-trust tier is filtered BEFORE ranking so a disabled or aged-out
             # chunk cannot consume a candidate slot. No-op when nothing unconfirmed is
             # in the pool, which is every deployment that never enabled the tier.
             survivors = self._filter_unconfirmed(survivors)
             if not survivors:
-                return []
+                return RagRetrievalObservation(
+                    [], unavailable_reason is None, unavailable_reason or "completed"
+                )
             if cfg.hybrid and len(survivors) > 1:
                 ranked = _hybrid_rerank(query, survivors, cfg.vector_weight, cfg.bm25_weight)
             else:
                 ranked = survivors
             ranked = self._apply_precedent_policy(ranked, k)
-            return [
+            chunks = [
                 RagChunk(
                     text=chunk.text,
                     source=chunk.source,
@@ -1681,9 +1726,12 @@ class RagService:
                 )
                 for chunk, score in ranked[:k]
             ]
+            return RagRetrievalObservation(
+                chunks, unavailable_reason is None, unavailable_reason or "completed"
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG retrieve failed for query %r: %s", query, exc)
-            return []
+            return RagRetrievalObservation([], False, "retrieval_failed")
 
     # ------------------------------------------------------------------ #
     # Retrieval-side precedent policy (the anti-compounding half of the tier).

@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .. import __version__
+from ..build_identity import build_stamp
 from ..config import (
     Preferences,
     SourceInstance,
@@ -85,7 +86,14 @@ from ..stores.proposals import (
     sanitize_decision_reason,
 )
 from ..tools.enrich import EnrichTool
-from ..utils import iso_now, new_id, now_utc, relative_to_millis, to_millis
+from ..utils import (
+    iso_now,
+    new_id,
+    now_utc,
+    parse_es_timestamp,
+    relative_to_millis,
+    to_millis,
+)
 from .deps import (
     _audit_session,
     _bearer,
@@ -213,12 +221,6 @@ def _release_channel(configured: str | None = None) -> str:
     return "testing"
 
 
-def _build_stamp(environment_key: str) -> str:
-    """Return a normalized, public build stamp without inventing provenance."""
-    value = os.getenv(environment_key, "unknown").strip()
-    return value if value and value.lower() != "unknown" else "unknown"
-
-
 @router.get("/health", response_model=HealthResponse)
 async def health(state: AppState = Depends(get_state)) -> HealthResponse:
     ready, store_type = await _state_store_probe(state)
@@ -271,8 +273,8 @@ async def health_ready(state: AppState = Depends(get_state)) -> ReadinessRespons
 @router.get("/health/build-info", response_model=BuildInfoResponse)
 async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoResponse:
     """Non-secret release identity for support, diagnostics, and upgrade checks."""
-    commit_sha = _build_stamp("TLSOC_BUILD_SHA")
-    build_time = _build_stamp("TLSOC_BUILD_DATE")
+    commit_sha = build_stamp("TLSOC_BUILD_SHA")
+    build_time = build_stamp("TLSOC_BUILD_DATE")
     provenance_missing = [
         label
         for label, value in (("commit_sha", commit_sha), ("build_time", build_time))
@@ -2994,8 +2996,8 @@ async def playbook_update(
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
 async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
-    cases, _total = await state.cases.list(limit=2000)
-    out = compute_metrics(cases)
+    cases, total = await state.cases.list(limit=2000)
+    out = compute_metrics(cases, total_cases=total)
     try:
         out["cost"] = await state.usage_store.summary(window_hours=max(1, window_hours))
     except Exception:  # noqa: BLE001 — cost is best-effort on the metrics view
@@ -6047,13 +6049,59 @@ def _build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]
     reason) and the case_manager DECISION (deterministic rationale)."""
     # Audit rows are OLDEST-first.  A case can be re-investigated many times, so
     # project only the LATEST run instead of mixing the first run's context/tools
-    # with the current Case fields.  ``playbook_selector`` is the durable run
-    # boundary written before every real investigation (including the cheap path).
-    # Legacy audit histories without that row fall back to their full history.
+    # with the current Case fields.  ``playbook_selector`` is the usual durable run
+    # boundary (including the cheap path).  A failure can happen before selection,
+    # though; in that case the terminal ``pipeline error:`` row must start a new run
+    # rather than inheriting the previous run's measured retrieval or other artifacts.
+    # The prefix deliberately excludes the non-terminal timeout ERROR row: timeout
+    # handling continues to procedure provenance + the deterministic case-manager
+    # decision in the SAME run.  Legacy audit histories without either boundary fall
+    # back to their full history.
     run_start = 0
+    run_boundary_reason = "historical_provenance_missing"
+    last_selector = -1
+    last_terminal = -1
     for idx, row in enumerate(rows):
         if _audit_get(row, "actor") == "playbook_selector":
             run_start = idx
+            run_boundary_reason = "historical_provenance_missing"
+            last_selector = idx
+        elif (
+            _audit_get(row, "actor") == "pipeline"
+            and _audit_get(row, "action_type") == ActionType.ERROR.value
+            and str(_audit_get(row, "result_summary") or "").startswith("pipeline error:")
+        ):
+            # No selector has appeared since the preceding completed run: this
+            # failure itself is the latest run boundary.  If the current run DID
+            # reach selection, retain that more informative boundary so any measured
+            # retrieval completed before the later failure remains attributable.
+            if last_selector <= last_terminal:
+                run_start = idx
+                run_boundary_reason = "pipeline_failed_before_provenance"
+            last_terminal = idx
+        elif (
+            _audit_get(row, "actor") == "case_manager"
+            and _audit_get(row, "action_type") == ActionType.DECISION.value
+        ):
+            last_terminal = idx
+
+    # The fail-to-human Case is persisted before its terminal audit row. If that
+    # best-effort append was lost but older audit history remains readable, an error
+    # Case would otherwise inherit the preceding run. A newer Case timestamp is
+    # positive evidence that the bounded audit trail has no boundary for this run;
+    # fail closed to an empty/unavailable projection instead of guessing.
+    case_error = str(_audit_get(case, "error") or "").strip()
+    case_updated_at = parse_es_timestamp(_audit_get(case, "updated_at"))
+    audit_times = [
+        parsed
+        for row in rows
+        if (parsed := parse_es_timestamp(_audit_get(row, "ts"))) is not None
+    ]
+    if case_error and case_updated_at is not None and (
+        not audit_times or max(audit_times) < case_updated_at
+    ):
+        run_start = len(rows)
+        run_boundary_reason = "pipeline_failure_provenance_missing"
     run_rows = rows[run_start:]
 
     selector_row = next(
@@ -6126,6 +6174,9 @@ def _build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]
         "persona": {"selected_id": "", "selection_reason": "", "consulted": False},
         "playbook": {"selected_id": "", "selection_reason": "", "consulted": False},
         "consultation_path": "",
+        # Missing procedure telemetry is UNKNOWN, never a measured zero.
+        "retrieval_status": "unavailable",
+        "retrieval_reason": run_boundary_reason,
         "retrieval_query_groups": [],
         "knowledge": [],
     }
@@ -6143,6 +6194,24 @@ def _build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]
                 }
             procedure_provenance["consultation_path"] = str(
                 procedure_input.get("consultation_path") or ""
+            )
+            raw_retrieval_status = str(
+                procedure_input.get("retrieval_status") or "unavailable"
+            )
+            retrieval_status = (
+                raw_retrieval_status
+                if raw_retrieval_status
+                in {"measured", "not_attempted", "unavailable"}
+                else "unavailable"
+            )
+            procedure_provenance["retrieval_status"] = retrieval_status
+            procedure_provenance["retrieval_reason"] = str(
+                procedure_input.get("retrieval_reason")
+                or (
+                    "historical_provenance_missing"
+                    if retrieval_status == "unavailable"
+                    else ""
+                )
             )
             for item in procedure_input.get("retrieval_query_groups") or []:
                 if not isinstance(item, dict):
@@ -6312,6 +6381,8 @@ def _trace_step(row: dict[str, Any], include_prompts: bool) -> TraceStep:
     toggle by dropping the (untrusted) prompt excerpt when disabled."""
     return TraceStep(
         ts=str(row.get("ts", "")),
+        app_version=row.get("app_version"),
+        build_sha=row.get("build_sha"),
         actor=str(row.get("actor", "")),
         action_type=row.get("action_type"),
         model=row.get("model"),

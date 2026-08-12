@@ -116,7 +116,93 @@ def feedback_stats(cases: list[Case]) -> dict:
     }
 
 
-def compute_metrics(cases: list[Case], *, trend_days: int = 14) -> dict:
+def retrieval_history(
+    cases: list[Case], *, total_cases: int | None = None
+) -> dict[str, Any]:
+    """Honest case-level knowledge-reference coverage.
+
+    This is *not* retrieval quality and it is not a per-run hit rate.  The Case field
+    is cumulative, de-duplicated, and bounded, so the only supportable question is:
+    among fully instrumented investigated cases with a completed retrieval attempt,
+    how many ever recorded at least one reference?
+
+    Any historically unavailable case or truncated store read makes the headline
+    value unavailable.  A missing observation is never folded into the denominator;
+    only the explicit observation marker proves a completed attempt.  The knowledge
+    list intentionally retains its backwards-compatible array shape, so list presence
+    by itself carries no measurement meaning.
+    """
+
+    loaded_cases = len(cases)
+    truncated = total_cases is not None and total_cases > loaded_cases
+    eligible = [case for case in cases if case.verdict is not None]
+    history_available = [
+        case for case in eligible if case.retrieval_history_status == "available"
+    ]
+    history_unavailable = len(eligible) - len(history_available)
+    completed = [
+        case
+        for case in history_available
+        if case.retrieval_observation_status == "measured"
+    ]
+
+    base: dict[str, Any] = {
+        "status": "unavailable",
+        "available": False,
+        "reason": "",
+        "loaded_cases": loaded_cases,
+        "total_cases": total_cases if total_cases is not None else loaded_cases,
+        "truncated": truncated,
+        "eligible_cases": len(eligible),
+        "history_available_cases": len(history_available),
+        "history_unavailable_cases": history_unavailable,
+        "completed_attempt_cases": len(completed),
+        "cases_with_references": None,
+        "reference_coverage": None,
+        "formula": (
+            "cases with at least one recorded reference / cases with at least one "
+            "completed retrieval attempt"
+        ),
+    }
+    if truncated:
+        base["reason"] = (
+            f"Only {loaded_cases} of {total_cases} cases were loaded; retrieval "
+            "coverage is unavailable for a truncated cohort."
+        )
+        return base
+    if not eligible:
+        base.update({
+            "status": "insufficient_evidence",
+            "reason": "No investigated cases are available for retrieval coverage.",
+        })
+        return base
+    if history_unavailable:
+        base["reason"] = (
+            f"{history_unavailable} investigated case(s) have unavailable historical "
+            "retrieval instrumentation; missing history is excluded, never counted as zero."
+        )
+        return base
+    if not completed:
+        base.update({
+            "status": "insufficient_evidence",
+            "reason": "No fully instrumented case has a completed retrieval attempt.",
+        })
+        return base
+
+    with_references = sum(1 for case in completed if case.knowledge_used)
+    base.update({
+        "status": "available",
+        "available": True,
+        "reason": "",
+        "cases_with_references": with_references,
+        "reference_coverage": round(with_references / len(completed), 4),
+    })
+    return base
+
+
+def compute_metrics(
+    cases: list[Case], *, trend_days: int = 14, total_cases: int | None = None
+) -> dict:
     """Case analytics for the dashboard. Pure; deterministic given the inputs."""
     total = len(cases)
     by_status = Counter((c.status.value if c.status else "unknown") for c in cases)
@@ -197,6 +283,7 @@ def compute_metrics(cases: list[Case], *, trend_days: int = 14) -> dict:
         "burndown": burndown,
         "timing_trend": timing_trend(cases, trend_days=trend_days),
         "feedback": feedback_stats(cases),
+        "retrieval_history": retrieval_history(cases, total_cases=total_cases),
     }
 
 
