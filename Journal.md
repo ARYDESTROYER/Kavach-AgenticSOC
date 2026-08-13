@@ -9557,3 +9557,87 @@
 - Tests: Full backend **2,507 passed / 4 skipped** across **2,511 collected tests**, with one existing third-party synthetic TLS warning. Console strict-output contract **5/5** and complete Vitest suite **1,968/1,968 across 291 files** passed; generated OpenAPI/TypeScript contract is fresh for **221 paths**; TypeScript, ESLint, and the production build of **3,190 modules** passed. Documentation consistency passed for **78 public pages**, bundle/theme contracts passed **7/7**, Help Center build/revalidation and version consistency passed, Python compilation and CI-parity fatal Ruff passed, and final diff hygiene passed.
 - Status: complete and locally accepted for gaps 1 and 3. No version bump, SQL migration, new Elasticsearch index, historical backfill, commit, staging, push, pull request, deployment, protected-branch mutation, or Codex Security scan was performed.
 - Next: Review the local diff, then commit and promote it through the repository's normal protected Testing workflow when authorized; update or roll existing Elasticsearch templates/indices under the documented controlled rollout rather than assuming checked-in mappings mutate deployed state.
+
+### 2026-08-12 21:55Z — `/root` — server-side single-archive export started
+- Context: Add a default server-assembled portable ZIP export on `Testing` while preserving the legacy bounded export and advanced resumable segment flow.
+- Did: Confirmed a clean local `Testing` checkout exactly at `origin/Testing` commit `5f39402170a2d03d45b24fc6b6dbee02b3be23f4`; reviewed the supplied archive contract and began end-to-end backend, Console, authorization, bounded-memory, snapshot-consistency, provenance, audit, cleanup, and documentation work. Chose the requested stdlib temporary-file plus `zipfile` design so incomplete exports fail before any response is served.
+- Tests: Pending focused archive/segment parity, authorization/fresh-auth, cleanup/failure, Console download, generated-contract, full backend, strict Console, lint, build, docs, and diff gates.
+- Status: in-progress.
+- Next: Reuse the existing safe-scope page walker and signed snapshot state to write one NDJSON entry per scope, terminal manifest only after proven completion, then make the Console archive action primary and retain segments as an advanced option.
+
+### 2026-08-12 22:05Z — `/root` — archive export contract and operator documentation pinned
+- Context: Keep the new one-file path additive and operationally honest across Elasticsearch, production PostgreSQL, existing KV-backed catalogs, the bundled Console proxy, and the legacy/resumable contracts.
+- Did: Documented the archive route, per-scope NDJSON plus terminal manifest, server-disk atomicity, build provenance, safe-scope/fresh-auth/audit boundaries, PostgreSQL `bounded_at_start` semantics, and the advanced numbered-file escape hatch for proxy-time or temporary-disk constraints. Kept the legacy v1 and segment/cancel contracts intact.
+- Tests: Documentation diff hygiene passed; implementation and generated-contract gates remain pending.
+- Status: documentation milestone complete; integrated acceptance remains in progress.
+- Next: Adversarially review the backend temp-file/PIT lifecycle and Console binary-response flow, regenerate OpenAPI/types after the route settles, then run focused and full gates.
+
+### 2026-08-12 22:10Z — `/root` — single-download Console flow focused acceptance passed
+- Context: Make the archive endpoint the ordinary operator path without bypassing the Console's centralized session, reauthentication, cancellation, and error behavior.
+- Did: Added a shared binary-response client path beneath the existing auth/error boundary; made one ZIP the default Data export mode; required a non-empty `application/zip` response before any browser save; sanitized server filenames with a UTC fallback; and retained the exact numbered segment loop, progress, cancel, and compact-file behavior under an explicit advanced/resumable mode.
+- Tests: Focused Vitest passed **31/31** across the Data export component and API-client behavior; TypeScript and zero-warning ESLint passed.
+- Status: Console milestone complete; backend/archive and integrated acceptance remain in progress.
+- Next: Complete and adversarially test server-side assembly, late authorization, PIT/temp cleanup, binary headers, archive/segment parity, then regenerate contracts and run the full suites.
+
+### 2026-08-12 22:00Z — `/root/metric_history_map` — archive Console delivery work started
+- Context: Make the server-assembled ZIP the primary Settings export while preserving the existing resumable numbered-file workflow and centralized browser auth/error behavior.
+- Did: Began a frontend-only pass over the Data export section, shared API client, download validation, filename handling, cancellation, and focused component/client tests; no backend, docs, generated-contract, or Journal edits were included in the subtask.
+- Tests: Pending focused Console/API-client tests, TypeScript, ESLint, design gates, and production build.
+- Status: in-progress
+- Next: Implement the one-Blob primary path, retain the exact Advanced flow, then return focused verification to the orchestrator.
+
+### 2026-08-12 22:10Z — `/root/metric_history_map` — archive Console delivery work completed
+- Context: Provide one ordinary browser download without weakening the established advanced segment flow.
+- Did: Added a narrowly typed binary API path under the shared credential, unauthorized, one-time-reauth, abort, and error boundary; made one ZIP the recommended Settings mode; rejected missing/wrong MIME and zero-byte responses; parsed and sanitized server filenames with a UTC fallback; and kept continuation, progress, cancel, and numbered downloads in Advanced mode.
+- Tests: Focused Console/API-client tests passed **31/31**, broader Settings tests passed **143/143**, TypeScript and targeted zero-warning ESLint passed, design gates passed, and the production build transformed **3,190 modules**.
+- Status: complete; frontend files only
+- Next: Orchestrator should integrate the backend route and generated contract, run browser QA and the complete suites, then hand off the uncommitted Testing diff.
+
+### 2026-08-12 22:00Z — `/root/archive_backend_tests` — archive export regression verification started
+- Context: Adversarially verify the new delivery-atomic server-side portable ZIP export on Testing without changing production code.
+- Did: Mapped the existing segmented export, auth/RBAC/fresh-auth, PIT cursor, SQLite StateStore, temp-file, and streaming seams; planned focused success, parity, bounded-memory, integrity, cancellation, cleanup, and authorization tests.
+- Tests: Not yet run at session start.
+- Status: in-progress
+- Next: Implement backend-only regressions and run focused archive/export/auth/SQL suites.
+
+### 2026-08-12 22:34Z — `/root/archive_backend_tests` — archive export adversarial regressions green
+- Context: Prove the server-assembled portable ZIP is complete, bounded, honest across ES/SQL consistency, authorization-safe, and cleanup-safe before delivery.
+- Did: Added 24 backend regressions in `backend/tests/test_export_archive.py` covering response/manifest/provenance contracts, default-all safe scopes, lossless segment parity, 5,001-row paging, real SQLite semantics, unsafe-scope validation, fail-closed completeness/integrity, disk reserve, audit timing, concurrency, role/late-permission/fresh-auth gates, PIT ownership, cancellation, shielded writer, and ASGI disconnect cleanup.
+- Tests: **65/65** focused tests passed across the new archive suite, existing export suite, route-auth coverage, and SQL StateStore E2E; diff hygiene and Python compilation passed.
+- Status: complete; backend test file only
+- Next: Orchestrator should include the new regressions in full-suite acceptance and retain the documented process-local archive concurrency limitation.
+
+### 2026-08-12 22:00Z — `/root/contract_docs_map` — adversarial archive export review started
+- Context: Independently review the proposed server-side single-ZIP portable export across state-store paging, snapshot truth, authentication, audit timing, temporary-file lifecycle, ASGI disconnect behavior, proxy constraints, Console binary delivery, generated contracts, tests, and operator documentation.
+- Did: Re-read the repository handoff and agent rules; traced `routes_export.py` end to end; inspected Elasticsearch and SQL export-page implementations, auth/fresh-auth and CSRF dependencies, audit contracts, nginx behavior, Console export UX, generated OpenAPI/types, and existing regressions. Began a read-only adversarial audit with no repository edits.
+- Tests: Pending focused backend, Console, generated-contract, documentation, and diff-hygiene checks.
+- Status: in-progress
+- Next: Identify any delivery, PIT ownership, cancellation, cleanup, consistency, manifest, response-header, or documentation blockers and re-audit the final landed diff.
+
+### 2026-08-12 22:37Z — `/root/contract_docs_map` — adversarial archive export review completed with no blockers
+- Context: Final read-only release audit of the settled server-assembled ZIP implementation, primary Console download flow, generated API contract, operator documentation, and dedicated archive regressions.
+- Did: Verified delivery-atomic assembly without cross-scope snapshot overclaim; exact ES PIT and explicitly non-exact SQL/KV semantics; bounded page processing; off-loop serialization/compression/filesystem work; shielded cancellation; newest-cursor PIT cleanup; disconnect polling; temporary-disk reserve; CRC/count/size/SHA-256/manifest verification; strict prepared-artifact audit timing and actor identity; entry and attachment-name safety; exact response headers; late permission/fresh-auth rechecks; centralized Console auth/reauth/error behavior; and accurate documentation of inherited proxy, Blob, SQL, and KV limits. Confirmed generated OpenAPI and TypeScript contracts include the new route/model; no repository content was edited by this reviewer.
+- Tests: New archive suite collects **24** tests; focused backend acceptance passed **61/61**; focused Console/API-client tests passed **31/31**; generated-contract drift and docs-bundle checks passed with **222** OpenAPI paths and app `0.1.13`/docs `0.1`; diff hygiene passed.
+- Status: complete — no remaining release blocker found
+- Next: Orchestrator should run full-suite/lint/build acceptance and hand off the uncommitted local diff through the protected Testing workflow when authorized.
+
+### 2026-08-12 22:00Z — `/root/version_provenance_map` — archive backend design review started
+- Context: Design the additive server-side archive route around the existing segment walker, authorization dependencies, strict audit path, Elasticsearch PIT lifecycle, and temporary-file constraints.
+- Did: Began a backend-only contract and storage review, including request/manifest shape, response headers, late permission/fresh-auth checks, disk-backed streaming, cancellation cleanup, and focused test seams; no repository files were edited by this subtask.
+- Tests: Not run; implementation remained pending.
+- Status: in-progress
+- Next: Freeze a minimal production design and either implement it or return the complete design to the orchestrator.
+
+### 2026-08-12 22:12Z — `/root/version_provenance_map` — archive backend design handed off without edits
+- Context: Return the completed backend design so implementation could continue without widening the route or storage contracts.
+- Did: Specified a scopes-only request; nonblocking process-local assembly guard; `mkstemp`/`zipfile` page walker; terminal provenance manifest; exact headers; late permission and fresh-auth rechecks; prepared-artifact strict audit; and an async streaming iterator with idempotent outer cleanup. Flagged rollover/SQL semantics and ASGI send-failure cleanup for adversarial coverage. No production, test, docs, generated, or Journal files were edited by this subtask.
+- Tests: Not run by this subtask.
+- Status: complete as a design handoff; implementation moved to the orchestrator
+- Next: Orchestrator should implement the design, incorporate the independent audit findings, and prove it with focused and full suites.
+
+### 2026-08-12 22:38Z — `/root` — server-side single-archive export implemented and locally accepted
+- Context: Complete the requested default one-file archive export on the local `Testing` branch without changing the legacy bounded route or advanced resumable contract.
+- Did: Added `POST /api/admin/export/archive`, which walks the existing safe scopes through bounded segment pages, writes one NDJSON ZIP member per scope and a terminal manifest on restricted temporary disk, verifies entry names/CRC/terminators/counts/bytes/SHA-256 before audit or response, rechecks permission and fresh authentication after assembly, and streams with exact safe headers plus cleanup across success, failure, cancellation, disconnect, and ASGI send errors. Added a process-local nonblocking build slot and 64 MiB disk reserve; preserved ES PIT semantics and documented SQL/KV non-exactness. Made one ZIP the Console default, retained numbered segments as Advanced, refreshed OpenAPI/TypeScript, synchronized operator/API/release docs, and kept deterministic case-manager code byte-identical.
+- Tests: Full backend **2,531 passed / 4 skipped** across **2,535 collected tests** with one existing third-party TLS warning. Console strict-output contract passed **5/5** and the complete suite passed **1,979/1,979 across 291 files**; TypeScript, zero-warning ESLint, generated-type drift, design gates, the **3,190-module** production build, documentation/version/bundle/theme checks, Python compilation, focused/default and CI-fatal Ruff, browser QA at normal desktop and 1280×700, and final diff hygiene all passed. An independent adversarial review found no release blockers.
+- Status: complete and locally accepted on uncommitted branch `Testing` at protected base `5f39402170a2d03d45b24fc6b6dbee02b3be23f4`; application version remains `0.1.13`.
+- Next: Review and commit this local diff, then use the repository's normal protected Testing workflow when explicitly authorized; no commit, staging, push, PR, deployment, version bump, or Codex Security scan was performed in this session.

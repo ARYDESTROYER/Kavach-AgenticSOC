@@ -123,6 +123,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/export/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Application Data Archive
+         * @description Assemble selected full-history scopes into one atomic disk-backed ZIP.
+         *
+         *     Every NDJSON member is written one bounded segment page at a time. The terminal
+         *     manifest is added only after every selected repository emitted its starting count;
+         *     no response begins before the ZIP is complete, freshly authorized, and audited.
+         */
+        post: operations["export_application_data_archive_api_admin_export_archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/export/segment": {
         parameters: {
             query?: never;
@@ -6107,6 +6131,14 @@ export interface components {
             y: number;
         };
         /**
+         * DataExportArchiveRequest
+         * @description Selected safe scopes for one server-assembled full-history ZIP.
+         */
+        DataExportArchiveRequest: {
+            /** Scopes */
+            scopes?: ("all" | "cases" | "audit" | "usage" | "configuration" | "automation" | "knowledge")[];
+        };
+        /**
          * DataExportRequest
          * @description Selectable export request. ``all`` expands to every safe application scope.
          */
@@ -8265,6 +8297,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_application_data_archive_api_admin_export_archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DataExportArchiveRequest"];
+            };
+        };
+        responses: {
+            /** @description One complete server-assembled portable export archive. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
                 };
             };
             /** @description Validation Error */

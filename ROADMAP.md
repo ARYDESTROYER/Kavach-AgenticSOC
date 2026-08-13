@@ -64,8 +64,11 @@ the exact record to Case Manager, whose desktop queue divider is accessible,
 bounded, and persisted. The dashboard defaults to visibility-aware LIVE refresh and
 adds an expanded aggregate Noise Reduction view. Threat Context explains persisted
 alert-to-cluster-to-case formation; Demo Mode now has five sources including Entra;
-and privileged operators can page every record in selected supported safe export
-scopes through bounded, resumable files (still an analysis artifact, not a backup).
+and privileged operators can download every record in selected supported safe export
+scopes as one verified server-assembled ZIP served only after every selected scope emits
+its starting count under its declared consistency, with the
+bounded numbered-file flow retained
+as an advanced resumable option (still an analysis artifact, not a backup).
 Compatible official OpenAI alert/case work prefers live Flex with truthful standard
 fallback, independently of the still-opt-in asynchronous Batch event funnel.
 Agent Effectiveness now preserves its established quality/turnaround headline while

@@ -155,26 +155,44 @@ exists, warm data remains retained and the Console reports Archive as not config
 
 Open **Settings → Organization → Data export** when support or offline analysis
 needs all records from selected supported safe scopes. Select cases, audit, usage,
-configuration, automation, and/or knowledge. **Records per file** (up to 5,000) is a
-bounded response size, not a full-history ceiling: the Console follows authenticated
-opaque cursors and downloads numbered files until each scope explicitly reports
-complete. A cursor is bound to its requesting operator, scope, and snapshot; do not
-edit or share it. The Console shows record/file progress and supports cancellation.
+configuration, automation, and/or knowledge. The primary action asks the server to
+assemble one UTC-stamped ZIP and downloads exactly that one file. It contains one
+newline-delimited JSON entry per selected scope and a terminal `manifest.json` with
+counts, completion and consistency evidence, actor, and build provenance. The server
+does not start serving the ZIP unless every selected scope emits its starting count and
+the finished archive passes CRC, count, size, digest, and manifest checks. Only an
+Elasticsearch scope marked exact is a fixed snapshot; PostgreSQL and KV scopes disclose
+their weaker semantics, and scopes are captured independently rather than in one shared
+database transaction.
+
+**Advanced / resumable (numbered files)** preserves the signed-cursor workflow for very
+large exports or constrained proxy/server-disk environments. Its **Records per file**
+setting (up to 5,000) is a bounded response size, not a full-history ceiling: the Console
+follows authenticated opaque cursors and downloads numbered files until each scope
+explicitly reports complete. A cursor is bound to its requesting operator, scope, and
+snapshot; do not edit or share it. The Console shows record/file progress and supports
+cancellation.
 
 The Knowledge scope includes exact catalog counts, sanitized authoritative Markdown
 for operator-owned runbooks and playbooks, and metadata-only references/manifests for
 bundled procedures. It excludes environment/source credentials, users and sessions,
 password/MFA material, browser tokens, upstream raw logs, and raw knowledge chunks.
-Each compact server response and compact Console-downloaded segment is capped at
-25 MiB, and this is not an import format, whole-application
-export, or backup/restore mechanism. Every segment is audited and requires
+Each internal archive page, compact server segment response, and compact
+Console-downloaded segment is capped at 25 MiB; the complete disk-backed ZIP is not a
+25 MiB lifetime export. This is not an import format, whole-application export, or
+backup/restore mechanism. Every prepared archive and response-bounded segment is audited
+before streaming and requires
 `data_export:export` plus a fresh sign-in, granted by default to `super_admin` and
 `soc_manager`. Exact point-in-time consistency is available on the bundled
-Elasticsearch state path; other backends disclose weaker consistency. A cursor that
+Elasticsearch state path; PostgreSQL is explicitly `bounded_at_start` and other
+backends disclose their weaker consistency. A segment cursor that
 expires (ten-minute PIT keep-alive), crosses a backend restart, or is invalid must be
 restarted for that scope.
-Unavailable/malformed registry data or an unavailable append-only audit store aborts
-the scope with an error; the Console never turns that failure into a completed export.
+Unavailable/malformed registry data, insufficient temporary space, an integrity failure,
+or an unavailable append-only audit store aborts with an error; the Console never turns
+that failure into a completed export. One archive may be assembled/served per backend
+process at a time; use Advanced mode after a 409 busy response or when the synchronous
+request could exceed the deployment's upstream timeout.
 
 ## Secrets
 

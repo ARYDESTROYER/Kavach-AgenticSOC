@@ -117,6 +117,7 @@ the exact request model and every operation under a prefix.
 | Telemetry-gap evidence | `GET /api/tuning/source-recommendations` | Query-backed supported missing-evidence recommendations; connector absence alone is never proof |
 | Own-state storage lifecycle | `GET/PUT /api/storage/lifecycle`, `POST /api/storage/lifecycle/preview`, `POST /api/storage/lifecycle/apply` | Inspect/save desired Hot/Warm/archive policy, preview capabilities, and explicitly apply the supported Elasticsearch ILM subset |
 | Portable data export | `POST /api/admin/export` | Legacy single-file, bounded, secret-free application-state snapshot (`data_export:export`) |
+| Full-history export archive | `POST /api/admin/export/archive` | Assemble and verify selected safe scopes before serving one ZIP (fresh auth + `data_export:export`) |
 | Full-history export segment | `POST /api/admin/export/segment` | Continue one supported safe scope past 5,000 records using an opaque cursor (fresh auth + `data_export:export`) |
 | Cancel export segment | `POST /api/admin/export/segment/cancel` | Release the PIT carried by an unfinished cursor (fresh auth + `data_export:export`) |
 | Audit and realtime | `GET /api/audit`, `GET /api/events` | Append-only action history and server-sent event updates |
@@ -607,7 +608,38 @@ use fewer scopes or a lower item cap when the server returns HTTP 413. The respo
 not an import/restore format. The default permission is limited to `super_admin` and
 `soc_manager` through `data_export:export`, and each request is audited.
 
-For all records in a selected supported safe scope, use
+`POST /api/admin/export/archive` accepts optional `scopes` (default `all`) and is the
+primary full-history contract. It walks the existing bounded segment machinery on the
+server, writes one `<scope>.ndjson` ZIP entry incrementally, and writes root
+`manifest.json` only after every selected scope emits the record count fixed at that
+scope's start. The manifest identifies
+the format as `agentic-soc-portable-export-archive` version 1, records the UTC generation
+time, authenticated actor, current `app_version` / `build_sha`, and for each scope its
+snapshot total, exported count, completion status, consistency/PIT truth, entry name,
+uncompressed byte count, and SHA-256. The server reopens the finished ZIP and streams
+every member through CRC, count, size, digest, and manifest verification before auditing
+or serving it.
+The 200 response is `application/zip`, has a real `Content-Length`, and uses a UTC-stamped
+`agentic-soc-export-*.zip` attachment filename. Any incomplete or unverified walk,
+unavailable strict registry/audit store, expired snapshot, failed late fresh-auth check,
+or disk/write error returns non-2xx before an archive is served. The temporary artifact
+and any open PIT are released on success, failure, request cancellation, or streaming
+disconnect.
+
+Archive construction is synchronous and uses temporary server disk; artifact delivery is
+atomic in the narrow sense that HTTP response headers do not start until the complete ZIP
+has passed integrity checks. It is not one cross-scope database transaction. Each scope
+declares its own consistency: only `exact: true` proves fixed membership and values;
+PostgreSQL `bounded_at_start` means that the starting count was emitted while OFFSET pages
+may reflect concurrent changes. The backend permits one archive build/download per process
+and preserves 64 MiB of temporary-filesystem free space; another request returns 409 and
+insufficient space returns 507. The bundled Console proxy allows five minutes. For a dataset
+that may exceed that proxy/ingress window or available temporary-disk capacity, use the
+advanced resumable segment contract below and retain its numbered files. External
+reverse proxies need a compatible upstream timeout; increasing a timeout does not turn
+this support artifact into a backup.
+
+For all records in a selected supported safe scope, advanced clients may use
 `POST /api/admin/export/segment` with `scope`, optional opaque `cursor`, and
 `page_size` (1–5000). The 5,000 value is a per-response/segment safety bound, not a
 lifetime cap. Follow `segment.next_cursor` until `segment.complete` is `true`; never
@@ -621,8 +653,10 @@ for internally monotonic counters/position. A cursor is not transferable. Expira
 backend restart, or an invalid cursor requires restarting that scope. Call
 `POST /api/admin/export/segment/cancel` with the scope and last cursor on cancellation.
 
-The segment route requires both `data_export:export` and fresh authentication.
-Knowledge/automation registry reads and the delivery audit write are strict: an
+The archive and segment routes require both `data_export:export` and fresh authentication.
+Archive permission and freshness are checked again after assembly. Its strict audit row
+records a prepared, authorized artifact before network streaming; it cannot prove that the
+client received every byte. Knowledge/automation registry reads and the audit write are strict: an
 unavailable or malformed backing collection returns HTTP 503, releases an active PIT,
 and never emits a truthful-looking `complete` response.
 Cases, audit, and usage are store-paginated; automation and knowledge remain KV-backed

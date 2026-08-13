@@ -9,7 +9,7 @@
  *     a readable sentence instead of a raw JSON blob (finding 18).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api } from '../api';
+import { api, ApiError, setReauthHandler } from '../api';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -22,6 +22,111 @@ function jsonResponse(status: number, body: unknown): Response {
     text: async () => JSON.stringify(body),
   } as unknown as Response;
 }
+
+function blobResponse(
+  status: number,
+  body: Blob,
+  headers: Record<string, string> = {},
+): Response {
+  const normalized = Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name: string) => normalized[name.toLowerCase()] || null },
+    blob: async () => body,
+    json: async () => {
+      throw new Error('not json');
+    },
+    text: async () => '',
+  } as unknown as Response;
+}
+
+describe('binary downloads preserve the central auth and error boundary', () => {
+  afterEach(() => {
+    setReauthHandler(null);
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the Blob and download headers only after a successful response', async () => {
+    const archive = new Blob(['zip'], { type: 'application/zip' });
+    const fetchMock = vi.fn().mockResolvedValue(blobResponse(200, archive, {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="export.zip"',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    const result = await api.dataExport.archive(['cases'], controller.signal);
+
+    expect(result).toEqual({
+      blob: archive,
+      contentType: 'application/zip',
+      contentDisposition: 'attachment; filename="export.zip"',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]).toEqual([
+      '/api/admin/export/archive',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'include',
+        signal: controller.signal,
+        body: JSON.stringify({ scopes: ['cases'] }),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ]);
+  });
+
+  it('turns a non-2xx JSON response into ApiError without reading a Blob', async () => {
+    const errorResponse = jsonResponse(503, { detail: 'archive assembly failed' });
+    const blobSpy = vi.fn();
+    Object.assign(errorResponse, { blob: blobSpy });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse));
+
+    await expect(api.dataExport.archive(['cases'])).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        name: 'ApiError',
+        status: 503,
+        message: 'archive assembly failed',
+      }),
+    );
+    expect(blobSpy).not.toHaveBeenCalled();
+  });
+
+  it('retries a reauth-required Blob request exactly once through the shared gate', async () => {
+    const gate = vi.fn().mockResolvedValue(true);
+    setReauthHandler(gate);
+    const archive = new Blob(['zip'], { type: 'application/zip' });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(401, { detail: { code: 'reauth_required' } }))
+      .mockResolvedValueOnce(blobResponse(200, archive, {
+        'Content-Type': 'application/zip',
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await api.dataExport.archive(['cases']);
+
+    expect(result.blob).toBe(archive);
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1]).toEqual(fetchMock.mock.calls[0][1]);
+  });
+
+  it('does not recurse when the one reauth retry is also rejected', async () => {
+    const gate = vi.fn().mockResolvedValue(true);
+    setReauthHandler(gate);
+    const fetchMock = vi.fn()
+      .mockResolvedValue(jsonResponse(401, { detail: { code: 'reauth_required' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(api.dataExport.archive(['cases'])).rejects.toBeInstanceOf(
+      ApiError,
+    );
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('dashboard update: default trailing-debounce + immediate Save path (finding 17)', () => {
   let fetchMock: ReturnType<typeof vi.fn>;

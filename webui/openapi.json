@@ -2011,6 +2011,30 @@
         "title": "DashboardWidget",
         "type": "object"
       },
+      "DataExportArchiveRequest": {
+        "description": "Selected safe scopes for one server-assembled full-history ZIP.",
+        "properties": {
+          "scopes": {
+            "items": {
+              "enum": [
+                "all",
+                "cases",
+                "audit",
+                "usage",
+                "configuration",
+                "automation",
+                "knowledge"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "title": "DataExportArchiveRequest",
+        "type": "object"
+      },
       "DataExportRequest": {
         "description": "Selectable export request. ``all`` expands to every safe application scope.",
         "properties": {
@@ -6500,6 +6524,46 @@
           }
         },
         "summary": "Export Application Data"
+      }
+    },
+    "/api/admin/export/archive": {
+      "post": {
+        "description": "Assemble selected full-history scopes into one atomic disk-backed ZIP.\n\nEvery NDJSON member is written one bounded segment page at a time. The terminal\nmanifest is added only after every selected repository emitted its starting count;\nno response begins before the ZIP is complete, freshly authorized, and audited.",
+        "operationId": "export_application_data_archive_api_admin_export_archive_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DataExportArchiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "One complete server-assembled portable export archive."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Application Data Archive"
       }
     },
     "/api/admin/export/segment": {

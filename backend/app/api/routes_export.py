@@ -3,8 +3,9 @@
 The export is intentionally selected APPLICATION state, not a backup of credentials
 or raw upstream logs. The legacy endpoint returns one bounded canonical JSON file;
 the v2 endpoint walks every record in one supported safe scope through resumable,
-response-bounded segments. Environment secrets, connector credentials, auth
-users/sessions, password/MFA material and raw log payloads are never traversed. A
+response-bounded segments; and the archive endpoint walks those same bounded pages
+into one disk-backed ZIP before serving it. Environment secrets, connector credentials,
+auth users/sessions, password/MFA material and raw log payloads are never traversed. A
 final recursive guard omits credential-named keys and redacts common bearer/API-key/
 private-key patterns from free text.
 
@@ -16,20 +17,29 @@ authority (#3).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets as stdlib_secrets
+import shutil
+import tempfile
+import threading
+import zipfile
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..build_identity import current_record_provenance
 from ..constants import ActionType
 from ..engine.runbooks import parse_runbook_document
 from ..playbooks.loader import parse_playbook
@@ -38,6 +48,9 @@ from ..state import AppState
 from .deps import current_username, get_state, require_fresh_auth, require_permission
 
 router = APIRouter(prefix="/api")
+
+_ARCHIVE_PERMISSION_DEP = require_permission("data_export", "export")
+_ARCHIVE_FRESH_DEP = require_fresh_auth()
 
 ExportScope = Literal[
     "all", "cases", "audit", "usage", "configuration", "automation", "knowledge"
@@ -54,6 +67,13 @@ _MAX_EXPORT_BYTES = 25 * 1024 * 1024
 _MAX_TEXT_CHARS = 250_000
 _MAX_CURSOR_CHARS = 32_768
 _MAX_PIT_CHARS = 24_000
+_ARCHIVE_STREAM_CHUNK_BYTES = 1024 * 1024
+_ARCHIVE_DISK_RESERVE_BYTES = 64 * 1024 * 1024
+
+# A single process assembles/serves at most one temporary archive at a time. This is
+# deliberately non-blocking: privileged callers receive 409 instead of queueing a
+# second potentially large disk artifact until their fresh-auth window has expired.
+_ARCHIVE_SLOT = threading.Lock()
 
 # Exact/suffix checks avoid stripping harmless usage fields such as prompt_tokens.
 _SENSITIVE_KEYS = {
@@ -102,11 +122,203 @@ class DataExportSegmentRequest(BaseModel):
     page_size: int = Field(default=1000, ge=1, le=_MAX_ITEMS_PER_SCOPE)
 
 
+class DataExportArchiveRequest(BaseModel):
+    """Selected safe scopes for one server-assembled full-history ZIP."""
+
+    scopes: list[ExportScope] = Field(default_factory=lambda: ["all"], min_length=1)
+
+
 class DataExportSegmentCancelRequest(BaseModel):
     """Release a still-open point-in-time cursor after operator cancellation."""
 
     scope: SegmentExportScope
     cursor: str = Field(min_length=1, max_length=_MAX_CURSOR_CHARS)
+
+
+class _ArchiveArtifact:
+    """Idempotent temp-file and global-slot cleanup for every response path."""
+
+    def __init__(self) -> None:
+        self.path: str | None = None
+        self._done = False
+
+    async def cleanup(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            if self.path:
+                await _run_blocking(_unlink_archive, self.path)
+        finally:
+            _ARCHIVE_SLOT.release()
+
+
+class _ArchiveStreamingResponse(StreamingResponse):
+    """Streaming response whose outer ASGI boundary always deletes the artifact.
+
+    Starlette's background callback is not reached when ``send`` raises. Wrapping the
+    complete response call in ``finally`` covers disconnects before the body iterator
+    starts as well as failures during a chunk, while the iterator keeps its own finally
+    as defense in depth.
+    """
+
+    def __init__(
+        self,
+        content: AsyncIterator[bytes],
+        *,
+        cleanup: Callable[[], Awaitable[None]],
+        headers: dict[str, str],
+    ) -> None:
+        super().__init__(content, media_type="application/zip", headers=headers)
+        self._archive_cleanup = cleanup
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._archive_cleanup()
+
+
+def _unlink_archive(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _new_archive_path() -> str:
+    descriptor, path = tempfile.mkstemp(
+        prefix="agentic-soc-export-",
+        suffix=".zip",
+    )
+    os.close(descriptor)
+    return path
+
+
+async def _run_blocking(
+    function: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Finish an in-flight filesystem call before propagating cancellation.
+
+    Cancelling ``asyncio.to_thread`` does not stop its worker. Waiting for that worker
+    prevents ZIP writes racing the close/unlink cleanup path after a client abort.
+    """
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        except Exception:  # noqa: BLE001 — cancellation remains authoritative
+            pass
+        raise
+
+
+def _ensure_archive_capacity(path: str, required_bytes: int) -> None:
+    free = shutil.disk_usage(os.path.dirname(path) or ".").free
+    needed = max(0, int(required_bytes)) + _ARCHIVE_DISK_RESERVE_BYTES
+    if free < needed:
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                "temporary storage is too full to assemble this export safely; "
+                "free space or use the resumable segment export"
+            ),
+        )
+
+
+def _write_ndjson_page(
+    entry: Any,
+    records: list[Any],
+    digest: Any,
+) -> int:
+    written = 0
+    for record in records:
+        line = (
+            json.dumps(
+                record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            + b"\n"
+        )
+        entry.write(line)
+        digest.update(line)
+        written += len(line)
+    return written
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _verify_archive(
+    path: str,
+    scopes: list[str],
+    expected_manifest: dict[str, Any],
+) -> None:
+    expected_names = [*(f"{scope}.ndjson" for scope in scopes), "manifest.json"]
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            if archive.namelist() != expected_names:
+                raise ValueError("archive entries do not match the selected scopes")
+            for scope in scopes:
+                metadata = expected_manifest["scopes"][scope]
+                entry_name = str(metadata["entry"])
+                digest = hashlib.sha256()
+                uncompressed_bytes = 0
+                line_count = 0
+                final_byte = b""
+                with archive.open(entry_name, "r") as entry:
+                    while True:
+                        chunk = entry.read(_ARCHIVE_STREAM_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        uncompressed_bytes += len(chunk)
+                        line_count += chunk.count(b"\n")
+                        final_byte = chunk[-1:]
+                if uncompressed_bytes and final_byte != b"\n":
+                    raise ValueError(f"{entry_name} is not complete NDJSON")
+                if uncompressed_bytes != int(metadata["uncompressed_bytes"]):
+                    raise ValueError(f"{entry_name} byte count does not match manifest")
+                if digest.hexdigest() != str(metadata["sha256"]):
+                    raise ValueError(f"{entry_name} digest does not match manifest")
+                if line_count != int(metadata["exported"]):
+                    raise ValueError(f"{entry_name} record count does not match manifest")
+                if archive.getinfo(entry_name).file_size != uncompressed_bytes:
+                    raise ValueError(f"{entry_name} ZIP size does not match its contents")
+            stored_manifest = json.loads(archive.read("manifest.json"))
+            if stored_manifest != expected_manifest:
+                raise ValueError("archive manifest does not match assembled state")
+    except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="the completed export archive failed integrity verification",
+        ) from exc
+
+
+async def _stream_archive(
+    path: str,
+    cleanup: Callable[[], Awaitable[None]],
+) -> AsyncIterator[bytes]:
+    handle = None
+    try:
+        handle = await _run_blocking(open, path, "rb")
+        while True:
+            chunk = await _run_blocking(handle.read, _ARCHIVE_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        if handle is not None:
+            await _run_blocking(handle.close)
+        await cleanup()
 
 
 def _redact_text(value: str, *, max_characters: int = _MAX_TEXT_CHARS) -> str:
@@ -812,11 +1024,9 @@ async def _segment_envelope(
                 "actual_page_size": page_size,
             },
             "excluded": _EXCLUDED,
-            "records": _plain(records),
+            "records": await _run_blocking(_plain, records),
         }
-        payload = json.dumps(
-            envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        payload = await _run_blocking(_canonical_json_bytes, envelope)
         if len(payload) <= _MAX_EXPORT_BYTES:
             if complete or not continuation_available:
                 await _close_export_position(scope, state, next_position or position)
@@ -843,6 +1053,261 @@ async def _segment_envelope(
                 "after": previous_after,
                 "seen": previous_seen,
             }
+
+
+async def _close_archive_cursor(
+    scope: str,
+    cursor: str | None,
+    state: AppState,
+    actor: str,
+) -> None:
+    if not cursor:
+        return
+    try:
+        cursor_state = _decode_cursor(
+            scope,
+            cursor,
+            actor=actor,
+            signing_key=state.export_cursor_signing_key,
+        )
+    except HTTPException:
+        return
+    await _close_export_position(
+        scope,
+        state,
+        cursor_state.get("position") if cursor_state else None,
+    )
+
+
+async def _assemble_archive(
+    path: str,
+    scopes: list[str],
+    state: AppState,
+    actor: str,
+    disconnected: Callable[[], Awaitable[bool]] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Write every selected scope incrementally and add the manifest last."""
+    archive = await _run_blocking(
+        zipfile.ZipFile,
+        path,
+        "w",
+        zipfile.ZIP_DEFLATED,
+        True,
+    )
+    active_entry: Any | None = None
+    active_scope = ""
+    active_cursor: str | None = None
+    scope_manifest: dict[str, dict[str, Any]] = {}
+    assembly_succeeded = False
+    try:
+        for scope in scopes:
+            active_scope = scope
+            active_cursor = None
+            entry_name = f"{scope}.ndjson"
+            active_entry = await _run_blocking(
+                archive.open,
+                entry_name,
+                "w",
+                force_zip64=True,
+            )
+            first_consistency: dict[str, Any] | None = None
+            snapshot_total: int | None = None
+            exported = 0
+            uncompressed_bytes = 0
+            digest = hashlib.sha256()
+            seen_cursors: set[str] = set()
+            while True:
+                if disconnected is not None and await disconnected():
+                    raise asyncio.CancelledError
+                body = DataExportSegmentRequest(
+                    scope=scope,  # type: ignore[arg-type]
+                    cursor=active_cursor,
+                    page_size=_MAX_ITEMS_PER_SCOPE,
+                )
+                envelope, _bounded_payload = await _segment_envelope(
+                    body,
+                    state,
+                    actor,
+                )
+                consistency = dict(envelope.get("consistency") or {})
+                segment = dict(envelope.get("segment") or {})
+                returned_cursor = segment.get("next_cursor")
+                active_cursor = str(returned_cursor) if returned_cursor else None
+                # Take ownership of the returned continuation/PIT before observing
+                # disconnect, so cancellation always closes the newest live cursor.
+                if disconnected is not None and await disconnected():
+                    raise asyncio.CancelledError
+                if consistency.get("mode") == "unverified":
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export repository cannot verify its "
+                            "consistency; no archive was produced"
+                        ),
+                    )
+                if first_consistency is None:
+                    first_consistency = consistency
+                elif (
+                    consistency.get("mode") != first_consistency.get("mode")
+                    or consistency.get("exact") != first_consistency.get("exact")
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export consistency changed during assembly; "
+                            "no archive was produced"
+                        ),
+                    )
+                observed_total = segment.get("snapshot_total")
+                if not isinstance(observed_total, int) or isinstance(observed_total, bool):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export could not prove its starting record "
+                            "count; no archive was produced"
+                        ),
+                    )
+                if snapshot_total is None:
+                    snapshot_total = observed_total
+                elif observed_total != snapshot_total:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export count changed during assembly; "
+                            "no archive was produced"
+                        ),
+                    )
+                records = envelope.get("records")
+                if not isinstance(records, list):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"the {scope} export returned malformed records",
+                    )
+                await _run_blocking(
+                    _ensure_archive_capacity,
+                    path,
+                    len(_bounded_payload) + len(records) + 1024 * 1024,
+                )
+                uncompressed_bytes += int(
+                    await _run_blocking(
+                        _write_ndjson_page,
+                        active_entry,
+                        records,
+                        digest,
+                    )
+                )
+                exported = int(segment.get("cumulative_count") or 0)
+                status = str(segment.get("status") or "unverified")
+                complete = bool(segment.get("complete"))
+                if complete and status == "complete":
+                    if exported != snapshot_total:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"the {scope} export ended before its starting count "
+                                "was emitted; no archive was produced"
+                            ),
+                        )
+                    active_cursor = None
+                    break
+                if status in {"incomplete", "unverified"}:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export stopped with status={status}; "
+                            "no archive was produced"
+                        ),
+                    )
+                if (
+                    status != "partial"
+                    or not active_cursor
+                    or not records
+                    or active_cursor in seen_cursors
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the {scope} export made no verifiable forward progress; "
+                            "no archive was produced"
+                        ),
+                    )
+                seen_cursors.add(active_cursor)
+
+            await _run_blocking(active_entry.close)
+            active_entry = None
+            consistency = first_consistency or _consistency_manifest("unverified")
+            scope_manifest[scope] = {
+                "snapshot_total": snapshot_total,
+                "exported": exported,
+                "status": "complete",
+                "pit_consistent": bool(
+                    consistency.get("mode") == "point_in_time"
+                    and consistency.get("exact") is True
+                ),
+                "consistency": consistency,
+                "entry": entry_name,
+                "uncompressed_bytes": uncompressed_bytes,
+                "sha256": digest.hexdigest(),
+            }
+
+        if disconnected is not None and await disconnected():
+            raise asyncio.CancelledError
+        generated = datetime.now(timezone.utc).replace(microsecond=0)
+        generated_at = generated.isoformat().replace("+00:00", "Z")
+        manifest = {
+            "format": "agentic-soc-portable-export-archive",
+            "format_version": 1,
+            "generated_at": generated_at,
+            "generated_by": actor,
+            "provenance": current_record_provenance(),
+            "selection": {"scopes": scopes},
+            "limits": {
+                "max_items_per_internal_page": _MAX_ITEMS_PER_SCOPE,
+                "max_bytes_per_internal_page": _MAX_EXPORT_BYTES,
+                "temporary_disk_reserve_bytes": _ARCHIVE_DISK_RESERVE_BYTES,
+            },
+            "semantics": {
+                "delivery": "the complete ZIP is verified before the response starts",
+                "scope_consistency": (
+                    "each scope is captured independently; this is not one cross-scope "
+                    "database transaction"
+                ),
+                "complete": (
+                    "each scope emitted the record count fixed at that scope's start; "
+                    "only consistency.exact=true proves fixed membership and values"
+                ),
+            },
+            "excluded": _EXCLUDED,
+            "scopes": scope_manifest,
+            "complete": True,
+        }
+        manifest_payload = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        await _run_blocking(
+            archive.writestr,
+            "manifest.json",
+            manifest_payload,
+        )
+        filename = f"agentic-soc-export-{generated.strftime('%Y%m%dT%H%M%SZ')}.zip"
+        assembly_succeeded = True
+        return manifest, filename
+    finally:
+        if active_entry is not None:
+            try:
+                await _run_blocking(active_entry.close)
+            except Exception:  # noqa: BLE001 — preserve the primary assembly error
+                pass
+        if active_cursor:
+            await _close_archive_cursor(active_scope, active_cursor, state, actor)
+        try:
+            await _run_blocking(archive.close)
+        except Exception:  # noqa: BLE001 — incomplete archives are deleted by caller
+            if assembly_succeeded:
+                raise
 
 
 @router.post("/admin/export")
@@ -914,6 +1379,115 @@ async def export_application_data(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@router.post(
+    "/admin/export/archive",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "One complete server-assembled portable export archive.",
+            "content": {
+                "application/zip": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
+)
+async def export_application_data_archive(
+    body: DataExportArchiveRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    actor: str = Depends(current_username),
+    _permission: Any = Depends(_ARCHIVE_PERMISSION_DEP),
+    _fresh: Any = Depends(_ARCHIVE_FRESH_DEP),
+) -> Response:
+    """Assemble selected full-history scopes into one atomic disk-backed ZIP.
+
+    Every NDJSON member is written one bounded segment page at a time. The terminal
+    manifest is added only after every selected repository emitted its starting count;
+    no response begins before the ZIP is complete, freshly authorized, and audited.
+    """
+    if not _ARCHIVE_SLOT.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "another archive export is already being assembled or served; "
+                "retry after it finishes or use the resumable segment export"
+            ),
+        )
+
+    artifact = _ArchiveArtifact()
+    effective_actor = actor or "local-operator"
+    try:
+        artifact.path = await _run_blocking(_new_archive_path)
+        await _run_blocking(
+            _ensure_archive_capacity,
+            artifact.path,
+            _MAX_EXPORT_BYTES,
+        )
+        scopes = _select_scopes([str(scope) for scope in body.scopes])
+        manifest, filename = await _assemble_archive(
+            artifact.path,
+            scopes,
+            state,
+            effective_actor,
+            request.is_disconnected,
+        )
+        await _run_blocking(_verify_archive, artifact.path, scopes, manifest)
+
+        # Assembly can outlive a short sudo window or an operator's grant. Re-run both
+        # gates against the same request immediately before audit and response creation.
+        await _ARCHIVE_PERMISSION_DEP(request)
+        await _ARCHIVE_FRESH_DEP(request)
+
+        archive_size = await _run_blocking(os.path.getsize, artifact.path)
+        counts = ",".join(
+            f"{scope}={int(meta['exported'])}"
+            for scope, meta in manifest["scopes"].items()
+        )
+        try:
+            await state.control_audit.record_strict(
+                action_type=ActionType.DATA_EXPORT,
+                surface="settings",
+                actor=effective_actor,
+                result_summary=(
+                    f"prepared archive scopes={','.join(scopes)} records={counts} "
+                    f"complete=true bytes={archive_size}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "the export audit trail is unavailable; no archive was delivered"
+                ),
+            ) from exc
+
+        return _ArchiveStreamingResponse(
+            _stream_archive(artifact.path, artifact.cleanup),
+            cleanup=artifact.cleanup,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(archive_size),
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except HTTPException:
+        await artifact.cleanup()
+        raise
+    except asyncio.CancelledError:
+        await artifact.cleanup()
+        raise
+    except Exception as exc:  # noqa: BLE001 — hide filesystem/backend internals
+        await artifact.cleanup()
+        raise HTTPException(
+            status_code=503,
+            detail="the export archive could not be assembled; no archive was delivered",
+        ) from exc
 
 
 @router.post("/admin/export/segment")

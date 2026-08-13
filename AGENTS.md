@@ -340,12 +340,16 @@ backend/app/
                      decomposition; +`POST /api/triage/preview-decision` [rule Test/Preview
                      that NEVER calls decide()/bills the LLM #3/#6] + typed baseline/
                      campaign/batch config endpoints + routes_export [legacy bounded
-                     `POST /api/admin/export` plus fresh-auth resumable
-                     `/api/admin/export/segment` + `/cancel`; secret-free supported
-                     application-state scopes behind `data_export:export`, with ES PIT
-                     consistency, actor/scope/snapshot-bound signed cursors, explicit
-                     weaker-backend semantics, and Intelligence catalog export with
-                     sanitized operator runbook/playbook source plus safe bundled refs]
+                     `POST /api/admin/export`; default fresh-auth server-assembled
+                     `/api/admin/export/archive` (one fully assembled-before-response ZIP
+                     with per-scope NDJSON +
+                     terminal manifest); and advanced resumable `/api/admin/export/segment`
+                     + `/cancel`; secret-free supported application-state scopes behind
+                     `data_export:export`, with bounded cases/audit/usage pages (and the
+                     documented KV-catalog materialization limit), ES PIT consistency,
+                     actor/scope/snapshot-bound signed cursors, explicit weaker-backend
+                     semantics, and Intelligence catalog export with sanitized operator
+                     runbook/playbook source plus safe bundled refs]
                      + routes_storage
                      [`GET/PUT /api/storage/lifecycle`, pure preview, freshly authenticated
                      explicit apply limited to supported owned-state targets];
