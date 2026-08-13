@@ -156,6 +156,13 @@ class NotificationService:
         self._event_bus = event_bus
         ensure_registered()
 
+    def reset_runtime_state(self) -> None:
+        """Forget in-process tenant dedup/rate evidence after a factory reset."""
+
+        self._dedup_mem.clear()
+        self._rate_mem.clear()
+        self._warned_channel_digest = False
+
     # -- trigger evaluation -------------------------------------------------- #
     def _triggers_for_case(self, case: Any, cfg) -> list[str]:
         """Which configured triggers this saved case matches (verdict/status)."""

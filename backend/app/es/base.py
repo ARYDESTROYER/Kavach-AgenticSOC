@@ -157,6 +157,33 @@ class BaseESClient(ABC):
         await self.index_doc(index, doc, doc_id=doc_id, refresh=refresh)
         return True
 
+    async def delete_index_strict(self, name: str) -> bool:
+        """Delete one owned-state index/pattern without masking backend failure.
+
+        ``False`` means the target was already absent.  Bundled clients implement
+        this against the management credential; compatibility clients must opt in
+        explicitly rather than inheriting a fail-soft deletion at a destructive
+        privacy boundary.
+        """
+        raise NotImplementedError(
+            "Elasticsearch client does not implement strict owned-index deletion"
+        )
+
+    async def delete_doc_strict(
+        self,
+        index: str,
+        doc_id: str,
+        refresh: bool = False,
+    ) -> bool:
+        """Delete one owned-state document without masking backend failure.
+
+        ``False`` is reserved for a real missing document/index.  Authorization,
+        connectivity, cluster, and every other failure must propagate.
+        """
+        raise NotImplementedError(
+            "Elasticsearch client does not implement strict owned-document deletion"
+        )
+
     @abstractmethod
     async def update_doc(
         self,

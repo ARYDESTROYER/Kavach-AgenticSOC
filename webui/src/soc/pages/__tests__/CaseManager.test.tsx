@@ -2,10 +2,10 @@
 import * as React from 'react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import type { Case } from '@/lib/types';
+import type { BackgroundJob, BackgroundJobKind, Case } from '@/lib/types';
 import CaseManager from '../CaseManager';
 
 expect.extend(toHaveNoViolations);
@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   caseAssign: vi.fn(),
   caseTags: vi.fn(),
   reinvestigateCase: vi.fn(),
+  submitJob: vi.fn(),
   navigate: vi.fn(),
   routeOpts: undefined as { caseId?: string } | undefined,
   username: 'analyst.one' as string | null,
@@ -39,6 +40,10 @@ vi.mock('@/lib/api', async () => {
       cases: {
         ...actual.api.cases,
         bulk: mocks.bulk,
+      },
+      jobs: {
+        ...actual.api.jobs,
+        submit: mocks.submitJob,
       },
     },
   };
@@ -147,6 +152,26 @@ async function chooseBulkAction(name: string | RegExp) {
   await user.click(within(menu).getByRole('menuitem', { name }));
 }
 
+function acceptedJob(kind: BackgroundJobKind, params: Record<string, unknown>): BackgroundJob {
+  return {
+    job_id: `job-${kind}`,
+    kind,
+    actor: 'analyst.one',
+    created_at: '2026-08-13T10:00:00Z',
+    started_at: null,
+    finished_at: null,
+    status: 'queued',
+    progress: { done: 0, total: (params.case_ids as string[])?.length ?? 0, unit: 'cases' },
+    failures: [],
+    failure_count: 0,
+    failures_truncated: 0,
+    request_fingerprint: 'fp',
+    result: null,
+    params,
+    cancel_requested: false,
+  };
+}
+
 describe('CaseManager', () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -178,6 +203,9 @@ describe('CaseManager', () => {
       if (!item) throw new Error('Case not found');
       return { ...item, updated_at: '2026-07-20T10:30:00Z' };
     });
+    mocks.submitJob.mockReset().mockImplementation(async (input) =>
+      acceptedJob(input.kind, input.params),
+    );
     mocks.toastLoading.mockClear();
     mocks.toastSuccess.mockClear();
     mocks.toastWarning.mockClear();
@@ -353,13 +381,7 @@ describe('CaseManager', () => {
     expect(screen.queryByRole('button', { name: /bulk actions for/i })).not.toBeInTheDocument();
   });
 
-  it('uses the server bulk lifecycle contract and retains only failed acknowledgements', async () => {
-    mocks.bulk.mockResolvedValue({
-      results: [
-        { id: OPEN_HIGH.case_id, ok: false, error: 'Illegal transition from NEEDS_HUMAN' },
-        { id: OPEN_CRITICAL.case_id, ok: true },
-      ],
-    });
+  it('snapshots selected case ids into one durable lifecycle job', async () => {
     render(<CaseManager />);
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
@@ -368,29 +390,24 @@ describe('CaseManager', () => {
 
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText('Acknowledge 2 cases?')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    expect(mocks.submitJob).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Acknowledge cases' }));
 
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenCalledWith(
-        [OPEN_HIGH.case_id, OPEN_CRITICAL.case_id],
-        { action: 'acknowledge' },
-      ),
-    );
-    expect(
-      await screen.findByText(
-        '1 acknowledged, 1 failed. CASE-2026-0091: Illegal transition from NEEDS_HUMAN',
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText('1 selected')).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(mocks.listCases).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob).toHaveBeenCalledWith({
+      kind: 'case_lifecycle',
+      idempotency_key: expect.stringMatching(/^case_lifecycle-/),
+      params: {
+        action: 'acknowledge',
+        case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id],
+      },
+    });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(await screen.findByText(/track progress in inbox/i)).toBeInTheDocument();
+    expect(screen.getByText('2 visible')).toBeInTheDocument();
   });
 
-  it('keeps assignment and tagging status-neutral on their dedicated endpoints', async () => {
+  it('keeps assignment and tagging status-neutral with their dedicated job kinds', async () => {
     render(<CaseManager />);
     await screen.findByText('Multiple failed logins');
 
@@ -403,11 +420,12 @@ describe('CaseManager', () => {
     fireEvent.change(assignee, { target: { value: 'tier-2' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Assign cases' }));
 
-    await waitFor(() =>
-      expect(mocks.caseAssign).toHaveBeenCalledWith(OPEN_HIGH.case_id, 'tier-2'),
-    );
-    expect(await screen.findByText('1 case assigned to tier-2.')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_assign',
+      params: { case_ids: [OPEN_HIGH.case_id], assignee: 'tier-2' },
+    });
+    expect(mocks.caseAssign).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
     await chooseBulkAction('Add tag');
@@ -417,14 +435,15 @@ describe('CaseManager', () => {
     });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add tag' }));
 
-    await waitFor(() =>
-      expect(mocks.caseTags).toHaveBeenCalledWith(OPEN_HIGH.case_id, ['needs-review']),
-    );
-    expect(await screen.findByText('1 case tagged needs-review.')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(2));
+    expect(mocks.submitJob.mock.calls[1][0]).toMatchObject({
+      kind: 'case_tag',
+      params: { case_ids: [OPEN_HIGH.case_id], tag: 'needs-review' },
+    });
+    expect(mocks.caseTags).not.toHaveBeenCalled();
   });
 
-  it('collects status and disposition values before sending bulk lifecycle updates', async () => {
+  it('collects status and disposition values before submitting lifecycle jobs', async () => {
     render(<CaseManager />);
     await screen.findByText('Multiple failed logins');
 
@@ -434,12 +453,11 @@ describe('CaseManager', () => {
     fireEvent.click(within(dialog).getByRole('combobox', { name: 'New status' }));
     fireEvent.click(await screen.findByRole('option', { name: 'On hold' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set status' }));
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenCalledWith(
-        [OPEN_HIGH.case_id],
-        { action: 'set_status', status: 'on_hold' },
-      ),
-    );
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: { case_ids: [OPEN_HIGH.case_id], action: 'set_status', status: 'on_hold' },
+    });
 
     const checkbox = await screen.findByRole('checkbox', { name: 'Select CASE-2026-0091' });
     fireEvent.click(checkbox);
@@ -448,12 +466,15 @@ describe('CaseManager', () => {
     fireEvent.click(within(dialog).getByRole('combobox', { name: 'Disposition' }));
     fireEvent.click(await screen.findByRole('option', { name: 'False positive' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set disposition' }));
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenLastCalledWith(
-        [OPEN_HIGH.case_id],
-        { action: 'set_disposition', disposition: 'false_positive' },
-      ),
-    );
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(2));
+    expect(mocks.submitJob.mock.calls[1][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: {
+        case_ids: [OPEN_HIGH.case_id],
+        action: 'set_disposition',
+        disposition: 'false_positive',
+      },
+    });
   });
 
   it('confirmation-gates resolve and hides actions without their RBAC grants', async () => {
@@ -478,21 +499,20 @@ describe('CaseManager', () => {
     await chooseBulkAction('Resolve');
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText('Resolve 1 case?')).toBeInTheDocument();
-    expect(mocks.bulk).not.toHaveBeenCalled();
+    expect(mocks.submitJob).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Resolve cases' }));
-    await waitFor(() =>
-      expect(mocks.bulk).toHaveBeenCalledWith(
-        [OPEN_HIGH.case_id],
-        { action: 'resolve', reason: 'Bulk-resolved by analyst' },
-      ),
-    );
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: {
+        case_ids: [OPEN_HIGH.case_id],
+        action: 'resolve',
+        reason: 'Bulk-resolved by analyst',
+      },
+    });
   });
 
-  it('confirms the token-spending action, updates successes, and leaves failures selected', async () => {
-    mocks.reinvestigateCase.mockImplementation(async (caseId: string) => {
-      if (caseId === OPEN_HIGH.case_id) throw new Error('Stored evidence is unavailable');
-      return { ...OPEN_CRITICAL, status: 'resolved', updated_at: '2026-07-20T10:40:00Z' };
-    });
+  it('confirms token-spending work and submits one background reinvestigation', async () => {
     render(<CaseManager />);
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
@@ -507,78 +527,40 @@ describe('CaseManager', () => {
     expect(mocks.reinvestigateCase).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Reinvestigate' }));
-    await waitFor(() => expect(mocks.reinvestigateCase).toHaveBeenCalledTimes(2));
-
-    expect(
-      await screen.findByText(
-        '1 reinvestigated, 1 failed. CASE-2026-0091: Stored evidence is unavailable',
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
-    expect(screen.getByText('1 shown · 1 active / 3 loaded')).toBeInTheDocument();
-    expect(screen.getByText('1 selected')).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(mocks.listCases).toHaveBeenCalledTimes(1);
-    expect(mocks.toastWarning).toHaveBeenCalledWith('1 reinvestigated, 1 failed', {
-      id: 'case-manager-bulk',
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob).toHaveBeenCalledWith({
+      kind: 'case_reinvestigate',
+      idempotency_key: expect.stringMatching(/^case_reinvestigate-/),
+      params: { case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id] },
     });
+    expect(mocks.reinvestigateCase).not.toHaveBeenCalled();
+    expect(await screen.findByText(/reinvestigation queued for 2 cases/i)).toBeInTheDocument();
   });
 
-  it('bounds reinvestigation to three concurrent requests and reports progress', async () => {
-    const batchCases: Case[] = Array.from({ length: 5 }, (_, index) => ({
-      ...OPEN_HIGH,
-      case_id: `case-batch-${index + 1}`,
-      case_number: `CASE-BATCH-${index + 1}`,
-      title: `Batch case ${index + 1}`,
-      updated_at: `2026-07-20T10:0${index}:00Z`,
-    }));
-    mocks.listCases.mockResolvedValue({ cases: batchCases, total: batchCases.length });
-
-    const pending = new Map<string, (value: Case) => void>();
-    mocks.reinvestigateCase.mockImplementation(
-      (caseId: string) =>
-        new Promise<Case>((resolve) => {
-          pending.set(caseId, resolve);
-        }),
-    );
-
+  it('reuses one idempotency key across an ambiguous retry and rotates after acceptance', async () => {
+    mocks.submitJob
+      .mockRejectedValueOnce(new Error('connection closed'))
+      .mockImplementationOnce(async (input) => acceptedJob(input.kind, input.params))
+      .mockImplementationOnce(async (input) => acceptedJob(input.kind, input.params));
     render(<CaseManager />);
-    await screen.findByText('Batch case 1');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    await screen.findByText('Multiple failed logins');
+    const checkbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+    fireEvent.click(checkbox);
     await chooseBulkAction('Reinvestigate');
-    const dialog = await screen.findByRole('alertdialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Reinvestigate' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
 
-    await waitFor(() => expect(mocks.reinvestigateCase).toHaveBeenCalledTimes(3));
-    expect(screen.getByRole('checkbox', { name: 'Select all visible cases' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Clear case selection' })).toBeDisabled();
+    await chooseBulkAction('Reinvestigate');
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(2));
+    const firstKey = mocks.submitJob.mock.calls[0][0].idempotency_key;
+    expect(mocks.submitJob.mock.calls[1][0].idempotency_key).toBe(firstKey);
 
-    // Chunk two cannot begin until the first bounded group has fully settled.
-    const firstBatchIds = Array.from(pending.keys());
-    await act(async () => {
-      for (const id of firstBatchIds) {
-        const item = batchCases.find((candidate) => candidate.case_id === id)!;
-        pending.get(id)?.({ ...item, updated_at: '2026-07-20T10:50:00Z' });
-      }
-    });
-    await waitFor(() => expect(mocks.reinvestigateCase).toHaveBeenCalledTimes(5));
-
-    const secondBatchIds = Array.from(pending.keys()).filter((id) => !firstBatchIds.includes(id));
-    await act(async () => {
-      for (const id of secondBatchIds) {
-        const item = batchCases.find((candidate) => candidate.case_id === id)!;
-        pending.get(id)?.({ ...item, updated_at: '2026-07-20T10:50:00Z' });
-      }
-    });
-
-    expect(await screen.findByText('5 cases reinvestigated.')).toBeInTheDocument();
-    expect(screen.getByText('5 visible')).toBeInTheDocument();
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('5 cases reinvestigated.', {
-      id: 'case-manager-bulk',
-    });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    await chooseBulkAction('Reinvestigate');
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(3));
+    expect(mocks.submitJob.mock.calls[2][0].idempotency_key).not.toBe(firstKey);
   });
 
   it('returns to the queue on narrow-layout back/dismiss without reopening a case', async () => {

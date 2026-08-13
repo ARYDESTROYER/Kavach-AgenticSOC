@@ -303,6 +303,19 @@ or when an administrator needs to reconcile the catalog deliberately.
 - The result reports indexed, deleted, and failed counts plus bounded errors. A
   partial result remains visible and retryable instead of being labelled successful.
 
+Reindex submits a `runbook_reindex` background job, with an optional immutable
+Runbook ID for a targeted reconciliation. The dialog closes after `202 Accepted`;
+progress, cooperative cancellation, counts, and bounded failures stay available in
+**Analytics → Jobs** and **Inbox** across navigation or reload. A lease-expired
+in-progress reindex item is safe to retry, while already recorded items are not run
+again. Reindex remains advisory retrieval maintenance and never changes the authored
+revision or deterministic case policy.
+
+The direct full-catalog `POST /api/runbooks/reindex` route remains executable for
+compatibility clients, but it is OpenAPI-deprecated and request-bound; it is not the
+Console workflow. Direct `POST /api/runbooks/{runbook_id}/reindex` remains the normal
+targeted catalog primitive.
+
 Reindexing existing content does not create a new authoring revision and does not
 retroactively apply the current submission rules. An operator must bring legacy
 content into compliance when saving its next edit.
@@ -324,5 +337,6 @@ recommend a verdict, but deterministic operator policy remains the only close or
 escalate authority. `NEEDS_HUMAN` can never auto-close.
 
 See [Knowledge and memory](knowledge-memory.md),
+[Background jobs](../operations/background-jobs.md),
 [Investigation](../analyst/investigation.md), and
 [Permissions](../reference/permissions.md).

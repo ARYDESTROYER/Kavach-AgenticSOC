@@ -200,6 +200,124 @@ class SessionStore:
         entries = await self._load()
         return self._tv_from(entries, username)
 
+    async def strict_deferred_authority(
+        self,
+        *,
+        sid: str,
+        username: str,
+        token_version: int,
+        idle_timeout: int,
+        absolute_lifetime: int,
+        sudo_window: int,
+    ) -> bool:
+        """Fail-closed one-snapshot authority check for deferred privileged work.
+
+        General request authentication deliberately tolerates a transient session
+        registry outage for backwards compatibility. A reset/export/storage effect
+        cannot: it may run after the originating request is gone. This reads the
+        exact session row and the user's current token-version sentinel from one
+        strict KV snapshot, then applies the *live* expiry and sudo-window policy.
+        """
+        return (
+            await self.strict_deferred_authority_expires_at(
+                sid=sid,
+                username=username,
+                token_version=token_version,
+                idle_timeout=idle_timeout,
+                absolute_lifetime=absolute_lifetime,
+                sudo_window=sudo_window,
+            )
+            is not None
+        )
+
+    async def strict_deferred_authority_expires_at(
+        self,
+        *,
+        sid: str,
+        username: str,
+        token_version: int,
+        idle_timeout: int,
+        absolute_lifetime: int,
+        sudo_window: int,
+    ) -> int | None:
+        """Return the exact live step-up expiry in epoch milliseconds.
+
+        A strict storage/corruption failure raises. A known but stale, revoked, or
+        mismatched session returns ``None``. This lets sensitive admission report a
+        registry outage separately while every deferred effect remains fail closed.
+        """
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        doc = await getter(SESSIONS_NS, SESSIONS_KEY)
+        if not isinstance(doc, dict) or not isinstance(doc.get("entries", []), list):
+            raise RuntimeError("session authority registry is unavailable")
+        entries = [row for row in doc.get("entries", []) if isinstance(row, dict)]
+        row = next((entry for entry in entries if entry.get("sid") == sid), None)
+        if row is None or _norm(row.get("username", "")) != _norm(username):
+            return None
+        try:
+            stamped = int(row.get("token_version", -1))
+        except (TypeError, ValueError):
+            return None
+        current = self._tv_from(entries, username)
+        if stamped != int(token_version) or current != int(token_version):
+            return None
+        if self.is_active(
+            row,
+            idle_timeout=max(0, int(idle_timeout)),
+            absolute_lifetime=max(0, int(absolute_lifetime)),
+        ) is not None:
+            return None
+        last_authn = _to_epoch(row.get("last_authn_at")) or _to_epoch(
+            row.get("created_at")
+        )
+        if last_authn is None:
+            return None
+        expires_at = last_authn + max(1, int(sudo_window))
+        if now_utc().timestamp() > expires_at:
+            return None
+        return int(expires_at * 1000)
+
+    async def strict_request_authority(
+        self,
+        *,
+        sid: str,
+        username: str,
+        token_version: int,
+        idle_timeout: int,
+        absolute_lifetime: int,
+    ) -> str | None:
+        """Validate one request session from a strict, read-only KV snapshot.
+
+        Normal request handling may lazily register/touch a signed session for
+        backwards compatibility. A closed factory boundary cannot permit either
+        write. This seam therefore returns the usual rejection reason (or
+        ``"unknown"``) without mutating the registry and raises on storage/corrupt
+        uncertainty so the caller can fail closed.
+        """
+
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        doc = await getter(SESSIONS_NS, SESSIONS_KEY)
+        if doc is None:
+            return "unknown"
+        if not isinstance(doc, dict) or not isinstance(doc.get("entries", []), list):
+            raise RuntimeError("session authority registry is unavailable")
+        entries = [row for row in doc.get("entries", []) if isinstance(row, dict)]
+        row = next((entry for entry in entries if entry.get("sid") == sid), None)
+        if row is None or _norm(row.get("username", "")) != _norm(username):
+            return "unknown"
+        try:
+            row_tv = int(row.get("token_version", -1))
+        except (TypeError, ValueError):
+            return REASON_TV_MISMATCH
+        current_tv = self._tv_from(entries, username)
+        if row_tv != int(token_version) or current_tv != int(token_version):
+            return REASON_TV_MISMATCH
+        return self.is_active(
+            row,
+            idle_timeout=max(0, int(idle_timeout)),
+            absolute_lifetime=max(0, int(absolute_lifetime)),
+        )
+
     @staticmethod
     def _tv_from(entries: list[dict[str, Any]], username: str) -> int:
         needle = f"__tv__:{_norm(username)}"

@@ -8,19 +8,24 @@
  *      `text-critical-foreground` token (so it tracks the critical axis in both themes).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { fetchInboxMock } = vi.hoisted(() => ({ fetchInboxMock: vi.fn() }));
+const { fetchInboxMock, fetchActiveJobCountMock, eventStreamMock } = vi.hoisted(() => ({
+  fetchInboxMock: vi.fn(),
+  fetchActiveJobCountMock: vi.fn().mockResolvedValue(0),
+  eventStreamMock: vi.fn(() => ({ live: false })),
+}));
 
 vi.mock('../NotificationBell.api', () => ({
   fetchInbox: fetchInboxMock,
   fetchUnreadCount: vi.fn().mockResolvedValue({ unread: 1 }),
+  fetchActiveJobCount: fetchActiveJobCountMock,
   markAllRead: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('@/lib/useEventStream', () => ({
-  useEventStream: () => ({ live: false }),
+  useEventStream: eventStreamMock,
 }));
 
 import { NotificationBell } from '../NotificationBell';
@@ -28,6 +33,8 @@ import { NotificationBell } from '../NotificationBell';
 describe('NotificationBell severity a11y (#29) + badge token (#30)', () => {
   beforeEach(() => {
     fetchInboxMock.mockReset();
+    fetchActiveJobCountMock.mockReset().mockResolvedValue(0);
+    eventStreamMock.mockClear();
     fetchInboxMock.mockResolvedValue({
       items: [
         {
@@ -40,6 +47,44 @@ describe('NotificationBell severity a11y (#29) + badge token (#30)', () => {
         },
       ],
     });
+  });
+
+  it('keeps active background work visible even when its Inbox item is read', async () => {
+    fetchActiveJobCountMock.mockResolvedValue(2);
+    render(<NotificationBell onNavigate={vi.fn()} />);
+    expect(
+      await screen.findByRole('button', {
+        name: /1 unread, 2 active jobs/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTitle('2 active background jobs')).toHaveTextContent('2');
+  });
+
+  it('subscribes to jobs and renders durable progress in the recent window', async () => {
+    fetchInboxMock.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'job-notification',
+          title: 'Export running',
+          body: 'Building one ZIP',
+          state: 'read',
+          created_at: '2026-08-13T10:00:00Z',
+          job_id: 'job-1',
+          job_status: 'running',
+          progress: { done: 3, total: 6, unit: 'scopes' },
+          result: null,
+        },
+      ],
+    });
+    render(<NotificationBell onNavigate={vi.fn()} />);
+    expect(eventStreamMock).toHaveBeenCalledWith(
+      expect.arrayContaining(['notifications', 'inbox', 'jobs']),
+      expect.any(Object),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /notifications/i }));
+    expect(await screen.findByRole('status', { name: '3 of 6 scopes complete' })).toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
   });
 
   it('announces severity beside the color (not color-only) + uses the critical token badge', async () => {
@@ -74,5 +119,35 @@ describe('NotificationBell severity a11y (#29) + badge token (#30)', () => {
 
     resolveInbox({ items: [] });
     expect(await screen.findByText('You’re all caught up')).toBeInTheDocument();
+  });
+
+  it('ignores an older recent-window response that resolves after newer job progress', async () => {
+    render(<NotificationBell onNavigate={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: /notifications/i }));
+    await screen.findByText('Case escalated');
+
+    let resolveSlow!: (value: { items: Array<{ id: string; title: string; state: 'read' }> }) => void;
+    fetchInboxMock
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          resolveSlow = resolve;
+        }),
+      )
+      .mockResolvedValueOnce({
+        items: [{ id: 'new', title: 'Newest progress', state: 'read' }],
+      });
+    const onEvent = eventStreamMock.mock.calls.at(-1)?.[1]?.onEvent as (() => void) | undefined;
+    expect(onEvent).toBeTypeOf('function');
+    act(() => {
+      onEvent?.();
+      onEvent?.();
+    });
+
+    expect(await screen.findByText('Newest progress')).toBeInTheDocument();
+    await act(async () => {
+      resolveSlow({ items: [{ id: 'stale', title: 'Stale progress', state: 'read' }] });
+    });
+    expect(screen.getByText('Newest progress')).toBeInTheDocument();
+    expect(screen.queryByText('Stale progress')).not.toBeInTheDocument();
   });
 });

@@ -24,6 +24,20 @@ sessions, collaboration, and knowledge. Selecting it does not select or migrate 
 log source. Switching backends creates a separate state view unless you perform an
 explicit migration.
 
+Application background jobs share the existing KV authority: one bounded strict-CAS
+registry document stores self-scoped jobs, idempotency fingerprints, item/checkpoint
+state, renewable leases, transitions, bounded failures, and terminal summaries. It
+adds no SQL table or Elasticsearch index. Large submitted parameters and per-item maps
+are compacted at terminal state; the registry is an operational ledger, not long-term
+storage for imported text or every selected case ID.
+
+ZIP artifacts are intentionally outside the StateStore. Local development and the
+byte-pinned updater-managed standalone profile default to `./data/job-artifacts`; the
+legacy merge Compose mounts `/var/lib/agentic-soc/jobs` on a persistent named volume.
+Private file modes, opaque
+IDs, count-bounded retention, and SHA-256/size verification protect delivery, but this
+directory needs its own capacity, backup, and retention decision.
+
 ## Producing-build provenance
 
 Operational records carry the build that produced them, not the build that happens to
@@ -79,6 +93,15 @@ Audit records should answer:
 - whether the action succeeded or failed.
 
 The console's Audit page is a review surface, not permission to alter history.
+
+Background-job submission and state transitions are audit-before-visible as well as
+audit-before-effect. Submission/retry and cancellation return a successful `202` only
+after their transition audit is confirmed, and a terminal Inbox/SSE projection waits
+for its terminal audit. Durable reconciliation repairs an ambiguous or missing
+transition audit before projection without treating uncertainty as permission to run an
+unsafe item again. CAS, audit ordering, and a five-minute lease make bounded restart
+recovery possible; cancellation remains cooperative and completed item effects are not
+rolled back.
 
 ## Retrieval history is evidence-qualified
 
@@ -152,9 +175,15 @@ Backup, restore, forward-upgrade, interrupted-migration, and downgrade guarantee
 must be established for your environment before relying on persistent production
 state.
 
+The job registry's leases and the process-local investigation/export gates do not
+remove the supported single-backend-replica constraint. Related LLM Batch records are
+a separate provider-job projection, and the updater retains its separate supervisor
+state. See [Background jobs](../operations/background-jobs.md) for those boundaries.
+
 ## Related pages
 
 - [Architecture](architecture.md)
 - [Deterministic decisions](deterministic-decisions.md)
 - [Install Agentic SOC](../getting-started/install.md)
 - [Configuration and secrets](../operations/configuration.md)
+- [Background jobs](../operations/background-jobs.md)

@@ -134,7 +134,12 @@ export interface paths {
         put?: never;
         /**
          * Export Application Data Archive
-         * @description Assemble selected full-history scopes into one atomic disk-backed ZIP.
+         * @deprecated
+         * @description Deprecated request-bound compatibility export.
+         *
+         *     New operator workflows submit ``data_export_archive`` through ``POST /api/jobs``
+         *     so assembly survives navigation, reports durable progress, and produces a
+         *     permission-rechecked artifact. This route remains for existing API integrations.
          *
          *     Every NDJSON member is written one bounded segment page at a time. The terminal
          *     manifest is added only after every selected repository emitted its starting count;
@@ -158,7 +163,12 @@ export interface paths {
         put?: never;
         /**
          * Export Application Data Segment
-         * @description Download one resumable segment of a scope's complete history.
+         * @deprecated
+         * @description Deprecated request-bound compatibility segment.
+         *
+         *     New operator workflows submit ``data_export_segment`` through ``POST /api/jobs``;
+         *     that worker owns the complete cursor loop and returns one verified artifact. This
+         *     one-page primitive remains for existing integrations and explicit cursor recovery.
          *
          *     The 5,000-record setting is deliberately a per-segment memory/response bound,
          *     not a lifetime ceiling. The Console follows ``next_cursor`` until ``complete``;
@@ -204,12 +214,7 @@ export interface paths {
         put?: never;
         /**
          * Admin Reset
-         * @description Perform a tiered StateStore reset. Returns ``{ok, scope, cleared}``.
-         *
-         *     ``scope`` ∈ {``cases``, ``sources``, ``factory``}; ``confirm`` must match the
-         *     scope's phrase. Order of operations (fail-closed): validate scope → validate
-         *     confirm → AUDIT (#2) → clear in-memory per-source secrets (tiers 2/3 only) →
-         *     reset the StateStore. Nothing is cleared until BOTH gates + BOTH validations pass.
+         * @deprecated
          */
         post: operations["admin_reset_api_admin_reset_post"];
         delete?: never;
@@ -2199,6 +2204,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Jobs */
+        get: operations["list_jobs_api_jobs_get"];
+        put?: never;
+        /** Submit Job */
+        post: operations["submit_job_api_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job */
+        get: operations["get_job_api_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job Artifact */
+        get: operations["job_artifact_api_jobs__job_id__artifact_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Job */
+        post: operations["cancel_job_api_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/llm/models": {
         parameters: {
             query?: never;
@@ -3338,8 +3412,12 @@ export interface paths {
         put?: never;
         /**
          * Rag Import
-         * @description Import a free-text document into the RAG corpus. Chunked + embedded; takes
-         *     effect immediately for retrieval. 400 on empty/oversized text.
+         * @deprecated
+         * @description Deprecated request-bound single-document import compatibility route.
+         *
+         *     New operator workflows submit bounded ``rag_import`` Jobs so indexing survives
+         *     navigation and has durable progress. The document is chunked and embedded and
+         *     takes effect immediately for retrieval. 400 on empty/oversized text.
          */
         post: operations["rag_import_api_rag_import_post"];
         delete?: never;
@@ -3366,13 +3444,15 @@ export interface paths {
         put?: never;
         /**
          * Precedent Bootstrap
-         * @description Bulk-ratify the agent's own auto-closed verdicts as LOWER-TRUST precedent.
+         * @deprecated
+         * @description Deprecated request-bound bulk-ratification compatibility route.
          *
-         *     Bounded (``limit`` <= 1000), idempotent (an already-ratified case is skipped) and
-         *     therefore resumable: call it repeatedly until ``remaining`` is 0. Requires
-         *     ``rag:manage`` AND ``cases:write``, and an exact acknowledgement string so the
-         *     caller cannot claim afterwards that they believed these were analyst labels.
-         *     Audited per case plus once per batch (#2).
+         *     New operator workflows submit ``precedent_bootstrap`` through ``POST /api/jobs``
+         *     for durable per-case progress and projection recovery.
+         *
+         *     Bounded, idempotent, resumable, and explicitly acknowledged. The route preserves
+         *     the historical synchronous API while sharing the exact domain operation with the
+         *     durable Jobs subsystem.
          */
         post: operations["precedent_bootstrap_api_rag_precedent_bootstrap_post"];
         delete?: never;
@@ -3842,7 +3922,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reindex Runbooks */
+        /**
+         * Reindex Runbooks
+         * @deprecated
+         * @description Deprecated request-bound full reconciliation compatibility route.
+         *
+         *     New operator workflows submit ``runbook_reindex`` through ``POST /api/jobs`` so
+         *     the full reconciliation survives navigation and has a durable result.
+         */
         post: operations["reindex_runbooks_api_runbooks_reindex_post"];
         delete?: never;
         options?: never;
@@ -4578,7 +4665,7 @@ export interface paths {
         put?: never;
         /**
          * Storage Lifecycle Apply
-         * @description Explicitly apply the persisted policy to supported owned-state targets.
+         * @deprecated
          */
         post: operations["storage_lifecycle_apply_api_storage_lifecycle_apply_post"];
         delete?: never;
@@ -6441,6 +6528,128 @@ export interface components {
             /** @default investigate */
             source_surface: components["schemas"]["SourceSurface"];
         };
+        /** JobFailure */
+        JobFailure: {
+            /**
+             * Item Ref
+             * @default
+             */
+            item_ref: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
+        /**
+         * JobKind
+         * @description Registered server-owned long-operation kinds.
+         * @enum {string}
+         */
+        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "tiered_reset" | "storage_lifecycle_apply";
+        /** JobListResponse */
+        JobListResponse: {
+            /** Jobs */
+            jobs: components["schemas"]["JobPublic"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            related?: components["schemas"]["RelatedJobsPublic"] | null;
+            system_workers?: components["schemas"]["SchedulerHealthPublic"] | null;
+            /** Total */
+            total: number;
+        };
+        /**
+         * JobProgress
+         * @description Bounded progress projection shared by Jobs, Inbox, SSE, and the Console.
+         */
+        JobProgress: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Unit
+             * @default items
+             */
+            unit: string;
+        };
+        /**
+         * JobPublic
+         * @description Secret-free/self-scoped wire projection returned by the Jobs API and SSE.
+         */
+        JobPublic: {
+            /** Actor */
+            actor: string;
+            /**
+             * Cancel Requested
+             * @default false
+             */
+            cancel_requested: boolean;
+            /** Created At */
+            created_at: string;
+            /**
+             * Failure Count
+             * @default 0
+             */
+            failure_count: number;
+            /** Failures */
+            failures?: components["schemas"]["JobFailure"][];
+            /**
+             * Failures Truncated
+             * @default 0
+             */
+            failures_truncated: number;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Job Id */
+            job_id: string;
+            kind: components["schemas"]["JobKind"];
+            /** Params */
+            params?: Record<string, never>;
+            progress: components["schemas"]["JobProgress"];
+            /** Request Fingerprint */
+            request_fingerprint: string;
+            result?: components["schemas"]["JobResult"] | null;
+            /** Started At */
+            started_at?: string | null;
+            status: components["schemas"]["JobStatus"];
+        };
+        /** JobResult */
+        JobResult: {
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Kind
+             * @default summary
+             */
+            kind: string;
+        };
+        /**
+         * JobStatus
+         * @description Durable lifecycle of a server-owned operator job.
+         * @enum {string}
+         */
+        JobStatus: "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled";
+        /** JobSubmit */
+        JobSubmit: {
+            /** Idempotency Key */
+            idempotency_key: string;
+            kind: components["schemas"]["JobKind"];
+            /** Params */
+            params: Record<string, never>;
+        };
         /** LivenessResponse */
         LivenessResponse: {
             /** Service */
@@ -6847,6 +7056,42 @@ export interface components {
             /** Model */
             model?: string | null;
         };
+        /**
+         * RelatedBatchJobPublic
+         * @description Bounded, provider-secret-free LLM Batch summary on the unified Jobs view.
+         */
+        RelatedBatchJobPublic: {
+            /** Discount */
+            discount: number;
+            /** Id */
+            id: string;
+            /** Model */
+            model: string;
+            /** Polled At */
+            polled_at?: string | null;
+            /** Provider */
+            provider: string;
+            /** Requests */
+            requests: number;
+            /** Retrieved */
+            retrieved: number;
+            /** State */
+            state: string;
+            /** Submitted At */
+            submitted_at?: string | null;
+        };
+        /** RelatedJobsPublic */
+        RelatedJobsPublic: {
+            /** Llm Batches */
+            llm_batches?: components["schemas"]["RelatedBatchJobPublic"][];
+            /** Total */
+            total: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** ReleaseCacheStatus */
         ReleaseCacheStatus: {
             /** Hit */
@@ -7237,6 +7482,46 @@ export interface components {
             shared?: boolean | null;
             /** Sort */
             sort?: string | null;
+        };
+        /** SchedulerHealthPublic */
+        SchedulerHealthPublic: {
+            /** Scheduler Runtime Running */
+            scheduler_runtime_running: boolean;
+            /** Workers */
+            workers?: {
+                [key: string]: components["schemas"]["SchedulerWorkerPublic"];
+            };
+        };
+        /** SchedulerWorkerPublic */
+        SchedulerWorkerPublic: {
+            /** Cadence */
+            cadence: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Gated */
+            gated: boolean;
+            /**
+             * Last Attempt At
+             * @default
+             */
+            last_attempt_at: string;
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /**
+             * Last Success At
+             * @default
+             */
+            last_success_at: string;
+            /**
+             * Processed
+             * @default 0
+             */
+            processed: number;
+            /** Running */
+            running: boolean;
         };
         /**
          * SearchResponse
@@ -8424,8 +8709,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
-            200: {
+            /** @description Mutation retired; submit a tiered_reset durable Job. */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11367,6 +11652,165 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_jobs_api_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_job_api_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_api_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    job_artifact_api_jobs__job_id__artifact_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified ZIP artifact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/zip": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_job_api_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobPublic"];
                 };
             };
             /** @description Validation Error */
@@ -15039,8 +15483,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
-            200: {
+            /** @description Mutation retired; submit a storage_lifecycle_apply durable Job. */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };

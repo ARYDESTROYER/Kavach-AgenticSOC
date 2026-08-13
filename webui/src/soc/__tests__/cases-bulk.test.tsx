@@ -9,9 +9,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
-const { bulkMock, listCasesMock } = vi.hoisted(() => ({
+const { bulkMock, listCasesMock, submitJobMock } = vi.hoisted(() => ({
   bulkMock: vi.fn(),
   listCasesMock: vi.fn(),
+  submitJobMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api', () => {
@@ -38,6 +39,7 @@ vi.mock('@/lib/api', () => {
       demo: { status: ok({ mode: 'off', active: false, run_id: null }) },
       listCases: listCasesMock,
       cases: { bulk: bulkMock },
+      jobs: { submit: submitJobMock },
     },
   };
 });
@@ -86,10 +88,16 @@ describe('Cases bulk actions (W7c)', () => {
     bulkMock.mockResolvedValue({ results: [{ id: 'case-001', ok: true }, { id: 'case-002', ok: true }] });
     listCasesMock.mockReset();
     listCasesMock.mockResolvedValue({ cases: CASES, total: CASES.length });
+    submitJobMock.mockReset().mockResolvedValue({
+      job_id: 'job-ack', kind: 'case_lifecycle', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 2, unit: 'cases' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'c'.repeat(64), params: {}, cancel_requested: false,
+    });
     window.localStorage.clear();
   });
 
-  it('selects all rows and calls api.cases.bulk with the selected ids', async () => {
+  it('selects all rows and submits one durable lifecycle job', async () => {
     renderCases();
     // Wait for the rows to load.
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
@@ -104,10 +112,12 @@ describe('Cases bulk actions (W7c)', () => {
 
     fireEvent.click(within(bar).getByRole('button', { name: /acknowledge/i }));
 
-    await waitFor(() => expect(bulkMock).toHaveBeenCalledTimes(1));
-    const [ids, input] = bulkMock.mock.calls[0];
-    expect(new Set(ids)).toEqual(new Set(['case-001', 'case-002']));
-    expect(input).toMatchObject({ action: 'acknowledge' });
+    await waitFor(() => expect(submitJobMock).toHaveBeenCalledTimes(1));
+    expect(submitJobMock.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: { case_ids: ['case-001', 'case-002'], action: 'acknowledge' },
+    });
+    expect(bulkMock).not.toHaveBeenCalled();
   });
 
   it('does not wrap the bulk bar onto multiple lines and reserves bottom space (#3)', async () => {

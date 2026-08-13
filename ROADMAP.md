@@ -62,13 +62,29 @@ grammar documented in `docs/development/ui-standard.md`.
 Cases remains the full-width table for broad list work, but opening a case now hands
 the exact record to Case Manager, whose desktop queue divider is accessible,
 bounded, and persisted. The dashboard defaults to visibility-aware LIVE refresh and
-adds an expanded aggregate Noise Reduction view. Threat Context explains persisted
+adds an expanded aggregate Noise Reduction view. Posture tiles are now request-keyed
+to the active range, superseded reads abort, and response windows are validated so a
+slow prior range cannot repaint False Positive Rate or Auto-resolved. Full Agent health
+has moved to the range-aware Analytics Effectiveness tab at the stable
+`#/metrics?tab=effectiveness` URL; Overview uses the same authority but renders only a
+positive degradation warning and costs no space while healthy. Threat Context explains persisted
 alert-to-cluster-to-case formation; Demo Mode now has five sources including Entra;
-and privileged operators can download every record in selected supported safe export
-scopes as one verified server-assembled ZIP served only after every selected scope emits
-its starting count under its declared consistency, with the
-bounded numbered-file flow retained
-as an advanced resumable option (still an analysis artifact, not a backup).
+and accepted long Case Manager work, exports, knowledge maintenance, resets, and
+storage apply now run through one self-scoped strict-CAS background-job registry with
+renewable leases, Inbox/SSE progress, polling fallback, cooperative cancellation,
+bounded failures, restart recovery, and verified persistent ZIP artifacts. Both Data
+export strategies assemble one server-owned ZIP; segment mode follows its cursors
+without a browser download loop (still an analysis artifact, not a backup). Jobs also
+projects permission-scoped related LLM Batch rows and list-only worker health for the
+threshold/campaign/Batch cadence loops plus the event-driven, on-ingest baseline
+producer. New local Batch rows also freeze a bounded, generation-bound
+effective-`models:read` Inbox audience; legacy rows and later users/grants remain
+list-only. The application-wide single-replica boundary remains, and the updater is
+untouched. Successful submit/retry/cancel `202` responses and terminal Inbox/SSE
+projection are audit-confirmed before visibility. Console/user workflows are Jobs-only;
+direct archive/segment export, precedent bootstrap, RAG import, and full-catalog Runbook
+reindex remain executable OpenAPI-deprecated compatibility primitives, while direct
+reset/storage mutation remains retired with 410.
 Compatible official OpenAI alert/case work prefers live Flex with truthful standard
 fallback, independently of the still-opt-in asynchronous Batch event funnel.
 Agent Effectiveness now preserves its established quality/turnaround headline while
@@ -106,6 +122,22 @@ and the "Progress" log below for the per-round summary (Round 10 first).
 
 Rounds 1 through 9c are complete and shipped (see "Progress" below and
 `CHANGELOG.md`). The tracks below are the genuinely still-open items.
+
+**Durable-job operational boundaries (implemented and regression-backed):**
+
+- ☑ **LLM Batch Inbox audience/outbox** — the strict new-row audience snapshot and
+  generation-bound stable Inbox outbox are implemented with a maximum 200 active
+  effective-`models:read` recipients. Authorization-store outage remains pending for
+  retry; permission/generation loss revokes and fail-closed filters; later grants/users,
+  legacy rows, and overflow remain list-only. Safe provider/model/count copy is the only
+  Inbox payload, with no Batch Cancel, Download, or completion toast. Scheduler health stays list-only.
+- ☑ **Factory single-process quiescence and recovery** — the job/Batch/HTTP fences,
+  HTTP and SSE drain, producer and detached-writer quiescence, strict default-delete
+  tenant purge, prior Jobs/Inbox/artifact purge, actorless privileged sanitized receipt,
+  and new audit lineage are in place. The guarantee remains process-local; do not claim
+  an atomic distributed reset across arbitrary application replicas. A privacy-boundary
+  failure remains fenced/degraded, blocks ordinary work, and allows only a new freshly
+  authorized factory retry.
 
 **A. Round-3 follow-ups (still open):** the opt-in row-level data scope (the `can_object()`
 hook shipped OFF) · the OCSF classification/observables surfacing + the 1.4→1.8 version bump.

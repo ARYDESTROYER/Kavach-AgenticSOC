@@ -32,12 +32,15 @@ notification tests for those dependencies.
 - Deployment configuration, CA material, JWT/MFA keys, and all external secrets in a
   separate protected secret backup.
 - The exact application version, commit SHA, image digests, and Compose configuration.
+- The application-job artifact directory/volume when retained ZIP exports are part of
+  the recovery objective. Job metadata alone cannot recreate a pruned or missing ZIP.
 
 Redis is an optimization/cache and is not the authoritative application backup.
 Upstream logs remain in their source systems and require their own retention/backup.
 
-**Settings → Organization → Data export** can package all records in its selected
-supported safe scopes into one server-assembled ZIP (or advanced resumable segments),
+**Settings → Organization → Data export** submits a background job that can package all
+records in its selected supported safe scopes into one verified server-assembled ZIP,
+using either the archive or internal segmented walk,
 but it is a support/analysis artifact, not a whole-application
 backup. Its Knowledge scope preserves sanitized authoritative operator runbook and
 playbook documents plus safe bundled manifests/references, but it omits credentials,
@@ -46,9 +49,15 @@ and has no matching import/restore endpoint. The ZIP manifest proves that the se
 emitted each scope's starting count and verified the prepared artifact, not that the
 client received it or that it is recoverable. Only exact Elasticsearch scopes are fixed
 snapshots; PostgreSQL honestly reports a non-exact `bounded_at_start` view.
-Resumable cursors are signed and bound to the requesting operator, scope, and snapshot.
+Segment cursors are signed and bound to the requesting operator, scope, and snapshot;
+the server follows them and packages the envelopes into the one retained artifact.
 Use the selected state backend's
 consistent dump or snapshot mechanism for recovery.
+
+The Jobs registry retains operational summaries, not a full copy of imported text or
+selected case IDs. Artifacts are count-pruned after the newest 50 attachments and each
+download re-verifies size/SHA-256. Download and independently retain an export needed
+for recovery or evidence; an Inbox entry is not a backup.
 
 The desired Storage & retention archive stage is also not a backup mechanism in
 0.1.13. Glacier requires an independent immutable export, manifest, checksums, and a
@@ -78,5 +87,5 @@ Agentic SOC 0.1 has no built-in backup scheduler or complete versioned database 
 framework. A successful dump is not sufficient evidence; test a full restore and retain
 upstream data long enough to replay after failure.
 
-See [Upgrades](upgrades.md), [Reset and recovery](../administration/reset.md), and
-[Troubleshooting](troubleshooting.md).
+See [Background jobs](background-jobs.md), [Upgrades](upgrades.md),
+[Reset and recovery](../administration/reset.md), and [Troubleshooting](troubleshooting.md).

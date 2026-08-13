@@ -76,6 +76,12 @@ statuses (`new`, `open`, `needs_human`, `investigating`, `escalated`, `on_hold`)
 Critical / High spans both open and resolved cases in the window and states the
 split as `N open + M resolved`; it never silently drops an unknown lifecycle.
 
+False Positive Rate and Auto-resolved use the server posture rollup for the exact
+selected range. A range change immediately hides the previous posture snapshot,
+cancels the superseded request, and accepts only a response whose echoed window still
+matches the selector. A slower earlier request cannot repaint those tiles beneath a
+new range; loading/unavailable copy appears instead of mixed-window values.
+
 The next row uses the available height for a current-open-queue **Active Risk
 Index**, Open-above-Resolved severity rings, and exactly four **Latest Cases**.
 Hovering or keyboard-focusing a latest row reveals bounded case detail without
@@ -100,6 +106,13 @@ page, and sample truncation notices remain visible. Raw alert identifiers and pa
 not exposed; alerts that never formed a case remain aggregate counts only. The Cases
 page loads a bounded record window, so its filtered rows may be a lower bound even when
 the aggregate outcome count is complete.
+
+The full Agent health panel lives on **Analytics → Effectiveness**, follows that page's
+24h/7d/30d selector, and is directly reloadable at
+`#/metrics?tab=effectiveness`. Overview renders no health card while every readable
+signal is healthy. A positively detected precedent-corpus, migration, or auto-close
+degradation produces one compact warning that opens the full panel; unknown evidence
+is explained there without being promoted to a false incident.
 
 ---
 
@@ -373,8 +386,12 @@ partial-failure behavior—is maintained in
 Manager selection behaves exactly like the older table bulk bar.
 
 In short, its current menu is **Acknowledge · Assign · Add tag · Set status · Set
-disposition · Reinvestigate · Resolve**. Raw Close is omitted. Successful cases
-leave the selection; failed cases stay selected with their error for retry.
+disposition · Reinvestigate · Resolve**. Raw Close is omitted. The exact selected IDs
+and action input are submitted as one background-job snapshot. After `202 Accepted`,
+the dialog closes and progress, cooperative cancellation, bounded failures, and the
+terminal result remain in **Analytics → Jobs** and **Inbox** across navigation/reload.
+Result links seed a current status/assignee/tag context, not an immutable exact case
+cohort; use job counts, case history, and Audit for exact accountability.
 
 **Two-axis taxonomy.** A case carries both a lifecycle **status** and an analyst
 **disposition** — they are independent.
@@ -661,7 +678,7 @@ aggregate-derived, never fed raw logs, and never touching `decide()` (non-negoti
 ## 7a. Agent effectiveness (Surface)
 
 Open **Analytics → Agent effectiveness** (the **Effectiveness** analytics tab; the
-stable `#/effectiveness` deep link opens the same tab). Access follows the backend's
+reload-safe `#/metrics?tab=effectiveness` URL opens the same tab). Access follows the backend's
 `metrics:view` permission. The page reads
 `GET /api/metrics/agent-improvement` and compares the last **7 complete UTC days**
 with the preceding **28 complete UTC days**. It is read-only: loading it makes no
@@ -807,7 +824,7 @@ source (`runbook` / `mitre` / `suppression` / `resolved_case`).
 | Corpus stats (docs, chunks, embedding model + dim, by-source) | `GET /api/rag/stats` | also feeds the Metrics page |
 | Browse documents | `GET /api/rag/documents` | title, source, tags, chunk count |
 | Inspect one document's chunks | `GET /api/rag/documents/{id}` | the chunk drill-in flyout |
-| Import a document | `POST /api/rag/import` | `{ title, text, source?, tags? }` — chunked + embedded + indexed |
+| Import a document directly | `POST /api/rag/import` | Executable OpenAPI-deprecated single-document compatibility primitive; the Console submits bounded `rag_import` jobs |
 | Delete a document | `DELETE /api/rag/documents/{id}?force=` | seeds need `force=true` (see below) |
 | Run a live test retrieval | `GET /api/rag/search?q=&top_k=` | shows EXACTLY what RAG returns for a query |
 
@@ -819,9 +836,13 @@ managed projections while leaving operator-imported documents untouched. Live
 retrieval enforces the same switches, so a disabled source cannot remain effective
 because an older chunk still exists.
 
-**Import a document.** On the Knowledge page, paste text into the import textarea or
-upload a `.txt` / `.md` / `.json` / `.csv` file (read client-side, then sent as
-text). Give it a title (and optional tags); the backend chunks it
+**Import documents.** On the Knowledge page, paste text into the import textarea or
+upload bounded `.txt` / `.md` / `.json` / `.csv` files (read client-side, then sent
+as text). The Console snapshots up to 20 validated documents with aggregate UTF-8
+headroom below the active job registry's 8 MiB cap and submits one `rag_import` job.
+After `202 Accepted`, Jobs/Inbox owns per-document progress and bounded failures; the
+terminal record compacts the imported text. Give each document a title (and optional
+tags); the backend chunks it
 (`engine/chunking.chunk_text` — dependency-free paragraph-pack with overlap),
 embeds each chunk through the single gateway, and indexes it into the same vector
 store the investigator retrieves from. Imported docs are immediately retrievable.
@@ -1247,7 +1268,10 @@ case's `cluster_signature`, and it can never close or escalate a member case —
 Campaign operation is still single-replica/process-local: there is no distributed
 lease or immutable split/merge lifecycle history, and the pass remains bounded. Use
 `GET /api/schedulers/health` to distinguish disabled, manual/gated, running, failed,
-and last-success states for the tuner, campaign correlation, and batch worker.
+and last-success states for the threshold tuner, campaign correlation, event-driven
+baseline producer, and Batch worker. The baseline row uses `cadence=on_ingest`; its
+running state means baseline learning is enabled and ready outside Demo, independent of
+the cadence-loop `scheduler_runtime_running` flag.
 
 ---
 
@@ -1438,7 +1462,7 @@ the model is priced at $0 regardless.
 
 ### Discounted inference — live Flex and asynchronous Batch
 
-**Analytics → Batch jobs** controls two independent cost paths. Both preserve the
+**Analytics → Jobs** controls two independent cost paths. Both preserve the
 same prompt, verdict, one-ledger-row rule, and deterministic case decision.
 
 **Live Flex preference (default on).** Compatible alert/case inference on the
@@ -1465,9 +1489,10 @@ the tier requested.
 **Asynchronous Batch queue (opt-in).** `batch.enabled` separately routes eligible
 low-urgency event-detection candidates through Anthropic Message Batches or OpenAI
 Batch. The severity floor and provider allow-list apply only to that delayed funnel;
-turning it off does not disable the live Flex preference above. **Batch jobs** is a
-read-only view of the durable job registry, while users with model-management
-permission can edit the two routing policies on the same page.
+turning it off does not disable the live Flex preference above. **Jobs** first shows
+the signed-in actor's application background work. With `models:read`, it also shows a
+separate read-only projection of related provider Batch records; users with
+model-management permission can edit the two routing policies on the same page.
 
 | Action | Endpoint |
 |---|---|
@@ -1480,6 +1505,56 @@ router—you observe progress here (submitted → polling → retrieved). Provid
 can arrive out of order, so retrieval is keyed by `custom_id`. Results are billed
 **exactly once per result** at the batch discount rate (0.5×); this page never writes
 a usage row itself, and nothing here calls `decide()`.
+
+Related provider Batch rows do not acquire application-job Cancel or Download actions.
+With `automation:read`, the page also shows read-only scheduler health; those worker
+rows never create personal Inbox notifications. A newly accepted local Batch row takes
+one strict, bounded snapshot of at most 200 active accounts whose effective grants include
+`models:read`. A durable outbox then upserts one stable, generation-bound Inbox row per
+snapshotted recipient with safe provider/model labels, request progress, and terminal
+counts only. It never exposes provider handles, custom/case IDs, candidate payloads, or
+raw provider errors, and it never adds Batch Cancel, Download, or completion-toast
+actions.
+
+If the authorization stores are unavailable, the audience stays pending and the
+reconciler retries instead of guessing. Permission or account-generation loss removes
+and fail-closed filters the old note. The snapshot is frozen: users or grants added later,
+legacy Batch rows, and recipients beyond the 200-entry bound remain Jobs-list-only.
+The bounded audience/outbox path is regression-backed across authorization-store outage,
+stable retry, permission loss, account deletion/recreation, and factory-reset fencing.
+
+### Durable application jobs
+
+Long Case Manager operations, Data exports, precedent bootstrap, Runbook reindex,
+Knowledge import, tiered reset, and Storage apply submit to `POST /api/jobs`. One
+user intent retains one idempotency key across an ambiguous retry or double-submit;
+a later deliberate repeat uses a fresh key. The server snapshots validated parameters,
+returns `202 Accepted` only after the submission transition audit is confirmed, and
+continues without the initiating page. Cancellation likewise waits for its transition
+audit before a successful `202`; terminal Inbox/SSE state is withheld until the
+terminal audit is confirmed and durable reconciliation repairs any audit gap.
+
+Console/user workflows are Jobs-only. Direct archive/segment export, precedent
+bootstrap, RAG import, and full-catalog Runbook reindex remain executable,
+OpenAPI-deprecated compatibility primitives with request-bound or synchronous limits;
+they are not canonical Console paths. Targeted single-Runbook reindex remains a normal
+direct catalog operation. Reset and storage apply are different: their direct mutation
+routes are retired with 410 and have no synchronous bypass.
+
+Use **Analytics → Jobs** for the self-scoped registry and **Inbox** for its stable
+notification projection. SSE provides actor-scoped live nudges and polling is the
+fallback. Status moves from queued/running to succeeded, partial, failed, or cancelled.
+Cancellation is cooperative and never rolls back completed items. Detailed failures
+are bounded while their full/truncated counts remain visible. A terminal toast is a
+deduplicated convenience, not the durable record.
+
+Only results carrying a retained `artifact_id` show **Download**. The server verifies
+size and SHA-256 before serving the server-managed ZIP. Artifacts are private filesystem state,
+retained only for the newest 50 attachments, so move important exports into an
+independent retention system. Job state uses strict-CAS transitions and renewable
+five-minute leases, but execution/concurrency is process-local and the application
+still supports one backend replica. See
+[`docs/operations/background-jobs.md`](operations/background-jobs.md).
 
 ### Budget gate — a pre-flight spend ceiling
 
@@ -1575,6 +1650,16 @@ user's bucket; there is no admin view of another user's inbox.
 
 The inbox is advisory (never feeds `decide()`, #3); titles/bodies are plain,
 render-escaped data (#9); no secret is ever read or returned here.
+
+Accepted application jobs upsert one stable Inbox row with status, progress, result
+counts, and a curated same-app result link. Marking it read does not cancel work or
+hide active progress. SSE nudges and polling keep it current; the terminal toast is
+deduplicated and transient. Scheduler health is always list-only. Newly accepted local
+LLM Batch rows also upsert one stable progress/terminal note for their frozen,
+generation-bound effective-`models:read` audience (maximum 200). They intentionally
+have no Cancel, Download, or terminal toast. Legacy rows and later users/grants remain
+Jobs-list-only; permission/generation loss hides and removes a stale note. The Jobs list
+remains the authoritative shared record for every non-recipient.
 
 ---
 
@@ -1764,42 +1849,59 @@ source.
 
 ### Portable application-state export
 
-**Settings → Organization → Data export** downloads all records in selected supported
+**Settings → Organization → Data export** exports all records in selected supported
 safe scopes. Choose `cases`, `audit`, `usage`, `configuration`, `automation`, and/or
-`knowledge`; the primary action downloads one UTC-stamped ZIP assembled on server disk.
-The archive contains one `<scope>.ndjson` entry per selected scope and a terminal
-`manifest.json` with counts, completeness, consistency, actor, and current build
-provenance. The server serves no ZIP unless every selected scope emits the record count
-fixed when its walk began and the completed artifact passes integrity verification. Only
-an Elasticsearch scope whose manifest says `consistency.exact: true` proves fixed
-membership and values; PostgreSQL and KV scopes remain explicitly non-exact, and the
-selected scopes are not captured in one cross-scope transaction.
+`knowledge`; archive and advanced segment strategies both submit one server-owned
+background job. After `202 Accepted`, close the dialog or navigate elsewhere. Follow
+progress, cooperative cancellation, bounded failures, and the terminal result in
+**Analytics → Jobs** or **Inbox**.
 
-Open **Advanced / resumable (numbered files)** when the export may outlive the proxy
-window or temporary server disk is constrained. That mode exposes **Records per file**
-from 500–5000, follows authenticated opaque cursors, shows progress, supports
-cancellation, and saves canonical numbered JSON segments. The setting is a per-response
-safety bound, not a full-history ceiling.
+Archive mode writes one `<scope>.ndjson` entry per selected scope and a terminal
+`manifest.json` with counts, completeness, consistency, actor, and current build
+provenance. Advanced mode follows authenticated opaque cursors in bounded pages, then
+packages its numbered JSON envelopes into the same kind of single ZIP. **Records per
+file** (500–5000) is an internal segment-size control, not a full-history ceiling; the
+browser no longer has to remain open and collect numbered downloads.
+
+The server exposes **Download** only when the terminal job result has a non-empty
+`artifact_id`. Archive mode verifies member CRC/count/size/digests against its terminal
+manifest before attachment. Segment mode reopens its ZIP and rejects corrupt, empty, or
+unexpected members. Every download then checks the retained file's size and SHA-256.
+Only an Elasticsearch scope whose manifest says `consistency.exact: true` proves fixed
+membership and values; PostgreSQL and KV scopes remain explicitly non-exact, and
+selected scopes are not one cross-scope transaction.
 
 This export intentionally excludes environment/source credentials, users and
 sessions, password/MFA material, browser tokens, upstream raw logs, and raw knowledge
 chunks; a final recursive sanitizer also removes credential-shaped fields and common
 secret patterns. Each internal archive page and compact segment response is capped at
-25 MiB; the complete disk-backed ZIP has no 25 MiB lifetime ceiling. It is **not** a whole-application
-export, import format, database dump, or backup/restore substitute; chat,
-collaboration, identity/session state, user preferences, and raw RAG chunks are also
-outside its supported scopes. Every prepared archive or response-bounded segment is
-audited before streaming and requires
-`data_export:export` plus fresh authentication. Elasticsearch scopes disclose an
-exact PIT snapshot; PostgreSQL discloses `bounded_at_start` and KV paths disclose their
-weaker live-at-read semantics.
-If any selected registry cannot emit its starting count, the temporary filesystem cannot
-preserve its safety reserve, the finished ZIP fails CRC/count/size/SHA-256 verification,
-or the append-only preparation audit cannot be persisted, the server returns an error and
-the Console saves no archive. An audit event proves preparation, authorization, and
-counts—not that the client received every response byte.
+25 MiB; the complete disk-backed ZIP has no 25 MiB lifetime ceiling. It is **not** a
+whole-application export, import format, database dump, or backup/restore substitute;
+chat, collaboration, identity/session state, user preferences, and raw RAG chunks are
+also outside its supported scopes. Preparation and terminal outcomes are audited and
+require `data_export:export` plus fresh authentication. Elasticsearch scopes disclose
+an exact PIT snapshot; PostgreSQL discloses `bounded_at_start` and KV paths disclose
+their weaker live-at-read semantics.
 
-Download one delivery-atomic archive (all safe scopes when `scopes` is omitted):
+If any selected registry cannot emit its starting count, the temporary filesystem
+cannot preserve its safety reserve, the finished ZIP fails CRC/count/size/SHA-256
+verification, or the append-only job/audit transition cannot be persisted, the job
+fails and exposes no artifact. The audit and job result prove preparation,
+authorization, and counts—not that the client downloaded every byte.
+
+The local and updater-managed standalone artifact root defaults to
+`./data/job-artifacts`; the legacy merge Compose uses the persistent
+`/var/lib/agentic-soc/jobs` volume. Standalone files survive a process/ordinary
+container restart but require an operator-provided reviewed mount to survive container
+replacement. Files are private and only the newest 50 attached artifacts are retained.
+A job record can outlive its Download action. Move an important export to an
+independently controlled retention system; this feature is still an analysis/support
+artifact, not a backup.
+
+The older direct archive and segment endpoints remain executable, explicitly
+OpenAPI-deprecated compatibility interfaces. They retain their request-bound timeout,
+temporary-disk, and cursor constraints and are not the Console workflow. For example,
+a direct synchronous archive request (all safe scopes when `scopes` is omitted) is:
 
 ```bash
 curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/archive \
@@ -1808,7 +1910,7 @@ curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/archive \
   --output agentic-soc-export.zip
 ```
 
-Advanced/resumable example:
+Direct advanced/resumable example:
 
 ```bash
 curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/segment \
@@ -1817,16 +1919,16 @@ curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/segment \
   --output agentic-soc-audit-part-00001.json
 ```
 
-For advanced mode, pass the response's `segment.next_cursor` in the next request and continue until
+For the direct advanced API, pass the response's `segment.next_cursor` in the next request and continue until
 `segment.complete` is true. PIT cursors use a renewable ten-minute keep-alive; after
 expiration or backend restart, restart that scope. Automation and knowledge are
 currently materialized from their KV collections before being sliced into response
 segments, so exceptionally large catalogs have a known server-memory limitation.
-The synchronous ZIP path permits one active build/download per backend process, preserves
-a 64 MiB temporary-filesystem reserve, and relies on the deployment's response timeout;
-use Advanced mode when those constraints are unsuitable. Browser cancellation closes the
-request, and the server checks for disconnects between bounded pages and removes its
-temporary artifact.
+The direct synchronous ZIP path retains its proxy/timeout boundary. The background job
+does not depend on the initiating browser response, but archive assembly still has one
+process-local slot and must fit server disk. Job cancellation stops at a safe checkpoint
+and does not undo server work already performed; a cancelled or otherwise incomplete
+export exposes no artifact.
 
 ### Polling & detection
 
@@ -2110,9 +2212,23 @@ audit log. `/api/audit` shows the demo-scoped trail while Demo Mode is active; e
 the demo before using the Audit page to view those persistent lifecycle records.
 
 **Tiered reset.** Beyond Demo Mode, **Settings → Organization → Danger zone** offers
-an admin-gated, type-to-confirm **tiered reset** (cases / sources / factory) via
-`POST /api/admin/reset` — the cost ledger and audit log survive the cases tier, and
-**environment-supplied secrets are never wiped by any tier**.
+an admin-gated, freshly authenticated, type-to-confirm **tiered reset** (cases /
+sources / factory) through a `tiered_reset` background job. The cost ledger and audit
+log survive the cases tier, and **environment-supplied secrets are never wiped by any
+tier**. Non-factory progress remains in Jobs/Inbox. Factory purges prior Jobs, personal
+Inbox state, and artifacts, so it retains only one privileged actorless sanitized
+system receipt and starts a new audit lineage—not a personal Inbox completion. In the
+supported single-backend-process profile, the reset closes and drains HTTP mutation
+admission and SSE, quiesces tenant producers and detached writers, clears Demo/EventBus/
+cache state, strictly removes tenant cases/cursors/RAG/usage/audit and non-protected KV
+state, restores boot-provided runtime secrets, and releases its fences only after the
+sanitized receipt lineage is audited. This is not a distributed transaction across
+arbitrary application replicas.
+If its privacy boundary fails, the application stays fenced/degraded: ordinary work is
+blocked and only a new, freshly authorized factory-reset attempt is permitted until the
+boundary succeeds.
+The retired direct `POST /api/admin/reset` mutation returns `410 Gone` with
+`durable_job_required`; there is no synchronous bypass around the Job fence.
 
 ---
 
@@ -2272,9 +2388,13 @@ curl -s -b cookies.txt -X POST localhost:8088/api/cases/bulk \
 # -> { "results":[ {"id":"case-a","ok":true}, {"id":"case-b","ok":false,"error":"..."}, ... ] }
 ```
 
-This API/table workflow is distinct from the newer Case Manager toolbar. See the
+This direct API/table workflow is distinct from the newer Case Manager toolbar. Case
+Manager submits `case_lifecycle`, `case_assign`, `case_tag`, or
+`case_reinvestigate` through `POST /api/jobs` with an immutable selected-ID snapshot;
+it does not run a browser-owned per-case loop. Its dialog closes after admission and
+the durable Jobs/Inbox surfaces own progress and partial failure reporting. See the
 [Case Manager guide](analyst/case-manager.md) for its exact current selection and
-bulk-action contract.
+background-job contract.
 
 ### Audit viewer
 
@@ -2483,7 +2603,8 @@ curl -s -X POST localhost:8088/api/overview \
 curl -s localhost:8088/api/llm/models
 curl -s localhost:8088/api/llm/providers
 
-# Knowledge base (RAG): stats, browse, import, test-retrieve, delete (seeds need force)
+# Knowledge base (RAG): stats, browse, deprecated direct import, test-retrieve, delete
+# (Console import uses a durable rag_import Job; seeds need force)
 curl -s localhost:8088/api/rag/stats
 curl -s localhost:8088/api/rag/documents
 curl -s localhost:8088/api/rag/documents/doc-abc123                 # one document's chunks
@@ -2510,6 +2631,8 @@ curl -s "localhost:8088/api/scans/notifications?since=now-24h"
 # Standup, aggregate agent-effectiveness evidence, and cost
 curl -s "localhost:8088/api/standup/report?window_hours=24"
 curl -s "localhost:8088/api/metrics/agent-improvement"
+curl -s "localhost:8088/api/diagnostics/health?window_hours=24"
+curl -s "localhost:8088/api/metrics/auto-close-health?window_hours=24"
 curl -s "localhost:8088/api/usage/summary?window_hours=24"
 
 # Detection & Rules (§14): CRUD + preview + version ledger
@@ -2525,6 +2648,16 @@ curl -s localhost:8088/api/tuning/recommendations
 curl -s localhost:8088/api/tuning/source-recommendations
 curl -s localhost:8088/api/schedulers/health
 curl -s localhost:8088/api/batch/jobs
+
+# Self-scoped durable application jobs (§22)
+curl -s -b cookies.txt "localhost:8088/api/jobs?limit=50&offset=0"
+curl -s -b cookies.txt -X POST localhost:8088/api/jobs \
+  -H 'content-type: application/json' \
+  -d '{"kind":"case_tag","idempotency_key":"case-tag-one-intent-01","params":{"case_ids":["case-a","case-b"],"tag":"reviewed"}}'
+curl -s -b cookies.txt localhost:8088/api/jobs/job-abc123
+curl -s -b cookies.txt -X POST localhost:8088/api/jobs/job-abc123/cancel
+curl -sS -b cookies.txt localhost:8088/api/jobs/job-abc123/artifact \
+  --output job-artifact.zip  # only when result.artifact_id is non-empty
 
 # Custom dashboards (§21)
 curl -s localhost:8088/api/dashboards

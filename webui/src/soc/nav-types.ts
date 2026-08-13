@@ -22,6 +22,10 @@
 export type NavOpts = {
   caseId?: string;
   status?: string;
+  /** Exact assignee value as useful result context; it is not a stored job-ID cohort. */
+  assignee?: string;
+  /** Exact tag value as useful result context; it is not a stored job-ID cohort. */
+  tag?: string;
   /**
    * Severity-band drill-through (Round-6 #38): a coarse band the destination Cases view
    * seeds its severity filter from — one of `critical | high | medium | low | info`

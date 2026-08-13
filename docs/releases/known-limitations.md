@@ -261,6 +261,58 @@ Adding replicas now can duplicate cases or scheduled work, lose receiver ownersh
 and deliver inconsistent live updates. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
 defines the required worker/lease split.
 
+Application background jobs do use strict-CAS mutations and renewable five-minute
+leases. That narrow registry protection is not a distributed application runtime: the
+runner, foreground-priority investigation gate, archive assembly slot, Inbox/SSE fan-out,
+receivers, and schedulers retain process-local authorities. Continue to operate exactly
+one backend replica.
+
+### Background-job recovery, cancellation, and retention are bounded
+
+Cancellation is cooperative and does not roll back completed items. After a lost lease,
+repeat-safe export/precedent/Runbook work can retry an ambiguous item; unsafe
+state-changing items fail closed rather than risk a duplicate effect. This is safer than
+blind replay but is not a cross-system exactly-once transaction.
+
+Successful submission/retry and cancel responses, plus terminal Inbox/SSE projection,
+wait for the corresponding transition audit. Durable reconciliation repairs an audit
+gap before projection. An audit-store outage can therefore delay visible acceptance or
+completion even when underlying work is otherwise ready; this is the intended
+audit-before-visible boundary, not permission to bypass the Job with a new request.
+
+The strict-CAS registry retains at most 1,000 jobs and 8 MiB of active canonical
+parameters. Terminal compaction removes large inputs/item maps and retains only bounded
+failure detail. ZIP artifacts are separate filesystem state, count-pruned to the newest
+50 attachments, and can disappear while the terminal job record remains. Download and
+retain important artifacts independently.
+
+Case completion links deliberately carry a privacy-bounded current status/assignee/tag
+context rather than every attempted case ID. They can include other matching cases or
+omit a case that changed again, so they are not exact immutable result cohorts. Audit,
+case history, job counts, and bounded failures are the accountability sources.
+
+The unified Jobs page projects related LLM Batch records for `models:read`. Only newly
+accepted local rows freeze a strict, generation-bound audience, capped at 200 active
+effective-`models:read` accounts, and reconcile one stable safe progress/terminal Inbox
+note per recipient. Strict authorization-store outage stays pending/retryable;
+permission or generation loss removes and fail-closed filters a note. The audience does
+not expand later, so legacy rows, later users/grants, and recipients beyond the bound
+remain list-only. Notes expose bounded provider/model copy and counts only and have no
+Batch Cancel, Download, or completion toast. The bounded audience/outbox contract is
+regression-backed; the Jobs list is authoritative for every non-recipient. Scheduler health is intentionally list-only
+and never personal Inbox work.
+
+Factory reset's job registry retains only one privileged actorless sanitized receipt
+after purging prior Jobs, Inbox state, and artifacts. The supported single-backend-process
+profile closes and drains HTTP mutation admission/SSE, quiesces tenant producers and
+detached writers, and strictly clears all non-protected tenant StateStore data plus RAG,
+usage/audit ledgers, runtime projections, and runtime secret overlays before auditing the
+receipt and releasing its fences. This guarantee is process-local; do not claim an atomic
+distributed factory reset across arbitrary application replicas. There is no synchronous reset bypass:
+the retired `POST /api/admin/reset` route returns 410 and canonical mutation is a
+`tiered_reset` Job. A privacy-boundary failure leaves the application fenced/degraded,
+blocks ordinary work, and admits only a new freshly authorized factory-reset attempt.
+
 ### Volatile push evidence and realtime replay
 
 Push-source browse/live-tail keeps only the latest 500 events per source in process
@@ -368,24 +420,38 @@ buffers, and realtime delivery still lack distributed ownership.
 
 ### Portable export is not backup or tenant isolation
 
-The default Data export workflow now assembles one delivery-atomic ZIP on temporary server disk;
-the advanced workflow continues through numbered files beyond 5,000 records. The 5,000
-records and 25 MiB limits are per internal page/segment, not archive lifetime bounds.
-The synchronous archive must still fit available temporary disk and the deployment's
-upstream response timeout, and only one archive is built/served per backend process; use
-the resumable path when any constraint is uncertain. Delivery-atomic means the verified
-ZIP is complete before HTTP headers start, not that selected scopes share a transaction
-or that a pre-stream audit proves client receipt. It covers only selected supported safe
-scopes, excludes secrets/users/sessions/chat/collaboration/user preferences/raw logs/
-raw knowledge chunks, and has no import endpoint. It is suitable for support and
-offline analysis, not disaster recovery. Elasticsearch cases/audit/usage use a PIT;
-SQL reports a bounded-at-start, non-exact view, and configuration/KV scopes report
-live-at-read semantics. PIT cursors expire after ten minutes without renewal and must
-be restarted after expiration or backend restart. Automation/knowledge collections
+The primary Data export workflow now submits a background archive or segment job. Both
+walk every selected scope server-side and retain one verified ZIP; the segment strategy
+packages its internal numbered envelopes rather than asking the browser to remain open.
+The 5,000-record and 25 MiB limits are per internal page/segment, not archive lifetime
+bounds. Only one archive assembly slot exists per backend process, and the artifact must
+fit available server disk. The older direct archive/segment endpoints remain executable,
+explicitly OpenAPI-deprecated compatibility primitives with their synchronous/proxy-
+timeout and cursor constraints. They are not canonical Console workflows.
+
+An artifact proves that the server completed and verified the ZIP, not that selected
+scopes share a transaction or that a download reached the client. It covers only
+selected supported safe scopes, excludes secrets/users/sessions/chat/collaboration/user
+preferences/raw logs/raw knowledge chunks, and has no import endpoint. It is suitable
+for support and offline analysis, not disaster recovery. Elasticsearch cases/audit/
+usage use a PIT; SQL reports a bounded-at-start, non-exact view, and configuration/KV
+scopes report live-at-read semantics. PIT cursors expire after ten minutes without
+renewal and must be restarted after expiration or backend restart. Automation/knowledge collections
 are still materialized before response slicing, so very large catalogs can consume
 server memory even though responses stay bounded.
 `data_export:export` is also broad scope access rather than per-analyst row isolation;
 grant it to custom roles only after reviewing the disclosure boundary.
+
+Job artifacts are retained separately from StateStore metadata and only for the newest
+50 attachments. A terminal export row can therefore outlive its Download action. This
+count-bounded cache is not an evidence-retention or disaster-recovery policy.
+
+The Console is Jobs-only for long work, but direct precedent bootstrap, RAG import, and
+full-catalog Runbook reindex also remain executable OpenAPI-deprecated compatibility
+primitives. They retain their request-bound behavior and do not inherit the durable Job
+surface merely because an equivalent Job kind exists. Targeted single-Runbook reindex
+remains a normal direct operation. Direct reset and storage apply are the exception:
+those mutations return 410 rather than executing.
 
 ### Storage lifecycle does not yet provide end-to-end archival
 
@@ -394,11 +460,15 @@ S3 Glacier Flexible Retrieval, with deletion permanently off. Native enforcement
 currently narrower than that desired policy:
 
 - Elasticsearch ILM is applied only to append-only audit and usage/cost ledgers,
-  and only after an explicit capability preview and freshly authenticated Apply;
+  and only after an explicit capability preview plus a freshly authenticated
+  `storage_lifecycle_apply` Job;
 - mutable cases and live metadata stay Hot;
 - PostgreSQL is advisory until partitioning/tablespace/scheduler work exists;
 - SQLite is export-only; and
 - connected SIEM/log retention remains external and read-only.
+
+The retired direct `POST /api/storage/lifecycle/apply` mutation returns 410; GET, PUT,
+and preview remain direct. This prevents a synchronous bypass around the durable Job.
 
 There is no independent Glacier writer, immutable manifest, checksum verifier,
 catalog, or tested restore workflow yet. Consequently Archive is reported as not
@@ -437,8 +507,10 @@ an incident-history ledger.
   families, and uses exact deterministic matching. There is no operator-playbook
   delete route in v0.1.
 - Scheduler health is process-local. Tuner/campaign success anchors recover from
-  durable state, but distributed ownership and a complete immutable attempt history
-  are not implemented.
+  durable state; the event-driven baseline producer reports on-ingest attempt,
+  confirmed-success, error, and processed evidence independently of the cadence-loop
+  runtime flag. Distributed ownership and a complete immutable attempt history are not
+  implemented.
 - Local embedding fallback is explicitly marked and is not equivalent to a provider
   embedding. Changing embedding space requires managed-corpus reseeding, so retrieval
   may be temporarily incomplete while that reconciliation runs.

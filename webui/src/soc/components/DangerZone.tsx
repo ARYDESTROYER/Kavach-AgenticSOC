@@ -10,7 +10,8 @@
  *
  * The whole surface is gated behind `<Can resource="users" action="manage">` (the
  * `super_admin`/admin grant that mirrors the backend `require_admin` on
- * `POST /api/admin/reset`). The server ALSO enforces a step-up / fresh-auth window;
+ * `POST /api/jobs` with kind `tiered_reset`). The server ALSO enforces a step-up /
+ * fresh-auth window;
  * a 401 `reauth_required` from the reset call transparently pops the globally
  * registered `ReauthDialog` and retries once (see `DangerZone.api.ts`).
  *
@@ -31,7 +32,8 @@
  * so a bare mount is safe; the enclosing section header/RBAC filter still applies.
  */
 import * as React from 'react';
-import { AlertTriangle, Loader2, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Loader2, ShieldAlert } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -48,13 +50,18 @@ import {
 import { Can } from './Can';
 import { cn } from '@/lib/cn';
 import {
-  adminReset,
   RESET_CONFIRM_PHRASE,
   type ResetScope,
-  type ResetResult,
 } from '@/soc/DangerZone.api';
 import { ApiError } from '@/lib/api';
 import { SectionTitle } from '@/soc/pages/settings/primitives';
+import { api } from '@/lib/api';
+import { useNavigateOptional } from '@/soc/router';
+import {
+  announceJobAccepted,
+  retainJobSubmissionIntent,
+  type JobSubmissionIntent,
+} from '@/soc/jobs/jobs';
 
 /* --------------------------------------------------------------- copy ------- */
 
@@ -84,10 +91,16 @@ const TIERS: TierCopy[] = [
     summary: 'Clear every case and its working data, keeping your sources and settings.',
     clears: [
       'All cases, campaigns and baselines',
-      'Per-case collaboration, inbox and activity',
-      'Batch jobs and live-tail log buffers',
+      'Per-case collaboration, ordinary inbox items and activity',
+      'LLM Batch records and live-tail log buffers',
     ],
-    keeps: ['Sources', 'Secrets', 'Users', 'Settings', 'Knowledge base (RAG)'],
+    keeps: [
+      'Sources',
+      'Secrets',
+      'Users and settings',
+      'Knowledge base (RAG)',
+      'Durable application Jobs and their Inbox progress',
+    ],
   },
   {
     scope: 'sources',
@@ -98,7 +111,12 @@ const TIERS: TierCopy[] = [
       'All configured sources',
       'Polling cursors and per-source connector secrets',
     ],
-    keeps: ['Global secrets (env)', 'Users', 'Settings', 'First-run setup'],
+    keeps: [
+      'Global secrets (env)',
+      'Users and settings',
+      'First-run setup',
+      'Durable application Jobs and their Inbox progress',
+    ],
     caution:
       'After this, no sources are connected — you will need to re-add them from the wizard or Sources page.',
   },
@@ -108,12 +126,16 @@ const TIERS: TierCopy[] = [
     summary: 'Wipe all suite state and restart into first-run setup (OOBE).',
     clears: [
       'All state (cases, sources, users, settings, branding)',
-      'Personalisation and audit log',
+      'Personalisation, historical Jobs, personal Inbox and export artifacts',
+      'LLM Batch records and the previous audit log',
       'The setup flag → the app restarts into the first-run wizard',
     ],
-    keeps: ['Environment-provided secrets only (ES / LLM keys, database URL)'],
+    keeps: [
+      'Environment-provided secrets (ES / LLM keys, database URL)',
+      'One identity-free operational reset receipt in the new audit lineage',
+    ],
     caution:
-      'This restarts the suite into first-run setup (OOBE). Environment secrets remain so you can immediately create the admin account. This cannot be undone.',
+      'This signs everyone out and restarts the suite into first-run setup (OOBE). Personal Inbox history is erased; a minimal system receipt records only the reset outcome. Environment secrets remain so you can immediately create the admin account. This cannot be undone.',
   },
 ];
 
@@ -122,7 +144,7 @@ const TIERS: TierCopy[] = [
 interface ResetDialogProps {
   tier: TierCopy | null;
   onClose: () => void;
-  onDone: (result: ResetResult) => void;
+  onAccepted: () => void;
 }
 
 /**
@@ -130,7 +152,9 @@ interface ResetDialogProps {
  * trimmed input byte-matches the tier's phrase; the phrase itself is echoed as an
  * `<InlineCode>`-style token so the operator can see exactly what to type.
  */
-function ResetDialog({ tier, onClose, onDone }: ResetDialogProps) {
+function ResetDialog({ tier, onClose, onAccepted }: ResetDialogProps) {
+  const navigate = useNavigateOptional();
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [value, setValue] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -140,6 +164,7 @@ function ResetDialog({ tier, onClose, onDone }: ResetDialogProps) {
     setValue('');
     setBusy(false);
     setError(null);
+    jobSubmissionIntentRef.current = null;
   }, [tier?.scope]);
 
   if (!tier) return null;
@@ -153,8 +178,33 @@ function ResetDialog({ tier, onClose, onDone }: ResetDialogProps) {
     setBusy(true);
     setError(null);
     try {
-      const result = await adminReset(tier.scope, value.trim());
-      onDone(result);
+      const params = { scope: tier.scope, confirm: value.trim() };
+      const intent = retainJobSubmissionIntent(
+        jobSubmissionIntentRef.current,
+        'tiered_reset',
+        params,
+      );
+      jobSubmissionIntentRef.current = intent;
+      const job = await api.jobs.submit({
+        kind: 'tiered_reset',
+        idempotency_key: intent.idempotencyKey,
+        params,
+      });
+      jobSubmissionIntentRef.current = null;
+      announceJobAccepted(job);
+      onAccepted();
+      if (tier.scope === 'factory') {
+        toast.success('Factory reset job accepted.', {
+          description:
+            'The server will quiesce work, clear personal state and retain only a sanitized system receipt.',
+        });
+      } else {
+        toast.success(`${tier.title} job accepted.`, {
+          description:
+            'The destructive operation runs server-side and its durable outcome remains in Inbox.',
+          action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+        });
+      }
     } catch (e) {
       setBusy(false);
       if (e instanceof ApiError) {
@@ -162,10 +212,10 @@ function ResetDialog({ tier, onClose, onDone }: ResetDialogProps) {
         setError(
           e.status === 401
             ? 'Re-authentication was required and not completed. Nothing was cleared.'
-            : e.message || 'Reset failed.',
+            : e.message || 'Reset job submission failed.',
         );
       } else {
-        setError(e instanceof Error ? e.message : 'Reset failed.');
+        setError(e instanceof Error ? e.message : 'Reset job submission failed.');
       }
     }
   };
@@ -248,63 +298,6 @@ function ResetDialog({ tier, onClose, onDone }: ResetDialogProps) {
   );
 }
 
-/* ------------------------------------------------- success summary ---------- */
-
-interface SuccessDialogProps {
-  result: ResetResult;
-  onClose: () => void;
-}
-
-/** Post-reset receipt: the server's `cleared[]` list, rendered as plain text (#9). */
-function SuccessDialog({ result, onClose }: SuccessDialogProps) {
-  return (
-    <Dialog open onOpenChange={(next) => (!next ? onClose() : undefined)}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <CheckCircle2 className="h-5 w-5 text-success" aria-hidden />
-            Reset complete
-          </DialogTitle>
-          <DialogDescription>
-            The <span className="font-medium text-foreground">{String(result.scope)}</span> reset
-            finished. Environment-provided secrets were preserved.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="py-1">
-          {result.cleared.length ? (
-            <>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Cleared
-              </p>
-              <ul className="space-y-1 rounded-md border border-border bg-muted/40 p-3 font-mono text-xs text-foreground">
-                {result.cleared.map((line, i) => (
-                  <li key={`${line}-${i}`} className="break-words">
-                    {line}
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            <p className="text-sm text-muted-foreground">Nothing needed clearing — the store was already empty.</p>
-          )}
-          {String(result.scope) === 'factory' ? (
-            <p className="mt-3 text-sm text-muted-foreground">
-              The suite will restart into first-run setup. Reload the page to begin.
-            </p>
-          ) : null}
-        </div>
-
-        <DialogFooter>
-          <Button type="button" onClick={onClose}>
-            Done
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 /* ------------------------------------------------------ small parts --------- */
 
 function ConsequenceList({
@@ -357,7 +350,6 @@ export interface DangerZoneProps {
  */
 export function DangerZone({ className }: DangerZoneProps) {
   const [pending, setPending] = React.useState<TierCopy | null>(null);
-  const [done, setDone] = React.useState<ResetResult | null>(null);
 
   return (
     <Can resource="users" action="manage">
@@ -403,12 +395,10 @@ export function DangerZone({ className }: DangerZoneProps) {
       <ResetDialog
         tier={pending}
         onClose={() => setPending(null)}
-        onDone={(result) => {
+        onAccepted={() => {
           setPending(null);
-          setDone(result);
         }}
       />
-      {done ? <SuccessDialog result={done} onClose={() => setDone(null)} /> : null}
     </Can>
   );
 }

@@ -67,10 +67,19 @@ schema, protocol, identity, privilege, or frozen-base change.
   knowledge retrieval, MITRE ATT&CK context, campaigns, baselines, and auto-tuning.
 - **Built for teams:** RBAC, MFA, SSO, sessions, notifications, case collaboration,
   audit history, saved views, and per-user chat history.
+- **Durable long work:** bulk case operations, exports, knowledge maintenance, resets,
+  and lifecycle apply continue server-side across navigation/reload, with personal Jobs,
+  audit-confirmed Inbox progress, cooperative cancellation, bounded failures, and
+  verified artifacts. The Console is Jobs-only; selected direct long-operation APIs
+  remain explicitly deprecated compatibility primitives, while direct reset/storage
+  mutations are retired.
 - **Selectable state:** PostgreSQL with pgvector, Elasticsearch, or SQLite.
 - **A complete standalone Console:** responsive light and dark themes, first-run setup,
   live dashboards, Cases, Case Manager, Analytics, Intelligence, Settings, and bundled
   documentation.
+- **Window-safe operations:** Overview rejects stale posture responses after a range
+  change; full Agent health lives in range-aware Analytics Effectiveness, while Overview
+  shows only a positive degradation warning.
 - **Supervised Stable updates:** after one bootstrap, the reference PostgreSQL Compose
   deployment can apply a compatible signed, digest-pinned release from the Console with
   verified backup, durable progress, readiness checks, and automatic in-flight rollback.
@@ -117,6 +126,7 @@ Deterministic Case Manager
   │
   ├─ cases and collaboration
   ├─ audit and usage ledgers
+  ├─ strict-CAS background jobs, Inbox progress, and verified ZIP artifacts
   └─ PostgreSQL + pgvector | Elasticsearch | SQLite
   │
   ▼
@@ -263,6 +273,7 @@ matches the application version.
 | Use the product | [Help Center](docs/index.md) |
 | Evaluate quickly | [Quickstart](docs/getting-started/quickstart.md) |
 | Operate cases | [Case Manager guide](docs/analyst/case-manager.md) |
+| Monitor long-running work | [Background jobs](docs/operations/background-jobs.md) |
 | Author intelligence | [Runbooks](docs/intelligence/runbooks.md) |
 | Deploy and operate | [Deployment](docs/operations/deployment.md) |
 | Troubleshoot | [Troubleshooting](docs/operations/troubleshooting.md) |

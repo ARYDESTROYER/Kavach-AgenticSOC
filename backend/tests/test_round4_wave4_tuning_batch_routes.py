@@ -353,6 +353,32 @@ def test_batch_jobs_list_and_get(state_and_client) -> None:
     assert client.get("/api/batch/jobs/nope").status_code == 404
 
 
+def test_batch_jobs_preserve_terminal_aggregate_counts_after_compaction(
+    state_and_client,
+) -> None:
+    state, client = state_and_client
+    job = BatchJob(
+        provider="openai",
+        provider_batch_id="batch_terminal",
+        state=BatchJobState.RETRIEVED,
+        model="gpt-test",
+        custom_ids={
+            "c1": {"retrieved": True, "result_state": "succeeded"},
+            "c2": {"retrieved": True, "result_state": "errored"},
+        },
+        submitted_at="2026-07-02T00:00:00+00:00",
+    )
+    stored = _run(client, state.batch_job_store.save(job))
+    assert stored.terminal_compacted is True
+    assert stored.custom_ids == {}
+
+    response = client.get("/api/batch/jobs")
+    assert response.status_code == 200, response.text
+    row = response.json()["jobs"][0]
+    assert row["requests"] == 2
+    assert row["retrieved"] == 2
+
+
 def test_batch_registry_outage_is_503_not_empty_or_not_found(
     state_and_client, monkeypatch,
 ) -> None:

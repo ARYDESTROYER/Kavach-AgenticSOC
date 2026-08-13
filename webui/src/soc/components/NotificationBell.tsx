@@ -26,18 +26,21 @@
  */
 import * as React from 'react';
 import { useEventStream } from '@/lib/useEventStream';
-import { Bell, CheckCheck, Inbox as InboxIcon, AlertTriangle } from 'lucide-react';
+import { Bell, CheckCheck, Inbox as InboxIcon, AlertTriangle, LoaderCircle } from 'lucide-react';
 import { Button } from '@/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { ScrollArea } from '@/ui/scroll-area';
 import { Separator } from '@/ui/separator';
+import { Progress } from '@/ui/progress';
 import { cn } from '@/lib/cn';
-import { humanizeAge } from '@/lib/format';
+import { humanizeAge, humanizeToken } from '@/lib/format';
 import { ApiError } from '@/lib/api';
 import { LoadingState } from '@/design-system';
 import { semanticIcon, type SeverityKey } from './palette';
 import type { Navigate } from '../router';
+import { isActiveJobStatus, JOBS_CHANGED_EVENT } from '../jobs/jobs';
 import {
+  fetchActiveJobCount,
   fetchInbox,
   fetchUnreadCount,
   markAllRead,
@@ -60,7 +63,7 @@ const RECENT_LIMIT = 8;
  * the dispatcher) and case-mention nudges (`inbox`/`inapp` from collaboration). Both
  * deliver the `inapp` event channel; any frame on either topic triggers a re-sync.
  */
-const BELL_TOPICS = ['notifications', 'inbox'];
+const BELL_TOPICS = ['notifications', 'inbox', 'jobs'];
 
 /**
  * Poll the unread count. Pauses while the tab is hidden; refetches immediately when
@@ -71,15 +74,31 @@ const BELL_TOPICS = ['notifications', 'inbox'];
  * When the stream is healthy (`live`) the bell refreshes on every frame and drops to
  * a slow safety-net poll; when realtime is disabled/unavailable it polls normally.
  */
-function useUnreadCount(): { unread: number; refresh: () => void } {
+function useUnreadCount(onNudge?: () => void): {
+  unread: number;
+  activeJobs: number;
+  refresh: () => void;
+} {
   const [unread, setUnread] = React.useState(0);
+  const [activeJobs, setActiveJobs] = React.useState(0);
+  const seqRef = React.useRef(0);
   const refresh = React.useCallback(() => {
-    void fetchUnreadCount()
-      .then((r) => setUnread(Math.max(0, r.unread | 0)))
-      .catch((e) => {
-        // A lapsed/disabled inbox or auth bounce → stay quiet, don't surface.
-        if (e instanceof ApiError) setUnread(0);
-      });
+    const seq = ++seqRef.current;
+    void Promise.allSettled([fetchUnreadCount(), fetchActiveJobCount()]).then(
+      ([unreadResult, activeResult]) => {
+        if (seq !== seqRef.current) return;
+        if (unreadResult.status === 'fulfilled') {
+          setUnread(Math.max(0, unreadResult.value.unread | 0));
+        } else if (unreadResult.reason instanceof ApiError) {
+          setUnread(0);
+        }
+        if (activeResult.status === 'fulfilled') {
+          setActiveJobs(Math.max(0, activeResult.value | 0));
+        } else if (activeResult.reason instanceof ApiError) {
+          setActiveJobs(0);
+        }
+      },
+    );
   }, []);
 
   // Live updates: a fresh `inapp` frame means the unread count likely changed; refetch
@@ -87,7 +106,8 @@ function useUnreadCount(): { unread: number; refresh: () => void } {
   const onEvent = React.useCallback(() => {
     if (typeof document !== 'undefined' && document.hidden) return;
     refresh();
-  }, [refresh]);
+    onNudge?.();
+  }, [onNudge, refresh]);
   const { live } = useEventStream(BELL_TOPICS, { enabled: true, onEvent });
 
   React.useEffect(() => {
@@ -110,7 +130,7 @@ function useUnreadCount(): { unread: number; refresh: () => void } {
     };
   }, [refresh, live]);
 
-  return { unread, refresh };
+  return { unread, activeJobs, refresh };
 }
 
 /** Compact "9+" formatting for the numeric badge. */
@@ -157,6 +177,10 @@ export const SEVERITY_TEXT: Record<SeverityKey, string> = {
 /** One row in the bell dropdown. All text is UNTRUSTED → rendered PLAIN. */
 const InboxRow: React.FC<{ item: InboxItem }> = ({ item }) => {
   const unread = item.state === 'unseen' || item.state === 'seen';
+  const activeJob = Boolean(item.job_id && isActiveJobStatus(item.job_status));
+  const done = Math.max(0, Number(item.progress?.done || 0));
+  const total = Math.max(0, Number(item.progress?.total || 0));
+  const progress = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   // Severity: not color-only (WCAG 1.4.1). For a known severity we render the shared
   // SEMANTIC_ICON glyph (shape = colorblind-safe redundancy) tinted by the AA `-text`
   // token, plus an sr-only label so AT announces it; unknown severities keep the dot.
@@ -197,6 +221,22 @@ const InboxRow: React.FC<{ item: InboxItem }> = ({ item }) => {
             {item.body}
           </span>
         ) : null}
+        {item.job_id && item.progress ? (
+          <span
+            className="mt-1.5 block space-y-1"
+            role={activeJob ? 'status' : undefined}
+            aria-label={`${done} of ${total} ${item.progress.unit} complete`}
+          >
+            <span className="flex items-center justify-between gap-2 text-2xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                {activeJob ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : null}
+                {humanizeToken(item.job_status || 'completed')}
+              </span>
+              <span className="tabular-nums">{done.toLocaleString()} / {total.toLocaleString()}</span>
+            </span>
+            <Progress value={progress} className="h-1" />
+          </span>
+        ) : null}
       </span>
     </li>
   );
@@ -213,33 +253,52 @@ export interface NotificationBellProps {
  * is off / the inbox is unavailable: it shows a clean, empty, quiet bell.
  */
 export function NotificationBell({ onNavigate, className }: NotificationBellProps) {
-  const { unread, refresh } = useUnreadCount();
   const [open, setOpen] = React.useState(false);
   const [items, setItems] = React.useState<InboxItem[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
+  const recentSeqRef = React.useRef(0);
 
-  // Load the recent window each time the dropdown opens.
-  React.useEffect(() => {
-    if (!open) return undefined;
-    let alive = true;
+  const loadRecent = React.useCallback(() => {
+    if (!open) return;
+    const seq = ++recentSeqRef.current;
     setLoading(true);
     setFailed(false);
     void fetchInbox(RECENT_LIMIT)
       .then((r) => {
-        if (!alive) return;
+        if (seq !== recentSeqRef.current) return;
         setItems(Array.isArray(r.items) ? r.items : []);
       })
       .catch(() => {
-        if (alive) setFailed(true);
+        if (seq !== recentSeqRef.current) return;
+        setFailed(true);
       })
       .finally(() => {
-        if (alive) setLoading(false);
+        if (seq !== recentSeqRef.current) return;
+        setLoading(false);
       });
-    return () => {
-      alive = false;
-    };
   }, [open]);
+
+  const { unread, activeJobs, refresh } = useUnreadCount(loadRecent);
+
+  React.useEffect(() => {
+    if (open) loadRecent();
+    else {
+      recentSeqRef.current += 1;
+      setLoading(false);
+    }
+  }, [loadRecent, open]);
+  React.useEffect(() => () => {
+    recentSeqRef.current += 1;
+  }, []);
+  React.useEffect(() => {
+    const onJobsChanged = () => {
+      refresh();
+      loadRecent();
+    };
+    window.addEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+    return () => window.removeEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+  }, [loadRecent, refresh]);
 
   const onMarkAll = React.useCallback(() => {
     // Optimistic: clear the unread styling immediately, then persist + re-sync.
@@ -264,7 +323,7 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
           size="icon"
           className={cn('relative h-8 w-8', className)}
           aria-label={
-            unread > 0 ? `Notifications, ${unread} unread` : 'Notifications, none unread'
+            `Notifications, ${unread > 0 ? `${unread} unread` : 'none unread'}, ${activeJobs} active job${activeJobs === 1 ? '' : 's'}`
           }
         >
           <Bell className="h-4 w-4" aria-hidden />
@@ -278,6 +337,15 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
               aria-hidden
             >
               {badge}
+            </span>
+          ) : null}
+          {activeJobs > 0 ? (
+            <span
+              className="absolute -bottom-0.5 -left-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-info px-[3px] text-2xs font-semibold leading-none text-info-foreground"
+              title={`${activeJobs} active background job${activeJobs === 1 ? '' : 's'}`}
+              aria-hidden
+            >
+              {badgeText(activeJobs)}
             </span>
           ) : null}
         </Button>

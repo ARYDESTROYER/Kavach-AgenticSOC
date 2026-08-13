@@ -220,6 +220,85 @@ describe('Overview — Security Command Center (rebuild)', () => {
     expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('Closed by agent')).toBeInTheDocument();
   });
 
+  it('never renders delayed 24h posture under the LIVE 7d selector', async () => {
+    const requests: Array<{
+      hours: number;
+      signal: AbortSignal;
+      resolve: (value: PostureResponse) => void;
+    }> = [];
+    fetchPostureMock.mockImplementation(
+      (hours: number, _compare: string, signal: AbortSignal) =>
+        new Promise<PostureResponse>((resolve) => requests.push({ hours, signal, resolve })),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(requests).toHaveLength(1));
+
+    requests[0].resolve({
+      ...POSTURE_CMP,
+      quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.48, auto_closed_cases: 25 },
+    });
+    await waitFor(() =>
+      expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument(),
+    );
+    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('25')).toBeInTheDocument();
+
+    // Manual refresh and LIVE ticks share `refreshAll`; leave this 24h pulse in
+    // flight to reproduce the production interleave at the range boundary.
+    await user.click(screen.getByRole('button', { name: 'Refresh dashboard' }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1].hours).toBe(24);
+
+    await user.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole(
+        'button',
+        { name: /Last 7 days/i },
+      ),
+    );
+
+    // The selector render hides both posture values synchronously; neither is
+    // allowed to masquerade as selected-window data while 168h is in flight.
+    expect(screen.getByRole('button', { name: /Time range: Last 7 days/i })).toBeInTheDocument();
+    expect(within(screen.getByTestId('kpi-false-positive-rate')).queryByText('48%')).toBeNull();
+    expect(within(screen.getByTestId('kpi-auto-resolved')).queryByText('25')).toBeNull();
+    expect(
+      within(screen.getByTestId('kpi-false-positive-rate')).getByText('Loading 7 days'),
+    ).toBeInTheDocument();
+
+    await waitFor(() => expect(requests).toHaveLength(3));
+    expect(requests[1].signal.aborted).toBe(true);
+    requests[2].resolve({
+      ...POSTURE_CMP,
+      window_hours: 168,
+      quality: {
+        ...POSTURE_CMP.quality,
+        total_cases: 1412,
+        false_positive_cases: 1173,
+        false_positive_rate: 0.8307,
+        auto_closed_cases: 1355,
+      },
+      compare: {
+        ...POSTURE_CMP.compare!,
+        false_positive_rate: { value: 0.8307, prev: 0.8628, delta_pct: -3.7 },
+      },
+    });
+    await waitFor(() =>
+      expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('83%')).toBeInTheDocument(),
+    );
+    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('1,355')).toBeInTheDocument();
+
+    // Even if the aborted transport settles late, its 24h data remains discarded.
+    requests[1].resolve({
+      ...POSTURE_CMP,
+      quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.49, auto_closed_cases: 25 },
+    });
+    await Promise.resolve();
+    expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('83%')).toBeInTheDocument();
+    expect(within(screen.getByTestId('kpi-auto-resolved')).queryByText('25')).toBeNull();
+  });
+
   it('mounts the instrument band: Active Risk + two donut snapshots + latest cases', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
@@ -363,7 +442,11 @@ describe('Overview — Security Command Center (rebuild)', () => {
     expect(within(timingRegion).getByText('45m')).toBeInTheDocument();
     expect(fetchPostureMock).toHaveBeenCalled();
     // The posture fetch requests the period-over-period compare block.
-    expect(fetchPostureMock).toHaveBeenCalledWith(expect.any(Number), 'prev');
+    expect(fetchPostureMock).toHaveBeenCalledWith(
+      expect.any(Number),
+      'prev',
+      expect.any(AbortSignal),
+    );
   });
 
   it('attaches a delta ONLY to a unit-matched tile (FP-rate), never to the count tiles', async () => {

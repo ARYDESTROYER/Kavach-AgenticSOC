@@ -65,10 +65,12 @@ describe('ROUTES registry', () => {
     // `cases` seeds initialStatus from opts.status; `dashboard` forces the tab; neither
     // receives an onNavigate prop (pages use useNavigate/useNavigateOptional now).
     const cases = renderRoute('cases', {
-      opts: { status: 'needs_human', window: 24 },
+      opts: { status: 'needs_human', assignee: 'ana', tag: 'phishing', window: 24 },
       onRerunWizard: () => {},
     });
     expect((cases.props as { initialStatus?: string }).initialStatus).toBe('needs_human');
+    expect((cases.props as { initialAssignee?: string }).initialAssignee).toBe('ana');
+    expect((cases.props as { initialTag?: string }).initialTag).toBe('phishing');
     expect((cases.props as { initialWindowHours?: number }).initialWindowHours).toBe(24);
     expect((cases.props as Record<string, unknown>).onNavigate).toBeUndefined();
 

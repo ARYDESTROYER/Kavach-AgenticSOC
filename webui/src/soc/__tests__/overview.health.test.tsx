@@ -1,17 +1,17 @@
 /**
- * Overview — the agent-health band belongs ON THE DASHBOARD.
+ * Overview — only the degradation indicator belongs on the dashboard.
  *
- * The incident report's conclusion about an auto-close collapse was explicit: it belongs
- * on the dashboard, not buried in a settings page. This spec pins the mount contract:
+ * The full health panel moved to Analytics → Effectiveness. This spec pins the remaining
+ * Overview host contract:
  *
- *   1. the health band renders above the fold when the client exposes the health
+ *   1. the degradation-only indicator mounts when the client exposes the health
  *      endpoints, and it is handed the dashboard's own time window;
  *   2. it is omitted entirely when the client exposes neither endpoint, so a trimmed
  *      surface can never trigger a call it cannot answer (the AutomationNudge /
  *      noiseReduction guard pattern).
  *
- * The panel itself is stubbed here; its rendering/honesty rules are pinned by
- * `soc/components/__tests__/HealthDiagnostics.test.tsx`.
+ * The indicator itself is stubbed here; healthy/degraded rendering is pinned by
+ * `soc/components/__tests__/HealthDegradationIndicator.test.tsx`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -50,9 +50,9 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-vi.mock('@/soc/components/HealthDiagnostics', () => ({
-  HealthDiagnostics: ({ windowHours }: { windowHours?: number }) => (
-    <section data-testid="health-band">health:{windowHours}</section>
+vi.mock('@/soc/components/HealthDegradationIndicator', () => ({
+  HealthDegradationIndicator: ({ windowHours }: { windowHours?: number }) => (
+    <section data-testid="health-indicator-host">health:{windowHours}</section>
   ),
 }));
 
@@ -116,7 +116,7 @@ const POSTURE: PostureResponse = {
   sla: { enabled: false, evaluated: 0, response_breached: 0, response_at_risk: 0, resolve_breached: 0, resolve_at_risk: 0, attainment_pct: 100, breaching: [] },
 };
 
-describe('Overview — agent health band', () => {
+describe('Overview — degradation-only agent health host', () => {
   beforeEach(() => {
     withHealth.value = true;
     fetchPostureMock.mockReset();
@@ -131,19 +131,19 @@ describe('Overview — agent health band', () => {
     usageMock.mockResolvedValue({ total_cost: 0, total_tokens: 0, call_count: 0, currency: 'USD' });
   });
 
-  it('mounts the health band with the dashboard window', async () => {
+  it('mounts the degradation indicator with the dashboard window', async () => {
     render(<Overview onNavigate={vi.fn()} />);
 
-    const band = await screen.findByTestId('health-band');
-    expect(band).toHaveTextContent('health:24');
+    const indicator = await screen.findByTestId('health-indicator-host');
+    expect(indicator).toHaveTextContent('health:24');
   });
 
-  it('omits the band when the client exposes neither health endpoint', async () => {
+  it('omits the indicator host when the client exposes neither health endpoint', async () => {
     withHealth.value = false;
 
     render(<Overview onNavigate={vi.fn()} />);
 
     expect(await screen.findByTestId('page-hero')).toBeInTheDocument();
-    expect(screen.queryByTestId('health-band')).toBeNull();
+    expect(screen.queryByTestId('health-indicator-host')).toBeNull();
   });
 });

@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { listMock, markReadMock, markAllReadMock, dismissMock, getPrefsMock, putPrefsMock } =
+const { listMock, markReadMock, markAllReadMock, dismissMock, getPrefsMock, putPrefsMock, cancelJobMock } =
   vi.hoisted(() => ({
     listMock: vi.fn(),
     markReadMock: vi.fn(),
@@ -22,7 +22,19 @@ const { listMock, markReadMock, markAllReadMock, dismissMock, getPrefsMock, putP
     dismissMock: vi.fn(),
     getPrefsMock: vi.fn(),
     putPrefsMock: vi.fn(),
+    cancelJobMock: vi.fn(),
   }));
+
+vi.mock('@/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api')>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      jobs: { ...actual.api.jobs, cancel: cancelJobMock },
+    },
+  };
+});
 
 vi.mock('@/soc/pages/Inbox.api', async (importOriginal) => {
   // Keep the real catalog constants; only stub the network surface.
@@ -81,6 +93,7 @@ describe('Inbox page (read-state)', () => {
     markReadMock.mockReset();
     markAllReadMock.mockReset();
     dismissMock.mockReset();
+    cancelJobMock.mockReset().mockResolvedValue({ status: 'running' });
     listMock.mockResolvedValue({ items: ITEMS, total: 2, limit: 50, offset: 0 });
     markReadMock.mockResolvedValue({ ok: true });
     markAllReadMock.mockResolvedValue({ ok: true, marked: 1 });
@@ -160,6 +173,157 @@ describe('Inbox page (read-state)', () => {
     const openButtons = screen.getAllByRole('button', { name: /open case/i });
     fireEvent.click(openButtons[0]);
     expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'case-123' });
+  });
+
+  it('renders durable job progress, cancels active work, and gates artifact Download', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          id: 'job-note-running',
+          category: 'system',
+          title: 'Export is running',
+          body: 'Background export progress',
+          state: 'read',
+          created_at: '2026-08-13T10:00:00Z',
+          job_id: 'job-running',
+          job_status: 'running',
+          progress: { done: 2, total: 6, unit: 'scopes' },
+          result: null,
+        },
+        {
+          id: 'job-note-no-artifact',
+          category: 'system',
+          title: 'Case work complete',
+          body: 'No artifact expected',
+          state: 'read',
+          created_at: '2026-08-13T09:00:00Z',
+          job_id: 'job-case',
+          job_status: 'succeeded',
+          progress: { done: 1, total: 1, unit: 'cases' },
+          result: { kind: 'case_tag', counts: { total: 1, succeeded: 1 } },
+        },
+        {
+          id: 'job-note-artifact',
+          category: 'system',
+          title: 'Export complete',
+          body: 'Verified artifact ready',
+          state: 'read',
+          created_at: '2026-08-13T08:00:00Z',
+          job_id: 'job-export',
+          job_status: 'succeeded',
+          progress: { done: 6, total: 6, unit: 'scopes' },
+          result: {
+            kind: 'data_export_archive',
+            artifact_id: 'artifact-1',
+            counts: { total: 6, succeeded: 6 },
+          },
+        },
+        {
+          id: 'batch-note-running',
+          category: 'system',
+          title: 'LLM batch job',
+          body: 'Provider batch progress',
+          state: 'read',
+          created_at: '2026-08-13T07:00:00Z',
+          ref: { batch_job_id: 'batch-1', kind: 'llm_batch' },
+          job_id: 'batch-job:batch-1',
+          job_status: 'running',
+          progress: { done: 4, total: 10, unit: 'requests' },
+          result: null,
+          url: '#/analytics?tab=jobs',
+        },
+      ],
+      total: 4,
+      limit: 50,
+      offset: 0,
+    });
+    renderInbox();
+
+    await screen.findByText('Export is running');
+    expect(screen.getByRole('status', { name: '2 of 6 scopes complete' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: '4 of 10 requests complete' })).toBeInTheDocument();
+    expect(screen.getByText('Related LLM Batch running')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Cancel' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Dismiss' })).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(cancelJobMock).toHaveBeenCalledWith('job-running'));
+  });
+
+  it('routes a terminal LLM Batch Inbox entry to Jobs without cancel or artifact actions', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          id: 'batch-note-terminal',
+          category: 'system',
+          title: 'LLM batch job',
+          body: 'Provider batch complete',
+          state: 'read',
+          created_at: '2026-08-13T07:00:00Z',
+          ref: { batch_job_id: 'batch-1', kind: 'llm_batch' },
+          job_id: 'batch-job:batch-1',
+          job_status: 'succeeded',
+          progress: { done: 10, total: 10, unit: 'requests' },
+          result: {
+            kind: 'llm_batch',
+            counts: { succeeded: 10, failed: 0, total: 10 },
+          },
+          url: '#/analytics?tab=jobs',
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    const { onNavigate } = renderInbox();
+    await screen.findByText('Provider batch complete');
+
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View result' }));
+    expect(onNavigate).toHaveBeenCalledWith('batchjobs', undefined);
+  });
+
+  it('uses a kind-derived safe result route and hides unknown malformed actions', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          id: 'known-job',
+          category: 'system',
+          title: 'Known export',
+          body: 'Ready',
+          state: 'read',
+          job_id: 'job-known',
+          job_status: 'succeeded',
+          progress: { done: 1, total: 1, unit: 'exports' },
+          result: { kind: 'data_export_archive', counts: { total: 1, succeeded: 1 } },
+          url: 'javascript:alert(1)',
+        },
+        {
+          id: 'unknown-job',
+          category: 'system',
+          title: 'Unknown legacy work',
+          body: 'No safe destination',
+          state: 'read',
+          job_id: 'job-unknown',
+          job_status: 'succeeded',
+          progress: { done: 1, total: 1, unit: 'items' },
+          result: { kind: 'future_unknown_kind', counts: { total: 1, succeeded: 1 } },
+          url: 'https://attacker.example/result',
+        },
+      ],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    });
+    const { onNavigate } = renderInbox();
+    await screen.findByText('Known export');
+
+    const actions = screen.getAllByRole('button', { name: 'View result' });
+    expect(actions).toHaveLength(1);
+    fireEvent.click(actions[0]);
+    expect(onNavigate).toHaveBeenCalledWith('settings', { section: 'data_export' });
   });
 
   it('switches to the unread-only view and re-queries', async () => {

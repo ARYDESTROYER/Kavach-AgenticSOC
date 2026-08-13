@@ -12,6 +12,7 @@ without a restart.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import logging
 import secrets as stdlib_secrets
@@ -91,6 +92,7 @@ class AppState:
         # Round-4 Wave-3: the lazily-built batch service is memoised here; _wire()
         # clears it so a credential/store rebuild re-binds it to the fresh gateway/store.
         self._batch_service = None
+        self._job_runner = None
         # Round-4 Wave-4: the gated background schedulers (threshold-tuner / campaign /
         # batch-jobs). Started in startup() (behind start_poller), cancelled in
         # shutdown(). Tuning observation and campaign grouping are default ON; async
@@ -119,7 +121,12 @@ class AppState:
                 "last_error": "",
                 "processed": 0,
             }
-            for name in ("threshold_tuner", "campaign_correlation", "batch_jobs")
+            for name in (
+                "threshold_tuner",
+                "campaign_correlation",
+                "baseline_producer",
+                "batch_jobs",
+            )
         }
         # The single, long-lived streaming baseline model behind the EVENT-feed detection
         # funnel (Wave-4). Warmed from baseline_store on first use; None until built. It
@@ -151,6 +158,65 @@ class AppState:
         # it so a caller's edit is applied against the freshest prefs. Created in __init__
         # (not _wire) so it is a single stable lock across credential-driven rewires.
         self._prefs_lock = asyncio.Lock()
+        from .engine.investigation_gate import InvestigationGate
+        from .engine.mutation_gate import MutationAdmissionGate
+
+        self.investigation_gate = InvestigationGate()
+        # Process-local half of the factory-reset write fence. The durable Jobs and
+        # Batch documents protect claims/submissions across replicas; this gate drains
+        # already-admitted unsafe HTTP requests in the supported single-process runtime.
+        self.mutation_gate = MutationAdmissionGate()
+        # Detached notification/automation work can outlive the request that spawned
+        # it. Keep every tenant-writing task reachable so factory reset can cancel and
+        # await it after closing HTTP admission and before clearing state.
+        self._mutation_tasks: set[asyncio.Task[Any]] = set()
+        # BaseSettings folds environment values into mutable dicts. Capture their boot
+        # value once so reset removes runtime UI additions without erasing environment-
+        # supplied connector/SSO/notification credentials.
+        self._runtime_secret_fields = frozenset(
+            {
+                # UI-set model and embedding credentials.
+                # The read-only log-surface key is tenant/source authority; restore
+                # its boot value while preserving the active management URL/key and
+                # state backend that own this reset transaction.
+                "es_api_key",
+                "openai_api_key",
+                "anthropic_api_key",
+                "litellm_api_key",
+                "azure_openai_api_key",
+                "aws_access_key_id",
+                "aws_secret_access_key",
+                "aws_session_token",
+                "vertex_api_key",
+                "embedding_api_key",
+                # Every provider field mutable through routes_enrichment.
+                "abuseipdb_api_key",
+                "virustotal_api_key",
+                "greynoise_api_key",
+                "shodan_api_key",
+                "censys_api_id",
+                "censys_api_secret",
+                "binaryedge_api_key",
+                "ipinfo_token",
+                "otx_api_key",
+                "pulsedive_api_key",
+                "spur_api_key",
+                "xforce_api_key",
+                "xforce_api_password",
+                "urlscan_api_key",
+                "hibp_api_key",
+                "honeypot_access_key",
+                "abusech_auth_key",
+                # Runtime maps managed by source/SSO/notification routes.
+                "connector_secrets",
+                "sso_client_secrets",
+                "notification_secrets",
+            }
+        )
+        self._boot_runtime_secrets = {
+            field: copy.deepcopy(getattr(secrets, field))
+            for field in self._runtime_secret_fields
+        }
         # Continuation cursors for privileged portable exports are signed with a
         # purpose-separated server key.  A configured auth JWT secret makes the
         # key stable across replicas/restarts; the no-secret development profile
@@ -180,6 +246,85 @@ class AppState:
     @property
     def demo_active(self) -> bool:
         return self._demo is not None
+
+    def spawn_mutation_task(self, coro, *, name: str | None = None) -> asyncio.Task[Any]:
+        """Spawn one tracked tenant-writing task, rejecting work after admission closes."""
+
+        if self.mutation_gate.closed:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError("factory reset mutation fence is closed")
+        task = asyncio.create_task(coro, name=name)
+        self._mutation_tasks.add(task)
+        task.add_done_callback(self._mutation_tasks.discard)
+        return task
+
+    async def cancel_mutation_tasks(self) -> int:
+        """Cancel and await every detached tenant writer registered before reset."""
+
+        cancelled = 0
+        while self._mutation_tasks:
+            tasks = list(self._mutation_tasks)
+            cancelled += len(tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return cancelled
+
+    def restore_environment_runtime_secrets(self) -> dict[str, int]:
+        """Drop tenant runtime overlays while preserving deployment/boot values.
+
+        State backend/management connection, auth/JWT, Redis, artifact and updater
+        wiring are deliberately outside this allowlist; changing them mid-run would
+        move the reset worker and durable receipt to a different authority surface.
+        """
+
+        restored: dict[str, int] = {}
+        for field, boot_value in self._boot_runtime_secrets.items():
+            current = getattr(self.secrets, field)
+            if isinstance(current, dict) and isinstance(boot_value, dict):
+                restored[field] = max(0, len(current) - len(boot_value))
+            else:
+                restored[field] = int(current != boot_value)
+            setattr(self.secrets, field, copy.deepcopy(boot_value))
+        self.gateway.reset_providers()
+        return restored
+
+    async def factory_recovery_bootstrap_allowed(self) -> bool:
+        """Whether an empty identity store may bootstrap while a reset is degraded."""
+
+        if not self.mutation_gate.degraded:
+            return False
+        try:
+            if not await self.jobs.factory_recovery_fence_matches(
+                self.mutation_gate.owner
+            ):
+                return False
+            getter = getattr(self.kv, "get_strict", None) or self.kv.get
+            from .constants import USERS_KEY, USERS_NS
+
+            doc = await getter(USERS_NS, USERS_KEY)
+            entries = doc.get("entries", []) if isinstance(doc, dict) else []
+            return not entries
+        except Exception:  # fail closed on identity-store uncertainty
+            return False
+
+    async def recover_factory_mutation_gate(self) -> str:
+        """Rehydrate the process-local safe-stop from the durable Jobs fence.
+
+        Called after the state backend schema is reachable but before tenant seeding,
+        reconciliation, or any producer starts. A real owner is returned for tests
+        and startup logging; an unreadable/corrupt registry raises so startup can
+        install an opaque, non-recoverable safe-stop rather than fail open.
+        """
+
+        owner = await self.jobs.factory_fence_owner()
+        if not owner:
+            return ""
+        await self.mutation_gate.close(owner)
+        await self.mutation_gate.mark_degraded(owner)
+        return owner
 
     # ------------------------------------------------------------------ #
     # Public accessors for the REAL (never demo-swapped) collaborators + KV.
@@ -242,6 +387,18 @@ class AppState:
     @property
     def real_batch_job_store(self):
         return self._real_batch_job_store
+
+    @property
+    def real_inbox(self):
+        return self._real_inbox
+
+    @property
+    def jobs(self):
+        return self._jobs
+
+    @property
+    def job_runner(self):
+        return self._job_runner
 
     @property
     def kv(self):
@@ -438,6 +595,15 @@ class AppState:
         # handle survives every ``_wire()`` rebuild like the Round-3/4/5 stores. Advisory
         # presentation state only (#3-safe); never read by case_manager.decide().
         self._build_round7_stores()
+        from .engine.jobs import JobRunner
+        from .stores.jobs import JobStore
+
+        self._jobs = JobStore(self._kv)
+        if self._job_runner is None:
+            self._job_runner = JobRunner(self, self._jobs)
+        else:
+            self._job_runner.state = self
+            self._job_runner.store = self._jobs
         # Drop any memoised batch service so it re-binds to the freshly-built store +
         # gateway on the next access (a credential change rebuilds both).
         self._batch_service = None
@@ -527,6 +693,8 @@ class AppState:
             # collaborators built AFTER the pipeline — the _wire() ordering (#6) is
             # preserved; only this already-available collaborator moves to the ctor.
             event_bus=self.event_bus,
+            investigation_gate=self.investigation_gate,
+            mutation_task_spawner=self.spawn_mutation_task,
         )
         self._real_chat_engine = ChatEngine(
             es, self.gateway, self._real_audit, self._real_cases, self.rag,
@@ -631,8 +799,6 @@ class AppState:
         """Automation RUN_PLAYBOOK action → QUEUE a re-investigation of the case with
         the playbook forced as TRUSTED context. Detached so it never blocks the
         case path; the re-investigation itself re-runs the deterministic decide()."""
-        import asyncio
-
         async def _do() -> None:
             try:
                 cluster = await self._automation_cluster_for_case(case)
@@ -647,7 +813,9 @@ class AppState:
             except Exception:  # noqa: BLE001 — a queued re-investigation never breaks anything
                 logger.debug("automation playbook re-investigation failed for %s", case.case_id)
 
-        asyncio.create_task(_do())
+        self.spawn_mutation_task(
+            _do(), name=f"automation-playbook:{case.case_id}"
+        )
 
     async def _automation_cluster_for_case(self, case):
         """Rebuild a cluster for a queued automation re-investigation (read-only).
@@ -1097,6 +1265,7 @@ class AppState:
                 make_provider=self.build_batch_provider,
                 get_prefs=self.get_prefs,
                 reenter=self._reenter_detections,
+                state=self,
             )
             self._batch_service = svc
         return svc
@@ -1289,22 +1458,27 @@ class AppState:
             return False
         return bool(getattr(getattr(prefs, "baseline", None), "enabled", False))
 
-    async def _flush_realtime_baseline(self, engine, signature: str) -> None:
+    async def _flush_realtime_baseline(self, engine, signature: str) -> bool:
         """Persist the ONE signature's sketches back to the baseline_store (best-effort),
         then delete any signatures the LRU bound evicted this tick so ``max_series`` bounds
-        the durable store too, not just memory."""
+        the durable store too, not just memory. The boolean is operator-health evidence
+        only; callers remain fail-open exactly as before."""
+        persisted = True
         try:
             snap = engine.snapshot(signature)
             if snap:
-                await self.baseline_store.put(signature, snap)
+                await self.baseline_store.put_strict(signature, snap)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            persisted = False
             logger.debug("realtime baseline flush failed (%s)", exc)
         try:
             for evicted in engine.drain_evictions():
                 if evicted != signature:
-                    await self.baseline_store.delete(evicted)
+                    await self.baseline_store.delete_strict(evicted)
         except Exception as exc:  # noqa: BLE001 — eviction cleanup is best-effort
+            persisted = False
             logger.debug("realtime baseline eviction cleanup failed (%s)", exc)
+        return persisted
 
     async def observe_source_volume(self, source_id, count, *, when: datetime | None = None):
         """Fold ONE tick's PER-SOURCE ingest volume into the baseline (silent-source /
@@ -1328,15 +1502,22 @@ class AppState:
             pass
         if not self._baseline_learning_on():
             return None
+        self._scheduler_attempt("baseline_producer")
         try:
             from .engine.baseline import source_volume_signature
 
             engine = await self._ensure_realtime_baseline()
             sig = source_volume_signature(sid)
             signal = engine.observe(sig, engine.bucket_for_time(now), float(count))
-            await self._flush_realtime_baseline(engine, sig)
+            if await self._flush_realtime_baseline(engine, sig):
+                self._scheduler_success("baseline_producer", processed=1)
+            else:
+                self._scheduler_failure(
+                    "baseline_producer", "baseline persistence was not confirmed"
+                )
             return signal
         except Exception as exc:  # noqa: BLE001 — the producer must never break a tick
+            self._scheduler_failure("baseline_producer", exc)
             logger.debug("source-volume baseline observe failed (%s)", exc)
             return None
 
@@ -1350,12 +1531,19 @@ class AppState:
         if not sig or not self._baseline_learning_on():
             return None
         now = when or datetime.now(timezone.utc)
+        self._scheduler_attempt("baseline_producer")
         try:
             engine = await self._ensure_realtime_baseline()
             signal = engine.observe(sig, engine.bucket_for_time(now), float(count))
-            await self._flush_realtime_baseline(engine, sig)
+            if await self._flush_realtime_baseline(engine, sig):
+                self._scheduler_success("baseline_producer", processed=1)
+            else:
+                self._scheduler_failure(
+                    "baseline_producer", "baseline persistence was not confirmed"
+                )
             return signal
         except Exception as exc:  # noqa: BLE001 — the producer must never break a tick
+            self._scheduler_failure("baseline_producer", exc)
             logger.debug("cluster-volume baseline observe failed (%s)", exc)
             return None
 
@@ -1620,6 +1808,7 @@ class AppState:
         configs = {
             "threshold_tuner": getattr(self.prefs, "threshold_tuning", None),
             "campaign_correlation": getattr(self.prefs, "campaign", None),
+            "baseline_producer": getattr(self.prefs, "baseline", None),
             "batch_jobs": getattr(self.prefs, "batch", None),
         }
         # Recover durable success anchors on a new process before the first tick.
@@ -1639,6 +1828,21 @@ class AppState:
                 pass
         workers: dict[str, Any] = {}
         for name, cfg in configs.items():
+            if name == "baseline_producer":
+                enabled = bool(cfg is not None and getattr(cfg, "enabled", False))
+                demo_gated = bool(
+                    getattr(getattr(self.prefs, "demo", None), "active", False)
+                )
+                workers[name] = {
+                    "enabled": enabled,
+                    "gated": demo_gated,
+                    # This producer is event-driven rather than an asyncio cadence:
+                    # enabled + non-demo means it is ready on every ingest tick.
+                    "running": bool(enabled and not demo_gated),
+                    "cadence": "on_ingest",
+                    **dict(self._scheduler_health[name]),
+                }
+                continue
             cadence = str(getattr(cfg, "cadence", "continuous"))
             enabled = bool(cfg is not None and getattr(cfg, "enabled", False))
             workers[name] = {
@@ -1766,6 +1970,10 @@ class AppState:
             try:
                 svc = self.batch_service
                 if svc.enabled() and not self._schedulers_gated_off():
+                    # Batch Inbox is a durable projection outbox. Reconcile terminal
+                    # as well as open provider rows so an Inbox outage at completion
+                    # repairs itself without needing another submission.
+                    await svc.reconcile_inbox()
                     open_jobs = await svc.store.load_open_jobs()
                     if open_jobs:
                         self._scheduler_attempt("batch_jobs")
@@ -2191,7 +2399,41 @@ class AppState:
     async def startup(self, *, start_poller: bool = True) -> None:
         await self.cache.connect()
         await self._bootstrap_state_backend()
+        # Cache keys are namespaced by the latest sanitized factory receipt. An
+        # unavailable Jobs registry chooses a unique fail-safe namespace rather than
+        # risking reuse of prior-tenant Redis evidence.
+        try:
+            self.cache.set_tenant_epoch(await self.jobs.factory_cache_epoch())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Factory cache epoch unavailable (%s); isolating this boot", exc)
+            self.cache.set_tenant_epoch(f"unavailable-{stdlib_secrets.token_hex(16)}")
+        # Rebuild the process-local HTTP boundary from the durable fence before any
+        # producer or request can mutate tenant state. A malformed/unreadable registry
+        # fails closed with an opaque recovery owner; explicit repair is then required.
+        factory_recovery = False
+        try:
+            fence_owner = await self.recover_factory_mutation_gate()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Jobs factory-fence status unavailable; entering safe-stop: %s", exc)
+            fence_owner = f"unavailable-{stdlib_secrets.token_hex(16)}"
+            await self.mutation_gate.close(fence_owner)
+            await self.mutation_gate.mark_degraded(fence_owner)
+            factory_recovery = True
+        if fence_owner:
+            factory_recovery = True
         self.prefs = await self.config_store.load()
+        if factory_recovery:
+            # Recovery boots are deliberately minimal. Do not seed users/rules,
+            # reconcile RAG/playbooks/tuning, restore demo state, or start any Job,
+            # poller, receiver, or scheduler writer. Read-only identity hydration is
+            # enough for env-admin login or the guarded empty-store setup bootstrap;
+            # a freshly submitted factory retry starts the JobRunner explicitly.
+            await self.refresh_users()
+            logger.warning(
+                "AppState started in factory-reset recovery safe-stop (owner=%s)",
+                fence_owner,
+            )
+            return
         # First-run seeding of the built-in rule catalog (C3-1): idempotent and
         # guarded by rule_catalog_seed_version so operator edits are never clobbered.
         self.prefs = await self.config_store.seed_rule_catalog(self.prefs)
@@ -2265,7 +2507,10 @@ class AppState:
                 )
             except Exception as exc:  # noqa: BLE001 — never block startup on demo re-seed
                 logger.warning("Demo re-seed on startup failed (%s); continuing", exc)
-        if start_poller:
+        # Durable operator jobs are independent of polling/scheduler enablement and
+        # must recover queued/expired work even in push-only or test-controlled runs.
+        await self.job_runner.start()
+        if start_poller and not factory_recovery:
             self.poller.start()
             self._receivers_enabled = True
             await self._start_receivers()
@@ -3081,6 +3326,10 @@ class AppState:
 
     async def shutdown(self) -> None:
         try:
+            await self.job_runner.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             await self.disable_demo()
         except Exception:  # noqa: BLE001
             pass
@@ -3098,6 +3347,7 @@ class AppState:
             pass
         self._receivers_enabled = False
         await self._stop_receivers()
+        await self.cancel_mutation_tasks()
         await self.gateway.aclose()
         await self.cache.aclose()
         owned = getattr(self, "_owned_log_client", None)
@@ -3249,7 +3499,9 @@ class _BatchJobService:
     saved. That boundary is surfaced as an operational limitation rather than claimed
     as exactly-once remote submission."""
 
-    def __init__(self, *, store, gateway, make_provider, get_prefs, reenter=None) -> None:
+    def __init__(
+        self, *, store, gateway, make_provider, get_prefs, reenter=None, state=None
+    ) -> None:
         self._store = store
         self._gateway = gateway
         self._make_provider = make_provider
@@ -3258,6 +3510,22 @@ class _BatchJobService:
         # event-detections into the SAME correlate→pipeline path (#4/#3). None → results
         # are only billed (a plain investigation batch), never re-entered here.
         self._reenter = reenter
+        self._state = state
+
+    async def _project_inbox(self, job) -> None:
+        if self._state is None:
+            return
+        try:
+            from .engine.batch_inbox import reconcile_batch_inbox
+
+            await reconcile_batch_inbox(self._state, job)
+        except Exception as exc:  # projection outbox is retried; provider work proceeds
+            logger.warning("LLM Batch Inbox projection failed for %s: %s", job.id, exc)
+
+    async def reconcile_inbox(self) -> None:
+        """Retry every bounded Batch Inbox outbox, including terminal rows."""
+        for job in await self._store.list_strict():
+            await self._project_inbox(job)
 
     @property
     def store(self):
@@ -3319,6 +3587,7 @@ class _BatchJobService:
                     raise RuntimeError(
                         "batch outbox disappeared while recording provider failure"
                     ) from exc
+                await self._project_inbox(failed)
                 return failed
 
             # Persist acceptance before closing the client. A slow/hung close must not
@@ -3334,6 +3603,7 @@ class _BatchJobService:
                 raise RuntimeError(
                     "batch outbox disappeared while recording provider acceptance"
                 )
+            await self._project_inbox(accepted)
             return accepted
         finally:
             if provider_client is not None:
@@ -3373,13 +3643,19 @@ class _BatchJobService:
             candidates=dict(candidates or {}),
             submitted_at=iso_now(),
         )
+        if self._state is not None:
+            from .engine.batch_inbox import prepare_batch_inbox_audience
+
+            job = await prepare_batch_inbox_audience(self._state, job)
         # This is the acceptance boundary used by the Poller cursor. Creation is a
         # strict atomic CAS: simultaneous identical submitters share one local intent.
         # The provider call is separately leased because the scheduler can observe the
         # row between this creation and the opportunistic submit below.
         job, created = await self._store.create_if_absent(job)
         if not created:
+            await self._project_inbox(job)
             return job
+        await self._project_inbox(job)
         return await self._submit_outbox(job)
 
     async def poll(self, job):
@@ -3395,7 +3671,9 @@ class _BatchJobService:
             job = await prov.poll(job)
         finally:
             await prov.aclose()
-        return await self._store.save(job)
+        saved = await self._store.save(job)
+        await self._project_inbox(saved)
+        return saved
 
     async def process(self, job, *, role: str = "investigator", surface: str = "batch"):
         """Stream a completed job's results, fold them through the ONE gateway ledger
@@ -3417,6 +3695,9 @@ class _BatchJobService:
             job, results, self._gateway, role=role, surface=surface
         )
         if not getattr(job, "candidates", None):
+            current = await self._store.get_strict(job.id)
+            if current is not None:
+                await self._project_inbox(current)
             return recorded
 
         by_id = {
@@ -3448,6 +3729,9 @@ class _BatchJobService:
                 continue
             if await self._store.complete_reentry(job.id, custom_id, token):
                 completed.append(result)
+        current = await self._store.get_strict(job.id)
+        if current is not None:
+            await self._project_inbox(current)
         return completed
 
 

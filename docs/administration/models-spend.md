@@ -39,7 +39,7 @@ mean the infrastructure, GPU, network, or upstream proxy is free.
 
 ## Discounted inference
 
-Open **Analytics → Batch jobs** to configure two independent paths. Neither changes
+Open **Analytics → Jobs** to configure two independent paths. Neither changes
 the prompt, model verdict, deterministic close/escalate authority, or requirement for
 one usage-ledger row per resolved call.
 
@@ -92,6 +92,23 @@ live preference above. Anthropic Message Batches and OpenAI
 Batch results can arrive out of order, so retrieval is keyed by `custom_id`; each
 result is written to the ledger exactly once at the 0.5× batch multiplier.
 
+The same Jobs surface first shows each actor's application jobs, then exposes related
+provider Batch rows only to `models:read`. The latter are read-only shared projections:
+they do not acquire application-job Cancel or Download actions. Scheduler worker health
+can also appear for `automation:read`, but those rows are list-only and never personal
+Inbox notifications.
+
+New local Batch rows freeze a strict audience snapshot of at most 200 active accounts
+whose effective grants include `models:read`. One generation-bound stable Inbox note per
+snapshotted recipient carries only safe provider/model copy, request progress, and
+terminal counts. Authorization-store outage remains pending/retryable; permission or
+account-generation loss removes and fail-closed filters the note. The audience never
+expands later, so later users/grants, legacy rows, and recipients beyond the bound remain
+Jobs-list-only. Batch notes have no Cancel, Download, or completion toast. The bounded
+audience/outbox contract is regression-backed, while the Jobs list remains authoritative
+for every non-recipient. See
+[Background jobs](../operations/background-jobs.md).
+
 ## Budget gate
 
 The default balanced configuration enables a **$10 daily** LLM backstop, warns at
@@ -117,5 +134,5 @@ Discounted modes can reduce cost but can increase latency or have limited capaci
 The live Flex preference is on by default for the narrow eligible path above; the
 asynchronous Batch queue remains opt-in. Reconcile the Agentic SOC ledger with the
 provider invoice rather than assuming a requested tier was discounted. See
-[Settings administration](settings.md) and [Health, backup, and
-restore](../operations/health-backup.md).
+[Settings administration](settings.md), [Background jobs](../operations/background-jobs.md),
+and [Health, backup, and restore](../operations/health-backup.md).

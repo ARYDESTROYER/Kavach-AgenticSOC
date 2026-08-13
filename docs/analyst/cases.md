@@ -25,9 +25,16 @@ want queue, detail, and bulk operations in one continuous workspace. See the
 dedicated [Case Manager guide](case-manager.md) for exact selection, resize,
 permission, and failure semantics.
 
-Selecting rows opens bulk actions. Bulk operations execute the same server-side
-action once per case and return individual successes and failures. A partial failure
-does not make the successful changes disappear.
+Selecting rows opens bulk actions. Long-running Case Manager operations snapshot the
+selected case IDs and submit one server-owned background job. The dialog closes after
+`202 Accepted`; work continues across navigation or reload and reports progress in
+**Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes
+and reports bounded per-case failures rather than rolling the whole selection back.
+
+The terminal action opens a safely allow-listed Cases context such as active status,
+resulting status, assignee, or tag. That destination is a useful current filter, not
+an immutable cohort of every attempted ID: cases can change again and other cases can
+match the same filter. Use job counts, case history, and Audit for exact accountability.
 
 ## Status and disposition are different
 
@@ -112,5 +119,6 @@ When closing or resolving, select a disposition deliberately and grade the AI re
 Confirmed false positives can produce a pending suppression proposal and can be
 indexed as prior-case context. Neither process silently changes decision policy.
 
-See [Investigation](investigation.md), [Collaboration](collaboration.md), and
+See [Investigation](investigation.md), [Collaboration](collaboration.md),
+[Background jobs](../operations/background-jobs.md), and
 [Playbooks and approvals](../automation/playbooks-approvals.md).

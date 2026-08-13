@@ -25,6 +25,12 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Overview posture values can no longer cross time ranges.** The shared posture
+  loader keys state to `window_hours` plus comparison mode, aborts superseded reads,
+  validates the response's echoed window, and hides an old snapshot synchronously while
+  a new one loads. A slow 24-hour response therefore cannot repaint False Positive Rate
+  or Auto-resolved after the operator has selected 7 or 30 days; retained LIVE callbacks
+  also read the current range rather than closing over a previous one.
 - **Missing historical retrieval instrumentation no longer becomes a measured zero.**
   `Case.knowledge_used` keeps its backward-compatible array shape. The new
   `retrieval_observation_status` (`measured`, `not_measured`, or `unavailable`) is
@@ -78,17 +84,54 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
-- **One-file, server-assembled portable export.** `POST /api/admin/export/archive`
-  walks the same safe scopes and bounded pages as the resumable segment contract, writes
+- **Durable application background jobs.** `POST /api/jobs` now admits self-scoped,
+  idempotent long work into one bounded strict-CAS StateStore registry. Renewable
+  five-minute leases, audit-before-effect and audit-before-visible transitions, restart recovery, live-grant
+  checkpoints, cooperative cancellation, terminal compaction, bounded failure details,
+  actor-scoped Inbox/SSE progress, polling fallback, and verified persistent ZIP
+  artifacts cover Case Manager bulk lifecycle/reinvestigation/assignment/tagging, Data
+  export archive/segment, precedent bootstrap, Runbook reindex, Knowledge import, tiered
+  reset, and Storage lifecycle apply. The Console's **Analytics → Jobs** page is open to
+  ordinary authenticated Inbox users for their own work, conditionally adds related LLM
+  Batch rows for `models:read`, and adds list-only worker health for threshold tuning,
+  campaign correlation, Batch cadence loops, and the event-driven `baseline_producer`
+  (`cadence=on_ingest`) for `automation:read`. Newly accepted local LLM Batch rows freeze a strict, maximum-200,
+  generation-bound active effective-`models:read` audience and reconcile one stable safe
+  progress/terminal Inbox note per recipient. Authorization-store outage stays pending;
+  permission/generation loss revokes the note; later users/grants and legacy rows remain
+  list-only. Batch notes expose bounded provider/model/count copy only and have no Cancel,
+  Download, or completion toast. The audience/outbox path is regression-backed across
+  strict-store outage, stable retry, revocation, account replacement, and reset fencing.
+  Case-result links are strict, privacy-bounded status/assignee/
+  tag context filters—not immutable exact cohorts. The updater's separate private-
+  supervisor job protocol is unchanged. Factory reset replaces prior Jobs/Inbox/artifact
+  state with one privileged actorless sanitized receipt. In the supported single-backend-
+  process profile it drains HTTP/SSE mutation admission, quiesces producers and detached
+  writers, strictly clears tenant stores/RAG/usage/audit/runtime overlays, and releases
+  its fences only after the new receipt lineage is audited. A factory privacy failure
+  keeps the application fenced/degraded, blocks ordinary work, and permits only a new
+  freshly authorized factory retry. Successful submit/retry/cancel `202` responses and
+  terminal Inbox/SSE projection wait for their transition audit; reconciliation repairs
+  audit gaps before projection. Retired direct reset and
+  storage-apply mutations return 410; `POST /api/jobs` is the canonical mutation path.
+  Direct archive/segment export, precedent bootstrap, RAG import, and full-catalog
+  Runbook reindex remain executable OpenAPI-deprecated compatibility primitives;
+  Console/user workflows use Jobs, while targeted Runbook reindex remains direct.
+- **Durable one-file, server-assembled portable export.** The direct
+  `POST /api/admin/export/archive` walks the same safe scopes and bounded pages as the
+  resumable segment contract, writes
   one NDJSON member per scope plus a terminal provenance-bearing `manifest.json` into a
   stdlib ZIP on temporary server disk, and serves it only after every selected scope has
   emitted its starting count under its declared consistency. Elasticsearch retains its fixed PIT; PostgreSQL reports the honest
   non-exact `bounded_at_start` view and KV collections remain `live_values_at_read`.
   Permission and fresh-auth are rechecked before response creation, a strict append-only
   audit row records the prepared artifact (not client receipt), and temporary files/PITs are released on success,
-  failure, cancellation, or disconnect. The Console now downloads this one archive by
-  default while keeping the numbered `/segment` workflow under an explicit advanced /
-  resumable affordance. The legacy bounded v1 route is unchanged.
+  failure, cancellation, or disconnect. The Console now submits either
+  `data_export_archive` or `data_export_segment` to the application-job registry; both
+  complete server-side and retain one verified ZIP behind `artifact_id`, while segment
+  mode follows and packages all numbered envelopes without a browser loop. The direct
+  archive/segment routes remain executable OpenAPI-deprecated compatibility primitives,
+  and the legacy bounded v1 route remains a compatibility contract.
 - **Producing-build provenance on operational records.** Every newly created case carries
   immutable creation-build `app_version` and `build_sha`; re-investigation preserves those
   original values. Every new append-only audit and usage row carries the build that first
@@ -122,13 +165,14 @@ and, just as importantly, makes each of these conditions a state an operator can
   rate only means an outage while decided volume holds steady, which is what separates
   "auto-close died" from "quiet night"; thin evidence reports an unavailable rate and a
   reason rather than a healthy-looking number.
-- **Console: an agent-health band on the dashboard.** An auto-close collapse belongs where
-  an operator already looks, so the Security Command Center now renders the diagnostics
-  roll-up and the auto-close status above the fold. Each signal is gated on its own grant,
-  `unknowns` render under "not yet measured" and are explicitly neither problems nor
-  reassurance, an empty `alerts` list beside a non-empty `unknowns` list says in words that
-  it is not a clean bill of health, and `insufficient_evidence` / `no_volume` render as
-  exactly that rather than as `0%`.
+- **Console: one shared Agent-health authority with a focused home.** The complete
+  diagnostics roll-up now lives above **Analytics → Effectiveness** and follows that
+  tab's 24h/7d/30d range at the stable `#/metrics?tab=effectiveness` URL. Overview uses
+  the same reducer but renders only one compact strip for a positively detected
+  degradation; healthy, unsupported, or unauthorized signals take no dashboard space,
+  and unknown/unmeasured evidence remains distinct from healthy. Each endpoint keeps
+  its independent `settings:read` or `metrics:view` grant, and superseded health reads
+  cannot cross ranges.
 - **An opt-in, default-off lower-trust precedent tier.** A fully autonomous deployment
   produces no analyst-confirmed outcomes, so its precedent corpus is permanently empty:
   auto-close depends on precedent, precedent depends on analyst labels, and analyst labels

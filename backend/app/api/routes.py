@@ -31,7 +31,6 @@ from ..constants import (
     FeedbackOutcome,
     IngestMode,
     OCSF_VERSION,
-    SourceSurface,
     SourceType,
     UserRole,
 )
@@ -303,7 +302,7 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # --------------------------------------------------------------------------- #
 # Topics the UI may subscribe to. A single case-detail view may also request
 # 'cases:{case_id}' (exact-match topic) — allowed via the prefix below.
-_REALTIME_TOPICS = frozenset({"notifications", "cases", "agent"})
+_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent"})
 
 
 @router.get("/events")
@@ -4513,7 +4512,19 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="user not found")
     if await _would_orphan_super_admin(state, target, demoting=True, disabling=True):
         raise HTTPException(status_code=409, detail="cannot delete the last active super_admin")
+    from ..engine.jobs import account_generation
+
+    generation = account_generation(target.username, target.created_at)
+    artifacts, _removed_jobs = await state.jobs.retire_actor(username, generation)
+    await state.job_runner.delete_artifacts(artifacts)
     await state.users.delete(username)
+    await state.auth.purge_user_side_state(
+        username,
+        inbox=state.real_inbox,
+        notif_prefs=state.notif_prefs,
+        user_prefs=state.user_prefs,
+        custom_roles=state.custom_roles,
+    )
     await state.refresh_users()
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
@@ -4932,9 +4943,10 @@ async def _perform_case_action(
             _trig = TRIGGER_CLOSED
         notifier: NotificationService | None = getattr(state, "notifications", None)
         if _trig and notifier is not None and not state.demo_active:
-            import asyncio
-
-            asyncio.create_task(notifier.dispatch(case, _trig))
+            state.spawn_mutation_task(
+                notifier.dispatch(case, _trig),
+                name=f"case-lifecycle-notify:{case_id}",
+            )
     except Exception as exc:  # noqa: BLE001 — notifications never affect the action
         logger.debug("lifecycle notification scheduling skipped for %s: %s", case_id, exc)
     return case.model_dump(mode="json")

@@ -6,8 +6,8 @@
  *   - each tier's destructive button ARMS only on the EXACT type-to-confirm token
  *     (a near-miss / wrong-tier phrase / trailing junk keeps it disabled; a leading/
  *     trailing-whitespace-trimmed exact match arms it);
- *   - confirming posts `POST admin/reset {scope, confirm}` with the right scope;
- *   - the success dialog echoes the server's `cleared[]` receipt as plain text.
+ *   - confirming submits one `tiered_reset` durable job with the right scope/phrase;
+ *   - the destructive work never runs in the browser.
  *
  * Offline — the shared api client is mocked; no network. The component renders inside
  * the real AuthProvider with `auth.me` reporting auth OFF, so `hasPermission` returns
@@ -18,9 +18,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 const mocks = {
-  post: vi.fn(),
+  submit: vi.fn(),
   authMe: vi.fn(),
+  toastSuccess: vi.fn(),
 };
+
+vi.mock('sonner', () => ({
+  toast: { success: (...args: unknown[]) => mocks.toastSuccess(...args) },
+}));
 
 vi.mock('@/lib/api', () => {
   class ApiError extends Error {
@@ -38,7 +43,7 @@ vi.mock('@/lib/api', () => {
     setUnauthorizedHandler: vi.fn(),
     setReauthHandler: vi.fn(),
     api: {
-      post: (path: string, body?: unknown) => mocks.post(path, body),
+      jobs: { submit: (body: unknown) => mocks.submit(body) },
       auth: { me: () => mocks.authMe() },
       roles: { get: vi.fn().mockResolvedValue({ matrix: {}, rbac_enabled: false }) },
     },
@@ -61,7 +66,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Auth OFF → hasPermission() returns true, so <Can> renders everything.
   mocks.authMe.mockResolvedValue({ auth_enabled: false, authenticated: false, user: null });
-  mocks.post.mockReset();
+  mocks.submit.mockReset();
+  mocks.toastSuccess.mockReset();
 });
 
 /** Open a tier's confirm dialog by clicking its card button, then return the dialog. */
@@ -141,11 +147,12 @@ describe('DangerZone', () => {
     expect(cta).not.toBeDisabled();
   });
 
-  it('posts the correct scope + confirm and shows the cleared receipt', async () => {
-    mocks.post.mockResolvedValue({
-      ok: true,
-      scope: 'cases',
-      cleared: ['cases:42', 'kv:inbox', 'live_tail_rings'],
+  it('submits the correct durable reset job and closes the confirm dialog', async () => {
+    mocks.submit.mockResolvedValue({
+      job_id: 'job-reset', kind: 'tiered_reset', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'reset' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'd'.repeat(64), params: {}, cancel_requested: false,
     });
     renderDangerZone();
     await screen.findByTestId('danger-zone');
@@ -155,21 +162,54 @@ describe('DangerZone', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Reset cases & logs' }));
 
     await waitFor(() =>
-      expect(mocks.post).toHaveBeenCalledWith('admin/reset', {
-        scope: 'cases',
-        confirm: 'RESET CASES',
+      expect(mocks.submit).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'tiered_reset',
+        params: { scope: 'cases', confirm: 'RESET CASES' },
+      })),
+    );
+    expect(mocks.submit.mock.calls[0][0].idempotency_key).toMatch(/^tiered_reset-/);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      'Reset cases & logs job accepted.',
+      expect.objectContaining({
+        description: expect.stringMatching(/outcome remains in Inbox/i),
+        action: expect.objectContaining({ label: 'Open Inbox' }),
       }),
     );
+  });
 
-    // The success dialog echoes each cleared line as plain text.
-    await screen.findByText('Reset complete');
-    expect(screen.getByText('cases:42')).toBeInTheDocument();
-    expect(screen.getByText('kv:inbox')).toBeInTheDocument();
-    expect(screen.getByText('live_tail_rings')).toBeInTheDocument();
+  it('discloses factory privacy semantics and never promises a personal Inbox result', async () => {
+    mocks.submit.mockResolvedValue({
+      job_id: 'job-factory', kind: 'tiered_reset', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'reset' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'e'.repeat(64), params: {}, cancel_requested: false,
+    });
+    renderDangerZone();
+    await screen.findByTestId('danger-zone');
+    const dialog = await openTier('Factory reset');
+
+    expect(within(dialog).getByText(/Personalisation, historical Jobs, personal Inbox/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/identity-free operational reset receipt/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Personal Inbox history is erased/i)).toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByPlaceholderText('FACTORY RESET'), {
+      target: { value: 'FACTORY RESET' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Factory reset' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      'Factory reset job accepted.',
+      {
+        description:
+          'The server will quiesce work, clear personal state and retain only a sanitized system receipt.',
+      },
+    );
   });
 
   it('surfaces a cancelled step-up re-auth (401) without wiping anything', async () => {
-    mocks.post.mockRejectedValue(new ApiError(401, 'reauth required', { code: 'reauth_required' }));
+    mocks.submit.mockRejectedValue(new ApiError(401, 'reauth required', { code: 'reauth_required' }));
     renderDangerZone();
     await screen.findByTestId('danger-zone');
     const dialog = await openTier('Reset cases & logs');

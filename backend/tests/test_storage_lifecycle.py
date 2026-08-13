@@ -472,7 +472,7 @@ def lifecycle_client():
         yield client
 
 
-def test_storage_routes_save_preview_and_explicitly_apply(lifecycle_client: TestClient) -> None:
+def test_storage_routes_save_preview_and_require_durable_apply_job(lifecycle_client: TestClient) -> None:
     initial = lifecycle_client.get("/api/storage/lifecycle")
     assert initial.status_code == 200, initial.text
     assert initial.json()["policy"]["hot_days"] == 180
@@ -496,10 +496,9 @@ def test_storage_routes_save_preview_and_explicitly_apply(lifecycle_client: Test
     assert saved.json()["effective_state"] == "not_configured"
 
     applied = lifecycle_client.post("/api/storage/lifecycle/apply")
-    assert applied.status_code == 200, applied.text
-    body = applied.json()
-    assert body["execution"]["state"] == "active"
-    assert body["status"]["effective_state"] == "active"
+    assert applied.status_code == 410, applied.text
+    assert applied.json()["detail"]["code"] == "durable_job_required"
 
     persisted = lifecycle_client.get("/api/storage/lifecycle").json()
     assert persisted["policy"]["glacier_storage_class"] == "DEEP_ARCHIVE"
+    assert persisted["effective_state"] == "not_configured"

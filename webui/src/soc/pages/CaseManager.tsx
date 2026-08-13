@@ -33,7 +33,7 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
 import { humanizeAge, humanizeToken } from '@/lib/format';
-import type { Case, CaseActionInput } from '@/lib/types';
+import type { BackgroundJobKind, Case } from '@/lib/types';
 
 import { Button } from '@/ui/button';
 import { Checkbox } from '@/ui/checkbox';
@@ -72,13 +72,17 @@ import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SeverityBadge, StatusBadge, severityBand } from '@/soc/components/badges';
 import { useAuth } from '@/soc/auth';
 import { useRoute } from '@/soc/router';
+import {
+  announceJobAccepted,
+  retainJobSubmissionIntent,
+  type JobSubmissionIntent,
+} from '@/soc/jobs/jobs';
 import { CaseDetail } from './CaseDetail';
 
 const LIST_LIMIT = 200;
 const TERMINAL_STATUSES = new Set(['closed', 'resolved']);
 const ANY_SEVERITY = '__any_severity__';
 const ANY_STATUS = '__any_status__';
-const BULK_CONCURRENCY = 3;
 const SPLIT_STORAGE_KEY = 'soc.caseManager.queueWidth';
 const SPLIT_MIN_QUEUE_PX = 320;
 const SPLIT_MAX_QUEUE_PX = 680;
@@ -91,18 +95,6 @@ type QueueMode = 'active' | 'all';
 type QueueSort = 'updated_desc' | 'risk_desc' | 'created_desc' | 'title_asc';
 type ConfirmableBulkAction = 'acknowledge' | 'resolve' | 'reinvestigate';
 type BulkFormAction = 'assign' | 'tag' | 'status' | 'disposition';
-
-interface BulkOperation {
-  targets: Case[];
-  progressLabel: string;
-  resultVerb: string;
-  run: (item: Case) => Promise<Case>;
-}
-
-interface BulkFailure {
-  caseLabel: string;
-  reason: string;
-}
 
 const BULK_STATUSES = [
   { value: 'open', label: 'Open' },
@@ -317,15 +309,10 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
   const [bulkFormAction, setBulkFormAction] = React.useState<BulkFormAction | null>(null);
   const [bulkFormValue, setBulkFormValue] = React.useState('');
   const [bulkBusy, setBulkBusy] = React.useState(false);
-  const [bulkProgress, setBulkProgress] = React.useState<{
-    done: number;
-    total: number;
-    label: string;
-  } | null>(null);
   const [bulkOutcome, setBulkOutcome] = React.useState<
     { kind: 'success' | 'warning'; message: string } | null
   >(null);
-  const [detailRevision, setDetailRevision] = React.useState(0);
+  const jobIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const splitFrameRef = React.useRef<HTMLDivElement>(null);
   const splitDragRef = React.useRef<{
     pointerId: number;
@@ -576,151 +563,47 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
     });
   }, []);
 
-  const reportBulkOutcome = React.useCallback(
-    (
-      succeeded: number,
-      failures: BulkFailure[],
-      resultVerb: string,
-      toastId: string | number,
+  const submitCaseJob = React.useCallback(
+    async (
+      kind: BackgroundJobKind,
+      params: Record<string, unknown>,
+      targets: readonly Case[],
+      label: string,
     ) => {
-      if (failures.length > 0) {
-        const visibleFailures = failures
-          .slice(0, 3)
-          .map((failure) => `${failure.caseLabel}: ${failure.reason}`);
-        if (failures.length > visibleFailures.length) {
-          visibleFailures.push(`+${failures.length - visibleFailures.length} more`);
-        }
-        const summary = `${succeeded} ${resultVerb}, ${failures.length} failed`;
-        setBulkOutcome({ kind: 'warning', message: `${summary}. ${visibleFailures.join('; ')}` });
-        toast.warning(summary, { id: toastId });
-        return;
-      }
-
-      const message = `${succeeded} case${succeeded === 1 ? '' : 's'} ${resultVerb}.`;
-      setBulkOutcome({ kind: 'success', message });
-      toast.success(message, { id: toastId });
-    },
-    [],
-  );
-
-  const applySuccessfulCases = React.useCallback(
-    (succeeded: Map<string, Case>) => {
-      if (succeeded.size === 0) return;
-      setCases((current) => current.map((item) => succeeded.get(item.case_id) ?? item));
-      setSelectedCaseIds((current) => {
-        const next = new Set(current);
-        for (const id of succeeded.keys()) next.delete(id);
-        return next;
-      });
-      if (selectedCaseId && succeeded.has(selectedCaseId)) {
-        // CaseDetail owns its own fetch state; remount only when the open case was
-        // authoritatively changed so the complete workspace refreshes.
-        setDetailRevision((current) => current + 1);
-      }
-    },
-    [selectedCaseId],
-  );
-
-  // Status-neutral owner/tag writes and cost-bearing reinvestigation use their
-  // canonical per-case endpoints. The small pool keeps fan-out bounded, each response
-  // replaces its queue record authoritatively, and only successes leave the selection.
-  const runPerCaseBulk = React.useCallback(
-    async ({ targets, progressLabel, resultVerb, run }: BulkOperation) => {
       if (targets.length === 0 || bulkBusy) return;
+      const targetIds = targets.map((item) => item.case_id).sort();
+      const materialParams = { ...params, case_ids: targetIds };
+      const intent = retainJobSubmissionIntent(jobIntentRef.current, kind, materialParams);
+      jobIntentRef.current = intent;
       setBulkBusy(true);
       setBulkOutcome(null);
-      setBulkProgress({ done: 0, total: targets.length, label: progressLabel });
-      const toastId = toast.loading(`${progressLabel} 0/${targets.length}…`);
-      const succeeded = new Map<string, Case>();
-      const failures: BulkFailure[] = [];
-      let done = 0;
-
       try {
-        for (let start = 0; start < targets.length; start += BULK_CONCURRENCY) {
-          const batch = targets.slice(start, start + BULK_CONCURRENCY);
-          const results = await Promise.allSettled(
-            batch.map((item) => Promise.resolve().then(() => run(item))),
-          );
-          results.forEach((result, index) => {
-            const target = batch[index];
-            if (result.status === 'fulfilled') succeeded.set(target.case_id, result.value);
-            else {
-              failures.push({
-                caseLabel: target.case_number || target.case_id,
-                reason: errorMessage(result.reason, 'Unknown error'),
-              });
-            }
-          });
-          done += batch.length;
-          setBulkProgress({ done, total: targets.length, label: progressLabel });
-          toast.loading(`${progressLabel} ${done}/${targets.length}…`, { id: toastId });
-        }
-
-        applySuccessfulCases(succeeded);
-        reportBulkOutcome(succeeded.size, failures, resultVerb, toastId);
-      } finally {
-        setBulkBusy(false);
-        setBulkProgress(null);
-      }
-    },
-    [applySuccessfulCases, bulkBusy, reportBulkOutcome],
-  );
-
-  // Lifecycle and disposition changes use the mature POST /cases/bulk contract. The
-  // server validates every selected case and returns one result per id; a mixed-status
-  // selection can therefore partially succeed without the UI inventing transitions.
-  // We refresh from the server after the mutation and retain failed ids for retry.
-  const runLifecycleBulk = React.useCallback(
-    async (input: CaseActionInput, progressLabel: string, resultVerb: string) => {
-      const targets = selectedCases;
-      if (targets.length === 0 || bulkBusy) return;
-      setBulkBusy(true);
-      setBulkOutcome(null);
-      setBulkProgress({ done: 0, total: targets.length, label: progressLabel });
-      const toastId = toast.loading(`${progressLabel} ${targets.length} cases…`);
-
-      try {
-        const response = await api.cases.bulk(
-          targets.map((item) => item.case_id),
-          input,
-        );
-        const returned = new Map((response.results ?? []).map((result) => [result.id, result]));
-        const succeededIds = new Set<string>();
-        const failures: BulkFailure[] = [];
-        for (const target of targets) {
-          const result = returned.get(target.case_id);
-          if (result?.ok) succeededIds.add(target.case_id);
-          else {
-            failures.push({
-              caseLabel: target.case_number || target.case_id,
-              reason: result?.error || 'No result returned by the server',
-            });
-          }
-        }
-
-        setBulkProgress({ done: targets.length, total: targets.length, label: progressLabel });
-        if (succeededIds.size > 0) {
-          setSelectedCaseIds((current) => {
-            const next = new Set(current);
-            for (const id of succeededIds) next.delete(id);
-            return next;
-          });
-          if (selectedCaseId && succeededIds.has(selectedCaseId)) {
-            setDetailRevision((current) => current + 1);
-          }
-        }
-        await loadCases();
-        reportBulkOutcome(succeededIds.size, failures, resultVerb, toastId);
+        const job = await api.jobs.submit({
+          kind,
+          idempotency_key: intent.idempotencyKey,
+          params: materialParams,
+        });
+        jobIntentRef.current = null;
+        announceJobAccepted(job);
+        setSelectedCaseIds((current) => {
+          const next = new Set(current);
+          targetIds.forEach((id) => next.delete(id));
+          return next;
+        });
+        const message = `${label} queued for ${targetIds.length} case${targetIds.length === 1 ? '' : 's'}; it is running in the background.`;
+        setBulkOutcome({ kind: 'success', message: `${message} Track progress in Inbox.` });
+        toast.success(message, {
+          action: { label: 'Open Inbox', onClick: () => route.navigate('inbox') },
+        });
       } catch (nextError) {
-        const message = errorMessage(nextError, 'Bulk action failed');
+        const message = errorMessage(nextError, `Could not queue ${label.toLowerCase()}.`);
         setBulkOutcome({ kind: 'warning', message });
-        toast.error(message, { id: toastId });
+        toast.error(message);
       } finally {
         setBulkBusy(false);
-        setBulkProgress(null);
       }
     },
-    [bulkBusy, loadCases, reportBulkOutcome, selectedCaseId, selectedCases],
+    [bulkBusy, route],
   );
 
   const openBulkForm = React.useCallback(
@@ -748,73 +631,50 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
     setBulkFormValue('');
 
     if (action === 'assign') {
-      void runPerCaseBulk({
-        targets,
-        progressLabel: 'Assigning',
-        resultVerb: `assigned to ${value}`,
-        run: (item) => api.caseAssign(item.case_id, value),
-      });
+      void submitCaseJob('case_assign', { assignee: value }, targets, 'Assignment');
       return;
     }
     if (action === 'tag') {
-      void runPerCaseBulk({
-        targets,
-        progressLabel: 'Adding tag',
-        resultVerb: `tagged ${value}`,
-        run: (item) =>
-          api.caseTags(
-            item.case_id,
-            Array.from(new Set([...(Array.isArray(item.tags) ? item.tags : []), value])),
-          ),
-      });
+      void submitCaseJob('case_tag', { tag: value }, targets, 'Tag update');
       return;
     }
     if (action === 'status') {
-      const label = BULK_STATUSES.find((option) => option.value === value)?.label ?? value;
-      void runLifecycleBulk(
+      void submitCaseJob(
+        'case_lifecycle',
         { action: 'set_status', status: value },
-        'Setting status',
-        `set to ${label}`,
+        targets,
+        'Status update',
       );
       return;
     }
-    const label =
-      BULK_DISPOSITIONS.find((option) => option.value === value)?.label ?? value;
-    void runLifecycleBulk(
+    void submitCaseJob(
+      'case_lifecycle',
       { action: 'set_disposition', disposition: value },
-      'Setting disposition',
-      `classified as ${label}`,
+      targets,
+      'Disposition update',
     );
-  }, [bulkBusy, bulkFormAction, bulkFormValue, runLifecycleBulk, runPerCaseBulk, selectedCases]);
+  }, [bulkBusy, bulkFormAction, bulkFormValue, selectedCases, submitCaseJob]);
 
   const runConfirmedBulkAction = React.useCallback(() => {
     const action = pendingBulkAction;
     setPendingBulkAction(null);
     if (action === 'acknowledge') {
-      void runLifecycleBulk(
-        { action: 'acknowledge' },
-        'Acknowledging',
-        'acknowledged',
-      );
+      void submitCaseJob('case_lifecycle', { action: 'acknowledge' }, selectedCases, 'Acknowledgement');
       return;
     }
     if (action === 'resolve') {
-      void runLifecycleBulk(
+      void submitCaseJob(
+        'case_lifecycle',
         { action: 'resolve', reason: 'Bulk-resolved by analyst' },
-        'Resolving',
-        'resolved',
+        selectedCases,
+        'Resolution',
       );
       return;
     }
     if (action === 'reinvestigate') {
-      void runPerCaseBulk({
-        targets: selectedCases,
-        progressLabel: 'Reinvestigating',
-        resultVerb: 'reinvestigated',
-        run: (item) => api.reinvestigateCase(item.case_id),
-      });
+      void submitCaseJob('case_reinvestigate', {}, selectedCases, 'Reinvestigation');
     }
-  }, [pendingBulkAction, runLifecycleBulk, runPerCaseBulk, selectedCases]);
+  }, [pendingBulkAction, selectedCases, submitCaseJob]);
 
   const clearFilters = React.useCallback(() => {
     setSearch('');
@@ -868,19 +728,19 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
         acknowledge: {
           title: `Acknowledge ${selectedCases.length} case${selectedCases.length === 1 ? '' : 's'}?`,
           description:
-            'Move each eligible case to INVESTIGATING. The server validates every transition; cases that fail remain selected for retry.',
+            'Move each eligible case to INVESTIGATING. This submits one durable background job; progress and per-case failures remain visible in Inbox.',
           label: 'Acknowledge cases',
         },
         resolve: {
           title: `Resolve ${selectedCases.length} case${selectedCases.length === 1 ? '' : 's'}?`,
           description:
-            'Mark each eligible case resolved through the canonical analyst lifecycle action. Cases that fail remain selected for retry.',
+            'Mark each eligible case resolved through the canonical analyst lifecycle action. Progress and per-case failures remain visible in Inbox.',
           label: 'Resolve cases',
         },
         reinvestigate: {
           title: `Reinvestigate ${selectedCases.length} case${selectedCases.length === 1 ? '' : 's'}?`,
           description:
-            'Each case re-runs the full AI investigation pipeline and may change its verdict, confidence, and status. This spends LLM tokens per case.',
+            'Each case re-runs the full AI investigation pipeline and may change its verdict, confidence, and status. This spends LLM tokens per case and continues in the background; progress and failures remain in Inbox.',
           label: 'Reinvestigate',
         },
       }[pendingBulkAction]
@@ -1053,11 +913,9 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                             <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5 shrink-0" aria-hidden />
                           )}
                           <span className="truncate">
-                            {bulkProgress
-                              ? `${bulkProgress.label} ${bulkProgress.done}/${bulkProgress.total}`
-                              : 'Bulk actions'}
+                            {bulkBusy ? 'Submitting…' : 'Bulk actions'}
                           </span>
-                          {!bulkProgress ? (
+                          {!bulkBusy ? (
                             <ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0" aria-hidden />
                           ) : null}
                         </Button>
@@ -1068,7 +926,7 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                             {selectedCaseIds.size} selected
                           </span>
                           <span className="block text-2xs font-normal leading-4">
-                            Successful cases clear; failures stay selected.
+                            Submitted work continues in the background and stays visible in Inbox.
                           </span>
                         </DropdownMenuLabel>
                         <DropdownMenuSeparator />
@@ -1250,7 +1108,7 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                 </div>
                 <div className="min-h-0 flex-1">
                   <CaseDetail
-                    key={`${selectedCaseId}:${detailRevision}`}
+                    key={selectedCaseId}
                     caseId={selectedCaseId}
                     presentation="embedded"
                     onClose={closeDetail}
@@ -1324,7 +1182,7 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                 />
               )}
               <p className="text-2xs leading-4 text-muted-foreground">
-                Successful cases leave the selection; failed cases stay selected for retry.
+                The selected case IDs are snapshotted when submitted; later selection changes do not alter the job.
               </p>
             </div>
             <DialogFooter>

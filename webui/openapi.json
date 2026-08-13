@@ -2692,6 +2692,292 @@
         "title": "InvestigateRequest",
         "type": "object"
       },
+      "JobFailure": {
+        "properties": {
+          "item_ref": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Item Ref",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "JobFailure",
+        "type": "object"
+      },
+      "JobKind": {
+        "description": "Registered server-owned long-operation kinds.",
+        "enum": [
+          "case_reinvestigate",
+          "case_lifecycle",
+          "case_assign",
+          "case_tag",
+          "data_export_archive",
+          "data_export_segment",
+          "precedent_bootstrap",
+          "runbook_reindex",
+          "rag_import",
+          "tiered_reset",
+          "storage_lifecycle_apply"
+        ],
+        "title": "JobKind",
+        "type": "string"
+      },
+      "JobListResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/JobPublic"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "related": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RelatedJobsPublic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "system_workers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SchedulerHealthPublic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "jobs",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "JobListResponse",
+        "type": "object"
+      },
+      "JobProgress": {
+        "description": "Bounded progress projection shared by Jobs, Inbox, SSE, and the Console.",
+        "properties": {
+          "done": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "unit": {
+            "default": "items",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "title": "JobProgress",
+        "type": "object"
+      },
+      "JobPublic": {
+        "description": "Secret-free/self-scoped wire projection returned by the Jobs API and SSE.",
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "cancel_requested": {
+            "default": false,
+            "title": "Cancel Requested",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "failure_count": {
+            "default": 0,
+            "title": "Failure Count",
+            "type": "integer"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/JobFailure"
+            },
+            "title": "Failures",
+            "type": "array"
+          },
+          "failures_truncated": {
+            "default": 0,
+            "title": "Failures Truncated",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/JobKind"
+          },
+          "params": {
+            "title": "Params",
+            "type": "object"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/JobProgress"
+          },
+          "request_fingerprint": {
+            "title": "Request Fingerprint",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "actor",
+          "created_at",
+          "status",
+          "progress",
+          "request_fingerprint"
+        ],
+        "title": "JobPublic",
+        "type": "object"
+      },
+      "JobResult": {
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "kind": {
+            "default": "summary",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "title": "JobResult",
+        "type": "object"
+      },
+      "JobStatus": {
+        "description": "Durable lifecycle of a server-owned operator job.",
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "partial",
+          "failed",
+          "cancelled"
+        ],
+        "title": "JobStatus",
+        "type": "string"
+      },
+      "JobSubmit": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 8,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/JobKind"
+          },
+          "params": {
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "idempotency_key",
+          "params"
+        ],
+        "title": "JobSubmit",
+        "type": "object"
+      },
       "LivenessResponse": {
         "properties": {
           "service": {
@@ -3561,6 +3847,104 @@
         "title": "ReinvestigateRequest",
         "type": "object"
       },
+      "RelatedBatchJobPublic": {
+        "description": "Bounded, provider-secret-free LLM Batch summary on the unified Jobs view.",
+        "properties": {
+          "discount": {
+            "title": "Discount",
+            "type": "number"
+          },
+          "id": {
+            "maxLength": 2000,
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "maxLength": 2000,
+            "title": "Model",
+            "type": "string"
+          },
+          "polled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Polled At"
+          },
+          "provider": {
+            "maxLength": 2000,
+            "title": "Provider",
+            "type": "string"
+          },
+          "requests": {
+            "minimum": 0.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "retrieved": {
+            "minimum": 0.0,
+            "title": "Retrieved",
+            "type": "integer"
+          },
+          "state": {
+            "maxLength": 80,
+            "title": "State",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "state",
+          "model",
+          "discount",
+          "requests",
+          "retrieved"
+        ],
+        "title": "RelatedBatchJobPublic",
+        "type": "object"
+      },
+      "RelatedJobsPublic": {
+        "properties": {
+          "llm_batches": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedBatchJobPublic"
+            },
+            "title": "Llm Batches",
+            "type": "array"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total"
+        ],
+        "title": "RelatedJobsPublic",
+        "type": "object"
+      },
       "ReleaseCacheStatus": {
         "properties": {
           "hit": {
@@ -4311,6 +4695,77 @@
           }
         },
         "title": "SavedViewPatchBody",
+        "type": "object"
+      },
+      "SchedulerHealthPublic": {
+        "properties": {
+          "scheduler_runtime_running": {
+            "title": "Scheduler Runtime Running",
+            "type": "boolean"
+          },
+          "workers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SchedulerWorkerPublic"
+            },
+            "title": "Workers",
+            "type": "object"
+          }
+        },
+        "required": [
+          "scheduler_runtime_running"
+        ],
+        "title": "SchedulerHealthPublic",
+        "type": "object"
+      },
+      "SchedulerWorkerPublic": {
+        "properties": {
+          "cadence": {
+            "maxLength": 80,
+            "title": "Cadence",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "gated": {
+            "title": "Gated",
+            "type": "boolean"
+          },
+          "last_attempt_at": {
+            "default": "",
+            "title": "Last Attempt At",
+            "type": "string"
+          },
+          "last_error": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Last Error",
+            "type": "string"
+          },
+          "last_success_at": {
+            "default": "",
+            "title": "Last Success At",
+            "type": "string"
+          },
+          "processed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Processed",
+            "type": "integer"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "gated",
+          "running",
+          "cadence"
+        ],
+        "title": "SchedulerWorkerPublic",
         "type": "object"
       },
       "SearchResponse": {
@@ -6528,7 +6983,8 @@
     },
     "/api/admin/export/archive": {
       "post": {
-        "description": "Assemble selected full-history scopes into one atomic disk-backed ZIP.\n\nEvery NDJSON member is written one bounded segment page at a time. The terminal\nmanifest is added only after every selected repository emitted its starting count;\nno response begins before the ZIP is complete, freshly authorized, and audited.",
+        "deprecated": true,
+        "description": "Deprecated request-bound compatibility export.\n\nNew operator workflows submit ``data_export_archive`` through ``POST /api/jobs``\nso assembly survives navigation, reports durable progress, and produces a\npermission-rechecked artifact. This route remains for existing API integrations.\n\nEvery NDJSON member is written one bounded segment page at a time. The terminal\nmanifest is added only after every selected repository emitted its starting count;\nno response begins before the ZIP is complete, freshly authorized, and audited.",
         "operationId": "export_application_data_archive_api_admin_export_archive_post",
         "requestBody": {
           "content": {
@@ -6568,7 +7024,8 @@
     },
     "/api/admin/export/segment": {
       "post": {
-        "description": "Download one resumable segment of a scope's complete history.\n\nThe 5,000-record setting is deliberately a per-segment memory/response bound,\nnot a lifetime ceiling. The Console follows ``next_cursor`` until ``complete``;\neach accepted response remains below 25 MiB. Elasticsearch-backed ledgers/cases\nuse one PIT carried in the opaque cursor across requests, while other backends\ndisclose their weaker consistency mode rather than claiming an exact snapshot.",
+        "deprecated": true,
+        "description": "Deprecated request-bound compatibility segment.\n\nNew operator workflows submit ``data_export_segment`` through ``POST /api/jobs``;\nthat worker owns the complete cursor loop and returns one verified artifact. This\none-page primitive remains for existing integrations and explicit cursor recovery.\n\nThe 5,000-record setting is deliberately a per-segment memory/response bound,\nnot a lifetime ceiling. The Console follows ``next_cursor`` until ``complete``;\neach accepted response remains below 25 MiB. Elasticsearch-backed ledgers/cases\nuse one PIT carried in the opaque cursor across requests, while other backends\ndisclose their weaker consistency mode rather than claiming an exact snapshot.",
         "operationId": "export_application_data_segment_api_admin_export_segment_post",
         "requestBody": {
           "content": {
@@ -6648,7 +7105,7 @@
     },
     "/api/admin/reset": {
       "post": {
-        "description": "Perform a tiered StateStore reset. Returns ``{ok, scope, cleared}``.\n\n``scope`` ∈ {``cases``, ``sources``, ``factory``}; ``confirm`` must match the\nscope's phrase. Order of operations (fail-closed): validate scope → validate\nconfirm → AUDIT (#2) → clear in-memory per-source secrets (tiers 2/3 only) →\nreset the StateStore. Nothing is cleared until BOTH gates + BOTH validations pass.",
+        "deprecated": true,
         "operationId": "admin_reset_api_admin_reset_post",
         "requestBody": {
           "content": {
@@ -6661,7 +7118,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
                 "schema": {
@@ -6670,7 +7127,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Mutation retired; submit a tiered_reset durable Job."
           },
           "422": {
             "content": {
@@ -10696,6 +11153,231 @@
         "summary": "Investigate"
       }
     },
+    "/api/jobs": {
+      "get": {
+        "operationId": "list_jobs_api_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Jobs",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "post": {
+        "operationId": "submit_job_api_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobSubmit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "operationId": "get_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/artifact": {
+      "get": {
+        "operationId": "job_artifact_api_jobs__job_id__artifact_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Verified ZIP artifact"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Job Artifact",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_job_api_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/llm/models": {
       "get": {
         "operationId": "llm_models_api_llm_models_get",
@@ -12923,7 +13605,8 @@
     },
     "/api/rag/import": {
       "post": {
-        "description": "Import a free-text document into the RAG corpus. Chunked + embedded; takes\neffect immediately for retrieval. 400 on empty/oversized text.",
+        "deprecated": true,
+        "description": "Deprecated request-bound single-document import compatibility route.\n\nNew operator workflows submit bounded ``rag_import`` Jobs so indexing survives\nnavigation and has durable progress. The document is chunked and embedded and\ntakes effect immediately for retrieval. 400 on empty/oversized text.",
         "operationId": "rag_import_api_rag_import_post",
         "requestBody": {
           "content": {
@@ -12981,7 +13664,8 @@
         "summary": "Precedent Bootstrap Status"
       },
       "post": {
-        "description": "Bulk-ratify the agent's own auto-closed verdicts as LOWER-TRUST precedent.\n\nBounded (``limit`` <= 1000), idempotent (an already-ratified case is skipped) and\ntherefore resumable: call it repeatedly until ``remaining`` is 0. Requires\n``rag:manage`` AND ``cases:write``, and an exact acknowledgement string so the\ncaller cannot claim afterwards that they believed these were analyst labels.\nAudited per case plus once per batch (#2).",
+        "deprecated": true,
+        "description": "Deprecated request-bound bulk-ratification compatibility route.\n\nNew operator workflows submit ``precedent_bootstrap`` through ``POST /api/jobs``\nfor durable per-case progress and projection recovery.\n\nBounded, idempotent, resumable, and explicitly acknowledged. The route preserves\nthe historical synchronous API while sharing the exact domain operation with the\ndurable Jobs subsystem.",
         "operationId": "precedent_bootstrap_api_rag_precedent_bootstrap_post",
         "requestBody": {
           "content": {
@@ -13969,6 +14653,8 @@
     },
     "/api/runbooks/reindex": {
       "post": {
+        "deprecated": true,
+        "description": "Deprecated request-bound full reconciliation compatibility route.\n\nNew operator workflows submit ``runbook_reindex`` through ``POST /api/jobs`` so\nthe full reconciliation survives navigation and has a durable result.",
         "operationId": "reindex_runbooks_api_runbooks_reindex_post",
         "responses": {
           "200": {
@@ -15519,10 +16205,10 @@
     },
     "/api/storage/lifecycle/apply": {
       "post": {
-        "description": "Explicitly apply the persisted policy to supported owned-state targets.",
+        "deprecated": true,
         "operationId": "storage_lifecycle_apply_api_storage_lifecycle_apply_post",
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
                 "schema": {
@@ -15531,7 +16217,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Mutation retired; submit a storage_lifecycle_apply durable Job."
           }
         },
         "summary": "Storage Lifecycle Apply",

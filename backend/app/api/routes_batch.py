@@ -63,6 +63,8 @@ def _job_json(job: BatchJob) -> dict[str, Any]:
     case-scoped custom_id text is leaked into the body."""
     tracked = {k: v for k, v in (job.custom_ids or {}).items() if k != "__meta__"}
     retrieved = sum(1 for v in tracked.values() if isinstance(v, dict) and v.get("retrieved"))
+    total_count = max(int(job.summary_total or 0), len(tracked))
+    retrieved_count = max(int(job.summary_retrieved or 0), retrieved)
     return {
         "id": _safe(job.id),
         "provider": _safe(job.provider),
@@ -70,8 +72,8 @@ def _job_json(job: BatchJob) -> dict[str, Any]:
         "state": _safe(getattr(job.state, "value", job.state)),
         "model": _safe(job.model),
         "discount": float(job.discount),
-        "requests": len(tracked),
-        "retrieved": retrieved,
+        "requests": total_count,
+        "retrieved": min(retrieved_count, total_count),
         "submitted_at": _safe(job.submitted_at) if job.submitted_at else None,
         "polled_at": _safe(job.polled_at) if job.polled_at else None,
         "last_error": _safe(job.last_error) if job.last_error else None,

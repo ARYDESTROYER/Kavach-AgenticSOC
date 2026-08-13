@@ -229,6 +229,35 @@ describe('HealthDiagnostics surface', () => {
     expect(screen.getByText(/1 problem detected\./)).toBeInTheDocument();
   });
 
+  it('requests the selected Analytics window and renders the API response echo', async () => {
+    const selected = autoClose({
+      window_hours: 168,
+      status: 'ok',
+      reason: '',
+      collapsed: false,
+      needs_attention: false,
+      current: window_({
+        decided: 1696,
+        auto_closed: 1355,
+        routed_to_human: 341,
+        rate: 0.8,
+      }),
+    });
+    diagnosticsMock.mockResolvedValue(
+      health({ window_hours: 168, auto_close: selected }),
+    );
+    autoCloseMock.mockResolvedValue(selected);
+
+    render(<HealthDiagnostics windowHours={168} />);
+
+    expect(await screen.findByText('80%')).toBeInTheDocument();
+    expect(
+      screen.getByText(/1,355 of 1,696 decided cases auto-closed in the last 168h\./),
+    ).toBeInTheDocument();
+    expect(diagnosticsMock).toHaveBeenCalledWith(168, expect.any(AbortSignal));
+    expect(autoCloseMock).toHaveBeenCalledWith(168, expect.any(AbortSignal));
+  });
+
   it('renders unknowns as "not yet measured" and never as a clean bill of health', async () => {
     const quiet = autoClose({
       status: 'no_volume',
@@ -313,6 +342,63 @@ describe('HealthDiagnostics surface', () => {
     expect(screen.getByText('Starved')).toBeInTheDocument();
     expect(screen.getByText('Strict audit writes broken')).toBeInTheDocument();
     expect(screen.getByText('ALTER TABLE audit ALTER COLUMN id TYPE bigint;')).toBeInTheDocument();
+  });
+
+  it('uses the shared direct-field reducer when a trimmed payload omits alert rows', async () => {
+    const base = health();
+    diagnosticsMock.mockResolvedValue(
+      health({
+        precedent_corpus: {
+          ...base.precedent_corpus,
+          // Trimmed/older payload: the explicit zero flag is present, while the
+          // pre-reduced status + alerts list were omitted/stale. Overview exercises
+          // this exact direct-field-only shape in HealthDegradationIndicator.test.
+          status: 'ok',
+          status_reason: '',
+          analyst_confirmed_precedent_documents: 0,
+          zero_analyst_confirmed_precedents: true,
+          starved: false,
+        },
+        alerts: [],
+        alert_count: 0,
+      }),
+    );
+    autoCloseMock.mockResolvedValue(autoClose({ status: 'ok', needs_attention: false }));
+
+    render(<HealthDiagnostics />);
+
+    const panel = await screen.findByTestId('health-diagnostics');
+    expect(panel).toHaveAttribute('data-health-state', 'degraded');
+    expect(screen.getByText(/1 problem detected/)).toBeInTheDocument();
+    expect(screen.getByText('No analyst-confirmed precedents')).toBeInTheDocument();
+    expect(screen.getByText('Detected problems (1)')).toBeInTheDocument();
+  });
+
+  it('does not call a deliberately disabled zero-count corpus degraded', async () => {
+    const base = health();
+    diagnosticsMock.mockResolvedValue(
+      health({
+        precedent_corpus: {
+          ...base.precedent_corpus,
+          status: 'disabled',
+          status_reason: 'the precedent source is turned off',
+          precedent_source_enabled: false,
+          analyst_confirmed_precedent_documents: 0,
+          zero_analyst_confirmed_precedents: true,
+          starved: false,
+        },
+        alerts: [],
+        alert_count: 0,
+      }),
+    );
+    autoCloseMock.mockResolvedValue(autoClose({ status: 'ok', needs_attention: false }));
+
+    render(<HealthDiagnostics />);
+
+    const panel = await screen.findByTestId('health-diagnostics');
+    expect(panel).toHaveAttribute('data-health-state', 'healthy');
+    expect(screen.getByText(/no problems detected/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Detected problems/)).toBeNull();
   });
 
   it('gates each signal on its own grant and self-hides when neither is held', async () => {

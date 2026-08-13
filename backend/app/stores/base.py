@@ -506,6 +506,16 @@ class KVStore(ABC):
         await self.put(namespace, key, value)
         return True
 
+    async def factory_purge_strict(self) -> int:
+        """Purge tenant KV state while retaining the factory-control anchors.
+
+        Bundled backends implement this as a fail-closed privacy boundary.  The
+        exact Jobs and Batch registry documents plus system-update operation rows
+        survive byte-for-byte; every other row must be absent on return.  Missing
+        protected registries and unsupported compatibility stores raise.
+        """
+        raise NotImplementedError("KV backend does not implement strict factory purge")
+
     # -- optimistic-concurrency read-modify-write -------------------------- #
     # The shared single-document KV stores route their load→mutate→save through
     # :func:`kv_mutate` (above), which serialises same-process writers on a

@@ -20,14 +20,19 @@ glitch can never drop an alert or break chat.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import Any
 
 from ..constants import (
+    BATCH_JOBS_KEY,
+    BATCH_JOBS_NS,
     CHAT_CONVERSATIONS_DOC_ID,
     CHAT_CONVERSATIONS_KEY,
     CHAT_CONVERSATIONS_NS,
     CONFIG_INDEX,
+    JOBS_KEY,
+    JOBS_NS,
     MEMORY_DOC_ID,
     MEMORY_KEY,
     MEMORY_NS,
@@ -49,6 +54,7 @@ from ..models import MemoryEntry
 from ..utils import iso_now
 from .base import KVStore
 from .base import kv_mutate_strict
+from .update_operations import UPDATE_OPERATIONS_NS
 
 logger = logging.getLogger("tlsoc.stores.memory")
 
@@ -138,6 +144,102 @@ class EsKVStore(KVStore):
     ) -> bool:
         """Native Elasticsearch CAS; backend errors propagate to strict callers."""
         return await self.put_if(namespace, key, value, expected_rev)
+
+    async def _config_snapshot_strict(self) -> dict[str, dict[str, Any]]:
+        """Read the complete config index through a stable management PIT."""
+        pit_id = str(await self._es.open_state_pit(CONFIG_INDEX, "10m") or "")
+        if not pit_id:
+            raise RuntimeError(
+                "strict factory purge requires a point-in-time config scan"
+            )
+        rows: dict[str, dict[str, Any]] = {}
+        after: list[Any] | None = None
+        try:
+            while True:
+                body: dict[str, Any] = {
+                    "size": 500,
+                    "track_total_hits": True,
+                    "query": {"match_all": {}},
+                    "sort": ["_shard_doc"],
+                    "pit": {"id": pit_id, "keep_alive": "10m"},
+                }
+                if after is not None:
+                    body["search_after"] = after
+                response = await self._es.search(CONFIG_INDEX, body)
+                pit_id = str(response.get("pit_id") or pit_id)
+                hits = response.get("hits", {}).get("hits", [])
+                if not isinstance(hits, list):
+                    raise RuntimeError("config PIT search returned malformed hits")
+                if not hits:
+                    return rows
+                for hit in hits:
+                    if not isinstance(hit, dict) or not hit.get("_id"):
+                        raise RuntimeError(
+                            "config PIT search returned a hit without an id"
+                        )
+                    doc_id = str(hit["_id"])
+                    source = hit.get("_source")
+                    if not isinstance(source, dict):
+                        raise RuntimeError(
+                            f"config document {doc_id!r} is not a JSON object"
+                        )
+                    if doc_id in rows:
+                        raise RuntimeError(
+                            f"config PIT search repeated document {doc_id!r}"
+                        )
+                    rows[doc_id] = copy.deepcopy(source)
+                marker = hits[-1].get("sort")
+                if (
+                    not isinstance(marker, list)
+                    or len(marker) != 1
+                    or marker == after
+                ):
+                    raise RuntimeError("config PIT search returned no stable cursor")
+                after = list(marker)
+        finally:
+            await self._es.close_state_pit(pit_id)
+
+    async def factory_purge_strict(self) -> int:
+        """Delete all tenant config/KV docs except the three protected classes.
+
+        The exact factory-fenced Jobs and Batch documents are mandatory.  A stable
+        PIT avoids Elasticsearch's result-window limit; per-document strict deletes
+        keep both control anchors continuously present if a later deletion fails.
+        """
+        jobs_id = self._doc_id(JOBS_NS, JOBS_KEY)
+        batch_id = self._doc_id(BATCH_JOBS_NS, BATCH_JOBS_KEY)
+        update_prefix = f"{UPDATE_OPERATIONS_NS}:"
+        before = await self._config_snapshot_strict()
+        if jobs_id not in before or batch_id not in before:
+            raise RuntimeError(
+                "factory purge requires durable Jobs and Batch fence documents"
+            )
+        protected = {
+            doc_id: copy.deepcopy(source)
+            for doc_id, source in before.items()
+            if doc_id in {jobs_id, batch_id} or doc_id.startswith(update_prefix)
+        }
+        deleted = 0
+        pending = [doc_id for doc_id in before if doc_id not in protected]
+        for doc_id in pending:
+            if await self._es.delete_doc_strict(
+                CONFIG_INDEX, doc_id, refresh=True
+            ):
+                deleted += 1
+
+        after = await self._config_snapshot_strict()
+        if after != protected:
+            retained = len(set(after) - set(protected))
+            missing = len(set(protected) - set(after))
+            changed = sum(
+                after[doc_id] != protected[doc_id]
+                for doc_id in set(after).intersection(protected)
+            )
+            raise RuntimeError(
+                "factory KV purge verification failed "
+                f"(retained={retained}, missing={missing}, changed={changed})"
+            )
+        return deleted
 
 
 class MemoryStore:

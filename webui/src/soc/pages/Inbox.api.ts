@@ -21,6 +21,11 @@
  * (#10). The inbox is advisory (#3 — it never feeds `decide()`).
  */
 import { api } from '@/lib/api';
+import type {
+  BackgroundJobProgress,
+  BackgroundJobResult,
+  BackgroundJobStatus,
+} from '@/lib/types';
 
 /* ---------------------------------------------------------------- types ----- */
 
@@ -48,6 +53,10 @@ export interface InboxItem {
   created_at?: string;
   read_at?: string | null;
   ref?: Record<string, unknown>;
+  job_id?: string | null;
+  job_status?: BackgroundJobStatus | null;
+  progress?: BackgroundJobProgress | null;
+  result?: BackgroundJobResult | null;
 }
 
 /** Page of inbox items (newest first) + the total matching the active filter. */

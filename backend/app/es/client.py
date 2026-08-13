@@ -246,6 +246,17 @@ class RealESClient(BaseESClient):
                 return
             logger.warning("delete_index(%s) failed: %s", name, exc)
 
+    async def delete_index_strict(self, name: str) -> bool:
+        """Drop an owned-state index/pattern; mask only a confirmed 404."""
+        client = self._require_mgmt()
+        try:
+            await client.indices.delete(index=name)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc):
+                return False
+            raise
+
     async def delete_doc(self, index: str, doc_id: str, refresh: bool = False) -> bool:
         """Delete a single management document by id (used by RAG document
         management to remove an imported document's chunks). Missing doc/index is
@@ -259,6 +270,19 @@ class RealESClient(BaseESClient):
                 return False
             logger.warning("delete_doc(%s/%s) failed: %s", index, doc_id, exc)
             return False
+
+    async def delete_doc_strict(
+        self, index: str, doc_id: str, refresh: bool = False
+    ) -> bool:
+        """Delete an owned-state document; mask only a confirmed 404."""
+        client = self._require_mgmt()
+        try:
+            await client.delete(index=index, id=doc_id, refresh=refresh)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc):
+                return False
+            raise
 
     async def get_doc(self, index: str, doc_id: str) -> dict[str, Any] | None:
         client = self._require_mgmt()

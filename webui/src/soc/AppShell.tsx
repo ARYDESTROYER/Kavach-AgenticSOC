@@ -105,6 +105,7 @@ import { useUpstreamReleaseUpdates } from './hooks/useUpstreamReleaseUpdates';
 import { useHasUnsavedChanges } from './hooks/useDirtyDraft';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion';
+import { JobMonitor } from './jobs/JobMonitor';
 import { navItem, navLabel, navParentOf, type PageId } from './nav';
 import type { Navigate } from './router';
 // TYPE-ONLY import (elided at build → zero runtime import): motion.dev must NEVER ride
@@ -1081,8 +1082,9 @@ export const AppShell: React.FC<AppShellProps> = ({
     // shares announce() so deep components (DataTable sort/bulk outcomes, etc.) can
     // speak status to assistive tech without a visible UI change.
     <AnnouncerProvider>
-    <div className="flex min-h-dvh overflow-x-hidden bg-canvas text-foreground">
-      {/* Skip-to-main link (#1 — WCAG 2.4.1). Visually hidden until it receives
+      <JobMonitor actor={username} onNavigate={onNavigate} />
+      <div className="flex min-h-dvh overflow-x-hidden bg-canvas text-foreground">
+        {/* Skip-to-main link (#1 — WCAG 2.4.1). Visually hidden until it receives
           keyboard focus, then it pins to the top-left so a keyboard/SR user can jump
           straight past the nav to the routed content (#socMain). */}
       <a
@@ -1598,7 +1600,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         onOpenChange={handlePaletteOpenChange}
         onNavigate={onNavigate}
       />
-    </div>
+      </div>
     </AnnouncerProvider>
   );
 };

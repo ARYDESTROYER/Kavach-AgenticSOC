@@ -21,7 +21,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from ..config import StorageLifecycleConfig
 from ..constants import ActionType
 from ..engine.storage_lifecycle import (
-    apply_elasticsearch_lifecycle,
     lifecycle_preview,
     lifecycle_status,
 )
@@ -114,75 +113,29 @@ async def storage_lifecycle_preview(
     )
 
 
-@router.post("/storage/lifecycle/apply")
+@router.post(
+    "/storage/lifecycle/apply",
+    deprecated=True,
+    status_code=410,
+    responses={
+        410: {
+            "description": (
+                "Mutation retired; submit a storage_lifecycle_apply durable Job."
+            ),
+        }
+    },
+)
 async def storage_lifecycle_apply(
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("settings", "manage")),
     _fresh=Depends(require_fresh_auth()),
 ) -> dict[str, Any]:
-    """Explicitly apply the persisted policy to supported owned-state targets."""
-    if state.prefs.read_only_settings_mode:
-        raise HTTPException(status_code=403, detail="settings are read-only")
-
-    actor = current_username(request) or "admin"
-    # Record intent before the provider mutation. If append-only audit is unavailable,
-    # fail closed rather than perform an untracked control-plane change.
-    try:
-        await state.control_audit.record(
-            action_type=ActionType.STATUS,
-            surface="storage",
-            actor=actor,
-            result_summary="requested own-state lifecycle apply",
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=500,
-            detail="could not record the lifecycle apply audit; apply aborted",
-        ) from exc
-
-    if _backend(state) != "elasticsearch":
-        status = await _status(state)
-        execution = {
-            "applied": False,
-            "state": "advisory",
-            "managed_targets": [],
-            "reason": (
-                "Native lifecycle apply is currently available only for the "
-                "Elasticsearch own-state backend."
-            ),
-        }
-    else:
-        try:
-            execution = await apply_elasticsearch_lifecycle(
-                state.es, state.prefs.storage_lifecycle
-            )
-        except Exception as exc:  # noqa: BLE001
-            try:
-                await state.control_audit.record(
-                    action_type=ActionType.ERROR,
-                    surface="storage",
-                    actor=actor,
-                    result_summary=f"own-state lifecycle apply failed: {type(exc).__name__}",
-                )
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(
-                status_code=502,
-                detail="storage provider rejected the lifecycle apply",
-            ) from exc
-        status = await _status(state)
-
-    try:
-        await state.control_audit.record(
-            action_type=ActionType.STATUS,
-            surface="storage",
-            actor=actor,
-            result_summary=(
-                f"own-state lifecycle apply state={execution.get('state')} "
-                f"targets={','.join(execution.get('managed_targets') or []) or 'none'}"
-            )[:500],
-        )
-    except Exception:  # noqa: BLE001 — intent is already durable; report remains truthful
-        logger.warning("Could not record storage lifecycle apply result", exc_info=True)
-    return {"execution": execution, "status": status}
+    del request, state, _, _fresh
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "durable_job_required",
+            "message": "submit storage_lifecycle_apply through POST /api/jobs",
+        },
+    )

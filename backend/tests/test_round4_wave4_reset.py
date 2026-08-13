@@ -130,12 +130,43 @@ async def _seed_everything(state: AppState) -> None:
     )
 
 
+async def _seed_factory_control_anchors(state: AppState) -> None:
+    """Direct engine tests model the durable Jobs-owned factory boundary.
+
+    Production reaches ``reset_service(factory)`` only after the runner installs
+    both strict control documents. The wholesale privacy purge correctly refuses to
+    run without them, so legacy engine-level tests seed canonical empty anchors.
+    """
+
+    await state.kv.put(
+        "jobs",
+        "jobs",
+        {"jobs": {}, "idempotency": {}, "factory_fence": ""},
+    )
+
+
+async def _reset_direct(state: AppState, scope: ResetScope):
+    if scope == ResetScope.FACTORY:
+        await _seed_factory_control_anchors(state)
+    return await reset_service(state, scope)
+    await state.kv.put(
+        "batch_jobs",
+        "jobs",
+        {"jobs": {}, "factory_fence": "", "reset_epoch": 0},
+    )
+
+
 async def _kv_nonempty(kv, ns: str, key: str) -> bool:
     doc = await kv.get(ns, key)
     if not doc:
         return False
-    # ``_rev`` is bookkeeping; a cleared doc is {} + a rev bump → treat rev-only as empty.
-    return any(k != "_rev" for k in doc)
+    # Revision and Batch reset-fence metadata are bookkeeping. A cleared Batch
+    # registry intentionally retains its epoch so stale cross-process mutators fail.
+    ignored = {"_rev", "factory_fence", "reset_epoch"}
+    return any(
+        key not in ignored and not (key == "jobs" and value == {})
+        for key, value in doc.items()
+    )
 
 
 async def _case_count(state: AppState) -> int:
@@ -160,11 +191,19 @@ async def test_cases_tier_clears_only_cases_scope():
         # Cleared: cases + case-adjacent KV + live-tail rings.
         assert await _case_count(state) == 0
         for ns, key in (
-            ("campaigns", "campaigns"), ("baseline", "baseline"), ("inbox", "items"),
+            ("campaigns", "campaigns"), ("baseline", "baseline"),
             ("case_thread", "threads"), ("case_activity", "activity"),
-            ("case_tasks", "tasks"), ("batch_jobs", "jobs"),
+            ("case_tasks", "tasks"),
         ):
             assert not await _kv_nonempty(state._kv, ns, key), f"{ns} should be cleared"
+        batch_doc = await state._kv.get("batch_jobs", "jobs")
+        assert (batch_doc or {}).get("jobs") == {}
+        assert int((batch_doc or {}).get("reset_epoch", 0)) >= 1
+        assert not (batch_doc or {}).get("factory_fence")
+        # The cases tier preserves durable operator-Job Inbox projections. This seed
+        # contains no valid Job notification, so the canonical bucket map is empty.
+        inbox_doc = await state._kv.get("inbox", "items")
+        assert (inbox_doc or {}).get("items", {}) == {}
         assert state._real_ingest_service._recent == {}
 
         # KEPT: sources, settings, users, cursors, memory, proposals, audit.
@@ -242,6 +281,7 @@ async def test_factory_tier_clears_everything_and_flips_setup_complete():
     state = await _build_state()
     try:
         await _seed_everything(state)
+        await _seed_factory_control_anchors(state)
         # Give branding a non-default value to prove factory drops it.
         prefs = state.prefs.model_copy(deep=True)
         prefs.branding.org_name = "AcmeCorp"
@@ -269,6 +309,30 @@ async def test_factory_tier_clears_everything_and_flips_setup_complete():
         await state.shutdown()
 
 
+@asyncio
+async def test_factory_privacy_clear_failure_does_not_open_oobe_or_erase_audit(monkeypatch):
+    state = await _build_state()
+    try:
+        await _seed_everything(state)
+        await _seed_factory_control_anchors(state)
+
+        async def fail_factory_purge():
+            raise RuntimeError("injected identity-store outage")
+
+        monkeypatch.setattr(state.kv, "factory_purge_strict", fail_factory_purge)
+        result = await reset_service(state, ResetScope.FACTORY)
+
+        assert result["privacy_boundary_confirmed"] is False
+        assert "kv:tenant" in result["failed"]
+        assert "audit" not in result["attempted"]
+        assert "preferences" not in result["attempted"]
+        assert state.prefs.setup_complete is True
+        rows = await state._real_audit.records(limit=50)
+        assert any(row.get("surface") == "test" for row in rows)
+    finally:
+        await state.shutdown()
+
+
 # --------------------------------------------------------------------------- #
 # ⛔ Airtight rail: env secrets are byte-identical before/after EVERY tier.
 # --------------------------------------------------------------------------- #
@@ -278,6 +342,8 @@ async def test_env_secrets_byte_identical_across_every_tier(scope):
     state = await _build_state()
     try:
         await _seed_everything(state)
+        if scope == ResetScope.FACTORY:
+            await _seed_factory_control_anchors(state)
         before = _snapshot_env_secrets(state)
         # The full Secrets object dump too (belt-and-braces: no field mutates except the
         # in-memory per-source connector bucket the ROUTE clears — the ENGINE never
@@ -320,48 +386,40 @@ def _client(state: AppState):
 
 
 @asyncio
-async def test_route_audits_reset_before_acting_and_reports_cleared():
+async def test_legacy_reset_route_requires_a_durable_job_and_does_not_mutate():
     state = await _build_state()
     try:
         await _seed_everything(state)
+        await _seed_factory_control_anchors(state)
         with _client(state) as c:
             resp = c.post("/api/admin/reset", json={"scope": "cases", "confirm": "RESET CASES"})
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["ok"] is True and body["scope"] == "cases"
-        assert "cases:2" in body["cleared"]
-
-        # The RESET audit row exists (written before the destructive step; the cases
-        # tier keeps the audit index so we can read it back).
+        assert resp.status_code == 410, resp.text
+        assert resp.json()["detail"]["code"] == "durable_job_required"
+        assert await _case_count(state) == 2
         rows = await state._real_audit.records(action_type=ActionType.RESET.value, limit=50)
-        assert rows, "an ActionType.RESET audit row must be recorded"
-        assert any("scope=cases" in (r.get("result_summary") or "") for r in rows)
+        assert not rows, "the disabled legacy route must not record a fake reset action"
     finally:
         await state.shutdown()
 
 
 @asyncio
-async def test_route_clears_connector_secrets_only_at_sources_and_factory():
+async def test_legacy_reset_route_cannot_clear_connector_secrets():
     state = await _build_state()
     try:
         await _seed_everything(state)
+        await _seed_factory_control_anchors(state)
         assert state.secrets.source_secrets("src-1") == {"token": "SECRET-TOKEN"}
         env_before = _snapshot_env_secrets(state)
 
         with _client(state) as c:
-            # cases tier: per-source secret PRESERVED.
             r1 = c.post("/api/admin/reset", json={"scope": "cases", "confirm": "RESET CASES"})
-            assert r1.status_code == 200, r1.text
+            assert r1.status_code == 410, r1.text
         assert state.secrets.source_secrets("src-1") == {"token": "SECRET-TOKEN"}
 
-        # Re-seed the source secret + sources for the sources-tier run.
-        state.secrets.set_source_secret("src-1", "token", "SECRET-TOKEN")
         with _client(state) as c:
             r2 = c.post("/api/admin/reset", json={"scope": "sources", "confirm": "RESET SOURCES"})
-            assert r2.status_code == 200, r2.text
-            assert "connector_secrets" in r2.json()["cleared"]
-        # per-source connector secret cleared, env scalars UNCHANGED.
-        assert state.secrets.source_secrets("src-1") == {}
+            assert r2.status_code == 410, r2.text
+        assert state.secrets.source_secrets("src-1") == {"token": "SECRET-TOKEN"}
         assert _snapshot_env_secrets(state) == env_before
     finally:
         await state.shutdown()
@@ -381,14 +439,14 @@ async def test_route_clears_connector_secrets_only_at_sources_and_factory():
         ("bogus", "FACTORY RESET"),      # invalid scope
     ],
 )
-async def test_wrong_confirm_or_scope_is_400_and_nothing_cleared(scope, confirm):
+async def test_legacy_reset_route_is_gone_regardless_of_body(scope, confirm):
     state = await _build_state()
     try:
         await _seed_everything(state)
         before = await _case_count(state)
         with _client(state) as c:
             resp = c.post("/api/admin/reset", json={"scope": scope, "confirm": confirm})
-        assert resp.status_code == 400, resp.text
+        assert resp.status_code == 410, resp.text
         # Nothing was cleared — cases survive.
         assert await _case_count(state) == before
         # No RESET audit row was written (validation failed before the audit step).
@@ -408,6 +466,7 @@ async def test_reset_never_touches_the_readonly_log_surface():
         # Seed a log doc into the read-only surface (what upstream would have written).
         state.es.add_log("all-logs-2026.07.01", {"message": "an upstream log"}, doc_id="log-1")
         await _seed_everything(state)
+        await _seed_factory_control_anchors(state)
 
         await reset_service(state, ResetScope.FACTORY)
 
@@ -448,6 +507,7 @@ async def test_sql_backend_factory_reset_truncates_tables_and_preserves_env_secr
     state = await _build_sql_state(tmp_path)
     try:
         await _seed_everything(state)
+        await _seed_factory_control_anchors(state)
         before = _snapshot_env_secrets(state)
         assert await _case_count(state) == 2
 

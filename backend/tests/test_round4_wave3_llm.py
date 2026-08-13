@@ -579,7 +579,10 @@ async def test_process_results_writes_one_usagedoc_each_at_batch_rate():
     # Both custom_ids flagged retrieved; job flips to RETRIEVED.
     reloaded = await store.get("batch-x")
     assert reloaded.state == BatchJobState.RETRIEVED
-    assert all(reloaded.custom_ids[c]["retrieved"] for c in ("cid-A", "cid-B"))
+    assert reloaded.terminal_compacted is True
+    assert reloaded.custom_ids == {}
+    assert reloaded.summary_total == 2
+    assert reloaded.summary_retrieved == 2
 
 
 async def test_process_results_idempotent_no_double_write():
@@ -624,7 +627,10 @@ async def test_concurrent_process_results_bill_each_custom_id_once():
     assert len(await _usage_docs(es)) == 2
     done = await store.get("batch-x")
     assert done.state == BatchJobState.RETRIEVED
-    assert all(done.custom_ids[c]["retrieved"] for c in ("cid-A", "cid-B"))
+    assert done.terminal_compacted is True
+    assert done.custom_ids == {}
+    assert done.summary_total == 2
+    assert done.summary_retrieved == 2
 
 
 async def test_process_results_partial_then_remainder():
@@ -674,8 +680,11 @@ async def test_error_result_records_error_row_and_marks_retrieved():
     assert outcomes == sorted([UsageOutcome.OK.value, UsageOutcome.ERROR.value])
     # The errored custom_id is still marked retrieved so it is not retried.
     reloaded = await store.get("batch-x")
-    assert reloaded.custom_ids["cid-B"]["retrieved"] is True
-    assert reloaded.custom_ids["cid-B"]["result_state"] == "errored"
+    assert reloaded.terminal_compacted is True
+    assert reloaded.custom_ids == {}
+    assert reloaded.summary_total == 2
+    assert reloaded.summary_retrieved == 2
+    assert reloaded.summary_failed == 1
 
 
 async def test_load_open_jobs_resume_after_restart():
@@ -1204,6 +1213,10 @@ async def test_detection_reentry_failure_retries_without_duplicate_ledger_row():
     completed = await service.process(await store.get("batch-x"))
     assert [item.custom_id for item in completed] == ["cid-A"]
     done = await store.get("batch-x")
-    assert done.custom_ids["cid-A"]["reentry_state"] == "complete"
+    assert done.state == BatchJobState.RETRIEVED
+    assert done.terminal_compacted is True
+    assert done.custom_ids == {}
+    assert done.summary_total == 1
+    assert done.summary_retrieved == 1
     assert done.state == BatchJobState.RETRIEVED
     assert len(await _usage_docs(es)) == 1

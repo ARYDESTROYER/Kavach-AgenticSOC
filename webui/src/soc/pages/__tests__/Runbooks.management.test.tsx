@@ -8,8 +8,7 @@ const mocks = vi.hoisted(() => ({
   createRunbook: vi.fn(),
   updateRunbook: vi.fn(),
   deleteRunbook: vi.fn(),
-  reindexRunbooks: vi.fn(),
-  reindexRunbook: vi.fn(),
+  submitJob: vi.fn(),
   canManage: true,
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
@@ -27,8 +26,10 @@ vi.mock('@/lib/api', async (importOriginal) => {
       createRunbook: mocks.createRunbook,
       updateRunbook: mocks.updateRunbook,
       deleteRunbook: mocks.deleteRunbook,
-      reindexRunbooks: mocks.reindexRunbooks,
-      reindexRunbook: mocks.reindexRunbook,
+      jobs: {
+        ...actual.api.jobs,
+        submit: mocks.submitJob,
+      },
     },
   };
 });
@@ -211,8 +212,7 @@ describe('Intelligence Runbooks management', () => {
       mocks.createRunbook,
       mocks.updateRunbook,
       mocks.deleteRunbook,
-      mocks.reindexRunbooks,
-      mocks.reindexRunbook,
+      mocks.submitJob,
       mocks.toastSuccess,
       mocks.toastWarning,
       mocks.toastError,
@@ -429,6 +429,37 @@ describe('Intelligence Runbooks management', () => {
     expect(screen.getByText('Cloud exfiltration')).toBeInTheDocument();
   });
 
+  it('submits full and targeted reconciliation as durable server jobs', async () => {
+    const row = runbook();
+    mocks.getRunbooks.mockResolvedValue(response([row]));
+    mocks.submitJob
+      .mockResolvedValueOnce({ job_id: 'job-all', kind: 'runbook_reindex', status: 'queued' })
+      .mockResolvedValueOnce({ job_id: 'job-one', kind: 'runbook_reindex', status: 'queued' });
+
+    renderRunbooks();
+    fireEvent.click(await screen.findByRole('button', { name: /reindex all/i }));
+    await waitFor(() =>
+      expect(mocks.submitJob).toHaveBeenNthCalledWith(1, {
+        kind: 'runbook_reindex',
+        idempotency_key: expect.any(String),
+        params: {},
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reindex suspicious powershell/i }));
+    await waitFor(() =>
+      expect(mocks.submitJob).toHaveBeenNthCalledWith(2, {
+        kind: 'runbook_reindex',
+        idempotency_key: expect.any(String),
+        params: { runbook_id: row.id },
+      }),
+    );
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/queued/i),
+      expect.objectContaining({ description: expect.stringMatching(/server/i) }),
+    );
+  });
+
   it('shows the complete authoring standard and gates submission until every issue is fixed', async () => {
     mocks.getRunbooks.mockResolvedValue(response([]));
 
@@ -514,7 +545,7 @@ describe('Intelligence Runbooks management', () => {
     expect(editor.value).toBe(untouchedDraft);
     expect(mocks.createRunbook).not.toHaveBeenCalled();
     expect(mocks.updateRunbook).not.toHaveBeenCalled();
-    expect(mocks.reindexRunbook).not.toHaveBeenCalled();
+    expect(mocks.submitJob).not.toHaveBeenCalled();
   });
 
   it('keeps downloads available when an inline example preview cannot load', async () => {

@@ -44,6 +44,23 @@ changing any case or detection policy.
    MTTD, MTTA, MTTR, or dwell, then open **Deeper analytics** for autonomy,
    connector coverage, workload, outcomes, top signatures, and top entities.
 
+False Positive Rate and Auto-resolved come from the server posture rollup rather
+than the bounded case list. They are keyed to the selected window and comparison
+mode. When the range changes, the Console immediately hides the old posture values,
+cancels the superseded request, and publishes a response only if its echoed
+`window_hours` still matches the active selector. A slower earlier request therefore
+cannot repaint either tile beneath a newer range. While the replacement is in flight,
+the tiles show a loading/unavailable state instead of mixing windows.
+
+The full **Agent health** diagnostic panel no longer occupies the Overview layout.
+When every readable signal is healthy—or the operator cannot read either diagnostic
+source—Overview renders no health panel at all. A positively detected precedent-corpus,
+migration, or auto-close degradation produces one compact warning strip. Its
+**View effectiveness** action opens the shareable
+`#/metrics?tab=effectiveness` route, where the complete evidence follows the same
+selected Analytics window. Unknown or unmeasured evidence remains visible there but
+is not promoted into a false Overview incident.
+
 The primary Open and Resolved controls drill directly into the matching case scope.
 The combined Critical / High tile opens the selected-window case list without
 pretending that the single-severity Cases filter can express both bands at once; its
@@ -81,8 +98,9 @@ that scope. Timing cards expose their sample availability, and source coverage i
 reported independently of case volume: a quiet source and an unread source are not
 the same condition.
 
-The posture endpoints require `metrics:view` where RBAC is enabled. Case drill-down
-requires `cases:read`; source health requires `sources:read`.
+The posture endpoints require `metrics:view` where RBAC is enabled. Auto-close health
+uses the same grant; the broader diagnostic health response requires `settings:read`.
+Case drill-down requires `cases:read`; source health requires `sources:read`.
 
 ## Custom views
 

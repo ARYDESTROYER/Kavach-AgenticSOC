@@ -18,11 +18,13 @@ pass-through when disabled.
 from __future__ import annotations
 
 from app.middleware.csrf import CSRFMiddleware
+from app.middleware.mutation_admission import MutationAdmissionMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 
 __all__ = [
     "CSRFMiddleware",
+    "MutationAdmissionMiddleware",
     "RateLimitMiddleware",
     "SecurityHeadersMiddleware",
 ]

@@ -114,6 +114,7 @@ _SESSION_REASON_CODE = {
     "tv_mismatch": "reauth_required",
     "absolute_expired": "session_expired",
     "idle_expired": "session_expired",
+    "unknown": "session_invalid",
 }
 
 
@@ -133,6 +134,32 @@ async def _session_check(request: Request, state: AppState, auth, user, token: s
     policy = getattr(getattr(state, "prefs", None), "session_policy", None)
     idle = int(getattr(policy, "idle_timeout", 0) or 0)
     absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+    # Once the factory boundary closes, even an authenticated GET must be
+    # read-only: the normal compatibility path touches known rows and lazily creates
+    # unknown signed sessions. Validate one strict snapshot instead and fail closed
+    # without either mutation. This also covers the narrowly allowed recovery POSTs.
+    if bool(getattr(getattr(state, "mutation_gate", None), "closed", False)):
+        claims = auth.claims_of(token) if token else None
+        stamped_tv = int((claims or {}).get("tv", 0) or 0)
+        try:
+            reason = await sessions.strict_request_authority(
+                sid=sid,
+                username=user.username,
+                token_version=stamped_tv,
+                idle_timeout=idle,
+                absolute_lifetime=absolute,
+            )
+        except Exception as exc:  # storage uncertainty cannot cross reset boundary
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "session_registry_unavailable"},
+            ) from exc
+        if reason is not None:
+            code = _SESSION_REASON_CODE.get(reason, "session_invalid")
+            raise HTTPException(
+                status_code=401, detail={"code": code, "reason": reason}
+            )
+        return
     try:
         row = await sessions.get(sid)
         # token_version (tv) check — a revoke-all bumps the user's tv so an old token

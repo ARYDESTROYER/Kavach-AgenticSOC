@@ -36,6 +36,12 @@ vi.mock('../pages/Metrics.posture.api', async () => {
   };
 });
 
+vi.mock('@/soc/components/HealthDiagnostics', () => ({
+  HealthDiagnostics: ({ windowHours }: { windowHours?: number }) => (
+    <section data-testid="analytics-health-diagnostics">health:{windowHours}</section>
+  ),
+}));
+
 vi.mock('@/lib/api', () => ({
   api: {
     getMetrics: vi.fn().mockResolvedValue({
@@ -143,6 +149,10 @@ vi.mock('@/lib/api', () => ({
       by_surface: [],
       top_cost_drivers: [],
     }),
+    // Presence preserves the older-proxy typeof guard and mounts the relocated
+    // diagnostics surface. The component itself is isolated above.
+    diagnosticsHealth: vi.fn(),
+    autoCloseHealth: vi.fn(),
   },
 }));
 
@@ -240,6 +250,23 @@ describe('Analytics consolidation (Round 4 / #10)', () => {
     expect(screen.getByText(/reporting only/i)).toBeInTheDocument();
   });
 
+  it('places full Agent health above Effectiveness and follows its time selector', async () => {
+    render(<Metrics embedded tab="effectiveness" />);
+
+    const health = await screen.findByTestId('analytics-health-diagnostics');
+    const effectiveness = await screen.findByTestId('agent-effectiveness');
+    expect(health).toHaveTextContent('health:168');
+    expect(
+      health.compareDocumentPosition(effectiveness) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const controls = screen.getByRole('group', { name: 'Analytics controls' });
+    await userEvent.click(within(controls).getByRole('radio', { name: '24h' }));
+    expect(await screen.findByTestId('analytics-health-diagnostics')).toHaveTextContent(
+      'health:24',
+    );
+  });
+
   it('Cost tab is the single spend home — shows the ledger controls + breakdown', async () => {
     render(<Metrics embedded />);
     // Scope the section-tab lookup to the metrics strip: the embedded Cost ledger's
@@ -293,5 +320,19 @@ describe('Analytics consolidation (Round 4 / #10)', () => {
       name: /^cost$/i,
     });
     expect(costTab).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('restores the Effectiveness deep-link with diagnostics above its report', async () => {
+    render(<Metrics embedded tab="effectiveness" />);
+
+    const effectivenessTab = within(screen.getByTestId('metrics-tabs')).getByRole('tab', {
+      name: /effectiveness/i,
+    });
+    expect(effectivenessTab).toHaveAttribute('aria-selected', 'true');
+    const health = await screen.findByTestId('analytics-health-diagnostics');
+    const report = await screen.findByTestId('agent-effectiveness');
+    expect(
+      health.compareDocumentPosition(report) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

@@ -167,11 +167,16 @@ export interface MitreCoverageResponse {
 export function fetchPosture(
   windowHours: number,
   compare: 'prev' | '' = '',
+  signal?: AbortSignal,
 ): Promise<PostureResponse> {
   // Defer through Promise.resolve so a synchronous failure (e.g. a stubbed client)
   // surfaces as a rejection — callers wrap this in Promise.all/allSettled.
   return Promise.resolve().then(() =>
-    api.get<PostureResponse>('metrics/posture', { window_hours: windowHours, compare }),
+    api.get<PostureResponse>(
+      'metrics/posture',
+      { window_hours: windowHours, compare },
+      signal,
+    ),
   );
 }
 
