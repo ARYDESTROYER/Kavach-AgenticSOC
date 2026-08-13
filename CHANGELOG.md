@@ -78,6 +78,17 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **One-file, server-assembled portable export.** `POST /api/admin/export/archive`
+  walks the same safe scopes and bounded pages as the resumable segment contract, writes
+  one NDJSON member per scope plus a terminal provenance-bearing `manifest.json` into a
+  stdlib ZIP on temporary server disk, and serves it only after every selected scope has
+  emitted its starting count under its declared consistency. Elasticsearch retains its fixed PIT; PostgreSQL reports the honest
+  non-exact `bounded_at_start` view and KV collections remain `live_values_at_read`.
+  Permission and fresh-auth are rechecked before response creation, a strict append-only
+  audit row records the prepared artifact (not client receipt), and temporary files/PITs are released on success,
+  failure, cancellation, or disconnect. The Console now downloads this one archive by
+  default while keeping the numbered `/segment` workflow under an explicit advanced /
+  resumable affordance. The legacy bounded v1 route is unchanged.
 - **Producing-build provenance on operational records.** Every newly created case carries
   immutable creation-build `app_version` and `build_sha`; re-investigation preserves those
   original values. Every new append-only audit and usage row carries the build that first

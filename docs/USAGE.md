@@ -1765,25 +1765,50 @@ source.
 ### Portable application-state export
 
 **Settings → Organization → Data export** downloads all records in selected supported
-safe scopes as canonical, numbered JSON segments. Choose `cases`, `audit`, `usage`,
-`configuration`, `automation`, and/or `knowledge`, then set **Records per file** from
-500–5000. This is a per-response safety bound, not a full-history ceiling. The Console
-continues automatically until every scope explicitly reports complete, shows progress,
-and can cancel an unfinished export.
+safe scopes. Choose `cases`, `audit`, `usage`, `configuration`, `automation`, and/or
+`knowledge`; the primary action downloads one UTC-stamped ZIP assembled on server disk.
+The archive contains one `<scope>.ndjson` entry per selected scope and a terminal
+`manifest.json` with counts, completeness, consistency, actor, and current build
+provenance. The server serves no ZIP unless every selected scope emits the record count
+fixed when its walk began and the completed artifact passes integrity verification. Only
+an Elasticsearch scope whose manifest says `consistency.exact: true` proves fixed
+membership and values; PostgreSQL and KV scopes remain explicitly non-exact, and the
+selected scopes are not captured in one cross-scope transaction.
+
+Open **Advanced / resumable (numbered files)** when the export may outlive the proxy
+window or temporary server disk is constrained. That mode exposes **Records per file**
+from 500–5000, follows authenticated opaque cursors, shows progress, supports
+cancellation, and saves canonical numbered JSON segments. The setting is a per-response
+safety bound, not a full-history ceiling.
 
 This export intentionally excludes environment/source credentials, users and
 sessions, password/MFA material, browser tokens, upstream raw logs, and raw knowledge
 chunks; a final recursive sanitizer also removes credential-shaped fields and common
-secret patterns. Each compact response—and the compact segment file the Console saves
-from it—is capped at 25 MiB. It is **not** a whole-application
+secret patterns. Each internal archive page and compact segment response is capped at
+25 MiB; the complete disk-backed ZIP has no 25 MiB lifetime ceiling. It is **not** a whole-application
 export, import format, database dump, or backup/restore substitute; chat,
 collaboration, identity/session state, user preferences, and raw RAG chunks are also
-outside its supported scopes. Every segment is audited and requires
+outside its supported scopes. Every prepared archive or response-bounded segment is
+audited before streaming and requires
 `data_export:export` plus fresh authentication. Elasticsearch scopes disclose an
-exact PIT snapshot; SQL/KV paths disclose their weaker bounded/live semantics.
-If any selected registry cannot be read completely, or the append-only delivery audit
-cannot be persisted, the server returns an error and the Console stops without claiming
-that scope is complete.
+exact PIT snapshot; PostgreSQL discloses `bounded_at_start` and KV paths disclose their
+weaker live-at-read semantics.
+If any selected registry cannot emit its starting count, the temporary filesystem cannot
+preserve its safety reserve, the finished ZIP fails CRC/count/size/SHA-256 verification,
+or the append-only preparation audit cannot be persisted, the server returns an error and
+the Console saves no archive. An audit event proves preparation, authorization, and
+counts—not that the client received every response byte.
+
+Download one delivery-atomic archive (all safe scopes when `scopes` is omitted):
+
+```bash
+curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/archive \
+  -H 'content-type: application/json' \
+  -d '{"scopes":["cases","audit","usage"]}' \
+  --output agentic-soc-export.zip
+```
+
+Advanced/resumable example:
 
 ```bash
 curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/segment \
@@ -1792,11 +1817,16 @@ curl -sS -b cookies.txt -X POST localhost:8088/api/admin/export/segment \
   --output agentic-soc-audit-part-00001.json
 ```
 
-Pass the response's `segment.next_cursor` in the next request and continue until
+For advanced mode, pass the response's `segment.next_cursor` in the next request and continue until
 `segment.complete` is true. PIT cursors use a renewable ten-minute keep-alive; after
 expiration or backend restart, restart that scope. Automation and knowledge are
 currently materialized from their KV collections before being sliced into response
 segments, so exceptionally large catalogs have a known server-memory limitation.
+The synchronous ZIP path permits one active build/download per backend process, preserves
+a 64 MiB temporary-filesystem reserve, and relies on the deployment's response timeout;
+use Advanced mode when those constraints are unsuitable. Browser cancellation closes the
+request, and the server checks for disconnects between bounded pages and removes its
+temporary artifact.
 
 ### Polling & detection
 

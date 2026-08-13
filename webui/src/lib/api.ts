@@ -498,6 +498,22 @@ export class ApiError extends Error {
   }
 }
 
+/** A successful binary download plus the response metadata needed to name it safely. */
+export interface BlobDownload {
+  blob: Blob;
+  contentDisposition: string | null;
+  contentType: string | null;
+}
+
+/** Secret-free application-state scopes accepted by the portable archive endpoint. */
+export type DataExportScope =
+  | 'cases'
+  | 'audit'
+  | 'usage'
+  | 'configuration'
+  | 'automation'
+  | 'knowledge';
+
 /**
  * The single API prefix every request is built from. EXPORTED so co-located data
  * layers that hand-build a URL for a plain `<a href>` download (e.g. the ATT&CK
@@ -605,17 +621,24 @@ function extractMessage(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-async function request<T>(
+interface RequestOptions {
+  body?: unknown;
+  query?: Record<string, unknown>;
+  _retried?: boolean;
+  signal?: AbortSignal;
+  cache?: RequestCache;
+}
+
+/**
+ * Fetch one authenticated response and apply the shared error/session/step-up flow.
+ * Keeping this below both JSON and Blob readers means binary downloads cannot bypass
+ * the exactly-once re-auth retry or accidentally turn an error response into a file.
+ */
+async function requestResponse(
   method: string,
   path: string,
-  opts: {
-    body?: unknown;
-    query?: Record<string, unknown>;
-    _retried?: boolean;
-    signal?: AbortSignal;
-    cache?: RequestCache;
-  } = {},
-): Promise<T> {
+  opts: RequestOptions = {},
+): Promise<Response> {
   const clean = path.replace(/^\/+/, '');
   const url = `${API_BASE}/${clean}${buildQuery(opts.query)}`;
   let res: Response;
@@ -635,8 +658,8 @@ async function request<T>(
     // Network-level failure (backend down, CORS, etc.)
     throw new ApiError(0, `Cannot reach backend: ${(e as Error).message}`);
   }
-  const body = await parseBody(res);
   if (!res.ok) {
+    const body = await parseBody(res);
     // A 401 with `code:'reauth_required'` is a STEP-UP gate (the session is valid
     // but the action needs fresh credentials). Open the re-auth modal; if the user
     // re-authenticates, retry the original request exactly ONCE. Never recurse on a
@@ -650,7 +673,7 @@ async function request<T>(
     ) {
       const ok = await reauthGate();
       if (ok) {
-        return request<T>(method, path, { ...opts, _retried: true });
+        return requestResponse(method, path, { ...opts, _retried: true });
       }
       // User cancelled — surface the original 401.
       throw new ApiError(res.status, extractMessage(res.status, body), body);
@@ -663,7 +686,29 @@ async function request<T>(
     }
     throw new ApiError(res.status, extractMessage(res.status, body), body);
   }
-  return body as T;
+  return res;
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const res = await requestResponse(method, path, opts);
+  return (await parseBody(res)) as T;
+}
+
+async function requestBlob(
+  method: string,
+  path: string,
+  opts: RequestOptions = {},
+): Promise<BlobDownload> {
+  const res = await requestResponse(method, path, opts);
+  return {
+    blob: await res.blob(),
+    contentDisposition: res.headers.get('content-disposition'),
+    contentType: res.headers.get('content-type'),
+  };
 }
 
 /**
@@ -741,6 +786,15 @@ export const api = {
   // + task patch in `routes_cases_collab.py`); calling them with PUT 405s. Mirrors put().
   patch: <T = unknown>(path: string, body?: unknown) => request<T>('PATCH', path, { body }),
   del: <T = unknown>(path: string) => request<T>('DELETE', path),
+
+  // ---- Secret-free application-state export --------------------------- //
+  // The archive endpoint returns binary data, so it cannot use the ordinary JSON
+  // reader. It still runs through requestResponse and therefore preserves cookies,
+  // session-lapse handling, AbortSignal, ApiError extraction and one re-auth retry.
+  dataExport: {
+    archive: (scopes: DataExportScope[], signal?: AbortSignal) =>
+      requestBlob('POST', 'admin/export/archive', { body: { scopes }, signal }),
+  },
 
   // ---- Auth (optional; OFF-safe) ---------------------------------------- //
   auth: {

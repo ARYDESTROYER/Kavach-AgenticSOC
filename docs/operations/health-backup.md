@@ -36,13 +36,18 @@ notification tests for those dependencies.
 Redis is an optimization/cache and is not the authoritative application backup.
 Upstream logs remain in their source systems and require their own retention/backup.
 
-**Settings → Organization → Data export** can page all records in its selected
-supported safe scopes, but it is a support/analysis artifact, not a whole-application
+**Settings → Organization → Data export** can package all records in its selected
+supported safe scopes into one server-assembled ZIP (or advanced resumable segments),
+but it is a support/analysis artifact, not a whole-application
 backup. Its Knowledge scope preserves sanitized authoritative operator runbook and
 playbook documents plus safe bundled manifests/references, but it omits credentials,
 users/sessions, chat/collaboration state, raw upstream logs, and raw knowledge chunks,
-and has no matching import/restore endpoint. Resumable cursors are signed and bound to
-the requesting operator, scope, and snapshot. Use the selected state backend's
+and has no matching import/restore endpoint. The ZIP manifest proves that the server
+emitted each scope's starting count and verified the prepared artifact, not that the
+client received it or that it is recoverable. Only exact Elasticsearch scopes are fixed
+snapshots; PostgreSQL honestly reports a non-exact `bounded_at_start` view.
+Resumable cursors are signed and bound to the requesting operator, scope, and snapshot.
+Use the selected state backend's
 consistent dump or snapshot mechanism for recovery.
 
 The desired Storage & retention archive stage is also not a backup mechanism in

@@ -362,7 +362,8 @@ backend/app/
                    routes_search (`/search`, `/audit`). None of those paths remain in
                    `routes.py`, and there is no `/branding/presets` endpoint. Current
                    integration adds routes_export (legacy bounded `POST
-                   /api/admin/export` plus fresh-auth resumable
+                   /api/admin/export`, default fresh-auth server-assembled single ZIP at
+                   `/api/admin/export/archive`, plus advanced resumable
                    `/api/admin/export/segment` + `/cancel`, all under
                    `data_export:export`) + routes_storage (desired own-state lifecycle,
                    pure capability preview, and explicit fresh-auth Elasticsearch apply)

@@ -368,8 +368,14 @@ buffers, and realtime delivery still lack distributed ownership.
 
 ### Portable export is not backup or tenant isolation
 
-The Data export workflow now continues through numbered files beyond 5,000 records;
-5,000 records and 25 MiB of compact JSON are per-segment bounds. It still covers only selected supported safe
+The default Data export workflow now assembles one delivery-atomic ZIP on temporary server disk;
+the advanced workflow continues through numbered files beyond 5,000 records. The 5,000
+records and 25 MiB limits are per internal page/segment, not archive lifetime bounds.
+The synchronous archive must still fit available temporary disk and the deployment's
+upstream response timeout, and only one archive is built/served per backend process; use
+the resumable path when any constraint is uncertain. Delivery-atomic means the verified
+ZIP is complete before HTTP headers start, not that selected scopes share a transaction
+or that a pre-stream audit proves client receipt. It covers only selected supported safe
 scopes, excludes secrets/users/sessions/chat/collaboration/user preferences/raw logs/
 raw knowledge chunks, and has no import endpoint. It is suitable for support and
 offline analysis, not disaster recovery. Elasticsearch cases/audit/usage use a PIT;
