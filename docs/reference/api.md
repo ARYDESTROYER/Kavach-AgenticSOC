@@ -108,20 +108,22 @@ the exact request model and every operation under a prefix.
 | Knowledge and memory | `/api/rag/*`, `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, manage operator memory, and manage protected/owned runbooks |
 | Enrichment and MITRE | `/api/enrichment/*`, `/api/mitre/coverage*`, `GET /api/cases/{case_id}/threat-context` | IOC enrichment, provider configuration, ATT&CK coverage, and Navigator export |
 | Dashboards and metrics | `/api/dashboards*`, `/api/metrics*`, `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, usage, feedback, and cost estimates |
+| Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface |
 | Standup and handoff | `/api/standup*` | Shift report, acknowledgements, and action items |
 | Notifications | `/api/notifications/providers`, `/channels/*`, `/preview`, `/test`, `/prefs`, `/inbox*` | Channel catalog/secrets, safe previews, tests, per-user preferences, and in-app inbox |
+| Application background jobs | `POST/GET /api/jobs`, `GET /api/jobs/{job_id}`, `POST /cancel`, `GET /artifact` | Self-scoped durable work, progress, cooperative cancellation, bounded failures, result projections, and verified retained artifacts |
 | Preferences and presentation | `/api/settings*`, `/api/prefs/*`, `/api/branding`, `/api/terminology`, `/api/views*`, `/api/budget*`, `/api/llm/*`, `/api/models` | Organization/user preferences, saved views, model routing/pricing, branding, and budget controls |
 | Release-source discovery | `GET /api/releases/upstream`, `POST /api/releases/upstream/check` | Read cached or force a cooldown-bounded refresh of public Stable/Testing source metadata; never deploys or activates code |
 | Supervised application updates | `GET /api/system-updates/status`, `POST /preflight`, `POST /jobs`, `GET /jobs/{job_id}`, `POST /cancel`, `POST /rollback`, `GET /receipt` | Capability and blocker discovery plus a fresh-auth, built-in-super-admin control plane for one supported signed Compose/PostgreSQL application update; host operations stay behind the private supervisor socket |
-| Improvement worker health | `GET /api/schedulers/health` | Process-local tuner, campaign, and batch enabled/gated/running plus last attempt/success/error |
+| Improvement worker health | `GET /api/schedulers/health` | Process-local threshold-tuner, campaign, event-driven baseline, and Batch health; list-only, never a personal Inbox job |
 | Telemetry-gap evidence | `GET /api/tuning/source-recommendations` | Query-backed supported missing-evidence recommendations; connector absence alone is never proof |
-| Own-state storage lifecycle | `GET/PUT /api/storage/lifecycle`, `POST /api/storage/lifecycle/preview`, `POST /api/storage/lifecycle/apply` | Inspect/save desired Hot/Warm/archive policy, preview capabilities, and explicitly apply the supported Elasticsearch ILM subset |
+| Own-state storage lifecycle | `GET/PUT /api/storage/lifecycle`, `POST /api/storage/lifecycle/preview`; apply via `POST /api/jobs` | Inspect/save/preview desired policy; submit canonical `storage_lifecycle_apply` work as a Job (`POST .../apply` is retired with 410) |
 | Portable data export | `POST /api/admin/export` | Legacy single-file, bounded, secret-free application-state snapshot (`data_export:export`) |
-| Full-history export archive | `POST /api/admin/export/archive` | Assemble and verify selected safe scopes before serving one ZIP (fresh auth + `data_export:export`) |
-| Full-history export segment | `POST /api/admin/export/segment` | Continue one supported safe scope past 5,000 records using an opaque cursor (fresh auth + `data_export:export`) |
+| Full-history export archive | `POST /api/admin/export/archive` | OpenAPI-deprecated executable compatibility primitive: synchronously assemble and verify selected safe scopes before serving one ZIP (fresh auth + `data_export:export`) |
+| Full-history export segment | `POST /api/admin/export/segment` | OpenAPI-deprecated executable compatibility primitive: continue one supported safe scope past 5,000 records using an opaque cursor (fresh auth + `data_export:export`) |
 | Cancel export segment | `POST /api/admin/export/segment/cancel` | Release the PIT carried by an unfinished cursor (fresh auth + `data_export:export`) |
 | Audit and realtime | `GET /api/audit`, `GET /api/events` | Append-only action history and server-sent event updates |
-| Demo and reset | `/api/demo/*`, `POST /api/admin/reset` | Isolated synthetic demonstration lifecycle and privileged tiered reset |
+| Demo and reset | `/api/demo/*`; reset via `POST /api/jobs` | Isolated synthetic demonstration lifecycle and canonical `tiered_reset` Job submission (`POST /api/admin/reset` is retired with 410) |
 
 ## Supervised application updates
 
@@ -163,7 +165,7 @@ while create, update, delete, and reindex require `runbooks:manage`.
 | `PUT /api/runbooks/{runbook_id}` | Validate and replace an operator runbook using `{content, expected_revision}`, then attempt targeted reindexing |
 | `DELETE /api/runbooks/{runbook_id}?expected_revision=N` | Delete the expected operator revision and its retrieval projection |
 | `POST /api/runbooks/{runbook_id}/reindex` | Reconcile one runbook's full-body retrieval projection |
-| `POST /api/runbooks/reindex` | Reconcile all bundled and operator runbook projections without clearing unrelated knowledge |
+| `POST /api/runbooks/reindex` | OpenAPI-deprecated executable compatibility primitive for full-catalog reconciliation; the Console uses a `runbook_reindex` Job |
 
 Bundled items return `source_type=bundled`, `protected=true`, and `editable=false`.
 Operator items return their current revision, actor/timestamp metadata, and separate
@@ -316,12 +318,16 @@ These run-level fields do not overwrite the Case's authoritative lifetime
 
 `GET /api/schedulers/health` (`automation:read`) returns
 `scheduler_runtime_running` plus `workers` for `threshold_tuner`,
-`campaign_correlation`, and `batch_jobs`. Each worker reports `enabled`, `gated`,
-`running`, `cadence`, `last_attempt_at`, `last_success_at`, `last_error`, and
-`processed`. Tuner/campaign success anchors recover from durable state after restart;
-the runtime is still process-local and has no distributed lease. `manual` is reported
-as gated, and a push/queue-only deployment is not marked gated merely because pull
-polling is disabled.
+`campaign_correlation`, `baseline_producer`, and `batch_jobs`. Each worker reports
+`enabled`, `gated`, `running`, `cadence`, `last_attempt_at`, `last_success_at`,
+`last_error`, and `processed`. The first, second, and fourth are cadence loops covered
+by `scheduler_runtime_running`. `baseline_producer` is event-driven with
+`cadence=on_ingest`; it is enabled/running when baseline learning is enabled outside
+Demo and reports its own attempted, confirmed-success, error, and processed evidence
+without depending on the cadence-loop runtime flag. Tuner/campaign success anchors
+recover from durable state after restart; the workers remain process-local and have no
+distributed lease. `manual` is reported as gated, and a push/queue-only deployment is
+not marked gated merely because pull polling is disabled.
 
 `GET /api/tuning/source-recommendations` (`cases:read`) scans at most 20,000 cases and
 returns `status`, `recommendations`, `scanned_cases`, `truncated`,
@@ -531,6 +537,103 @@ cases. Up to 12 member references are returned as stable one-way hashes, with a
 truncation count; raw source identifiers and alert payloads are excluded. Consumers
 must tolerate `available: false` or incomplete fields for older cases.
 
+## Application background jobs
+
+`POST /api/jobs` accepts `{kind, idempotency_key, params}` and returns HTTP 202 after
+the validated job is durably admitted and its submission transition audit is confirmed.
+Every Jobs route requires `inapp:read`; the
+server also enforces each operation's resource grant at admission and execution. The
+supported kinds and material parameters are:
+
+| Kind | Parameters |
+| --- | --- |
+| `case_reinvestigate` | `case_ids` plus optional `model` |
+| `case_lifecycle` | `case_ids`, canonical lifecycle `action`, and its bounded optional action fields |
+| `case_assign` | `case_ids`, `assignee` |
+| `case_tag` | `case_ids`, one `tag` |
+| `data_export_archive` | optional safe `scopes` |
+| `data_export_segment` | optional safe `scopes` and `page_size` |
+| `precedent_bootstrap` | exact acknowledgement plus bounded optional limit/batch/dry-run fields |
+| `runbook_reindex` | optional `runbook_id` |
+| `rag_import` | up to 20 bounded documents |
+| `tiered_reset` | scope and its exact confirmation phrase |
+| `storage_lifecycle_apply` | acknowledgement plus the exact saved lifecycle-policy snapshot |
+
+Unknown or extra parameters fail validation. Secret-looking keys are rejected, and
+large active canonical parameters share an 8 MiB registry cap. Case operations accept
+an immutable `case_ids` snapshot; later UI selection changes cannot alter it.
+
+The Console/user workflow for these long operations is `POST /api/jobs`. Direct
+archive/segment export, precedent bootstrap, RAG import, and full-catalog Runbook
+reindex remain executable, request-bound compatibility primitives and are explicitly
+deprecated in OpenAPI. They are not canonical Console submission paths. Targeted
+single-Runbook reindex remains a normal direct catalog operation. By contrast, the old
+direct reset and storage-apply mutations are non-executable and return 410.
+
+The idempotency key is scoped to actor/account generation and a canonical request
+fingerprint. Retry one ambiguous intent with the same key. A changed request under that
+key returns 409. The same material request converges on its retained job for that row's
+lifetime. A deliberate repeat uses a fresh key; atomic pruning of a terminal row releases
+the old binding, while active rows are never evicted for capacity.
+
+`GET /api/jobs?limit=&offset=` returns the caller's jobs with active work first and then
+newest terminal history. A public job exposes `job_id`, kind, actor/timestamps, status,
+`progress`, bounded `failures`, full failure/truncation counts, request fingerprint,
+result counts/optional `artifact_id`, public compacted parameters, and
+`cancel_requested`. The additive response can also contain:
+
+- `related.llm_batches` for `models:read`, using the safe provider Batch projection; and
+- `system_workers` for `automation:read`, using the existing scheduler-health shape.
+
+Those two sections are read-only projections, not application jobs. Scheduler health is
+always list-only. A newly accepted local LLM Batch row strictly snapshots at most 200
+active accounts with effective `models:read` and drives a generation-bound stable Inbox
+outbox for those recipients. The note exposes bounded safe provider/model copy, request
+progress, and terminal counts only—never provider handles, custom/case IDs, candidates,
+or raw errors—and has no Batch Cancel, artifact, or completion toast. Authorization-store
+outage remains pending/retryable; permission or account-generation loss removes and
+fail-closed filters the note. The audience is frozen, so later users/grants, legacy rows,
+and recipients beyond the bound remain Jobs-list-only. The bounded audience/outbox
+contract is regression-backed; the Jobs projection remains authoritative for every
+non-recipient.
+
+`GET /api/jobs/{job_id}` and `POST /api/jobs/{job_id}/cancel` are self-scoped to the
+exact actor/account generation. A successful cancel response waits for its transition
+audit before returning `202`.
+Cancellation is cooperative: queued work can stop immediately, while running work sets
+`cancel_requested` and stops at a supported checkpoint without rolling back completed
+items. Live grants, account generation, and step-up authority are rechecked during
+execution.
+
+`GET /api/jobs/{job_id}/artifact` returns bytes only when the terminal result has a
+non-empty `artifact_id`. The server verifies the private ZIP's size and SHA-256 before
+sending `Content-Type`, `Content-Length`, and a bounded attachment filename with
+`no-store`/`nosniff`. No artifact returns 404; missing/pruned/corrupt retained metadata
+fails instead of streaming unverified content.
+
+Application-job progress upserts one stable per-user Inbox notification and publishes
+actor-scoped SSE topic `jobs`, event type `job`, with polling as a client fallback.
+Failure details retain at most 20 entries plus the omitted count. Terminal compaction
+drops large inputs and item maps. Bulk-case notification URLs carry only allow-listed
+current-context filters (`status`, `assignee`, or `tag`), not an exact immutable cohort.
+Submission/retry, cancellation, and terminal states are audit-before-visible: successful
+`202` responses wait for their transition audit, and terminal Inbox/SSE projection is
+withheld until its terminal audit is confirmed. Durable reconciliation repairs an
+ambiguous audit transition before projection.
+
+Job claims and transitions use one strict-CAS StateStore registry and renewable
+five-minute leases. The runner and its investigation/export concurrency remain
+in-process, and the wider application is still single-replica. Factory reset replaces
+the prior Jobs/Inbox/artifact state with one privileged actorless sanitized receipt. In
+the supported single-backend-process profile, a default-deny HTTP mutation gate drains
+admitted requests and SSE before tenant producers and detached writers are quiesced; the
+reset then strictly clears tenant state and audits the actorless receipt before releasing
+its Jobs, Batch, and HTTP fences. This is not a distributed transaction across arbitrary
+application replicas. If that privacy boundary fails, the
+application stays fenced/degraded, ordinary work remains blocked, and only a new freshly
+authorized factory-reset attempt is admitted. See
+[Background jobs](../operations/background-jobs.md).
+
 ## Realtime events
 
 `GET /api/events` is a server-sent events stream. The optional `topics` query filters
@@ -539,6 +642,10 @@ The server emits heartbeats; clients should reconnect and fall back to bounded p
 when the stream is unavailable. When realtime preferences disable the event bus, the
 endpoint returns HTTP 204. Browser `EventSource` clients cannot set an Authorization
 header, so authenticated Console subscriptions use the session cookie.
+
+Application jobs use topic `jobs` and event type `job`; the payload is the actor-scoped
+public job projection. Ordinary progress is sampled, while submission/start/terminal
+transitions force publication. SSE is a nudge, not the durable registry or Inbox.
 
 ## Upstream release observations
 
@@ -569,7 +676,12 @@ Stable annotated-tag commit.
 capabilities, per-tier status, and a target-by-target explanation. `PUT` saves the
 validated desired policy but does not silently mutate storage. `POST .../preview`
 is read-only and returns the plan/blockers for the supplied or saved policy.
-`POST .../apply` is the explicit, freshly authenticated, audited mutation.
+
+The canonical mutation is `POST /api/jobs` kind `storage_lifecycle_apply`, with
+`acknowledge: true` and the exact saved policy snapshot. Admission is freshly
+authenticated and audited; execution fails if the authoritative saved policy has
+drifted. Authenticated calls to the retired `POST /api/storage/lifecycle/apply` route
+receive `410 Gone` plus `durable_job_required`; it is not a synchronous bypass.
 
 Apply is deliberately allowlisted: on Elasticsearch it can install/remove the
 Agentic SOC ILM policy and lifecycle settings only for the append-only audit and
@@ -608,9 +720,9 @@ use fewer scopes or a lower item cap when the server returns HTTP 413. The respo
 not an import/restore format. The default permission is limited to `super_admin` and
 `soc_manager` through `data_export:export`, and each request is audited.
 
-`POST /api/admin/export/archive` accepts optional `scopes` (default `all`) and is the
-primary full-history contract. It walks the existing bounded segment machinery on the
-server, writes one `<scope>.ndjson` ZIP entry incrementally, and writes root
+`POST /api/admin/export/archive` accepts optional `scopes` (default `all`) and is an
+executable but OpenAPI-deprecated direct full-history compatibility primitive. It walks the existing bounded segment
+machinery on the server, writes one `<scope>.ndjson` ZIP entry incrementally, and writes root
 `manifest.json` only after every selected scope emits the record count fixed at that
 scope's start. The manifest identifies
 the format as `agentic-soc-portable-export-archive` version 1, records the UTC generation
@@ -626,7 +738,7 @@ or disk/write error returns non-2xx before an archive is served. The temporary a
 and any open PIT are released on success, failure, request cancellation, or streaming
 disconnect.
 
-Archive construction is synchronous and uses temporary server disk; artifact delivery is
+The direct archive route is synchronous and uses temporary server disk; artifact delivery is
 atomic in the narrow sense that HTTP response headers do not start until the complete ZIP
 has passed integrity checks. It is not one cross-scope database transaction. Each scope
 declares its own consistency: only `exact: true` proves fixed membership and values;
@@ -635,12 +747,20 @@ may reflect concurrent changes. The backend permits one archive build/download p
 and preserves 64 MiB of temporary-filesystem free space; another request returns 409 and
 insufficient space returns 507. The bundled Console proxy allows five minutes. For a dataset
 that may exceed that proxy/ingress window or available temporary-disk capacity, use the
-advanced resumable segment contract below and retain its numbered files. External
+application-job contract or the direct advanced segment contract below. External
 reverse proxies need a compatible upstream timeout; increasing a timeout does not turn
 this support artifact into a backup.
 
-For all records in a selected supported safe scope, advanced clients may use
-`POST /api/admin/export/segment` with `scope`, optional opaque `cursor`, and
+The primary Console workflow submits `data_export_archive` or `data_export_segment`
+through `/api/jobs`. Both run server-side after `202 Accepted` and persist one verified
+ZIP behind the terminal job's `artifact_id`. The segment job follows all scope cursors
+and packages the numbered JSON envelopes itself; the browser does not collect them.
+Artifact storage/retention and cooperative cancellation follow the application-job
+contract above.
+
+For all records in a selected supported safe scope, direct advanced clients may use the
+executable but OpenAPI-deprecated `POST /api/admin/export/segment` compatibility
+primitive with `scope`, optional opaque `cursor`, and
 `page_size` (1–5000). The 5,000 value is a per-response/segment safety bound, not a
 lifetime cap. Follow `segment.next_cursor` until `segment.complete` is `true`; never
 infer completion from a short page. Compact JSON responses are individually capped at

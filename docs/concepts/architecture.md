@@ -24,6 +24,7 @@ not replace or modify the upstream SIEM, EDR, queue, or event pipeline.
 | Deterministic engines | Correlation, risk, budget admission, baselines, tuning, campaigns, and case policy |
 | LLM gateway | The only path to a model provider and the usage/cost ledger |
 | StateStore | Agentic SOC-owned cases, configuration, cursor, usage, audit, users, and knowledge in PostgreSQL, SQLite, or Elasticsearch |
+| Background-job runner | In-process executor over a strict-CAS StateStore registry, with leases, Inbox/SSE progress, cooperative cancellation, and verified artifacts |
 
 ## Shipped signal flow
 
@@ -39,6 +40,9 @@ flowchart LR
     E --> I["Case, provenance, audit and metrics"]
     H --> I
     I --> J["Agentic SOC Console and notifications"]
+    K["Accepted long operation"] --> L["Strict-CAS job + renewable lease"]
+    L --> M["Checkpointed work, audit and result"]
+    M --> J
 ```
 
 Pull connectors are polled per enabled source and feed. Push receivers deliver
@@ -77,9 +81,17 @@ are process-local. Several connectors require transport-specific durability test
 These are explicit evaluation constraints, not properties of the target scale-out
 design. See [Known limitations](../releases/known-limitations.md).
 
+Application background jobs make accepted long work durable across Console navigation,
+reload, and ordinary backend restart recovery. They do not create a distributed worker
+plane: job execution, investigation priority, export assembly, and realtime publication
+are process-local, and the wider application still has single-replica authorities. The
+separate supervised-updater job protocol is unchanged. See
+[Background jobs](../operations/background-jobs.md).
+
 ## Related pages
 
 - [Ingestion and investigation](../architecture/ingestion.md)
 - [OCSF normalization](ocsf.md)
 - [Deterministic decisions](deterministic-decisions.md)
 - [State, audit, and cost](state-audit-cost.md)
+- [Background jobs](../operations/background-jobs.md)

@@ -111,14 +111,18 @@ async def rag_document(
     return doc
 
 
-@router.post("/rag/import")
+@router.post("/rag/import", deprecated=True)
 async def rag_import(
     body: RagImportRequest,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("rag", "manage")),
 ) -> dict[str, Any]:
-    """Import a free-text document into the RAG corpus. Chunked + embedded; takes
-    effect immediately for retrieval. 400 on empty/oversized text."""
+    """Deprecated request-bound single-document import compatibility route.
+
+    New operator workflows submit bounded ``rag_import`` Jobs so indexing survives
+    navigation and has durable progress. The document is chunked and embedded and
+    takes effect immediately for retrieval. 400 on empty/oversized text.
+    """
     title = (body.title or "").strip()
     text = body.text or ""
     if not title or not text.strip():
@@ -251,6 +255,79 @@ def _precedent_preview(state: AppState) -> dict[str, Any]:
     }
 
 
+async def perform_precedent_candidate(
+    case: Any,
+    item: dict[str, Any],
+    state: AppState,
+    *,
+    actor: str,
+    batch_id: str,
+) -> dict[str, Any]:
+    """Idempotently ratify and project one lower-trust precedent candidate.
+
+    The history marker is the first-writer authority. If a worker restarts after the
+    case save but before projection acknowledgement, re-entering this helper skips the
+    duplicate history append and safely upserts the same ``resolved_case:<id>`` RAG
+    document. Both the synchronous route and durable Jobs runner use this seam.
+    """
+    newly_ratified = not is_bulk_ratified(case)
+    if newly_ratified:
+        entry = precedent_ratification_entry(
+            actor=actor,
+            batch_id=batch_id,
+            outcome=str((item.get("metadata") or {}).get("outcome") or ""),
+            confidence=float(case.confidence or 0.0),
+        )
+        case.history.append(entry)
+        await state.cases.save(case)
+        try:
+            await state.audit.record(
+                action_type=ActionType.CONTEXT,
+                surface="rag_precedent_bootstrap",
+                actor=actor,
+                case_id=case.case_id,
+                result_summary=(
+                    "bulk-ratified MODEL verdict as precedent "
+                    f"trust_class={TRUST_MODEL_UNCONFIRMED} "
+                    f"provenance={PRECEDENT_RATIFICATION_PROVENANCE} "
+                    f"batch={batch_id} independent_analyst_outcome=false"
+                ),
+            )
+        except Exception as exc:  # existing domain audit remains fail-soft per row
+            logger.warning(
+                "precedent ratification audit failed for %s: %s", case.case_id, exc
+            )
+    indexed = await state.rag_service.index_precedent_items(
+        [item], ratified_by=actor, batch_id=batch_id
+    )
+    if indexed < 1:
+        raise RuntimeError("precedent projection produced no indexable chunk")
+    if not any(
+        isinstance(entry, dict)
+        and entry.get("event") == "precedent_projection_ack"
+        for entry in list(case.history or [])
+    ):
+        case.history.append(
+            {
+                "ts": iso_now(),
+                "event": "precedent_projection_ack",
+                "batch_id": str(batch_id or ""),
+                "projected_by": str(actor or ""),
+            }
+        )
+        await state.cases.save(case)
+    return {"ratified": newly_ratified, "indexed": indexed}
+
+
+def is_precedent_projected(case: Any) -> bool:
+    """Durable acknowledgement that the ratified case reached the RAG projection."""
+    return any(
+        isinstance(entry, dict)
+        and entry.get("event") == "precedent_projection_ack"
+        for entry in list(getattr(case, "history", None) or [])
+    )
+
+
 @router.get("/rag/precedent/bootstrap")
 async def precedent_bootstrap_status(
     state: AppState = Depends(get_state),
@@ -271,21 +348,16 @@ async def precedent_bootstrap_status(
     return preview
 
 
-@router.post("/rag/precedent/bootstrap")
-async def precedent_bootstrap(
+async def perform_precedent_bootstrap(
     body: PrecedentBootstrapRequest,
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("rag", "manage")),
-    __=Depends(require_permission("cases", "write")),
+    state: AppState,
+    actor: str,
 ) -> dict[str, Any]:
-    """Bulk-ratify the agent's own auto-closed verdicts as LOWER-TRUST precedent.
+    """Canonical domain operation for lower-trust precedent ratification.
 
-    Bounded (``limit`` <= 1000), idempotent (an already-ratified case is skipped) and
-    therefore resumable: call it repeatedly until ``remaining`` is 0. Requires
-    ``rag:manage`` AND ``cases:write``, and an exact acknowledgement string so the
-    caller cannot claim afterwards that they believed these were analyst labels.
-    Audited per case plus once per batch (#2).
+    HTTP and durable-job callers enforce their own live permissions before entering
+    this helper. Keeping the mutation here makes their ground-truth, provenance,
+    idempotency, indexing, and per-case audit semantics identical.
     """
     if (body.acknowledgement or "").strip() != PRECEDENT_RATIFICATION_ACKNOWLEDGEMENT:
         raise HTTPException(
@@ -306,7 +378,7 @@ async def precedent_bootstrap(
             ),
         )
 
-    actor = current_username(request) or "operator"
+    actor = (actor or "operator").strip() or "operator"
     batch_id = (body.batch_id or "").strip() or new_id("ratify")
     # The scan cap is the ENDPOINT's bound, not ``guards.max_items``: the operator is
     # deliberately seeding a backlog here, whereas ``max_items`` bounds how much the
@@ -317,53 +389,35 @@ async def precedent_bootstrap(
         _PRECEDENT_BOOTSTRAP_MAX
     )
     already = [pair for pair in candidates if is_bulk_ratified(pair[0])]
+    pending_projection = [
+        pair
+        for pair in candidates
+        if is_bulk_ratified(pair[0]) and not is_precedent_projected(pair[0])
+    ]
     pending = [pair for pair in candidates if not is_bulk_ratified(pair[0])]
-    batch = pending[: int(body.limit)]
+    batch = (pending_projection + pending)[: int(body.limit)]
 
     ratified: list[str] = []
     failed: list[str] = []
+    indexed = 0
     if not body.dry_run:
         for case, item in batch:
-            entry = precedent_ratification_entry(
-                actor=actor,
-                batch_id=batch_id,
-                outcome=str((item.get("metadata") or {}).get("outcome") or ""),
-                confidence=float(case.confidence or 0.0),
-            )
             try:
-                case.history.append(entry)
-                await state.cases.save(case)
+                outcome = await perform_precedent_candidate(
+                    case,
+                    item,
+                    state,
+                    actor=actor,
+                    batch_id=batch_id,
+                )
             except Exception as exc:  # noqa: BLE001 — one bad case must not abort the batch
                 logger.warning(
-                    "precedent ratification could not persist %s: %s", case.case_id, exc
+                    "precedent ratification could not complete %s: %s", case.case_id, exc
                 )
                 failed.append(case.case_id)
                 continue
             ratified.append(case.case_id)
-            try:
-                await state.audit.record(
-                    action_type=ActionType.CONTEXT,
-                    surface="rag_precedent_bootstrap",
-                    actor=actor,
-                    case_id=case.case_id,
-                    result_summary=(
-                        f"bulk-ratified MODEL verdict as precedent "
-                        f"trust_class={TRUST_MODEL_UNCONFIRMED} "
-                        f"provenance={PRECEDENT_RATIFICATION_PROVENANCE} "
-                        f"batch={batch_id} independent_analyst_outcome=false"
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001 — audit is fail-soft per row
-                logger.warning("precedent ratification audit failed for %s: %s",
-                               case.case_id, exc)
-
-    indexed = 0
-    if ratified:
-        indexed = await state.rag_service.index_precedent_items(
-            [item for case, item in batch if case.case_id in set(ratified)],
-            ratified_by=actor,
-            batch_id=batch_id,
-        )
+            indexed += int(outcome["indexed"])
 
     await state.audit.record(
         action_type=ActionType.CONTEXT,
@@ -398,6 +452,30 @@ async def precedent_bootstrap(
         "case_ids": ratified[:100],
         "does_not": list(_PRECEDENT_BOOTSTRAP_DISCLAIMER),
     }
+
+
+@router.post("/rag/precedent/bootstrap", deprecated=True)
+async def precedent_bootstrap(
+    body: PrecedentBootstrapRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("rag", "manage")),
+    __=Depends(require_permission("cases", "write")),
+) -> dict[str, Any]:
+    """Deprecated request-bound bulk-ratification compatibility route.
+
+    New operator workflows submit ``precedent_bootstrap`` through ``POST /api/jobs``
+    for durable per-case progress and projection recovery.
+
+    Bounded, idempotent, resumable, and explicitly acknowledged. The route preserves
+    the historical synchronous API while sharing the exact domain operation with the
+    durable Jobs subsystem.
+    """
+    return await perform_precedent_bootstrap(
+        body,
+        state,
+        current_username(request) or "operator",
+    )
 
 
 # --------------------------------------------------------------------------- #

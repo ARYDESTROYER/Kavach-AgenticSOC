@@ -1236,6 +1236,114 @@ export interface SystemUpdateReceipt {
 }
 
 // --------------------------------------------------------------------------- //
+// Durable background jobs (ordinary application work; NOT the supervised updater).
+// --------------------------------------------------------------------------- //
+export type BackgroundJobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'partial'
+  | 'failed'
+  | 'cancelled';
+
+export type BackgroundJobKind =
+  | 'case_reinvestigate'
+  | 'case_lifecycle'
+  | 'case_assign'
+  | 'case_tag'
+  | 'data_export_archive'
+  | 'data_export_segment'
+  | 'precedent_bootstrap'
+  | 'runbook_reindex'
+  | 'rag_import'
+  | 'tiered_reset'
+  | 'storage_lifecycle_apply';
+
+export interface BackgroundJobProgress {
+  done: number;
+  total: number;
+  unit: string;
+}
+
+export interface BackgroundJobFailure {
+  item_ref: string;
+  reason: string;
+}
+
+export interface BackgroundJobResult {
+  kind: string;
+  artifact_id?: string | null;
+  counts: Record<string, number>;
+}
+
+export interface BackgroundJob {
+  job_id: string;
+  kind: BackgroundJobKind;
+  actor: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status: BackgroundJobStatus;
+  progress: BackgroundJobProgress;
+  failures: BackgroundJobFailure[];
+  failure_count: number;
+  /** Number of failures omitted from the bounded `failures` array. */
+  failures_truncated: number;
+  request_fingerprint: string;
+  result?: BackgroundJobResult | null;
+  /** Secret-free resume scope. Render values only as plain data. */
+  params: Record<string, unknown>;
+  cancel_requested: boolean;
+}
+
+export interface BackgroundJobSubmit {
+  kind: BackgroundJobKind;
+  idempotency_key: string;
+  params: Record<string, unknown>;
+}
+
+export interface RelatedLlmBatchJob {
+  id: string;
+  provider: string;
+  state: string;
+  model: string;
+  discount: number;
+  requests: number;
+  retrieved: number;
+  submitted_at: string | null;
+  polled_at: string | null;
+}
+
+export interface SystemWorkerHealth {
+  enabled: boolean;
+  gated: boolean;
+  running: boolean;
+  cadence: string;
+  last_attempt_at: string;
+  last_success_at: string;
+  last_error: string;
+  processed: number;
+}
+
+export interface BackgroundJobsResponse {
+  jobs: BackgroundJob[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Present only with models:read; null otherwise. */
+  related?: {
+    llm_batches: RelatedLlmBatchJob[];
+    total: number;
+    truncated: boolean;
+  } | null;
+  /** Present only with automation:read; never projected into the personal Inbox. */
+  system_workers?: {
+    scheduler_runtime_running: boolean;
+    workers: Record<string, SystemWorkerHealth>;
+  } | null;
+}
+
+// --------------------------------------------------------------------------- //
 // Models (per-role pickers).
 // --------------------------------------------------------------------------- //
 export interface ModelsResponse {

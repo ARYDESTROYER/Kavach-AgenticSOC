@@ -1,5 +1,5 @@
 /**
- * HealthDiagnostics — the dashboard surface for the failures that used to be SILENT.
+ * HealthDiagnostics — the full Analytics surface for failures that used to be SILENT.
  *
  * The precedent/auto-close incident had no operator-visible trace: an unrelated setting
  * change starved the resolved-case precedent corpus, auto-close stopped forever, and the
@@ -42,9 +42,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
-import { api } from '@/lib/api';
 import type {
-  AutoCloseHealth,
   AutoCloseWindow,
   DiagnosticsFinding,
   DiagnosticsHealth,
@@ -54,51 +52,16 @@ import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
-import { useCan } from '@/soc/components/Can';
+import {
+  autoCloseStatusView,
+  healthDegradations,
+  useHealthDiagnosticsData,
+} from './health-diagnostics-state';
+
+export { autoCloseStatusView } from './health-diagnostics-state';
+export type { AutoCloseStatusView } from './health-diagnostics-state';
 
 /* --------------------------------------------------------------- pure logic --- */
-
-/** The label + badge tone for one auto-close status. */
-export interface AutoCloseStatusView {
-  label: string;
-  tone: React.ComponentProps<typeof Badge>['variant'];
-  /** True when the status is a POSITIVELY DETECTED problem (not merely unmeasured). */
-  problem: boolean;
-  /** True when the status means "we could not measure this" — never a health claim. */
-  unmeasured: boolean;
-}
-
-/**
- * Map the backend's explicit auto-close `status` onto operator-facing copy.
- *
- * `no_volume` and `insufficient_evidence` are rendered as exactly what they are — the
- * absence of a measurement — and are NEVER folded into either "healthy" or "problem".
- */
-export function autoCloseStatusView(status: string | undefined | null): AutoCloseStatusView {
-  switch ((status ?? '').trim()) {
-    case 'collapsed':
-      return { label: 'Collapsed', tone: 'critical', problem: true, unmeasured: false };
-    case 'degraded':
-      return { label: 'Degraded', tone: 'warning', problem: true, unmeasured: false };
-    case 'never_fired':
-      return { label: 'Never fired', tone: 'warning', problem: true, unmeasured: false };
-    case 'disabled':
-      return { label: 'Turned off', tone: 'secondary', problem: false, unmeasured: false };
-    case 'no_volume':
-      return { label: 'Not measured — no volume', tone: 'outline', problem: false, unmeasured: true };
-    case 'insufficient_evidence':
-      return {
-        label: 'Not measured — insufficient evidence',
-        tone: 'outline',
-        problem: false,
-        unmeasured: true,
-      };
-    case 'ok':
-      return { label: 'Measured — within tolerance', tone: 'success', problem: false, unmeasured: false };
-    default:
-      return { label: 'Not measured', tone: 'outline', problem: false, unmeasured: true };
-  }
-}
 
 /**
  * Render one auto-close window's rate. An unavailable window returns the literal
@@ -234,50 +197,13 @@ export interface HealthDiagnosticsProps {
 }
 
 /**
- * The dashboard health surface. Self-fetching, self-hiding, and permission-aware.
+ * The full Analytics health surface. Self-fetching, self-hiding, and permission-aware.
  *
  * Both API methods are called through a `typeof` guard so a trimmed test/mock `api`
  * surface (or an older proxy) simply yields no panel rather than throwing.
  */
 export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnosticsProps) {
-  const canDiagnostics = useCan('settings', 'read');
-  const canMetrics = useCan('metrics', 'view');
-
-  const [health, setHealth] = React.useState<DiagnosticsHealth | null>(null);
-  const [autoClose, setAutoClose] = React.useState<AutoCloseHealth | null>(null);
-  const [busy, setBusy] = React.useState(false);
-  const alive = React.useRef(true);
-
-  React.useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-
-  const load = React.useCallback(async () => {
-    if (!canDiagnostics && !canMetrics) return;
-    setBusy(true);
-    try {
-      const [roll, ac] = await Promise.all([
-        canDiagnostics && typeof api.diagnosticsHealth === 'function'
-          ? api.diagnosticsHealth(windowHours).catch(() => null)
-          : Promise.resolve(null),
-        canMetrics && typeof api.autoCloseHealth === 'function'
-          ? api.autoCloseHealth(windowHours).catch(() => null)
-          : Promise.resolve(null),
-      ]);
-      if (!alive.current) return;
-      setHealth(roll);
-      setAutoClose(ac);
-    } finally {
-      if (alive.current) setBusy(false);
-    }
-  }, [canDiagnostics, canMetrics, windowHours]);
-
-  React.useEffect(() => {
-    void load();
-  }, [load]);
+  const { health, autoClose, busy, reload } = useHealthDiagnosticsData(windowHours);
 
   // Prefer the dedicated endpoint (it is the one the operator can grant on its own);
   // fall back to the identical block embedded in the roll-up.
@@ -290,8 +216,18 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
   const status = autoCloseStatusView(ac?.status);
   const corpus = health?.precedent_corpus ?? null;
   const migration = health?.schema_migration ?? null;
-  const alerts = health?.alerts ?? [];
   const unknowns = health?.unknowns ?? [];
+  const degradations = healthDegradations(health, autoClose);
+  const detectedFindings: DiagnosticsFinding[] = degradations.map((finding) => ({
+    id: finding.id,
+    severity: finding.severity,
+    title: finding.label,
+    detail: finding.detail,
+    // Migration SQL has its own selectable remediation block below the signal
+    // tiles; do not repeat it in the detected-problem row.
+    remediation:
+      finding.id === 'sql_schema_migration_failed' ? '' : finding.remediation,
+  }));
 
   const corpusBadge = !corpus ? null : !corpus.available ? (
     <Badge variant="outline">Not measured</Badge>
@@ -309,6 +245,7 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
     <section
       aria-label="Agent health diagnostics"
       data-testid="health-diagnostics"
+      data-health-state={degradations.length ? 'degraded' : 'healthy'}
       className={cn('space-y-3 border-y border-border/70 py-4', className)}
     >
       <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
@@ -319,13 +256,15 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
           </h2>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {/* Without the roll-up, "0 alerts" would only mean "we never asked". */}
-            {health ? healthSummaryText(alerts.length, unknowns.length) : PARTIAL_SCOPE_SUMMARY}
+            {health
+              ? healthSummaryText(detectedFindings.length, unknowns.length)
+              : PARTIAL_SCOPE_SUMMARY}
           </p>
         </div>
         <Button
           size="sm"
           variant="ghost"
-          onClick={() => void load()}
+          onClick={() => void reload()}
           disabled={busy}
           aria-label="Refresh agent health"
         >
@@ -396,12 +335,12 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
         </div>
       ) : null}
 
-      {alerts.length ? (
+      {detectedFindings.length ? (
         <div className="space-y-2">
           <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Detected problems ({fmtNumber(alerts.length)})
+            Detected problems ({fmtNumber(detectedFindings.length)})
           </p>
-          <FindingList findings={alerts} kind="alert" />
+          <FindingList findings={detectedFindings} kind="alert" />
         </div>
       ) : null}
 

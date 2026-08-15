@@ -262,6 +262,7 @@ class EventBus:
         data: Any,
         *,
         audience: Iterable[str] | None = None,
+        retain: bool = True,
     ) -> str:
         """Publish ``data`` to ``topic`` under the SSE ``event_type`` channel.
 
@@ -285,9 +286,10 @@ class EventBus:
         payload = _encode(data)
         self._seq += 1
         event = _Event(self._seq, topic, event_type, payload, aud)
-        # Replay history (bounded) — even with no subscribers, so a client that
-        # connects-then-reconnects can catch up via Last-Event-ID.
-        if self._history_per_topic > 0:
+        # Replay history is normally bounded and retained even with no subscribers.
+        # A producer may explicitly disable retention for identity-sensitive data
+        # whose audience key is mutable (for example a deleted/recreated username).
+        if retain and self._history_per_topic > 0:
             ring = self._history.get(topic)
             if ring is None:
                 ring = deque(maxlen=self._history_per_topic)

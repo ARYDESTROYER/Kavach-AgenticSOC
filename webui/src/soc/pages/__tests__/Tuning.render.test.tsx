@@ -613,7 +613,7 @@ describe('Tuning page', () => {
 
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Outcomes' }), { key: 'Enter' });
     fireEvent.click(screen.getByRole('button', { name: 'View full evidence' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/metrics'));
+    await waitFor(() => expect(window.location.hash).toBe('#/metrics?tab=effectiveness'));
   });
 
   it('keeps tuning available when the operator lacks the separate metrics grant', async () => {

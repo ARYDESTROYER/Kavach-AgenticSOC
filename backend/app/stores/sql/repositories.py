@@ -12,11 +12,23 @@ update/delete and never mutates a prior row.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import logging
 from typing import Any
 
-from sqlalchemy import Float, Integer, cast, func, select, update
+from sqlalchemy import (
+    Float,
+    Integer,
+    and_,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
@@ -24,8 +36,12 @@ from ...build_identity import stamp_new_record
 from ...config import Preferences
 from ...constants import (
     ActionType,
+    BATCH_JOBS_KEY,
+    BATCH_JOBS_NS,
     CASE_PIPELINE_USAGE_ROLES,
     CaseStatus,
+    JOBS_KEY,
+    JOBS_NS,
     OPEN_CASE_STATUSES,
     SourceSurface,
 )
@@ -46,6 +62,7 @@ from ..usage import (
     _processing_tier_summary,
     _top,
 )  # reuse the ES summary aggregation helpers
+from ..update_operations import UPDATE_OPERATIONS_NS
 from .models import AuditRow, CaseRow, KVRow, UsageRow
 
 logger = logging.getLogger("tlsoc.stores.sql")
@@ -707,6 +724,71 @@ class SqlKVStore(KVStore):
         except IntegrityError:
             # Lost the absent-row INSERT race; the caller reloads the winning revision.
             return False
+
+    async def factory_purge_strict(self) -> int:
+        """Atomically purge tenant KV rows and verify protected state in-transaction."""
+        jobs_pk = (JOBS_NS, JOBS_KEY)
+        batch_pk = (BATCH_JOBS_NS, BATCH_JOBS_KEY)
+        async with self._sm() as session:
+            async with session.begin():
+                if self._engine.dialect.name == "postgresql":
+                    # Existing-row FOR UPDATE locks do not fence inserts into a
+                    # namespace that was absent from the snapshot.  Factory reset
+                    # is rare and already globally quiescent, so take the explicit
+                    # table lock that makes this one transaction the whole KV
+                    # privacy boundary. SQLite's first DELETE obtains its database
+                    # write lock and needs no unsupported LOCK TABLE statement.
+                    await session.execute(
+                        text("LOCK TABLE kv IN ACCESS EXCLUSIVE MODE")
+                    )
+                rows = (
+                    await session.execute(
+                        select(KVRow).with_for_update()
+                    )
+                ).scalars().all()
+                before = {
+                    (str(row.namespace), str(row.key)): copy.deepcopy(row.value)
+                    for row in rows
+                }
+                if jobs_pk not in before or batch_pk not in before:
+                    raise RuntimeError(
+                        "factory purge requires durable Jobs and Batch fence rows"
+                    )
+                protected = {
+                    key: value
+                    for key, value in before.items()
+                    if key in {jobs_pk, batch_pk}
+                    or key[0] == UPDATE_OPERATIONS_NS
+                }
+                keep = or_(
+                    and_(KVRow.namespace == JOBS_NS, KVRow.key == JOBS_KEY),
+                    and_(
+                        KVRow.namespace == BATCH_JOBS_NS,
+                        KVRow.key == BATCH_JOBS_KEY,
+                    ),
+                    KVRow.namespace == UPDATE_OPERATIONS_NS,
+                )
+                result = await session.execute(delete(KVRow).where(~keep))
+                await session.flush()
+                remaining = (
+                    await session.execute(select(KVRow))
+                ).scalars().all()
+                after = {
+                    (str(row.namespace), str(row.key)): copy.deepcopy(row.value)
+                    for row in remaining
+                }
+                if after != protected:
+                    retained = len(set(after) - set(protected))
+                    missing = len(set(protected) - set(after))
+                    changed = sum(
+                        after[key] != protected[key]
+                        for key in set(after).intersection(protected)
+                    )
+                    raise RuntimeError(
+                        "factory KV purge verification failed "
+                        f"(retained={retained}, missing={missing}, changed={changed})"
+                    )
+                return int(result.rowcount or 0)
 
 
 class SqlConfigStore(ConfigRepository):

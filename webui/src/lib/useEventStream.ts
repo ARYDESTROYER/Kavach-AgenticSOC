@@ -196,7 +196,7 @@ export function useEventStream(
     // Known producer channels we explicitly listen on (EventSource delivers a typed
     // `event:` to addEventListener, NOT to onmessage). `message` (untyped) is also
     // wired for any default-channel frame.
-    const CHANNELS = ['message', 'inapp', 'case.activity', 'agent', 'overflow'];
+    const CHANNELS = ['message', 'inapp', 'case.activity', 'agent', 'job', 'overflow'];
 
     const openStream = () => {
       teardownEs();

@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
 import { ROUTES, renderRoute, FEATURES, type FeatureChild } from '../registry';
-import { pageHash, RouterProvider, useRoute } from '../router';
+import { optsFromHash, pageHash, RouterProvider, useRoute } from '../router';
 import { ThemeProvider } from '../theme';
 import { PrefsProvider } from '../prefs';
 import { AuthProvider } from '../auth';
@@ -124,13 +124,17 @@ describe('registry — Analytics children RBAC gates match their backend routes'
 
 describe('RouterProvider — initial hash normalization', () => {
   let currentPage = '';
+  let currentOpts: ReturnType<typeof useRoute>['opts'];
   function Reader() {
-    currentPage = useRoute().page;
+    const route = useRoute();
+    currentPage = route.page;
+    currentOpts = route.opts;
     return null;
   }
   afterEach(() => {
     window.location.hash = '';
     currentPage = '';
+    currentOpts = undefined;
   });
 
   it('preserves #/settings?s=<section> on initial load (no strip to bare #/settings)', () => {
@@ -178,6 +182,72 @@ describe('RouterProvider — initial hash normalization', () => {
       '#/case_manager?caseId=case%2Falpha%2001',
     );
     expect(pageHash('cases')).toBe('#/cases');
+    window.location.hash = '#/case_manager?caseId=case%2Falpha%2001';
+    expect(optsFromHash()).toEqual({
+      caseId: 'case/alpha 01',
+      status: undefined,
+      assignee: undefined,
+      tag: undefined,
+    });
+  });
+
+  it('round-trips the strict effectiveness analytics tab across refresh', () => {
+    expect(pageHash('metrics', { tab: 'effectiveness' })).toBe(
+      '#/metrics?tab=effectiveness',
+    );
+    window.location.hash = '#/metrics?tab=effectiveness';
+    expect(optsFromHash()).toEqual({ tab: 'effectiveness' });
+    act(() => {
+      render(
+        <RouterProvider>
+          <Reader />
+        </RouterProvider>,
+      );
+    });
+    expect(currentPage).toBe('metrics');
+    expect(currentOpts).toEqual({ tab: 'effectiveness' });
+
+    window.location.hash = '#/metrics?tab=cost';
+    expect(optsFromHash()).toBeUndefined();
+    window.location.hash = '#/metrics?tab=effectiveness&next=https%3A%2F%2Fevil.example';
+    expect(optsFromHash()).toBeUndefined();
+  });
+
+  it('round-trips only allowlisted filtered-case result options', () => {
+    expect(
+      pageHash('cases', {
+        status: 'active',
+        assignee: 'tier-2@example.com',
+        tag: 'needs-review',
+      }),
+    ).toBe('#/cases?status=active&assignee=tier-2%40example.com&tag=needs-review');
+    window.location.hash = '#/cases?assignee=tier-2%40example.com';
+    expect(optsFromHash()).toEqual({
+      caseId: undefined,
+      status: undefined,
+      assignee: 'tier-2@example.com',
+      tag: undefined,
+    });
+    window.location.hash = '#/cases?tag=ok&next=javascript%3Aalert%281%29';
+    expect(optsFromHash()).toBeUndefined();
+
+    const unicodeHash = pageHash('cases', { assignee: 'アナリスト', tag: '要確認' });
+    expect(unicodeHash).toBe(
+      '#/cases?assignee=%E3%82%A2%E3%83%8A%E3%83%AA%E3%82%B9%E3%83%88&tag=%E8%A6%81%E7%A2%BA%E8%AA%8D',
+    );
+    window.location.hash = unicodeHash;
+    expect(optsFromHash()).toEqual({
+      caseId: undefined,
+      status: undefined,
+      assignee: 'アナリスト',
+      tag: '要確認',
+    });
+    window.location.hash = '#/cases?assignee=analyst%E2%80%AEexe';
+    expect(optsFromHash()).toBeUndefined();
+    window.location.hash = '#/cases?tag=review%2Furgent';
+    expect(optsFromHash()).toBeUndefined();
+    window.location.hash = '#/cases?tag=review%ZZ';
+    expect(optsFromHash()).toBeUndefined();
   });
 });
 

@@ -38,6 +38,7 @@ RUN python -m pip install --no-cache-dir wheel==0.45.1 -r requirements.txt \
     && python -m pip check \
     && groupadd --gid 10001 tlsoc \
     && useradd --uid 10001 --gid tlsoc --create-home --home-dir /home/tlsoc tlsoc \
+    && install -d -o tlsoc -g tlsoc -m 0700 /var/lib/agentic-soc/jobs \
     && chown tlsoc:tlsoc /app
 
 # ``playbooks/`` is a sibling of ``app/`` by runtime contract

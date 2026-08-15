@@ -254,12 +254,17 @@ async def delete_runbook(
     return {"ok": True, "id": runbook_id, "index": index}
 
 
-@router.post("/runbooks/reindex")
+@router.post("/runbooks/reindex", deprecated=True)
 async def reindex_runbooks(
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("runbooks", "manage")),
 ) -> dict[str, Any]:
+    """Deprecated request-bound full reconciliation compatibility route.
+
+    New operator workflows submit ``runbook_reindex`` through ``POST /api/jobs`` so
+    the full reconciliation survives navigation and has a durable result.
+    """
     result = await state.rag.reindex_runbooks()
     await _audit(
         state,

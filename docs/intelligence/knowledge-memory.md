@@ -28,6 +28,23 @@ Use the Knowledge page to:
 Import and deletion require `rag:manage`. Seed material is protected from ordinary
 deletion; overriding that protection requires an explicit force operation.
 
+Knowledge import is a server-owned `rag_import` background job. The Console snapshots
+up to 20 validated documents and keeps aggregate UTF-8 payload headroom below the
+active registry's 8 MiB cap. After `202 Accepted`, navigation or reload does not stop
+the import; per-document progress and bounded failures remain in
+**Analytics → Jobs** and **Inbox**. Imported text is compacted out of the terminal job
+record. Deletion remains a direct, explicit document operation.
+
+`POST /api/rag/import` remains executable for compatibility clients, but it is an
+OpenAPI-deprecated, request-bound single-document primitive. It is not the Console
+workflow and does not gain the durable progress/recovery guarantees of `rag_import`.
+
+Resolved-case precedent bootstrap uses the same durable job surface. It is distinct
+from importing operator documents and retains the existing trust rules. The older
+direct `POST /api/rag/precedent/bootstrap` route is likewise executable but
+OpenAPI-deprecated and request-bound; new user workflows should submit a
+`precedent_bootstrap` Job.
+
 ## Trust labels
 
 Only administrator-controlled `runbook` knowledge and the system-verified `mitre` and
@@ -60,6 +77,7 @@ decision.
 - Test retrieval after large corpus changes.
 - Treat missing retrieval as degraded context, not permission to drop a case.
 
-See [Runbooks](runbooks.md), [Enrichment](enrichment.md),
+See [Runbooks](runbooks.md),
+[Background jobs](../operations/background-jobs.md), [Enrichment](enrichment.md),
 [MITRE and threat context](mitre-threat-context.md), and
 [Playbooks and approvals](../automation/playbooks-approvals.md).

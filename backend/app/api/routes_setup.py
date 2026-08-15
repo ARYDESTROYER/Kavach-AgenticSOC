@@ -132,8 +132,12 @@ async def setup_account(
     if not state.secrets.auth_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
 
-    # 2) once setup is complete the step is locked (a factory reset flips this back).
-    if bool(state.prefs.setup_complete):
+    # 2) once setup is complete the step is locked. The sole exception is a durable
+    # degraded factory boundary that has already confirmed the strict user store is
+    # empty; this lets a deployment without an environment admin bootstrap authority
+    # for the only operation the still-closed Job fence accepts: factory recovery.
+    recovery_bootstrap = await state.factory_recovery_bootstrap_allowed()
+    if bool(state.prefs.setup_complete) and not recovery_bootstrap:
         raise HTTPException(
             status_code=403, detail="setup already complete; account step is locked"
         )

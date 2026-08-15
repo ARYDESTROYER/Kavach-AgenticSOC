@@ -159,6 +159,7 @@ nav:
       - Install: getting-started/install.md
       - Deployment: operations/deployment.md
       - Configuration: operations/configuration.md
+      - Background jobs: operations/background-jobs.md
       - Security hardening: operations/security.md
       - Health and backup: operations/health-backup.md
       - Upgrades: operations/upgrades.md

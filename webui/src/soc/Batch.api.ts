@@ -44,8 +44,8 @@ export interface BatchJobRow {
   id: string;
   /** The provider the batch runs against (e.g. "anthropic"/"openai"). */
   provider: string;
-  /** The provider's opaque batch handle (NOT a secret), or null pre-submit. */
-  provider_batch_id: string | null;
+  /** Legacy detail-route field. The unified Jobs projection intentionally omits it. */
+  provider_batch_id?: string | null;
   /** A `BatchJobState` value. */
   state: BatchJobState;
   /** The model the batch runs. */

@@ -59,6 +59,48 @@ digest settings. Confirm the runtime secret survived the last restart and inspec
 receiving provider's rejection logs. Case persistence can succeed even when delivery
 fails.
 
+## A background job looks stuck
+
+Open **Analytics → Jobs** and record the job ID, status, progress, cancellation state,
+and safe failure summary. Navigation and reload do not stop accepted work. If SSE is
+unavailable, use **Refresh** or wait for the polling fallback. A running cancellation is
+cooperative and may wait for the next checkpoint; it does not undo completed items.
+
+After an abrupt backend stop, allow the five-minute lease to expire before treating a
+running record as orphaned. Recovery retries only repeat-safe ambiguous work; unsafe
+state-changing items fail closed. Operate one backend replica—CAS job claims do not make
+the wider process-local application active-active.
+
+Submission/retry and cancel do not return a successful `202`, and a terminal Inbox/SSE
+state does not project, until the corresponding transition audit is confirmed. During an
+audit-store interruption, inspect the durable reconciliation/audit evidence before
+assuming a queued or terminal state was lost; do not bypass the wait by resubmitting a
+state-changing operation under a new intent key.
+
+For a missing Download action, confirm the terminal result has an `artifact_id`. For a
+failed download, inspect the configured artifact volume, private file permissions,
+newest-50 retention, free space, and size/SHA-256 verification logs. Do not resubmit a
+state-changing job until its audit transitions and terminal state are conclusive.
+
+Scheduler health is a list projection and never appears in personal Inbox. A newly
+accepted local LLM Batch row creates notes only for its strict, frozen, maximum-200
+effective-`models:read` audience. Legacy rows, users/grants added later, and recipients
+past the bound remain list-only. Authorization-store outage leaves the outbox pending for
+retry; permission or account-generation loss removes and fail-closed filters the note.
+Batch notes carry no Cancel, Download, or completion toast. The Jobs list is authoritative
+for legacy, later-grant, and overflow records. See
+[Background jobs](background-jobs.md).
+
+An authenticated legacy client that calls `POST /api/admin/reset` or
+`POST /api/storage/lifecycle/apply` receives `410 Gone` with
+`durable_job_required`. Submit `tiered_reset` or `storage_lifecycle_apply` through
+`POST /api/jobs`; do not retry the retired synchronous mutation in a loop.
+
+If factory reset reports or leaves a privacy-boundary failure, the fenced/degraded state
+is intentional. Ordinary work remains blocked. Restore the failing dependency, perform
+fresh authorization, and submit only another factory-reset attempt; do not try a cases,
+sources, or unrelated Job as a way around the fence.
+
 ## UI is blank or stale
 
 Verify backend readiness through the nginx `/api` proxy, then inspect browser network

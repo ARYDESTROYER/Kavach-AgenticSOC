@@ -36,7 +36,7 @@ from typing import Any
 
 from ..constants import BASELINE_KEY, BASELINE_NS
 from ..models import BaselineState
-from .base import KVStore, kv_mutate
+from .base import KVStore, kv_mutate, kv_mutate_strict
 
 logger = logging.getLogger("tlsoc.stores.baseline")
 
@@ -136,6 +136,26 @@ class BaselineStore:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Persisting baseline (%s) failed (%s); continuing", sig, exc)
 
+    async def put_strict(
+        self, signature: str, buckets: dict[int, BaselineState]
+    ) -> None:
+        """Confirmed sibling of :meth:`put` for operator-health accounting.
+
+        The ingest producer still catches this at its fail-open boundary; exposing the
+        failure here merely prevents the Jobs/worker-health surface from calling an
+        unconfirmed baseline write successful.
+        """
+        sig = str(signature)
+
+        def _change(current: dict | None) -> dict:
+            series = _decode_series(current)
+            series[sig] = {int(b): st for b, st in (buckets or {}).items()}
+            return _encode_series(series)
+
+        await kv_mutate_strict(
+            self._kv, BASELINE_NS, BASELINE_KEY, _change, lock=self._lock
+        )
+
     async def list_signatures(self) -> list[str]:
         """Every signature that has a persisted baseline (sorted, stable)."""
         return sorted((await self._load()).keys())
@@ -157,6 +177,21 @@ class BaselineStore:
             return _encode_series(series)
 
         await kv_mutate(self._kv, BASELINE_NS, BASELINE_KEY, _change, lock=self._lock)
+        return removed["any"]
+
+    async def delete_strict(self, signature: str) -> bool:
+        """Confirmed eviction used by the realtime producer health projection."""
+        sig = str(signature)
+        removed = {"any": False}
+
+        def _change(current: dict | None) -> dict:
+            series = _decode_series(current)
+            removed["any"] = series.pop(sig, None) is not None
+            return _encode_series(series)
+
+        await kv_mutate_strict(
+            self._kv, BASELINE_NS, BASELINE_KEY, _change, lock=self._lock
+        )
         return removed["any"]
 
     async def clear(self) -> None:

@@ -485,7 +485,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'danger',
     group: 'organization',
     // Gate on `users:manage` to match BOTH the DangerZone body's own <Can> guard and the
-    // backend `require_admin` on POST /api/admin/reset — otherwise a principal with only
+    // backend `users:manage` admission/execution gate for tiered_reset Jobs — otherwise a principal with only
     // settings:manage saw the rail entry + outer guard pass but a blank (body-gated) panel.
     perm: { resource: 'users', action: 'manage' },
     title: 'Danger zone',

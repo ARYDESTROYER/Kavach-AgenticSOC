@@ -22,9 +22,12 @@ import {
   Bell,
   BellOff,
   CheckCheck,
+  Download,
   Inbox as InboxIcon,
+  LoaderCircle,
   RefreshCw,
   Settings2,
+  Square,
   Trash2,
   X,
 } from 'lucide-react';
@@ -34,6 +37,8 @@ import { toast } from 'sonner';
 import { useNavigateOptional, type Navigate } from '@/soc/router';
 import { humanizeAge, humanizeToken } from '@/lib/format';
 import { errorMessage } from '@/lib/errorMessage';
+import { api } from '@/lib/api';
+import { useEventStream } from '@/lib/useEventStream';
 import { cn } from '@/lib/cn';
 import { LoadingState } from '@/design-system';
 import {
@@ -55,6 +60,7 @@ import { Button } from '@/ui/button';
 import { Badge, type BadgeProps } from '@/ui/badge';
 import { Card, CardContent } from '@/ui/card';
 import { Separator } from '@/ui/separator';
+import { Progress } from '@/ui/progress';
 import {
   Sheet,
   SheetContent,
@@ -64,10 +70,19 @@ import {
 } from '@/ui/sheet';
 
 import { NotificationPrefs } from '@/soc/components/NotificationPrefs';
+import {
+  downloadJobArtifactById,
+  isActiveJobStatus,
+  JOBS_CHANGED_EVENT,
+  jobDestinationForKind,
+  jobDestinationFromUrl,
+} from '@/soc/jobs/jobs';
 
 /* ---------------------------------------------------------------- constants - */
 
 const PAGE_SIZE = 50;
+const POLL_MS = 15_000;
+const POLL_MS_LIVE = 60_000;
 
 type GroupMode = 'category' | 'feed';
 
@@ -119,6 +134,21 @@ function categoryVariant(cat: string): BadgeProps['variant'] {
   }
 }
 
+function jobStatusVariant(status?: string | null): BadgeProps['variant'] {
+  switch (status) {
+    case 'succeeded':
+      return 'success';
+    case 'partial':
+      return 'warning';
+    case 'failed':
+      return 'critical';
+    case 'cancelled':
+      return 'secondary';
+    default:
+      return 'info';
+  }
+}
+
 /* ------------------------------------------------------------- item row ----- */
 
 const InboxRow: React.FC<{
@@ -127,8 +157,27 @@ const InboxRow: React.FC<{
   onMarkRead: (item: InboxItem) => void;
   onDismiss: (item: InboxItem) => void;
   onOpenCase: (caseId: string) => void;
-}> = ({ item, busy, onMarkRead, onDismiss, onOpenCase }) => {
+  onOpenResult: (item: InboxItem) => void;
+  onCancelJob: (item: InboxItem) => void;
+  onDownloadJob: (item: InboxItem) => void;
+}> = ({
+  item,
+  busy,
+  onMarkRead,
+  onDismiss,
+  onOpenCase,
+  onOpenResult,
+  onCancelJob,
+  onDownloadJob,
+}) => {
   const unread = isUnread(item);
+  const relatedLlmBatch = item.ref?.kind === 'llm_batch' || item.result?.kind === 'llm_batch';
+  const activeJob = Boolean(item.job_id && isActiveJobStatus(item.job_status));
+  const resultDestination =
+    jobDestinationFromUrl(item.url) ?? jobDestinationForKind(item.result?.kind);
+  const done = Math.max(0, Number(item.progress?.done || 0));
+  const total = Math.max(0, Number(item.progress?.total || 0));
+  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   return (
     <li
       className={cn(
@@ -148,6 +197,11 @@ const InboxRow: React.FC<{
             <Badge variant={severityVariant(item.severity)}>
               {/* UNTRUSTED severity → humanised plain text */}
               {humanizeToken(item.severity)}
+            </Badge>
+          ) : null}
+          {item.job_id && item.job_status ? (
+            <Badge variant={jobStatusVariant(item.job_status)}>
+              {humanizeToken(item.job_status)}
             </Badge>
           ) : null}
           {unread ? (
@@ -175,6 +229,31 @@ const InboxRow: React.FC<{
           </p>
         ) : null}
 
+        {item.job_id && item.progress ? (
+          <div
+            className="space-y-1.5 pt-1"
+            role={activeJob ? 'status' : undefined}
+            aria-label={`${done} of ${total} ${item.progress.unit} complete`}
+          >
+            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                {activeJob ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden /> : null}
+                {relatedLlmBatch
+                  ? activeJob
+                    ? 'Related LLM Batch running'
+                    : 'Related LLM Batch complete'
+                  : activeJob
+                    ? 'Running in the background'
+                    : 'Background job complete'}
+              </span>
+              <span className="tabular-nums">
+                {done.toLocaleString()} / {total.toLocaleString()} {item.progress.unit}
+              </span>
+            </div>
+            <Progress value={percent} className="h-1.5" />
+          </div>
+        ) : null}
+
         <div className="flex flex-wrap items-center gap-2 pt-1">
           {item.case_id ? (
             <Button
@@ -185,6 +264,36 @@ const InboxRow: React.FC<{
             >
               Open case
               <ArrowRight className="size-3.5" aria-hidden />
+            </Button>
+          ) : null}
+          {item.job_id && !activeJob && resultDestination ? (
+            <Button variant="outline" size="sm" className="h-7" onClick={() => onOpenResult(item)}>
+              View result
+              <ArrowRight className="size-3.5" aria-hidden />
+            </Button>
+          ) : null}
+          {item.job_id && item.result?.artifact_id ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              disabled={busy}
+              onClick={() => onDownloadJob(item)}
+            >
+              <Download className="size-3.5" aria-hidden />
+              Download
+            </Button>
+          ) : null}
+          {item.job_id && activeJob && !relatedLlmBatch ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              disabled={busy || item.job_status === 'cancelled'}
+              onClick={() => onCancelJob(item)}
+            >
+              <Square className="size-3.5" aria-hidden />
+              Cancel
             </Button>
           ) : null}
           {unread ? (
@@ -199,16 +308,18 @@ const InboxRow: React.FC<{
               Mark read
             </Button>
           ) : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-muted-foreground hover:text-critical"
-            disabled={busy}
-            onClick={() => onDismiss(item)}
-          >
-            <Trash2 className="size-3.5" aria-hidden />
-            Dismiss
-          </Button>
+          {!activeJob ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-muted-foreground hover:text-critical"
+              disabled={busy}
+              onClick={() => onDismiss(item)}
+            >
+              <Trash2 className="size-3.5" aria-hidden />
+              Dismiss
+            </Button>
+          ) : null}
         </div>
       </div>
     </li>
@@ -257,6 +368,7 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
   const [error, setError] = React.useState<unknown>(null);
 
   const [unreadOnly, setUnreadOnly] = React.useState(false);
+  const unreadOnlyRef = React.useRef(false);
   const [groupMode, setGroupMode] = React.useState<GroupMode>('feed');
   const [prefsOpen, setPrefsOpen] = React.useState(false);
   // ids with an in-flight per-row action (mark-read / dismiss) — disables their buttons.
@@ -276,7 +388,7 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
 
   const load = React.useCallback(
     async (opts?: { unread?: boolean }) => {
-      const unread = opts?.unread ?? unreadOnly;
+      const unread = opts?.unread ?? unreadOnlyRef.current;
       const seq = ++seqRef.current;
       setLoading(true);
       setError(null);
@@ -292,16 +404,41 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
         if (mountedRef.current && seq === seqRef.current) setLoading(false);
       }
     },
-    [unreadOnly],
+    [],
   );
 
-  React.useEffect(() => {
+  const onInboxEvent = React.useCallback(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [load]);
+  const { live } = useEventStream(['notifications', 'inbox', 'jobs'], {
+    enabled: true,
+    onEvent: onInboxEvent,
+  });
+
+  React.useEffect(() => {
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void load();
+    };
+    tick();
+    const interval = window.setInterval(tick, live ? POLL_MS_LIVE : POLL_MS);
+    const onVisibility = () => {
+      if (!document.hidden) tick();
+    };
+    const onJobsChanged = () => tick();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+    };
+  }, [live, load]);
 
   const setUnreadFilter = React.useCallback(
     (next: boolean) => {
+      unreadOnlyRef.current = next;
       setUnreadOnly(next);
       void load({ unread: next });
     },
@@ -402,6 +539,47 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
       navigate('cases', { caseId });
     },
     [navigate],
+  );
+
+  const openResult = React.useCallback(
+    (item: InboxItem) => {
+      const destination =
+        jobDestinationFromUrl(item.url) ?? jobDestinationForKind(item.result?.kind);
+      if (!destination) return;
+      navigate(destination.page, destination.opts);
+    },
+    [navigate],
+  );
+
+  const cancelJob = React.useCallback(
+    (item: InboxItem) => {
+      if (!item.job_id) return;
+      void withBusy(item.id, async () => {
+        try {
+          await api.jobs.cancel(item.job_id as string);
+          toast.info('Cancellation requested. The job will stop at a safe checkpoint.');
+          await load();
+        } catch (e) {
+          toast.error(errorMessage(e, 'Could not request cancellation.'));
+        }
+      });
+    },
+    [load, withBusy],
+  );
+
+  const downloadJob = React.useCallback(
+    (item: InboxItem) => {
+      if (!item.job_id || !item.result?.artifact_id) return;
+      void withBusy(item.id, async () => {
+        try {
+          const filename = await downloadJobArtifactById(item.job_id as string, item.result?.kind);
+          toast.success(`Downloaded ${filename}.`);
+        } catch (e) {
+          toast.error(errorMessage(e, 'Could not download the job artifact.'));
+        }
+      });
+    },
+    [withBusy],
   );
 
   /* ---- derived counts + grouping ---- */
@@ -558,6 +736,9 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
                   onMarkRead={markRead}
                   onDismiss={dismiss}
                   onOpenCase={openCase}
+                  onOpenResult={openResult}
+                  onCancelJob={cancelJob}
+                  onDownloadJob={downloadJob}
                 />
               ))}
             </GroupBlock>
@@ -575,6 +756,9 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
                   onMarkRead={markRead}
                   onDismiss={dismiss}
                   onOpenCase={openCase}
+                  onOpenResult={openResult}
+                  onCancelJob={cancelJob}
+                  onDownloadJob={downloadJob}
                 />
               ))}
             </ul>

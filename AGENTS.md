@@ -81,6 +81,7 @@ Components, loosely coupled:
 Authoritative companion docs (keep them in sync when you change behavior):
 `docs/HANDOFF.md` (onboarding — START HERE), `README.md` (overview), `DEPLOY.md`
 (deploy), `docs/USAGE.md` (use + examples),
+`docs/operations/background-jobs.md` (durable work, cancellation, recovery, artifacts),
 `docs/TROUBLESHOOTING.md` (failures), `COMPATIBILITY.md` (upstream compatibility),
 `docs/ENVIRONMENT.md` (environments), `docs/VIGIL_STUDY.md` (Vigil study + overhaul
 plan), `docs/development/ui-standard.md` (current Console visual/interaction
@@ -256,8 +257,15 @@ backend/app/
                      branding, dependency-free, fail-open) · sample_analysis (deterministic
                      field-mapping suggestion from a pasted sample record — no LLM, no
                      persistence of the sample itself, #9-safe) · storage_lifecycle
-                     (explicit capability preview/apply; Elasticsearch ILM only for
-                     append-only audit+usage; no case rollover/delete/Glacier mutation) ·
+                     (explicit capability preview + Job-only apply; Elasticsearch ILM
+                     only for append-only audit+usage; no case rollover/delete/Glacier
+                     mutation) ·
+                     jobs (durable in-process runner over strict-CAS registry + 5m
+                     renewable leases; actor-scoped Inbox/SSE progress, cooperative
+                     cancellation, restart recovery, terminal compaction, verified
+                     persistent ZIP artifacts; process-local concurrency does not make
+                     the application multi-replica safe) · investigation_gate
+                     (process-local foreground-priority cap reserving ingest headroom) ·
                      agent_improvement (read-only aggregate comparison of the last 7
                      complete UTC days against the preceding 28; insufficient evidence
                      stays explicit and never becomes a composite score)
@@ -308,6 +316,11 @@ backend/app/
                      (full-set active-view reconciliation + durable success anchor) ·
                      baseline (per-signature online stats) · batch_jobs (resume-safe,
                      per-`custom_id` retrieved-dedup → exactly-one UsageDoc/result #6) ·
+                     jobs (one strict-CAS bounded registry document; self-scoped jobs,
+                     leases, intent idempotency, item state, bounded failures,
+                     audit-before-visible transitions/reconciliation, and sanitized
+                     factory receipt; a privacy failure stays fenced and permits only
+                     a fresh authorized factory retry; no new index/table) ·
                      2 Round-5 KV stores (same zero-migration pattern): dashboards
                      (per-user custom dashboards) · rule_versions (rule version ledger +
                      rollback) · noise_counters (Round-7: durable per-hour raw-alert-by-
@@ -321,20 +334,23 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **27 `routes_*.py` feature routers**, ALL
+                     + /sources/health) + **29 `routes_*.py` feature routers**, ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
                      routes_standup · routes_enrichment · routes_models · routes_inapp ·
                      routes_cases_collab · routes_triage · routes_roles; Round-4's
                      routes_tuning · routes_campaigns · routes_baseline · routes_batch ·
-                     routes_reset [admin + fresh-auth, tiered, never wipes env secrets] ·
+                     routes_reset [deprecated direct mutation returns 410; canonical
+                     admin + fresh-auth tiered reset is a Job and never wipes env secrets] ·
                      routes_setup [OOBE first-admin, strong-pw, self-locking]; Round-5's
                      routes_rules [Detection & Rules editor/versioning] ·
                      routes_dashboards [per-user custom dashboards] + **4 more extracted
                      from the base router** — routes_notifications [`/notifications/*`],
                      routes_prefs [`/branding`, `/prefs/*`, `/terminology`, `/views*`],
-                     routes_rag [`/rag/*`, `/memory*`], routes_search [`/search`,
+                     routes_rag [`/rag/*`, `/memory*`; direct RAG import and precedent
+                     bootstrap remain executable OpenAPI-deprecated compatibility
+                     primitives], routes_search [`/search`,
                      `/audit`] (none of these paths remain in `routes.py`; there is no
                      `/branding/presets` endpoint). All paths byte-identical across the
                      decomposition; +`POST /api/triage/preview-decision` [rule Test/Preview
@@ -349,16 +365,30 @@ backend/app/
                      documented KV-catalog materialization limit), ES PIT consistency,
                      actor/scope/snapshot-bound signed cursors, explicit weaker-backend
                      semantics, and Intelligence catalog export with sanitized operator
-                     runbook/playbook source plus safe bundled refs]
+                     runbook/playbook source plus safe bundled refs; direct archive and
+                     segment are executable OpenAPI-deprecated compatibility primitives,
+                     while Console/user workflows submit Jobs]
                      + routes_storage
-                     [`GET/PUT /api/storage/lifecycle`, pure preview, freshly authenticated
-                     explicit apply limited to supported owned-state targets];
+                     [`GET/PUT /api/storage/lifecycle`, pure preview; deprecated direct
+                     apply returns 410 and canonical fresh-auth apply is a Job limited
+                     to supported owned-state targets];
                      routes_runbooks [dedicated `runbooks:read/manage` bundled/operator
-                     catalog CRUD + targeted/full RAG reconciliation] · routes_releases
+                     catalog CRUD + targeted/full RAG reconciliation; direct full-catalog
+                     reindex is executable but OpenAPI-deprecated, targeted remains
+                     direct] · routes_releases
                      [public Stable/Testing source discovery only] · routes_schedulers
-                     [read-only worker cadence/attempt/success/error health] ·
+                     [read-only threshold-tuner/campaign/Batch cadence-loop health plus
+                     event-driven `baseline_producer` `on_ingest` health] ·
                      routes_telemetry [query-backed, versioned telemetry-gap evidence;
                      connector absence alone never creates a recommendation] ·
+                     routes_diagnostics [read-only precedent/migration/auto-close health] ·
+                     routes_jobs [`POST/GET /api/jobs`, self-scoped list/detail/cancel,
+                     verified artifact download, related permission-scoped LLM Batch
+                     and scheduler projections; successful submit/retry/cancel plus
+                     terminal Inbox/SSE are audit-confirmed before response/projection;
+                     new local Batch rows freeze a strict,
+                     generation-bound effective-`models:read` Inbox audience (max 200),
+                     while legacy/unselected rows remain list-only] ·
                      mounted in main.py · deps (require_auth + require_permission +
                      require_fresh_auth + custom-role union enforcement + session check) ·
                      state.py (DI hub; exposes enrichment_registry + event_bus) · main.py
@@ -379,11 +409,17 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      [custom-dashboard builder/grid/widget registry, LAZY react-grid-layout] ·
                      hooks/*; pages/* incl. Users/Security/Approvals/Knowledge/Memory + Round-3
                      Models/Roles/Inbox + Analytics tabs (Operational/Performance/Posture/
-                     Effectiveness/Cost; Effectiveness is aggregate-only and Cost exposes
-                     actual Standard/Flex/Batch/Unconfirmed ledger tiers) + CaseDetail chips/trace/collab +
+                     Effectiveness/Cost) + Jobs (personal durable application work,
+                     related permission-scoped LLM Batch rows with bounded new-job Inbox
+                     audience/outbox projection, list-only scheduler health;
+                     global SSE observer + polling fallback + deduplicated terminal toasts;
+                     Effectiveness owns the full Agent-health diagnostics while Overview
+                     is degradation-only; Cost exposes actual Standard/Flex/Batch/
+                     Unconfirmed ledger tiers) + CaseDetail chips/trace/collab +
                      CaseManager (canonical detail workspace; Active/All split-pane
                      queue, persisted accessible desktop resize, selection +
-                     permission-gated bulk work, full six-tab detail; Cases list
+                     permission-gated bulk work submitted as immutable background-job
+                     snapshots, full six-tab detail; Cases list
                      hands an opened row to the exact Case Manager record) + Chat
                      (searchable 264px desktop history rail/mobile Sheet, newest-first
                      durable per-user transcripts, one docked composer; Case Manager

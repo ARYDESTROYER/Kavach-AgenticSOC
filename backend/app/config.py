@@ -169,6 +169,11 @@ class Secrets(BaseSettings):
         default=180.0, ge=30.0, le=300.0
     )
 
+    # Private, server-only output directory for durable Jobs artifacts. The API
+    # persists opaque artifact ids, never host paths, and derives every download
+    # path beneath this root with containment/symlink checks.
+    jobs_artifact_dir: str = "./data/job-artifacts"
+
     # --- Auth (Wave 2; OPTIONAL — default OFF so the no-auth "old version" is the
     # out-of-the-box behaviour and fully available). Flip ``auth_enabled`` to require
     # a JWT login on every /api route except the small public allowlist. Credentials

@@ -18,7 +18,12 @@ from .api.deps import require_auth
 from .api.routes import router
 from .config import Secrets
 from .logging_setup import configure_logging
-from .middleware import CSRFMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
+from .middleware import (
+    CSRFMiddleware,
+    MutationAdmissionMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from .state import AppState
 
 logger = logging.getLogger("tlsoc.main")
@@ -82,6 +87,12 @@ app = FastAPI(
                 "read-only and owns only Agentic SOC application state.",
     lifespan=lifespan,
 )
+
+# Always-on tenant mutation admission. It is a no-op during normal operation and
+# becomes the process-local HTTP drain boundary only while a durable factory-reset
+# Job owns the corresponding CAS fence. Added before security middleware so response
+# hardening remains outermost.
+app.add_middleware(MutationAdmissionMiddleware)
 
 # --- Security middleware (Wave 2; env-toggleable, independent of auth). Added in
 # this order so security headers are OUTERMOST (cover every response incl. 401/403).

@@ -86,7 +86,7 @@ import { BarList, type BarListItem } from '@/soc/components/BarList';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { AutomationNudge } from './AutomationNudge';
-import { HealthDiagnostics } from '@/soc/components/HealthDiagnostics';
+import { HealthDegradationIndicator } from '@/soc/components/HealthDegradationIndicator';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { usePosture } from '@/soc/hooks/usePosture';
 import { Card, CardContent } from '@/ui/card';
@@ -270,6 +270,10 @@ function caseArrivalTrend(
   return observed > 0 ? buckets : undefined;
 }
 
+function formatWholePercent(value: number): string {
+  return `${Math.round(value)}%`;
+}
+
 /** One KPI-strip tile descriptor (built in a memo, rendered as a <KpiTile>). */
 interface KpiItem {
   label: string;
@@ -283,6 +287,7 @@ interface KpiItem {
   countTo?: number;
   format?: (n: number) => string;
   spark?: number[];
+  sparkMinPoints?: number;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -833,7 +838,17 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   // Server-side posture rollup — the AUTHORITATIVE lifecycle (MTTA/MTTR/dwell/MTTD p50 +
   // SLA + quality rates). `'prev'` also asks for the period-over-period `compare` block.
-  const { data: posture, reload: reloadPosture } = usePosture(hours, 'prev');
+  const {
+    data: postureResponse,
+    loading: postureLoading,
+    error: postureError,
+    reload: reloadPosture,
+  } = usePosture(hours, 'prev');
+  // Defensive echo check at the rendering boundary. The hook already rejects a
+  // mismatched payload; keeping this projection here makes every posture consumer
+  // visibly tied to the selected window and prevents a future hook regression from
+  // reintroducing cross-window tiles.
+  const posture = postureResponse?.window_hours === hours ? postureResponse : null;
 
   /** Retry only the LLM spend slice; healthy dashboard siblings never reload or blank. */
   const retryUsage = React.useCallback(async () => {
@@ -1178,7 +1193,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const kpis: KpiItem[] = React.useMemo(() => {
     const compare = posture?.compare;
     const fpRate = posture?.quality?.false_positive_rate;
-    const autoResolved = posture?.quality?.auto_closed_cases ?? autonomy.autoClosed;
+    const fpPercent = typeof fpRate === 'number' ? Math.round(fpRate * 100) : undefined;
+    const autoResolved = posture?.quality?.auto_closed_cases;
     const escalated = metrics?.needs_human_cases ?? autonomy.escalated;
     const { fromMs, toMs } = resolveRange(range);
     const openTrend = caseArrivalTrend(cases, fromMs, toMs, (row) =>
@@ -1197,6 +1213,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
     const resolvedTrend = caseArrivalTrend(cases, fromMs, toMs, (row) =>
       isAutoClosedByAI(row.status, row.decision_by),
     );
+    const previousFpRate = compare?.false_positive_rate?.prev;
+    // Both spark points come from the same authoritative server comparison as the
+    // numeral and delta. Never mix the bounded case sample into this tile.
+    const falsePositiveTrend =
+      typeof fpRate === 'number' && typeof previousFpRate === 'number'
+        ? [previousFpRate * 100, fpRate * 100]
+        : undefined;
+    const postureSub = postureLoading
+      ? `Loading ${windowLabel(hours)}`
+      : postureError
+        ? 'Posture unavailable'
+        : undefined;
     return [
       {
         label: 'Open Cases',
@@ -1245,10 +1273,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
       },
       {
         label: 'False Positive Rate',
-        value: ratioPct(fpRate),
-        sub: 'Closed as false pos.',
+        value: typeof fpPercent === 'number' ? `${fpPercent}%` : DASH,
+        countTo: fpPercent,
+        format: formatWholePercent,
+        sub: postureSub ?? 'Closed as false pos.',
         icon: Percent,
         accent: 'medium',
+        spark: falsePositiveTrend,
+        sparkMinPoints: 2,
         goodDirection: 'down',
         delta: toKpiDelta(deltaView(compare?.false_positive_rate)),
         onClick: navigate ? () => navigate('metrics', { tab: 'posture' }) : undefined,
@@ -1256,9 +1288,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
       {
         label: 'Auto-Resolved',
         value: fmtNumber(autoResolved),
-        countTo: autoResolved,
+        countTo: typeof autoResolved === 'number' ? autoResolved : undefined,
         format: fmtInt,
-        sub: 'Closed by agent',
+        sub: postureSub ?? 'Closed by agent',
         icon: ShieldCheck,
         accent: 'success',
         spark: resolvedTrend,
@@ -1268,7 +1300,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
           : undefined,
       },
     ];
-  }, [derived, metrics, cases, range, navWindow, autonomy.escalated, autonomy.autoClosed, posture, navigate]);
+  }, [
+    derived,
+    metrics,
+    cases,
+    range,
+    navWindow,
+    autonomy.escalated,
+    posture,
+    postureLoading,
+    postureError,
+    hours,
+    navigate,
+  ]);
 
   // ----- Noise-Reduction funnel drill-through ----------------------------- //
   const onStageClick = React.useCallback(
@@ -1372,13 +1416,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         />
       ) : null}
 
-      {/* Agent health — the previously SILENT failures (auto-close collapse, a starved
-          precedent corpus, a failed state-schema migration) belong on the dashboard, so
-          they sit above the fold rather than in a settings page nobody opens. The panel
-          fetches its own RBAC-gated signals and self-hides when neither grant is held or
-          neither endpoint answered; the `typeof` guard keeps a trimmed mock surface (and
-          an older proxy) from ever calling a method it does not have. */}
-      {healthAvailable ? <HealthDiagnostics windowHours={hours} /> : null}
+      {/* Healthy diagnostics cost no Overview space. A positively detected failure
+          becomes one compact strip and one canonical Analytics drill-through. The
+          component retains the independent RBAC and older-proxy guards. */}
+      {healthAvailable ? (
+        <HealthDegradationIndicator windowHours={hours} onNavigate={navigate} />
+      ) : null}
 
       {error ? (
         <LoadError error={error} title="Could not load the dashboard" onRetry={refreshAll} />
@@ -1421,6 +1464,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   countTo={kpi.countTo}
                   format={kpi.format}
                   spark={kpi.spark}
+                  sparkMinPoints={kpi.sparkMinPoints}
                   onClick={kpi.onClick}
                 />
               ))}

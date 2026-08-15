@@ -1,30 +1,38 @@
 /**
- * BatchJobs — the async BATCH-inference job viewer (Round 4 / Wave 4).
+ * Jobs — durable personal work plus permission-scoped operational projections.
  *
  * A READ-ONLY table of the durable async LLM batch-job registry: which low-urgency
  * investigations were routed through a provider's discounted async batch API (~50%
  * off) and how far each has progressed (submit -> poll -> retrieve -> retrieved).
  *
- * RBAC: gated behind <ProtectedRoute resource="models" action="read"> (the same grant
- * the backend routes enforce). There are NO mutating controls here — submit/poll/
- * retrieve is driven out-of-band by the batch service.
+ * Every authenticated actor can see their own application jobs. Related LLM Batch
+ * rows/config require models:read; scheduler health is projected only when the server
+ * authorizes automation:read. System projections never become personal Inbox items.
  *
  * #9: every value (job id / provider / model / state) is attacker-influenceable and is
  * rendered as PLAIN text / in a fenced CodeBlock — never HTML, never re-fed into a
- * prompt. No secret is ever shown (a job carries no credential; `provider_batch_id` is
- * the provider's opaque handle). #6: this viewer never records a ledger row — the batch
- * service writes exactly one UsageDoc per result at the discounted rate. #3: a batch
- * job is advisory plumbing and never touches `decide()`.
+ * prompt. The unified projection excludes provider handles and raw provider errors;
+ * no credential or provider-private diagnostic is shown. #6: this viewer never records
+ * a ledger row — the batch service writes exactly one UsageDoc per result at the
+ * discounted rate. #3: a batch job is advisory plumbing and never touches `decide()`.
  */
 import * as React from 'react';
-import { Layers, Percent, Info } from 'lucide-react';
+import { Activity, Download, Info, Layers, Percent, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { LoadingState } from '@/design-system';
 import { errorMessage } from '@/lib/errorMessage';
-import type { BatchConfig } from '@/lib/types';
+import type {
+  BackgroundJob,
+  BackgroundJobStatus,
+  BatchConfig,
+  SystemWorkerHealth,
+} from '@/lib/types';
+import { useEventStream } from '@/lib/useEventStream';
 import { fmtNumber, humanizeAge, humanizeToken, DASH } from '@/lib/format';
 import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
+import { Progress } from '@/ui/progress';
 import { Switch } from '@/ui/switch';
 import { Label } from '@/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
@@ -37,7 +45,7 @@ import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
-import { ProtectedRoute, Can, useCan } from '@/soc/components/Can';
+import { Can, useCan } from '@/soc/components/Can';
 import { LabeledSlider } from '@/soc/components/LabeledSlider';
 import { TagInput } from '@/soc/components/TagInput';
 import { EffectiveConfigPreview } from '@/soc/components/rules/EffectiveConfigPreview';
@@ -53,6 +61,12 @@ import {
   BATCH_STATE_ORDER,
   type BatchJobRow,
 } from '@/soc/Batch.api';
+import {
+  downloadJobArtifact,
+  isActiveJobStatus,
+  JOBS_CHANGED_EVENT,
+  jobSummary,
+} from '@/soc/jobs/jobs';
 
 /** Backend defaults (mirror `config.BatchConfig`). */
 const DEFAULT_BATCH_CONFIG: Required<BatchConfig> = {
@@ -82,6 +96,23 @@ const SEVERITY_NAME: Record<number, string> = {
   6: 'Fatal',
 };
 
+const JOB_POLL_MS = 15_000;
+const JOB_POLL_MS_LIVE = 60_000;
+
+function JobStatusBadge({ status }: { status: BackgroundJobStatus }) {
+  const variant =
+    status === 'succeeded'
+      ? 'success'
+      : status === 'partial'
+        ? 'warning'
+        : status === 'failed'
+          ? 'critical'
+          : status === 'cancelled'
+            ? 'secondary'
+            : 'info';
+  return <Badge variant={variant}>{humanizeToken(status)}</Badge>;
+}
+
 /** A controlled, colour-coded state badge (plain-text label, #9). */
 function StateBadge({ state }: { state: string }) {
   const meta = BATCH_STATE_META[state] ?? { label: humanizeToken(state), variant: 'secondary' as const };
@@ -103,20 +134,24 @@ function DiscountPill({ discount }: { discount: number }) {
 }
 
 export default function BatchJobs() {
-  return (
-    <ProtectedRoute resource="models" action="read">
-      <BatchJobsInner />
-    </ProtectedRoute>
-  );
+  return <BatchJobsInner />;
 }
 
 export function BatchJobsInner() {
+  const canReadModels = useCan('models', 'read');
   const canManage = useCan('models', 'manage');
+  const [applicationJobs, setApplicationJobs] = React.useState<BackgroundJob[]>([]);
   const [rows, setRows] = React.useState<BatchJobRow[]>([]);
+  const [workers, setWorkers] = React.useState<{
+    scheduler_runtime_running: boolean;
+    workers: Record<string, SystemWorkerHealth>;
+  } | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
 
-  const cfg = useConfigEditor<BatchConfig>(api.batch, DEFAULT_BATCH_CONFIG);
+  const cfg = useConfigEditor<BatchConfig>(api.batch, DEFAULT_BATCH_CONFIG, {
+    enabled: canReadModels,
+  });
   const draft = { ...DEFAULT_BATCH_CONFIG, ...cfg.draft };
 
   const saveConfig = React.useCallback(async () => {
@@ -132,20 +167,53 @@ export function BatchJobsInner() {
     setLoading(true);
     setError(null);
     try {
-      const res = await batchApi.jobs();
-      setRows(res?.jobs ?? []);
+      const res = await api.jobs.list({ limit: 100, offset: 0 });
+      setApplicationJobs(Array.isArray(res.jobs) ? res.jobs : []);
+      setWorkers(res.system_workers ?? null);
+      if (!canReadModels) {
+        setRows([]);
+      } else if (res.related === undefined) {
+        // Compatibility with a backend that has the durable personal registry but
+        // predates the additive related projection.
+        const legacy = await batchApi.jobs();
+        setRows(legacy?.jobs ?? []);
+      } else {
+        setRows(res.related?.llm_batches ?? []);
+      }
     } catch (e) {
       setError(e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canReadModels]);
 
-  React.useEffect(() => {
+  const onJobsEvent = React.useCallback(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     void load();
   }, [load]);
+  const { live } = useEventStream(['jobs'], { enabled: true, onEvent: onJobsEvent });
 
-  const initialLoading = loading && rows.length === 0;
+  React.useEffect(() => {
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void load();
+    };
+    tick();
+    const interval = window.setInterval(tick, live ? JOB_POLL_MS_LIVE : JOB_POLL_MS);
+    const onVisibility = () => {
+      if (!document.hidden) tick();
+    };
+    const onJobsChanged = () => tick();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener(JOBS_CHANGED_EVENT, onJobsChanged);
+    };
+  }, [live, load]);
+
+  const initialLoading = loading && applicationJobs.length === 0 && rows.length === 0;
 
   // ---- Aggregate stats over the loaded jobs (all client-side, read-only). ---- //
   const totals = React.useMemo(() => {
@@ -156,6 +224,125 @@ export function BatchJobsInner() {
     const retrieved = rows.reduce((a, r) => a + (r.retrieved || 0), 0);
     return { total, active, done, requests, retrieved };
   }, [rows]);
+
+  const cancelJob = React.useCallback(
+    async (job: BackgroundJob) => {
+      try {
+        await api.jobs.cancel(job.job_id);
+        toast.info('Cancellation requested. The job will stop at a safe checkpoint.');
+        await load();
+      } catch (e) {
+        toast.error(errorMessage(e, 'Could not request cancellation.'));
+      }
+    },
+    [load],
+  );
+
+  const downloadArtifact = React.useCallback(async (job: BackgroundJob) => {
+    if (!job.result?.artifact_id) return;
+    try {
+      const filename = await downloadJobArtifact(job);
+      toast.success(`Downloaded ${filename}.`);
+    } catch (e) {
+      toast.error(errorMessage(e, 'Could not download the job artifact.'));
+    }
+  }, []);
+
+  const applicationColumns = React.useMemo<DataTableColumn<BackgroundJob>[]>(
+    () => [
+      {
+        id: 'job',
+        header: 'Job',
+        lockVisible: true,
+        cell: (job) => (
+          <span className="space-y-0.5">
+            <span className="block text-sm font-medium text-foreground">
+              {humanizeToken(job.kind)}
+            </span>
+            <InlineCode>{job.job_id}</InlineCode>
+          </span>
+        ),
+      },
+      {
+        id: 'status',
+        header: 'Status',
+        cell: (job) => <JobStatusBadge status={job.status} />,
+      },
+      {
+        id: 'progress',
+        header: 'Progress',
+        cell: (job) => {
+          const done = Math.max(0, Number(job.progress.done || 0));
+          const total = Math.max(0, Number(job.progress.total || 0));
+          const value = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+          return (
+            <span className="block min-w-44 space-y-1">
+              <span className="flex justify-between gap-2 text-xs text-muted-foreground">
+                <span>{job.progress.unit}</span>
+                <span className="tabular-nums">{done.toLocaleString()} / {total.toLocaleString()}</span>
+              </span>
+              <Progress value={value} className="h-1.5" />
+            </span>
+          );
+        },
+      },
+      {
+        id: 'result',
+        header: 'Result',
+        cell: (job) => (
+          <span className="block max-w-80 text-xs text-muted-foreground">
+            {jobSummary(job)}
+            {job.failures_truncated > 0
+              ? ` ${job.failures_truncated.toLocaleString()} additional failures omitted.`
+              : ''}
+          </span>
+        ),
+      },
+      {
+        id: 'created',
+        header: 'Created',
+        align: 'right',
+        cell: (job) => (
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
+            {humanizeAge(job.created_at)}
+          </span>
+        ),
+      },
+      {
+        id: 'actions',
+        header: 'Actions',
+        align: 'right',
+        cell: (job) => (
+          <span className="inline-flex justify-end gap-1.5">
+            {job.result?.artifact_id ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                onClick={() => void downloadArtifact(job)}
+              >
+                <Download className="size-3.5" aria-hidden />
+                Download
+              </Button>
+            ) : null}
+            {isActiveJobStatus(job.status) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                disabled={job.cancel_requested}
+                onClick={() => void cancelJob(job)}
+              >
+                <Square className="size-3.5" aria-hidden />
+                {job.cancel_requested ? 'Stopping…' : 'Cancel'}
+              </Button>
+            ) : null}
+          </span>
+        ),
+      },
+    ],
+    [cancelJob, downloadArtifact],
+  );
 
   const columns = React.useMemo<DataTableColumn<BatchJobRow>[]>(
     () => [
@@ -201,16 +388,6 @@ export function BatchJobsInner() {
         cell: (r) => <DiscountPill discount={r.discount} />,
       },
       {
-        id: 'batch_id',
-        header: 'Provider batch id',
-        cell: (r) =>
-          r.provider_batch_id ? (
-            <InlineCode>{r.provider_batch_id}</InlineCode>
-          ) : (
-            <span className="text-muted-foreground">{DASH}</span>
-          ),
-      },
-      {
         id: 'submitted_at',
         header: 'Submitted',
         align: 'right',
@@ -230,21 +407,6 @@ export function BatchJobsInner() {
           </span>
         ),
       },
-      {
-        id: 'last_error',
-        header: 'Attention',
-        cell: (r) =>
-          r.last_error ? (
-            <span
-              className="block max-w-64 truncate text-xs text-destructive"
-              title={r.last_error}
-            >
-              {r.last_error}
-            </span>
-          ) : (
-            <span className="text-muted-foreground">{DASH}</span>
-          ),
-      },
     ],
     [],
   );
@@ -253,9 +415,9 @@ export function BatchJobsInner() {
     <PageContainer variant="wide" className="flex flex-col gap-6">
       <PageHeader
         icon={Layers}
-        eyebrow="Models"
-        title="Batch jobs"
-        description="Async LLM batch-inference jobs routed through a provider's discounted batch API. Read-only — submit, poll, and retrieve run out-of-band."
+        eyebrow="Operations"
+        title="Jobs"
+        description="Durable application work continues across navigation and reload. Personal progress, cancellation, failures, and verified artifacts stay available here and in Inbox."
         actions={
           <RefreshButton
             // Refresh only re-loads the read-only jobs table; it must NOT reload the
@@ -269,80 +431,147 @@ export function BatchJobsInner() {
 
       {initialLoading ? (
         <LoadingState
-          label="Loading batch jobs"
-          description="Preparing async inference status and retrieval progress."
+          label="Loading jobs"
+          description="Preparing durable work, related model batches, and worker health."
           layout="panel"
           shape="rows"
           shapeRows={6}
         />
       ) : (
         <>
-          <div className="grid border-y border-border/70 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiTile
-              label="Total jobs"
-              value={fmtNumber(totals.total)}
-              accent="primary"
-              icon={Layers}
-              variant="strip"
-              className="border-b border-border/70 sm:border-r lg:border-b-0"
-            />
-            <KpiTile
-              label="In flight"
-              value={fmtNumber(totals.active)}
-              accent="info"
-              variant="strip"
-              className="border-b border-border/70 lg:border-b-0 lg:border-r"
-            />
-            {/* `done` counts JOBS whose state is `retrieved`; `retrieved` sums individual
-                REQUESTS retrieved. Label each by its granularity so "retrieved" is not
-                overloaded across the two adjacent tiles. */}
-            <KpiTile
-              label="Jobs done"
-              value={fmtNumber(totals.done)}
-              accent="success"
-              variant="strip"
-              className="border-b border-border/70 sm:border-b-0 sm:border-r"
-            />
-            <KpiTile
-              label="Requests retrieved"
-              value={fmtNumber(totals.retrieved)}
-              sub={`of ${fmtNumber(totals.requests)} total`}
-              accent="primary"
-              variant="strip"
-            />
-          </div>
-
           {error ? (
             <LoadError
               error={error}
-              title="Could not load batch jobs"
-              fallback="Could not load batch jobs."
+              title="Could not load jobs"
+              fallback="Could not load jobs."
               onRetry={() => void load()}
             />
           ) : null}
 
-          {error && rows.length === 0 ? null : (
+          {error && applicationJobs.length === 0 ? null : (
             <DataTable
-              ariaLabel="Batch jobs"
-              columns={columns}
-              rows={rows}
-              getRowId={(r) => r.id}
+              ariaLabel="Application jobs"
+              columns={applicationColumns}
+              rows={applicationJobs}
+              getRowId={(job) => job.job_id}
               loading={loading}
               loadingRows={6}
               empty={
                 <EmptyState
                   compact
                   icon={Layers}
-                  title="No batch jobs yet"
-                  description="Low-urgency investigations routed through a provider's async batch API will appear here."
+                  title="No application jobs yet"
+                  description="Exports, bulk case work, imports, resets, and other long-running operations will appear here."
                 />
               }
             />
           )}
+
+          {workers ? (
+            <section className="space-y-3" aria-labelledby="system-workers-heading">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 id="system-workers-heading" className="text-sm font-semibold text-foreground">
+                    System workers
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    Read-only scheduler health. Worker rows are operational state and never personal Inbox notifications.
+                  </p>
+                </div>
+                <Badge variant={workers.scheduler_runtime_running ? 'success' : 'secondary'}>
+                  {workers.scheduler_runtime_running ? 'Scheduler running' : 'Scheduler unavailable'}
+                </Badge>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {Object.entries(workers.workers).map(([name, worker]) => (
+                  <div key={name} className="border border-border p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground">
+                        <Activity className="size-3.5 text-muted-foreground" aria-hidden />
+                        {humanizeToken(name)}
+                      </span>
+                      <Badge variant={worker.running ? 'info' : worker.last_error ? 'critical' : 'secondary'}>
+                        {worker.running ? 'Running' : worker.gated ? 'Gated' : worker.enabled ? 'Idle' : 'Disabled'}
+                      </Badge>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {worker.cadence || 'Cadence unavailable'} · {worker.processed.toLocaleString()} processed
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Last success {worker.last_success_at ? humanizeAge(worker.last_success_at) : DASH}
+                    </p>
+                    {worker.last_error ? (
+                      <p className="mt-1 break-words text-xs text-critical-text">{worker.last_error}</p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {canReadModels ? (
+            <section className="space-y-4" aria-labelledby="llm-batch-heading">
+              <div>
+                <h2 id="llm-batch-heading" className="text-sm font-semibold text-foreground">
+                  Related LLM Batch jobs
+                </h2>
+                <p className="text-xs text-muted-foreground">
+                  Read-only provider batch progress. These shared model-service records are not personal application jobs.
+                </p>
+              </div>
+              <div className="grid border-y border-border/70 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiTile
+                  label="Total jobs"
+                  value={fmtNumber(totals.total)}
+                  accent="primary"
+                  icon={Layers}
+                  variant="strip"
+                  className="border-b border-border/70 sm:border-r lg:border-b-0"
+                />
+                <KpiTile
+                  label="In flight"
+                  value={fmtNumber(totals.active)}
+                  accent="info"
+                  variant="strip"
+                  className="border-b border-border/70 lg:border-b-0 lg:border-r"
+                />
+                <KpiTile
+                  label="Jobs done"
+                  value={fmtNumber(totals.done)}
+                  accent="success"
+                  variant="strip"
+                  className="border-b border-border/70 sm:border-b-0 sm:border-r"
+                />
+                <KpiTile
+                  label="Requests retrieved"
+                  value={fmtNumber(totals.retrieved)}
+                  sub={`of ${fmtNumber(totals.requests)} total`}
+                  accent="primary"
+                  variant="strip"
+                />
+              </div>
+              <DataTable
+                ariaLabel="Related LLM Batch jobs"
+                columns={columns}
+                rows={rows}
+                getRowId={(row) => row.id}
+                loading={loading}
+                loadingRows={6}
+                empty={
+                  <EmptyState
+                    compact
+                    icon={Layers}
+                    title="No LLM Batch jobs yet"
+                    description="Low-urgency investigations routed through a provider's async Batch API will appear here."
+                  />
+                }
+              />
+            </section>
+          ) : null}
         </>
       )}
 
-      {!initialLoading ? (
+      {!initialLoading && canReadModels ? (
         <>
       <Separator />
 

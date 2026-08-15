@@ -363,9 +363,8 @@ export const FEATURES: FeatureNode[] = [
       },
       {
         id: 'batchjobs',
-        label: 'Batch jobs',
+        label: 'Jobs',
         icon: Layers,
-        perm: { resource: 'models', action: 'read' },
       },
     ],
   },
@@ -636,6 +635,8 @@ export const ROUTES: Record<PageId, RouteDef> = {
     render: (c) => (
       <Cases
         initialStatus={c.opts?.status}
+        initialAssignee={c.opts?.assignee}
+        initialTag={c.opts?.tag}
         initialSeverity={c.opts?.severity}
         initialNoiseOutcome={c.opts?.noiseOutcome}
         initialWindowHours={c.opts?.window}

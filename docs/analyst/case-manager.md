@@ -113,25 +113,28 @@ the single-case workflow when a close requires case-specific disposition,
 resolution, or feedback. A missing permission hides that action rather than leaving
 an unusable menu item.
 
-Acknowledge, Set status, Set disposition, and Resolve use
-`POST /api/cases/bulk`. Assign calls `POST /api/cases/{id}/assign`, Add tag calls
-`POST /api/cases/{id}/tags` with the existing de-duplicated tag set, and
-Reinvestigate calls `POST /api/cases/{id}/reinvestigate`. The server returns one
-result per lifecycle case and rechecks every transition. Assign, Add tag, and
-Reinvestigate use their canonical per-case routes
-through a bounded three-request worker pool. Case Manager does not hide mixed-state
-selections or invent client-side lifecycle eligibility: it attempts the selected
-operation and reports the server truth per case.
+The Console does not execute these selections as a browser-owned per-case loop.
+Acknowledge, Set status, Set disposition, and Resolve submit a `case_lifecycle` job;
+Assign submits `case_assign`; Add tag submits `case_tag`; and Reinvestigate submits
+`case_reinvestigate`. Each request carries the exact selected `case_ids` snapshot and
+validated action input. A later selection, filter, assignee, tag, or status change in
+the browser cannot mutate an accepted job.
 
-During a run the bulk trigger and selection controls are disabled and the trigger reports
-completed/total progress. A success is removed from the selection. Per-case
-responses replace queue records directly;
-bulk lifecycle/disposition runs reload the case list, and a successful open detail
-case remounts from backend truth. A failure stays selected for correction or retry.
-The result banner reports the success/fail
-counts and up to three case-specific reasons, with an additional-failure count when
-needed. If the request itself fails, the full selection remains. Successful work is
-never rolled back merely because another selected case failed.
+The confirmation remains open while admission is ambiguous and reuses the same
+per-intent idempotency key across a retry or double-submit. After `202 Accepted`, the
+dialog closes immediately and the Console confirms that work is running in the
+background. Reinvestigation retains its explicit warning that every selected case can
+incur model cost and change verdict, confidence, or status. The authoritative progress,
+success/failure counts, cancellation request, and bounded failure reasons then live in
+**Analytics → Jobs** and the durable **Inbox** entry. Work is not cancelled when the
+operator changes pages or reloads.
+
+Cancellation is cooperative and does not undo completed case changes. Each item is
+re-authorized and reloaded before execution; unsafe ambiguous in-progress items fail
+closed after lease recovery rather than being applied twice. A terminal action opens
+a current Cases context—active/resulting status, exact assignee, or exact tag—through
+a strict same-app route allowlist. It is not an exact retained cohort of every attempted
+case ID. Use the job counts and bounded failures together with case history and Audit.
 
 ## Authority and audit
 
@@ -141,11 +144,12 @@ same guarded server action path as their single-case equivalents; re-investigati
 uses the existing metered case route. UI eligibility is guidance only—the backend
 rechecks permission and state for every requested case.
 
-Every successful change is audited. Lifecycle bulk work uses the authenticated actor;
-the canonical assignment, tag, and reinvestigation routes retain their existing actor
-fields and fallback attribution. A mixed bulk result keeps successful changes and
-reports failed case IDs; it does not roll the successful work back or falsely report
-an all-or-nothing transaction.
+Every successful change is audited. Job admission, start, checkpoints, and terminal
+outcomes are also attributable and reconciled before side effects continue. Execution
+rechecks the authenticated actor's live grants; losing authority fails closed. A mixed
+terminal result keeps successful changes and reports failed case IDs within the bounded
+failure projection; it does not roll the successful work back or falsely report an
+all-or-nothing transaction.
 
 ## When to use the legacy Cases page
 
@@ -157,5 +161,6 @@ queue-to-evidence work and its current selection actions. The list replacement p
 is still gradual: parity is verified capability by capability before the Cases table
 can be retired.
 
-See [Cases](cases.md), [Investigation](investigation.md), and
+See [Cases](cases.md), [Investigation](investigation.md),
+[Background jobs](../operations/background-jobs.md), and
 [Deterministic decisions](../concepts/deterministic-decisions.md).

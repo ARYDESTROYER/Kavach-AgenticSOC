@@ -175,6 +175,16 @@ class InMemoryESClient(BaseESClient):
             if backing in targets or alias == name:
                 self.alias_to_index.pop(alias, None)
 
+    async def delete_index_strict(self, name: str) -> bool:
+        """Strict management-index delete; absence is the only false result."""
+        targets = set(self._matching_indices(name))
+        target = self._resolve(name)
+        if target in self.docs:
+            targets.add(target)
+        existed = bool(targets or name in self.alias_to_index)
+        await self.delete_index(name)
+        return existed
+
     async def delete_doc(self, index: str, doc_id: str, refresh: bool = False) -> bool:
         """Delete a single document by id (used by RAG document management).
         Missing index/id is benign (returns False)."""
@@ -184,6 +194,12 @@ class InMemoryESClient(BaseESClient):
             del bucket[doc_id]
             return True
         return False
+
+    async def delete_doc_strict(
+        self, index: str, doc_id: str, refresh: bool = False
+    ) -> bool:
+        """Strict fake seam matching the real management-only delete contract."""
+        return await self.delete_doc(index, doc_id, refresh=refresh)
 
     async def get_doc(self, index: str, doc_id: str) -> dict[str, Any] | None:
         target = self._resolve(index)

@@ -46,4 +46,16 @@ describe('KpiTile round-7 props', () => {
     rerender(<KpiTile label="Trend" value="10" spark={[1, 2, 3, 4, 5]} />);
     expect(container.querySelector('div[aria-hidden].h-7')).not.toBeNull();
   });
+
+  it('accepts an explicit two-point floor for exact previous/current comparisons', () => {
+    const { container } = render(
+      <KpiTile
+        label="Rate trend"
+        value="83%"
+        spark={[86.28, 83.07]}
+        sparkMinPoints={2}
+      />,
+    );
+    expect(container.querySelector('div[aria-hidden].h-7')).not.toBeNull();
+  });
 });

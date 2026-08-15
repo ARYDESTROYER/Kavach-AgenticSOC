@@ -44,6 +44,12 @@ import {
   SettingsGrid,
   type SettingsTOCItem,
 } from '@/soc/components/SettingsGrid';
+import { useNavigateOptional } from '@/soc/router';
+import {
+  announceJobAccepted,
+  retainJobSubmissionIntent,
+  type JobSubmissionIntent,
+} from '@/soc/jobs/jobs';
 
 import { NumPref, SectionShell, SwitchPref, errMsg } from './primitives';
 
@@ -133,6 +139,7 @@ export function StorageLifecycleSection({
   update,
   readOnly = false,
 }: StorageLifecycleSectionProps) {
+  const navigate = useNavigateOptional();
   const draft = normalizedConfig(prefs.storage_lifecycle);
   const persisted = normalizedConfig(persistedPrefs.storage_lifecycle);
   const draftDiffers = !samePolicy(draft, persisted);
@@ -143,6 +150,7 @@ export function StorageLifecycleSection({
   const [error, setError] = React.useState<string | null>(null);
   const [previewing, setPreviewing] = React.useState(false);
   const [applying, setApplying] = React.useState(false);
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
 
   const loadStatus = React.useCallback(async () => {
     setLoading(true);
@@ -209,11 +217,26 @@ export function StorageLifecycleSection({
     if (applyDisabled) return;
     setApplying(true);
     try {
-      await api.post('storage/lifecycle/apply');
-      await loadStatus();
-      toast.success('Supported storage lifecycle applied.');
+      const params = { acknowledge: true, policy: persisted };
+      const intent = retainJobSubmissionIntent(
+        jobSubmissionIntentRef.current,
+        'storage_lifecycle_apply',
+        params,
+      );
+      jobSubmissionIntentRef.current = intent;
+      const job = await api.jobs.submit({
+        kind: 'storage_lifecycle_apply',
+        idempotency_key: intent.idempotencyKey,
+        params,
+      });
+      jobSubmissionIntentRef.current = null;
+      announceJobAccepted(job);
+      toast.success('Storage lifecycle apply job accepted.', {
+        description: 'The provider mutation runs server-side; its durable outcome remains in Inbox.',
+        action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+      });
     } catch (cause) {
-      toast.error(errMsg(cause, 'Could not apply the storage lifecycle.'));
+      toast.error(errMsg(cause, 'Could not start the storage lifecycle job.'));
     } finally {
       setApplying(false);
     }

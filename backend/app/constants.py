@@ -193,6 +193,13 @@ BATCH_JOBS_NS = "batch_jobs"
 BATCH_JOBS_KEY = "jobs"
 BATCH_JOBS_DOC_ID = "batch_jobs"        # ES doc id within CONFIG_INDEX
 
+# Durable operator jobs (server-owned long operations).  The complete registry is
+# one strict-CAS document in the existing state-backend KV, so this introduces no
+# Elasticsearch index, SQL table, or migration.
+JOBS_NS = "jobs"
+JOBS_KEY = "jobs"
+JOBS_DOC_ID = "jobs"                    # ES doc id within CONFIG_INDEX
+
 # Threshold TUNING state (per-rule tuning suggestions + counters) — the nightly
 # auto-tuner's proposed threshold adjustments awaiting apply/shadow-eval.
 TUNING_NS = "tuning"
@@ -395,6 +402,7 @@ class ActionType(str, Enum):
     TUNING = "tuning"              # a threshold-tuning suggestion applied / shadow-evaluated
     RESET = "reset"                # an operator reset of cases/sources/factory state
     DATA_EXPORT = "data_export"    # privileged, secret-free portable application-state export
+    JOB = "job"                    # durable operator-job lifecycle transition
     SYSTEM_UPDATE = "system_update"  # operator-authorized supervised app update / rollback
 
 
@@ -529,6 +537,33 @@ class BatchJobState(str, Enum):
     RETRIEVED = "retrieved"
     ERRORED = "errored"
     EXPIRED = "expired"
+
+
+class JobKind(str, Enum):
+    """Registered server-owned long-operation kinds."""
+
+    CASE_REINVESTIGATE = "case_reinvestigate"
+    CASE_LIFECYCLE = "case_lifecycle"
+    CASE_ASSIGN = "case_assign"
+    CASE_TAG = "case_tag"
+    DATA_EXPORT_ARCHIVE = "data_export_archive"
+    DATA_EXPORT_SEGMENT = "data_export_segment"
+    PRECEDENT_BOOTSTRAP = "precedent_bootstrap"
+    RUNBOOK_REINDEX = "runbook_reindex"
+    RAG_IMPORT = "rag_import"
+    TIERED_RESET = "tiered_reset"
+    STORAGE_LIFECYCLE_APPLY = "storage_lifecycle_apply"
+
+
+class JobStatus(str, Enum):
+    """Durable lifecycle of a server-owned operator job."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 # How a candidate case was surfaced for triage (Round 4 detection sources). ``detection``

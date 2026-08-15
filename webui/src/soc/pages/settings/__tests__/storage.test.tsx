@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-const { getMock, postMock } = vi.hoisted(() => ({
+const { getMock, postMock, submitJobMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   postMock: vi.fn(),
+  submitJobMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api', () => ({
-  api: { get: getMock, post: postMock },
+  api: { get: getMock, post: postMock, jobs: { submit: submitJobMock } },
 }));
 
 import type {
@@ -92,6 +93,12 @@ describe('StorageLifecycleSection', () => {
     postMock.mockReset();
     getMock.mockResolvedValue(STATUS);
     postMock.mockResolvedValue(STATUS);
+    submitJobMock.mockReset().mockResolvedValue({
+      job_id: 'job-storage', kind: 'storage_lifecycle_apply', actor: 'operator',
+      created_at: '2026-08-13T00:00:00Z', status: 'queued',
+      progress: { done: 0, total: 1, unit: 'apply' }, failures: [], failure_count: 0,
+      failures_truncated: 0, request_fingerprint: 'e'.repeat(64), params: {}, cancel_requested: false,
+    });
   });
 
   it('shows the effective 180-day Hot, 90-day Warm, and truthful archive boundary', async () => {
@@ -149,8 +156,12 @@ describe('StorageLifecycleSection', () => {
     expect(apply).toBeEnabled();
 
     fireEvent.click(apply);
-    await waitFor(() => expect(postMock).toHaveBeenCalledWith('storage/lifecycle/apply'));
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(submitJobMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'storage_lifecycle_apply',
+      params: { acknowledge: true, policy: POLICY },
+    })));
+    expect(postMock).not.toHaveBeenCalledWith('storage/lifecycle/apply');
+    expect(getMock).toHaveBeenCalledTimes(1);
   });
 
   it('allows explicit disable when management remains available but Warm is degraded', async () => {
@@ -173,7 +184,10 @@ describe('StorageLifecycleSection', () => {
     expect(apply).toBeEnabled();
 
     fireEvent.click(apply);
-    await waitFor(() => expect(postMock).toHaveBeenCalledWith('storage/lifecycle/apply'));
+    await waitFor(() => expect(submitJobMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'storage_lifecycle_apply',
+      params: { acknowledge: true, policy: disabledPolicy },
+    })));
   });
 
   it('keeps native Apply unavailable for an advisory PostgreSQL backend', async () => {

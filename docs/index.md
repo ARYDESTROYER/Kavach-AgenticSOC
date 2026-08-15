@@ -35,6 +35,7 @@ Most readers should begin here.
 | Build or update a response procedure | [Playbooks and approvals](automation/playbooks-approvals.md) |
 | Add reusable investigation guidance | [Runbooks](intelligence/runbooks.md) |
 | Read posture and performance | [Analytics](analyst/analytics.md) |
+| Monitor long-running work, cancellation, and downloads | [Background jobs](operations/background-jobs.md) |
 
 If this is your first session, [choose a getting-started path](getting-started/index.md).
 The deterministic Demo Mode is the shortest way to explore the workflow without
@@ -114,7 +115,8 @@ Use the [settings map](administration/settings.md),
 [users and RBAC](administration/users-rbac.md),
 [authentication](administration/authentication.md), and
 [source administration](sources/index.md). Administrators who also own the runtime
-should review [security hardening](operations/security.md) and
+should review [background jobs](operations/background-jobs.md),
+[security hardening](operations/security.md), and
 [health and backup](operations/health-backup.md).
 
 ### Deployment operators, developers, and integrators

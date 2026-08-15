@@ -6,8 +6,8 @@
  *   - a corpus-health header (KPI tiles: total chunks, documents, embedding
  *     model, vector dimensions) + a "Corpus by source" BarList,
  *   - an Import card (paste text OR upload one-or-more .txt/.md/.json/.csv files,
- *     read client-side via FileReader, queued + indexed in sequence; the title is
- *     auto-filled from the filename) + tags + a soft size guard,
+ *     read client-side via FileReader and submitted once to a durable server job;
+ *     the title is auto-filled from the filename) + tags + bounded size/count guards,
  *   - a "Try a retrieval" card that runs GET /api/rag/search and shows the exact,
  *     score-bearing chunks RAG would return for a query, ranked highest-first,
  *   - an indexed-documents DataTable with search, a source facet, sort, a density
@@ -43,8 +43,10 @@ import {
 import type { LucideIcon } from 'lucide-react';
 
 import type { Navigate } from '@/soc/router';
+import { useNavigateOptional } from '@/soc/router';
 import { api, ApiError } from '@/lib/api';
 import type {
+  PrecedentBootstrapStatus,
   RagChunk,
   RagDocument,
   RagStats,
@@ -73,6 +75,11 @@ import { IconButton } from '@/soc/components/IconButton';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Stagger } from '@/soc/components/Stagger';
 import { LoadingState } from '@/design-system';
+import {
+  announceJobAccepted,
+  retainJobSubmissionIntent,
+  type JobSubmissionIntent,
+} from '@/soc/jobs/jobs';
 
 import { Button } from '@/ui/button';
 import { Badge, type BadgeProps } from '@/ui/badge';
@@ -88,7 +95,6 @@ import { Textarea } from '@/ui/textarea';
 import { Label } from '@/ui/label';
 import { Skeleton } from '@/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { Progress } from '@/ui/progress';
 import { Separator } from '@/ui/separator';
 import {
   Select,
@@ -123,6 +129,10 @@ import {
 /** Per-import size guard — exactly mirrors routes_rag._RAG_MAX_TEXT. */
 const MAX_IMPORT_BYTES = 1_000_000;
 const MAX_IMPORT_LABEL = '1 MB';
+const MAX_IMPORT_DOCUMENTS = 20;
+/** Leave headroom below the server's 8 MiB active-job registry ceiling. */
+const MAX_IMPORT_PAYLOAD_BYTES = 7_500_000;
+const MAX_IMPORT_TITLE_CHARS = 512;
 const IMPORT_ACCEPT = '.txt,.md,.json,.csv,text/*';
 
 const TOP_K_DEFAULT = 5;
@@ -431,16 +441,15 @@ interface QueuedFile {
   tooBig: boolean;
 }
 
-export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported }) => {
+export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
+  const navigate = useNavigateOptional();
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [title, setTitle] = React.useState('');
   const [text, setText] = React.useState('');
   const [source, setSource] = React.useState('');
   const [tagInput, setTagInput] = React.useState('');
   const [tags, setTags] = React.useState<string[]>([]);
   const [submitting, setSubmitting] = React.useState(false);
-  const [progress, setProgress] = React.useState<{ done: number; total: number } | null>(
-    null,
-  );
   const [fileError, setFileError] = React.useState<string | null>(null);
   const [queue, setQueue] = React.useState<QueuedFile[]>([]);
   // The file <input> is uncontrolled — bump this key to reset its value after a read.
@@ -448,9 +457,48 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
 
   const bytes = React.useMemo(() => new Blob([text]).size, [text]);
   const tooBig = bytes > MAX_IMPORT_BYTES;
-  const hasPasted = title.trim().length > 0 && text.trim().length > 0;
-  const queueValid = queue.length > 0 && queue.every((q) => !q.tooBig);
   const batching = queue.length > 0;
+  const normalizedTags = React.useMemo(
+    () => tags.map((tag) => tag.trim()).filter(Boolean),
+    [tags],
+  );
+  const normalizedSource = source.trim() || undefined;
+  const documents = React.useMemo(
+    () =>
+      batching
+        ? queue.map((queued) => ({
+            title: queued.name.replace(/\.[^.]+$/, ''),
+            text: queued.text,
+            source: normalizedSource,
+            tags: normalizedTags,
+          }))
+        : [
+            {
+              title: title.trim(),
+              text,
+              source: normalizedSource,
+              tags: normalizedTags,
+            },
+          ],
+    [batching, normalizedSource, normalizedTags, queue, text, title],
+  );
+  const payloadBytes = React.useMemo(
+    () => new Blob([JSON.stringify({ documents })]).size,
+    [documents],
+  );
+  const titlesValid = documents.every(
+    (document) =>
+      document.title.length > 0 && document.title.length <= MAX_IMPORT_TITLE_CHARS,
+  );
+  const payloadValid = payloadBytes <= MAX_IMPORT_PAYLOAD_BYTES;
+  const hasPasted =
+    title.trim().length > 0 && text.trim().length > 0 && titlesValid && payloadValid;
+  const queueValid =
+    queue.length > 0 &&
+    queue.length <= MAX_IMPORT_DOCUMENTS &&
+    queue.every((queued) => !queued.tooBig) &&
+    titlesValid &&
+    payloadValid;
   const canSubmit = computeImportCanSubmit({ batching, queueValid, hasPasted, tooBig, submitting });
 
   const readFile = (file: File): Promise<QueuedFile> =>
@@ -471,6 +519,11 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
       const list = files ? Array.from(files) : [];
       if (list.length === 0) {
         setQueue([]);
+        return;
+      }
+      if (list.length > MAX_IMPORT_DOCUMENTS) {
+        setQueue([]);
+        setFileError(`Select at most ${MAX_IMPORT_DOCUMENTS} documents per import job.`);
         return;
       }
       // Single file + empty paste area → fill the paste fields inline (legacy flow).
@@ -521,51 +574,36 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
   }, []);
 
   const submit = React.useCallback(async () => {
-    const tagList = tags.map((t) => t.trim()).filter(Boolean);
-    const src = source.trim() || undefined;
+    const params = { documents };
+    const intent = retainJobSubmissionIntent(
+      jobSubmissionIntentRef.current,
+      'rag_import',
+      params,
+    );
+    jobSubmissionIntentRef.current = intent;
     setSubmitting(true);
     try {
-      if (queue.length > 0) {
-        let totalChunks = 0;
-        setProgress({ done: 0, total: queue.length });
-        for (let i = 0; i < queue.length; i += 1) {
-          const qf = queue[i];
-          const res = await api.ragImport({
-            title: qf.name.replace(/\.[^.]+$/, ''),
-            text: qf.text,
-            source: src,
-            tags: tagList,
-          });
-          totalChunks += res.chunk_count ?? 0;
-          setProgress({ done: i + 1, total: queue.length });
-        }
-        toast.success(
-          `Indexed ${fmtNumber(queue.length)} document${queue.length === 1 ? '' : 's'} (${fmtNumber(
-            totalChunks,
-          )} chunk${totalChunks === 1 ? '' : 's'}).`,
-        );
-      } else {
-        const res = await api.ragImport({
-          title: title.trim(),
-          text,
-          source: src,
-          tags: tagList,
-        });
-        toast.success(
-          `Indexed "${res.title}" (${fmtNumber(res.chunk_count)} chunk${
-            res.chunk_count === 1 ? '' : 's'
-          }).`,
-        );
-      }
+      const job = await api.jobs.submit({
+        kind: 'rag_import',
+        idempotency_key: intent.idempotencyKey,
+        params,
+      });
+      jobSubmissionIntentRef.current = null;
+      announceJobAccepted(job);
       reset();
-      onImported();
+      toast.success(
+        `${documents.length} document${documents.length === 1 ? '' : 's'} queued for indexing.`,
+        {
+          description: 'Indexing continues on the server after navigation or reload. Track progress in Inbox.',
+          action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+        },
+      );
     } catch (e) {
-      toast.error(errorMessage(e, 'Import failed.'));
+      toast.error(errorMessage(e, 'Could not start the import job.'));
     } finally {
       setSubmitting(false);
-      setProgress(null);
     }
-  }, [title, text, source, tags, queue, reset, onImported]);
+  }, [documents, navigate, reset]);
 
   return (
     <Card className="flex h-full flex-col">
@@ -591,6 +629,11 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
               onChange={(e) => setTitle(e.target.value)}
               disabled={batching}
             />
+            {!batching && title.trim().length > MAX_IMPORT_TITLE_CHARS ? (
+              <p className="text-xs text-critical">
+                Keep the title to {MAX_IMPORT_TITLE_CHARS} characters or fewer.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="rag-source">Source (optional)</Label>
@@ -622,6 +665,8 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
               ? 'Disabled while files are queued.'
               : tooBig
                 ? `Too large — keep documents under ${MAX_IMPORT_LABEL}.`
+                : !payloadValid
+                  ? 'This document and its metadata are too large for one durable job.'
                 : `${fmtNumber(bytes)} bytes`}
           </p>
         </div>
@@ -638,7 +683,7 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
             className="cursor-pointer file:mr-3 file:cursor-pointer file:rounded file:border file:border-border file:bg-muted file:px-2 file:py-0.5"
           />
           <p className={cn('text-xs', fileError ? 'text-critical' : 'text-muted-foreground')}>
-            {fileError ?? 'Select one file to fill the editor, or several to batch-index them.'}
+            {fileError ?? `Select one file to fill the editor, or up to ${MAX_IMPORT_DOCUMENTS} to batch-index.`}
           </p>
         </div>
 
@@ -664,7 +709,11 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
             </ul>
             {!queueValid ? (
               <p className="mt-2 text-xs text-critical">
-                Some files exceed {MAX_IMPORT_LABEL} — remove them and re-select.
+                {!titlesValid
+                  ? `Every filename-derived title must be ${MAX_IMPORT_TITLE_CHARS} characters or fewer.`
+                  : !payloadValid
+                    ? 'This batch is too large for one durable job. Split it into smaller imports.'
+                    : `Some files exceed ${MAX_IMPORT_LABEL} — remove them and re-select.`}
               </p>
             ) : null}
           </div>
@@ -708,17 +757,6 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
           )}
         </div>
 
-        {progress ? (
-          <div className="space-y-1">
-            <Progress
-              value={progress.total > 0 ? (progress.done / progress.total) * 100 : 0}
-            />
-            <p className="text-xs text-muted-foreground">
-              Indexing {progress.done} / {progress.total}
-            </p>
-          </div>
-        ) : null}
-
         <div className="mt-auto flex items-center justify-end gap-2 pt-2">
           {hasPasted || batching ? (
             <Button variant="ghost" size="sm" onClick={reset} disabled={submitting}>
@@ -729,8 +767,8 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
           <Button size="sm" onClick={() => void submit()} disabled={!canSubmit}>
             <Plus aria-hidden />
             {batching
-              ? `Index ${fmtNumber(queue.length)} document${queue.length === 1 ? '' : 's'}`
-              : 'Index document'}
+              ? `Queue ${fmtNumber(queue.length)} document${queue.length === 1 ? '' : 's'}`
+              : 'Queue document'}
           </Button>
         </div>
       </CardContent>
@@ -745,7 +783,9 @@ export const ImportCard: React.FC<{ onImported: () => void }> = ({ onImported })
  * retrieved + injected into investigations as a clearly-labelled TRUSTED fenced
  * block (the content itself is UNTRUSTED corpus material). Gated by rag:manage.
  */
-export const ThreatIntelImportCard: React.FC<{ onImported: () => void }> = ({ onImported }) => {
+export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () => {
+  const navigate = useNavigateOptional();
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [title, setTitle] = React.useState('');
   const [content, setContent] = React.useState('');
   const [tagInput, setTagInput] = React.useState('');
@@ -754,7 +794,13 @@ export const ThreatIntelImportCard: React.FC<{ onImported: () => void }> = ({ on
 
   const bytes = React.useMemo(() => new Blob([content]).size, [content]);
   const tooBig = bytes > MAX_IMPORT_BYTES;
-  const canSubmit = title.trim().length > 0 && content.trim().length > 0 && !tooBig && !submitting;
+  const titleTooLong = title.trim().length > MAX_IMPORT_TITLE_CHARS;
+  const canSubmit =
+    title.trim().length > 0 &&
+    content.trim().length > 0 &&
+    !titleTooLong &&
+    !tooBig &&
+    !submitting;
 
   const addTag = React.useCallback((raw: string) => {
     const label = raw.trim();
@@ -764,29 +810,45 @@ export const ThreatIntelImportCard: React.FC<{ onImported: () => void }> = ({ on
   }, []);
 
   const submit = React.useCallback(async () => {
+    const params = {
+      documents: [
+        {
+          title: title.trim(),
+          text: content,
+          source: 'threat_context',
+          tags: tags.map((tag) => tag.trim()).filter(Boolean),
+        },
+      ],
+    };
+    const intent = retainJobSubmissionIntent(
+      jobSubmissionIntentRef.current,
+      'rag_import',
+      params,
+    );
+    jobSubmissionIntentRef.current = intent;
     setSubmitting(true);
     try {
-      const res = await api.threatContext.import({
-        title: title.trim(),
-        content,
-        tags: tags.map((t) => t.trim()).filter(Boolean),
+      const job = await api.jobs.submit({
+        kind: 'rag_import',
+        idempotency_key: intent.idempotencyKey,
+        params,
       });
-      toast.success(
-        `Indexed threat intel "${res.title}" (${fmtNumber(res.chunk_count)} chunk${
-          res.chunk_count === 1 ? '' : 's'
-        }).`,
-      );
+      jobSubmissionIntentRef.current = null;
+      announceJobAccepted(job);
+      toast.success('Threat-intel indexing job accepted.', {
+        description: 'Indexing continues on the server after navigation or reload.',
+        action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+      });
       setTitle('');
       setContent('');
       setTags([]);
       setTagInput('');
-      onImported();
     } catch (e) {
-      toast.error(errorMessage(e, 'Threat-intel import failed.'));
+      toast.error(errorMessage(e, 'Could not start the threat-intel import job.'));
     } finally {
       setSubmitting(false);
     }
-  }, [title, content, tags, onImported]);
+  }, [content, navigate, tags, title]);
 
   return (
     <Card className="flex h-full flex-col">
@@ -811,6 +873,11 @@ export const ThreatIntelImportCard: React.FC<{ onImported: () => void }> = ({ on
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
+          {titleTooLong ? (
+            <p className="text-xs text-critical">
+              Keep the title to {MAX_IMPORT_TITLE_CHARS} characters or fewer.
+            </p>
+          ) : null}
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ti-content">Content</Label>
@@ -862,7 +929,123 @@ export const ThreatIntelImportCard: React.FC<{ onImported: () => void }> = ({ on
         <div className="mt-auto flex items-center justify-end gap-2 pt-2">
           <Button size="sm" onClick={() => void submit()} disabled={!canSubmit}>
             <Plus aria-hidden />
-            Index threat intel
+            Queue threat intel
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+/** Explicit lower-trust precedent ratification, executed as one durable server job. */
+const PrecedentBootstrapCard: React.FC = () => {
+  const navigate = useNavigateOptional();
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
+  const [preview, setPreview] = React.useState<PrecedentBootstrapStatus | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [acknowledgement, setAcknowledgement] = React.useState('');
+
+  React.useEffect(() => {
+    let live = true;
+    void api
+      .get<PrecedentBootstrapStatus>('rag/precedent/bootstrap')
+      .then((next) => {
+        if (live) setPreview(next);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (loading || !preview) return null;
+  const exact = preview.acknowledgement_required;
+  const ready = preview.tier_enabled && preview.pending > 0 && acknowledgement.trim() === exact;
+
+  const submit = async () => {
+    if (!ready || submitting) return;
+    const params = {
+      acknowledgement: acknowledgement.trim(),
+      limit: Math.min(200, Math.max(1, preview.max_batch)),
+      dry_run: false,
+    };
+    const intent = retainJobSubmissionIntent(
+      jobSubmissionIntentRef.current,
+      'precedent_bootstrap',
+      params,
+    );
+    jobSubmissionIntentRef.current = intent;
+    setSubmitting(true);
+    try {
+      const job = await api.jobs.submit({
+        kind: 'precedent_bootstrap',
+        idempotency_key: intent.idempotencyKey,
+        params,
+      });
+      jobSubmissionIntentRef.current = null;
+      announceJobAccepted(job);
+      setAcknowledgement('');
+      toast.success('Precedent bootstrap job accepted.', {
+        description: 'Ratification and embedding continue server-side. Progress and the final lower-trust counts remain in Inbox.',
+        action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+      });
+    } catch (cause) {
+      toast.error(errorMessage(cause, 'Could not start the precedent bootstrap job.'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <CardIcon icon={ShieldAlert} />
+          <CardTitle>Lower-trust precedent bootstrap</CardTitle>
+        </div>
+        <CardDescription className="pt-1">
+          Ratify eligible model outcomes only into the explicitly capped{' '}
+          <code className="font-mono text-xs">{preview.trust_class}</code> tier. This never
+          fabricates analyst feedback, promotes trust, or changes case decisions.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={preview.tier_enabled ? 'success' : 'warning'}>
+            {preview.tier_enabled ? 'Tier enabled' : 'Tier disabled'}
+          </Badge>
+          <Badge variant="outline">{fmtNumber(preview.pending)} pending</Badge>
+          <Badge variant="outline">{fmtNumber(preview.eligible)} eligible</Badge>
+        </div>
+        {preview.does_not.slice(0, 3).map((statement) => (
+          <p key={statement} className="text-xs leading-relaxed text-muted-foreground">
+            {statement}
+          </p>
+        ))}
+        <div className="space-y-1.5">
+          <Label htmlFor="precedent-bootstrap-ack">
+            Type the exact acknowledgement to start
+          </Label>
+          <code className="block break-words bg-muted px-2 py-1.5 font-mono text-xs text-foreground">
+            {exact}
+          </code>
+          <Input
+            id="precedent-bootstrap-ack"
+            value={acknowledgement}
+            onChange={(event) => setAcknowledgement(event.target.value)}
+            disabled={!preview.tier_enabled || preview.pending <= 0 || submitting}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button onClick={() => void submit()} disabled={!ready || submitting}>
+            {submitting ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : null}
+            Start bootstrap job
           </Button>
         </div>
       </CardContent>
@@ -1574,6 +1757,7 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
 
   const showHealthSkeleton = loading && !stats;
   const canManageRag = useCan('rag', 'manage');
+  const canWriteCases = useCan('cases', 'write');
   // A hard load failure with NO cached data: show one clean LoadError instead of
   // zeroed KPIs + a false "corpus is empty" state below it.
   const hardLoadFail = !!error && !stats;
@@ -1733,6 +1917,8 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
           <ThreatIntelImportCard onImported={load} />
         </Can>
       ) : null}
+
+      {canManageRag && canWriteCases ? <PrecedentBootstrapCard /> : null}
 
       {/* ---- documents table ---- */}
       <DocumentsSection

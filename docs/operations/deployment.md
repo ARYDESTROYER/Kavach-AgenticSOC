@@ -138,6 +138,23 @@ those independent archive objects under an S3 lifecycle rule. **Never transition
 Elasticsearch snapshot-repository prefix to Glacier**; Elasticsearch expects its
 repository objects to remain directly readable.
 
+## Background-job artifact volume
+
+Application job metadata lives in the selected StateStore, but verified ZIP artifacts
+live on the backend filesystem. Direct source runs and the updater-managed standalone
+Compose v1 default to `./data/job-artifacts`; those files survive a backend process or
+ordinary container restart, but not container replacement. The standalone base file is
+byte-pinned by the updater protocol, so use a reviewed Compose override/bind mount when
+replacement-safe retention is required. The legacy ELK merge profile maps
+`TLSOC_JOBS_ARTIFACT_DIR` (default `/var/lib/agentic-soc/jobs`) onto the persistent
+`agentic-soc-job-artifacts` volume.
+
+The backend creates the root at `0700` and files at `0600`, uses opaque IDs, and verifies
+size plus SHA-256 on download. Retention is bounded to the newest 50 attached artifacts,
+not by age or backup policy. Monitor the volume and export important ZIPs into an
+independent controlled archive. Never store artifacts in the updater control, state, or
+backup volumes.
+
 ## Image identity
 
 Backend and web images use the machine version `0.1.13` and accept OCI version,
@@ -299,5 +316,10 @@ There is no complete schema-migration framework, durable receipt ledger for ever
 transport, or built-in secret manager. Read [Known limitations](../releases/known-limitations.md)
 before admitting sensitive or loss-intolerant data.
 
-Next: [Configuration reference](configuration.md), [Security hardening](security.md),
-and [Health, backup, and restore](health-backup.md).
+Application jobs use strict-CAS claims and renewable leases, but their runner,
+investigation priority gate, export assembly slot, Inbox/SSE publication, receivers,
+and schedulers remain process-local. Those narrow claims do not authorize multiple
+backend replicas. See [Background jobs](background-jobs.md).
+
+Next: [Configuration reference](configuration.md), [Background jobs](background-jobs.md),
+[Security hardening](security.md), and [Health, backup, and restore](health-backup.md).

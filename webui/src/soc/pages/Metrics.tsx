@@ -83,6 +83,7 @@ import {
 } from '@/soc/components/charts';
 import { BurnDownChart, MitreHeatmap } from '@/soc/components/charts-soc';
 import { semanticColor, token } from '@/soc/components/palette';
+import { HealthDiagnostics } from '@/soc/components/HealthDiagnostics';
 
 import type { Navigate } from '@/soc/router';
 import {
@@ -261,6 +262,8 @@ export default function MetricsPage({
   }, [hours]);
 
   const usesAgentEvidenceEndpoint = tab === 'effectiveness';
+  const healthAvailable =
+    typeof api.diagnosticsHealth === 'function' || typeof api.autoCloseHealth === 'function';
   React.useEffect(() => {
     // Effectiveness owns a distinct, aggregate-only endpoint and must not depend on
     // the generic metrics rollup succeeding. It loads itself only while its tab is
@@ -366,24 +369,30 @@ export default function MetricsPage({
   // ---- adaptive tab-row controls ---------------------------------------- //
   // The time window and reload are the primary commands, so they stay first when the
   // shared ControlBar wraps. Ranked-breakdown sorting is contextual and may wrap after
-  // them on a narrow container. Cost owns a different endpoint/cadence, while
-  // Effectiveness owns its evidence window, so neither receives these controls.
-  const tabPrimaryControls = tab === 'cost' || tab === 'effectiveness' ? null : (
-    <>
-      <SegmentedControl<WindowId>
-        aria-label="Time window"
-        size="sm"
-        value={windowId}
-        onValueChange={setWindowId}
-        options={WINDOWS.map((w) => ({ value: w.id, label: w.label }))}
-      />
-
-      <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-        <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden />
-        Refresh
-      </Button>
-    </>
+  // them on a narrow container. Cost owns a different endpoint/cadence.
+  // Effectiveness retains the shared selector because Agent health is measured over
+  // that operator-selected window; its panel owns the scoped refresh action.
+  const windowControl = (
+    <SegmentedControl<WindowId>
+      aria-label="Time window"
+      size="sm"
+      value={windowId}
+      onValueChange={setWindowId}
+      options={WINDOWS.map((w) => ({ value: w.id, label: w.label }))}
+    />
   );
+  const tabPrimaryControls =
+    tab === 'cost' ? null : tab === 'effectiveness' ? (
+      windowControl
+    ) : (
+      <>
+        {windowControl}
+        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden />
+          Refresh
+        </Button>
+      </>
+    );
   const tabSecondaryControls = tab === 'operational' ? (
     <SegmentedControl<RankSort>
       aria-label="Sort ranked breakdowns"
@@ -902,7 +911,10 @@ export default function MetricsPage({
         </TabsContent>
 
         <TabsContent value="effectiveness">
-          <AgentEffectiveness />
+          <div className="space-y-6">
+            {healthAvailable ? <HealthDiagnostics windowHours={hours} /> : null}
+            <AgentEffectiveness />
+          </div>
         </TabsContent>
 
         {/* Cost — the SINGLE cost home. The standalone Cost page renders embedded so

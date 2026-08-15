@@ -129,6 +129,15 @@ does not prove that bytes moved. Use **Preview** to inspect capabilities and exa
 targets, then **Apply supported lifecycle** to make the native changes. Apply is an
 explicit, freshly authenticated, audited operation.
 
+Apply submits a `storage_lifecycle_apply` background job with an exact snapshot of
+the persisted policy. The worker compares that snapshot with the authoritative saved
+policy before applying it and fails rather than acting on drifted settings. After
+`202 Accepted`, progress remains in **Analytics → Jobs** and **Inbox**; leaving Settings
+does not stop it. Cancellation is cooperative and cannot undo a native lifecycle
+change already committed. The retired direct `POST /api/storage/lifecycle/apply`
+mutation returns `410 Gone` with `durable_job_required`; GET, PUT, and Preview remain
+direct operations.
+
 Enforcement is intentionally capability-aware:
 
 - **Elasticsearch state:** Agentic SOC can install ILM only for the append-only
@@ -155,33 +164,35 @@ exists, warm data remains retained and the Console reports Archive as not config
 
 Open **Settings → Organization → Data export** when support or offline analysis
 needs all records from selected supported safe scopes. Select cases, audit, usage,
-configuration, automation, and/or knowledge. The primary action asks the server to
-assemble one UTC-stamped ZIP and downloads exactly that one file. It contains one
-newline-delimited JSON entry per selected scope and a terminal `manifest.json` with
-counts, completion and consistency evidence, actor, and build provenance. The server
-does not start serving the ZIP unless every selected scope emits its starting count and
-the finished archive passes CRC, count, size, digest, and manifest checks. Only an
-Elasticsearch scope marked exact is a fixed snapshot; PostgreSQL and KV scopes disclose
-their weaker semantics, and scopes are captured independently rather than in one shared
-database transaction.
+configuration, automation, and/or knowledge. Both the normal archive and the advanced
+segment strategy now submit a server-owned job. The server walks every selected scope,
+assembles one UTC-stamped ZIP, verifies it, and exposes **Download** only when the
+terminal result carries a retained `artifact_id`.
 
-**Advanced / resumable (numbered files)** preserves the signed-cursor workflow for very
-large exports or constrained proxy/server-disk environments. Its **Records per file**
-setting (up to 5,000) is a bounded response size, not a full-history ceiling: the Console
-follows authenticated opaque cursors and downloads numbered files until each scope
-explicitly reports complete. A cursor is bound to its requesting operator, scope, and
-snapshot; do not edit or share it. The Console shows record/file progress and supports
-cancellation.
+Archive mode writes one newline-delimited JSON entry per selected scope and a terminal
+`manifest.json` with counts, completion and consistency evidence, actor, and build
+provenance. The advanced strategy uses bounded cursor pages internally, but the server
+follows them and packages their numbered JSON envelopes into one ZIP; the browser no
+longer has to remain open and collect a sequence of files. **Records per file** (up to
+5,000) remains an internal segment-size control, not a full-history ceiling.
+
+After `202 Accepted`, close the dialog or navigate away. Progress, cancellation,
+partial/failure counts, and the final artifact remain in **Analytics → Jobs** and
+**Inbox**. Cancellation is cooperative: it releases work at a safe checkpoint and does
+not undo server work already performed. A cancelled or otherwise incomplete export
+exposes no artifact. The executable direct archive/segment APIs are explicitly
+OpenAPI-deprecated compatibility primitives with their synchronous/request-bound and
+cursor limits; the cursor-cancel cleanup remains available. None is the Console
+workflow.
 
 The Knowledge scope includes exact catalog counts, sanitized authoritative Markdown
 for operator-owned runbooks and playbooks, and metadata-only references/manifests for
 bundled procedures. It excludes environment/source credentials, users and sessions,
 password/MFA material, browser tokens, upstream raw logs, and raw knowledge chunks.
-Each internal archive page, compact server segment response, and compact
-Console-downloaded segment is capped at 25 MiB; the complete disk-backed ZIP is not a
-25 MiB lifetime export. This is not an import format, whole-application export, or
-backup/restore mechanism. Every prepared archive and response-bounded segment is audited
-before streaming and requires
+Each internal archive page and compact server segment is capped at 25 MiB; the complete
+disk-backed ZIP is not a 25 MiB lifetime export. This is not an import format,
+whole-application export, or backup/restore mechanism. Preparation and terminal outcome
+are audited and require
 `data_export:export` plus a fresh sign-in, granted by default to `super_admin` and
 `soc_manager`. Exact point-in-time consistency is available on the bundled
 Elasticsearch state path; PostgreSQL is explicitly `bounded_at_start` and other
@@ -189,10 +200,14 @@ backends disclose their weaker consistency. A segment cursor that
 expires (ten-minute PIT keep-alive), crosses a backend restart, or is invalid must be
 restarted for that scope.
 Unavailable/malformed registry data, insufficient temporary space, an integrity failure,
-or an unavailable append-only audit store aborts with an error; the Console never turns
-that failure into a completed export. One archive may be assembled/served per backend
-process at a time; use Advanced mode after a 409 busy response or when the synchronous
-request could exceed the deployment's upstream timeout.
+or an unavailable append-only audit store fails the job; the Console never turns that
+failure into a completed export. One archive assembly slot exists per backend process.
+
+Artifacts live outside the StateStore. The supported Compose profiles persist
+`/var/lib/agentic-soc/jobs` on a named volume; the local default is
+`./data/job-artifacts`. Downloads re-check file size and SHA-256. Only the newest 50
+attached artifacts are retained, so move important exports into an independently
+controlled retention system. See [Background jobs](../operations/background-jobs.md).
 
 ## Secrets
 
@@ -207,4 +222,5 @@ Discard clears only the local replacement drafts. A failed secret update never e
 or erases the attempted value, so the operator can correct the problem and retry.
 
 Continue with [Configuration reference](../operations/configuration.md),
-[Authentication](authentication.md), and [Health, backup, and restore](../operations/health-backup.md).
+[Background jobs](../operations/background-jobs.md), [Authentication](authentication.md),
+and [Health, backup, and restore](../operations/health-backup.md).

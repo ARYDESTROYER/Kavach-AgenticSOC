@@ -11,6 +11,29 @@ counters but never feed the case decision policy.
 
 Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.
 
+The **Effectiveness** tab has the stable, reload-safe URL
+`#/metrics?tab=effectiveness`. Browser back/forward and a direct reload preserve the
+tab instead of falling back to Operational.
+
+## Agent health diagnostics
+
+The complete Agent health surface appears above Agent Effectiveness on
+**Analytics → Metrics → Effectiveness**. It explains resolved-case precedent corpus
+availability, migration/retrieval state, and auto-close health for the selected 24h,
+7d, or 30d Analytics window. The loader is keyed to that window, aborts superseded
+requests, and rejects mismatched response windows, so a quick range change cannot
+combine old health evidence with a new selector.
+
+The two inputs retain independent RBAC boundaries. The diagnostic rollup requires
+`settings:read`; auto-close health requires `metrics:view`. If only one is readable,
+the panel explains only that evidence. If neither endpoint is readable or supported,
+it renders nothing rather than implying “healthy.” Unknown and not-measured states
+stay distinct from a detected degradation.
+
+Overview consumes the same shared degradation reducer but shows only a compact warning
+when a degradation is positively detected. The full evidence, reasons, remediation,
+window, and retry action remain here so Overview does not become a second health page.
+
 ## Timing definitions
 
 Agentic SOC reports distributions, including p50 and p90 where available:
@@ -222,4 +245,5 @@ spend by model, role, surface, case, and time. Every model call must pass throug
 ledger. A price is an estimate based on the active catalog or operator override; it
 does not replace the provider invoice.
 
-See [Analyst overview](overview.md) and [Cases](cases.md).
+See [Analyst overview](overview.md), [Cases](cases.md), and
+[Background jobs](../operations/background-jobs.md).

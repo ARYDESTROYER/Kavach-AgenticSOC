@@ -190,7 +190,9 @@ async def test_campaign_full_reconciliation_removes_stale_rows(app_state) -> Non
     ) is False
 
 
-async def test_scheduler_health_is_truthful_and_push_only_is_not_gated(app_state) -> None:
+async def test_scheduler_health_is_truthful_and_push_only_is_not_gated(
+    app_state, monkeypatch,
+) -> None:
     prefs = app_state.prefs.model_copy(deep=True)
     prefs.setup_complete = True
     prefs.polling_enabled = False  # push/queue-only deployments do not run PULL collection
@@ -213,6 +215,30 @@ async def test_scheduler_health_is_truthful_and_push_only_is_not_gated(app_state
     assert tuner["last_success_at"]
     assert tuner["last_error"] == ""
     assert tuner["processed"] == 3
+
+    baseline = healthy["workers"]["baseline_producer"]
+    assert baseline["enabled"] is True
+    assert baseline["gated"] is False
+    assert baseline["running"] is True
+    assert baseline["cadence"] == "on_ingest"
+
+    await app_state.observe_source_volume("push-source", 2)
+    observed = await app_state.scheduler_health()
+    baseline = observed["workers"]["baseline_producer"]
+    assert baseline["last_attempt_at"]
+    assert baseline["last_success_at"]
+    assert baseline["last_error"] == ""
+    assert baseline["processed"] == 1
+
+    async def baseline_unavailable(*_args, **_kwargs):
+        raise RuntimeError("baseline store unavailable")
+
+    monkeypatch.setattr(app_state.baseline_store, "put_strict", baseline_unavailable)
+    await app_state.observe_cluster_volume("cluster-health", 4)
+    degraded = await app_state.scheduler_health()
+    baseline = degraded["workers"]["baseline_producer"]
+    assert baseline["last_attempt_at"]
+    assert baseline["last_error"] == "baseline persistence was not confirmed"
     app_state._scheduler_running = False
 
 

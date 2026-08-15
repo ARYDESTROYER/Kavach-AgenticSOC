@@ -81,6 +81,7 @@ touches them. These additive fields do not require a version bump or SQL migrati
 | Enrichment | provider-specific API keys plus `EMBEDDING_API_KEY` | Keyless providers need no key; enabled/keyed filtering happens at dispatch |
 | Cache | `REDIS_URL` | Enrichment caching degrades to an in-process cache when Redis is unavailable |
 | Server | `BACKEND_HOST`, `BACKEND_PORT`, `LOG_LEVEL` | Uvicorn bind and logging configuration |
+| Job artifacts | `JOBS_ARTIFACT_DIR` (legacy merge Compose: `TLSOC_JOBS_ARTIFACT_DIR`) | Private ZIP root; local and updater-managed standalone default `./data/job-artifacts`, legacy merge Compose default `/var/lib/agentic-soc/jobs` on `agentic-soc-job-artifacts` |
 | Release identity | `TLSOC_VERSION`, `TLSOC_RELEASE_CHANNEL`, `TLSOC_BUILD_SHA`, `TLSOC_BUILD_DATE`, `TLSOC_SOURCE_URL` | Direct prefixed build metadata; channel/SHA/date also reach the API runtime as non-secret identity. Source URL is an OCI-only Docker build argument and is not mapped from `.env` by the reference Compose files |
 | Authentication | `AUTH_ENABLED`, `AUTH_JWT_SECRET`, `AUTH_TOKEN_HOURS`, `AUTH_COOKIE_SECURE`, bootstrap user fields | Use a stable signing key and secure cookies behind HTTPS |
 | Security middleware | `SECURITY_HEADERS_ENABLED`, `RATE_LIMIT_ENABLED`, `RATE_LIMIT_CAPACITY`, `RATE_LIMIT_REFILL_PER_SECOND`, `CSRF_ENABLED` | Headers default on; rate limiting and CSRF default off |
@@ -91,6 +92,18 @@ The reference standalone Compose file maps the SSO and notification JSON maps. I
 does **not** map a `TLSOC_CONNECTOR_SECRETS` variable in 0.1. To boot per-source
 connector secrets from the environment, pass the backend's unprefixed
 `CONNECTOR_SECRETS` explicitly or add a deliberate Compose mapping.
+
+`JOBS_ARTIFACT_DIR` is not a StateStore selector. Job metadata and CAS leases remain in
+the selected state backend; only downloadable ZIP bytes live in this directory. The
+server creates private modes, verifies size/SHA-256 at download, and retains at most 50
+attached artifacts. Changing the path does not migrate old files. See
+[Background jobs](../operations/background-jobs.md).
+
+The updater-managed standalone Compose file is intentionally byte-pinned by its v1
+upgrade protocol and does not gain a new volume in this release. Its files survive a
+backend process or ordinary container restart, but not a container replacement. Use a
+reviewed Compose override/bind mount when that installation needs longer retention;
+do not repurpose the updater control/state volumes.
 
 ## State backends
 

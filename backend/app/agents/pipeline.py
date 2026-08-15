@@ -80,6 +80,8 @@ class InvestigationPipeline:
         notifier: Any = None,
         automation: Any = None,
         event_bus: Any = None,
+        investigation_gate: Any = None,
+        mutation_task_spawner: Any = None,
     ) -> None:
         self._es = es
         # The agent's read-only log surface. Defaults to wrapping ``es`` in an
@@ -128,6 +130,13 @@ class InvestigationPipeline:
         # pipeline (#3/#11). When realtime is disabled nobody subscribes and publish is a
         # cheap history-only no-op.
         self.event_bus = event_bus
+        # Process-wide permit shared by poller, push ingest, manual work and durable
+        # jobs. None preserves direct-construction compatibility in extension tests.
+        self._investigation_gate = investigation_gate
+        # AppState-owned detached-task registry. Direct constructions keep the old
+        # create_task fallback; production injects a spawner that factory reset can
+        # cancel/await before it clears tenant state.
+        self._mutation_task_spawner = mutation_task_spawner
         # Per-cluster-signature locks (Round-4 harden). The poller fan-out
         # (:class:`PollerManager`) runs per-source pollers CONCURRENTLY, so two ticks /
         # sources correlating the SAME cluster signature could both run the
@@ -229,9 +238,13 @@ class InvestigationPipeline:
 
             # Pass fetch=get so the detached task merges notifications_sent onto the
             # FRESH case, never clobbering a concurrent analyst edit (audit #28).
-            asyncio.create_task(
-                notifier.notify(case, save=self._cases.save, fetch=self._cases.get)
-            )
+            coro = notifier.notify(case, save=self._cases.save, fetch=self._cases.get)
+            if self._mutation_task_spawner is not None:
+                self._mutation_task_spawner(
+                    coro, name=f"case-notify:{case.case_id}"
+                )
+            else:
+                asyncio.create_task(coro)
         except Exception as exc:  # noqa: BLE001 — must never affect the case flow
             logger.debug("notification scheduling skipped: %s", exc)
 
@@ -401,6 +414,7 @@ class InvestigationPipeline:
         force: bool = False,
         force_playbook_id: str | None = None,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
+        investigation_priority: str = "ingest",
     ) -> Case:
         """Investigate a cluster into a case. The ``find_open_by_signature → save``
         critical section is serialized PER SIGNATURE (:meth:`signature_lock`) so two
@@ -411,9 +425,44 @@ class InvestigationPipeline:
                 cluster, source_surface, prefs,
                 force=force, force_playbook_id=force_playbook_id,
                 query_source=query_source,
+                investigation_priority=investigation_priority,
             )
 
     async def _investigate_cluster_locked(
+        self,
+        cluster: Cluster,
+        source_surface: SourceSurface,
+        prefs: Preferences,
+        *,
+        force: bool = False,
+        force_playbook_id: str | None = None,
+        query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
+        investigation_priority: str = "ingest",
+    ) -> Case:
+        gate = self._investigation_gate
+        if gate is None:
+            return await self._investigate_cluster_effect(
+                cluster,
+                source_surface,
+                prefs,
+                force=force,
+                force_playbook_id=force_playbook_id,
+                query_source=query_source,
+            )
+        async with gate.permit(
+            max(1, int(getattr(prefs.caps, "max_concurrent", 3))),
+            "background" if investigation_priority == "background" else "ingest",
+        ):
+            return await self._investigate_cluster_effect(
+                cluster,
+                source_surface,
+                prefs,
+                force=force,
+                force_playbook_id=force_playbook_id,
+                query_source=query_source,
+            )
+
+    async def _investigate_cluster_effect(
         self,
         cluster: Cluster,
         source_surface: SourceSurface,

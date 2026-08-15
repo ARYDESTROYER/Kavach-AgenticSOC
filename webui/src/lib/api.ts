@@ -20,6 +20,9 @@ import type {
   AutoClosePolicy,
   BaselineConfig,
   BatchConfig,
+  BackgroundJob,
+  BackgroundJobsResponse,
+  BackgroundJobSubmit,
   Branding,
   BulkResult,
   CampaignConfig,
@@ -655,6 +658,9 @@ async function requestResponse(
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch (e) {
+    // Superseded parameter-keyed reads deliberately abort; preserve that control
+    // flow instead of disguising it as a backend outage.
+    if (opts.signal?.aborted) throw e;
     // Network-level failure (backend down, CORS, etc.)
     throw new ApiError(0, `Cannot reach backend: ${(e as Error).message}`);
   }
@@ -776,8 +782,8 @@ function normalizeRunbooksResponse(value: RunbooksResponse): RunbooksResponse {
 
 /** Generic verbs, for ad-hoc/endpoints not yet wrapped in a typed method. */
 export const api = {
-  get: <T = unknown>(path: string, query?: Record<string, unknown>) =>
-    request<T>('GET', path, { query }),
+  get: <T = unknown>(path: string, query?: Record<string, unknown>, signal?: AbortSignal) =>
+    request<T>('GET', path, { query, signal }),
   post: <T = unknown>(path: string, body?: unknown) => request<T>('POST', path, { body }),
   postAbortable: <T = unknown>(path: string, body: unknown, signal: AbortSignal) =>
     request<T>('POST', path, { body, signal }),
@@ -794,6 +800,21 @@ export const api = {
   dataExport: {
     archive: (scopes: DataExportScope[], signal?: AbortSignal) =>
       requestBlob('POST', 'admin/export/archive', { body: { scopes }, signal }),
+  },
+
+  // ---- Durable background jobs ---------------------------------------- //
+  // Ordinary application work, distinct from the separately hardened updater.
+  jobs: {
+    submit: (input: BackgroundJobSubmit) =>
+      request<BackgroundJob>('POST', 'jobs', { body: input }),
+    list: (query?: { limit?: number; offset?: number }, signal?: AbortSignal) =>
+      request<BackgroundJobsResponse>('GET', 'jobs', { query, signal }),
+    get: (jobId: string, signal?: AbortSignal) =>
+      request<BackgroundJob>('GET', `jobs/${encodeURIComponent(jobId)}`, { signal }),
+    cancel: (jobId: string) =>
+      request<BackgroundJob>('POST', `jobs/${encodeURIComponent(jobId)}/cancel`),
+    artifact: (jobId: string, signal?: AbortSignal) =>
+      requestBlob('GET', `jobs/${encodeURIComponent(jobId)}/artifact`, { signal }),
   },
 
   // ---- Auth (optional; OFF-safe) ---------------------------------------- //
@@ -1333,13 +1354,15 @@ export const api = {
   // GET /api/metrics/auto-close-health — the rolling auto-close signal with an
   // explicit `status` (`metrics:view` server-side). Both are typeof-guardable at the
   // call site so a minimal test/mock surface never has to stub them.
-  diagnosticsHealth: (windowHours = 24) =>
+  diagnosticsHealth: (windowHours = 24, signal?: AbortSignal) =>
     request<DiagnosticsHealth>('GET', 'diagnostics/health', {
       query: { window_hours: windowHours },
+      signal,
     }),
-  autoCloseHealth: (windowHours = 24) =>
+  autoCloseHealth: (windowHours = 24, signal?: AbortSignal) =>
     request<AutoCloseHealth>('GET', 'metrics/auto-close-health', {
       query: { window_hours: windowHours },
+      signal,
     }),
 
   // ---- Analytics surfaces ---------------------------------------------- //

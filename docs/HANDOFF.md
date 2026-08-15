@@ -6,7 +6,7 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Working branch:** `Testing`  ·  **Date:** 2026-08-11
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-08-13
 - **Status:** Round 10 and the additive Security Command Center / Case Manager work are
   integrated on `Testing`. A **backend deep-audit hardening pass
   (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10 high / 24 med / 13 low)
@@ -121,6 +121,50 @@
   candidate uses the immutable commit from the exact annotated `vVERSION` tag. This
   observation suppresses downgrades,
   and cannot authorize installation or change the updater's host-pinned trust policy.
+- **Current durable-work contract:** long-running case bulk work, Data export,
+  precedent bootstrap, Runbook reindex, Knowledge import, tiered reset, and Storage
+  apply submit to one strict-CAS application-job registry. The in-process runner uses
+  renewable five-minute leases, rechecks authority, publishes actor-scoped Inbox/SSE
+  progress with polling fallback, and supports cooperative cancellation, restart
+  recovery, bounded failures, terminal compaction, and verified persistent ZIP
+  artifacts. The unified **Analytics → Jobs** surface always shows self-scoped
+  application work; `models:read` adds related LLM Batch rows and `automation:read`
+  adds list-only worker health for threshold tuning, campaign correlation, Batch, and
+  the event-driven `baseline_producer` (`cadence=on_ingest`; independent of the
+  cadence-loop runtime flag). Newly accepted local LLM Batch rows freeze a strict,
+  generation-bound audience of at most 200 active effective-`models:read` recipients and
+  reconcile one stable safe Inbox row per recipient. Strict audience-store outages stay
+  pending/retryable; permission or account-generation loss revokes/fail-closed filters
+  the note. Later grants/users and legacy rows without a snapshot remain list-only. The
+  audience/outbox path is regression-backed across strict-store outage, permission loss,
+  account deletion/recreation, stable retry, and factory-reset fencing. CAS job claims do not remove
+  the application-wide single-replica boundary: investigation/export concurrency,
+  receivers, schedulers, and realtime delivery retain process-local authorities.
+  Factory reset leaves only a privileged actorless sanitized system receipt in the
+  replaced registry. In the supported single-backend-process profile it closes and
+  drains HTTP mutation admission and SSE, quiesces tenant producers and detached writers,
+  strictly clears tenant KV/cases/cursors/RAG/usage/audit plus runtime overlays, and
+  releases its durable fences only after the new receipt lineage is audited. A factory
+  privacy-boundary failure keeps the application fenced/degraded, blocks ordinary work,
+  and admits only a new freshly authorized factory retry. Submission/retry and cancel
+  `202` responses, plus terminal Inbox/SSE projection, wait for their transition audit;
+  durable reconciliation repairs audit gaps before projection. The updater's
+  private supervisor jobs are separate and unchanged. See
+  `docs/operations/background-jobs.md`.
+- **Long-operation compatibility boundary:** Console/user workflows use
+  `POST /api/jobs`. Direct archive/segment export, precedent bootstrap, RAG import, and
+  full-catalog Runbook reindex remain executable, explicitly OpenAPI-deprecated,
+  request-bound compatibility primitives; targeted Runbook reindex remains direct.
+  Direct reset and Storage apply mutations are different: they return 410 and have no
+  synchronous bypass.
+- **Dashboard integrity contract:** Overview posture values are keyed to the selected
+  range/comparison, superseded requests abort, response windows are validated, and old
+  posture data is hidden during a range transition. False Positive Rate and
+  Auto-resolved therefore cannot repaint from an older request. Full Agent health now
+  lives above **Analytics → Effectiveness** and follows its 24h/7d/30d range; Overview
+  consumes the same reducer but renders only a degradation warning, with a stable
+  `#/metrics?tab=effectiveness` drill-through. Healthy/unauthorized states cost no
+  Overview space, while unknown evidence stays distinct from healthy.
 - **Current Console contract:** the shared rail and route-loading states follow
   `docs/development/ui-standard.md`; `webui/src/design-system/` now exposes the one
   centered loading grammar, original source marks, and a serializable catalog for
@@ -215,8 +259,8 @@
   backward-compatible read path, with no operator reset. Saved server history is
   authoritative on resume. Case Manager chat remains case-scoped and never enters
   personal Workspace history; browser-only chats from before this feature cannot be
-  recovered. **Analytics → Agent effectiveness** (also reachable at the stable
-  `#/effectiveness` deep link) renders the additive
+  recovered. **Analytics → Agent effectiveness** (reload-safe at
+  `#/metrics?tab=effectiveness`) renders the additive
   `GET /api/metrics/agent-improvement` report. It compares the last seven complete UTC days with the
   preceding 28 using weighted analyst-reported agreement, material correction rate,
   and human review turnaround, while exposing two-sided cohort coverage, truncation,
@@ -341,8 +385,8 @@ backend/app/
                    /account/me, /demo/*, /proposals, /settings/schema, `/chat`, and
                    per-user `/chat/conversations` list/detail/rename/delete).
                    api/deps.py =
-                   auth/RBAC gates (+ custom-role union). **27 `routes_*.py` feature
-                   routers total**, ALL auto-discovered at boot
+                   auth/RBAC gates (+ custom-role union). **29 feature routers total**,
+                   ALL auto-discovered at boot
                    (`main.py::discover_feature_routers()` walks `app.api.routes_*`, needs
                    only a top-level `router: APIRouter` — no manual registration):
                    Round 3 added 8: routes_metrics · routes_standup · routes_enrichment ·
@@ -365,12 +409,19 @@ backend/app/
                    /api/admin/export`, default fresh-auth server-assembled single ZIP at
                    `/api/admin/export/archive`, plus advanced resumable
                    `/api/admin/export/segment` + `/cancel`, all under
-                   `data_export:export`) + routes_storage (desired own-state lifecycle,
-                   pure capability preview, and explicit fresh-auth Elasticsearch apply)
+                   `data_export:export`) + routes_storage (desired own-state lifecycle
+                   and pure capability preview; direct apply returns 410 and canonical
+                   fresh-auth Elasticsearch apply is a Job)
                    + routes_runbooks (durable runbook catalog/reconciliation) +
                    routes_releases (public source discovery) + routes_schedulers
-                   (read-only worker health) + routes_telemetry (query-backed telemetry
-                   gaps; connector absence is never evidence).
+                   (read-only threshold/campaign/Batch cadence-loop health plus
+                   event-driven baseline-producer health) + routes_telemetry (query-backed telemetry
+                   gaps; connector absence is never evidence) + routes_diagnostics
+                   (read-only precedent/migration/auto-close health) + routes_jobs
+                   (self-scoped application job submit/list/detail/cancel/artifact plus
+                   permission-scoped LLM Batch and scheduler projections; bounded,
+                   generation-bound new-Batch Inbox outbox). Direct reset mutation also
+                   returns 410; canonical tiered reset is a Job.
   auth/            passwords (PBKDF2) · tokens (stdlib HS256 JWT, sid/tv claims) · service ·
                    mfa (RFC-6238 TOTP) · oidc (SSO code-exchange)
   rbac/policy.py   the role->resource->action permission matrix + can()
@@ -387,7 +438,10 @@ backend/app/
                    Round-5: dashboards (per-user custom-dashboard layouts) · rule_versions
                    (detection-rule version ledger + rollback) — NO new index/table needed
   notifications/   channel SPI · email (SMTP+SES) · resend · webhook/slack/teams · templates · dispatch ·
-                   InAppChannel (Round 3 — fan-out to InboxStore, no network)
+                   InAppChannel (Round 3 — fan-out to InboxStore, no network) · jobs
+                   (one strict-CAS bounded registry, renewable leases, intent
+                   idempotency, bounded failures, terminal compaction, sanitized
+                   factory receipt; no new index/table)
   enrichment/      Round 3 — EnrichmentProvider SPI: base/registry/dispatch/aggregate +
                    providers/ (19 registered classes, +17 new in Round 3: abuseipdb/virustotal/
                    greynoise/shodan(+internetdb)/censys/binaryedge/ipinfo/otx/pulsedive/spur/
@@ -408,6 +462,9 @@ backend/app/
                    event_detection (EVENT-feed batched agent-driven detection funnel) ·
                    forwarding (explain_forwarding) · reset (tiered danger-zone reset) ·
                    storage_lifecycle (capability-aware append-only ledger ILM; no deletion) ·
+                   jobs (in-process durable runner, actor-scoped Inbox/SSE, cooperative
+                   cancellation, restart recovery, verified ZIP artifacts) ·
+                   investigation_gate (process-local ingest-priority concurrency) ·
                    agent_improvement (pure aggregate complete-day quality headline +
                    additive cost/closure/outcome/volume trends; reporting only)
   agents/          router · investigator · formatter · chat · standup · overview · personas · pipeline
@@ -438,7 +495,8 @@ webui/src/
                    Workspace(Chat with searchable desktop history rail/mobile Sheet,
                    durable per-user transcripts, and one docked composer + Entity
                    investigation), Analytics(Operational+Performance+Posture+
-                   Effectiveness+Cost),
+                   Effectiveness+Cost), Jobs (personal application jobs + permission-
+                   scoped related LLM Batch and scheduler projections),
                    Home(Overview+Standup), Intelligence(Knowledge corpus+Reference
                    runbooks+Operator memory+Response playbooks+Agent personas),
                    Docs + a hidden legacy Scans compatibility route + Round-3 Models,
@@ -585,8 +643,8 @@ what-shipped: `docs/research/2026-07-round4/`.
 - **Unified logs** — `GET /api/logs` scatter-gather across browse-capable sources + a
   webui `UnifiedLogsSheet`.
 - **Reset + OOBE** — `engine/reset.py` (tiered cases / sources / factory reset that **never**
-  wipes env secrets) + `routes_reset.py`; `routes_setup.py` OOBE first-admin (strong-pw,
-  self-locking).
+  wipes env secrets) + `routes_reset.py` (deprecated direct mutation returns 410;
+  canonical reset is a Job); `routes_setup.py` OOBE first-admin (strong-pw, self-locking).
 - **Login white-label** — `BrandingConfig.login_*` bounded plain-text hero/illustration.
 - **Terminology cleanup** (UI/docs only; wire keys + aliases kept): event / detection / alert
   / case / campaign; "correlate" → Auto-investigate / clustering / campaign-correlation;
@@ -799,6 +857,7 @@ hunting/query builder, case linking/merge, and an integrations marketplace.
 | Round-4 design + what-shipped (extend a feature) | `docs/research/2026-07-round4/PROPOSAL.md` · `IMPLEMENTATION.md` |
 | Round-5 design + what-shipped (UI/UX + rules + dashboards + coupling) | `docs/research/2026-07-round5/PROPOSAL.md` · `DESIGN_STANDARD.md` · `IMPLEMENTATION.md` |
 | The current Console UI contract — READ before touching webui | `docs/development/ui-standard.md` |
+| Durable background jobs, cancellation, recovery, and artifacts | `docs/operations/background-jobs.md` |
 | Round-5 design history (color/token/primitives rationale) | `docs/research/2026-07-round5/DESIGN_STANDARD.md` |
 | Round-6 what-shipped (fleet glitch-hunt, 464 findings) | `docs/research/2026-07-round6/IMPLEMENTATION.md` |
 | Round-7 design + what-shipped (Security Command Center + Noise-Reduction funnel) | `docs/research/2026-07-round7/` |

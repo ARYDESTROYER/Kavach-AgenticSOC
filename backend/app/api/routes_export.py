@@ -1085,6 +1085,7 @@ async def _assemble_archive(
     state: AppState,
     actor: str,
     disconnected: Callable[[], Awaitable[bool]] | None = None,
+    progressed: Callable[[str, int, int], Awaitable[None]] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Write every selected scope incrementally and add the manifest last."""
     archive = await _run_blocking(
@@ -1197,6 +1198,8 @@ async def _assemble_archive(
                     )
                 )
                 exported = int(segment.get("cumulative_count") or 0)
+                if progressed is not None:
+                    await progressed(scope, exported, int(snapshot_total or 0))
                 status = str(segment.get("status") or "unverified")
                 complete = bool(segment.get("complete"))
                 if complete and status == "complete":
@@ -1383,6 +1386,7 @@ async def export_application_data(
 
 @router.post(
     "/admin/export/archive",
+    deprecated=True,
     response_class=StreamingResponse,
     responses={
         200: {
@@ -1403,7 +1407,11 @@ async def export_application_data_archive(
     _permission: Any = Depends(_ARCHIVE_PERMISSION_DEP),
     _fresh: Any = Depends(_ARCHIVE_FRESH_DEP),
 ) -> Response:
-    """Assemble selected full-history scopes into one atomic disk-backed ZIP.
+    """Deprecated request-bound compatibility export.
+
+    New operator workflows submit ``data_export_archive`` through ``POST /api/jobs``
+    so assembly survives navigation, reports durable progress, and produces a
+    permission-rechecked artifact. This route remains for existing API integrations.
 
     Every NDJSON member is written one bounded segment page at a time. The terminal
     manifest is added only after every selected repository emitted its starting count;
@@ -1490,7 +1498,7 @@ async def export_application_data_archive(
         ) from exc
 
 
-@router.post("/admin/export/segment")
+@router.post("/admin/export/segment", deprecated=True)
 async def export_application_data_segment(
     body: DataExportSegmentRequest,
     state: AppState = Depends(get_state),
@@ -1498,7 +1506,11 @@ async def export_application_data_segment(
     _permission=Depends(require_permission("data_export", "export")),
     _fresh=Depends(require_fresh_auth()),
 ) -> Response:
-    """Download one resumable segment of a scope's complete history.
+    """Deprecated request-bound compatibility segment.
+
+    New operator workflows submit ``data_export_segment`` through ``POST /api/jobs``;
+    that worker owns the complete cursor loop and returns one verified artifact. This
+    one-page primitive remains for existing integrations and explicit cursor recovery.
 
     The 5,000-record setting is deliberately a per-segment memory/response bound,
     not a lifetime ceiling. The Console follows ``next_cursor`` until ``complete``;

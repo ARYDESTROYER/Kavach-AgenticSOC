@@ -27,6 +27,8 @@ from .constants import (
     DecisionBy,
     Disposition,
     EntityType,
+    JobKind,
+    JobStatus,
     SourceSurface,
     UsageOutcome,
     UserRole,
@@ -913,6 +915,202 @@ class CaseTask(BaseModel):
     logs: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class JobProgress(BaseModel):
+    """Bounded progress projection shared by Jobs, Inbox, SSE, and the Console."""
+
+    done: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+    unit: str = Field(default="items", min_length=1, max_length=40)
+
+
+class JobFailure(BaseModel):
+    item_ref: str = Field(default="", max_length=200)
+    reason: str = Field(default="", max_length=500)
+
+
+class JobResult(BaseModel):
+    kind: str = Field(default="summary", min_length=1, max_length=80)
+    artifact_id: str | None = Field(default=None, max_length=120)
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class JobPermission(BaseModel):
+    resource: str = Field(min_length=1, max_length=80)
+    action: str = Field(min_length=1, max_length=80)
+
+
+class JobTransition(BaseModel):
+    seq: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=40)
+    at: str = Field(default_factory=iso_now)
+    summary: str = Field(default="", max_length=500)
+    audited: bool = False
+
+
+class JobArtifact(BaseModel):
+    """Internal artifact metadata; the opaque id derives its private-root path."""
+
+    artifact_id: str = Field(min_length=1, max_length=120)
+    filename: str = Field(min_length=1, max_length=240)
+    content_type: str = Field(min_length=1, max_length=120)
+    size: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: str = Field(default_factory=iso_now)
+
+
+class Job(BaseModel):
+    """Durable internal job record stored in the existing state-backend KV."""
+
+    job_id: str = Field(default_factory=lambda: new_id("job-"), max_length=120)
+    kind: JobKind
+    actor: str = Field(default="", max_length=160)
+    actor_generation: str = Field(default="", max_length=64)
+    created_at: str = Field(default_factory=iso_now)
+    started_at: str | None = None
+    finished_at: str | None = None
+    status: JobStatus = JobStatus.QUEUED
+    progress: JobProgress = Field(default_factory=JobProgress)
+    failures: list[JobFailure] = Field(default_factory=list)
+    failure_count: int = Field(default=0, ge=0)
+    failures_truncated: int = Field(default=0, ge=0)
+    # Empty only on the deliberately sanitized system-owned factory-reset receipt.
+    request_fingerprint: str = Field(pattern=r"^(?:[0-9a-f]{64})?$")
+    # Purpose-separated SHA-256(actor + NUL + caller key); the raw idempotency key
+    # is never persisted or returned.
+    idempotency_key_hash: str = Field(pattern=r"^(?:[0-9a-f]{64})?$")
+    result: JobResult | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    required_permissions: list[JobPermission] = Field(default_factory=list)
+    # Sensitive jobs are admitted only after step-up authentication. Persist the
+    # bounded authorization deadline and originating session id so execution cannot
+    # silently outlive/replay that authority after the HTTP request disappears.
+    fresh_authorized_until_millis: int = Field(default=0, ge=0)
+    fresh_session_id: str | None = Field(default=None, max_length=160)
+    fresh_token_version: int | None = Field(default=None, ge=0)
+    cancel_requested: bool = False
+    # Resume/dedup journal. A post-crash ambiguous ``processing`` item is failed
+    # closed rather than re-executed and potentially billed/applied twice.
+    item_states: dict[str, Literal["pending", "processing", "succeeded", "failed"]] = Field(
+        default_factory=dict
+    )
+    lease_owner: str | None = Field(default=None, max_length=160)
+    lease_token: str | None = Field(default=None, max_length=160)
+    lease_expires_at_millis: int = Field(default=0, ge=0)
+    transition_seq: int = Field(default=0, ge=0)
+    transitions: list[JobTransition] = Field(default_factory=list)
+    artifact: JobArtifact | None = None
+    # A worker reserves an opaque artifact identity in the durable row before it
+    # creates/writes the private file. Startup cleanup therefore cannot mistake a
+    # different replica's in-progress archive for an orphan.
+    pending_artifact_id: str | None = Field(default=None, max_length=120)
+    pending_artifact_suffix: str | None = Field(default=None, max_length=16)
+    inbox_synced: bool = False
+    # Set when an account generation is deleted while its worker is in flight.
+    # The worker may finish/audit, but no later projection may target a recreated
+    # account with the same mutable username.
+    retired: bool = False
+    app_version: str | None = None
+    build_sha: str | None = None
+
+    @model_validator(mode="after")
+    def _factory_receipt_or_executable(self) -> "Job":
+        empty_identity = not self.request_fingerprint or not self.idempotency_key_hash
+        if not empty_identity:
+            return self
+        valid_receipt = (
+            not self.request_fingerprint
+            and not self.idempotency_key_hash
+            and self.kind == JobKind.TIERED_RESET
+            and self.actor == ""
+            and self.actor_generation == ""
+            and self.status
+            in {
+                JobStatus.SUCCEEDED,
+                JobStatus.PARTIAL,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            }
+            and self.params == {"scope": "factory"}
+            and not self.required_permissions
+            and not self.fresh_session_id
+            and self.fresh_token_version is None
+            and not self.item_states
+            and not self.failures
+            and self.failure_count == 0
+            and self.artifact is None
+            and self.pending_artifact_id is None
+            and not self.retired
+        )
+        if not valid_receipt:
+            raise ValueError("empty job identity is reserved for sanitized factory receipts")
+        return self
+
+
+class JobPublic(BaseModel):
+    """Secret-free/self-scoped wire projection returned by the Jobs API and SSE."""
+
+    job_id: str
+    kind: JobKind
+    actor: str
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    status: JobStatus
+    progress: JobProgress
+    failures: list[JobFailure] = Field(default_factory=list)
+    failure_count: int = 0
+    failures_truncated: int = 0
+    request_fingerprint: str
+    result: JobResult | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    cancel_requested: bool = False
+
+
+class RelatedBatchJobPublic(BaseModel):
+    """Bounded, provider-secret-free LLM Batch summary on the unified Jobs view."""
+
+    id: str = Field(max_length=2000)
+    provider: str = Field(max_length=2000)
+    state: str = Field(max_length=80)
+    model: str = Field(max_length=2000)
+    discount: float
+    requests: int = Field(ge=0)
+    retrieved: int = Field(ge=0)
+    submitted_at: str | None = None
+    polled_at: str | None = None
+
+
+class RelatedJobsPublic(BaseModel):
+    llm_batches: list[RelatedBatchJobPublic] = Field(default_factory=list)
+    total: int = Field(ge=0)
+    truncated: bool = False
+
+
+class SchedulerWorkerPublic(BaseModel):
+    enabled: bool
+    gated: bool
+    running: bool
+    cadence: str = Field(max_length=80)
+    last_attempt_at: str = ""
+    last_success_at: str = ""
+    last_error: str = Field(default="", max_length=500)
+    processed: int = Field(default=0, ge=0)
+
+
+class SchedulerHealthPublic(BaseModel):
+    scheduler_runtime_running: bool
+    workers: dict[str, SchedulerWorkerPublic] = Field(default_factory=dict)
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobPublic]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=100)
+    offset: int = Field(ge=0)
+    related: RelatedJobsPublic | None = None
+    system_workers: SchedulerHealthPublic | None = None
+
+
 class InAppNotification(BaseModel):
     """One item in a user's in-app notification inbox (Round 3). ``category`` is a
     :class:`app.constants.NotificationCategory` value; ``state`` tracks the read
@@ -931,6 +1129,17 @@ class InAppNotification(BaseModel):
     created_at: str = Field(default_factory=iso_now)
     read_at: str | None = None
     ref: dict[str, Any] = Field(default_factory=dict)
+    # Durable Jobs integration. These are additive and default null so historical
+    # inbox rows load byte-compatibly. The item id remains stable while these values
+    # are updated in place.
+    job_id: str | None = None
+    job_status: JobStatus | None = None
+    progress: JobProgress | None = None
+    result: JobResult | None = None
+    # Internal generation binding for every durable application/LLM Batch Job
+    # projection. API routes explicitly omit it; it exists only so a recreated
+    # same-name principal cannot inherit a predecessor's durable Inbox row.
+    audience_generation: str | None = Field(default=None, max_length=64)
 
 
 class NotificationPref(BaseModel):
@@ -1171,6 +1380,15 @@ class BaselineState(BaseModel):
     version: int = 1
 
 
+class BatchInboxAudience(BaseModel):
+    """One generation-bound recipient in a BatchJob's durable Inbox outbox."""
+
+    username: str = Field(default="", max_length=160)
+    account_generation: str = Field(default="", max_length=64)
+    state: Literal["pending", "projected", "revoked"] = "pending"
+    projection_signature: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+
+
 class BatchJob(BaseModel):
     """One async BATCH-inference job (Round 4 batch LLM). Tracks a batch of LLM calls
     submitted to a provider's async batch API (Anthropic/OpenAI ~50% discounted) so a
@@ -1215,6 +1433,22 @@ class BatchJob(BaseModel):
     # EVENT-detection re-entry payload (Wave-6). custom_id -> serialised CandidateAlert
     # (see engine/event_detection.candidate_to_json). Additive; default empty.
     candidates: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Personal Inbox projection is a durable OUTBOX over a strict snapshot of the
+    # active accounts that held ``models:read`` when this batch was accepted. Old
+    # rows default to ``legacy`` and are intentionally list-only: we never guess a
+    # historical audience after the fact. A new row is ``pending`` only when the
+    # security snapshot could not be read; the reconciler retries without blocking
+    # the provider/security workflow. Per-recipient state makes a crash between the
+    # Inbox CAS and this acknowledgement safe (the same stable note is upserted).
+    inbox_audience_state: Literal["legacy", "pending", "ready"] = "legacy"
+    inbox_audience: list[BatchInboxAudience] = Field(default_factory=list, max_length=200)
+    inbox_audience_truncated: int = Field(default=0, ge=0)
+    # Terminal compaction keeps the shared single-document registry bounded. The
+    # aggregate counts survive after request/custom-id/candidate payloads are scrubbed.
+    summary_total: int = Field(default=0, ge=0)
+    summary_retrieved: int = Field(default=0, ge=0)
+    summary_failed: int = Field(default=0, ge=0)
+    terminal_compacted: bool = False
 
 
 class DetectionRule(BaseModel):

@@ -44,7 +44,7 @@ import {
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import type { Case, CaseActionInput, SavedView } from '@/lib/types';
+import type { BackgroundJobKind, Case, CaseActionInput, SavedView } from '@/lib/types';
 import { Can, useCan } from '@/soc/components/Can';
 import { humanizeAge, humanizeToken, DASH } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -105,6 +105,11 @@ import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTa
 
 import type { Navigate } from '@/soc/router';
 import { useRoute } from '@/soc/router';
+import {
+  announceJobAccepted,
+  retainJobSubmissionIntent,
+  type JobSubmissionIntent,
+} from '@/soc/jobs/jobs';
 // motion.dev (lazy — Cases is a lazy page chunk, off the eager first-paint graph): the
 // bulk-action bar's slide-out EXIT (today it just vanishes). Cases mounts its OWN
 // MotionProvider so the portaled bar animates even on a deep link.
@@ -505,6 +510,10 @@ export interface CasesProps {
   onNavigate?: Navigate;
   /** Seed the status filter on mount (e.g. from a drill-through). */
   initialStatus?: string;
+  /** Seed the exact assignee facet from a completed bulk-assignment job. */
+  initialAssignee?: string;
+  /** Seed the searchable tag token from a completed bulk-tag job. */
+  initialTag?: string;
   /**
    * Seed the severity filter on mount from a severity drill-through (Round-6 #38 —
    * Overview's Critical/High KPI + open-by-severity rows). One of the coarse bands
@@ -661,6 +670,8 @@ const CaseManagerHandoff: React.FC<{ target: CaseManagerHandoffTarget | null }> 
 export default function Cases({
   onNavigate,
   initialStatus: initialStatusProp,
+  initialAssignee: initialAssigneeProp,
+  initialTag: initialTagProp,
   initialSeverity: initialSeverityProp,
   initialNoiseOutcome: initialNoiseOutcomeProp,
   initialWindowHours: initialWindowHoursProp,
@@ -668,6 +679,8 @@ export default function Cases({
   const route = useRoute();
   const navigate = onNavigate ?? route.navigate;
   const initialStatus = initialStatusProp ?? route.opts?.status;
+  const initialAssignee = initialAssigneeProp ?? route.opts?.assignee;
+  const initialTag = initialTagProp ?? route.opts?.tag;
   // Only honour a recognised band so a stray value can never silently empty the list
   // behind an un-representable severity filter.
   const initialSeverityRaw = initialSeverityProp ?? route.opts?.severity;
@@ -708,6 +721,8 @@ export default function Cases({
   const [filters, setFilters] = React.useState<CaseFilters>(() => {
     let f = EMPTY_FILTERS;
     if (initialStatus) f = { ...f, status: initialStatus };
+    if (initialAssignee) f = { ...f, assignee: initialAssignee };
+    if (initialTag) f = { ...f, search: initialTag };
     if (initialSeverity) f = { ...f, severity: initialSeverity };
     if (initialNoiseOutcome) f = { ...f, noiseOutcome: initialNoiseOutcome };
     if (initialTimeRange) f = { ...f, timeRange: initialTimeRange };
@@ -757,6 +772,17 @@ export default function Cases({
     if (initialStatus) setFilters((f) => ({ ...f, status: initialStatus }));
   }, [initialStatus]);
 
+  // Completed bulk assignment/tag jobs deep-link back to their affected cohort. The
+  // assignee remains an exact facet; tags reuse the visible text search, whose haystack
+  // already includes Case.tags, so the destination is inspectable and easy to clear.
+  React.useEffect(() => {
+    if (initialAssignee) setFilters((f) => ({ ...f, assignee: initialAssignee }));
+  }, [initialAssignee]);
+
+  React.useEffect(() => {
+    if (initialTag) setFilters((f) => ({ ...f, search: initialTag }));
+  }, [initialTag]);
+
   // A severity drill-through (Overview Critical/High KPI + open-by-severity rows, #38)
   // can change `initialSeverity` while mounted; reseed the severity facet. Additive —
   // no-op when absent, and pre-validated to a known band above.
@@ -804,8 +830,10 @@ export default function Cases({
 
   // Self-heal selected facet values when the loaded rows change.
   React.useEffect(() => {
-    setFilters((f) => healFilters(f, facets));
-  }, [facets]);
+    // Do not erase a deep-linked assignee while the first case page is still loading
+    // and the facet catalog is necessarily empty.
+    if (!loading) setFilters((f) => healFilters(f, facets));
+  }, [facets, loading]);
 
   const filtered = React.useMemo(() => applyFilters(cases, filters), [cases, filters]);
 
@@ -867,147 +895,52 @@ export default function Cases({
     const set = new Set(selected);
     return filteredSorted.filter((c) => set.has(c.case_id));
   }, [selected, filteredSorted]);
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
 
-  // BULK case action — POST /api/cases/bulk applies the SAME human lifecycle action
-  // as the single-case POST /api/cases/{id}/action to every selected case. #3-safe:
-  // this is the analyst layer (never an LLM auto-close / decide()). RBAC is enforced
-  // server-side (cases:close for close/resolve, cases:write otherwise); the client
-  // <Can> gates only hide the affordances. The per-id result drives a summary toast
-  // + the warning alert, and the selection clears after.
-  const runBulk = React.useCallback(
-    async (input: CaseActionInput) => {
-      const ids = selectedCases.map((c) => c.case_id);
+  /** Submit one immutable Cases selection to the server-owned Jobs subsystem. */
+  const submitCaseJob = React.useCallback(
+    async (
+      kind: BackgroundJobKind,
+      additionalParams: Record<string, unknown>,
+      activity: string,
+    ) => {
+      const ids = selectedCases.map((item) => item.case_id).sort((a, b) => a.localeCompare(b));
       if (!ids.length || bulkBusy) return;
+      const params = { case_ids: ids, ...additionalParams };
+      const intent = retainJobSubmissionIntent(jobSubmissionIntentRef.current, kind, params);
+      jobSubmissionIntentRef.current = intent;
       setBulkBusy(true);
       setBulkError(null);
       try {
-        const res = await api.cases.bulk(ids, input);
-        const results = res.results ?? [];
-        const okCount = results.filter((r) => r.ok).length;
-        const failures = results.filter((r) => !r.ok);
-        if (failures.length) {
-          // Surface the distinct reasons (capped) so the operator sees WHY.
-          const reasons = Array.from(
-            new Set(failures.map((f) => f.error || 'unknown error')),
-          ).slice(0, 3);
-          setBulkError(
-            `${failures.length} of ${results.length} case${results.length === 1 ? '' : 's'} could not be updated: ${reasons.join('; ')}`,
-          );
-          toast.warning(`${okCount} updated, ${failures.length} failed`);
-        } else {
-          toast.success(
-            `${okCount} case${okCount === 1 ? '' : 's'} updated`,
-          );
-        }
+        const job = await api.jobs.submit({
+          kind,
+          idempotency_key: intent.idempotencyKey,
+          params,
+        });
+        jobSubmissionIntentRef.current = null;
+        const acceptedIds = new Set(ids);
+        setSelected((current) => current.filter((id) => !acceptedIds.has(id)));
+        announceJobAccepted(job);
+        toast.success(`${ids.length} case${ids.length === 1 ? '' : 's'} ${activity}.`, {
+          description: 'The server-owned job continues after navigation or reload. Track it in Inbox.',
+          action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+        });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Bulk action failed.';
+        const msg = e instanceof Error ? e.message : 'Could not start the background job.';
         setBulkError(msg);
         toast.error(msg);
       } finally {
-        setSelected([]);
-        await load();
         setBulkBusy(false);
       }
     },
-    [selectedCases, bulkBusy, load],
+    [bulkBusy, navigate, selectedCases],
   );
 
-  // Status-NEUTRAL bulk helper: apply a per-case async op (tag / assign) to every
-  // selected case WITHOUT the lifecycle-action path. Bulk tagging and owner-assignment
-  // must never move a case's status — the old wiring mis-used `acknowledge`/`escalate`,
-  // which silently drove open cases to INVESTIGATING/ESCALATED (distorting SLA/MTTA)
-  // and 400-ed on closed/resolved cases ("illegal transition"). These use the dedicated
-  // status-neutral POST /cases/{id}/tags and /cases/{id}/assign endpoints instead.
-  // Mirrors runBulk's toast + error summary + selection-clear + reload.
-  const runBulkForEach = React.useCallback(
-    async (perform: (c: Case) => Promise<unknown>) => {
-      const targets = selectedCases;
-      if (!targets.length || bulkBusy) return;
-      setBulkBusy(true);
-      setBulkError(null);
-      const failures: string[] = [];
-      let okCount = 0;
-      for (const c of targets) {
-        try {
-          await perform(c);
-          okCount += 1;
-        } catch (e) {
-          failures.push(e instanceof Error ? e.message : 'unknown error');
-        }
-      }
-      if (failures.length) {
-        const reasons = Array.from(new Set(failures)).slice(0, 3);
-        setBulkError(
-          `${failures.length} of ${targets.length} case${targets.length === 1 ? '' : 's'} could not be updated: ${reasons.join('; ')}`,
-        );
-        toast.warning(`${okCount} updated, ${failures.length} failed`);
-      } else {
-        toast.success(`${okCount} case${okCount === 1 ? '' : 's'} updated`);
-      }
-      setSelected([]);
-      await load();
-      setBulkBusy(false);
-    },
-    [selectedCases, bulkBusy, load],
+  const runBulk = React.useCallback(
+    (input: CaseActionInput, activity = 'are being updated') =>
+      submitCaseJob('case_lifecycle', { ...input }, activity),
+    [submitCaseJob],
   );
-
-  // Bulk REINVESTIGATE — loops the EXISTING single-case POST /cases/{id}/reinvestigate
-  // over the selection (no backend bulk route: that would just re-loop the same call
-  // and grow the authZ-exempt allowlist for no gain). Unlike the cheap sequential
-  // `runBulkForEach` (tag/assign), reinvestigate is LLM-backed + slow + costly per case
-  // (#6), so this runs a small bounded-concurrency pool — capped at REINVESTIGATE_
-  // CONCURRENCY, matching the backend's own `caps.max_concurrent` fan-out ceiling — with
-  // a single live-updating toast so a long batch shows honest progress. Per-item
-  // try/catch → deduped failure summary; the batch never aborts on one failure. Each
-  // per-case call re-runs the FULL shared pipeline (force=True) → re-verdicts via the
-  // deterministic decide() (#3) and bills exactly one ledger write per LLM call (#6).
-  const REINVESTIGATE_CONCURRENCY = 3;
-
-  const runBulkReinvestigate = React.useCallback(async () => {
-    const targets = selectedCases;
-    if (!targets.length || bulkBusy) return;
-    setBulkBusy(true);
-    setBulkError(null);
-    const total = targets.length;
-    let done = 0;
-    let okCount = 0;
-    const failures: string[] = [];
-    const toastId = toast.loading(`Reinvestigating 0/${total}…`);
-    let cursor = 0;
-    const worker = async () => {
-      for (;;) {
-        const i = cursor++;
-        if (i >= targets.length) return;
-        const c = targets[i];
-        try {
-          // No model override — bulk reinvestigate always uses the configured model.
-          await api.reinvestigateCase(c.case_id);
-          okCount += 1;
-        } catch (e) {
-          failures.push(e instanceof Error ? e.message : 'unknown error');
-        } finally {
-          done += 1;
-          toast.loading(`Reinvestigating ${done}/${total}…`, { id: toastId });
-        }
-      }
-    };
-    // Each worker already catches per-item, so Promise.all can never reject.
-    await Promise.all(
-      Array.from({ length: Math.min(REINVESTIGATE_CONCURRENCY, targets.length) }, worker),
-    );
-    if (failures.length) {
-      const reasons = Array.from(new Set(failures)).slice(0, 3);
-      setBulkError(
-        `${failures.length} of ${total} case${total === 1 ? '' : 's'} could not be reinvestigated: ${reasons.join('; ')}`,
-      );
-      toast.warning(`${okCount} reinvestigated, ${failures.length} failed`, { id: toastId });
-    } else {
-      toast.success(`${okCount} case${okCount === 1 ? '' : 's'} reinvestigated`, { id: toastId });
-    }
-    setSelected([]);
-    await load();
-    setBulkBusy(false);
-  }, [selectedCases, bulkBusy, load]);
 
   // Perform the confirmed row-close. Posts the SAME `close` analyst action as the
   // bulk bar / CaseDetail close dialog — the backend's decide() adjudicates (#3).
@@ -1787,24 +1720,20 @@ export default function Cases({
       <BulkActionBar
         count={selectedCases.length}
         busy={bulkBusy}
-        onAcknowledge={() => void runBulk({ action: 'acknowledge' })}
-        onClose={() => void runBulk({ action: 'close', resolution: 'Bulk-closed by analyst' })}
+        onAcknowledge={() => void runBulk({ action: 'acknowledge' }, 'are being acknowledged')}
+        onClose={() => void runBulk({ action: 'close', resolution: 'Bulk-closed by analyst' }, 'are being closed')}
         onResolve={(reason) =>
-          void runBulk({ action: 'resolve', reason: reason || 'Bulk-resolved by analyst' })
+          void runBulk({ action: 'resolve', reason: reason || 'Bulk-resolved by analyst' }, 'are being resolved')
         }
         onAssign={(assignee) =>
-          void runBulkForEach((c) => api.caseAssign(c.case_id, assignee))
+          void submitCaseJob('case_assign', { assignee }, `are being assigned to ${assignee}`)
         }
         onAddTag={(tag) =>
-          void runBulkForEach((c) =>
-            // Merge (don't replace): the /tags endpoint sets the full list, so send
-            // the case's existing tags + the new one (backend de-dupes + caps).
-            api.caseTags(c.case_id, [...(Array.isArray(c.tags) ? c.tags : []), tag]),
-          )
+          void submitCaseJob('case_tag', { tag }, `are being tagged ${tag}`)
         }
-        onSetStatus={(status) => void runBulk({ action: 'set_status', status })}
+        onSetStatus={(status) => void runBulk({ action: 'set_status', status }, `are being set to ${status}`)}
         onSetDisposition={(disposition) =>
-          void runBulk({ action: 'set_disposition', disposition })
+          void runBulk({ action: 'set_disposition', disposition }, `are being classified as ${disposition}`)
         }
         onReinvestigate={() => setReinvestConfirmOpen(true)}
         onClear={() => setSelected([])}
@@ -1840,11 +1769,11 @@ export default function Cases({
         open={reinvestConfirmOpen}
         onOpenChange={setReinvestConfirmOpen}
         title={`Reinvestigate ${selectedCases.length} case${selectedCases.length === 1 ? '' : 's'}?`}
-        description="Each case re-runs the full AI investigation pipeline and may change its verdict, confidence, and status. This spends LLM tokens per case."
+        description="Each case re-runs the full AI investigation pipeline and may change its verdict, confidence, and status. This spends LLM tokens per case. The server-owned job continues after navigation or reload."
         confirmLabel="Reinvestigate"
         onConfirm={() => {
           setReinvestConfirmOpen(false);
-          void runBulkReinvestigate();
+          void submitCaseJob('case_reinvestigate', {}, 'are being reinvestigated');
         }}
       />
     </PageContainer>

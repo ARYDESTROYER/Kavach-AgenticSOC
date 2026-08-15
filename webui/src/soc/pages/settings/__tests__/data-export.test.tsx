@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
-const { postMock, postAbortableMock, archiveMock, toastMock } = vi.hoisted(() => ({
-  postMock: vi.fn(),
-  postAbortableMock: vi.fn(),
-  archiveMock: vi.fn(),
+import type { BackgroundJob, BackgroundJobKind } from '@/lib/types';
+
+const { submitMock, toastMock } = vi.hoisted(() => ({
+  submitMock: vi.fn(),
   toastMock: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
@@ -15,9 +15,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      post: postMock,
-      postAbortable: postAbortableMock,
-      dataExport: { ...actual.api.dataExport, archive: archiveMock },
+      jobs: { ...actual.api.jobs, submit: submitMock },
     },
   };
 });
@@ -28,29 +26,23 @@ vi.mock('@/soc/components/Can', () => ({
 
 import { DataExportSection } from '../data-export';
 
-function response(
-  scope: string,
-  part = 1,
-  complete = true,
-  cursor: string | null = null,
-  status = complete ? 'complete' : 'partial',
-) {
+function accepted(kind: BackgroundJobKind, id = 'job-export'): BackgroundJob {
   return {
-    format: 'agentic-soc-portable-export-segment',
-    format_version: 2,
-    selection: { scope },
-    consistency: { mode: 'point_in_time', exact: true, detail: 'fixed snapshot' },
-    segment: {
-      number: part,
-      count: 2,
-      cumulative_count: part * 2,
-      snapshot_total: complete ? part * 2 : 4,
-      remaining: complete ? 0 : 2,
-      complete,
-      status,
-      next_cursor: cursor,
-    },
-    records: [{ record: { id: `${scope}-${part}-1` } }, { record: { id: `${scope}-${part}-2` } }],
+    job_id: id,
+    kind,
+    actor: 'admin.one',
+    created_at: '2026-08-13T10:00:00Z',
+    started_at: null,
+    finished_at: null,
+    status: 'queued',
+    progress: { done: 0, total: 6, unit: 'scopes' },
+    failures: [],
+    failure_count: 0,
+    failures_truncated: 0,
+    request_fingerprint: 'fp',
+    result: null,
+    params: {},
+    cancel_requested: false,
   };
 }
 
@@ -59,187 +51,95 @@ function selectOnlyCases(): void {
   fireEvent.click(screen.getByRole('checkbox', { name: 'Include Cases' }));
 }
 
-function chooseAdvanced(): void {
-  fireEvent.click(screen.getByRole('radio', { name: /advanced \/ resumable/i }));
+function chooseSegmented(): void {
+  fireEvent.click(screen.getByRole('radio', { name: /segmented assembly/i }));
 }
 
-function lastClickedFilename(): string {
-  const clickMock = vi.mocked(HTMLAnchorElement.prototype.click);
-  return (clickMock.mock.instances.at(-1) as HTMLAnchorElement | undefined)?.download || '';
-}
-
-describe('DataExportSection', () => {
+describe('DataExportSection durable jobs', () => {
   beforeEach(() => {
-    postMock.mockReset();
-    postMock.mockResolvedValue({ ok: true });
-    postAbortableMock.mockReset();
-    postAbortableMock.mockImplementation((_path: string, body: { scope: string }) =>
-      Promise.resolve(response(body.scope)),
+    submitMock.mockReset().mockResolvedValue(accepted('data_export_archive'));
+    Object.values(toastMock).forEach((mock) => mock.mockReset());
+  });
+
+  it('submits one archive job and never starts a browser-held download loop', async () => {
+    render(<DataExportSection />);
+    fireEvent.click(screen.getByRole('button', { name: /build zip in background/i }));
+
+    await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(1));
+    expect(submitMock).toHaveBeenCalledWith({
+      kind: 'data_export_archive',
+      idempotency_key: expect.stringMatching(/^data_export_archive-/),
+      params: {
+        scopes: ['audit', 'automation', 'cases', 'configuration', 'knowledge', 'usage'],
+      },
+    });
+    expect(toastMock.success).toHaveBeenCalledWith(
+      expect.stringMatching(/running in the background/i),
+      expect.objectContaining({ action: expect.objectContaining({ label: 'Open Inbox' }) }),
     );
-    archiveMock.mockReset();
-    archiveMock.mockResolvedValue({
-      blob: new Blob(['zip-bytes'], { type: 'application/zip' }),
-      contentDisposition: 'attachment; filename="agentic-soc-export-20260813T101112Z.zip"',
-      contentType: 'application/zip',
-    });
-    toastMock.success.mockReset();
-    toastMock.error.mockReset();
-    toastMock.info.mockReset();
-    vi.stubGlobal('URL', {
-      createObjectURL: vi.fn(() => 'blob:agentic-soc-export'),
-      revokeObjectURL: vi.fn(),
-    });
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  it('uses one archive request and one save, with the safe server filename', async () => {
+  it('submits segmented server assembly as one ZIP job with the selected page bound', async () => {
+    submitMock.mockResolvedValueOnce(accepted('data_export_segment'));
     render(<DataExportSection />);
-    expect(screen.queryByLabelText(/records per export file/i)).not.toBeInTheDocument();
+    chooseSegmented();
+    selectOnlyCases();
 
-    fireEvent.click(screen.getByRole('button', { name: /download zip archive/i }));
+    expect(screen.getByLabelText(/records per server segment/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /build zip in background/i }));
 
-    await waitFor(() => expect(archiveMock).toHaveBeenCalledTimes(1));
-    expect(archiveMock).toHaveBeenCalledWith(
-      ['cases', 'audit', 'usage', 'configuration', 'automation', 'knowledge'],
-      expect.any(AbortSignal),
+    await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(1));
+    expect(submitMock).toHaveBeenCalledWith({
+      kind: 'data_export_segment',
+      idempotency_key: expect.stringMatching(/^data_export_segment-/),
+      params: { scopes: ['cases'], page_size: 1000 },
+    });
+    expect(screen.getByText(/final delivery is still one zip/i)).toBeInTheDocument();
+  });
+
+  it('reuses an intent key after an ambiguous failure, then rotates after acceptance', async () => {
+    submitMock
+      .mockRejectedValueOnce(new Error('connection closed'))
+      .mockResolvedValueOnce(accepted('data_export_archive', 'job-first'))
+      .mockResolvedValueOnce(accepted('data_export_archive', 'job-second'));
+    render(<DataExportSection />);
+    const submit = screen.getByRole('button', { name: /build zip in background/i });
+
+    fireEvent.click(submit);
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
+    fireEvent.click(submit);
+    await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(submit);
+    await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(3));
+
+    const firstKey = submitMock.mock.calls[0][0].idempotency_key;
+    const retryKey = submitMock.mock.calls[1][0].idempotency_key;
+    const laterKey = submitMock.mock.calls[2][0].idempotency_key;
+    expect(retryKey).toBe(firstKey);
+    expect(laterKey).not.toBe(firstKey);
+  });
+
+  it('rotates the retained intent when material selection changes after a failure', async () => {
+    submitMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(accepted('data_export_archive'));
+    render(<DataExportSection />);
+    const submit = screen.getByRole('button', { name: /build zip in background/i });
+
+    fireEvent.click(submit);
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include Audit' }));
+    fireEvent.click(submit);
+    await waitFor(() => expect(submitMock).toHaveBeenCalledTimes(2));
+
+    expect(submitMock.mock.calls[1][0].idempotency_key).not.toBe(
+      submitMock.mock.calls[0][0].idempotency_key,
     );
-    expect(postAbortableMock).not.toHaveBeenCalled();
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
-    expect(lastClickedFilename()).toBe('agentic-soc-export-20260813T101112Z.zip');
   });
 
-  it('accepts UTF-8 filename*, strips path components, and sanitizes its basename', async () => {
-    archiveMock.mockResolvedValueOnce({
-      blob: new Blob(['zip-bytes'], { type: 'application/zip' }),
-      contentDisposition:
-        "attachment; filename=ignored.zip; filename*=UTF-8''..%2Fcase%20export%20%282026%29.zip",
-      contentType: 'application/zip; charset=binary',
-    });
-    render(<DataExportSection />);
-    fireEvent.click(screen.getByRole('button', { name: /download zip archive/i }));
-
-    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
-    expect(lastClickedFilename()).toBe('case-export-2026.zip');
-  });
-
-  it('falls back to a UTC filename when Content-Disposition is absent or unsafe', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-08-13T10:11:12.345Z'));
-    archiveMock.mockResolvedValueOnce({
-      blob: new Blob(['zip-bytes'], { type: 'application/zip' }),
-      contentDisposition: 'attachment; filename="../../not-a-zip.txt"',
-      contentType: 'application/zip',
-    });
-    render(<DataExportSection />);
-    fireEvent.click(screen.getByRole('button', { name: /download zip archive/i }));
-
-    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
-    expect(lastClickedFilename()).toBe('agentic-soc-export-20260813T101112Z.zip');
-  });
-
-  it.each([
-    {
-      label: 'API error',
-      result: () => Promise.reject(new Error('archive unavailable')),
-    },
-    {
-      label: 'wrong content type',
-      result: () => Promise.resolve({
-        blob: new Blob(['error'], { type: 'application/json' }),
-        contentDisposition: 'attachment; filename="looks-safe.zip"',
-        contentType: 'application/json',
-      }),
-    },
-    {
-      label: 'empty archive',
-      result: () => Promise.resolve({
-        blob: new Blob([], { type: 'application/zip' }),
-        contentDisposition: 'attachment; filename="empty.zip"',
-        contentType: 'application/zip',
-      }),
-    },
-  ])('shows a clear error and never saves for $label', async ({ result }) => {
-    archiveMock.mockImplementationOnce(result);
-    render(<DataExportSection />);
-    fireEvent.click(screen.getByRole('button', { name: /download zip archive/i }));
-
-    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
-    expect(String(toastMock.error.mock.calls[0][0])).toMatch(/archive|zip|content type/i);
-    expect(URL.createObjectURL).not.toHaveBeenCalled();
-    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
-  });
-
-  it('switches to the explicit advanced mode and reveals Records per file only there', () => {
-    render(<DataExportSection />);
-    expect(screen.getByRole('radio', { name: /one zip archive/i })).toBeChecked();
-    expect(screen.queryByLabelText(/records per export file/i)).not.toBeInTheDocument();
-
-    chooseAdvanced();
-
-    expect(screen.getByRole('radio', { name: /advanced \/ resumable/i })).toBeChecked();
-    expect(screen.getByLabelText(/records per export file/i)).toBeInTheDocument();
-    expect(screen.getByText(/already downloaded parts remain after cancellation/i)).toBeInTheDocument();
-  });
-
-  it('preserves the numbered-file continuation flow in advanced mode', async () => {
-    postAbortableMock
-      .mockResolvedValueOnce(response('cases', 1, false, 'cursor-2'))
-      .mockResolvedValueOnce(response('cases', 2, true, null));
-    render(<DataExportSection />);
-    chooseAdvanced();
-    selectOnlyCases();
-    fireEvent.click(screen.getByRole('button', { name: /export numbered files/i }));
-
-    await waitFor(() => expect(postAbortableMock).toHaveBeenCalledTimes(2));
-    expect(postAbortableMock.mock.calls[0][1]).toEqual({
-      scope: 'cases', cursor: null, page_size: 1000,
-    });
-    expect(postAbortableMock.mock.calls[1][1]).toEqual({
-      scope: 'cases', cursor: 'cursor-2', page_size: 1000,
-    });
-    expect(archiveMock).not.toHaveBeenCalled();
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
-  });
-
-  it.each(['incomplete', 'unverified'])('rejects an advanced %s response before saving it', async (status) => {
-    postAbortableMock.mockResolvedValueOnce(response('cases', 1, false, null, status));
-    render(<DataExportSection />);
-    chooseAdvanced();
-    selectOnlyCases();
-    fireEvent.click(screen.getByRole('button', { name: /export numbered files/i }));
-
-    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
-    expect(String(toastMock.error.mock.calls[0][0])).toContain(status);
-    expect(URL.createObjectURL).not.toHaveBeenCalled();
-  });
-
-  it('best-effort releases the active cursor after an advanced failure', async () => {
-    postAbortableMock
-      .mockResolvedValueOnce(response('cases', 1, false, 'cursor-2'))
-      .mockRejectedValueOnce(new Error('backend failed'));
-    render(<DataExportSection />);
-    chooseAdvanced();
-    selectOnlyCases();
-    fireEvent.click(screen.getByRole('button', { name: /export numbered files/i }));
-
-    await waitFor(() => expect(postMock).toHaveBeenCalledWith(
-      'admin/export/segment/cancel',
-      { scope: 'cases', cursor: 'cursor-2' },
-    ));
-  });
-
-  it('prevents an empty selection in either mode', () => {
+  it('prevents submission when no export scope is selected', () => {
     render(<DataExportSection />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select all export scopes' }));
-    expect(screen.getByRole('button', { name: /download zip archive/i })).toBeDisabled();
-    chooseAdvanced();
-    expect(screen.getByRole('button', { name: /export numbered files/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /build zip in background/i })).toBeDisabled();
   });
 });

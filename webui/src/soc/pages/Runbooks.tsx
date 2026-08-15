@@ -49,6 +49,12 @@ import { LoadError } from '@/soc/components/LoadError';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { useLiveAnnouncer } from '@/soc/hooks/useLiveAnnouncer';
 import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
+import { useNavigateOptional } from '@/soc/router';
+import {
+  announceJobAccepted,
+  retainJobSubmissionIntent,
+  type JobSubmissionIntent,
+} from '@/soc/jobs/jobs';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { Badge, type BadgeProps } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -1035,6 +1041,7 @@ export interface RunbooksProps {
 
 export default function Runbooks({ embedded = false }: RunbooksProps = {}) {
   const canManage = useCan('runbooks', 'manage');
+  const navigate = useNavigateOptional();
   const { announce, LiveRegion } = useLiveAnnouncer();
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
@@ -1059,6 +1066,7 @@ export default function Runbooks({ embedded = false }: RunbooksProps = {}) {
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [discardOpen, setDiscardOpen] = React.useState(false);
   const [lastIndex, setLastIndex] = React.useState<RunbookIndexResult | null>(null);
+  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
 
   const load = React.useCallback(async (blocking = true) => {
     if (blocking) setLoading(true);
@@ -1262,43 +1270,49 @@ export default function Runbooks({ embedded = false }: RunbooksProps = {}) {
     workspaceMode,
   ]);
 
-  const reindexOne = React.useCallback(
-    async (runbook: Runbook) => {
-      setReindexing(runbook.id);
+  const submitReindex = React.useCallback(
+    async (runbookId: string | undefined, label: string) => {
+      setReindexing(runbookId ?? '*');
+      const params = runbookId ? { runbook_id: runbookId } : {};
+      const intent = retainJobSubmissionIntent(
+        jobSubmissionIntentRef.current,
+        'runbook_reindex',
+        params,
+      );
+      jobSubmissionIntentRef.current = intent;
       try {
-        const result = await api.reindexRunbook(runbook.id);
-        recordIndexResult(result, `${runbook.title || runbook.id} reindex completed.`);
-        await load(false);
-        if (detail?.id === runbook.id) {
-          const opened = await api.getRunbook(runbook.id);
-          setDetail(opened);
-          setDraftContent(opened.content);
-        }
+        const job = await api.jobs.submit({
+          kind: 'runbook_reindex',
+          idempotency_key: intent.idempotencyKey,
+          params,
+        });
+        jobSubmissionIntentRef.current = null;
+        announceJobAccepted(job);
+        toast.success(`${label} queued.`, {
+          description: 'Reconciliation continues on the server after navigation or reload.',
+          action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
+        });
+        announce(`${label} queued as background job`);
       } catch (caught) {
-        const message = errorMessage(caught, 'Could not reindex the runbook.');
+        const message = errorMessage(caught, 'Could not start the reindex job.');
         toast.error(message);
         announce(message);
       } finally {
         setReindexing(null);
       }
     },
-    [announce, detail?.id, load, recordIndexResult],
+    [announce, navigate],
   );
 
-  const reindexAll = React.useCallback(async () => {
-    setReindexing('*');
-    try {
-      const result = await api.reindexRunbooks();
-      recordIndexResult(result, 'Runbook reconciliation completed.');
-      await load(false);
-    } catch (caught) {
-      const message = errorMessage(caught, 'Could not reindex runbooks.');
-      toast.error(message);
-      announce(message);
-    } finally {
-      setReindexing(null);
-    }
-  }, [announce, load, recordIndexResult]);
+  const reindexOne = React.useCallback(
+    (runbook: Runbook) => submitReindex(runbook.id, runbook.title || runbook.id),
+    [submitReindex],
+  );
+
+  const reindexAll = React.useCallback(
+    () => submitReindex(undefined, 'Runbook reconciliation'),
+    [submitReindex],
+  );
 
   const deleteRunbook = React.useCallback(async () => {
     if (!detail?.editable) return;
@@ -1384,7 +1398,7 @@ export default function Runbooks({ embedded = false }: RunbooksProps = {}) {
                 }
                 aria-hidden="true"
               />
-              {reindexing === '*' ? 'Reindexing…' : 'Reindex all'}
+              {reindexing === '*' ? 'Submitting…' : 'Reindex all'}
             </Button>
             <Button onClick={startCreate}>
               <Plus className="size-4" aria-hidden="true" />

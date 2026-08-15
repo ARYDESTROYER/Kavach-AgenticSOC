@@ -18,6 +18,13 @@ import * as React from 'react';
 import { isPageId, type PageId } from './nav';
 import type { NavOpts } from '@/lib/types';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import {
+  hasValidRouteEncoding,
+  isSafeCaseId,
+  isSafeCaseResultAssignee,
+  isSafeCaseResultStatus,
+  isSafeCaseResultTag,
+} from './case-result-route';
 
 export type { PageId } from './nav';
 
@@ -114,10 +121,20 @@ export function settingsSectionHash(section: string, anchor?: string): string {
  * filters remain in memory; Settings keeps its dedicated section hash above.
  */
 export function pageHash(page: PageId, opts?: NavOpts): string {
-  const caseQuery = opts?.caseId
-    ? `?caseId=${encodeURIComponent(opts.caseId)}`
-    : '';
-  return `#/${page}${caseQuery}`;
+  const params = new URLSearchParams();
+  if ((page === 'cases' || page === 'case_manager') && opts?.caseId) {
+    params.set('caseId', opts.caseId);
+  }
+  if (page === 'cases') {
+    if (opts?.status) params.set('status', opts.status);
+    if (opts?.assignee) params.set('assignee', opts.assignee);
+    if (opts?.tag) params.set('tag', opts.tag);
+  }
+  if (page === 'metrics' && opts?.tab === 'effectiveness') {
+    params.set('tab', opts.tab);
+  }
+  const query = params.toString().replace(/\+/g, '%20');
+  return `#/${page}${query ? `?${query}` : ''}`;
 }
 
 /** Parse `#/<pageid>` from the location hash; unknown/empty → 'overview'. */
@@ -139,16 +156,44 @@ export function pageFromHash(): PageId {
  * `#/cases?caseId=<id>`), so a FRESH tab / bookmark / refresh lands with the same opts an
  * in-app `navigate(page, opts)` would carry. This is what makes the CaseDetail "Open in
  * new tab" button work: the new tab boots straight into the case sheet. Only known keys
- * are read (unknown query keys are ignored); returns undefined when nothing is present.
+ * are read; unknown, duplicate, or malformed keys fail closed. Returns undefined
+ * when nothing valid is present.
  */
 export function optsFromHash(): NavOpts | undefined {
   try {
     const hash = window.location.hash || '';
     const qi = hash.indexOf('?');
     if (qi < 0) return undefined;
-    const params = new URLSearchParams(hash.slice(qi + 1));
-    const caseId = params.get('caseId');
-    return caseId ? { caseId } : undefined;
+    const page = pageFromHash();
+    const rawQuery = hash.slice(qi + 1);
+    if (!hasValidRouteEncoding(rawQuery)) return undefined;
+    const params = new URLSearchParams(rawQuery);
+    const allowed =
+      page === 'cases'
+        ? new Set(['caseId', 'status', 'assignee', 'tag'])
+        : page === 'case_manager'
+          ? new Set(['caseId'])
+          : page === 'metrics'
+            ? new Set(['tab'])
+            : new Set<string>();
+    if (Array.from(params.keys()).some((key) => !allowed.has(key))) return undefined;
+    if (Array.from(allowed).some((key) => params.getAll(key).length > 1)) return undefined;
+    const read = (key: string, validator: (value: string) => boolean): string | undefined => {
+      const value = params.get(key)?.trim();
+      return value && validator(value) ? value : undefined;
+    };
+    if (page === 'metrics') {
+      return params.get('tab') === 'effectiveness' ? { tab: 'effectiveness' } : undefined;
+    }
+    const caseId = read('caseId', isSafeCaseId);
+    const status = read('status', isSafeCaseResultStatus);
+    const assignee = read('assignee', isSafeCaseResultAssignee);
+    const tag = read('tag', isSafeCaseResultTag);
+    if (params.has('caseId') && !caseId) return undefined;
+    if (params.has('status') && !status) return undefined;
+    if (params.has('assignee') && !assignee) return undefined;
+    if (params.has('tag') && !tag) return undefined;
+    return caseId || status || assignee || tag ? { caseId, status, assignee, tag } : undefined;
   } catch {
     return undefined;
   }
@@ -242,7 +287,7 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           // not erase in-memory list filters such as a severity drill-through when
           // their navigate() hash change settles on the already-updated page.
           const hashOpts = optsFromHash();
-          if (hashOpts?.caseId) setOpts(hashOpts);
+          if (hashOpts) setOpts(hashOpts);
           return prev;
         }
         // Back/forward/direct navigation to a different page carries only durable

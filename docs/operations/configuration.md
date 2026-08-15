@@ -41,6 +41,15 @@ The state backend stores Agentic SOC-owned cases, audit, usage, configuration, c
 and knowledge. It does not select or authorize an external log source; connectors own
 that boundary.
 
+Background-job metadata shares this StateStore through a strict-CAS KV document.
+Downloadable job ZIPs do not: `JOBS_ARTIFACT_DIR` selects their filesystem root. The
+local and updater-managed standalone default is `./data/job-artifacts`; the legacy ELK
+merge profile maps `TLSOC_JOBS_ARTIFACT_DIR` to `/var/lib/agentic-soc/jobs` and mounts a
+persistent named volume there. Keep the directory private, capacity-monitored, and
+outside a public web root. A standalone operator who needs artifacts to survive
+container replacement must provide a reviewed override/bind mount; changing the
+directory does not migrate existing artifacts.
+
 ## Secret classes
 
 - **Global boot secrets:** model, database, authentication, enrichment, and similar
@@ -79,4 +88,4 @@ universal revision/rollback interface in 0.1.
 Review each default against the deployment's threat model and operational capacity.
 See [Settings administration](../administration/settings.md),
 [Models and spend controls](../administration/models-spend.md), and
-[Security hardening](security.md).
+[Background jobs](background-jobs.md), and [Security hardening](security.md).

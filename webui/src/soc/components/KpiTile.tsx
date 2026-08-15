@@ -107,6 +107,11 @@ export interface KpiTileProps {
    */
   spark?: number[];
   /**
+   * Override the default five-point noise floor when the series has a smaller exact
+   * contract (for example a two-point previous/current server comparison).
+   */
+  sparkMinPoints?: number;
+  /**
    * Round-7 W0.1 — optional plain-text help shown via an inline `HelpTip` (?) beside
    * the label (e.g. the exact MTTA/MTTR formula). Rendered only on the NON-clickable
    * tile (a clickable tile is itself a button — nesting the HelpTip button would be
@@ -228,6 +233,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       countTo,
       format,
       spark,
+      sparkMinPoints = 5,
       help,
       helpLabel,
       className,
@@ -258,9 +264,11 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         value
       );
 
-    // Sparkline gate: ≥5 real points; decorative + aria-hidden. Lazy (no recharts here).
+    // Sparkline gate: five real points by default, or a caller's explicit exact-series
+    // floor (never below two); decorative + aria-hidden. Lazy (no recharts here).
+    const requiredSparkPoints = Math.max(2, Math.floor(sparkMinPoints));
     const sparkNode =
-      spark && spark.length >= 5 ? (
+      spark && spark.length >= requiredSparkPoints ? (
         <div
           className={cn(
             strip ? 'absolute bottom-4 right-4 h-4 w-14' : 'mt-3 -mb-1 h-7',

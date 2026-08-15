@@ -36,10 +36,12 @@ from typing import Any, Callable, Iterable, TypeVar
 from ..constants import (
     BATCH_JOBS_KEY,
     BATCH_JOBS_NS,
+    JOBS_KEY,
+    JOBS_NS,
     BatchJobState,
     UsageOutcome,
 )
-from ..models import BatchJob
+from ..models import BatchInboxAudience, BatchJob
 from .base import KVStore, kv_mutate_strict
 
 _T = TypeVar("_T")
@@ -48,6 +50,51 @@ logger = logging.getLogger("tlsoc.stores.batch_jobs")
 
 _RECORDING_LEASE_MILLIS = 5 * 60 * 1000
 _SUBMISSION_LEASE_MILLIS = 5 * 60 * 1000
+_MAX_JOBS = 500
+_FACTORY_FENCE_FIELD = "factory_fence"
+_RESET_EPOCH_FIELD = "reset_epoch"
+
+
+def _tracked(job: BatchJob) -> dict[str, dict[str, Any]]:
+    return {key: value for key, value in (job.custom_ids or {}).items() if key != "__meta__"}
+
+
+def _refresh_summary(job: BatchJob) -> None:
+    tracked = _tracked(job)
+    job.summary_total = max(job.summary_total, len(tracked), len(job.requests or []))
+    job.summary_retrieved = max(
+        job.summary_retrieved,
+        sum(1 for value in tracked.values() if isinstance(value, dict) and value.get("retrieved")),
+    )
+    job.summary_failed = max(
+        job.summary_failed,
+        sum(
+            1
+            for value in tracked.values()
+            if isinstance(value, dict)
+            and value.get("retrieved")
+            and str(value.get("result_state") or "succeeded") != "succeeded"
+        ),
+    )
+
+
+def _compact_terminal(job: BatchJob) -> None:
+    """Scrub resumable payload only after this provider job is irreversibly terminal."""
+    terminal = job.state in {BatchJobState.ERRORED, BatchJobState.EXPIRED}
+    terminal = terminal or (
+        job.state == BatchJobState.RETRIEVED and BatchJobStore._all_complete(job)
+    )
+    if not terminal or job.terminal_compacted:
+        return
+    _refresh_summary(job)
+    if job.state in {BatchJobState.ERRORED, BatchJobState.EXPIRED}:
+        job.summary_failed = max(job.summary_failed, job.summary_total - job.summary_retrieved)
+    job.custom_ids = {}
+    job.requests = []
+    job.candidates = {}
+    job.submission_lease_token = None
+    job.submission_lease_at_millis = 0
+    job.terminal_compacted = True
 
 
 class BatchJobStore:
@@ -95,23 +142,183 @@ class BatchJobStore:
             raise ValueError("batch-job registry contains an invalid entry")
         return decoded
 
+    @staticmethod
+    def _meta(doc: dict | None) -> tuple[str, int]:
+        if not isinstance(doc, dict):
+            return "", 0
+        fence = str(doc.get(_FACTORY_FENCE_FIELD) or "")
+        try:
+            epoch = max(0, int(doc.get(_RESET_EPOCH_FIELD, 0) or 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("batch-job reset epoch is invalid") from exc
+        return fence, epoch
+
+    @staticmethod
+    def _encode(
+        jobs: dict[str, BatchJob], *, factory_fence: str, reset_epoch: int
+    ) -> dict[str, Any]:
+        return {
+            "jobs": {
+                jid: job.model_dump(mode="json") for jid, job in jobs.items()
+            },
+            _FACTORY_FENCE_FIELD: factory_fence,
+            _RESET_EPOCH_FIELD: max(0, int(reset_epoch)),
+        }
+
     async def _mutate(self, change: Callable[[dict[str, BatchJob]], _T]) -> _T:
         box: dict[str, _T] = {}
 
+        # Factory reset owns a strict cross-process fence in the operator Jobs
+        # registry. Check it before every Batch mutation, then re-check after the CAS:
+        # a worker that loaded a pre-reset Batch row may never recreate it after the
+        # destructive clear. The second check detects a fence acquired in the narrow
+        # cross-document window; its write is then erased by the factory Batch clear,
+        # while surfacing an error prevents the stale caller from claiming success.
+        getter = getattr(self._kv, "get_strict", None) or self._kv.get
+        jobs_fence_before = await getter(JOBS_NS, JOBS_KEY)
+        if isinstance(jobs_fence_before, dict) and str(
+            jobs_fence_before.get("factory_fence") or ""
+        ):
+            raise RuntimeError("factory reset is in progress; Batch mutation is fenced")
+
+        admitted_doc = await getter(BATCH_JOBS_NS, BATCH_JOBS_KEY)
+        admitted_fence, admitted_epoch = self._meta(admitted_doc)
+        if admitted_fence:
+            raise RuntimeError("factory reset is in progress; Batch mutation is fenced")
+
         def _mutator(current: dict | None) -> dict:
+            current_fence, current_epoch = self._meta(current)
+            if current_fence or current_epoch != admitted_epoch:
+                raise RuntimeError(
+                    "factory reset changed the Batch registry before mutation"
+                )
             jobs = self._decode(current)
+            # Any confirmed mutation opportunistically migrates historical terminal
+            # rows to the bounded aggregate shape and trims oldest terminal history.
+            # Active rows are never evicted.
+            for existing in jobs.values():
+                _compact_terminal(existing)
+            if len(jobs) > _MAX_JOBS:
+                terminal = sorted(
+                    (
+                        row
+                        for row in jobs.values()
+                        if row.terminal_compacted
+                    ),
+                    key=lambda row: (row.submitted_at or "", row.id),
+                )
+                for old in terminal[: len(jobs) - _MAX_JOBS]:
+                    jobs.pop(old.id, None)
             box["r"] = change(jobs)
-            return {"jobs": {jid: j.model_dump(mode="json") for jid, j in jobs.items()}}
+            return self._encode(
+                jobs,
+                factory_fence=current_fence,
+                reset_epoch=current_epoch,
+            )
 
         await kv_mutate_strict(
             self._kv, BATCH_JOBS_NS, BATCH_JOBS_KEY, _mutator, lock=self._lock
         )
+        jobs_fence_after = await getter(JOBS_NS, JOBS_KEY)
+        if isinstance(jobs_fence_after, dict) and str(
+            jobs_fence_after.get("factory_fence") or ""
+        ):
+            raise RuntimeError("factory reset began during Batch mutation")
         return box.get("r")  # type: ignore[return-value]
+
+    async def begin_factory_fence(self, owner: str) -> int:
+        """Atomically fence Batch writes and invalidate every admitted old mutator."""
+        owner = str(owner or "").strip()
+        if not owner:
+            raise ValueError("factory fence owner is required")
+        box: dict[str, int] = {}
+
+        def _mutator(current: dict | None) -> dict[str, Any]:
+            fence, epoch = self._meta(current)
+            if fence != owner:
+                # The Jobs runner transfers this only after its own registry fence
+                # points at ``owner``. Bump the generation so every closure admitted
+                # by the prior reset attempt becomes stale.
+                epoch += 1
+            box["epoch"] = epoch
+            return self._encode(
+                self._decode(current),
+                factory_fence=owner,
+                reset_epoch=epoch,
+            )
+
+        await kv_mutate_strict(
+            self._kv,
+            BATCH_JOBS_NS,
+            BATCH_JOBS_KEY,
+            _mutator,
+            lock=self._lock,
+        )
+        return box["epoch"]
+
+    async def clear_all_strict(self, *, factory_owner: str | None = None) -> int:
+        """Clear Batch rows and bump the same-document reset generation.
+
+        A mutator admitted before this CAS carries the previous epoch and therefore
+        fails inside its own CAS instead of recreating pre-reset provider state.
+        Factory callers must own the durable Batch fence; cases/sources resets use an
+        unfenced epoch bump and remain safe against an already-admitted mutation.
+        """
+        owner = str(factory_owner or "").strip()
+        box: dict[str, int] = {}
+
+        def _mutator(current: dict | None) -> dict[str, Any]:
+            fence, epoch = self._meta(current)
+            if owner:
+                if fence != owner:
+                    raise RuntimeError("factory Batch fence ownership changed")
+            elif fence:
+                raise RuntimeError("factory reset owns the Batch registry fence")
+            box["removed"] = len(self._decode(current))
+            return self._encode(
+                {},
+                factory_fence=fence,
+                reset_epoch=epoch + 1,
+            )
+
+        await kv_mutate_strict(
+            self._kv,
+            BATCH_JOBS_NS,
+            BATCH_JOBS_KEY,
+            _mutator,
+            lock=self._lock,
+        )
+        return box["removed"]
+
+    async def release_factory_fence(self, owner: str) -> None:
+        """Release only the caller-owned fence while retaining the reset epoch."""
+        owner = str(owner or "").strip()
+        if not owner:
+            raise ValueError("factory fence owner is required")
+
+        def _mutator(current: dict | None) -> dict[str, Any]:
+            fence, epoch = self._meta(current)
+            if fence != owner:
+                raise RuntimeError("factory Batch fence ownership changed")
+            return self._encode(
+                self._decode(current),
+                factory_fence="",
+                reset_epoch=epoch,
+            )
+
+        await kv_mutate_strict(
+            self._kv,
+            BATCH_JOBS_NS,
+            BATCH_JOBS_KEY,
+            _mutator,
+            lock=self._lock,
+        )
 
     # -- CRUD ---------------------------------------------------------------- #
     async def save(self, job: BatchJob) -> BatchJob:
         """Upsert a job (submit / after a poll). Returns the stored job."""
         def _change(jobs: dict[str, BatchJob]) -> BatchJob:
+            _compact_terminal(job)
             jobs[job.id] = job
             return job
         return await self._mutate(_change)
@@ -126,6 +333,25 @@ class BatchJobStore:
             existing = jobs.get(job.id)
             if existing is not None:
                 return existing, False
+            if len(jobs) >= _MAX_JOBS:
+                terminal = sorted(
+                    (
+                        row
+                        for row in jobs.values()
+                        if row.state
+                        in {
+                            BatchJobState.RETRIEVED,
+                            BatchJobState.ERRORED,
+                            BatchJobState.EXPIRED,
+                        }
+                        and (row.terminal_compacted or self._all_complete(row))
+                    ),
+                    key=lambda row: (row.submitted_at or "", row.id),
+                )
+                for old in terminal[: max(0, len(jobs) - _MAX_JOBS + 1)]:
+                    jobs.pop(old.id, None)
+            if len(jobs) >= _MAX_JOBS:
+                raise RuntimeError("batch-job registry capacity is exhausted")
             jobs[job.id] = job
             return job, True
 
@@ -250,6 +476,67 @@ class BatchJobStore:
         """List jobs or propagate storage failure; never confuse outage with empty."""
         return list((await self._load_all_strict()).values())
 
+    async def set_inbox_audience(
+        self,
+        job_id: str,
+        audience: list[BatchInboxAudience],
+        *,
+        truncated: int = 0,
+    ) -> BatchJob | None:
+        """Persist the first strict audience snapshot for a new Batch job.
+
+        ``legacy`` rows are deliberately immutable/list-only. A retry may fill only a
+        ``pending`` row, so newly granted users can never be added after the original
+        snapshot succeeded.
+        """
+
+        def _change(jobs: dict[str, BatchJob]) -> BatchJob | None:
+            job = jobs.get(job_id)
+            if job is None or job.inbox_audience_state != "pending":
+                return job
+            job.inbox_audience = list(audience)[:200]
+            job.inbox_audience_truncated = max(0, int(truncated))
+            job.inbox_audience_state = "ready"
+            jobs[job_id] = job
+            return job
+
+        return await self._mutate(_change)
+
+    async def mark_inbox_projection(
+        self,
+        job_id: str,
+        username: str,
+        account_generation: str,
+        *,
+        state: str,
+        signature: str = "",
+    ) -> BatchJob | None:
+        """Acknowledge one confirmed Inbox upsert/removal inside the Batch outbox."""
+        if state not in {"pending", "projected", "revoked"}:
+            raise ValueError("invalid Batch Inbox projection state")
+        needle = username.strip().lower()
+
+        def _change(jobs: dict[str, BatchJob]) -> BatchJob | None:
+            job = jobs.get(job_id)
+            if job is None or job.inbox_audience_state != "ready":
+                return job
+            for index, member in enumerate(job.inbox_audience):
+                if (
+                    member.username.strip().lower() == needle
+                    and member.account_generation == account_generation
+                ):
+                    job.inbox_audience[index] = member.model_copy(
+                        update={
+                            "state": state,
+                            "projection_signature": signature if state == "projected" else "",
+                        }
+                    )
+                    jobs[job_id] = job
+                    return job
+            return job
+
+        return await self._mutate(_change)
+
     async def delete(self, job_id: str) -> bool:
         jid = (job_id or "").strip()
 
@@ -277,6 +564,8 @@ class BatchJobStore:
 
     @staticmethod
     def _all_complete(job: BatchJob) -> bool:
+        if job.terminal_compacted and job.state == BatchJobState.RETRIEVED:
+            return True
         tracked = {k: v for k, v in job.custom_ids.items() if k != "__meta__"}
         if not tracked:
             return False
@@ -404,7 +693,11 @@ class BatchJobStore:
 
         def _change(jobs: dict[str, BatchJob]) -> dict[str, str]:
             job = jobs.get(job_id)
-            if job is None:
+            # A fully folded terminal row intentionally scrubs its potentially huge
+            # custom-id map. The aggregate marker is authoritative: provider retries
+            # after compaction are already accounted for and must not recreate a
+            # tracking entry or re-enter the ledger/pipeline.
+            if job is None or job.terminal_compacted:
                 return {}
             tracking = dict(job.custom_ids)
             claimed: dict[str, str] = {}
@@ -514,6 +807,7 @@ class BatchJobStore:
             )
             if BatchJobStore._all_complete(job):
                 job.state = BatchJobState.RETRIEVED
+                _compact_terminal(job)
             else:
                 job.state = BatchJobState.RETRIEVING
             jobs[job_id] = job
@@ -608,6 +902,7 @@ class BatchJobStore:
             if BatchJobStore._all_complete(job):
                 job.state = BatchJobState.RETRIEVED
                 job.last_error = None
+                _compact_terminal(job)
             jobs[job_id] = job
             return True
 
