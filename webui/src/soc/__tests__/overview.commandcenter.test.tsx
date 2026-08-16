@@ -179,9 +179,25 @@ describe('Overview — Security Command Center', () => {
     expect(within(funnel).getAllByText('Closed by human').length).toBeGreaterThan(0);
     expect(within(funnel).getAllByText('Auto-cleared by AI').length).toBeGreaterThan(0);
     expect(within(funnel).queryByTestId('noise-reduction-summary')).toBeNull();
-    expect(within(funnel).getByTestId('noise-flow-band').querySelectorAll(
-      '[data-edge-kind="conversion"]',
-    )).toHaveLength(2);
+    const conversionRibbons = Array.from(
+      within(funnel)
+        .getByTestId('noise-flow-band')
+        .querySelectorAll<SVGPathElement>('[data-edge-kind="conversion"]'),
+    );
+    expect(conversionRibbons).toHaveLength(2);
+    expect(
+      conversionRibbons.map((ribbon) => [
+        ribbon.dataset.sourceStage,
+        ribbon.dataset.targetStage,
+      ]),
+    ).toEqual([
+      ['ingested', 'clustered'],
+      ['clustered', 'cases'],
+    ]);
+    conversionRibbons.forEach((ribbon) => {
+      expect(ribbon.getAttribute('d')).toMatch(/Z$/);
+      expect(ribbon).not.toHaveAttribute('fill', 'none');
+    });
     expect(within(funnel).getByTestId('noise-flow-band').querySelectorAll(
       '[data-edge-kind="conserved"]',
     )).toHaveLength(4);
@@ -191,7 +207,7 @@ describe('Overview — Security Command Center', () => {
     expect(within(funnel).getByTestId('noise-stage-rail')).toHaveClass(
       'grid-cols-2',
       'sm:grid-cols-3',
-      '@[42rem]/noise:hidden',
+      '@[38rem]/noise:hidden',
     );
   });
 

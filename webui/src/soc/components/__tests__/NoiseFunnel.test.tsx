@@ -1,9 +1,12 @@
 /**
  * NoiseFunnel contract tests.
  *
- * The first two columns are mixed-unit conversion context; proportional geometry begins
- * at cases and is conserved across the two adjacent splits. Simple and Detailed share
- * that graph. Detailed adds evidence, while Open cases stays separate lifecycle context.
+ * Simple is the polished, direct-labelled full flow: its first two mixed-unit conversions
+ * are real filled ribbons with a disclosed compressed display scale, then case ribbons
+ * conserve the backend's case-unit splits. Detailed is deliberately a compatibility view
+ * of the exact Testing renderer: 640x220 stretched geometry, overlapping outcome fan,
+ * loss annotations, and the complete evidence rail. Open cases stays separate lifecycle
+ * context in Simple.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
@@ -180,7 +183,7 @@ function directLabel(container: HTMLElement, key: string): HTMLButtonElement {
 }
 
 describe('NoiseFunnel', () => {
-  it('defaults to Simple and uses the full width for conversion context and case flow', () => {
+  it('defaults to Simple and draws the full alert-to-cluster-to-case flow edge to edge', () => {
     const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
 
     expect(screen.getByTestId('noise-simple-view')).toBeInTheDocument();
@@ -195,19 +198,50 @@ describe('NoiseFunnel', () => {
     const svg = graph(view.container);
     expect(svg).toHaveAttribute('viewBox', '0 0 800 184');
     expect(svg).toHaveAttribute('preserveAspectRatio', 'xMidYMid meet');
-    expect(svg.querySelector('[data-context-node-key="ingested"]')).toHaveAttribute('x', '8');
+    expect(svg.querySelector('[data-context-node-key="ingested"]')).toHaveAttribute('x', '10');
     expect(svg.querySelector('[data-node-key="closed"]')).toHaveAttribute('x', '788');
+    const conversionRibbons = Array.from(
+      svg.querySelectorAll<SVGPathElement>('[data-edge-kind="conversion"]'),
+    );
+    expect(
+      conversionRibbons.map((ribbon) => [
+        ribbon.dataset.sourceStage,
+        ribbon.dataset.targetStage,
+      ]),
+    ).toEqual([
+      ['ingested', 'clustered'],
+      ['clustered', 'cases'],
+    ]);
+    conversionRibbons.forEach((ribbon) => {
+      expect(ribbon.getAttribute('d')).toMatch(/Z$/);
+      expect(ribbon).not.toHaveAttribute('fill', 'none');
+      expect(Number(ribbon.dataset.sourceHeight)).toBeGreaterThan(0);
+      expect(Number(ribbon.dataset.targetHeight)).toBeGreaterThan(0);
+    });
     expect(view.container.querySelectorAll('[data-flow-label]')).toHaveLength(5);
     expect(screen.getAllByText('Alerts ingested').length).toBeGreaterThan(0);
     expect(screen.getAllByText('After clustering').length).toBeGreaterThan(0);
   });
 
-  it('keeps mixed-unit conversions non-proportional and conserves every case ribbon', () => {
+  it('uses compressed conversion thickness and conserves every same-unit case ribbon', () => {
     const view = render(<NoiseFunnel data={fixture()} animate={false} />);
     const svg = graph(view.container);
-    const conversions = svg.querySelectorAll('[data-edge-kind="conversion"]');
+    const conversions = Array.from(
+      svg.querySelectorAll<SVGPathElement>('[data-edge-kind="conversion"]'),
+    );
     expect(conversions).toHaveLength(2);
-    conversions.forEach((edge) => expect(edge).not.toHaveAttribute('data-value'));
+    expect(conversions.map((edge) => Number(edge.dataset.value))).toEqual([220, 40]);
+    const height = (selector: string) =>
+      Number(svg.querySelector<SVGRectElement>(selector)?.getAttribute('height'));
+    const ingestedHeight = height('[data-context-node-key="ingested"]');
+    expect(height('[data-context-node-key="clustered"]') / ingestedHeight).toBeCloseTo(
+      Math.sqrt(220 / 1000),
+      6,
+    );
+    expect(height('[data-node-key="cases"]') / ingestedHeight).toBeCloseTo(
+      Math.sqrt(40 / 1000),
+      6,
+    );
 
     const ribbons = Array.from(
       svg.querySelectorAll<SVGPathElement>('[data-edge-kind="conserved"]'),
@@ -241,6 +275,10 @@ describe('NoiseFunnel', () => {
     ribbons.forEach((ribbon) => {
       expect(ribbon).toHaveAttribute('vector-effect', 'non-scaling-stroke');
       expect(ribbon.style.fillOpacity).toBe('var(--noise-ribbon-opacity)');
+      expect(Number(ribbon.dataset.sourceHeight)).toBeCloseTo(
+        Number(ribbon.dataset.targetHeight),
+        8,
+      );
     });
   });
 
@@ -262,39 +300,104 @@ describe('NoiseFunnel', () => {
     }
   });
 
-  it('toggles to Detailed without changing graph arithmetic', async () => {
+  it('keeps policy closes as their own conserved case branch in both views', async () => {
+    const user = userEvent.setup();
+    const data = fixture();
+    data.stages = [
+      ...data.stages.map((stage) =>
+        stage.key === 'escalated' ? { ...stage, total: 9 } : stage,
+      ),
+      {
+        key: 'policy_closed',
+        label: 'Closed by analyst policy',
+        source: 'cases',
+        deterministic: true,
+        total: 6,
+        by_severity: { medium: 4, low: 2 },
+      },
+    ];
+    const view = render(<NoiseFunnel data={data} animate={false} variant="flat" />);
+    const simpleSvg = graph(view.container);
+    const funnel = screen.getByTestId('noise-funnel');
+    const topologyId = funnel.getAttribute('aria-describedby');
+
+    expect(screen.queryByTestId('noise-flow-integrity')).toBeNull();
+    expect(document.getElementById(topologyId!)).toHaveTextContent(
+      /Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases/i,
+    );
+    expect(simpleSvg.querySelector('[data-node-key="policy_closed"]')).toBeInTheDocument();
+    const caseBranches = Array.from(
+      simpleSvg.querySelectorAll<SVGPathElement>(
+        '[data-edge-kind="conserved"][data-source-stage="cases"]',
+      ),
+    );
+    expect(
+      caseBranches.map((ribbon) => [ribbon.dataset.targetStage, Number(ribbon.dataset.value)]),
+    ).toEqual([
+      ['auto_cleared', 25],
+      ['policy_closed', 6],
+      ['escalated', 9],
+    ]);
+    expect(caseBranches.reduce((sum, ribbon) => sum + Number(ribbon.dataset.value), 0)).toBe(40);
+
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+    const detailedSvg = graph(view.container);
+    expect(
+      detailedSvg.querySelector(
+        '[data-source-stage="cases"][data-target-stage="policy_closed"]',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('Closed by analyst policy').length).toBeGreaterThan(0);
+  });
+
+  it('restores the exact Testing presentation when toggled to Detailed', async () => {
     const user = userEvent.setup();
     const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
-    const before = Array.from(
-      graph(view.container).querySelectorAll('[data-edge-kind="conserved"]'),
-      (ribbon) => ribbon.getAttribute('data-value'),
-    );
 
     await user.click(screen.getByRole('radio', { name: 'Detailed' }));
 
     expect(screen.queryByTestId('noise-simple-view')).toBeNull();
-    expect(screen.getByTestId('noise-detailed-view')).toBeInTheDocument();
+    const detailed = screen.getByTestId('noise-detailed-view');
+    expect(detailed).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Detailed' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
-    expect(screen.getByTestId('noise-reduction-summary')).toHaveTextContent(/Reduced by 96%/i);
-    expect(screen.getByTestId('noise-reduction-summary')).toHaveTextContent(
-      /1,000 alerts ingested.*7 cases closed by a human/i,
+    expect(detailed).toHaveTextContent(/Reduced by\s*96%/i);
+    expect(detailed).toHaveTextContent(
+      /1,000 events ingested\s*→\s*7 cases closed by a human/i,
     );
-    expect(screen.getByTestId('noise-stage-rail')).toHaveClass(
+    const legacyBand = within(detailed).getByTestId('noise-flow-band');
+    expect(legacyBand).toHaveClass('hidden', 'h-36', 'lg:block', 'lg:h-44');
+    const legacySvg = legacyBand.querySelector('svg');
+    expect(legacySvg).toHaveAttribute('viewBox', '0 0 640 220');
+    expect(legacySvg).toHaveAttribute('preserveAspectRatio', 'none');
+    expect(within(detailed).getByTestId('noise-stage-rail')).toHaveClass(
       'grid-cols-2',
       'sm:grid-cols-3',
-      'lg:grid-cols-7',
+      'lg:grid-cols-6',
     );
-    expect(screen.getByTestId('noise-stage-rail')).not.toHaveClass('@[42rem]/noise:hidden');
     expect(
-      Array.from(
-        graph(view.container).querySelectorAll('[data-edge-kind="conserved"]'),
-        (ribbon) => ribbon.getAttribute('data-value'),
-      ),
-    ).toEqual(before);
-    expect(view.container.querySelector('[data-flow-label="cases"]')?.tagName).toBe('DIV');
+      Array.from(legacySvg!.querySelectorAll<SVGPathElement>('[data-noise-ribbon]'), (ribbon) => [
+        ribbon.dataset.sourceStage,
+        ribbon.dataset.targetStage,
+      ]),
+    ).toEqual([
+      ['ingested', 'clustered'],
+      ['clustered', 'cases'],
+      ['cases', 'auto_cleared'],
+      ['cases', 'escalated'],
+      ['cases', 'closed'],
+    ]);
+    expect(
+      legacySvg!.querySelector('[data-source-stage="escalated"][data-target-stage="closed"]'),
+    ).toBeNull();
+    expect(legacySvg!.querySelectorAll('linearGradient, filter')).toHaveLength(0);
+    expect(within(detailed).getByText('−780 · 78% filtered')).toBeInTheDocument();
+    expect(within(detailed).getByText('−180 · 82% filtered')).toBeInTheDocument();
+    expect(detailed).toHaveTextContent('12 suppressed · 4 ignored removed before clustering');
+    expect(within(detailed).queryByTestId('noise-flow-refresh-sweep')).toBeNull();
+    expect(within(detailed).queryByTestId('noise-open-cases')).toBeNull();
   });
 
   it('preserves the chosen mode through collapse and full-screen inspection', async () => {
@@ -340,16 +443,18 @@ describe('NoiseFunnel', () => {
       'true',
     );
 
-    await user.click(
-      screen.getByRole('button', { name: 'Open full-screen noise reduction flow' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Expand noise reduction flow' }));
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveClass('h-[min(92dvh,960px)]', 'w-[min(96dvw,1800px)]');
     const expanded = within(dialog).getByRole('group', {
       name: 'Expanded noise reduction funnel',
     });
     expect(within(expanded).getByTestId('noise-detailed-view')).toBeInTheDocument();
-    expect(within(expanded).getByTestId('noise-flow-band')).toHaveClass('h-[400px]');
+    expect(within(expanded).getByTestId('noise-flow-band')).toHaveClass('h-44');
+    expect(within(expanded).getByTestId('noise-flow-band').querySelector('svg')).toHaveAttribute(
+      'viewBox',
+      '0 0 640 220',
+    );
     expect(within(expanded).getByRole('radio', { name: 'Detailed' })).toHaveAttribute(
       'aria-checked',
       'true',
@@ -359,6 +464,7 @@ describe('NoiseFunnel', () => {
 
     await user.click(within(expanded).getByRole('radio', { name: 'Simple' }));
     expect(within(expanded).getByTestId('noise-simple-view')).toBeInTheDocument();
+    expect(within(expanded).getByTestId('noise-flow-band')).toHaveClass('h-[400px]');
     expect(view.container.querySelector('[data-testid="noise-simple-view"]')).not.toBeNull();
   });
 
@@ -433,6 +539,17 @@ describe('NoiseFunnel', () => {
     expect(reduced.container.querySelector('.noise-open-cases-pulse')).toBeNull();
   });
 
+  it('keeps the compatibility Detailed renderer free of the Simple refresh sweep', async () => {
+    setReducedMotion(false);
+    const user = userEvent.setup();
+    render(<NoiseFunnel data={fixture()} animate />);
+    expect(screen.getByTestId('noise-flow-refresh-sweep')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+
+    expect(screen.queryByTestId('noise-flow-refresh-sweep')).toBeNull();
+  });
+
   it('withholds proportional geometry when either conservation invariant fails', async () => {
     const user = userEvent.setup();
     const view = render(
@@ -445,8 +562,17 @@ describe('NoiseFunnel', () => {
       /Case outcomes do not reconcile/i,
     );
     expect(view.container.querySelectorAll('[data-edge-kind="conserved"]')).toHaveLength(0);
-    expect(screen.getByTestId('noise-stage-rail')).not.toHaveClass('@[42rem]/noise:hidden');
+    expect(screen.getByTestId('noise-stage-rail')).not.toHaveClass('@[38rem]/noise:hidden');
     expect(screen.getAllByRole('button', { name: /^Cases opened:/i }).length).toBeGreaterThan(0);
+
+    view.rerender(
+      <NoiseFunnel
+        data={withStageTotals({ cases: 40, auto_cleared: -1, escalated: 40, closed: 7 })}
+        animate={false}
+      />,
+    );
+    expect(screen.getByTestId('noise-flow-integrity')).toBeInTheDocument();
+    expect(view.container.querySelectorAll('[data-edge-kind="conserved"]')).toHaveLength(0);
 
     view.rerender(
       <NoiseFunnel
@@ -484,6 +610,8 @@ describe('NoiseFunnel', () => {
       )!;
 
     fireEvent.focus(directLabel(view.container, 'closed'));
+    expect(ribbon('ingested', 'clustered').style.fillOpacity).toBe('0.92');
+    expect(ribbon('clustered', 'cases').style.fillOpacity).toBe('0.92');
     expect(ribbon('cases', 'escalated').style.fillOpacity).toBe('0.92');
     expect(ribbon('escalated', 'closed').style.fillOpacity).toBe('0.92');
     expect(ribbon('cases', 'auto_cleared').style.fillOpacity).toBe('0.14');

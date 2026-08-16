@@ -2,16 +2,18 @@
  * NoiseFunnel — the selected-window Noise Reduction instrument in the Security
  * Command Center.
  *
- * Alerts and clusters are different units, so their connectors are intentionally
- * fixed-weight conversion context. Proportional ribbons begin at opened cases and
- * conserve one unit across two adjacent splits:
+ * Simple draws a full, filled alert-to-case flow. Alerts, clusters, and cases remain
+ * different units, so those first two ribbons use a disclosed compressed display scale;
+ * exact counts stay in their labels. From opened cases onward, the case-unit ribbons
+ * conserve the backend outcome partitions:
  *
  *     alerts → clusters → cases ⇉ auto-cleared | escalated ⇉ human-closed | remainder
  *
- * Simple is the default direct-labelled graph. Detailed adds the reduction summary
- * and complete evidence rail without changing the graph's arithmetic. Open cases are
- * shown as separate selected-window lifecycle context because they are not equal to
- * the conserved escalated remainder.
+ * Simple is the default direct-labelled graph. Detailed intentionally restores the
+ * Testing renderer as a separate compatibility presentation: its 640x220 stretched
+ * canvas, processing spine, overlapping outcome fan, loss badges, and complete evidence
+ * rail remain unchanged. Open cases are shown as separate selected-window lifecycle
+ * context because they are not equal to the conserved escalated remainder.
  *
  * Binds VERBATIM to the §D `GET /api/metrics/noise-reduction` contract (the
  * `NoiseReduction` type). When the durable ingest counters are still warming up
@@ -151,12 +153,19 @@ const STAGE_MEANING: Record<string, string> = {
 const OUTCOME_KEYS = ['auto_cleared', 'escalated', 'closed', 'policy_closed'];
 
 /** Popover help copy (>80 chars → focusable Popover, not a bare Tooltip). */
+const LEGACY_NOISE_FUNNEL_HELP_TEXT =
+  'How the agent reduces raw alert volume: received alerts move through clustering, a ' +
+  'fraction become cases, and opened cases split into false-positive auto-clear or the ' +
+  'escalated analyst path. Closed by human is a subset of that escalated path, not a ' +
+  'third partition. Counts and percentages in the aligned rail are authoritative; ' +
+  'hover or focus any stage for its evidence.';
+
 export const NOISE_FUNNEL_HELP_TEXT =
-  'Simple view shows the alert-to-cluster-to-case conversion context and then the ' +
-  'mathematically conserved case flow. Detailed view restores every stage and its ' +
-  'evidence rail. Auto-cleared and Escalated partition opened cases; Closed by human ' +
-  'is a subset of Escalated. Open cases are shown separately because they are a live ' +
-  'lifecycle state, not the same thing as the non-auto-cleared remainder.';
+  'Simple view draws the complete alert-to-cluster-to-case flow with filled, tapered ' +
+  'ribbons and exact stage labels. Ribbon thickness uses a compressed display scale so ' +
+  'small stages stay visible; alerts, clusters, and cases remain different units. From ' +
+  'Cases opened onward, Auto-cleared, optional analyst-policy closes, and Escalated form ' +
+  'the conserved case split.';
 
 /* ------------------------------------------------------------------------- */
 /* Pure derivation (exported for tests).                                       */
@@ -305,6 +314,246 @@ interface Rect {
   h: number;
   fill: string;
 }
+
+/* Exact Testing renderer geometry used by Detailed view. Keep this isolated from
+ * the Simple renderer: Detailed is a compatibility presentation, including its
+ * 640×220 stretched canvas, processing spine, overlapping outcome fan, drop badges,
+ * and excluded-count spur. */
+const LEGACY_VB_W = 640;
+const LEGACY_VB_H = 220;
+const LEGACY_FLAT_PLOT_LEFT_EXTENSION = 14;
+const LEGACY_CY = LEGACY_VB_H / 2;
+const LEGACY_PLOT_PAD = 24;
+const LEGACY_PLOT_H = LEGACY_VB_H - LEGACY_PLOT_PAD * 2;
+const LEGACY_NODE_W = 5;
+const LEGACY_OUTCOME_SPREAD = 58;
+
+function legacySpineNodeHeight(total: number, topTotal: number): number {
+  if (total <= 0) return 0;
+  const prop = topTotal > 0 ? Math.min(1, total / topTotal) : 0;
+  return LEGACY_PLOT_H * prop;
+}
+
+interface LegacyRibbon {
+  id: string;
+  path: string;
+  colorName: string;
+  kind: 'flow' | 'outcome';
+  sourceKey: string;
+  targetKey: string;
+}
+
+interface LegacyBadge {
+  leftPct: number;
+  topPct: number;
+  drop: number;
+  pct: number;
+}
+
+interface LegacyLayout {
+  ribbons: LegacyRibbon[];
+  rects: Rect[];
+  badges: LegacyBadge[];
+  spurPath: string | null;
+  spurNub: { x: number; y: number } | null;
+  spurChip: { leftPct: number; topPct: number } | null;
+}
+
+interface LegacySpineGeom {
+  row: FunnelRow;
+  index: number;
+  x: number;
+  top: number;
+  bottom: number;
+  h: number;
+}
+
+function buildLegacyLayout(
+  derived: DerivedFunnel,
+  drops: { suppressed: number; ignored: number },
+  uid: string,
+  leftExtension = 0,
+): LegacyLayout {
+  const rows = derived.rows;
+  const n = rows.length;
+  const candidateKeys = new Set(['candidate', 'awaiting']);
+  const spineEntries = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => !row.isOutcome && !candidateKeys.has(row.key));
+  const topTotal = derived.topTotal;
+  const colCenter = (i: number) => {
+    const count = Math.max(1, n);
+    const canonical = (LEGACY_VB_W * (i + 0.5)) / count;
+    if (leftExtension <= 0) return canonical;
+    const progress = count <= 1 ? 0 : i / (count - 1);
+    return canonical - leftExtension * (1 - progress);
+  };
+
+  const rects: Rect[] = [];
+  const ribbons: LegacyRibbon[] = [];
+  const badges: LegacyBadge[] = [];
+  const spine: LegacySpineGeom[] = [];
+
+  for (const { row, index } of spineEntries) {
+    const x = colCenter(index);
+    const h = legacySpineNodeHeight(row.total, topTotal);
+    const top = LEGACY_CY - h / 2;
+    if (h > 0) {
+      rects.push({
+        key: row.key,
+        x: x - LEGACY_NODE_W / 2,
+        y: top,
+        w: LEGACY_NODE_W,
+        h,
+        fill: token('primary'),
+      });
+    }
+    spine.push({ row, index, x, top, bottom: top + h, h });
+  }
+
+  for (let i = 0; i < spine.length - 1; i += 1) {
+    const source = spine[i];
+    const target = spine[i + 1];
+    if (source.h > 0 && target.h > 0) {
+      ribbons.push({
+        id: `${uid}-legacy-flow-${i}`,
+        path: ribbonPath(
+          source.x + LEGACY_NODE_W / 2,
+          source.top,
+          source.bottom,
+          target.x - LEGACY_NODE_W / 2,
+          target.top,
+          target.bottom,
+        ),
+        colorName: 'primary',
+        kind: 'flow',
+        sourceKey: source.row.key,
+        targetKey: target.row.key,
+      });
+    }
+
+    const drop = Math.max(0, source.row.total - target.row.total);
+    if (drop > 0) {
+      badges.push({
+        leftPct: (((source.x + target.x) / 2) / LEGACY_VB_W) * 100,
+        topPct: (10 / LEGACY_VB_H) * 100,
+        drop,
+        pct: source.row.total > 0 ? Math.round((drop / source.row.total) * 100) : 0,
+      });
+    }
+  }
+
+  const candidateEntry = rows
+    .map((row, index) => ({ row, index }))
+    .find(({ row }) => candidateKeys.has(row.key));
+  const clusteredNode = spine.find((node) => node.row.key === 'clustered');
+  if (candidateEntry && clusteredNode && candidateEntry.row.total > 0) {
+    const x = colCenter(candidateEntry.index);
+    const h = legacySpineNodeHeight(candidateEntry.row.total, topTotal);
+    const top = LEGACY_VB_H - LEGACY_PLOT_PAD - h;
+    rects.push({
+      key: candidateEntry.row.key,
+      x: x - LEGACY_NODE_W / 2,
+      y: top,
+      w: LEGACY_NODE_W,
+      h,
+      fill: token('muted-foreground'),
+    });
+    const sourceH = Math.min(clusteredNode.h, h);
+    ribbons.push({
+      id: `${uid}-legacy-candidate`,
+      path: ribbonPath(
+        clusteredNode.x + LEGACY_NODE_W / 2,
+        clusteredNode.bottom - sourceH,
+        clusteredNode.bottom,
+        x - LEGACY_NODE_W / 2,
+        top,
+        top + h,
+      ),
+      colorName: 'muted-foreground',
+      kind: 'flow',
+      sourceKey: clusteredNode.row.key,
+      targetKey: candidateEntry.row.key,
+    });
+  }
+
+  const outcomes = rows.filter((row) => row.isOutcome);
+  const casesNode = spine.find((node) => node.row.key === 'cases');
+  const casesTotal = derived.casesTotal;
+  const casesH = casesNode ? casesNode.h : 0;
+  const shareSum = outcomes.reduce(
+    (sum, row) => sum + (casesTotal > 0 && row.total > 0 ? row.total / casesTotal : 0),
+    0,
+  );
+  const sourceScale = shareSum > 1 ? 1 / shareSum : 1;
+  let sliceCursor = casesNode ? casesNode.top : LEGACY_CY;
+  outcomes.forEach((row, outcomeIndex) => {
+    const rowIndex = rows.findIndex((candidate) => candidate.key === row.key);
+    const x = colCenter(rowIndex);
+    const share = casesTotal > 0 ? row.total / casesTotal : 0;
+    const h = row.total > 0 ? share * casesH : 0;
+    const centerY =
+      outcomes.length > 1
+        ? LEGACY_CY -
+          LEGACY_OUTCOME_SPREAD +
+          (2 * LEGACY_OUTCOME_SPREAD * outcomeIndex) / (outcomes.length - 1)
+        : LEGACY_CY;
+    const top = centerY - h / 2;
+    const colorName = OUTCOME_TOKEN[row.key] ?? 'primary';
+    if (h > 0) {
+      rects.push({
+        key: row.key,
+        x: x - LEGACY_NODE_W / 2,
+        y: top,
+        w: LEGACY_NODE_W,
+        h,
+        fill: token(colorName),
+      });
+    }
+
+    if (casesNode && casesH > 0 && row.total > 0) {
+      const sliceH = share * casesH * sourceScale;
+      const sourceTop = sliceCursor;
+      const sourceBottom = sliceCursor + sliceH;
+      sliceCursor = sourceBottom;
+      ribbons.push({
+        id: `${uid}-legacy-outcome-${outcomeIndex}`,
+        path: ribbonPath(
+          casesNode.x + LEGACY_NODE_W / 2,
+          sourceTop,
+          sourceBottom,
+          x - LEGACY_NODE_W / 2,
+          top,
+          top + h,
+        ),
+        colorName,
+        kind: 'outcome',
+        sourceKey: casesNode.row.key,
+        targetKey: row.key,
+      });
+    }
+  });
+
+  const dropTotal = (drops.suppressed ?? 0) + (drops.ignored ?? 0);
+  let spurPath: string | null = null;
+  let spurNub: { x: number; y: number } | null = null;
+  let spurChip: { leftPct: number; topPct: number } | null = null;
+  if (dropTotal > 0 && spine.length >= 2 && spine[0].h > 0) {
+    const sourceX = spine[0].x;
+    const sourceY = spine[0].bottom - spine[0].h * 0.25;
+    const nubX = (spine[0].x + spine[1].x) / 2;
+    const nubY = LEGACY_VB_H - 12;
+    spurPath = `M${sourceX},${sourceY} C${(sourceX + nubX) / 2},${sourceY} ${nubX},${nubY - 24} ${nubX},${nubY}`;
+    spurNub = { x: nubX, y: nubY };
+    spurChip = {
+      leftPct: (nubX / LEGACY_VB_W) * 100,
+      topPct: ((nubY - 4) / LEGACY_VB_H) * 100,
+    };
+  }
+
+  return { ribbons, rects, badges, spurPath, spurNub, spurChip };
+}
+
 /* Carbon-inspired conversion + conserved case-flow geometry. */
 
 const SIMPLE_INLINE_WIDTH = 800;
@@ -313,8 +562,11 @@ const SIMPLE_INLINE_HEIGHT = 184;
 const SIMPLE_EXPANDED_HEIGHT = 400;
 const SIMPLE_NODE_W = 4;
 const SIMPLE_FLOW_KEYS = new Set([
+  'ingested',
+  'clustered',
   'cases',
   'auto_cleared',
+  'policy_closed',
   'escalated',
   'closed',
   'escalated_remaining',
@@ -322,11 +574,14 @@ const SIMPLE_FLOW_KEYS = new Set([
 
 interface SimpleRibbon {
   id: string;
+  kind: 'conversion' | 'conserved';
   path: string;
   targetColor: string;
   sourceKey: string;
   targetKey: string;
   value: number;
+  sourceHeight: number;
+  targetHeight: number;
   relatedStages: string[];
 }
 
@@ -343,6 +598,9 @@ interface ConversionNode {
   row: FunnelRow;
   x: number;
   y: number;
+  h: number;
+  labelY: number;
+  labelSide: 'above' | 'below';
 }
 
 interface SimpleLayout {
@@ -359,15 +617,13 @@ interface SimpleLayout {
 }
 
 /**
- * Build the honest Simple view. Alerts and clusters are fixed-weight conversion
- * milestones because those columns change unit. Proportional ribbons begin only at
- * Cases opened, where the backend guarantees these same-unit invariants:
+ * Build the polished full-pipeline Simple view. Alerts → clusters → cases are filled,
+ * tapered conversion ribbons using a disclosed square-root display scale so the much
+ * smaller case stages remain legible. Exact labels retain their different units. From
+ * Cases opened onward, child heights remain strictly conserved:
  *
- *   auto-cleared + escalated = cases
+ *   auto-cleared + policy-closed + escalated = cases
  *   closed-by-human + not-analyst-closed = escalated
- *
- * If either invariant fails, the graph refuses to invent widths and the detailed
- * evidence rail remains available.
  */
 function buildSimpleLayout(
   derived: DerivedFunnel,
@@ -377,20 +633,32 @@ function buildSimpleLayout(
 ): SimpleLayout {
   const width = Math.max(720, requestedWidth || SIMPLE_INLINE_WIDTH);
   const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
-  const cases = rowByKey.get('cases')?.total ?? 0;
-  const autoCleared = rowByKey.get('auto_cleared')?.total ?? 0;
-  const escalated = rowByKey.get('escalated')?.total ?? 0;
-  const closed = rowByKey.get('closed')?.total ?? 0;
+  const rawTotal = (key: string) => rowByKey.get(key)?.total ?? 0;
+  const safeTotal = (key: string) => {
+    const value = rawTotal(key);
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
+  };
+  const ingested = safeTotal('ingested');
+  const clustered = safeTotal('clustered');
+  const cases = safeTotal('cases');
+  const autoCleared = safeTotal('auto_cleared');
+  const policyClosed = safeTotal('policy_closed');
+  const escalated = safeTotal('escalated');
+  const closed = safeTotal('closed');
   const remainingEscalated = Math.max(0, escalated - closed);
+  const rawCaseTotals = [
+    rawTotal('cases'),
+    rawTotal('auto_cleared'),
+    rawTotal('policy_closed'),
+    rawTotal('escalated'),
+    rawTotal('closed'),
+  ];
   const valid =
-    cases >= 0 &&
-    autoCleared >= 0 &&
-    escalated >= 0 &&
-    closed >= 0 &&
-    autoCleared + escalated === cases &&
+    rawCaseTotals.every((value) => Number.isFinite(value) && value >= 0) &&
+    autoCleared + policyClosed + escalated === cases &&
     closed <= escalated;
 
-  const casesX = width * 0.38;
+  const casesX = width * 0.405;
   const base = {
     width,
     height,
@@ -409,20 +677,33 @@ function buildSimpleLayout(
   if (!valid || cases <= 0) return base;
 
   const expanded = height >= 300;
-  const plotTop = expanded ? 54 : 40;
-  const plotBottom = height - (expanded ? 24 : 12);
-  const nodePadding = expanded ? 38 : 24;
-  const caseHeight = Math.max(1, plotBottom - plotTop - nodePadding);
-  const casesTop = plotTop + nodePadding / 2;
+  const plotTop = expanded ? 54 : 34;
+  const plotBottom = height - (expanded ? 24 : 10);
+  const nodePadding = expanded ? 42 : 24;
+  const pipelineHeight = Math.max(1, plotBottom - plotTop - nodePadding);
+  const fullPipeline = derived.mode === 'full' && ingested > 0;
+  const compressedHeight = (total: number) =>
+    total > 0 && ingested > 0
+      ? pipelineHeight * Math.sqrt(Math.min(1, total / ingested))
+      : 0;
+  const caseHeight = Math.max(1, fullPipeline ? compressedHeight(cases) : pipelineHeight);
+  const contextY = (plotTop + plotBottom) / 2;
+  const casesTop = contextY - caseHeight / 2;
   const casesBottom = casesTop + caseHeight;
-  const contextY = casesTop + caseHeight / 2;
-  const decisionX = width * 0.68;
+  const decisionX = width * 0.69;
   const resolutionX = width - 10;
 
   const autoHeight = (autoCleared / cases) * caseHeight;
+  const policyHeight = (policyClosed / cases) * caseHeight;
   const escalatedHeight = (escalated / cases) * caseHeight;
-  const autoTop = plotTop;
-  const escalatedTop = autoTop + autoHeight + nodePadding;
+  const decisionGap = policyClosed > 0 ? (expanded ? 24 : 14) : nodePadding;
+  const decisionGapCount = policyClosed > 0 ? 2 : 1;
+  const autoTop = contextY - (caseHeight + decisionGap * decisionGapCount) / 2;
+  const policyTop = autoTop + autoHeight + decisionGap;
+  const escalatedTop =
+    policyClosed > 0
+      ? policyTop + policyHeight + decisionGap
+      : autoTop + autoHeight + decisionGap;
   const escalatedBottom = escalatedTop + escalatedHeight;
 
   const resolutionPadding = expanded ? 30 : 18;
@@ -466,7 +747,7 @@ function buildSimpleLayout(
       rowKey: 'cases',
       label: 'Cases opened',
       total: cases,
-      labelY: Math.max(plotTop + 9, casesTop - 7),
+      labelY: Math.max(plotTop + 9, casesTop - 8),
       labelSide: 'after',
       x: casesX - SIMPLE_NODE_W / 2,
       y: casesTop,
@@ -487,6 +768,23 @@ function buildSimpleLayout(
       h: autoHeight,
       fill: token(OUTCOME_TOKEN.auto_cleared),
     },
+    ...(policyClosed > 0
+      ? [
+          {
+            key: 'policy_closed',
+            rowKey: 'policy_closed',
+            label: 'Closed by analyst policy',
+            total: policyClosed,
+            labelY: policyTop + Math.max(1, policyHeight) / 2,
+            labelSide: 'after' as const,
+            x: decisionX - SIMPLE_NODE_W / 2,
+            y: policyTop,
+            w: SIMPLE_NODE_W,
+            h: policyHeight,
+            fill: token(OUTCOME_TOKEN.policy_closed),
+          },
+        ]
+      : []),
     {
       key: 'escalated',
       rowKey: 'escalated',
@@ -531,6 +829,7 @@ function buildSimpleLayout(
   const ribbons: SimpleRibbon[] = [];
   const addRibbon = (
     suffix: string,
+    kind: 'conversion' | 'conserved',
     sourceKey: string,
     targetKey: string,
     value: number,
@@ -547,17 +846,88 @@ function buildSimpleLayout(
     const id = `${uid}-${suffix}`;
     ribbons.push({
       id,
+      kind,
       path: ribbonPath(x0, sy0, sy1, x1, ty0, ty1),
       targetColor,
       sourceKey,
       targetKey,
       value,
+      sourceHeight: sy1 - sy0,
+      targetHeight: ty1 - ty0,
       relatedStages,
     });
   };
 
+  const conversionNodes: ConversionNode[] = [];
+  if (fullPipeline) {
+    const ingestedRow = rowByKey.get('ingested');
+    const clusteredRow = rowByKey.get('clustered');
+    const ingestedHeight = pipelineHeight;
+    const clusteredHeight = compressedHeight(clustered);
+    const ingestedX = 12;
+    const clusteredX = width * 0.205;
+    if (ingestedRow && ingestedHeight > 0) {
+      conversionNodes.push({
+        key: 'ingested',
+        row: ingestedRow,
+        x: ingestedX,
+        y: contextY - ingestedHeight / 2,
+        h: ingestedHeight,
+        labelY: contextY - ingestedHeight / 2 - 6,
+        labelSide: 'above',
+      });
+    }
+    if (clusteredRow && clusteredHeight > 0) {
+      conversionNodes.push({
+        key: 'clustered',
+        row: clusteredRow,
+        x: clusteredX,
+        y: contextY - clusteredHeight / 2,
+        h: clusteredHeight,
+        labelY: contextY + clusteredHeight / 2 + 6,
+        labelSide: 'below',
+      });
+    }
+
+    if (ingestedRow && clusteredRow && ingestedHeight > 0 && clusteredHeight > 0) {
+      addRibbon(
+        'simple-ingested-clustered',
+        'conversion',
+        'ingested',
+        'clustered',
+        clustered,
+        ingestedX + SIMPLE_NODE_W / 2,
+        contextY - ingestedHeight / 2,
+        contextY + ingestedHeight / 2,
+        clusteredX - SIMPLE_NODE_W / 2,
+        contextY - clusteredHeight / 2,
+        contextY + clusteredHeight / 2,
+        token('primary'),
+        [...SIMPLE_FLOW_KEYS],
+      );
+    }
+    if (clusteredRow && clusteredHeight > 0 && caseHeight > 0) {
+      addRibbon(
+        'simple-clustered-cases',
+        'conversion',
+        'clustered',
+        'cases',
+        cases,
+        clusteredX + SIMPLE_NODE_W / 2,
+        contextY - clusteredHeight / 2,
+        contextY + clusteredHeight / 2,
+        casesX - SIMPLE_NODE_W / 2,
+        casesTop,
+        casesBottom,
+        token('primary'),
+        [...SIMPLE_FLOW_KEYS],
+      );
+    }
+  }
+
   addRibbon(
     'simple-cases-auto',
+    'conserved',
     'cases',
     'auto_cleared',
     autoCleared,
@@ -571,12 +941,28 @@ function buildSimpleLayout(
     ['cases', 'auto_cleared'],
   );
   addRibbon(
+    'simple-cases-policy',
+    'conserved',
+    'cases',
+    'policy_closed',
+    policyClosed,
+    casesX + SIMPLE_NODE_W / 2,
+    casesTop + autoHeight,
+    casesTop + autoHeight + policyHeight,
+    decisionX - SIMPLE_NODE_W / 2,
+    policyTop,
+    policyTop + policyHeight,
+    token(OUTCOME_TOKEN.policy_closed),
+    ['cases', 'policy_closed'],
+  );
+  addRibbon(
     'simple-cases-escalated',
+    'conserved',
     'cases',
     'escalated',
     escalated,
     casesX + SIMPLE_NODE_W / 2,
-    casesTop + autoHeight,
+    casesTop + autoHeight + policyHeight,
     casesBottom,
     decisionX - SIMPLE_NODE_W / 2,
     escalatedTop,
@@ -586,6 +972,7 @@ function buildSimpleLayout(
   );
   addRibbon(
     'simple-escalated-closed',
+    'conserved',
     'escalated',
     'closed',
     closed,
@@ -600,6 +987,7 @@ function buildSimpleLayout(
   );
   addRibbon(
     'simple-escalated-remaining',
+    'conserved',
     'escalated',
     'escalated_remaining',
     remainingEscalated,
@@ -612,21 +1000,6 @@ function buildSimpleLayout(
     token(OUTCOME_TOKEN.escalated),
     ['cases', 'escalated', 'escalated_remaining'],
   );
-
-  const conversionNodes: ConversionNode[] = [];
-  if (derived.mode === 'full') {
-    const ingested = rowByKey.get('ingested');
-    const clustered = rowByKey.get('clustered');
-    if (ingested) conversionNodes.push({ key: 'ingested', row: ingested, x: 10, y: contextY });
-    if (clustered) {
-      conversionNodes.push({
-        key: 'clustered',
-        row: clustered,
-        x: width * 0.27,
-        y: contextY,
-      });
-    }
-  }
 
   return {
     ...base,
@@ -801,7 +1174,10 @@ function Header({
         >
           {flat ? 'Noise reduction flow' : 'Noise reduction'}
         </h3>
-        <HelpTip label="What the noise-reduction funnel means" text={NOISE_FUNNEL_HELP_TEXT} />
+        <HelpTip
+          label="What the noise-reduction funnel means"
+          text={view === 'detailed' ? LEGACY_NOISE_FUNNEL_HELP_TEXT : NOISE_FUNNEL_HELP_TEXT}
+        />
       </div>
       <div className="flex flex-wrap items-center justify-end gap-1">
         {!hidden ? (
@@ -820,14 +1196,20 @@ function Header({
           <button
             type="button"
             onClick={onExpand}
-            aria-label="Open full-screen noise reduction flow"
+            aria-label={
+              view === 'detailed'
+                ? 'Expand noise reduction flow'
+                : 'Open full-screen noise reduction flow'
+            }
             className={cn(
               'inline-flex min-h-7 items-center justify-center gap-1.5 rounded-[3px] border border-border px-2 text-2xs font-medium text-muted-foreground transition-colors',
               'hover:bg-hover hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           >
             <Maximize2 className="h-3.5 w-3.5" aria-hidden />
-            <span className="hidden sm:inline">Full screen</span>
+            <span className="hidden sm:inline">
+              {view === 'detailed' ? 'Expand' : 'Full screen'}
+            </span>
           </button>
         ) : null}
         {onToggleHidden ? (
@@ -911,6 +1293,18 @@ export function NoiseFunnel({
         : null,
     [derived, simpleFallbackWidth, simplePlotHeight, simplePlotWidth, uid],
   );
+  const legacyLayout = React.useMemo(
+    () =>
+      derived
+        ? buildLegacyLayout(
+            derived,
+            { suppressed: dropSuppressed, ignored: dropIgnored },
+            uid,
+            flat ? LEGACY_FLAT_PLOT_LEFT_EXTENSION : 0,
+          )
+        : null,
+    [derived, dropIgnored, dropSuppressed, flat, uid],
+  );
 
   React.useLayoutEffect(() => {
     if (hidden) return undefined;
@@ -978,7 +1372,7 @@ export function NoiseFunnel({
     );
   }
   // Absent data + not loading → render nothing (a missing/off backend simply omits the widget).
-  if (!data || !derived || !simpleLayout) return null;
+  if (!data || !derived || !simpleLayout || !legacyLayout) return null;
 
   const overall = data.reduction?.overall_pct;
   const headlinePct = typeof overall === 'number' ? overall : null;
@@ -988,6 +1382,7 @@ export function NoiseFunnel({
   const n = derived.rows.length;
   const closedByHuman = derived.rows.find((r) => r.key === 'closed')?.total ?? 0;
   const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
+  const hasPolicyClosed = (rowByKey.get('policy_closed')?.total ?? 0) > 0;
   const candidateRow = rowByKey.get('candidate') ?? rowByKey.get('awaiting') ?? null;
   const escalatedRow = rowByKey.get('escalated') ?? null;
   const validOpenCases =
@@ -1016,13 +1411,20 @@ export function NoiseFunnel({
               : 'cases';
     const accessibleLabel = `${row.label}: ${row.total} ${unit}, ${accessiblePct} ${relativeTo}`;
     const detailId = `${uid}-${row.key}-detail`;
+    const useSimplePolicyCopy = view === 'simple' && hasPolicyClosed;
     const relationship =
       row.key === 'closed'
         ? 'This is a subset of Escalated, not an additional case partition.'
         : row.key === 'auto_cleared'
-          ? 'Together with Escalated, this partitions opened cases.'
+          ? useSimplePolicyCopy
+            ? 'Together with Closed by analyst policy and Escalated, this partitions opened cases.'
+            : 'Together with Escalated, this partitions opened cases.'
+          : row.key === 'policy_closed' && view === 'simple'
+            ? 'Together with Auto-cleared and Escalated, this partitions opened cases.'
           : row.key === 'escalated'
-            ? 'Together with Auto-cleared, this partitions opened cases; human closure is a subset of this stage.'
+            ? useSimplePolicyCopy
+              ? 'Together with Auto-cleared and Closed by analyst policy, this partitions opened cases; human closure is a subset of this stage.'
+              : 'Together with Auto-cleared, this partitions opened cases; human closure is a subset of this stage.'
             : row.key === 'candidate' || row.key === 'awaiting'
               ? 'This is a side cohort from clustered alerts, not a parent of opened cases.'
               : '';
@@ -1036,7 +1438,9 @@ export function NoiseFunnel({
       .join(' ');
     const displayLabel = flat ? DASHBOARD_STAGE_LABEL[row.key] || row.label : row.label;
     const baseReference =
-      row.key === 'auto_cleared' || row.key === 'escalated'
+      row.key === 'auto_cleared' ||
+      row.key === 'escalated' ||
+      (view === 'simple' && row.key === 'policy_closed')
         ? rowByKey.get('cases') ?? null
         : row.key === 'closed'
           ? rowByKey.get('escalated') ?? null
@@ -1141,8 +1545,12 @@ export function NoiseFunnel({
     );
   });
 
-  const detailGridColumns =
-    n === 4 ? 'lg:grid-cols-5' : n === 7 ? 'lg:grid-cols-8' : 'lg:grid-cols-7';
+  const legacyGridStyle: React.CSSProperties | undefined =
+    flat && !wideInspection
+      ? undefined
+      : { gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` };
+  const legacyFlatGridColumns =
+    n === 4 ? 'lg:grid-cols-4' : n === 7 ? 'lg:grid-cols-7' : 'lg:grid-cols-6';
   const dropTotal = dropSuppressed + dropIgnored;
 
   const coverageNote = !data.counters?.available
@@ -1153,43 +1561,200 @@ export function NoiseFunnel({
         ? `Case stages are partial: ${fmtNumber(data.cases_meta.fetched)} of ${fmtNumber(data.cases_meta.store_total)} matching cases were tallied.`
         : 'Every value is an aggregate for the selected time range.';
 
-  const flowView = (
+  const legacyDetailedView = (
     <div
       className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}
-      data-testid={view === 'simple' ? 'noise-simple-view' : 'noise-detailed-view'}
+      data-testid="noise-detailed-view"
       role="region"
-      aria-label={
-        view === 'simple' ? 'Simple noise reduction view' : 'Detailed noise reduction view'
-      }
+      aria-label="Detailed noise reduction view"
     >
-      {view === 'detailed' ? (
-        headlinePct != null ? (
-          <div data-testid="noise-reduction-summary">
-            <p
-              className={cn(
-                'font-semibold tracking-tight text-foreground',
-                flat ? 'text-xl' : 'text-2xl sm:text-3xl',
-              )}
-            >
-              {flat ? 'Reduced by ' : 'Noise reduced by '}
-              <span className="text-primary tabular-nums">{headlinePct}%</span>
-            </p>
-            <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-              {fmtNumber(derived.topTotal)}{' '}
-              {derived.mode === 'full' ? 'alerts ingested' : 'cases opened'}
-              <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
-                →
-              </span>
-              {fmtNumber(closedByHuman)} case{closedByHuman === 1 ? '' : 's'} closed by a human
-            </p>
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground" data-testid="noise-funnel-warming">
-            {degradedNote}
+      {headlinePct != null ? (
+        <div>
+          <p
+            className={cn(
+              'font-semibold tracking-tight text-foreground',
+              flat ? 'text-2xl' : 'text-2xl sm:text-3xl',
+            )}
+          >
+            {flat ? 'Reduced by ' : 'Noise reduced by '}
+            <span className="text-primary tabular-nums">{headlinePct}%</span>
           </p>
-        )
+          <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+            {fmtNumber(derived.topTotal)}{' '}
+            {derived.mode === 'full' ? 'events ingested' : 'cases opened'}
+            <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
+              →
+            </span>
+            {fmtNumber(closedByHuman)} case{closedByHuman === 1 ? '' : 's'} closed by a human
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground" data-testid="noise-funnel-warming">
+          {degradedNote}
+        </p>
+      )}
+
+      {headlinePct != null && (data.counters?.incomplete || data.cases_meta?.truncated) ? (
+        <p
+          className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
+          data-testid="noise-coverage-warning"
+        >
+          <span className="font-medium text-warning-text">Partial coverage</span>
+          {' · '}
+          {coverageNote}
+        </p>
       ) : null}
 
+      <div
+        data-testid="noise-instrument-panel"
+        className={cn('space-y-3', flat && 'border-y border-border/60 py-3')}
+      >
+        <div
+          data-testid="noise-flow-band"
+          className={cn(
+            'relative mt-1 w-full',
+            wideInspection
+              ? 'h-44'
+              : flat
+                ? 'hidden h-36 lg:block lg:h-44'
+                : 'h-44 sm:h-52',
+          )}
+        >
+          <svg
+            viewBox={`0 0 ${LEGACY_VB_W} ${LEGACY_VB_H}`}
+            preserveAspectRatio="none"
+            className="absolute inset-0 h-full w-full"
+            aria-hidden
+            focusable="false"
+          >
+            {legacyLayout.ribbons.map((ribbon) => {
+              const related =
+                !activeStage ||
+                ribbon.sourceKey === activeStage ||
+                ribbon.targetKey === activeStage;
+              return (
+                <path
+                  key={ribbon.id}
+                  d={ribbon.path}
+                  fill={token(ribbon.colorName)}
+                  stroke={token(ribbon.colorName)}
+                  strokeWidth={0.5}
+                  vectorEffect="non-scaling-stroke"
+                  data-noise-ribbon
+                  data-source-stage={ribbon.sourceKey}
+                  data-target-stage={ribbon.targetKey}
+                  className="transition-opacity duration-fast ease-standard"
+                  style={{
+                    fillOpacity: activeStage
+                      ? related
+                        ? 1
+                        : 0.14
+                      : ribbon.kind === 'flow'
+                        ? 'var(--noise-ribbon-opacity)'
+                        : 'var(--noise-outcome-opacity)',
+                    strokeOpacity: activeStage
+                      ? related
+                        ? 1
+                        : 0.14
+                      : 'var(--noise-ribbon-stroke-opacity)',
+                  }}
+                />
+              );
+            })}
+
+            {legacyLayout.spurPath ? (
+              <>
+                <path
+                  d={legacyLayout.spurPath}
+                  fill="none"
+                  stroke={token('muted-foreground', 0.4)}
+                  strokeWidth={1}
+                  strokeDasharray="2 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+                {legacyLayout.spurNub ? (
+                  <circle
+                    cx={legacyLayout.spurNub.x}
+                    cy={legacyLayout.spurNub.y}
+                    r={2.5}
+                    fill={token('muted-foreground', 0.7)}
+                  />
+                ) : null}
+              </>
+            ) : null}
+
+            {legacyLayout.rects.map((rect) => (
+              <rect
+                key={rect.key}
+                data-node-key={rect.key}
+                x={rect.x}
+                y={rect.y}
+                width={rect.w}
+                height={rect.h}
+                rx={0}
+                fill={rect.fill}
+                stroke={rect.fill}
+                strokeWidth={0.5}
+                vectorEffect="non-scaling-stroke"
+                opacity={activeStage && activeStage !== rect.key ? 0.48 : 1}
+                className="transition-opacity duration-fast ease-standard"
+              />
+            ))}
+          </svg>
+
+          <div className="pointer-events-none absolute inset-0" aria-hidden>
+            {legacyLayout.badges.map((badge, index) => (
+              <span
+                key={index}
+                data-loss-annotation
+                className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap px-1 text-2xs font-medium tabular-nums text-muted-foreground"
+                style={{ left: `${badge.leftPct}%`, top: `${badge.topPct}%` }}
+              >
+                −{badge.drop} · {badge.pct}% filtered
+              </span>
+            ))}
+            {legacyLayout.spurChip ? (
+              <span
+                className="absolute -translate-x-1/2 whitespace-nowrap px-1 text-2xs tabular-nums text-muted-foreground"
+                style={{
+                  left: `${legacyLayout.spurChip.leftPct}%`,
+                  top: `${legacyLayout.spurChip.topPct}%`,
+                }}
+              >
+                −{dropTotal} excluded
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div
+          data-testid="noise-stage-rail"
+          className={cn(
+            'grid items-start gap-1',
+            flat && 'grid-cols-2 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
+            flat && legacyFlatGridColumns,
+          )}
+          style={legacyGridStyle}
+        >
+          {chips}
+        </div>
+
+        {dropTotal > 0 ? (
+          <p className="mt-1 border-t border-border pt-2 text-xs text-muted-foreground">
+            {dropSuppressed} suppressed · {dropIgnored} ignored removed before clustering
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const simpleFlowView = (
+    <div
+      className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}
+      data-testid="noise-simple-view"
+      role="region"
+      aria-label="Simple noise reduction view"
+    >
       {data.counters?.incomplete || data.cases_meta?.truncated ? (
         <p
           className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
@@ -1210,7 +1775,7 @@ export function NoiseFunnel({
           data-testid="noise-flow-band"
           className={cn(
             'relative w-full',
-            wideInspection ? 'h-[400px]' : 'hidden h-[184px] @[42rem]/noise:block',
+            wideInspection ? 'h-[400px]' : 'hidden h-[184px] @[38rem]/noise:block',
           )}
         >
           {!simpleLayout.valid ? (
@@ -1239,17 +1804,6 @@ export function NoiseFunnel({
                 focusable="false"
               >
                 <defs>
-                  <marker
-                    id={`${uid}-conversion-arrow`}
-                    markerWidth="6"
-                    markerHeight="6"
-                    refX="5"
-                    refY="3"
-                    orient="auto"
-                    markerUnits="strokeWidth"
-                  >
-                    <path d="M0,0 L6,3 L0,6 Z" fill={token('muted-foreground', 0.55)} />
-                  </marker>
                   <clipPath id={`${uid}-simple-flow-clip`}>
                     {simpleLayout.ribbons.map((ribbon) => (
                       <path key={`${ribbon.id}-clip`} d={ribbon.path} />
@@ -1258,7 +1812,7 @@ export function NoiseFunnel({
                 </defs>
 
                 <text
-                  x={simpleLayout.casesX / 2}
+                  x={simpleLayout.width / 2}
                   y={wideInspection ? 22 : 14}
                   textAnchor="middle"
                   fill={token('muted-foreground')}
@@ -1266,55 +1820,21 @@ export function NoiseFunnel({
                   fontWeight={600}
                   letterSpacing="0.12em"
                 >
-                  CONVERSION CONTEXT
+                  FULL ALERT-TO-CASE FLOW
                 </text>
-                <text
-                  x={(simpleLayout.casesX + simpleLayout.width) / 2}
-                  y={wideInspection ? 22 : 14}
-                  textAnchor="middle"
-                  fill={token('muted-foreground')}
-                  fontSize={wideInspection ? 12 : 10}
-                  fontWeight={600}
-                  letterSpacing="0.12em"
-                >
-                  CONSERVED CASE FLOW
-                </text>
-
-                {simpleLayout.conversionNodes.length > 0
-                  ? [...simpleLayout.conversionNodes, { x: simpleLayout.casesX }].map(
-                      (node, index, sequence) => {
-                        const next = sequence[index + 1];
-                        if (!next) return null;
-                        return (
-                          <line
-                            key={`conversion-${index}`}
-                            x1={node.x + SIMPLE_NODE_W / 2 + 4}
-                            y1={simpleLayout.contextY}
-                            x2={next.x - SIMPLE_NODE_W / 2 - 8}
-                            y2={simpleLayout.contextY}
-                            fill="none"
-                            stroke={token('muted-foreground', 0.5)}
-                            strokeWidth={1}
-                            strokeDasharray="3 4"
-                            markerEnd={`url(#${uid}-conversion-arrow)`}
-                            vectorEffect="non-scaling-stroke"
-                            data-edge-kind="conversion"
-                          />
-                        );
-                      },
-                    )
-                  : null}
 
                 {simpleLayout.conversionNodes.map((node) => (
                   <rect
                     key={`${node.key}-context-node`}
                     data-context-node-key={node.key}
                     x={node.x - SIMPLE_NODE_W / 2}
-                    y={node.y - 14}
+                    y={node.y}
                     width={SIMPLE_NODE_W}
-                    height={28}
+                    height={node.h}
                     rx={0}
-                    fill={token('muted-foreground', 0.72)}
+                    fill={token('primary')}
+                    stroke={token('primary')}
+                    strokeWidth={0.5}
                     vectorEffect="non-scaling-stroke"
                   />
                 ))}
@@ -1331,10 +1851,12 @@ export function NoiseFunnel({
                       strokeWidth={0.5}
                       vectorEffect="non-scaling-stroke"
                       data-noise-ribbon
-                      data-edge-kind="conserved"
+                      data-edge-kind={ribbon.kind}
                       data-source-stage={ribbon.sourceKey}
                       data-target-stage={ribbon.targetKey}
                       data-value={ribbon.value}
+                      data-source-height={ribbon.sourceHeight}
+                      data-target-height={ribbon.targetHeight}
                       className="transition-opacity duration-fast ease-standard"
                       style={{
                         fillOpacity: activeSimpleStage
@@ -1441,15 +1963,13 @@ export function NoiseFunnel({
                       : node.row.total === 1
                         ? 'cluster'
                         : 'clusters';
-                  const first = node.key === 'ingested';
-                  const belowConnector = node.key === 'clustered';
                   const labelClassName = cn(
                     'absolute rounded-[3px] bg-card/95 px-1.5 py-1 text-left',
-                    belowConnector ? '-translate-x-1/2' : '-translate-y-full',
+                    node.labelSide === 'above' && '-translate-y-full',
                   );
                   const labelStyle: React.CSSProperties = {
-                    left: `${((node.x + (first ? 7 : 0)) / simpleLayout.width) * 100}%`,
-                    top: `${((node.y + (belowConnector ? 8 : -8)) / simpleLayout.height) * 100}%`,
+                    left: `${((node.x + 8) / simpleLayout.width) * 100}%`,
+                    top: `${(node.labelY / simpleLayout.height) * 100}%`,
                   };
                   const labelContent = (
                     <>
@@ -1481,7 +2001,7 @@ export function NoiseFunnel({
                       onPointerLeave={() => setHoveredStage(null)}
                       onFocus={() => setFocusedStage(node.key)}
                       onBlur={() => setFocusedStage(null)}
-                      aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}. Conversion context; the unit changes at this step.`}
+                      aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}. Filled conversion ribbon; the unit changes at this step.`}
                       className={cn(
                         'pointer-events-auto transition-colors duration-fast ease-standard',
                         'hover:bg-popover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -1575,7 +2095,9 @@ export function NoiseFunnel({
 
                   if (!row) return <React.Fragment key={node.key}>{control}</React.Fragment>;
                   const baseReference =
-                    row.key === 'auto_cleared' || row.key === 'escalated'
+                    row.key === 'auto_cleared' ||
+                    row.key === 'policy_closed' ||
+                    row.key === 'escalated'
                       ? rowByKey.get('cases') ?? null
                       : row.key === 'closed'
                         ? rowByKey.get('escalated') ?? null
@@ -1604,13 +2126,11 @@ export function NoiseFunnel({
           data-testid="noise-stage-rail"
           className={cn(
             'grid grid-cols-2 items-start gap-1 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
-            view === 'detailed'
-              ? detailGridColumns
-              : simpleLayout.valid && simpleLayout.nodes.length > 0
-                ? wideInspection
-                  ? 'hidden'
-                  : '@[42rem]/noise:hidden'
-                : 'lg:grid-cols-4',
+            simpleLayout.valid && simpleLayout.nodes.length > 0
+              ? wideInspection
+                ? 'hidden'
+                : '@[38rem]/noise:hidden'
+              : 'lg:grid-cols-4',
           )}
         >
           {chips}
@@ -1659,7 +2179,8 @@ export function NoiseFunnel({
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
           <p className="text-2xs leading-relaxed text-muted-foreground">
-            Alerts → clusters change unit; proportional width begins at Cases opened.
+            Filled ribbons show the alert → cluster → case reduction. Thickness uses a
+            compressed display scale; labels are the exact counts and units.
           </p>
           {validOpenCases ? (
             <button
@@ -1670,7 +2191,7 @@ export function NoiseFunnel({
               data-partial={validOpenCases.partial ? 'true' : 'false'}
               aria-label={`${validOpenCases.partial ? 'At least ' : ''}${fmtNumber(validOpenCases.count)} open cases in the selected window${validOpenCases.count > 0 ? ', review active cases' : ', queue clear'}.`}
               className={cn(
-                'inline-flex min-h-8 items-center gap-2 rounded-[3px] border px-2.5 py-1.5 text-left text-xs font-medium transition-colors duration-fast ease-standard',
+                'ml-auto inline-flex min-h-8 items-center gap-2 rounded-[3px] border px-2.5 py-1.5 text-left text-xs font-medium transition-colors duration-fast ease-standard',
                 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default',
                 validOpenCases.count > 0
                   ? 'border-warning/50 bg-warning/5 text-warning-text hover:bg-warning/10'
@@ -1749,11 +2270,9 @@ export function NoiseFunnel({
         data-testid="noise-funnel"
       >
         <p id={topologyDescriptionId} className="sr-only">
-          Alerts move through clustering into opened cases, with a unit change at each
-          conversion. Proportional width begins at opened cases. Auto-cleared and Escalated
-          partition opened cases; Closed by human is a subset of Escalated. Not
-          analyst-closed is the remaining conserved complement, while Open cases is a
-          separate current lifecycle count. Labels and evidence are authoritative.
+          {view === 'detailed'
+            ? 'Alerts move through clustering into opened cases. Auto-cleared and Escalated partition opened cases. Closed by human is a subset of Escalated. The graph is directional context; the labelled counts and percentages are authoritative.'
+            : 'Alerts move through clustering into opened cases as filled, tapered ribbons. Alerts, clusters, and cases are different units, and ribbon thickness uses a compressed display scale; labels are the exact values. Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases. Closed by human is a subset of Escalated. Not analyst-closed is the remaining conserved complement, while Open cases is a separate current lifecycle count.'}
         </p>
         <Header
           hidden={hidden}
@@ -1764,7 +2283,7 @@ export function NoiseFunnel({
           onViewChange={setView}
         />
 
-        {hidden ? null : flowView}
+        {hidden ? null : view === 'detailed' ? legacyDetailedView : simpleFlowView}
       </section>
 
       {expandable ? (

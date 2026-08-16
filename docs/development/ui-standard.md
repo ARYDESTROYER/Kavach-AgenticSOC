@@ -399,39 +399,47 @@ one `LoadingBar`, and a refresh error is reported without replacing that data.
 
 ## Operational flow visualizations
 
-The Dashboard Noise Reduction instrument uses one horizontal, Carbon-informed graph in
-two presentation modes. **Simple** is the default direct-labelled operational view.
-**Detailed** keeps the same graph and arithmetic, then adds the reduction summary and
-complete stage evidence rail. The selected mode carries into full-screen inspection.
-Labelled counts, definitions, coverage, and truncation evidence are authoritative:
+The Dashboard Noise Reduction instrument has two deliberately separate presentations.
+**Simple** is the default direct-labelled, Carbon-informed full alert-to-case flow.
+**Detailed** is the compatibility view of the Testing renderer: preserve its 640x220
+stretched canvas, proportional processing spine, direct overlapping Cases outcome fan,
+loss badges, excluded-count spur, reduction headline, and complete stage evidence rail.
+Do not reinterpret Detailed through the Simple geometry. The selected mode carries into
+full-screen inspection. Labelled counts, definitions, coverage, and truncation evidence
+are authoritative:
 
 - Preserve the familiar left-to-right lifecycle order and the current selected-window
   scope. Do not invent, relabel, or hide volume to make a branch look fuller.
-- **Alerts ingested**, **After clustering**, and **Cases opened** change unit. Show those
-  transitions as thin fixed-weight conversion connectors with exact counts; do not encode
-  alert, cluster, and case totals as one proportional ribbon.
-- Treat **Auto-cleared by AI** and **Escalated** as the conserved split of opened cases.
-  Split Escalated again into **Closed by human** and **Not analyst-closed** so every filled
-  ribbon has the same value and width at both endpoints. Do not draw Cases directly to
-  Closed by human or normalize an overlapping fan.
+- **Alerts ingested**, **After clustering**, and **Cases opened** change unit. In Simple,
+  draw both transitions as real filled, tapered ribbons so the complete path is visible.
+  Use the documented square-root display scale to keep later stages legible, disclose that
+  compression beside the graph, and keep exact counts plus alert/cluster/case units in the
+  labels. Never present those mixed-unit ribbons as mathematically conserved.
+- In Simple, treat **Auto-cleared by AI**, optional **Closed by analyst policy**, and
+  **Escalated** as the conserved split of opened cases. Split Escalated again into
+  **Closed by human** and **Not analyst-closed**, with equal source/target thickness for
+  every same-unit ribbon. Detailed intentionally retains Testing's direct Cases-to-outcome
+  fan, including the overlapping human-closure view; its aligned evidence rail is the
+  authoritative arithmetic.
 - **Open cases** is current lifecycle state from the selected-window posture count. It is
   not equal to Escalated minus human closure, so keep it outside the conserved graph as a
   labelled, keyboard-operable queue action. If the bounded scan is truncated, display the
   count as a lower bound and retain the complete-active-case drill-through.
 - When the backend emits an **Awaiting review / Candidate** cohort, keep it distinct
-  from the mandatory lifecycle; it is not a parent of Cases opened and receives no
-  conserved ribbon.
-- Keep direct labels and the Detailed evidence rail readable in both themes. Stage detail
-  must be available to keyboard and pointer users, not hover-only. At narrow widths,
-  replace the graph with its authoritative evidence rail instead of crushing its labels.
+  from the mandatory lifecycle; it is not a parent of Cases opened. Simple names it as
+  side evidence, while Detailed retains Testing's side-cohort branch.
+- Keep Simple's direct labels and Detailed's evidence rail readable in both themes. Stage
+  detail must be available to keyboard and pointer users, not hover-only. At narrow widths,
+  use the evidence rail rather than crushing either desktop graph's labels.
 - Outcome activation opens the matching selected-window Cases filter. Earlier stages
   open the selected-window Cases context because raw alert and cluster records are not
   exposed through the case list.
 - Counter coverage, the bounded case-store page, the bounded lineage sample, and any
   truncation remain visible. A chart must never imply that partial evidence is complete.
-- A successful payload may replay one short left-to-right matte sweep clipped to the
-  conserved ribbons. Key it to `generated_at`, remove it under reduced motion, and use no
-  gradient, blur, glow, autonomous five-second loop, or additional animation dependency.
+- In Simple only, a successful payload may replay one short left-to-right matte sweep
+  clipped to its ribbons. Key it to `generated_at`, remove it under reduced motion, and
+  use no gradient, blur, glow, autonomous five-second loop, or additional animation
+  dependency. Detailed retains Testing's static presentation.
 
 The implementation layers, public design-system exports, source-asset rules, and
 machine-readable catalog contract are documented in the
