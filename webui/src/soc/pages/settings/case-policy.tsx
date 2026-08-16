@@ -16,9 +16,9 @@
  * `ConfirmDialog`. Every operator-authored value renders as plain text (#9).
  */
 import * as React from 'react';
-import { AlertTriangle, Ban, Gauge, Timer } from 'lucide-react';
+import { AlertTriangle, Ban, Gauge, Gavel, Timer } from 'lucide-react';
 
-import type { SuppressionRuleConfig } from '@/lib/types';
+import type { AnalystRulePolicyConfig, SuppressionRuleConfig } from '@/lib/types';
 
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import { SettingsGrid, SettingsCard, type SettingsTOCItem } from '@/soc/components/SettingsGrid';
@@ -26,6 +26,7 @@ import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import {
   SlaPolicyEditor,
   PriorityMatrixEditor,
+  AnalystPolicyBuilder,
   SuppressionRuleBuilder,
 } from '@/soc/components/rules';
 
@@ -35,10 +36,16 @@ const CASE_POLICY_TOC: SettingsTOCItem[] = [
   { anchor: 'case-policy-sla', label: 'SLA targets', icon: Timer },
   { anchor: 'case-policy-priority', label: 'Priority matrix', icon: Gauge },
   { anchor: 'case-policy-suppression', label: 'Suppression', icon: Ban },
+  { anchor: 'case-policy-declarations', label: 'Declared benign', icon: Gavel },
 ];
 
 export function CasePolicySection({ prefs, update }: SecProps) {
   const rules = prefs.suppression_rules ?? [];
+  const declarations = prefs.analyst_rule_policies ?? [];
+  const [pendingDeclaration, setPendingDeclaration] = React.useState<{
+    index: number;
+    policy: AnalystRulePolicyConfig;
+  } | null>(null);
   // A LIVE suppression rule silently hides events, so its delete is gated. The builder
   // calls `onRequestRemove` for a live rule; we hold the pending target for the dialog.
   const [pendingRemove, setPendingRemove] = React.useState<{
@@ -100,6 +107,20 @@ export function CasePolicySection({ prefs, update }: SecProps) {
             onRequestRemove={(index, rule) => setPendingRemove({ index, rule })}
           />
         </SettingsCard>
+
+        <SettingsCard
+          anchor="case-policy-declarations"
+          title="Declared benign (analyst rule policies)"
+          icon={Gavel}
+          description="Operator statements that a detection is benign in THIS environment. A matching cluster is closed with no model call — the case stays visible, audited and reopenable, unlike a suppression rule, which drops the event before a case exists. Use this where a rule's alerts cannot carry the evidence an investigation needs."
+          wide="full"
+        >
+          <AnalystPolicyBuilder
+            policies={declarations}
+            onChange={(next) => update({ analyst_rule_policies: next })}
+            onRequestRemove={(index, policy) => setPendingDeclaration({ index, policy })}
+          />
+        </SettingsCard>
       </SettingsGrid>
 
       {/* Destructive-delete gate for a LIVE suppression rule (parity with the rest of the
@@ -122,6 +143,33 @@ export function CasePolicySection({ prefs, update }: SecProps) {
             update({ suppression_rules: rules.filter((_, i) => i !== pendingRemove.index) });
           }
           setPendingRemove(null);
+        }}
+      />
+
+      {/* Same gate for a LIVE declaration. Deleting one RESTORES investigation for that
+          rule, so the copy states the consequence in the direction that matters. */}
+      <ConfirmDialog
+        open={pendingDeclaration !== null}
+        onOpenChange={(o) => {
+          if (!o) setPendingDeclaration(null);
+        }}
+        destructive
+        title="Delete this declaration?"
+        description={
+          pendingDeclaration
+            ? `This live declaration (${pendingDeclaration.policy.rule_id || 'rule'}) currently closes matching cases without a model call. Deleting it means those cases are investigated normally again. Cases it already closed stay closed and remain reopenable. This writes configuration only — it never changes a case.`
+            : ''
+        }
+        confirmLabel="Delete declaration"
+        onConfirm={() => {
+          if (pendingDeclaration) {
+            update({
+              analyst_rule_policies: declarations.filter(
+                (_, i) => i !== pendingDeclaration.index,
+              ),
+            });
+          }
+          setPendingDeclaration(null);
         }}
       />
     </SectionShell>

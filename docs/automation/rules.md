@@ -61,10 +61,25 @@ against, so it routes to a human every time — no matter how many prior cases o
 rule an analyst has confirmed benign. Confirming more of them cannot change that.
 
 An analyst rule policy is an explicit statement that a detection is benign in your
-environment. Open **Settings → Case policy**, add a policy naming the detection rule, and
-give a reason. A cluster whose detections are all declared is then closed automatically
+environment. Open **Settings → Case policy → Declared benign**, add a declaration naming
+the detection rule, and give a reason. A cluster whose detections are all declared is then closed automatically
 with the `false_positive` disposition and the `analyst_policy` decision owner, without a
 model call.
+
+**Understand the trade before you enable one.** A declaration closes matching alerts
+**with no model call and no human**. If a genuine attack fires a declared rule, that case
+closes silently. Use a declaration only where the alerts genuinely cannot carry the
+evidence an investigation needs — where they can, enrich the source instead.
+
+Three bounds keep that decision reversible:
+
+- **Risk ceiling.** Set an optional maximum risk score. A cluster scoring above it is
+  investigated normally, so an unusual instance of a declared rule is not closed unseen.
+- **Scope and expiry.** Limit a declaration to one source, and give it an expiry, so it
+  cannot outlive the situation that justified it.
+- **Per-case override.** Reinvestigating a case always overrides the declaration for that
+  case, and it needs only `cases:reinvestigate` — an analyst who suspects a declared-benign
+  case is real never needs `rules:manage` to act on it.
 
 What it does and does not do:
 
@@ -72,6 +87,8 @@ What it does and does not do:
   discarded before it exists (that is what a suppression rule does instead);
 - every detection on a cluster must be declared before it closes, so a cluster that also
   fired an undeclared detection is investigated normally;
+- it never overrides a person. A case an analyst has acted on — reopened, escalated, held,
+  acknowledged — or one the agent has already investigated is left alone;
 - it applies to new clusters only; close cases that are already open from the case queue;
 - policy closes are excluded from false-positive rate, automation rate, auto-close
   health, the noise-reduction funnel, and improvement evidence, and are never counted as

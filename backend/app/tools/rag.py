@@ -115,9 +115,16 @@ TRUST_MODEL_UNCONFIRMED = "model_unconfirmed"
 # read only happens at all when the tier is switched on.
 _UNCONFIRMED_SCAN_CAP = 2000
 
-# The Elasticsearch vector store reads its corpus through one bounded document scan.
-# A corpus AT that ceiling may have been cut short, so every count derived from it is
-# reported as a lower bound rather than a confident total.
+# The Elasticsearch vector store reads its corpus through ONE bounded document scan
+# (``ESVectorStore._scan_all`` issues a single ``size: 10000`` page). A corpus at that
+# ceiling may have been cut short, so every count derived from it is reported as a lower
+# bound rather than a confident total.
+#
+# This ceiling is a property of THAT backend, not of the corpus. The in-memory and SQL
+# stores materialise every row, so applying it to them would report a perfectly complete
+# read of a large corpus as truncated — and, because a truncated read now withholds both
+# precedent promotion and the futility report, would silently disable the feature on a
+# PostgreSQL deployment that simply grew past 10k chunks.
 _CORPUS_SCAN_TRUNCATION_HINT = 10000
 
 # Bound the one-time rule-identity re-tag of pre-existing precedent so a large legacy
@@ -1507,13 +1514,27 @@ class RagService:
         from a truncated read is a lower bound rather than a confident total.
         """
         chunks = await self._store.list_all_chunks()
-        truncated = len(chunks) >= _CORPUS_SCAN_TRUNCATION_HINT
+        truncated = self._read_may_be_truncated(len(chunks))
         rows = [
             dict(chunk.metadata or {})
             for chunk in chunks
             if chunk.source == RESOLVED_CASE_SOURCE
         ]
         return rows, truncated
+
+    def _read_may_be_truncated(self, chunk_count: int) -> bool:
+        """Whether a whole-corpus read could have been cut short by the BACKEND.
+
+        Only the Elasticsearch store has a scan ceiling; the in-memory and SQL stores
+        return every row. Reporting a complete PostgreSQL read as truncated would be a
+        false unknown — and since a truncated read withholds promotion and the futility
+        report, it would quietly disable the feature on a healthy large deployment.
+        """
+        from .vectorstore import ESVectorStore  # local: avoids an import cycle at load
+
+        if not isinstance(self._store, ESVectorStore):
+            return False
+        return chunk_count >= _CORPUS_SCAN_TRUNCATION_HINT
 
     async def precedent_distribution(self, *, force: bool = False) -> PrecedentDistribution:
         """Analyst-confirmed precedent, counted per rule identity. Never raises.

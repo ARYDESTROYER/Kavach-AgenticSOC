@@ -58,8 +58,9 @@ The projection window is bounded. It is filled round-robin across rule identitie
 bulk confirmation on one rule cannot evict every other rule's precedent from the corpus.
 Set `precedent.window.stratify_by_rule` to `false` to restore a flat newest-first window.
 
-Retrieval surfaces resolved cases as fenced context. Optional precedent promotion
-additionally reports, as a computed count, how many analyst-confirmed benign and
+Retrieval surfaces resolved cases as fenced context. Enable optional precedent promotion
+under **Settings → Knowledge & threat context → Analyst-confirmed precedent promotion**;
+it additionally reports, as a computed count, how many analyst-confirmed benign and
 malicious outcomes exist for the exact rule identity under investigation. That count is
 evidence given to the investigator; the verdict remains the model's and the close
 decision remains the deterministic policy's. Promotion requires an exact rule-identity

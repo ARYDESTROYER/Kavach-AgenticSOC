@@ -1810,6 +1810,11 @@ class AnalystRulePolicy(BaseModel):
     # Empty/None means every source.
     source_id: str | None = None
     enabled: bool = True
+    # Optional risk ceiling. ``decide()`` bounds FALSE_POSITIVE auto-close with
+    # ``max_risk_score``; without an equivalent here a declared rule closes at ANY
+    # computed risk. ``None`` keeps the unbounded behaviour; a number lets an operator
+    # say "benign here, but investigate an unusually high-scoring instance".
+    max_risk_score: float | None = Field(default=None, ge=0.0, le=100.0)
     created_by: str = ""
     created_at: str = Field(default_factory=iso_now)
     expires_at: datetime | None = None

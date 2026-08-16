@@ -4607,6 +4607,7 @@ export interface Preferences {
   /** Operator field==value suppression rules (matching events are dropped). */
   suppression_rules?: SuppressionRuleConfig[];
   analyst_rule_policies?: AnalystRulePolicyConfig[];
+  precedent?: PrecedentConfig;
   /** Per-priority SLA response/resolution policy (advisory, #3-safe). */
   sla?: SlaPolicy;
   /** Impact × Urgency → Priority matrix (advisory, #3-safe). */
@@ -4637,6 +4638,31 @@ export interface Preferences {
  * `decision_by='analyst_policy'`. Unlike `SuppressionRuleConfig` (a field==value event
  * DROP) the case stays visible, audited and reopenable.
  */
+/** `Preferences.precedent.promotion` — the analyst-precedent promotion opt-in. */
+export interface PrecedentPromotionConfig {
+  enabled?: boolean;
+  min_confirmed?: number;
+  min_similarity?: number;
+  max_conflicting?: number;
+  [key: string]: unknown;
+}
+
+/** `Preferences.precedent.window` — how the bounded projection window is filled. */
+export interface PrecedentWindowConfig {
+  size?: number;
+  stratify_by_rule?: boolean;
+  [key: string]: unknown;
+}
+
+/** `Preferences.precedent` — promotion, window fairness and futility reporting. */
+export interface PrecedentConfig {
+  promotion?: PrecedentPromotionConfig;
+  window?: PrecedentWindowConfig;
+  futility?: Record<string, unknown>;
+  distribution_ttl_seconds?: number;
+  [key: string]: unknown;
+}
+
 export interface AnalystRulePolicyConfig {
   id: string;
   rule_id: string;
@@ -4644,6 +4670,8 @@ export interface AnalystRulePolicyConfig {
   /** Optional scope: when set, the declaration applies only to that source instance. */
   source_id?: string | null;
   enabled?: boolean;
+  /** Optional risk ceiling — above it the case is investigated instead of closed. */
+  max_risk_score?: number | null;
   created_by?: string;
   created_at?: string;
   expires_at?: string | null;
