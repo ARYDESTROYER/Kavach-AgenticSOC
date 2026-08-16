@@ -108,6 +108,33 @@ status and console errors. Confirm the web and backend artifacts are both versio
 `0.1.13`. Clear only browser cache/site data needed to rule out stale assets; do not
 factory-reset application state for a presentation problem.
 
+## A rule keeps routing to a human no matter how many cases we confirm
+
+Check **Analytics → Metrics → Effectiveness → Precedent by rule**. If the rule is listed
+as not helping, this is expected and confirming more cases will not change it.
+
+The cause is evidence sufficiency, not precedent. If the rule's alerts carry no request
+payload, URI, method, response code, or execution context, the investigation has nothing
+to verify the individual instance against, so it correctly declines. Precedent describes
+the rule's history; it cannot supply the missing per-case evidence.
+
+Two remedies work, in this order:
+
+1. **Enrich the source** so the alerts carry the fields an investigation needs. This is
+   the real fix and it improves every future case of that rule.
+2. **Declare the detection benign** with an [analyst rule policy](../automation/rules.md)
+   if the alerts genuinely cannot carry that evidence. Matching clusters then close
+   deterministically with no model call, and stay visible, audited, and reopenable.
+
+Optionally enable analyst-confirmed precedent promotion so a unanimous confirmed history
+for the exact rule is supplied to the investigator as a computed count. It is evidence,
+not authority, so it changes what the model is told but never who decides.
+
+If the rule is *not* listed and its precedent count looks low, confirm the corpus is
+healthy first: an unreadable corpus reports "Unknown" rather than zero, and precedent
+recorded before rule identity was captured is reported as unattributed until the next
+retrieval projection re-tags it.
+
 ## Escalation package
 
 Provide sanitized build info, deployment shape, state backend, failing endpoint/status,

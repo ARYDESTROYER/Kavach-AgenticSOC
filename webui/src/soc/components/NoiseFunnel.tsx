@@ -85,6 +85,9 @@ const OUTCOME_TOKEN: Record<string, string> = {
   auto_cleared: VERDICT_COLOR.false_positive, // blue-grey (a cleared false positive)
   escalated: VERDICT_COLOR.suspicious, // amber-orange
   closed: 'success', // green — a human drove it to a terminal state
+  // An operator's rule-level declaration closed it deterministically, with no model
+  // call and no human case work. Its own colour so it never reads as either.
+  policy_closed: VERDICT_COLOR.false_positive,
   needs_human: VERDICT_COLOR.needs_human, // warning (back-compat; no longer a spine chip)
   true_positive: VERDICT_COLOR.true_positive, // critical-red (back-compat)
 };
@@ -100,6 +103,7 @@ const STAGE_LABEL: Record<string, string> = {
   auto_cleared: 'Auto-cleared',
   escalated: 'Escalated',
   closed: 'Closed by human',
+  policy_closed: 'Closed by analyst policy',
   needs_human: 'Needs human',
   true_positive: 'True positive',
 };
@@ -114,6 +118,7 @@ const DASHBOARD_STAGE_LABEL: Record<string, string> = {
   auto_cleared: 'Auto-cleared by AI',
   escalated: 'Escalated',
   closed: 'Closed by human',
+  policy_closed: 'Closed by analyst policy',
 };
 
 /** One-line "what this stage means" copy for the per-stage hover card (plain text). */
@@ -135,13 +140,16 @@ const STAGE_MEANING: Record<string, string> = {
     'Every case not false-positive auto-cleared by the agent, including analyst-owned, ' +
     'needs-human, and confirmed residual cases.',
   closed: 'Cases a human analyst drove to a terminal state (resolved / closed).',
+  policy_closed:
+    'Cases closed by an operator declaration that the detection is benign here — no ' +
+    'model was called and no analyst worked the case. Excluded from agent performance.',
   needs_human: 'Cases routed to a human for the final decision.',
   true_positive: 'Cases confirmed as real, actionable threats.',
 };
 
 /** The terminal case views rendered after `cases` (AI-cleared, escalated, human-closed).
  *  `closed` overlaps `escalated`; it is not a third partition. */
-const OUTCOME_KEYS = ['auto_cleared', 'escalated', 'closed'];
+const OUTCOME_KEYS = ['auto_cleared', 'escalated', 'closed', 'policy_closed'];
 
 /** Popover help copy (>80 chars → focusable Popover, not a bare Tooltip). */
 export const NOISE_FUNNEL_HELP_TEXT =
@@ -215,6 +223,10 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
       : null;
 
   // Full flow from ingested, or case-only when the counters are still warming up.
+  // Rendered ONLY when an operator has actually declared something, so a deployment
+  // with no analyst rule policies keeps the exact previous stage list.
+  const policyKeys = (byKey.get('policy_closed')?.total ?? 0) > 0 ? ['policy_closed'] : [];
+
   const visibleKeys = countersOk
     ? [
         'ingested',
@@ -224,8 +236,9 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
         'auto_cleared',
         'escalated',
         'closed',
+        ...policyKeys,
       ]
-    : ['cases', 'auto_cleared', 'escalated', 'closed'];
+    : ['cases', 'auto_cleared', 'escalated', 'closed', ...policyKeys];
 
   const topKey = countersOk ? 'ingested' : 'cases';
   const topTotal = byKey.get(topKey)?.total ?? casesTotal;

@@ -51,6 +51,38 @@ Each meaningful edit appends an immutable version record. The history is newest
 first and includes the action and saved configuration. Rollback restores a selected
 configuration by appending a new rollback version; it never deletes earlier history.
 
-After rollback, preview again and monitor case and noise metrics. See
-[Tuning and baselines](tuning-baselines.md) for generated recommendations and
+After rollback, preview again and monitor case and noise metrics.
+
+## Analyst rule policies
+
+Some detections cannot be resolved by review. If a rule's alerts carry no request,
+payload, or execution context, an investigation has nothing to verify a given instance
+against, so it routes to a human every time — no matter how many prior cases of that
+rule an analyst has confirmed benign. Confirming more of them cannot change that.
+
+An analyst rule policy is an explicit statement that a detection is benign in your
+environment. Open **Settings → Case policy**, add a policy naming the detection rule, and
+give a reason. A cluster whose detections are all declared is then closed automatically
+with the `false_positive` disposition and the `analyst_policy` decision owner, without a
+model call.
+
+What it does and does not do:
+
+- the case is still created, still audited, and still reopenable — it is closed, not
+  discarded before it exists (that is what a suppression rule does instead);
+- every detection on a cluster must be declared before it closes, so a cluster that also
+  fired an undeclared detection is investigated normally;
+- it applies to new clusters only; close cases that are already open from the case queue;
+- policy closes are excluded from false-positive rate, automation rate, auto-close
+  health, the noise-reduction funnel, and improvement evidence, and are never counted as
+  analyst-confirmed outcomes; and
+- revoke by disabling, letting it expire, or deleting it — the next match stops
+  immediately, and cases already closed stay closed.
+
+Prefer a policy over repeated confirmation when the alerts genuinely cannot carry the
+evidence an investigation needs. Prefer enriching the source when they could. The
+diagnostics panel names the rules where confirmation is not helping — see
+[Analytics](../analyst/analytics.md).
+
+See [Tuning and baselines](tuning-baselines.md) for generated recommendations and
 [Playbooks and approvals](playbooks-approvals.md) for actions requiring review.

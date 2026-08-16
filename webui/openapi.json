@@ -633,6 +633,17 @@
             "title": "Agent Persona",
             "type": "string"
           },
+          "analyst_policy": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analyst Policy"
+          },
           "app_version": {
             "anyOf": [
               {
@@ -890,6 +901,17 @@
             "default": "",
             "title": "Playbook Id",
             "type": "string"
+          },
+          "precedent_signal": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precedent Signal"
           },
           "priority_level": {
             "anyOf": [
@@ -2140,7 +2162,8 @@
         "enum": [
           "agent",
           "analyst",
-          "system"
+          "system",
+          "analyst_policy"
         ],
         "title": "DecisionBy",
         "type": "string"
@@ -6650,18 +6673,54 @@
         "title": "VerdictAutoClose",
         "type": "object"
       },
-      "_EnabledIn": {
-        "description": "Enable/disable a rule (a lifecycle toggle body).",
+      "_PolicyIn": {
+        "description": "The writable shape. ``id`` comes from the path; provenance is set server-side.",
         "properties": {
           "enabled": {
+            "default": true,
             "title": "Enabled",
             "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          },
+          "rule_id": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
           }
         },
         "required": [
-          "enabled"
+          "rule_id"
         ],
-        "title": "_EnabledIn",
+        "title": "_PolicyIn",
         "type": "object"
       },
       "_PreviewDecisionIn": {
@@ -6789,6 +6848,34 @@
           }
         },
         "title": "_PreviewIn",
+        "type": "object"
+      },
+      "app__api__routes_analyst_policy___EnabledIn": {
+        "description": "Enable/disable a declaration.\n\nTyped on purpose: a raw ``dict`` + ``bool(body.get(\"enabled\"))`` coerces the JSON\nSTRING ``\"false\"`` to True, so a client that sends ``{\"enabled\": \"false\"}`` would be\ntold the declaration was revoked while it kept closing cases. A missing field would\nsilently disable instead of failing.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "_EnabledIn",
+        "type": "object"
+      },
+      "app__api__routes_rules___EnabledIn": {
+        "description": "Enable/disable a rule (a lifecycle toggle body).",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "_EnabledIn",
         "type": "object"
       }
     }
@@ -14074,6 +14161,167 @@
         "summary": "List Rules"
       }
     },
+    "/api/rules/analyst-policies": {
+      "get": {
+        "description": "Every operator declaration, with a derived ``live`` flag per row.",
+        "operationId": "list_analyst_policies_api_rules_analyst_policies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response List Analyst Policies Api Rules Analyst Policies Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Analyst Policies"
+      }
+    },
+    "/api/rules/analyst-policies/{policy_id}": {
+      "delete": {
+        "description": "Delete a declaration. Cases it already closed stay closed (and reopenable).",
+        "operationId": "delete_analyst_policy_api_rules_analyst_policies__policy_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "policy_id",
+            "required": true,
+            "schema": {
+              "title": "Policy Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Analyst Policy Api Rules Analyst Policies  Policy Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Analyst Policy"
+      },
+      "put": {
+        "description": "Create or replace ONE declaration.\n\n``policy_id`` of ``new`` mints a server-side id, so a client never has to invent\none. The rule id is normalised with the SAME function the tuner and precedent\nmatcher use, so \"the same rule\" means one thing everywhere.",
+        "operationId": "upsert_analyst_policy_api_rules_analyst_policies__policy_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "policy_id",
+            "required": true,
+            "schema": {
+              "title": "Policy Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PolicyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Upsert Analyst Policy Api Rules Analyst Policies  Policy Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Analyst Policy"
+      }
+    },
+    "/api/rules/analyst-policies/{policy_id}/enabled": {
+      "post": {
+        "description": "Revoke (or restore) a declaration without losing it or its provenance.",
+        "operationId": "set_analyst_policy_enabled_api_rules_analyst_policies__policy_id__enabled_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "policy_id",
+            "required": true,
+            "schema": {
+              "title": "Policy Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__api__routes_analyst_policy___EnabledIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Set Analyst Policy Enabled Api Rules Analyst Policies  Policy Id  Enabled Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Analyst Policy Enabled"
+      }
+    },
     "/api/rules/case-automation/{rule_id}": {
       "delete": {
         "description": "Delete ONE case-automation rule (deep-merge). 404 for an unknown id. Audited +\nversioned with the pre-delete snapshot (#2).",
@@ -14183,7 +14431,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/_EnabledIn"
+                "$ref": "#/components/schemas/app__api__routes_rules___EnabledIn"
               }
             }
           },
@@ -14414,7 +14662,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/_EnabledIn"
+                "$ref": "#/components/schemas/app__api__routes_rules___EnabledIn"
               }
             }
           },

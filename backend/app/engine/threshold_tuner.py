@@ -73,6 +73,7 @@ from ..stores.tuning import TuningRecord, TuningStore
 from ..tools.rag import PRECEDENT_RATIFICATION_EVENT
 from ..utils import now_utc
 from .analyst_outcomes import analyst_confirmed_outcome as _analyst_outcome
+from .precedent import is_policy_closed as _is_policy_closed
 
 logger = logging.getLogger("tlsoc.engine.threshold_tuner")
 
@@ -325,6 +326,18 @@ def _accumulate_rule_stats(cases: list[Case], *, ewma_alpha: float, z: float) ->
     per_rule_days: dict[str, dict[str, int]] = {}
     for case in cases:
         outcome, evidence_source = _analyst_outcome(case)
+        # An UNGRADED case closed by an operator's analyst RULE POLICY never traversed
+        # detection tuning: no correlation threshold decided it, no model judged it, and
+        # no analyst graded it. Counting it as observed volume would inflate ``observed``
+        # while contributing nothing to the FP/TP denominator, which is exactly the
+        # shape that trips the "insufficient analyst evidence — please confirm more
+        # cases" proposal for a rule the operator has already answered.
+        #
+        # A policy close an analyst LATER GRADED is different: that grade is independent
+        # ground truth about the alert, and discarding it would throw away exactly the
+        # evidence the tuner keeps asking for.
+        if outcome is None and _is_policy_closed(case):
+            continue
         ratified = outcome is None and _is_bulk_ratified(case)
         closed = _case_closed_at(case)
         day_key = closed.strftime("%Y-%m-%d") if closed else "unknown"

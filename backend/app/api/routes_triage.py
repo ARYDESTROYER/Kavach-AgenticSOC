@@ -32,7 +32,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ..config import AutoClosePolicy
-from ..constants import ActionType, CaseStatus, Verdict
+from ..constants import ActionType, CaseStatus, DecisionBy, Verdict
 from ..engine.case_manager import decide
 from ..engine.priority import derive_triage
 from ..models import (
@@ -517,8 +517,18 @@ def _decide_headline(pr: dict[str, Any]) -> str:
     if pr.get("escalate"):
         return "Escalated by policy"
     status = str(pr.get("decision_status") or "")
+    decided_by = str(pr.get("decision_by") or "")
     if status in (CaseStatus.RESOLVED.value, "closed", "resolved"):
-        return "Auto-closed by policy" if str(pr.get("decision_by")) != "human" else "Closed"
+        # Compare against the real ``DecisionBy`` vocabulary. The previous literal
+        # "human" matched no value the enum has ever produced, so EVERY close read as
+        # "Auto-closed by policy" — including an analyst's own close.
+        if decided_by == DecisionBy.ANALYST_POLICY.value:
+            return "Closed by analyst policy"
+        if decided_by == DecisionBy.ANALYST.value:
+            return "Closed by analyst"
+        if decided_by == DecisionBy.AGENT.value:
+            return "Auto-closed by policy"
+        return "Closed"
     if status in (CaseStatus.NEEDS_HUMAN.value, "needs_human", CaseStatus.ON_HOLD.value):
         return "Held for human review"
     return _humanize(status).capitalize() or "Decision recorded"

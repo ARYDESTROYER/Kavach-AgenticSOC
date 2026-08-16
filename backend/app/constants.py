@@ -344,6 +344,17 @@ class DecisionBy(str, Enum):
     AGENT = "agent"          # FP auto-close only, under strict conditions
     ANALYST = "analyst"      # human action
     SYSTEM = "system"        # deterministic routing (e.g. fail-to-human)
+    # An operator's explicit, audited, revocable per-rule declaration ("this detection
+    # is benign in my estate"), applied deterministically with NO LLM call. It is
+    # deliberately its OWN owner rather than a flavour of the three above:
+    #   * not ``agent``   — no model produced it, so it must never count as agent
+    #                       performance (automation rate, auto-close health, noise
+    #                       funnel, agent-improvement evidence);
+    #   * not ``analyst`` — ``engine.analyst_outcomes.analyst_confirmed_outcome`` would
+    #                       then read it as INDEPENDENT ground truth and the tuner and
+    #                       precedent corpus would train on the automation's own output;
+    #   * not ``system``  — it is an operator decision, not deterministic routing.
+    ANALYST_POLICY = "analyst_policy"
 
 
 class Role(str, Enum):

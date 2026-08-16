@@ -301,7 +301,8 @@ def test_build_noise_reduction_contract_shape() -> None:
     assert rep["window_hours"] == 0
     assert rep["bands"] == list(SEVERITY_BANDS)
     assert [s["key"] for s in rep["stages"]] == [
-        "ingested", "clustered", "cases", "auto_cleared", "escalated", "needs_human", "closed",
+        "ingested", "clustered", "cases", "auto_cleared", "escalated", "needs_human",
+        "closed", "policy_closed",
     ]
     det = {s["key"]: s["deterministic"] for s in rep["stages"]}
     assert det["cases"] is False and det["ingested"] is True and det["needs_human"] is True

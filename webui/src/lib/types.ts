@@ -2304,6 +2304,14 @@ export interface Case {
   /** Append-only lifecycle transition trail (from→to, by, when, reason). */
   status_history?: StatusHistoryEntry[];
   decision_by?: string;
+  /**
+   * The deterministic rule-identity precedent fact this investigation was given, and
+   * why it did or did not qualify. `null`/absent means the run predates the seam or
+   * never reached the investigator — never "no precedent exists".
+   */
+  precedent_signal?: PrecedentSignalRecord | null;
+  /** The operator declaration that closed this case with no model call, when one did. */
+  analyst_policy?: AnalystPolicyRecord | null;
   title?: string;
   summary?: string;
   token_cost?: number;
@@ -3550,6 +3558,32 @@ export interface PrecedentGroundTruth {
   fetched: number;
 }
 
+/**
+ * The per-case precedent fact. `status` is one of `qualified` | `insufficient` |
+ * `conflicting` | `not_retrieved` | `unavailable` | `disabled` | `not_applicable`.
+ */
+export interface PrecedentSignalRecord {
+  status: string;
+  reason: string;
+  qualifies: boolean;
+  rule_identity: string;
+  rule_ids: string[];
+  confirmed_false_positive: number;
+  confirmed_true_positive: number;
+  retrieved_matching: number;
+  top_score: number | null;
+  min_confirmed: number;
+  min_similarity: number;
+  truncated: boolean;
+}
+
+/** The operator declaration(s) that closed a case deterministically, with no LLM call. */
+export interface AnalystPolicyRecord {
+  policy_ids: string[];
+  rule_ids: string[];
+  reasons: string[];
+}
+
 /** Precedent-corpus health: size, per-source counts, and the explicit starvation flag. */
 export interface PrecedentCorpusHealth {
   /** The corpus itself could be read at all. */
@@ -3579,6 +3613,72 @@ export interface PrecedentCorpusHealth {
   documents_by_source: Record<string, number>;
   projection: DiagnosticsProjection;
   ground_truth: PrecedentGroundTruth;
+}
+
+/** Analyst-confirmed precedent held for ONE rule identity (the canonical rule set). */
+export interface RulePrecedentCounts {
+  rule_identity: string;
+  rule_ids: string[];
+  false_positive: number;
+  true_positive: number;
+  total: number;
+  unanimous_false_positive: boolean;
+}
+
+/** How analyst-confirmed precedent is spread across rule identities. */
+export interface PrecedentDistribution {
+  /** False ONLY when the corpus could not be read — an empty map is a real zero. */
+  available: boolean;
+  reason: string;
+  /** The corpus read hit its bound, so every count is a LOWER bound. */
+  truncated: boolean;
+  /** The operator turned the precedent source OFF — configured, not unmeasurable. */
+  disabled: boolean;
+  scanned_chunks: number;
+  rule_identities: number;
+  /** Precedent projected before rule identity existed: retrievable, not rule-matchable. */
+  unattributed_documents: number;
+  total_confirmed: number;
+  returned: number;
+  by_rule: RulePrecedentCounts[];
+}
+
+/** A rule whose precedent is abundant but is NOT changing the outcome. */
+export interface FutileRule {
+  rule_identity: string;
+  rule_ids: string[];
+  rules: string;
+  cases: number;
+  measurable_cases: number;
+  /** Cases that never reached a decision — excluded from the auto-close rate. */
+  undecided: number;
+  routed_to_human: number;
+  auto_closed: number;
+  analyst_closed: number;
+  /** Cases a human had to look at: routed to one, or closed by one. */
+  human_involved: number;
+  policy_closed: number;
+  auto_close_rate: number | null;
+  analyst_confirmed_benign: number;
+  analyst_confirmed_malicious: number;
+  detail: string;
+  remediation: string;
+}
+
+/** Is the precedent an operator has built actually changing anything? */
+export interface PrecedentEffectiveness {
+  promotion_enabled: boolean;
+  promotion_min_confirmed: number;
+  window_size: number;
+  window_stratified: boolean;
+  distribution: PrecedentDistribution;
+  /** True only when the futility report actually RAN. An empty `futile_rules` with
+   *  this false means "not measured", never "measured, nothing found". */
+  futility_measured: boolean;
+  /** Why it did not run, when it did not. */
+  futility_reason: string;
+  futile_rules: FutileRule[];
+  futile_rule_count: number;
 }
 
 /** The in-place SQL schema-migration outcome. `failed` breaks strict audit writes. */
@@ -3658,6 +3758,8 @@ export interface DiagnosticsHealth {
   demo_active: boolean;
   state_backend: string;
   precedent_corpus: PrecedentCorpusHealth;
+  /** Per-rule precedent distribution + the "more confirmations will not help" finding. */
+  precedent_effectiveness?: PrecedentEffectiveness;
   schema_migration: SchemaMigrationHealth;
   auto_close: AutoCloseHealth;
   /** POSITIVELY DETECTED conditions. */
@@ -4504,6 +4606,7 @@ export interface Preferences {
   asset_networks?: AssetNetwork[];
   /** Operator field==value suppression rules (matching events are dropped). */
   suppression_rules?: SuppressionRuleConfig[];
+  analyst_rule_policies?: AnalystRulePolicyConfig[];
   /** Per-priority SLA response/resolution policy (advisory, #3-safe). */
   sla?: SlaPolicy;
   /** Impact × Urgency → Priority matrix (advisory, #3-safe). */
@@ -4528,6 +4631,27 @@ export interface Preferences {
  * reason are additive provenance for agent-PROPOSED rules. `field`/`value`/`reason`/
  * `rationale` are operator/agent text → render as plain text (#9).
  */
+/**
+ * An operator's explicit, audited, revocable declaration that a detection is benign in
+ * THIS estate. Matching clusters close deterministically with no LLM call, as
+ * `decision_by='analyst_policy'`. Unlike `SuppressionRuleConfig` (a field==value event
+ * DROP) the case stays visible, audited and reopenable.
+ */
+export interface AnalystRulePolicyConfig {
+  id: string;
+  rule_id: string;
+  reason?: string;
+  /** Optional scope: when set, the declaration applies only to that source instance. */
+  source_id?: string | null;
+  enabled?: boolean;
+  created_by?: string;
+  created_at?: string;
+  expires_at?: string | null;
+  /** Derived server-side: enabled AND not expired. */
+  live?: boolean;
+  [key: string]: unknown;
+}
+
 export interface SuppressionRuleConfig {
   field: string;
   value: string;

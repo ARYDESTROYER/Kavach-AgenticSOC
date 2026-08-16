@@ -21,9 +21,18 @@ from ..cache import Cache
 from ..config import Preferences, Secrets
 from ..connectors.base import PullConnector
 from ..connectors.elastic import ElasticConnector
-from ..constants import ActionType, CaseStatus, DecisionBy, EntityType, SourceSurface, Verdict
+from ..constants import (
+    ActionType,
+    CaseStatus,
+    DecisionBy,
+    Disposition,
+    EntityType,
+    SourceSurface,
+    Verdict,
+)
 from ..engine.case_manager import CaseManager
 from ..engine.cost_gate import CaseBudget
+from ..engine.precedent import match_analyst_rule_policy
 from ..engine.risk import compute_risk
 from ..engine.signatures import find_open_case_for_cluster
 from ..es.base import BaseESClient
@@ -482,6 +491,17 @@ class InvestigationPipeline:
             if existing:
                 case_id = existing.case_id
 
+            # --- Operator analyst rule policy (deterministic, $0, no LLM) ----------
+            # An explicit, audited, revocable operator declaration that this detection
+            # is benign in THEIR estate. Checked BEFORE any model call precisely
+            # because there is nothing to ask a model: the operator has already
+            # answered at the rule level. See ``_close_by_analyst_policy``.
+            policy_case = await self._close_by_analyst_policy(
+                cluster, source_surface, prefs, case_id=case_id, existing=existing
+            )
+            if policy_case is not None:
+                return policy_case
+
             # --- P1: case/verdict stability ---
             # An already-investigated OPEN case (verdict is not None) with NO material
             # change (no new member event ids) and no explicit force must be returned
@@ -731,6 +751,7 @@ class InvestigationPipeline:
                     else None
                 ),
                 retrieval_measured=retrieval_measured,
+                precedent_signal=procedure_provenance.get("precedent"),
             )
             # ``Case.token_cost`` is a rounded cumulative presentation field. Adding
             # a new raw run cost to the previously rounded value can drift by a
@@ -825,6 +846,177 @@ class InvestigationPipeline:
                     ) from persist_error
             return case
 
+    async def _close_by_analyst_policy(
+        self,
+        cluster: Cluster,
+        source_surface: SourceSurface,
+        prefs: Preferences,
+        *,
+        case_id: str,
+        existing: Case | None,
+    ) -> Case | None:
+        """Close a cluster the operator has DECLARED benign — with no LLM call at all.
+
+        Why this exists. For a detection whose alerts carry no per-case evidence, an
+        investigation can never verify that THIS instance is benign, so it correctly
+        returns NEEDS_HUMAN no matter how much analyst-confirmed history stands behind
+        the rule. Confirming more cases cannot move an evidence-sufficiency judgement,
+        so an operator needs a way to assert a RULE-LEVEL fact directly. Trying to
+        persuade a model, per case, with evidence the source never emits is slower,
+        more expensive and less honest than letting the operator say it once.
+
+        What it is NOT. It is not a new close authority layered onto ``decide()``, and
+        it never reads or influences it: this runs BEFORE any verdict exists, so there
+        is nothing for the auto-close policy to be applied to. ``verdict`` stays
+        ``None`` — a case nobody investigated must never carry a fabricated model
+        judgement — and the decision owner is the distinct
+        ``DecisionBy.ANALYST_POLICY``, which is invisible to
+        ``analyst_confirmed_outcome`` (so it can never become training evidence for the
+        automation it replaces) and excluded from every agent-performance statistic (so
+        it can never flatter the agent).
+
+        Scope, and the two things this must never do:
+
+        * **It never retro-closes an investigated case.** The declaration applies going
+          FORWARD. A cluster signature is entity-centric and deliberately excludes rule
+          ids, so a later alert carrying only a declared rule can re-enter an OPEN case
+          the agent already investigated — and rebuilding that record here would erase
+          its verdict, override the outcome ``decide()`` produced (including a
+          ``NEEDS_HUMAN`` routing, which #3 says can never be auto-closed), and delete a
+          confirmed incident from every agent-performance statistic. So a case that
+          already carries a verdict is left entirely alone; the ordinary stability /
+          re-investigation path still owns it.
+        * **It never absorbs an undeclared detection.** Coverage is checked against the
+          rule set the closed record will actually CARRY — the union of the cluster's
+          rules and any already recorded on the existing case — not just the incoming
+          cluster's. Matching on the cluster alone would let a declared-rule alert close
+          a case that also fired something the operator never declared.
+
+        Revoking (disable, expire, delete) stops the next match immediately.
+
+        Returns the closed Case, or ``None`` when no declaration covers this cluster.
+        Fail-safe: any error returns ``None``, so a broken declaration degrades to a
+        normal investigation rather than dropping the cluster.
+        """
+        # An already-investigated case is out of scope, full stop. Its verdict is the
+        # agent's recorded work and the deterministic decision that followed it.
+        if existing is not None and existing.verdict is not None:
+            return None
+        try:
+            match = match_analyst_rule_policy(
+                rule_ids=_merge_rules(existing, cluster),
+                source_id=getattr(cluster, "source_id", None),
+                policies=getattr(prefs, "analyst_rule_policies", None),
+            )
+        except Exception as exc:  # noqa: BLE001 — never drop a cluster on policy code
+            logger.warning("Analyst rule policy evaluation failed: %s", exc)
+            return None
+        if match is None:
+            return None
+
+        breakdown = compute_risk(cluster, prefs, 0.0)
+        cluster.risk_score = breakdown.total
+        cluster.risk_breakdown = breakdown
+        case_number = await self._allocate_case_number(existing, cluster, prefs)
+        now = iso_now()
+        rules = ", ".join(match.rule_ids)
+        reason = next((r for r in match.reasons if r.strip()), "")
+        rationale = (
+            f"Closed by operator analyst rule policy: {rules} is declared benign in "
+            "this environment. No investigation was run and no model was called."
+            + (f" Operator reason: {truncate(reason, 240)}" if reason else "")
+        )
+        history = list(existing.history) if existing else []
+        history.append({
+            # Deliberately NOT the ``analyst_action`` event shape: that is what
+            # ``analyst_confirmed_outcome`` reads as independent ground truth, and a
+            # policy close is automation output, not a per-case human judgement.
+            "ts": now,
+            "event": "analyst_policy",
+            "action": "close_false_positive",
+            "policy_ids": list(match.policy_ids),
+            "rule_ids": list(match.rule_ids),
+            "rationale": rationale,
+        })
+        status_history = list(existing.status_history) if existing else []
+        prev_status = existing.status if existing else None
+        if prev_status != CaseStatus.CLOSED:
+            from ..models import StatusHistoryEntry  # local import avoids a cycle
+
+            status_history.append(StatusHistoryEntry(
+                from_status=(prev_status.value if prev_status else ""),
+                to_status=CaseStatus.CLOSED.value,
+                by=DecisionBy.ANALYST_POLICY.value,
+                at=now,
+                reason=rationale,
+            ))
+        case = Case(
+            case_id=case_id,
+            case_number=(existing.case_number if existing and existing.case_number else case_number),
+            cluster_signature=cluster.signature,
+            **originating_record_provenance(existing),
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+            source_surface=_preserved_surface(existing, source_surface),
+            origin_surface=_origin_surface(existing, source_surface),
+            rule_ids=_merge_rules(existing, cluster),
+            entity=cluster.entity,
+            source_id=_source_id(existing, cluster),
+            source_name=_source_name(existing, cluster),
+            member_event_ids=list(dict.fromkeys(
+                (existing.member_event_ids if existing else []) + cluster.member_event_ids
+            )),
+            member_event_keys=_merge_event_keys(existing, cluster),
+            first_seen_millis=_first_seen(existing, cluster),
+            risk_score=cluster.risk_score,
+            risk_breakdown=cluster.risk_breakdown,
+            # No model ran, so there is no verdict and no confidence to report.
+            verdict=None,
+            confidence=0.0,
+            status=CaseStatus.CLOSED,
+            disposition=Disposition.FALSE_POSITIVE,
+            decision_by=DecisionBy.ANALYST_POLICY,
+            status_reason=rationale,
+            recommended_action="No action required; this detection is declared benign here.",
+            reproduce_query=normalize_kql(entity_kql(cluster, prefs), prefs),
+            title=truncate(
+                f"{cluster.entity.type.value}:{cluster.entity.value} — "
+                f"{', '.join(cluster.rule_values) or 'activity'}", 200),
+            summary=truncate(rationale, 300),
+            token_cost=(existing.token_cost if existing else 0.0),
+            # Analyst-owned state on an un-investigated case survives the close: a grade
+            # recorded here is independent ground truth, and tags/comments/assignment are
+            # a person's work on the record.
+            feedback=(list(existing.feedback) if existing else []),
+            tags=(list(existing.tags) if existing else []),
+            comments=(list(existing.comments) if existing else []),
+            assignee=(existing.assignee if existing else ""),
+            history=history,
+            status_history=status_history,
+            verdict_history=(list(existing.verdict_history) if existing else []),
+            trigger_reason=_trigger(existing, cluster),
+            knowledge_used=list(existing.knowledge_used) if existing is not None else [],
+            retrieval_history_status=(
+                existing.retrieval_history_status if existing else "available"
+            ),
+            retrieval_observation_status=(
+                existing.retrieval_observation_status if existing else "not_measured"
+            ),
+            precedent_signal=(existing.precedent_signal if existing else None),
+            analyst_policy=match.as_dict(),
+        )
+        await self._cases.save(case)
+        await self._audit.record(
+            action_type=ActionType.DECISION, surface=source_surface.value,
+            actor=DecisionBy.ANALYST_POLICY.value, case_id=case_id,
+            result_summary=(
+                f"closed by analyst rule policy rules={rules} "
+                f"policies={','.join(match.policy_ids)} risk={cluster.risk_score}"
+            ),
+            tool_input={"analyst_policy": match.as_dict(), "rationale": rationale},
+        )
+        return case
+
     async def register_candidate(
         self, cluster: Cluster, source_surface: SourceSurface, prefs: Preferences,
         *, awaiting_reason: str = "",
@@ -853,6 +1045,14 @@ class InvestigationPipeline:
     ) -> Case:
         existing = await find_open_case_for_cluster(self._cases, cluster)
         case_id = existing.case_id if existing else new_id("case-")
+        # A declared-benign cluster is CLOSED here too, not parked as a candidate: the
+        # operator answered this at the rule level, so leaving it open would put work
+        # back on the queue the declaration exists to clear.
+        policy_case = await self._close_by_analyst_policy(
+            cluster, source_surface, prefs, case_id=case_id, existing=existing
+        )
+        if policy_case is not None:
+            return policy_case
         breakdown = compute_risk(cluster, prefs, 0.0)
         cluster.risk_score = breakdown.total
         cluster.risk_breakdown = breakdown
@@ -898,6 +1098,8 @@ class InvestigationPipeline:
             retrieval_observation_status=(
                 existing.retrieval_observation_status if existing else "not_measured"
             ),
+            precedent_signal=(existing.precedent_signal if existing else None),
+            analyst_policy=(existing.analyst_policy if existing else None),
         )
         await self._cases.save(case)
         await self._audit.record(
@@ -921,6 +1123,7 @@ class InvestigationPipeline:
         case_number: str = "",
         knowledge_used: list[dict[str, Any]] | None = None,
         retrieval_measured: bool = False,
+        precedent_signal: dict[str, Any] | None = None,
     ) -> Case:
         member_ids = list(dict.fromkeys(
             (existing.member_event_ids if existing else []) + cluster.member_event_ids
@@ -994,6 +1197,16 @@ class InvestigationPipeline:
             retrieval_observation_status=_retrieval_observation_status(
                 existing, retrieval_measured
             ),
+            # The precedent fact THIS run was given. A run that never reached the
+            # investigator (kill switch, router shortcut, timeout) contributes nothing,
+            # so the previous run's recorded signal is preserved rather than erased —
+            # an absent signal must never be mistaken for "no precedent exists".
+            precedent_signal=(
+                precedent_signal
+                if precedent_signal is not None
+                else (existing.precedent_signal if existing else None)
+            ),
+            analyst_policy=(existing.analyst_policy if existing else None),
         )
 
 
@@ -1118,6 +1331,8 @@ def _fail_to_human_case(
         retrieval_observation_status=_retrieval_observation_status(
             existing, retrieval_measured
         ),
+        precedent_signal=(existing.precedent_signal if existing else None),
+        analyst_policy=(existing.analyst_policy if existing else None),
     )
 
 

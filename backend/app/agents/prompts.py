@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from ..constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+from ..engine.precedent import PrecedentSignal
 from ..models import Cluster, EnrichmentResult, MemoryEntry, RagChunk
 from ..playbooks.manifest import MAX_PLAYBOOK_PROMPT_CHARS
 from ..tools.rag import TRUST_MODEL_UNCONFIRMED, is_trusted_knowledge
@@ -26,6 +27,15 @@ logger = logging.getLogger("tlsoc.agents.prompts")
 
 MEMORY_OPEN = "<<<MEMORY>>>"
 MEMORY_CLOSE = "<<<END_MEMORY>>>"
+
+# Distinct delimiters for the TRUSTED analyst-PRECEDENT summary. Everything inside is
+# COMPUTED IN CODE from the operator's own confirmed outcomes (counts, thresholds, a
+# status) — it is not retrieved prose and not attacker-influenceable, which is exactly
+# why it is a separate block from the fenced precedent CHUNKS below it. The one
+# log-derived value it carries (the rule identity) is fenced individually, and
+# ``fence()`` neutralises any forged copies of these markers.
+PRECEDENT_OPEN = "<<<PRECEDENT>>>"
+PRECEDENT_CLOSE = "<<<END_PRECEDENT>>>"
 
 # Generous safety-net cap for ``fence_block`` — a whole structured payload (a tool
 # observation, an event JSON, the standup aggregate) rather than a single leaf value.
@@ -62,6 +72,11 @@ def _neutralise_markers(value: Any) -> str:
         # the TRUSTED operator-MEMORY block (durable facts).
         .replace(MEMORY_OPEN, "<mem>")
         .replace(MEMORY_CLOSE, "</mem>")
+        # ...and forged PRECEDENT delimiters, so a log value (or a retrieved precedent
+        # chunk) can never impersonate the code-computed analyst-precedent summary and
+        # manufacture a benign history that does not exist.
+        .replace(PRECEDENT_OPEN, "<prec>")
+        .replace(PRECEDENT_CLOSE, "</prec>")
     )
 
 
@@ -163,6 +178,7 @@ def render_memory(entries: list[MemoryEntry] | None) -> str:
         text = (
             text.replace(MEMORY_OPEN, "<mem>").replace(MEMORY_CLOSE, "</mem>")
             .replace("<<<PLAYBOOK>>>", "<pb>").replace("<<<END_PLAYBOOK>>>", "</pb>")
+            .replace(PRECEDENT_OPEN, "<prec>").replace(PRECEDENT_CLOSE, "</prec>")
             .replace(UNTRUSTED_OPEN, "<fence>").replace(UNTRUSTED_CLOSE, "</fence>")
         )
         prefix = f"[{e.category}] " if e.category else ""
@@ -196,15 +212,81 @@ def render_memory(entries: list[MemoryEntry] | None) -> str:
     return "\n".join(parts)
 
 
+def render_precedent(signal: "PrecedentSignal | None") -> str:
+    """Render the QUALIFYING analyst-precedent summary as a TRUSTED, structured fact.
+
+    This is the fix for a structural dead end. For a detection whose alerts carry no
+    per-case evidence — no payload, no URI, no method, no response code — an
+    investigation can never verify that THIS instance is benign, so it correctly returns
+    NEEDS_HUMAN however many analyst-confirmed benign outcomes stand behind the rule.
+    Precedent volume cannot move an evidence-sufficiency judgement, and the four
+    retrieved snippets the model does see are prose it has no way to count.
+
+    So the count is computed in code and stated once, explicitly: N analyst-confirmed
+    benign outcomes and M analyst-confirmed malicious outcomes for THIS EXACT rule
+    identity. That is evidence PROMOTION. The verdict is still the model's, and
+    ``engine.case_manager.decide()`` still applies the operator's auto-close policy to
+    it (#3) — nothing here closes anything.
+
+    Rendered only when the operator enabled promotion AND the signal qualified, so a
+    deployment that has not opted in gets a byte-identical prompt. Every number is
+    code-computed; the only log-derived value (the rule identity) is individually
+    fenced (#9).
+    """
+    if signal is None or not getattr(signal, "qualifies", False):
+        return ""
+    rules = ", ".join(signal.rule_ids) or "n/a"
+    return "\n".join([
+        "## Analyst-confirmed precedent for this exact detection rule "
+        "(TRUSTED — computed in code from operator-confirmed outcomes, not retrieved text)",
+        PRECEDENT_OPEN,
+        f"- detection rule identity: {fence(rules, source='rule_identity')}",
+        f"- analyst-confirmed FALSE POSITIVE outcomes for this identity: "
+        f"{signal.confirmed_false_positive}",
+        f"- analyst-confirmed TRUE POSITIVE outcomes for this identity: "
+        f"{signal.confirmed_true_positive}",
+        f"- matching precedent retrieved for this case: {signal.retrieved_matching}",
+        "",
+        "The operator has reviewed these cases individually and confirmed each outcome. "
+        "This deployment has explicitly enabled precedent promotion for a history like "
+        "this one.",
+        "",
+        "How to use it: a THIN per-case evidence set is not, by itself, a reason to "
+        "return NEEDS_HUMAN here. Alerts from this detection are known to arrive without "
+        "the request/execution context an investigation would normally verify, and the "
+        "operator has already established what that pattern means in this estate. Weigh "
+        "this established history the way a senior analyst would weigh their own team's "
+        "confirmed history with the same rule.",
+        "",
+        "When you must still return NEEDS_HUMAN or TRUE_POSITIVE: whenever THIS case "
+        "shows something the precedent does not cover — an entity, destination, volume, "
+        "timing or enrichment result that contradicts the benign pattern, an indicator "
+        "of compromise, or any evidence of impact. Precedent describes the rule's "
+        "history, never a guarantee about this instance. Do not raise confidence beyond "
+        "what the case evidence plus this history actually support, and never cite "
+        "precedent as proof that a concrete malicious indicator is benign.",
+        PRECEDENT_CLOSE,
+        "",
+    ])
+
+
 def render_cluster(cluster: Cluster, enrichment: EnrichmentResult | None,
                    rag_chunks: list[RagChunk] | None, max_events: int = 12,
                    playbook: str | None = None,
-                   memory: list[MemoryEntry] | None = None) -> str:
+                   memory: list[MemoryEntry] | None = None,
+                   precedent: "PrecedentSignal | None" = None) -> str:
     lines: list[str] = []
     memory_block = render_memory(memory)
     if memory_block:
         # Operator MEMORY sits ABOVE the untrusted evidence but it is GUIDANCE only.
         lines.append(memory_block.rstrip())
+        lines.append("")
+    precedent_block = render_precedent(precedent)
+    if precedent_block:
+        # The code-computed analyst-precedent summary sits with the other TRUSTED
+        # operator context and ABOVE the untrusted evidence. Like the playbook and
+        # MEMORY blocks it can only INFORM: the deterministic policy still decides.
+        lines.append(precedent_block.rstrip())
         lines.append("")
     if playbook:
         # The active playbook is OUR OWN trusted operator procedure (a plain-text

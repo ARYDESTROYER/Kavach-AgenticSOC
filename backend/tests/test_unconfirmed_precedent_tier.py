@@ -295,6 +295,7 @@ async def test_confirmed_projection_is_unchanged_by_the_new_tier(
     assert set(items[0]["metadata"]) == {
         "case_id", "verdict", "outcome", "entity", "status", "note",
         "ground_truth_source", "trust_class", "document_id",
+        "rule_identity", "rule_ids",
     }
     assert "analyst-confirmed outcome false_positive" in items[0]["text"]
 

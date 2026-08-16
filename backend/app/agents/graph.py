@@ -17,11 +17,61 @@ from typing import Any, TypedDict
 from ..config import Preferences
 from ..constants import TriageBucket, Verdict
 from ..engine.cost_gate import CaseBudget
+from ..engine.precedent import (
+    PrecedentSignal,
+    cluster_rule_identity,
+    evaluate_precedent_signal,
+    rule_identity_members,
+    unavailable_distribution,
+)
 from ..models import Cluster, EnrichmentResult, EvidenceItem, VerdictResult
 from ..utils import truncate
 from .common import entity_kql, rag_query
 
 logger = logging.getLogger("tlsoc.agents.graph")
+
+
+async def _precedent_signal(
+    rag, cluster: Cluster, prefs: Preferences, rag_chunks: list[Any]
+) -> PrecedentSignal:
+    """The deterministic per-rule precedent fact for this cluster. Never raises.
+
+    Reads the per-rule distribution the RAG service maintains over the corpus (bounded,
+    cached, seed-free) and combines it with what this run actually retrieved. Fail-soft:
+    a RAG service that predates the distribution seam, or a corpus that cannot be read,
+    yields an explicitly UNAVAILABLE signal — never a confident zero, and never an
+    exception that would cost the case its investigation.
+    """
+    config = getattr(getattr(prefs, "precedent", None), "promotion", None)
+    if config is None:  # a stripped/legacy Preferences — behave as "not configured"
+        from ..config import PrecedentPromotionConfig  # local: avoids a cycle at import
+
+        config = PrecedentPromotionConfig()
+    rule_ids = rule_identity_members(cluster_rule_identity(cluster))
+    reader = getattr(rag, "precedent_distribution", None)
+    if not bool(getattr(config, "enabled", False)) or reader is None:
+        distribution = (
+            None
+            if not bool(getattr(config, "enabled", False))
+            else unavailable_distribution(
+                "this deployment's retrieval service does not expose a per-rule "
+                "precedent distribution"
+            )
+        )
+    else:
+        try:
+            distribution = await reader()
+        except Exception as exc:  # noqa: BLE001 — evidence promotion is never fatal
+            logger.warning("Precedent distribution unavailable: %s", exc)
+            distribution = unavailable_distribution(
+                f"the precedent distribution could not be read ({type(exc).__name__})"
+            )
+    return evaluate_precedent_signal(
+        rule_ids=rule_ids,
+        rag_chunks=rag_chunks,
+        distribution=distribution,
+        config=config,
+    )
 
 
 async def run_investigation(
@@ -193,9 +243,20 @@ async def run_investigation(
                 "retrieval_status": "not_attempted",
                 "retrieval_reason": "rag_disabled",
             })
+        # --- Rule-identity precedent promotion (deterministic, $0) ---------------
+        # Retrieval already found whatever precedent embeds close to this cluster; what
+        # it cannot tell the model is HOW MUCH analyst-confirmed history stands behind
+        # this EXACT detection. That count is computed in code from the corpus, gated on
+        # rule identity (a perfect-similarity hit from a different rule never qualifies),
+        # and injected as one structured TRUSTED statement. Evidence promotion only —
+        # the verdict is still the model's and decide() still applies the policy (#3).
+        precedent = await _precedent_signal(rag, cluster, prefs, rag_chunks)
+        if provenance_sink is not None:
+            provenance_sink["precedent"] = precedent.as_dict()
         return await investigator.investigate(
             cluster, enrichment, rag_chunks, prefs, budget, surface=surface, case_id=case_id,
-            persona=persona, playbook=playbook, memory=memory, cost_sink=cost_sink,
+            persona=persona, playbook=playbook, memory=memory, precedent=precedent,
+            cost_sink=cost_sink,
         )
 
     try:

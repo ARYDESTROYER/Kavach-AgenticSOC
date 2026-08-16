@@ -21,12 +21,24 @@ import re
 from collections import Counter
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from ..config import Preferences
 from ..constants import CaseStatus, DecisionBy, Verdict
 from ..engine.analyst_outcomes import analyst_confirmed_outcome
 from ..engine.chunking import chunk_text
+from ..engine.precedent import (
+    RULE_IDENTITY_KEY,
+    RULE_IDS_KEY,
+    PrecedentDistribution,
+    case_rule_identity,
+    disabled_distribution,
+    distribution_from_metadata,
+    rule_identity_members,
+    stratified_selection,
+    unavailable_distribution,
+)
 from ..engine.runbooks import corpus_items as runbook_corpus_items
 from ..llm.gateway import LLMGateway
 from ..models import RagChunk
@@ -40,7 +52,7 @@ from .vectorstore import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..config import UnconfirmedPrecedentConfig
+    from ..config import PrecedentWindowConfig, UnconfirmedPrecedentConfig
     from ..engine.runbook_service import RunbookService
     from ..models import Case
     from ..stores.cases import CaseStore
@@ -102,6 +114,15 @@ TRUST_MODEL_UNCONFIRMED = "model_unconfirmed"
 # (it must never spend its budget looking for unconfirmed candidates), and so the extra
 # read only happens at all when the tier is switched on.
 _UNCONFIRMED_SCAN_CAP = 2000
+
+# The Elasticsearch vector store reads its corpus through one bounded document scan.
+# A corpus AT that ceiling may have been cut short, so every count derived from it is
+# reported as a lower bound rather than a confident total.
+_CORPUS_SCAN_TRUNCATION_HINT = 10000
+
+# Bound the one-time rule-identity re-tag of pre-existing precedent so a large legacy
+# corpus costs a bounded management read per projection rather than an unbounded one.
+_RULE_IDENTITY_RECONCILE_CAP = 2000
 
 # The bulk ground-truth bootstrap (see ``routes_rag.py``). Ratification is recorded as
 # its OWN append-only ``case.history`` event type — never as a ``FeedbackEntry`` and
@@ -441,12 +462,19 @@ class RagService:
         #   {source, before, after, delta, shrank, collapsed, source_enabled, at}
         # ``before``/``after`` are stored chunk counts either side of the projection.
         self.last_projection: dict[str, dict[str, Any]] = {}
+        # Cached per-rule analyst-confirmed precedent distribution + the monotonic
+        # instant it was computed. In-process only and TTL-bounded; every precedent
+        # write invalidates it, so a stale count can never outlive a corpus change.
+        self._precedent_distribution: PrecedentDistribution | None = None
+        self._precedent_distribution_at: float | None = None
 
     def set_prefs(self, prefs: Preferences) -> None:
         """Point the service at the latest preferences so a live settings change
         (e.g. toggling rag.enabled / use_resolved_cases / min_score) takes effect
         without a full rewire."""
         self._prefs = prefs
+        # A precedent-source or window change can change what the distribution counts.
+        self.invalidate_precedent_distribution()
 
     def _source_signature(self) -> tuple[Any, ...]:
         cfg = self._prefs.rag
@@ -465,6 +493,10 @@ class RagService:
             # positional members are unchanged.
             bool(cfg.use_unconfirmed_resolved_cases),
             self._unconfirmed_cfg().model_dump_json(),
+            # The precedent WINDOW policy changes WHICH qualifying cases are projected
+            # (size + per-rule stratification), so a settings change must reseed.
+            # Appended, never inserted.
+            self._window_config().model_dump_json(),
         )
 
     def _unconfirmed_cfg(self) -> "UnconfirmedPrecedentConfig":
@@ -849,6 +881,10 @@ class RagService:
                 # Converge any pre-fix precedent onto per-case document identity
                 # before the projection reads/writes documents.
                 await self._reconcile_legacy_resolved_case_documents()
+                # Stamp rule identity onto precedent projected before it was metadata,
+                # so an EXISTING corpus becomes rule-matchable without a re-embed.
+                if self._prefs.rag.use_resolved_cases:
+                    await self._reconcile_precedent_rule_identity()
                 # Stage and validate the complete managed projection before ANY
                 # old document is removed. This preserves the last known-good
                 # corpus when loading, embedding, or persistence fails.
@@ -867,6 +903,7 @@ class RagService:
                         await self._runbooks.mark_indexed(record.runbook.id, record.revision)
                 self._seeded = True
                 self._seed_signature = signature
+                self.invalidate_precedent_distribution()
                 logger.info("RAG seeded with %d chunk(s)", len(chunks))
                 self._record_projection_outcome(
                     outgoing, await self._chunk_counts_by_source()
@@ -1077,6 +1114,7 @@ class RagService:
             supplied or self._case_analyst_note(case, ground_truth_source)
         )
         document_id = f"{RESOLVED_CASE_SOURCE}:{case.case_id}"
+        identity = case_rule_identity(case)
         return {
             "text": self._resolved_case_text(case, outcome, resolved_note),
             "source": RESOLVED_CASE_SOURCE,
@@ -1091,6 +1129,13 @@ class RagService:
                 "ground_truth_source": ground_truth_source,
                 "trust_class": TRUST_ANALYST_CONFIRMED,
                 "document_id": document_id,
+                # Rule identity as MATCHABLE metadata, not just a substring of the text.
+                # Precedent is promoted on rule identity, never on embedding similarity
+                # alone — a perfect-score hit from a DIFFERENT rule must not qualify —
+                # and that comparison has to read a canonical key rather than parse
+                # prose. Blank when the case carries no rule ids (never matches).
+                RULE_IDENTITY_KEY: identity,
+                RULE_IDS_KEY: list(rule_identity_members(identity)),
             },
         }
 
@@ -1176,6 +1221,7 @@ class RagService:
         in place, never a duplicate and never two disagreeing chunks about one case.
         """
         document_id = f"{RESOLVED_CASE_SOURCE}:{case.case_id}"
+        identity = case_rule_identity(case)
         return {
             "text": self._unconfirmed_case_text(case, outcome),
             "source": RESOLVED_CASE_SOURCE,
@@ -1186,6 +1232,11 @@ class RagService:
                 "outcome": outcome,
                 "entity": f"{case.entity.type.value}:{case.entity.value}",
                 "status": case.status.value if case.status else "",
+                # Mirrors the confirmed tier so the two never disagree about one case.
+                # It is still NOT promotable: ``trust_class`` below keeps this tier out
+                # of every precedent-promotion and distribution tally.
+                RULE_IDENTITY_KEY: identity,
+                RULE_IDS_KEY: list(rule_identity_members(identity)),
                 # No analyst note and NO ground-truth source: nothing independent
                 # backs this item, and pretending otherwise is the whole failure mode.
                 "note": "",
@@ -1341,31 +1392,62 @@ class RagService:
             item["metadata"] = metadata
             stamped.append(item)
         try:
-            return await self._embed_and_add(self._managed_items(stamped))
+            added = await self._embed_and_add(self._managed_items(stamped))
+            self.invalidate_precedent_distribution()
+            return added
         except Exception as exc:  # noqa: BLE001 — corpus writes are always fail-safe
             logger.warning("index_precedent_items failed: %s", exc)
             return 0
 
-    async def _resolved_case_items(self, limit: int = 200) -> list[dict[str, Any]]:
-        """The newest ``limit`` QUALIFYING precedents (bounded scan).
+    def _window_config(self) -> "PrecedentWindowConfig":
+        """The operator's precedent-window policy (size + per-rule stratification)."""
+        block = getattr(self._prefs, "precedent", None)
+        window = getattr(block, "window", None)
+        if window is not None:
+            return window
+        from ..config import PrecedentWindowConfig as _Window  # local: avoids a cycle
+
+        return _Window()
+
+    async def _resolved_case_items(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """The ``limit`` QUALIFYING precedents to project (bounded scan).
 
         The window is counted in analyst-confirmed items, NOT in raw terminal cases.
         Counting raw cases meant a self-running deployment's own unlabelled
         auto-closes — which are newer than every labelled case and unbounded in
         number — consumed every slot, so the precedent corpus eroded to zero exactly
-        as the agent succeeded. Paging continues until ``limit`` qualifying items are
-        collected or ``_RESOLVED_CASE_SCAN_CAP`` cases have been examined, whichever
-        comes first, so a large unlabelled backlog costs a bounded scan rather than
-        the whole corpus.
+        as the agent succeeded. ``_RESOLVED_CASE_SCAN_CAP`` bounds the raw cases
+        examined, so a large unlabelled backlog costs a bounded scan rather than the
+        whole corpus.
+
+        **Per-rule stratification** (``prefs.precedent.window.stratify_by_rule``, ON by
+        default). A flat newest-N window has the same starvation shape one level up: a
+        bulk analyst action on ONE rule produces hundreds of qualifying cases that are
+        all newer than every other rule's, so the next projection fills every slot with
+        that rule and drops every other rule's precedent to zero — including a rule
+        carrying most of the deployment's auto-close volume. That is the precedent
+        outage again, this time triggered by an operator doing exactly what the product
+        asked of them. Round-robin allocation across rule identities gives every active
+        rule an equal floor inside the same bounded window.
+
+        Stratifying means the scan can no longer stop at the first ``limit`` qualifying
+        items (that would only ever see the dominant rule), so it runs to the scan cap.
+        That is a bounded, paged case-store read that happens on projection only. With
+        stratification off, the early exit and the exact previous ordering are restored.
         """
         if self._cases is None:
             return []
-        items: list[dict[str, Any]] = []
+        window = self._window_config()
+        cap_items = max(1, int(limit if limit is not None else window.size))
+        stratify = bool(window.stratify_by_rule)
+        collected: list[dict[str, Any]] = []
         seen: set[str] = set()
         scanned = 0
         for status in (CaseStatus.CLOSED.value, CaseStatus.RESOLVED.value):
             offset = 0
-            while len(items) < limit and scanned < _RESOLVED_CASE_SCAN_CAP:
+            while scanned < _RESOLVED_CASE_SCAN_CAP and (
+                stratify or len(collected) < cap_items
+            ):
                 page_size = min(
                     _RESOLVED_CASE_PAGE_SIZE, _RESOLVED_CASE_SCAN_CAP - scanned
                 )
@@ -1381,17 +1463,168 @@ class RagService:
                     scanned += 1
                     item = self._resolved_case_item(case)
                     if item is not None:
-                        items.append(item)
-                        if len(items) >= limit:
+                        collected.append(item)
+                        if not stratify and len(collected) >= cap_items:
                             break
                 offset += len(page)
                 if offset >= total:
                     break
-            if len(items) >= limit or scanned >= _RESOLVED_CASE_SCAN_CAP:
+            if scanned >= _RESOLVED_CASE_SCAN_CAP:
                 break
-        return items
+            if not stratify and len(collected) >= cap_items:
+                break
+        if not stratify:
+            return collected[:cap_items]
+        return stratified_selection(
+            collected,
+            lambda item: str((item.get("metadata") or {}).get(RULE_IDENTITY_KEY) or ""),
+            cap_items,
+        )
 
-    async def index_resolved_cases(self, limit: int = 200) -> int:
+    # ----------------------------------------------------------------- #
+    # Per-rule precedent distribution (the deterministic half of promotion)
+    # ----------------------------------------------------------------- #
+    def invalidate_precedent_distribution(self) -> None:
+        """Drop the cached per-rule distribution after the corpus changed."""
+        self._precedent_distribution = None
+        self._precedent_distribution_at = None
+
+    async def _precedent_chunk_metadata(self) -> tuple[list[dict[str, Any]], bool]:
+        """Every stored precedent chunk's metadata, in ONE corpus read, plus a
+        truncation hint.
+
+        Reads through the management API rather than the search path so asking about
+        precedent never embeds, never seeds and never mutates the projection. It uses
+        the single-pass ``list_all_chunks`` deliberately: fanning ``list_chunks`` out per
+        document would make every backend re-scan the whole corpus once PER PRECEDENT
+        DOCUMENT, so a deployment with 846 precedents would pay 846 full scans for one
+        diagnostics request.
+
+        The Elasticsearch backend reads its corpus in one bounded page, so a corpus AT
+        that ceiling may have been cut short. The hint therefore compares the CHUNK
+        count against the chunk ceiling (comparing a grouped DOCUMENT count against it
+        could never detect the truncation it exists to report), and every count derived
+        from a truncated read is a lower bound rather than a confident total.
+        """
+        chunks = await self._store.list_all_chunks()
+        truncated = len(chunks) >= _CORPUS_SCAN_TRUNCATION_HINT
+        rows = [
+            dict(chunk.metadata or {})
+            for chunk in chunks
+            if chunk.source == RESOLVED_CASE_SOURCE
+        ]
+        return rows, truncated
+
+    async def precedent_distribution(self, *, force: bool = False) -> PrecedentDistribution:
+        """Analyst-confirmed precedent, counted per rule identity. Never raises.
+
+        This is what makes "N analyst-confirmed benign outcomes exist for this exact
+        rule" a deterministic fact rather than an inference from four retrieved
+        snippets. It counts what is actually IN the corpus (reachable by retrieval),
+        which is the honest population to gate promotion on.
+
+        Cached for ``prefs.precedent.distribution_ttl_seconds`` and invalidated whenever
+        precedent is written, so an investigation pays a bounded management read at most
+        once per TTL. A read failure returns an explicitly UNAVAILABLE distribution —
+        never an empty one that would read as a confident zero.
+        """
+        cfg = self._prefs.rag
+        if not (cfg.enabled and cfg.use_resolved_cases):
+            # DISABLED, not unreadable. Reporting the operator's own configuration as an
+            # unmeasurable unknown would put a permanent "could not be evaluated" entry
+            # on the diagnostics surface for a deployment that is behaving exactly as
+            # configured — the same distinction ``_precedent_corpus_block`` already makes.
+            return disabled_distribution(
+                "the resolved-case precedent source is turned off, so no per-rule "
+                "precedent is reachable by an investigation"
+            )
+        ttl = float(getattr(getattr(self._prefs, "precedent", None), "distribution_ttl_seconds", 0) or 0)
+        now = monotonic()
+        cached = self._precedent_distribution
+        if (
+            not force
+            and cached is not None
+            and ttl > 0
+            and self._precedent_distribution_at is not None
+            and (now - self._precedent_distribution_at) < ttl
+        ):
+            return cached
+        try:
+            rows, truncated = await self._precedent_chunk_metadata()
+        except Exception as exc:  # noqa: BLE001 — an outage must read as UNKNOWN
+            logger.warning("Precedent distribution could not be read: %s", exc)
+            return unavailable_distribution(
+                f"the precedent corpus could not be read ({type(exc).__name__})"
+            )
+        distribution = distribution_from_metadata(rows, truncated=truncated)
+        self._precedent_distribution = distribution
+        self._precedent_distribution_at = now
+        return distribution
+
+    async def _reconcile_precedent_rule_identity(self) -> int:
+        """Stamp rule identity onto precedent projected BEFORE it was metadata.
+
+        Rule identity became projection metadata with this change, so an existing
+        deployment's corpus carries none of it — and rule-identity matching would then
+        silently find nothing for precisely the operator who already did the work. Re-tag
+        those chunks in place from the CASE STORE (exact, never parsed out of the chunk
+        prose): the doc id is unchanged, so the store upserts with no re-embedding and no
+        gateway spend, exactly like :meth:`_reconcile_legacy_resolved_case_documents`.
+
+        This re-tags OUR OWN projection metadata; it never writes to the case. Chunks
+        whose case can no longer be read are left alone (they stay retrievable and are
+        reported as ``unattributed`` by the distribution rather than counted as absent).
+        Idempotent, bounded and best-effort: a failure never blocks seeding.
+        """
+        if self._cases is None:
+            return 0
+        try:
+            chunks = await self._store.list_all_chunks()
+        except Exception as exc:  # noqa: BLE001 — migration is best-effort
+            logger.warning("Precedent rule-identity reconciliation could not read: %s", exc)
+            return 0
+        # ONE corpus read, then a bounded number of CASE lookups. Fanning list_chunks out
+        # per document would re-scan the whole corpus once per precedent document on
+        # every seed — and because the cap only counted chunks MISSING the key, a fully
+        # migrated corpus never reached it, so that cost would have been paid forever
+        # rather than once.
+        stale = [
+            chunk
+            for chunk in chunks
+            if chunk.source == RESOLVED_CASE_SOURCE
+            and RULE_IDENTITY_KEY not in (chunk.metadata or {})
+        ]
+        if not stale:
+            return 0  # converged: nothing to look up, nothing to write
+        upgraded: list[StoredChunk] = []
+        for chunk in stale[:_RULE_IDENTITY_RECONCILE_CAP]:
+            metadata = dict(chunk.metadata or {})
+            case_id = str(metadata.get("case_id") or "")
+            if not case_id:
+                continue
+            try:
+                case = await self._cases.get(case_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if case is None:
+                continue
+            identity = case_rule_identity(case)
+            metadata[RULE_IDENTITY_KEY] = identity
+            metadata[RULE_IDS_KEY] = list(rule_identity_members(identity))
+            upgraded.append(dataclass_replace(chunk, metadata=metadata))
+        if not upgraded:
+            return 0
+        try:
+            await self._store.add(upgraded)
+        except Exception as exc:  # noqa: BLE001 — never block seeding on a migration
+            logger.warning("Precedent rule-identity reconciliation could not write: %s", exc)
+            return 0
+        logger.info(
+            "Stamped rule identity onto %d existing precedent chunk(s)", len(upgraded)
+        )
+        return len(upgraded)
+
+    async def index_resolved_cases(self, limit: int | None = None) -> int:
         """Load CLOSED cases and index one chunk per case as institutional memory.
 
         Only analyst-confirmed cases qualify, and the window counts QUALIFYING cases
@@ -1403,7 +1636,9 @@ class RagService:
         if self._cases is None:
             return 0
         try:
-            return await self._embed_and_add(await self._resolved_case_items(limit))
+            added = await self._embed_and_add(await self._resolved_case_items(limit))
+            self.invalidate_precedent_distribution()
+            return added
         except Exception as exc:  # noqa: BLE001
             logger.warning("Indexing resolved cases failed: %s", exc)
             return 0
@@ -1430,7 +1665,11 @@ class RagService:
             item = self._resolved_case_item(case, note=note)
             if item is None:
                 return 0
-            return await self._embed_and_add(self._managed_items([item]))
+            added = await self._embed_and_add(self._managed_items([item]))
+            # New precedent changes the per-rule counts promotion reads, so the cached
+            # distribution must never survive the write that invalidated it.
+            self.invalidate_precedent_distribution()
+            return added
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "index_resolved_case failed for %s: %s", getattr(case, "case_id", "?"), exc
@@ -1597,6 +1836,10 @@ class RagService:
             if is_seed and not force:
                 return {"deleted": 0, "guarded": True, "found": True}
             removed = await self._store.delete_document(document_id)
+            if src == RESOLVED_CASE_SOURCE:
+                # A precedent deletion changes the per-rule counts promotion reads; a
+                # cached distribution must never outlive the write that invalidated it.
+                self.invalidate_precedent_distribution()
             return {"deleted": removed, "guarded": False, "found": True}
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG delete_document(%s) failed: %s", document_id, exc)
@@ -1876,6 +2119,8 @@ class RagService:
                         await self._runbooks.mark_indexed(record.runbook.id, record.revision)
                 self._seeded = True
                 self._seed_signature = self._source_signature()
+                # A vector-space migration rewrites every precedent chunk.
+                self.invalidate_precedent_distribution()
                 self._record_projection_outcome(
                     outgoing, await self._chunk_counts_by_source()
                 )

@@ -45,6 +45,28 @@ direct `POST /api/rag/precedent/bootstrap` route is likewise executable but
 OpenAPI-deprecated and request-bound; new user workflows should submit a
 `precedent_bootstrap` Job.
 
+## Precedent by detection rule
+
+Each projected precedent record carries the canonical identity of the detection rule set
+that produced it, so precedent can be matched on the rule rather than on text similarity
+alone. Records written before this was captured are re-tagged in place from the case
+store on the next projection; the re-tag reuses the existing document and does not
+re-embed, so it costs nothing. Records whose case can no longer be read stay retrievable
+and are reported as unattributed rather than treated as absent.
+
+The projection window is bounded. It is filled round-robin across rule identities, so a
+bulk confirmation on one rule cannot evict every other rule's precedent from the corpus.
+Set `precedent.window.stratify_by_rule` to `false` to restore a flat newest-first window.
+
+Retrieval surfaces resolved cases as fenced context. Optional precedent promotion
+additionally reports, as a computed count, how many analyst-confirmed benign and
+malicious outcomes exist for the exact rule identity under investigation. That count is
+evidence given to the investigator; the verdict remains the model's and the close
+decision remains the deterministic policy's. Promotion requires an exact rule-identity
+match, an unanimous confirmed history, a minimum confirmed count, and a matching
+precedent actually retrieved for the case. Unreviewed agent auto-closes are never
+promotable. See [Deterministic decisions](../concepts/deterministic-decisions.md).
+
 ## Trust labels
 
 Only administrator-controlled `runbook` knowledge and the system-verified `mitre` and

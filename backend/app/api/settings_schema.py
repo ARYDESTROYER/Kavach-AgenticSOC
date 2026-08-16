@@ -98,6 +98,8 @@ _SECTION_TITLES: dict[str, str] = {
     "batch": "Batch Inference",
     "baseline": "Anomaly Baseline",
     "campaign": "Campaign Clustering",
+    # Rule-identity precedent (promotion / window fairness / futility reporting).
+    "precedent": "Analyst Precedent",
 }
 
 

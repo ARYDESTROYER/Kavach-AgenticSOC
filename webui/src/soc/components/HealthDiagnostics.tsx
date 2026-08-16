@@ -39,6 +39,7 @@ import {
   Database,
   Library,
   RefreshCw,
+  Scale,
   ShieldCheck,
 } from 'lucide-react';
 
@@ -117,6 +118,56 @@ export function precedentCountText(
     return `≥ ${fmtNumber(corpus.analyst_confirmed_precedent_documents)}`;
   }
   return fmtNumber(corpus.analyst_confirmed_precedent_documents);
+}
+
+/**
+ * The per-rule precedent headline: how the confirmed corpus is SPREAD, not just how big
+ * it is. A single number hides the two failures that matter — one rule holding every
+ * slot (starvation by success), and a rule whose abundant precedent is not changing any
+ * outcome (futility). Both are silent today.
+ */
+export function precedentSpreadText(
+  effectiveness: DiagnosticsHealth['precedent_effectiveness'] | undefined | null,
+): string {
+  const distribution = effectiveness?.distribution;
+  if (!distribution) return DASH;
+  if (distribution.disabled) return 'Turned off';
+  if (!distribution.available) return 'Unknown';
+  const prefix = distribution.truncated ? '≥ ' : '';
+  const rules = distribution.rule_identities;
+  return `${prefix}${fmtNumber(rules)} rule${rules === 1 ? '' : 's'}`;
+}
+
+/**
+ * The supporting line under the tile. Ordered so an UNMEASURED state can never be
+ * described with a measured-sounding sentence: turned off / unreadable / not evaluated
+ * each say so in the backend's own words before any count is offered.
+ */
+export function precedentSpreadDetail(
+  effectiveness: DiagnosticsHealth['precedent_effectiveness'] | undefined | null,
+): string | undefined {
+  if (!effectiveness) return undefined;
+  const d = effectiveness.distribution;
+  if (d.disabled || !d.available) return d.reason || undefined;
+  if (effectiveness.futility_measured === false) {
+    return effectiveness.futility_reason || undefined;
+  }
+  if (effectiveness.futile_rule_count > 0) {
+    const n = effectiveness.futile_rule_count;
+    return (
+      `${fmtNumber(n)} rule${n === 1 ? '' : 's'} hold plenty of analyst-confirmed ` +
+      'precedent but still need a human. Confirming more cases of those rules will ' +
+      'not change that on its own.'
+    );
+  }
+  return (
+    `${fmtNumber(d.total_confirmed)} analyst-confirmed precedent ` +
+    `document${d.total_confirmed === 1 ? '' : 's'} across ` +
+    `${fmtNumber(d.rule_identities)} rule ` +
+    `identit${d.rule_identities === 1 ? 'y' : 'ies'}; the projection window holds ` +
+    `${fmtNumber(effectiveness.window_size)} and is ` +
+    `${effectiveness.window_stratified ? 'shared fairly across rules' : 'filled newest-first'}.`
+  );
 }
 
 /* --------------------------------------------------------------- components --- */
@@ -215,6 +266,7 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
 
   const status = autoCloseStatusView(ac?.status);
   const corpus = health?.precedent_corpus ?? null;
+  const effectiveness = health?.precedent_effectiveness ?? null;
   const migration = health?.schema_migration ?? null;
   const unknowns = health?.unknowns ?? [];
   const degradations = healthDegradations(health, autoClose);
@@ -303,6 +355,34 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
                 `outcome${corpus.ground_truth.analyst_confirmed_cases === 1 ? '' : 's'} in the ` +
                 'scanned history back this corpus.'
             }
+          />
+        ) : null}
+
+        {effectiveness ? (
+          <SignalTile
+            icon={Scale}
+            label="Precedent by rule"
+            value={precedentSpreadText(effectiveness)}
+            badge={
+              effectiveness.distribution.disabled ? (
+                <Badge variant="secondary">Turned off</Badge>
+              ) : !effectiveness.distribution.available ? (
+                <Badge variant="outline">Not measured</Badge>
+              ) : effectiveness.futile_rule_count > 0 ? (
+                <Badge variant="warning">
+                  {fmtNumber(effectiveness.futile_rule_count)} not helping
+                </Badge>
+              ) : /* A green "Balanced" badge on a report that never RAN would be the
+                     exact false reassurance this panel exists to remove. */
+              effectiveness.futility_measured === false ? (
+                <Badge variant="outline">Not measured</Badge>
+              ) : effectiveness.window_stratified ? (
+                <Badge variant="success">Balanced</Badge>
+              ) : (
+                <Badge variant="outline">Unstratified</Badge>
+              )
+            }
+            detail={precedentSpreadDetail(effectiveness)}
           />
         ) : null}
 
