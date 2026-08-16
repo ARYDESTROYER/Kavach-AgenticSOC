@@ -58,7 +58,12 @@ detection is benign here. A cluster whose detections are all declared is closed 
 call. The declaration is recorded with its author, reason, optional source scope, and
 optional expiry, and is revoked by disabling, expiring, or deleting it.
 
-Three properties keep it honest:
+A declaration closes matching alerts with no model call and no human, so a genuine attack
+matching a declared rule closes silently. It carries an optional risk ceiling, an optional
+source scope and an optional expiry to bound that, and an explicit reinvestigation of a
+single case always overrides it.
+
+Four properties keep it honest:
 
 - the case stays visible, audited, and reopenable — nothing is dropped before a case
   exists, which is what a suppression rule does instead;
@@ -66,7 +71,10 @@ Three properties keep it honest:
   undeclared detection is still investigated normally; and
 - the close is excluded from agent-performance measurement and is never read as an
   analyst-confirmed outcome, so it can neither flatter the agent nor become training
-  evidence for the automation it replaces.
+  evidence for the automation it replaces; and
+- it never overrides a person. A case an analyst has acted on, or one the agent has
+  already investigated, is left alone — a statement about a detection does not overrule a
+  decision about a case.
 
 This path runs before a verdict exists. It does not change, read, or extend the
 auto-close policy above.

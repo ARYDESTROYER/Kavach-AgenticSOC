@@ -247,16 +247,14 @@ def render_precedent(signal: "PrecedentSignal | None") -> str:
         f"{signal.confirmed_true_positive}",
         f"- matching precedent retrieved for this case: {signal.retrieved_matching}",
         "",
-        "The operator has reviewed these cases individually and confirmed each outcome. "
-        "This deployment has explicitly enabled precedent promotion for a history like "
-        "this one.",
+        "Each of those outcomes was classified by a human analyst — through explicit "
+        "case feedback or an explicit disposition — not by this system. This deployment "
+        "has explicitly enabled precedent promotion.",
         "",
         "How to use it: a THIN per-case evidence set is not, by itself, a reason to "
-        "return NEEDS_HUMAN here. Alerts from this detection are known to arrive without "
-        "the request/execution context an investigation would normally verify, and the "
-        "operator has already established what that pattern means in this estate. Weigh "
-        "this established history the way a senior analyst would weigh their own team's "
-        "confirmed history with the same rule.",
+        "return NEEDS_HUMAN here, because this rule's history shows how its alerts have "
+        "actually resolved in this environment. Weigh that history the way a senior "
+        "analyst would weigh their own team's confirmed history with the same rule.",
         "",
         "When you must still return NEEDS_HUMAN or TRUE_POSITIVE: whenever THIS case "
         "shows something the precedent does not cover — an entity, destination, volume, "

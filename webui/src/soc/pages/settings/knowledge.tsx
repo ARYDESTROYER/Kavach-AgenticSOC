@@ -5,9 +5,12 @@
  * RAG retrieval config, the per-case threat-context panel, and deep-links to the
  * corpus and response-playbook management pages.
  */
-import { Bot, FileText, Library, ShieldAlert } from 'lucide-react';
+import { Bot, FileText, Library, Scale, ShieldAlert } from 'lucide-react';
 
 import type {
+  PrecedentConfig,
+  PrecedentPromotionConfig,
+  PrecedentWindowConfig,
   RagConfig,
   ThreatContextConfig,
   UnconfirmedPrecedentConfig,
@@ -25,6 +28,7 @@ import { SectionShell, NumPref, SwitchPref, type NavigateFn, type SecProps } fro
 
 const KNOWLEDGE_TOC: SettingsTOCItem[] = [
   { anchor: 'knowledge-rag', label: 'Retrieval (RAG)', icon: Library },
+  { anchor: 'knowledge-promotion', label: 'Precedent promotion', icon: Scale },
   { anchor: 'knowledge-precedent', label: 'Unconfirmed precedent', icon: Bot },
   { anchor: 'knowledge-threat', label: 'Threat context', icon: ShieldAlert },
   { anchor: 'knowledge-corpus', label: 'Corpus', icon: FileText },
@@ -39,6 +43,103 @@ const PRECEDENT_GUARD_DEFAULTS: Required<UnconfirmedPrecedentConfig> = {
   rank_penalty: 0.5,
   max_items: 50,
 };
+
+/**
+ * Analyst-confirmed precedent PROMOTION — the feature's own opt-in.
+ *
+ * It has to be here rather than in the generic Advanced form because the schema
+ * describes it as a nested object, and the generic renderer can only DESCRIBE structured
+ * fields ("edit in its dedicated section"). Without this card that section did not
+ * exist, so the switch was reachable only through the raw API.
+ *
+ * Turning it on changes WHAT THE INVESTIGATOR IS TOLD: it is handed a code-computed count
+ * of the analyst-confirmed outcomes for the exact detection rule under investigation,
+ * instead of inferring institutional history from a handful of retrieved snippets. It is
+ * evidence, never authority — the verdict stays the model's and the deterministic policy
+ * still decides the outcome — and the copy says so, because an operator must be able to
+ * tell "we told it more" from "we let it close more".
+ */
+function PrecedentPromotionControls({ prefs, update }: SecProps) {
+  const precedent: PrecedentConfig = prefs.precedent || {};
+  const promotion: PrecedentPromotionConfig = precedent.promotion || {};
+  const window: PrecedentWindowConfig = precedent.window || {};
+  const rag: RagConfig = prefs.rag || {};
+  // Promotion reads the resolved-case corpus, so it cannot work without it.
+  const canEnable = (rag.enabled ?? true) && (rag.use_resolved_cases ?? true);
+  const on = Boolean(promotion.enabled);
+
+  const setPrecedent = (patch: Partial<PrecedentConfig>) =>
+    update({ precedent: { ...precedent, ...patch } });
+  const setPromotion = (patch: Partial<PrecedentPromotionConfig>) =>
+    setPrecedent({ promotion: { ...promotion, ...patch } });
+  const setWindow = (patch: Partial<PrecedentWindowConfig>) =>
+    setPrecedent({ window: { ...window, ...patch } });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary">Off by default</Badge>
+        <Badge variant="outline">Evidence, not authority</Badge>
+      </div>
+
+      <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
+        For a detection whose alerts carry no request, payload or execution context, an
+        investigation has nothing to verify a single instance against — so it routes to a
+        human however many of its cases an analyst has confirmed benign. Promotion tells
+        the investigator, as a{' '}
+        <span className="font-medium text-foreground">count computed in code</span>, how
+        many analyst-confirmed outcomes exist for that exact rule. The verdict still comes
+        from the model and the deterministic policy still decides the outcome.
+      </p>
+
+      <SwitchPref
+        label="Promote analyst-confirmed precedent"
+        help={
+          canEnable
+            ? 'Requires an exact rule-identity match, a unanimous confirmed history, the minimum count below, and a matching precedent actually retrieved for the case.'
+            : 'Unavailable while retrieval or the resolved-case precedent source is turned off.'
+        }
+        checked={on}
+        disabled={!canEnable}
+        onChange={(v) => setPromotion({ enabled: v })}
+      />
+      <NumPref
+        label="Minimum confirmed outcomes"
+        help="How many analyst-confirmed benign outcomes a rule needs before its history is promoted."
+        value={promotion.min_confirmed ?? 25}
+        min={1}
+        step={1}
+        disabled={!canEnable || !on}
+        onChange={(v) => setPromotion({ min_confirmed: v })}
+      />
+      <NumPref
+        label="Relevance floor"
+        help="A secondary floor on the retrieval rank score. Rule identity is the authoritative gate — this only filters weak matches, and the score is not comparable across backends."
+        value={promotion.min_similarity ?? 0.5}
+        min={0}
+        max={1}
+        step={0.05}
+        disabled={!canEnable || !on}
+        onChange={(v) => setPromotion({ min_similarity: v })}
+      />
+      <NumPref
+        label="Conflicting outcomes allowed"
+        help="How many analyst-confirmed TRUE positives a rule may carry and still be promoted. 0 means a rule the analysts disagree about is never promoted."
+        value={promotion.max_conflicting ?? 0}
+        min={0}
+        step={1}
+        disabled={!canEnable || !on}
+        onChange={(v) => setPromotion({ max_conflicting: v })}
+      />
+      <SwitchPref
+        label="Share the precedent window across rules"
+        help="On: the bounded projection window is filled round-robin per detection rule, so one rule's bulk confirmation cannot evict every other rule's precedent. Off restores a flat newest-first window."
+        checked={window.stratify_by_rule ?? true}
+        onChange={(v) => setWindow({ stratify_by_rule: v })}
+      />
+    </div>
+  );
+}
 
 /**
  * The LOWER-TRUST precedent tier and its compounding guards.
@@ -215,6 +316,16 @@ export function KnowledgeSection({
           wide="full"
         >
           <RagControls prefs={prefs} update={update} />
+        </SettingsCard>
+
+        <SettingsCard
+          anchor="knowledge-promotion"
+          title="Analyst-confirmed precedent promotion"
+          icon={Scale}
+          description="Tell the investigator, as a computed count, how much analyst-confirmed history exists for the exact detection rule it is looking at. Evidence only — the deterministic policy still decides."
+          wide="full"
+        >
+          <PrecedentPromotionControls prefs={prefs} update={update} />
         </SettingsCard>
 
         <SettingsCard

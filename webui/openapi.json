@@ -6674,7 +6674,7 @@
         "type": "object"
       },
       "_PolicyIn": {
-        "description": "The writable shape. ``id`` comes from the path; provenance is set server-side.",
+        "description": "The writable shape. ``id`` comes from the path; provenance is set server-side.\n\nEvery optional field here defaults to the WIDEST blast radius (enabled, unscoped,\nnever expiring). Writing those defaults over a prior record would mean a partial edit\nsilently re-enables a revoked declaration, clears its expiry, and widens it from one\nsource to all of them. So :func:`upsert_analyst_policy` carries prior values forward\nfor any field the client did not actually send (``model_fields_set``) — the same\nreason :class:`_EnabledIn` makes ``enabled`` required.",
         "properties": {
           "enabled": {
             "default": true,
@@ -6691,6 +6691,19 @@
               }
             ],
             "title": "Expires At"
+          },
+          "max_risk_score": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Risk Score"
           },
           "reason": {
             "default": "",

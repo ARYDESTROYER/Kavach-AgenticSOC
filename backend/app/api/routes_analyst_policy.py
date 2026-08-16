@@ -86,12 +86,21 @@ class _EnabledIn(BaseModel):
 
 
 class _PolicyIn(BaseModel):
-    """The writable shape. ``id`` comes from the path; provenance is set server-side."""
+    """The writable shape. ``id`` comes from the path; provenance is set server-side.
+
+    Every optional field here defaults to the WIDEST blast radius (enabled, unscoped,
+    never expiring). Writing those defaults over a prior record would mean a partial edit
+    silently re-enables a revoked declaration, clears its expiry, and widens it from one
+    source to all of them. So :func:`upsert_analyst_policy` carries prior values forward
+    for any field the client did not actually send (``model_fields_set``) — the same
+    reason :class:`_EnabledIn` makes ``enabled`` required.
+    """
 
     rule_id: str = Field(min_length=1, max_length=500)
     reason: str = Field(default="", max_length=_MAX_REASON_CHARS)
     source_id: str | None = Field(default=None, max_length=200)
     enabled: bool = True
+    max_risk_score: float | None = Field(default=None, ge=0.0, le=100.0)
     expires_at: str | None = None
 
 
@@ -103,12 +112,53 @@ def _public(policy: AnalystRulePolicy) -> dict[str, Any]:
         "reason": policy.reason,
         "source_id": policy.source_id,
         "enabled": policy.enabled,
+        "max_risk_score": policy.max_risk_score,
         "created_by": policy.created_by,
         "created_at": policy.created_at,
         "expires_at": policy.expires_at.isoformat() if policy.expires_at else None,
         # Derived, so a lapsed declaration is visibly inert rather than looking active.
         "live": policy.is_live(),
     }
+
+
+#: The declaration fields whose change widens or narrows real authority. An audit row
+#: that records only the NEW state cannot answer "who widened this, and from what?" —
+#: which is exactly the question a re-enabled or scope-widened rule raises.
+_AUDITED_FIELDS: tuple[str, ...] = (
+    "rule_id", "enabled", "source_id", "max_risk_score", "expires_at", "reason",
+)
+
+
+def _audit_value(policy: AnalystRulePolicy | None, name: str) -> str:
+    if policy is None:
+        return "-"
+    value = getattr(policy, name, None)
+    if name == "expires_at":
+        return value.isoformat() if value else "never"
+    if name == "source_id":
+        return str(value or "all_sources")
+    if name == "max_risk_score":
+        return "unbounded" if value is None else str(value)
+    return str(value)
+
+
+def _describe_change(prior: AnalystRulePolicy | None, current: AnalystRulePolicy) -> str:
+    """``field: before -> after`` for every field that actually moved.
+
+    On a create it records the full initial state; on an edit it records only the delta,
+    so a widened scope or a re-enabled rule is traceable to the actor and the exact
+    change rather than just its end state.
+    """
+    if prior is None:
+        return "created " + " ".join(
+            f"{name}={_audit_value(current, name)}" for name in _AUDITED_FIELDS
+        )
+    moved = [
+        f"{name}: {_audit_value(prior, name)} -> {_audit_value(current, name)}"
+        for name in _AUDITED_FIELDS
+        if _audit_value(prior, name) != _audit_value(current, name)
+    ]
+    return "changed " + ("; ".join(moved) if moved else "nothing")
 
 
 async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
@@ -181,16 +231,39 @@ async def upsert_analyst_policy(
                 status_code=400,
                 detail=f"at most {_MAX_POLICIES} analyst rule policies are supported",
             )
+        sent = body.model_fields_set
+
+        def _field(name: str, supplied: Any, prior_value: Any) -> Any:
+            """The client's value when it SENT one, else the stored value.
+
+            A PUT that omits a field is an edit to the fields it did send, not a request
+            to reset everything else to the permissive default.
+            """
+            if prior is None or name in sent:
+                return supplied
+            return prior_value
+
         # Provenance is server-side: a client can never claim another operator authored
         # a declaration, and the original author/creation instant survive an edit.
         fields: dict[str, Any] = {
             "id": target_id,
             "rule_id": rule_id,
-            "reason": body.reason,
-            "source_id": (body.source_id or None),
-            "enabled": bool(body.enabled),
+            "reason": _field("reason", body.reason, prior.reason if prior else ""),
+            "source_id": _field(
+                "source_id", (body.source_id or None), prior.source_id if prior else None
+            ),
+            "enabled": bool(
+                _field("enabled", body.enabled, prior.enabled if prior else True)
+            ),
+            "max_risk_score": _field(
+                "max_risk_score",
+                body.max_risk_score,
+                prior.max_risk_score if prior else None,
+            ),
             "created_by": (prior.created_by if prior else actor),
-            "expires_at": body.expires_at,
+            "expires_at": _field(
+                "expires_at", body.expires_at, prior.expires_at if prior else None
+            ),
         }
         if prior is not None and prior.created_at:
             fields["created_at"] = prior.created_at
@@ -199,6 +272,7 @@ async def upsert_analyst_policy(
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=_safe(exc.errors())) from exc
         outcome["policy"] = policy
+        outcome["prior"] = prior
         outcome["created"] = prior is None
         return _replace(prefs, [p for p in current if p.id != target_id] + [policy])
 
@@ -207,8 +281,7 @@ async def upsert_analyst_policy(
     await _audit(
         state, request,
         "analyst_policy.upsert" if outcome["created"] else "analyst_policy.update",
-        f"id={target_id} rule={rule_id} enabled={policy.enabled} "
-        f"scope={policy.source_id or 'all_sources'}",
+        f"id={target_id} " + _describe_change(outcome.get("prior"), policy),
     )
     return {"policy": _public(policy), "created": outcome["created"]}
 
@@ -236,12 +309,14 @@ async def set_analyst_policy_enabled(
         ]
         outcome["policy"] = next(p for p in updated if p.id == policy_id)
         outcome["rule_id"] = target.rule_id
+        outcome["was_enabled"] = target.enabled
         return _replace(prefs, updated)
 
     await state.mutate_prefs(_apply)
     await _audit(
         state, request, "analyst_policy.enabled",
-        f"id={policy_id} rule={outcome['rule_id']} enabled={enabled}",
+        f"id={policy_id} rule={outcome['rule_id']} "
+        f"enabled: {outcome['was_enabled']} -> {enabled}",
     )
     return {"policy": _public(outcome["policy"])}
 
@@ -262,11 +337,14 @@ async def delete_analyst_policy(
         if target is None:
             raise HTTPException(status_code=404, detail="analyst rule policy not found")
         outcome["rule_id"] = target.rule_id
+        outcome["deleted_state"] = " ".join(
+            f"{name}={_audit_value(target, name)}" for name in _AUDITED_FIELDS
+        )
         return _replace(prefs, [p for p in current if p.id != policy_id])
 
     await state.mutate_prefs(_apply)
     await _audit(
         state, request, "analyst_policy.delete",
-        f"id={policy_id} rule={outcome['rule_id']}",
+        f"id={policy_id} deleted {outcome['deleted_state']}",
     )
     return {"deleted": 1, "id": policy_id}

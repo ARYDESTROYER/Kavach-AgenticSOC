@@ -1294,3 +1294,254 @@ def test_declaration_writes_read_the_list_under_the_preferences_lock() -> None:
     assert 'getattr(state.prefs, "analyst_rule_policies"' not in src.replace(
         "async def list_analyst_policies", "\x00"
     ).split("\x00")[1].split("@router.put")[1]
+
+
+# =========================================================================== #
+# 14 — REGRESSIONS from the post-merge review of this feature.
+#
+# The theme: a declaration is a statement about a DETECTION. It must never
+# overrule what a person decided about one CASE, and its marker must not be
+# erasable — because every statistical exclusion is keyed on it.
+# =========================================================================== #
+async def _analyst_action(app_state: AppState, case_id: str, action: str) -> Case:
+    """Drive the SUPPORTED analyst lifecycle path, not a hand-built Case."""
+    from app.api.routes import CaseAction, _perform_case_action
+
+    await _perform_case_action(case_id, CaseAction(action=action), "alice", app_state)
+    stored = await app_state.cases.get(case_id)
+    assert stored is not None
+    return stored
+
+
+async def _declare(app_state: AppState, **kw) -> None:
+    await app_state.update_prefs(app_state.prefs.model_copy(
+        update={"analyst_rule_policies": [AnalystRulePolicy(rule_id="web_shell_php", **kw)]}
+    ))
+
+
+async def test_an_analyst_reopen_is_never_overridden_by_the_next_alert(
+    app_state: AppState, mock_provider
+) -> None:
+    """THE one this feature promised not to do.
+
+    ``_perform_case_action`` stamps ``decision_by=ANALYST`` but never assigns a verdict,
+    and OPEN_CASE_STATUSES includes the reopened state — so a guard that only asked "did
+    a model run?" handed the reopened case straight back and re-closed it. The analyst's
+    only per-case escape was a loop they could not win.
+    """
+    await _declare(app_state)
+    closed = await app_state.pipeline.investigate_cluster(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    assert closed.decision_by == DecisionBy.ANALYST_POLICY
+
+    reopened = await _analyst_action(app_state, closed.case_id, "reopen")
+    assert reopened.status == CaseStatus.OPEN
+    assert reopened.decision_by == DecisionBy.ANALYST
+    assert reopened.verdict is None  # the shape that used to slip through
+
+    mock_provider.push("router", json.dumps(
+        {"bucket": "obviously_benign", "confidence": 0.95, "reason": "noise"}))
+    again = await app_state.pipeline.investigate_cluster(
+        _cluster(n=6), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    assert again.case_id == closed.case_id
+    assert again.decision_by != DecisionBy.ANALYST_POLICY
+
+
+@pytest.mark.parametrize("action", ["escalate", "hold", "acknowledge"])
+async def test_any_analyst_action_on_a_candidate_survives_a_declaration(
+    app_state: AppState, mock_provider, action: str
+) -> None:
+    """An un-investigated candidate a person acted on is theirs, not the policy's."""
+    candidate = await app_state.pipeline.register_candidate(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    acted = await _analyst_action(app_state, candidate.case_id, action)
+    assert acted.decision_by == DecisionBy.ANALYST
+
+    await _declare(app_state)
+    again = await app_state.pipeline.register_candidate(
+        _cluster(n=6), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    assert again.case_id == candidate.case_id
+    assert again.decision_by != DecisionBy.ANALYST_POLICY
+    assert again.status != CaseStatus.CLOSED
+
+
+async def test_force_always_defeats_a_declaration(
+    app_state: AppState, mock_provider
+) -> None:
+    """An analyst tier holds ``cases:reinvestigate`` but only ``rules:read``.
+
+    Without this they could neither investigate a declared-benign case they suspect is a
+    real attack, nor revoke the declaration. On a security product that is the wrong end
+    state: an explicit per-case human request must always win.
+    """
+    await _declare(app_state)
+    mock_provider.push("router", json.dumps(
+        {"bucket": "obviously_benign", "confidence": 0.9, "reason": "noise"}))
+    case = await app_state.pipeline.investigate_cluster(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs, force=True
+    )
+    assert case.decision_by != DecisionBy.ANALYST_POLICY
+    assert mock_provider.calls, "force=True must reach the model"
+
+
+async def test_confirm_fp_cannot_erase_the_policy_marker(
+    app_state: AppState, mock_provider
+) -> None:
+    """``decision_by`` alone is an erasable marker.
+
+    Any analyst action overwrites it, and ``_guard_transition`` allows a same-status
+    move — so ``confirm_fp`` on an already-CLOSED policy case (including in bulk) used to
+    silently drop it out of every exclusion at once, turning ONE declaration into N
+    independent analyst labels.
+    """
+    await _declare(app_state)
+    closed = await app_state.pipeline.investigate_cluster(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    confirmed = await _analyst_action(app_state, closed.case_id, "confirm_fp")
+
+    assert confirmed.decision_by == DecisionBy.ANALYST  # the overwrite still happens...
+    assert P.is_policy_closed(confirmed)  # ...but the durable payload says what it is
+    assert confirmed.analyst_policy is not None
+    # ...so every agent-performance exclusion still applies.
+    assert quality_metrics([confirmed])["policy_closed_cases"] == 1
+    assert quality_metrics([confirmed])["terminal_cases"] == 0
+
+
+async def test_a_real_investigation_clears_the_policy_marker(
+    app_state: AppState, mock_provider
+) -> None:
+    """The durable marker must not outlive the thing it describes.
+
+    Otherwise a case that was policy-closed, reopened and then genuinely investigated
+    would stay excluded from agent statistics forever.
+    """
+    await _declare(app_state)
+    closed = await app_state.pipeline.investigate_cluster(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    assert closed.analyst_policy is not None
+
+    mock_provider.push("router", json.dumps(
+        {"bucket": "obviously_benign", "confidence": 0.95, "reason": "noise"}))
+    investigated = await app_state.pipeline.investigate_cluster(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs, force=True
+    )
+    assert investigated.analyst_policy is None
+    assert not P.is_policy_closed(investigated)
+
+
+async def test_a_declaration_can_carry_a_risk_ceiling(
+    app_state: AppState, mock_provider
+) -> None:
+    """``decide()`` bounds FP auto-close by risk; a declaration had no equivalent."""
+    await _declare(app_state, max_risk_score=0.0)
+    mock_provider.push("router", json.dumps(
+        {"bucket": "obviously_benign", "confidence": 0.95, "reason": "noise"}))
+    case = await app_state.pipeline.investigate_cluster(
+        _cluster(), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    assert case.risk_score > 0.0
+    assert case.decision_by != DecisionBy.ANALYST_POLICY, "above the ceiling → investigate"
+
+    await _declare(app_state, max_risk_score=100.0)
+    covered = await app_state.pipeline.register_candidate(
+        _cluster(ip="10.0.0.9"), SourceSurface.AUTOMATED_SCAN, app_state.prefs
+    )
+    assert covered.decision_by == DecisionBy.ANALYST_POLICY
+
+
+def test_the_truncation_ceiling_is_elasticsearch_only() -> None:
+    """It is a property of ONE backend's scan, not of the corpus.
+
+    Applying it everywhere would report a complete PostgreSQL read of a large corpus as
+    truncated — and since a truncated read now withholds promotion AND the futility
+    report, it would silently disable the feature on a healthy deployment that simply
+    grew past 10k chunks.
+    """
+    from app.config import Secrets
+    from app.es.fake import InMemoryESClient
+    from app.llm.gateway import LLMGateway
+    from app.llm.providers import MockProvider
+    from app.stores.usage import UsageStore
+    from app.tools.rag import _CORPUS_SCAN_TRUNCATION_HINT, RagService
+    from app.tools.vectorstore import ESVectorStore, InMemoryVectorStore
+
+    mock = MockProvider()
+    gateway = LLMGateway(
+        Secrets(_env_file=None), UsageStore(InMemoryESClient()),
+        provider_overrides={"openai": mock, "mock": mock},
+    )
+    in_memory = RagService(gateway, Preferences(), store=InMemoryVectorStore())
+    assert in_memory._read_may_be_truncated(_CORPUS_SCAN_TRUNCATION_HINT * 10) is False
+
+    es_backed = RagService(gateway, Preferences(), store=ESVectorStore(InMemoryESClient()))
+    assert es_backed._read_may_be_truncated(_CORPUS_SCAN_TRUNCATION_HINT) is True
+    assert es_backed._read_may_be_truncated(_CORPUS_SCAN_TRUNCATION_HINT - 1) is False
+
+
+def test_a_partial_edit_never_widens_a_declaration(app_state: AppState) -> None:
+    """Every optional field defaults to the WIDEST blast radius.
+
+    Writing those defaults over a stored record means a one-word reason fix silently
+    re-enables a revoked rule, clears its expiry and widens it from one source to all.
+    """
+    with _policy_client(app_state) as client:
+        created = client.put("/api/rules/analyst-policies/new", json={
+            "rule_id": "web_shell_php", "reason": "scoped + expiring",
+            "source_id": "src-1", "enabled": False, "max_risk_score": 20,
+            "expires_at": "2027-01-01T00:00:00Z",
+        }).json()["policy"]
+
+        edited = client.put(f"/api/rules/analyst-policies/{created['id']}", json={
+            "rule_id": "web_shell_php", "reason": "typo fix",
+        }).json()["policy"]
+
+        assert edited["reason"] == "typo fix"          # what WAS sent changes...
+        assert edited["enabled"] is False              # ...and what was not, does not.
+        assert edited["source_id"] == "src-1"
+        assert edited["max_risk_score"] == 20
+        assert edited["expires_at"] == created["expires_at"]
+
+        # An EXPLICIT widening is still honoured — this is about omission, not intent.
+        widened = client.put(f"/api/rules/analyst-policies/{created['id']}", json={
+            "rule_id": "web_shell_php", "enabled": True, "source_id": None,
+        }).json()["policy"]
+        assert widened["enabled"] is True and widened["source_id"] is None
+
+
+def test_declaration_edits_record_what_actually_changed() -> None:
+    """An audit row carrying only the END state cannot answer "widened from what?"."""
+    from app.api.routes_analyst_policy import _describe_change
+
+    before = AnalystRulePolicy(
+        id="arp-1", rule_id="r", enabled=False, source_id="src-1", reason="scoped"
+    )
+    after = before.model_copy(update={"enabled": True, "source_id": None})
+    detail = _describe_change(before, after)
+    assert "enabled: False -> True" in detail
+    assert "source_id: src-1 -> all_sources" in detail
+    assert "reason" not in detail  # unchanged fields are not noise
+
+    created = _describe_change(None, after)
+    assert created.startswith("created ") and "rule_id=r" in created
+    assert _describe_change(before, before) == "changed nothing"
+
+
+def test_the_precedent_block_claims_only_what_the_code_verifies() -> None:
+    """Prompt copy must not assert diligence the pipeline never performed (#9-adjacent).
+
+    ``analyst_confirmed_outcome`` proves an explicit human classification per outcome. It
+    does NOT prove the cases were reviewed one at a time (a bulk confirm classifies many
+    at once), and NOTHING in the pipeline inspects a rule's alert fields — so the block
+    may not assert that its alerts lack request/execution context.
+    """
+    block = render_precedent(_qualified_signal())
+    assert "reviewed these cases individually" not in block
+    assert "known to arrive without" not in block
+    # What IS verified stays.
+    assert "classified by a human analyst" in block

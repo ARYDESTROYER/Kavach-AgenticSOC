@@ -46,6 +46,46 @@ and, just as importantly, makes each of these conditions a state an operator can
   operator doing exactly what the product asked of them. The window is now allocated
   round-robin across rule identities (`precedent.window.stratify_by_rule`, ON), so every
   active rule keeps a floor inside the same bounded window.
+- **An analyst rule policy can no longer override a person.** The guard asked "did a
+  model run?" (`verdict is not None`), but the analyst lifecycle path stamps
+  `decision_by=ANALYST` *without* assigning a verdict, and `OPEN_CASE_STATUSES` includes
+  escalated / on_hold / investigating / needs_human — so an analyst who **reopened** a
+  policy-closed case had it re-closed by the next matching alert, and an escalated
+  candidate was flipped back to closed. Their only per-case escape was a loop they could
+  not win. A case an analyst has acted on, like one the agent has already investigated, is
+  now left entirely alone.
+- **`force` always defeats a declaration.** The policy check ran before the force/stability
+  branch and took no `force` parameter, so `POST /api/cases/{id}/reinvestigate` returned a
+  fresh policy-closed case every time. An analyst tier holds `cases:reinvestigate` but only
+  `rules:read`, so they could neither investigate a declared-benign case they suspected was
+  a real attack nor revoke the declaration. An explicit per-case human request now always
+  wins.
+- **The policy-close marker is no longer erasable.** `is_policy_closed()` keyed only on
+  `decision_by`, which every analyst action overwrites — and `_guard_transition` permits a
+  same-status move, so `confirm_fp` on an already-closed policy case (including in bulk)
+  dropped it out of all seven statistical exclusions at once and let the threshold tuner
+  count one declaration as N independent analyst labels. The predicate now also reads the
+  durable `Case.analyst_policy` payload, which is written only by the policy close and
+  cleared by any writer that supersedes it.
+- **A partial `PUT /api/rules/analyst-policies/{id}` no longer widens authority.** Every
+  optional field defaulted to the widest blast radius and was written over the stored
+  record, so omitting `enabled` re-enabled a revoked declaration, omitting `expires_at`
+  cleared the expiry, and omitting `source_id` widened one source to all of them. Fields
+  the client did not send are now carried forward (`model_fields_set`).
+- **Declaration edits record what actually changed.** The audit row carried only the new
+  state, so a widened or re-enabled rule could not be traced back to what it was; it now
+  records `field: before -> after` for every field that moved.
+- **The precedent prompt block no longer claims diligence the code never performed.** It
+  asserted that the operator "reviewed these cases individually" (a bulk confirm classifies
+  many at once) and that the rule's alerts "are known to arrive without" request/execution
+  context — a factual claim about a detection that nothing in the pipeline measures. It now
+  states only what `analyst_confirmed_outcome` proves: each outcome carries an explicit
+  human classification.
+- **The Elasticsearch scan ceiling is no longer applied to every state backend.** The
+  in-memory and SQL stores materialise every row, so a complete PostgreSQL read of a corpus
+  past 10k chunks was reported as truncated — and since a truncated read withholds both
+  precedent promotion and the futility report, that silently disabled the feature on a
+  healthy large deployment.
 - **A `VectorStore` corpus-wide read is one pass, not one per document.** Adding
   `list_all_chunks()` removes an O(documents x corpus) fan-out that the per-rule precedent
   distribution and the rule-identity re-tag would otherwise have paid on every read: a
@@ -115,6 +155,20 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **A Console home for both new controls.** `analyst_rule_policies` is an array-of-model
+  and `precedent.promotion` a nested object, and the generic Advanced settings form can
+  only DESCRIBE structured fields ("edit in its dedicated section") — a section that did
+  not exist, so both were reachable only through the raw API. **Settings → Case policy →
+  Declared benign** now lists, edits, scopes, bounds, expires and revokes declarations
+  behind a confirm dialog, stating in the operator's own words that a declaration closes
+  matching alerts with no model call and no human. **Settings → Knowledge & threat context
+  → Analyst-confirmed precedent promotion** carries the promotion opt-in and its
+  thresholds. For a feature that closes cases without a human, being able to see and
+  revoke it is not cosmetic.
+- **An optional per-declaration risk ceiling.** `decide()` bounds FALSE_POSITIVE
+  auto-close with `max_risk_score`; a declaration had no equivalent and closed at any
+  computed risk. An operator can now say "benign here, but investigate an unusually
+  high-scoring instance".
 - **Analyst rule policies — an operator can state a rule-level fact and have it honoured
   deterministically.** For a detection whose alerts carry no per-case evidence, no amount
   of confirmation can help: the investigation cannot verify that *this* instance is

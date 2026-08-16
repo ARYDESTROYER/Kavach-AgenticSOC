@@ -15,7 +15,7 @@
  *       is off.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { TooltipProvider } from '@/ui/tooltip';
 import type { Preferences, RagConfig } from '@/lib/types';
@@ -44,7 +44,13 @@ describe('Knowledge settings — unconfirmed precedent tier', () => {
 
     expect(screen.getByText('Unconfirmed precedent (lower trust)')).toBeInTheDocument();
     expect(screen.getByText('Lower trust')).toBeInTheDocument();
-    expect(screen.getByText('Off by default')).toBeInTheDocument();
+    // Scoped to THIS card: the analyst-precedent promotion card on the same page is
+    // also (correctly) badged "Off by default", so a page-wide query would now match
+    // two and stop testing the tier it is named for.
+    const tierCard = screen
+      .getByText('Unconfirmed precedent (lower trust)')
+      .closest('section, article, div[class*="rounded"]') as HTMLElement;
+    expect(within(tierCard).getByText('Off by default')).toBeInTheDocument();
     expect(screen.getByText('its own prior model judgements')).toBeInTheDocument();
     expect(screen.getByText('analyst-confirmed outcomes only')).toBeInTheDocument();
 

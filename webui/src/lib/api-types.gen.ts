@@ -8434,6 +8434,13 @@ export interface components {
         /**
          * _PolicyIn
          * @description The writable shape. ``id`` comes from the path; provenance is set server-side.
+         *
+         *     Every optional field here defaults to the WIDEST blast radius (enabled, unscoped,
+         *     never expiring). Writing those defaults over a prior record would mean a partial edit
+         *     silently re-enables a revoked declaration, clears its expiry, and widens it from one
+         *     source to all of them. So :func:`upsert_analyst_policy` carries prior values forward
+         *     for any field the client did not actually send (``model_fields_set``) — the same
+         *     reason :class:`_EnabledIn` makes ``enabled`` required.
          */
         _PolicyIn: {
             /**
@@ -8443,6 +8450,8 @@ export interface components {
             enabled: boolean;
             /** Expires At */
             expires_at?: string | null;
+            /** Max Risk Score */
+            max_risk_score?: number | null;
             /**
              * Reason
              * @default

@@ -497,7 +497,8 @@ class InvestigationPipeline:
             # because there is nothing to ask a model: the operator has already
             # answered at the rule level. See ``_close_by_analyst_policy``.
             policy_case = await self._close_by_analyst_policy(
-                cluster, source_surface, prefs, case_id=case_id, existing=existing
+                cluster, source_surface, prefs,
+                case_id=case_id, existing=existing, force=force,
             )
             if policy_case is not None:
                 return policy_case
@@ -854,6 +855,7 @@ class InvestigationPipeline:
         *,
         case_id: str,
         existing: Case | None,
+        force: bool = False,
     ) -> Case | None:
         """Close a cluster the operator has DECLARED benign — with no LLM call at all.
 
@@ -898,15 +900,46 @@ class InvestigationPipeline:
         Fail-safe: any error returns ``None``, so a broken declaration degrades to a
         normal investigation rather than dropping the cluster.
         """
-        # An already-investigated case is out of scope, full stop. Its verdict is the
-        # agent's recorded work and the deterministic decision that followed it.
-        if existing is not None and existing.verdict is not None:
+        # An explicit human action on THIS case always wins over a rule-level statement.
+        #
+        # ``verdict is not None`` alone is not that test. The analyst lifecycle path
+        # (``routes._perform_case_action``) sets ``status`` and stamps
+        # ``decision_by = ANALYST`` but never assigns a verdict, and
+        # ``OPEN_CASE_STATUSES`` includes escalated / on_hold / investigating /
+        # needs_human — so an analyst who REOPENED a policy-closed case, or escalated an
+        # un-investigated candidate, was handed straight back to this gate and overridden
+        # by the next matching alert. Their only per-case escape was a loop they could
+        # not win. A declaration says what a DETECTION means in general; it must never
+        # overrule what a person decided about one case.
+        #
+        # This guard is also what makes the unconditional ``disposition=FALSE_POSITIVE``
+        # below safe: every writer of an analyst disposition stamps ANALYST too, so a
+        # deliberate analyst classification can no longer be reached from here (mirroring
+        # ``case_manager.apply``'s "never overrides an analyst-confirmed disposition").
+        if existing is not None and (
+            existing.verdict is not None
+            or existing.decision_by == DecisionBy.ANALYST
+        ):
             return None
+        # An explicit per-case human REQUEST wins too. ``force`` is what
+        # ``POST /api/cases/{id}/reinvestigate`` and ``/investigate`` carry, and an
+        # analyst tier holding ``cases:reinvestigate`` but only ``rules:read`` cannot
+        # revoke the declaration — so without this they could neither investigate a
+        # declared-benign case they suspect is a real attack, nor lift the declaration.
+        # On a security product that is the wrong end state.
+        if force:
+            return None
+        # The risk ceiling is compared against the SAME deterministic risk the case
+        # will carry, so it must be computed before the match rather than after it.
+        breakdown = compute_risk(cluster, prefs, 0.0)
+        cluster.risk_score = breakdown.total
+        cluster.risk_breakdown = breakdown
         try:
             match = match_analyst_rule_policy(
                 rule_ids=_merge_rules(existing, cluster),
                 source_id=getattr(cluster, "source_id", None),
                 policies=getattr(prefs, "analyst_rule_policies", None),
+                risk_score=cluster.risk_score,
             )
         except Exception as exc:  # noqa: BLE001 — never drop a cluster on policy code
             logger.warning("Analyst rule policy evaluation failed: %s", exc)
@@ -914,9 +947,6 @@ class InvestigationPipeline:
         if match is None:
             return None
 
-        breakdown = compute_risk(cluster, prefs, 0.0)
-        cluster.risk_score = breakdown.total
-        cluster.risk_breakdown = breakdown
         case_number = await self._allocate_case_number(existing, cluster, prefs)
         now = iso_now()
         rules = ", ".join(match.rule_ids)
@@ -1099,7 +1129,9 @@ class InvestigationPipeline:
                 existing.retrieval_observation_status if existing else "not_measured"
             ),
             precedent_signal=(existing.precedent_signal if existing else None),
-            analyst_policy=(existing.analyst_policy if existing else None),
+            # Reaching the candidate path means no live declaration covered this
+            # cluster, so any stale marker from an earlier close is no longer true.
+            analyst_policy=None,
         )
         await self._cases.save(case)
         await self._audit.record(
@@ -1206,7 +1238,11 @@ class InvestigationPipeline:
                 if precedent_signal is not None
                 else (existing.precedent_signal if existing else None)
             ),
-            analyst_policy=(existing.analyst_policy if existing else None),
+            # An investigation SUPERSEDES a declaration: this case is no longer closed by
+            # policy, so the durable marker is dropped rather than carried forward (the
+            # append-only ``analyst_policy`` history event keeps the trail). Leaving it
+            # set would keep a genuinely investigated case out of every agent statistic.
+            analyst_policy=None,
         )
 
 
@@ -1332,7 +1368,9 @@ def _fail_to_human_case(
             existing, retrieval_measured
         ),
         precedent_signal=(existing.precedent_signal if existing else None),
-        analyst_policy=(existing.analyst_policy if existing else None),
+        # A failed investigation is still an investigation: the case is NEEDS_HUMAN, not
+        # closed by declaration, so the durable marker does not survive.
+        analyst_policy=None,
     )
 
 

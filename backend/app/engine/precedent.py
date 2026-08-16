@@ -494,6 +494,7 @@ def match_analyst_rule_policy(
     rule_ids: Iterable[Any],
     source_id: str | None,
     policies: Iterable["AnalystRulePolicy"] | None,
+    risk_score: float | None = None,
     now: datetime | None = None,
 ) -> AnalystPolicyMatch | None:
     """The live operator declaration covering this cluster, or ``None``.
@@ -503,6 +504,10 @@ def match_analyst_rule_policy(
     discipline: a cluster that also fired an un-declared detection is NOT the thing the
     operator declared benign, and must still be investigated. A cluster with no rule
     identity never matches.
+
+    ``risk_score`` is the cluster's deterministic risk. A declaration carrying an
+    optional ``max_risk_score`` does not cover a cluster above that ceiling, so the
+    outlier is investigated normally instead of being closed unseen.
     """
     wanted = [normalize_rule_id(raw) for raw in (rule_ids or [])]
     wanted = sorted({rid for rid in wanted if rid})
@@ -516,6 +521,13 @@ def match_analyst_rule_policy(
             continue
         policy_scope = str(getattr(policy, "source_id", "") or "")
         if policy_scope and policy_scope != scope:
+            continue
+        # Optional per-declaration risk ceiling. ``decide()`` bounds FALSE_POSITIVE
+        # auto-close with ``max_risk_score``; a declaration had no equivalent, so a
+        # declared rule closed at ANY computed risk. An operator can now say "benign
+        # here, but not if it scores unusually high" and have the outlier investigated.
+        ceiling = getattr(policy, "max_risk_score", None)
+        if ceiling is not None and risk_score is not None and float(risk_score) > float(ceiling):
             continue
         target = normalize_rule_id(getattr(policy, "rule_id", ""))
         if not target or target not in wanted or target in covered:
@@ -640,8 +652,21 @@ def is_policy_closed(case: "Case") -> bool:
     The single predicate every statistics consumer uses, so "exclude the deterministic
     policy close" is one decision made once rather than eleven independent string
     comparisons that can drift apart.
+
+    It reads the DURABLE ``analyst_policy`` payload as well as ``decision_by``, because
+    ``decision_by`` alone is erasable. Any analyst lifecycle action stamps
+    ``decision_by = ANALYST``, and ``_guard_transition`` permits a same-status move — so
+    ``confirm_fp`` on an already-CLOSED policy case (including in bulk) silently
+    overwrote the marker. Every exclusion keyed on it stopped applying at once, and one
+    declaration became N independent analyst labels for the threshold tuner. The payload
+    is written only by the policy close and cleared by any writer that supersedes it (an
+    investigation, a fail-to-human, a candidate rebuild), so it means exactly "this case
+    is currently closed by declaration".
     """
-    return _decision_value(case) == DecisionBy.ANALYST_POLICY.value
+    return (
+        _decision_value(case) == DecisionBy.ANALYST_POLICY.value
+        or getattr(case, "analyst_policy", None) is not None
+    )
 
 
 def rule_outcome_tally(cases: Iterable["Case"]) -> dict[str, RuleOutcomeTally]:
