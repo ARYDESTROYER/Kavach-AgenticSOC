@@ -1,19 +1,17 @@
 /**
- * NoiseFunnel — the "Noise Reduction" flow ribbon for the Security Command Center
- * (restored from the Round-8 horizontal-Sankey ribbon, then tuned as an
- * operational instrument rather than a decorative illustration).
+ * NoiseFunnel — the selected-window Noise Reduction instrument in the Security
+ * Command Center.
  *
- * Tells the value-prop story of how the agent thins raw alert volume down to the
- * handful of cases a human sees, as a left-to-right flow:
+ * Alerts and clusters are different units, so their connectors are intentionally
+ * fixed-weight conversion context. Proportional ribbons begin at opened cases and
+ * conserve one unit across two adjacent splits:
  *
- *     ingested → clustered → cases → { auto_cleared | escalated → closed }
+ *     alerts → clusters → cases ⇉ auto-cleared | escalated ⇉ human-closed | remainder
  *
- * The processing spine is intentionally one quiet, proportional stream. Severity is
- * evidence about each stage (available in the stage detail), not a second competing
- * visual encoding. At `cases`, the stream fans into the three terminal operational
- * views: auto-cleared and escalated are the conserved split; closed by a human is an
- * overlapping subset of escalated. The labelled count/share rail is authoritative;
- * the restored ribbon fan provides directional context for the operator.
+ * Simple is the default direct-labelled graph. Detailed adds the reduction summary
+ * and complete evidence rail without changing the graph's arithmetic. Open cases are
+ * shown as separate selected-window lifecycle context because they are not equal to
+ * the conserved escalated remainder.
  *
  * Binds VERBATIM to the §D `GET /api/metrics/noise-reduction` contract (the
  * `NoiseReduction` type). When the durable ingest counters are still warming up
@@ -21,10 +19,9 @@
  *
  * #9: every value shown is an aggregate count or a fixed stage label (no raw log
  * text), rendered as plain text — UNTRUSTED-safe by construction. Colours resolve
- * from approved theme/semantic tokens only (no raw hex; design gate). The SVG flow is
- * decorative (`aria-hidden`); ALL meaning is carried by the focusable stage
- * buttons/groups in the label rail, so assistive tech gets the numbers, not the
- * beziers. Reduced-motion is honoured globally (theme.css neutralises the keyframes).
+ * from approved theme/semantic tokens only (no raw hex; design gate). The SVG is
+ * decorative; graph labels or the Detailed evidence rail carry the accessible values.
+ * Refresh feedback is one-shot, data-keyed, and absent under reduced motion.
  */
 import * as React from 'react';
 import { Eye, EyeOff, Maximize2 } from 'lucide-react';
@@ -51,6 +48,8 @@ import { token, SEVERITY_COLOR, VERDICT_COLOR } from './palette';
 import { CountUp } from './CountUp';
 import { HelpTip } from './HelpTip';
 import { NoiseLineageView } from './NoiseLineage';
+import { SegmentedControl } from './SegmentedControl';
+import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
 
 /* ------------------------------------------------------------------------- */
 /* Severity + outcome → token-name maps (routed through the palette authority  */
@@ -153,11 +152,11 @@ const OUTCOME_KEYS = ['auto_cleared', 'escalated', 'closed', 'policy_closed'];
 
 /** Popover help copy (>80 chars → focusable Popover, not a bare Tooltip). */
 export const NOISE_FUNNEL_HELP_TEXT =
-  'How the agent reduces raw alert volume: received alerts move through clustering, a ' +
-  'fraction become cases, and opened cases split into false-positive auto-clear or the ' +
-  'escalated analyst path. Closed by human is a subset of that escalated path, not a ' +
-  'third partition. Counts and percentages in the aligned rail are authoritative; ' +
-  'hover or focus any stage for its evidence.';
+  'Simple view shows the alert-to-cluster-to-case conversion context and then the ' +
+  'mathematically conserved case flow. Detailed view restores every stage and its ' +
+  'evidence rail. Auto-cleared and Escalated partition opened cases; Closed by human ' +
+  'is a subset of Escalated. Open cases are shown separately because they are a live ' +
+  'lifecycle state, not the same thing as the non-auto-cleared remainder.';
 
 /* ------------------------------------------------------------------------- */
 /* Pure derivation (exported for tests).                                       */
@@ -272,32 +271,8 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Sankey geometry.                                                            */
+/* Flow geometry.                                                             */
 /* ------------------------------------------------------------------------- */
-
-/** Fixed-aspect viewBox (~2.9:1). Stretch-scaled to the dashboard band. */
-const VB_W = 640;
-const VB_H = 220;
-/**
- * The flat dashboard has useful whitespace before the first centered stage column.
- * Reclaim a small part of it for the decorative plot only. The offset tapers to zero
- * at the final node, so the right edge stays fixed and the labelled rail never moves.
- */
-const FLAT_PLOT_LEFT_EXTENSION = 14;
-/** Vertical center + the plot band the strands live in. */
-const CY = VB_H / 2;
-const PLOT_PAD = 24;
-const PLOT_H = VB_H - PLOT_PAD * 2;
-/** Thin square-ended anchors + the vertical splay of the three outcomes. */
-const NODE_W = 5;
-const OUTCOME_SPREAD = 58;
-
-/** Exact proportional spine height: visual area never overstates survivor volume. */
-function spineNodeHeight(total: number, topTotal: number): number {
-  if (total <= 0) return 0;
-  const prop = topTotal > 0 ? Math.min(1, total / topTotal) : 0;
-  return PLOT_H * prop;
-}
 
 /** Honest compact share copy: a non-zero sub-half-percent cohort never reads as 0%. */
 function formatShare(value: number): string {
@@ -330,230 +305,337 @@ interface Rect {
   h: number;
   fill: string;
 }
-interface Ribbon {
+/* Carbon-inspired conversion + conserved case-flow geometry. */
+
+const SIMPLE_INLINE_WIDTH = 800;
+const SIMPLE_EXPANDED_WIDTH = 1120;
+const SIMPLE_INLINE_HEIGHT = 184;
+const SIMPLE_EXPANDED_HEIGHT = 400;
+const SIMPLE_NODE_W = 4;
+const SIMPLE_FLOW_KEYS = new Set([
+  'cases',
+  'auto_cleared',
+  'escalated',
+  'closed',
+  'escalated_remaining',
+]);
+
+interface SimpleRibbon {
   id: string;
   path: string;
-  colorName: string;
-  kind: 'flow' | 'outcome';
+  targetColor: string;
   sourceKey: string;
   targetKey: string;
-}
-interface Badge {
-  leftPct: number;
-  topPct: number;
-  drop: number;
-  pct: number;
-}
-interface Layout {
-  ribbons: Ribbon[];
-  rects: Rect[];
-  badges: Badge[];
-  spurPath: string | null;
-  spurNub: { x: number; y: number } | null;
-  spurChip: { leftPct: number; topPct: number } | null;
+  value: number;
+  relatedStages: string[];
 }
 
-/** One processing-spine node's exact proportional vertical extent. */
-interface SpineGeom {
+interface SimpleNode extends Rect {
+  rowKey: string | null;
+  label: string;
+  total: number;
+  labelY: number;
+  labelSide: 'after' | 'before';
+}
+
+interface ConversionNode {
+  key: 'ingested' | 'clustered';
   row: FunnelRow;
-  index: number;
   x: number;
-  top: number;
-  bottom: number;
-  h: number;
+  y: number;
+}
+
+interface SimpleLayout {
+  width: number;
+  height: number;
+  valid: boolean;
+  integrityMessage: string | null;
+  remainingEscalated: number;
+  ribbons: SimpleRibbon[];
+  nodes: SimpleNode[];
+  conversionNodes: ConversionNode[];
+  casesX: number;
+  contextY: number;
 }
 
 /**
- * Build one aggregate processing stream (ingested → clustered → cases), the
- * three-outcome fan, exact proportional anchors, direct loss annotations, and the
- * suppressed/ignored side-spur. Severity remains in the stage evidence instead of
- * becoming five competing flow colours.
+ * Build the honest Simple view. Alerts and clusters are fixed-weight conversion
+ * milestones because those columns change unit. Proportional ribbons begin only at
+ * Cases opened, where the backend guarantees these same-unit invariants:
+ *
+ *   auto-cleared + escalated = cases
+ *   closed-by-human + not-analyst-closed = escalated
+ *
+ * If either invariant fails, the graph refuses to invent widths and the detailed
+ * evidence rail remains available.
  */
-function buildLayout(
+function buildSimpleLayout(
   derived: DerivedFunnel,
-  drops: { suppressed: number; ignored: number },
   uid: string,
-  leftExtension = 0,
-): Layout {
-  const rows = derived.rows;
-  const n = rows.length;
-  const candidateKeys = new Set(['candidate', 'awaiting']);
-  const spineEntries = rows
-    .map((row, index) => ({ row, index }))
-    .filter(({ row }) => !row.isOutcome && !candidateKeys.has(row.key));
-  const topTotal = derived.topTotal;
-  const colCenter = (i: number) => {
-    const count = Math.max(1, n);
-    const canonical = (VB_W * (i + 0.5)) / count;
-    if (leftExtension <= 0) return canonical;
-    const progress = count <= 1 ? 0 : i / (count - 1);
-    return canonical - leftExtension * (1 - progress);
+  requestedWidth: number,
+  height: number,
+): SimpleLayout {
+  const width = Math.max(720, requestedWidth || SIMPLE_INLINE_WIDTH);
+  const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
+  const cases = rowByKey.get('cases')?.total ?? 0;
+  const autoCleared = rowByKey.get('auto_cleared')?.total ?? 0;
+  const escalated = rowByKey.get('escalated')?.total ?? 0;
+  const closed = rowByKey.get('closed')?.total ?? 0;
+  const remainingEscalated = Math.max(0, escalated - closed);
+  const valid =
+    cases >= 0 &&
+    autoCleared >= 0 &&
+    escalated >= 0 &&
+    closed >= 0 &&
+    autoCleared + escalated === cases &&
+    closed <= escalated;
+
+  const casesX = width * 0.38;
+  const base = {
+    width,
+    height,
+    valid,
+    integrityMessage: valid
+      ? null
+      : 'Case outcomes do not reconcile, so proportional ribbons are withheld. Exact counts remain available in Detailed view.',
+    remainingEscalated,
+    ribbons: [] as SimpleRibbon[],
+    nodes: [] as SimpleNode[],
+    conversionNodes: [] as ConversionNode[],
+    casesX,
+    contextY: height / 2,
   };
 
-  const rects: Rect[] = [];
-  const ribbons: Ribbon[] = [];
-  const badges: Badge[] = [];
+  if (!valid || cases <= 0) return base;
 
-  // --- one quiet processing spine, centered and exactly proportional ---
-  const spine: SpineGeom[] = [];
-  for (const { row, index } of spineEntries) {
-    const x = colCenter(index);
-    const h = spineNodeHeight(row.total, topTotal);
-    const top = CY - h / 2;
-    if (h > 0) {
-      rects.push({
-        key: row.key,
-        x: x - NODE_W / 2,
-        y: top,
-        w: NODE_W,
-        h,
-        fill: token('primary'),
-      });
-    }
-    spine.push({ row, index, x, top, bottom: top + h, h });
-  }
+  const expanded = height >= 300;
+  const plotTop = expanded ? 54 : 40;
+  const plotBottom = height - (expanded ? 24 : 12);
+  const nodePadding = expanded ? 38 : 24;
+  const caseHeight = Math.max(1, plotBottom - plotTop - nodePadding);
+  const casesTop = plotTop + nodePadding / 2;
+  const casesBottom = casesTop + caseHeight;
+  const contextY = casesTop + caseHeight / 2;
+  const decisionX = width * 0.68;
+  const resolutionX = width - 10;
 
-  // --- aggregate stream between consecutive processing stages ---
-  for (let i = 0; i < spine.length - 1; i++) {
-    const a = spine[i];
-    const b = spine[i + 1];
-    if (a.h > 0 && b.h > 0) {
-      ribbons.push({
-        id: `${uid}-flow-${i}`,
-        path: ribbonPath(
-          a.x + NODE_W / 2,
-          a.top,
-          a.bottom,
-          b.x - NODE_W / 2,
-          b.top,
-          b.bottom,
-        ),
-        colorName: 'primary',
-        kind: 'flow',
-        sourceKey: a.row.key,
-        targetKey: b.row.key,
-      });
-    }
+  const autoHeight = (autoCleared / cases) * caseHeight;
+  const escalatedHeight = (escalated / cases) * caseHeight;
+  const autoTop = plotTop;
+  const escalatedTop = autoTop + autoHeight + nodePadding;
+  const escalatedBottom = escalatedTop + escalatedHeight;
 
-    // drop-off badge on this connector.
-    const drop = Math.max(0, a.row.total - b.row.total);
-    if (drop > 0) {
-      badges.push({
-        leftPct: ((a.x + b.x) / 2 / VB_W) * 100,
-        topPct: (10 / VB_H) * 100,
-        drop,
-        pct: a.row.total > 0 ? Math.round((drop / a.row.total) * 100) : 0,
-      });
-    }
-  }
-
-  // Candidate/awaiting review is an optional side cohort from clustering, not a
-  // required parent of opened cases. Keep it discoverable without changing the
-  // restored primary processing spine.
-  const candidateEntry = rows
-    .map((row, index) => ({ row, index }))
-    .find(({ row }) => candidateKeys.has(row.key));
-  const clusteredNode = spine.find((node) => node.row.key === 'clustered');
-  if (candidateEntry && clusteredNode && candidateEntry.row.total > 0) {
-    const x = colCenter(candidateEntry.index);
-    const h = spineNodeHeight(candidateEntry.row.total, topTotal);
-    const top = VB_H - PLOT_PAD - h;
-    rects.push({
-      key: candidateEntry.row.key,
-      x: x - NODE_W / 2,
-      y: top,
-      w: NODE_W,
-      h,
-      fill: token('muted-foreground'),
-    });
-    const sourceH = Math.min(clusteredNode.h, h);
-    ribbons.push({
-      id: `${uid}-candidate`,
-      path: ribbonPath(
-        clusteredNode.x + NODE_W / 2,
-        clusteredNode.bottom - sourceH,
-        clusteredNode.bottom,
-        x - NODE_W / 2,
-        top,
-        top + h,
-      ),
-      colorName: 'muted-foreground',
-      kind: 'flow',
-      sourceKey: clusteredNode.row.key,
-      targetKey: candidateEntry.row.key,
-    });
-  }
-
-  // --- outcome nodes (splayed) + the verdict fan out of the last spine node ---
-  const outcomes = rows.filter((row) => row.isOutcome);
-  const casesNode = spine.find((node) => node.row.key === 'cases');
-  const casesTotal = derived.casesTotal;
-  const casesH = casesNode ? casesNode.h : 0;
-  // The visible outcomes are OVERLAPPING terminal views of `cases`, not a strict
-  // partition, so their source-side shares can sum past 1.0. Normalize the common
-  // source slices to avoid overflow. Each outcome anchor keeps its true share-based
-  // height; only the shared source fan is normalized.
-  const shareSum = outcomes.reduce(
-    (a, r) => a + (casesTotal > 0 && r.total > 0 ? r.total / casesTotal : 0),
-    0,
+  const resolutionPadding = expanded ? 30 : 18;
+  const closedHeight = escalated > 0 ? (closed / escalated) * escalatedHeight : 0;
+  const remainingHeight =
+    escalated > 0 ? (remainingEscalated / escalated) * escalatedHeight : 0;
+  const resolutionHeight = closedHeight + remainingHeight + resolutionPadding;
+  const escalatedCenter = escalatedTop + escalatedHeight / 2;
+  const resolutionTop = Math.max(
+    plotTop,
+    Math.min(plotBottom - resolutionHeight, escalatedCenter - resolutionHeight / 2),
   );
-  const srcScale = shareSum > 1 ? 1 / shareSum : 1;
-  let sliceCursor = casesNode ? casesNode.top : CY;
-  outcomes.forEach((row, m) => {
-    const oi = rows.findIndex((candidate) => candidate.key === row.key);
-    const x = colCenter(oi);
-    const share = casesTotal > 0 ? row.total / casesTotal : 0;
-    const h = row.total > 0 ? share * casesH : 0;
-    const yc =
-      outcomes.length > 1
-        ? CY - OUTCOME_SPREAD + (2 * OUTCOME_SPREAD * m) / (outcomes.length - 1)
-        : CY;
-    const top = yc - h / 2;
-    const colorName = OUTCOME_TOKEN[row.key] ?? 'primary';
-    if (h > 0) {
-      rects.push({
-        key: row.key,
-        x: x - NODE_W / 2,
-        y: top,
-        w: NODE_W,
-        h,
-        fill: token(colorName),
-      });
-    }
+  const closedTop = resolutionTop;
+  const remainingTop = closedTop + closedHeight + resolutionPadding;
 
-    // Fan ribbon: a proportional (source-normalized) slice of the cases node → this outcome.
-    if (casesNode && casesH > 0 && row.total > 0) {
-      const sliceH = share * casesH * srcScale;
-      const s0 = sliceCursor;
-      const s1 = sliceCursor + sliceH;
-      sliceCursor = s1;
-      ribbons.push({
-        id: `${uid}-o${m}`,
-        path: ribbonPath(casesNode.x + NODE_W / 2, s0, s1, x - NODE_W / 2, top, top + h),
-        colorName,
-        kind: 'outcome',
-        sourceKey: casesNode.row.key,
-        targetKey: row.key,
-      });
-    }
-  });
-
-  // --- suppressed/ignored side-spur (peels down before clustering) ---
-  const dropTotal = (drops.suppressed ?? 0) + (drops.ignored ?? 0);
-  let spurPath: string | null = null;
-  let spurNub: { x: number; y: number } | null = null;
-  let spurChip: { leftPct: number; topPct: number } | null = null;
-  if (dropTotal > 0 && spine.length >= 2 && spine[0].h > 0) {
-    const sx = spine[0].x;
-    const sy = spine[0].bottom - spine[0].h * 0.25;
-    const nubX = (spine[0].x + spine[1].x) / 2;
-    const nubY = VB_H - 12;
-    spurPath = `M${sx},${sy} C${(sx + nubX) / 2},${sy} ${nubX},${nubY - 24} ${nubX},${nubY}`;
-    spurNub = { x: nubX, y: nubY };
-    spurChip = { leftPct: (nubX / VB_W) * 100, topPct: ((nubY - 4) / VB_H) * 100 };
+  // Keep the two right-hand labels in separate lanes even when automation leaves
+  // only a very thin non-auto-cleared branch.
+  const labelGap = expanded ? 36 : 27;
+  const labelInset = expanded ? 18 : 12;
+  const labelFloor = plotTop + labelInset;
+  const labelCeiling = plotBottom - labelInset;
+  let closedLabelY = closedTop + Math.max(1, closedHeight) / 2;
+  let remainingLabelY = remainingTop + Math.max(1, remainingHeight) / 2;
+  if (remainingLabelY - closedLabelY < labelGap) {
+    const midpoint = (closedLabelY + remainingLabelY) / 2;
+    closedLabelY = midpoint - labelGap / 2;
+    remainingLabelY = midpoint + labelGap / 2;
+  }
+  if (closedLabelY < labelFloor) {
+    remainingLabelY += labelFloor - closedLabelY;
+    closedLabelY = labelFloor;
+  }
+  if (remainingLabelY > labelCeiling) {
+    closedLabelY -= remainingLabelY - labelCeiling;
+    remainingLabelY = labelCeiling;
   }
 
-  return { ribbons, rects, badges, spurPath, spurNub, spurChip };
+  const nodes: SimpleNode[] = [
+    {
+      key: 'cases',
+      rowKey: 'cases',
+      label: 'Cases opened',
+      total: cases,
+      labelY: Math.max(plotTop + 9, casesTop - 7),
+      labelSide: 'after',
+      x: casesX - SIMPLE_NODE_W / 2,
+      y: casesTop,
+      w: SIMPLE_NODE_W,
+      h: caseHeight,
+      fill: token('primary'),
+    },
+    {
+      key: 'auto_cleared',
+      rowKey: 'auto_cleared',
+      label: 'Auto-cleared by AI',
+      total: autoCleared,
+      labelY: autoTop + Math.max(1, autoHeight) / 2,
+      labelSide: 'after',
+      x: decisionX - SIMPLE_NODE_W / 2,
+      y: autoTop,
+      w: SIMPLE_NODE_W,
+      h: autoHeight,
+      fill: token(OUTCOME_TOKEN.auto_cleared),
+    },
+    {
+      key: 'escalated',
+      rowKey: 'escalated',
+      label: 'Escalated',
+      total: escalated,
+      labelY: escalatedTop + Math.max(1, escalatedHeight) / 2,
+      labelSide: 'before',
+      x: decisionX - SIMPLE_NODE_W / 2,
+      y: escalatedTop,
+      w: SIMPLE_NODE_W,
+      h: escalatedHeight,
+      fill: token(OUTCOME_TOKEN.escalated),
+    },
+    {
+      key: 'closed',
+      rowKey: 'closed',
+      label: 'Closed by human',
+      total: closed,
+      labelY: closedLabelY,
+      labelSide: 'before',
+      x: resolutionX - SIMPLE_NODE_W / 2,
+      y: closedTop,
+      w: SIMPLE_NODE_W,
+      h: closedHeight,
+      fill: token(OUTCOME_TOKEN.closed),
+    },
+    {
+      key: 'escalated_remaining',
+      rowKey: null,
+      label: 'Not analyst-closed',
+      total: remainingEscalated,
+      labelY: remainingLabelY,
+      labelSide: 'before',
+      x: resolutionX - SIMPLE_NODE_W / 2,
+      y: remainingTop,
+      w: SIMPLE_NODE_W,
+      h: remainingHeight,
+      fill: token(OUTCOME_TOKEN.escalated),
+    },
+  ];
+
+  const ribbons: SimpleRibbon[] = [];
+  const addRibbon = (
+    suffix: string,
+    sourceKey: string,
+    targetKey: string,
+    value: number,
+    x0: number,
+    sy0: number,
+    sy1: number,
+    x1: number,
+    ty0: number,
+    ty1: number,
+    targetColor: string,
+    relatedStages: string[],
+  ) => {
+    if (value <= 0 || sy1 <= sy0 || ty1 <= ty0) return;
+    const id = `${uid}-${suffix}`;
+    ribbons.push({
+      id,
+      path: ribbonPath(x0, sy0, sy1, x1, ty0, ty1),
+      targetColor,
+      sourceKey,
+      targetKey,
+      value,
+      relatedStages,
+    });
+  };
+
+  addRibbon(
+    'simple-cases-auto',
+    'cases',
+    'auto_cleared',
+    autoCleared,
+    casesX + SIMPLE_NODE_W / 2,
+    casesTop,
+    casesTop + autoHeight,
+    decisionX - SIMPLE_NODE_W / 2,
+    autoTop,
+    autoTop + autoHeight,
+    token(OUTCOME_TOKEN.auto_cleared),
+    ['cases', 'auto_cleared'],
+  );
+  addRibbon(
+    'simple-cases-escalated',
+    'cases',
+    'escalated',
+    escalated,
+    casesX + SIMPLE_NODE_W / 2,
+    casesTop + autoHeight,
+    casesBottom,
+    decisionX - SIMPLE_NODE_W / 2,
+    escalatedTop,
+    escalatedBottom,
+    token(OUTCOME_TOKEN.escalated),
+    ['cases', 'escalated', 'closed', 'escalated_remaining'],
+  );
+  addRibbon(
+    'simple-escalated-closed',
+    'escalated',
+    'closed',
+    closed,
+    decisionX + SIMPLE_NODE_W / 2,
+    escalatedTop,
+    escalatedTop + closedHeight,
+    resolutionX - SIMPLE_NODE_W / 2,
+    closedTop,
+    closedTop + closedHeight,
+    token(OUTCOME_TOKEN.closed),
+    ['cases', 'escalated', 'closed'],
+  );
+  addRibbon(
+    'simple-escalated-remaining',
+    'escalated',
+    'escalated_remaining',
+    remainingEscalated,
+    decisionX + SIMPLE_NODE_W / 2,
+    escalatedTop + closedHeight,
+    escalatedBottom,
+    resolutionX - SIMPLE_NODE_W / 2,
+    remainingTop,
+    remainingTop + remainingHeight,
+    token(OUTCOME_TOKEN.escalated),
+    ['cases', 'escalated', 'escalated_remaining'],
+  );
+
+  const conversionNodes: ConversionNode[] = [];
+  if (derived.mode === 'full') {
+    const ingested = rowByKey.get('ingested');
+    const clustered = rowByKey.get('clustered');
+    if (ingested) conversionNodes.push({ key: 'ingested', row: ingested, x: 10, y: contextY });
+    if (clustered) {
+      conversionNodes.push({
+        key: 'clustered',
+        row: clustered,
+        x: width * 0.27,
+        y: contextY,
+      });
+    }
+  }
+
+  return {
+    ...base,
+    ribbons,
+    nodes,
+    conversionNodes,
+    casesX,
+    contextY,
+  };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -679,21 +761,37 @@ export interface NoiseFunnelProps {
   lineageLoader?: (windowHours: number, limit: number) => Promise<NoiseLineage>;
   /** Expanded inspection keeps the graph and aligned rail visible at every viewport. */
   wideInspection?: boolean;
+  /** Selected-window current-state context. This is not a conserved flow node. */
+  openCases?: { count: number; partial?: boolean };
+  /** Opens the complete active-case cohort for the selected window. */
+  onOpenCasesClick?: () => void;
+  /** Optional controlled presentation mode (used by the expanded inspection). */
+  view?: NoiseFunnelView;
+  /** Initial mode for an uncontrolled funnel. */
+  defaultView?: NoiseFunnelView;
+  /** Optional controlled-mode change callback. */
+  onViewChange?: (view: NoiseFunnelView) => void;
 }
+
+export type NoiseFunnelView = 'simple' | 'detailed';
 
 function Header({
   hidden,
   onToggleHidden,
   onExpand,
   flat,
+  view,
+  onViewChange,
 }: {
   hidden?: boolean;
   onToggleHidden?: () => void;
   onExpand?: () => void;
   flat?: boolean;
+  view: NoiseFunnelView;
+  onViewChange: (view: NoiseFunnelView) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3">
+    <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex items-center gap-1.5">
         <h3
           className={cn(
@@ -705,19 +803,31 @@ function Header({
         </h3>
         <HelpTip label="What the noise-reduction funnel means" text={NOISE_FUNNEL_HELP_TEXT} />
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center justify-end gap-1">
+        {!hidden ? (
+          <SegmentedControl<NoiseFunnelView>
+            aria-label="Noise reduction view"
+            size="sm"
+            value={view}
+            onValueChange={onViewChange}
+            options={[
+              { value: 'simple', label: 'Simple' },
+              { value: 'detailed', label: 'Detailed' },
+            ]}
+          />
+        ) : null}
         {onExpand && !hidden ? (
           <button
             type="button"
             onClick={onExpand}
-            aria-label="Expand noise reduction flow"
+            aria-label="Open full-screen noise reduction flow"
             className={cn(
               'inline-flex min-h-7 items-center justify-center gap-1.5 rounded-[3px] border border-border px-2 text-2xs font-medium text-muted-foreground transition-colors',
               'hover:bg-hover hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           >
             <Maximize2 className="h-3.5 w-3.5" aria-hidden />
-            <span className="hidden sm:inline">Expand</span>
+            <span className="hidden sm:inline">Full screen</span>
           </button>
         ) : null}
         {onToggleHidden ? (
@@ -752,11 +862,27 @@ export function NoiseFunnel({
   expandable = false,
   lineageLoader,
   wideInspection = false,
+  openCases,
+  onOpenCasesClick,
+  view: controlledView,
+  defaultView = 'simple',
+  onViewChange,
 }: NoiseFunnelProps) {
+  const [uncontrolledView, setUncontrolledView] = React.useState<NoiseFunnelView>(defaultView);
+  const view = controlledView ?? uncontrolledView;
+  const setView = React.useCallback(
+    (next: NoiseFunnelView) => {
+      if (controlledView === undefined) setUncontrolledView(next);
+      onViewChange?.(next);
+    },
+    [controlledView, onViewChange],
+  );
   const [expanded, setExpanded] = React.useState(false);
   const [hoveredStage, setHoveredStage] = React.useState<string | null>(null);
   const [focusedStage, setFocusedStage] = React.useState<string | null>(null);
   const activeStage = focusedStage ?? hoveredStage;
+  const activeSimpleStage =
+    activeStage && SIMPLE_FLOW_KEYS.has(activeStage) ? activeStage : null;
   const [lineage, setLineage] = React.useState<NoiseLineage | null>(null);
   const [lineageLoading, setLineageLoading] = React.useState(false);
   const [lineageError, setLineageError] = React.useState<string | null>(null);
@@ -766,20 +892,45 @@ export function NoiseFunnel({
   const topologyDescriptionId = `${uid}-topology`;
   const derived = React.useMemo(() => (data ? deriveFunnel(data) : null), [data]);
   const flat = variant === 'flat';
+  const reducedMotion = usePrefersReducedMotion();
+  const simplePlotRef = React.useRef<HTMLDivElement>(null);
+  const [simplePlotWidth, setSimplePlotWidth] = React.useState(0);
+  const simplePlotHeight = wideInspection ? SIMPLE_EXPANDED_HEIGHT : SIMPLE_INLINE_HEIGHT;
+  const simpleFallbackWidth = wideInspection ? SIMPLE_EXPANDED_WIDTH : SIMPLE_INLINE_WIDTH;
   const dropSuppressed = data?.drops?.suppressed ?? 0;
   const dropIgnored = data?.drops?.ignored ?? 0;
-  const layout = React.useMemo(
+  const simpleLayout = React.useMemo(
     () =>
       derived
-        ? buildLayout(
+        ? buildSimpleLayout(
             derived,
-            { suppressed: dropSuppressed, ignored: dropIgnored },
             uid,
-            flat ? FLAT_PLOT_LEFT_EXTENSION : 0,
+            simplePlotWidth || simpleFallbackWidth,
+            simplePlotHeight,
           )
         : null,
-    [derived, dropSuppressed, dropIgnored, uid, flat],
+    [derived, simpleFallbackWidth, simplePlotHeight, simplePlotWidth, uid],
   );
+
+  React.useLayoutEffect(() => {
+    if (hidden) return undefined;
+    const element = simplePlotRef.current;
+    if (!element) return undefined;
+    const measure = () => {
+      const next = Math.round(element.getBoundingClientRect().width || element.clientWidth);
+      if (next > 0) setSimplePlotWidth((current) => (current === next ? current : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [hidden, view, wideInspection]);
+
+  React.useEffect(() => {
+    setHoveredStage(null);
+    setFocusedStage(null);
+  }, [view]);
   const lineageWindowHours = data?.window_hours ?? 24;
   const loadLineage = React.useCallback(async () => {
     const loader = lineageLoader ?? api.noiseReductionLineage;
@@ -827,7 +978,7 @@ export function NoiseFunnel({
     );
   }
   // Absent data + not loading → render nothing (a missing/off backend simply omits the widget).
-  if (!data || !derived || !layout) return null;
+  if (!data || !derived || !simpleLayout) return null;
 
   const overall = data.reduction?.overall_pct;
   const headlinePct = typeof overall === 'number' ? overall : null;
@@ -837,6 +988,12 @@ export function NoiseFunnel({
   const n = derived.rows.length;
   const closedByHuman = derived.rows.find((r) => r.key === 'closed')?.total ?? 0;
   const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
+  const candidateRow = rowByKey.get('candidate') ?? rowByKey.get('awaiting') ?? null;
+  const escalatedRow = rowByKey.get('escalated') ?? null;
+  const validOpenCases =
+    openCases && Number.isFinite(openCases.count) && openCases.count >= 0
+      ? { count: Math.floor(openCases.count), partial: openCases.partial === true }
+      : null;
 
   const chips = derived.rows.map((row, index) => {
     const pctLabel = formatShare(row.pctRetained);
@@ -984,12 +1141,8 @@ export function NoiseFunnel({
     );
   });
 
-  const gridStyle: React.CSSProperties | undefined =
-    flat && !wideInspection
-      ? undefined
-      : { gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` };
-  const flatGridColumns =
-    n === 4 ? 'lg:grid-cols-4' : n === 7 ? 'lg:grid-cols-7' : 'lg:grid-cols-6';
+  const detailGridColumns =
+    n === 4 ? 'lg:grid-cols-5' : n === 7 ? 'lg:grid-cols-8' : 'lg:grid-cols-7';
   const dropTotal = dropSuppressed + dropIgnored;
 
   const coverageNote = !data.counters?.available
@@ -999,6 +1152,589 @@ export function NoiseFunnel({
       : data.cases_meta?.truncated
         ? `Case stages are partial: ${fmtNumber(data.cases_meta.fetched)} of ${fmtNumber(data.cases_meta.store_total)} matching cases were tallied.`
         : 'Every value is an aggregate for the selected time range.';
+
+  const flowView = (
+    <div
+      className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}
+      data-testid={view === 'simple' ? 'noise-simple-view' : 'noise-detailed-view'}
+      role="region"
+      aria-label={
+        view === 'simple' ? 'Simple noise reduction view' : 'Detailed noise reduction view'
+      }
+    >
+      {view === 'detailed' ? (
+        headlinePct != null ? (
+          <div data-testid="noise-reduction-summary">
+            <p
+              className={cn(
+                'font-semibold tracking-tight text-foreground',
+                flat ? 'text-xl' : 'text-2xl sm:text-3xl',
+              )}
+            >
+              {flat ? 'Reduced by ' : 'Noise reduced by '}
+              <span className="text-primary tabular-nums">{headlinePct}%</span>
+            </p>
+            <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+              {fmtNumber(derived.topTotal)}{' '}
+              {derived.mode === 'full' ? 'alerts ingested' : 'cases opened'}
+              <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
+                →
+              </span>
+              {fmtNumber(closedByHuman)} case{closedByHuman === 1 ? '' : 's'} closed by a human
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground" data-testid="noise-funnel-warming">
+            {degradedNote}
+          </p>
+        )
+      ) : null}
+
+      {data.counters?.incomplete || data.cases_meta?.truncated ? (
+        <p
+          className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
+          data-testid="noise-coverage-warning"
+        >
+          <span className="font-medium text-warning-text">Partial coverage</span>
+          {' · '}
+          {coverageNote}
+        </p>
+      ) : null}
+
+      <div
+        data-testid="noise-instrument-panel"
+        className={cn('@container/noise space-y-2.5', flat && 'border-y border-border/60 py-3')}
+      >
+        <div
+          ref={simplePlotRef}
+          data-testid="noise-flow-band"
+          className={cn(
+            'relative w-full',
+            wideInspection ? 'h-[400px]' : 'hidden h-[184px] @[42rem]/noise:block',
+          )}
+        >
+          {!simpleLayout.valid ? (
+            <div
+              className="flex h-full items-center justify-center border border-dashed border-warning/60 bg-warning/5 px-6 text-center text-xs leading-relaxed text-muted-foreground"
+              data-testid="noise-flow-integrity"
+              role="status"
+            >
+              {simpleLayout.integrityMessage}
+            </div>
+          ) : simpleLayout.nodes.length === 0 ? (
+            <div
+              className="flex h-full items-center justify-center border border-dashed border-border text-xs text-muted-foreground"
+              data-testid="noise-flow-empty"
+              role="status"
+            >
+              No cases were opened in this time range.
+            </div>
+          ) : (
+            <>
+              <svg
+                viewBox={`0 0 ${simpleLayout.width} ${simpleLayout.height}`}
+                preserveAspectRatio="xMidYMid meet"
+                className="absolute inset-0 h-full w-full"
+                aria-hidden
+                focusable="false"
+              >
+                <defs>
+                  <marker
+                    id={`${uid}-conversion-arrow`}
+                    markerWidth="6"
+                    markerHeight="6"
+                    refX="5"
+                    refY="3"
+                    orient="auto"
+                    markerUnits="strokeWidth"
+                  >
+                    <path d="M0,0 L6,3 L0,6 Z" fill={token('muted-foreground', 0.55)} />
+                  </marker>
+                  <clipPath id={`${uid}-simple-flow-clip`}>
+                    {simpleLayout.ribbons.map((ribbon) => (
+                      <path key={`${ribbon.id}-clip`} d={ribbon.path} />
+                    ))}
+                  </clipPath>
+                </defs>
+
+                <text
+                  x={simpleLayout.casesX / 2}
+                  y={wideInspection ? 22 : 14}
+                  textAnchor="middle"
+                  fill={token('muted-foreground')}
+                  fontSize={wideInspection ? 12 : 10}
+                  fontWeight={600}
+                  letterSpacing="0.12em"
+                >
+                  CONVERSION CONTEXT
+                </text>
+                <text
+                  x={(simpleLayout.casesX + simpleLayout.width) / 2}
+                  y={wideInspection ? 22 : 14}
+                  textAnchor="middle"
+                  fill={token('muted-foreground')}
+                  fontSize={wideInspection ? 12 : 10}
+                  fontWeight={600}
+                  letterSpacing="0.12em"
+                >
+                  CONSERVED CASE FLOW
+                </text>
+
+                {simpleLayout.conversionNodes.length > 0
+                  ? [...simpleLayout.conversionNodes, { x: simpleLayout.casesX }].map(
+                      (node, index, sequence) => {
+                        const next = sequence[index + 1];
+                        if (!next) return null;
+                        return (
+                          <line
+                            key={`conversion-${index}`}
+                            x1={node.x + SIMPLE_NODE_W / 2 + 4}
+                            y1={simpleLayout.contextY}
+                            x2={next.x - SIMPLE_NODE_W / 2 - 8}
+                            y2={simpleLayout.contextY}
+                            fill="none"
+                            stroke={token('muted-foreground', 0.5)}
+                            strokeWidth={1}
+                            strokeDasharray="3 4"
+                            markerEnd={`url(#${uid}-conversion-arrow)`}
+                            vectorEffect="non-scaling-stroke"
+                            data-edge-kind="conversion"
+                          />
+                        );
+                      },
+                    )
+                  : null}
+
+                {simpleLayout.conversionNodes.map((node) => (
+                  <rect
+                    key={`${node.key}-context-node`}
+                    data-context-node-key={node.key}
+                    x={node.x - SIMPLE_NODE_W / 2}
+                    y={node.y - 14}
+                    width={SIMPLE_NODE_W}
+                    height={28}
+                    rx={0}
+                    fill={token('muted-foreground', 0.72)}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+
+                {simpleLayout.ribbons.map((ribbon) => {
+                  const related =
+                    !activeSimpleStage || ribbon.relatedStages.includes(activeSimpleStage);
+                  return (
+                    <path
+                      key={ribbon.id}
+                      d={ribbon.path}
+                      fill={ribbon.targetColor}
+                      stroke={ribbon.targetColor}
+                      strokeWidth={0.5}
+                      vectorEffect="non-scaling-stroke"
+                      data-noise-ribbon
+                      data-edge-kind="conserved"
+                      data-source-stage={ribbon.sourceKey}
+                      data-target-stage={ribbon.targetKey}
+                      data-value={ribbon.value}
+                      className="transition-opacity duration-fast ease-standard"
+                      style={{
+                        fillOpacity: activeSimpleStage
+                          ? related
+                            ? 0.92
+                            : 0.14
+                          : 'var(--noise-ribbon-opacity)',
+                        strokeOpacity: activeSimpleStage
+                          ? related
+                            ? 0.92
+                            : 0.12
+                          : 'var(--noise-ribbon-stroke-opacity)',
+                      }}
+                    />
+                  );
+                })}
+
+                {animate && !reducedMotion && !activeSimpleStage && simpleLayout.ribbons.length > 0 ? (
+                  <g
+                    key={`${data.generated_at}-flow-sweep`}
+                    clipPath={`url(#${uid}-simple-flow-clip)`}
+                    className="noise-flow-refresh-sweep"
+                    data-testid="noise-flow-refresh-sweep"
+                    style={
+                      {
+                        '--noise-sweep-distance': `${simpleLayout.width + 120}px`,
+                      } as React.CSSProperties
+                    }
+                  >
+                    <rect
+                      x={-92}
+                      y={0}
+                      width={54}
+                      height={simpleLayout.height}
+                      fill={token('foreground', 0.05)}
+                    />
+                    <rect
+                      x={-38}
+                      y={0}
+                      width={12}
+                      height={simpleLayout.height}
+                      fill={token('foreground', 0.16)}
+                    />
+                  </g>
+                ) : null}
+
+                {simpleLayout.nodes
+                  .filter(
+                    (node) =>
+                      node.h > 0 &&
+                      node.labelSide === 'before' &&
+                      Math.abs(node.labelY - (node.y + node.h / 2)) > 0.5,
+                  )
+                  .map((node) => (
+                    <path
+                      key={`${node.key}-label-leader`}
+                      d={`M${node.x},${node.y + node.h / 2} L${node.x - 7},${node.labelY}`}
+                      fill="none"
+                      stroke={token('muted-foreground', 0.55)}
+                      strokeWidth={1}
+                      vectorEffect="non-scaling-stroke"
+                      data-label-leader={node.key}
+                    />
+                  ))}
+
+                {simpleLayout.nodes
+                  .filter((node) => node.h > 0)
+                  .map((node) => {
+                    const related =
+                      !activeSimpleStage ||
+                      node.key === activeSimpleStage ||
+                      simpleLayout.ribbons.some(
+                        (ribbon) =>
+                          ribbon.relatedStages.includes(activeSimpleStage) &&
+                          (ribbon.sourceKey === node.key || ribbon.targetKey === node.key),
+                      );
+                    return (
+                      <rect
+                        key={node.key}
+                        data-node-key={node.key}
+                        x={node.x}
+                        y={node.y}
+                        width={node.w}
+                        height={node.h}
+                        rx={0}
+                        fill={node.fill}
+                        stroke={node.fill}
+                        strokeWidth={0.5}
+                        vectorEffect="non-scaling-stroke"
+                        opacity={related ? 1 : 0.3}
+                        className="transition-opacity duration-fast ease-standard"
+                      />
+                    );
+                  })}
+              </svg>
+
+              <div className="pointer-events-none absolute inset-0">
+                {simpleLayout.conversionNodes.map((node) => {
+                  const unit =
+                    node.key === 'ingested'
+                      ? node.row.total === 1
+                        ? 'alert'
+                        : 'alerts'
+                      : node.row.total === 1
+                        ? 'cluster'
+                        : 'clusters';
+                  const first = node.key === 'ingested';
+                  const belowConnector = node.key === 'clustered';
+                  const labelClassName = cn(
+                    'absolute rounded-[3px] bg-card/95 px-1.5 py-1 text-left',
+                    belowConnector ? '-translate-x-1/2' : '-translate-y-full',
+                  );
+                  const labelStyle: React.CSSProperties = {
+                    left: `${((node.x + (first ? 7 : 0)) / simpleLayout.width) * 100}%`,
+                    top: `${((node.y + (belowConnector ? 8 : -8)) / simpleLayout.height) * 100}%`,
+                  };
+                  const labelContent = (
+                    <>
+                      <span className="block text-2xs font-medium uppercase tracking-wider text-muted-foreground">
+                        {DASHBOARD_STAGE_LABEL[node.key]}
+                      </span>
+                      <span className="mt-0.5 block font-mono text-xs font-semibold tabular-nums text-foreground">
+                        {fmtNumber(node.row.total)} {unit}
+                      </span>
+                    </>
+                  );
+                  if (view === 'detailed') {
+                    return (
+                      <div
+                        key={node.key}
+                        className={labelClassName}
+                        style={labelStyle}
+                        aria-hidden
+                      >
+                        {labelContent}
+                      </div>
+                    );
+                  }
+                  const control = (
+                    <button
+                      type="button"
+                      onClick={() => onStageClick?.(node.key)}
+                      onPointerEnter={() => setHoveredStage(node.key)}
+                      onPointerLeave={() => setHoveredStage(null)}
+                      onFocus={() => setFocusedStage(node.key)}
+                      onBlur={() => setFocusedStage(null)}
+                      aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}. Conversion context; the unit changes at this step.`}
+                      className={cn(
+                        'pointer-events-auto transition-colors duration-fast ease-standard',
+                        'hover:bg-popover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        labelClassName,
+                      )}
+                      style={labelStyle}
+                    >
+                      {labelContent}
+                    </button>
+                  );
+                  return (
+                    <HoverCard key={node.key} openDelay={80} closeDelay={60}>
+                      <HoverCardTrigger asChild>{control}</HoverCardTrigger>
+                      <HoverCardContent side="top" align="center" className="w-72">
+                        <StageHoverContent
+                          row={node.row}
+                          topReference={relativeTo}
+                          baseReference={node.key === 'clustered' ? rowByKey.get('ingested') ?? null : null}
+                        />
+                      </HoverCardContent>
+                    </HoverCard>
+                  );
+                })}
+
+                {simpleLayout.nodes.filter((node) => node.h > 0).map((node) => {
+                  const row = node.rowKey ? rowByKey.get(node.rowKey) : undefined;
+                  const stageKey = node.rowKey ?? node.key;
+                  const labelX =
+                    node.labelSide === 'after' ? node.x + node.w + 8 : node.x - 8;
+                  const translateX =
+                    node.labelSide === 'after' ? '' : '-translate-x-full';
+                  const relationship =
+                    node.key === 'escalated_remaining'
+                      ? ', equal to Escalated minus Closed by human; this is not the Open cases count'
+                      : '';
+                  const labelClassName = cn(
+                    'absolute -translate-y-1/2 whitespace-nowrap rounded-[3px] bg-card/95 px-1.5 py-1 text-left font-medium text-foreground',
+                    node.total === 0 && 'text-muted-foreground',
+                    wideInspection ? 'text-sm' : 'text-xs',
+                    translateX,
+                  );
+                  const labelStyle: React.CSSProperties = {
+                    left: `${(labelX / simpleLayout.width) * 100}%`,
+                    top: `${(node.labelY / simpleLayout.height) * 100}%`,
+                  };
+                  const labelContent = (
+                    <>
+                      <span>{node.label}</span>
+                      <span className="ml-1 font-mono font-semibold tabular-nums">
+                        · {fmtNumber(node.total)}
+                      </span>
+                    </>
+                  );
+                  if (view === 'detailed') {
+                    return (
+                      <div
+                        key={node.key}
+                        data-flow-label={node.key}
+                        className={labelClassName}
+                        style={labelStyle}
+                        aria-hidden
+                      >
+                        {labelContent}
+                      </div>
+                    );
+                  }
+                  const control = (
+                    <button
+                      type="button"
+                      data-flow-label={node.key}
+                      aria-label={`${node.label}: ${fmtNumber(node.total)} case${node.total === 1 ? '' : 's'}${relationship}.`}
+                      onClick={() => {
+                        setFocusedStage(stageKey);
+                        if (node.rowKey) onStageClick?.(node.rowKey);
+                      }}
+                      onPointerEnter={() => setHoveredStage(stageKey)}
+                      onPointerLeave={() => setHoveredStage(null)}
+                      onFocus={() => setFocusedStage(stageKey)}
+                      onBlur={() => setFocusedStage(null)}
+                      className={cn(
+                        'pointer-events-auto',
+                        'transition-colors duration-fast ease-standard hover:bg-popover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        row ? 'active:bg-accent/70' : 'cursor-help',
+                        labelClassName,
+                      )}
+                      style={labelStyle}
+                    >
+                      {labelContent}
+                    </button>
+                  );
+
+                  if (!row) return <React.Fragment key={node.key}>{control}</React.Fragment>;
+                  const baseReference =
+                    row.key === 'auto_cleared' || row.key === 'escalated'
+                      ? rowByKey.get('cases') ?? null
+                      : row.key === 'closed'
+                        ? rowByKey.get('escalated') ?? null
+                        : row.key === 'cases'
+                          ? rowByKey.get('clustered') ?? null
+                          : null;
+                  return (
+                    <HoverCard key={node.key} openDelay={80} closeDelay={60}>
+                      <HoverCardTrigger asChild>{control}</HoverCardTrigger>
+                      <HoverCardContent side="top" align="center" className="w-72">
+                        <StageHoverContent
+                          row={row}
+                          topReference={relativeTo}
+                          baseReference={baseReference}
+                        />
+                      </HoverCardContent>
+                    </HoverCard>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div
+          data-testid="noise-stage-rail"
+          className={cn(
+            'grid grid-cols-2 items-start gap-1 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
+            view === 'detailed'
+              ? detailGridColumns
+              : simpleLayout.valid && simpleLayout.nodes.length > 0
+                ? wideInspection
+                  ? 'hidden'
+                  : '@[42rem]/noise:hidden'
+                : 'lg:grid-cols-4',
+          )}
+        >
+          {chips}
+          <button
+            type="button"
+            onPointerEnter={() => setHoveredStage('escalated_remaining')}
+            onPointerLeave={() => setHoveredStage(null)}
+            onFocus={() => setFocusedStage('escalated_remaining')}
+            onBlur={() => setFocusedStage(null)}
+            aria-label={`Not analyst-closed: ${fmtNumber(simpleLayout.remainingEscalated)} cases, equal to Escalated minus Closed by human; this is not the Open cases count.`}
+            aria-describedby={topologyDescriptionId}
+            className={cn(
+              'flex w-full cursor-help flex-col gap-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              flat ? 'items-start px-3 py-1 text-left' : 'items-center px-1 py-1.5 text-center',
+            )}
+          >
+            <span
+              className={cn(
+                'max-w-full text-2xs font-medium leading-tight',
+                flat
+                  ? 'min-h-7 w-full text-left uppercase tracking-wider text-muted-foreground'
+                  : 'text-foreground',
+              )}
+            >
+              Not analyst-closed
+            </span>
+            <span className={cn('flex items-baseline gap-1', flat && 'w-full justify-start')}>
+              <CountUp
+                value={simpleLayout.remainingEscalated}
+                duration={animate ? undefined : 0}
+                className={cn(
+                  'font-semibold tabular-nums text-foreground',
+                  flat ? 'font-mono text-xl' : 'text-sm',
+                )}
+              />
+              <span className={cn('tabular-nums text-muted-foreground', flat ? 'text-xs' : 'text-2xs')}>
+                {formatShare(
+                  escalatedRow && escalatedRow.total > 0
+                    ? (simpleLayout.remainingEscalated / escalatedRow.total) * 100
+                    : 0,
+                )}
+              </span>
+            </span>
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
+          <p className="text-2xs leading-relaxed text-muted-foreground">
+            Alerts → clusters change unit; proportional width begins at Cases opened.
+          </p>
+          {validOpenCases ? (
+            <button
+              type="button"
+              onClick={onOpenCasesClick}
+              disabled={!onOpenCasesClick}
+              data-testid="noise-open-cases"
+              data-partial={validOpenCases.partial ? 'true' : 'false'}
+              aria-label={`${validOpenCases.partial ? 'At least ' : ''}${fmtNumber(validOpenCases.count)} open cases in the selected window${validOpenCases.count > 0 ? ', review active cases' : ', queue clear'}.`}
+              className={cn(
+                'inline-flex min-h-8 items-center gap-2 rounded-[3px] border px-2.5 py-1.5 text-left text-xs font-medium transition-colors duration-fast ease-standard',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default',
+                validOpenCases.count > 0
+                  ? 'border-warning/50 bg-warning/5 text-warning-text hover:bg-warning/10'
+                  : 'border-success/40 bg-success/5 text-success-text',
+              )}
+            >
+              <span className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center" aria-hidden>
+                {validOpenCases.count > 0 && animate && !reducedMotion ? (
+                  <span
+                    key={`${data.generated_at}-open-pulse`}
+                    className="noise-open-cases-pulse absolute inset-0 rounded-full border border-warning"
+                  />
+                ) : null}
+                <span
+                  className={cn(
+                    'relative h-2 w-2 rounded-full',
+                    validOpenCases.count > 0 ? 'bg-warning' : 'bg-success',
+                  )}
+                />
+              </span>
+              <span>
+                <span className="font-mono font-semibold tabular-nums">
+                  {validOpenCases.partial ? '≥' : ''}{fmtNumber(validOpenCases.count)}
+                </span>{' '}
+                open case{validOpenCases.count === 1 ? '' : 's'}
+              </span>
+              <span className="text-2xs uppercase tracking-wider opacity-80">
+                {validOpenCases.count > 0 ? 'Review' : 'Clear'}
+              </span>
+            </button>
+          ) : null}
+        </div>
+
+        {candidateRow || dropTotal > 0 ? (
+          <p
+            className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border/60 pt-2 text-2xs leading-relaxed text-muted-foreground"
+            data-testid="noise-flow-annotations"
+          >
+            {candidateRow ? (
+              <span>
+                <span className="font-mono tabular-nums text-foreground">
+                  {fmtNumber(candidateRow.total)}
+                </span>{' '}
+                awaiting review · side cohort from clustering
+              </span>
+            ) : null}
+            {dropTotal > 0 ? (
+              <span>
+                Excluded before clustering ·{' '}
+                <span className="font-mono tabular-nums text-foreground">
+                  {fmtNumber(dropSuppressed)}
+                </span>{' '}
+                suppressed ·{' '}
+                <span className="font-mono tabular-nums text-foreground">
+                  {fmtNumber(dropIgnored)}
+                </span>{' '}
+                ignored
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -1013,197 +1749,22 @@ export function NoiseFunnel({
         data-testid="noise-funnel"
       >
         <p id={topologyDescriptionId} className="sr-only">
-          Alerts move through clustering into opened cases. Auto-cleared and Escalated
-          partition opened cases. Closed by human is a subset of Escalated. The graph is
-          directional context; the labelled counts and percentages are authoritative.
+          Alerts move through clustering into opened cases, with a unit change at each
+          conversion. Proportional width begins at opened cases. Auto-cleared and Escalated
+          partition opened cases; Closed by human is a subset of Escalated. Not
+          analyst-closed is the remaining conserved complement, while Open cases is a
+          separate current lifecycle count. Labels and evidence are authoritative.
         </p>
         <Header
           hidden={hidden}
           onToggleHidden={onToggleHidden}
           onExpand={expandable ? () => setExpanded(true) : undefined}
           flat={flat}
+          view={view}
+          onViewChange={setView}
         />
 
-        {hidden ? null : (
-          <div className={cn('space-y-3', flat ? 'mt-2' : 'mt-3')}>
-          {/* Hero — the value-prop headline + the ingested→human cascade. */}
-          {headlinePct != null ? (
-            <div>
-              <p
-                className={cn(
-                  'font-semibold tracking-tight text-foreground',
-                  flat ? 'text-2xl' : 'text-2xl sm:text-3xl',
-                )}
-              >
-                {flat ? 'Reduced by ' : 'Noise reduced by '}
-                <span className="text-primary tabular-nums">{headlinePct}%</span>
-              </p>
-              <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-                {fmtNumber(derived.topTotal)}{' '}
-                {derived.mode === 'full' ? 'events ingested' : 'cases opened'}
-                <span className="mx-1.5 text-muted-foreground/70" aria-hidden>
-                  →
-                </span>
-                {fmtNumber(closedByHuman)} case{closedByHuman === 1 ? '' : 's'} closed by a human
-              </p>
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground" data-testid="noise-funnel-warming">
-              {degradedNote}
-            </p>
-          )}
-
-          {headlinePct != null && (data.counters?.incomplete || data.cases_meta?.truncated) ? (
-            <p
-              className="border-l-2 border-warning pl-2 text-xs leading-relaxed text-muted-foreground"
-              data-testid="noise-coverage-warning"
-            >
-              <span className="font-medium text-warning-text">Partial coverage</span>
-              {' · '}
-              {coverageNote}
-            </p>
-          ) : null}
-
-          <div
-            data-testid="noise-instrument-panel"
-            className={cn('space-y-3', flat && 'border-y border-border/60 py-3')}
-          >
-            {/* The proportional flow band is shown at desktop width, where the six
-                fixed columns remain legible. The complete evidence rail stays present
-                at every width. All meaning is carried by that interactive rail. */}
-            <div
-              data-testid="noise-flow-band"
-              className={cn(
-                'relative mt-1 w-full',
-                wideInspection
-                  ? 'h-44'
-                  : flat
-                    ? 'hidden h-36 lg:block lg:h-44'
-                    : 'h-44 sm:h-52',
-              )}
-            >
-              <svg
-                viewBox={`0 0 ${VB_W} ${VB_H}`}
-                preserveAspectRatio="none"
-                className="absolute inset-0 h-full w-full"
-                aria-hidden
-                focusable="false"
-              >
-              {/* Matte, exact-width ribbons. No gradients, glow, or decorative growth. */}
-              {layout.ribbons.map((r) => {
-                const related =
-                  !activeStage || r.sourceKey === activeStage || r.targetKey === activeStage;
-                return (
-                  <path
-                    key={r.id}
-                    d={r.path}
-                    fill={token(r.colorName)}
-                    stroke={token(r.colorName)}
-                    strokeWidth={0.5}
-                    vectorEffect="non-scaling-stroke"
-                    data-noise-ribbon
-                    data-source-stage={r.sourceKey}
-                    data-target-stage={r.targetKey}
-                    className="transition-opacity duration-fast ease-standard"
-                    style={{
-                      fillOpacity: activeStage
-                        ? related
-                          ? 1
-                          : 0.14
-                        : r.kind === 'flow'
-                          ? 'var(--noise-ribbon-opacity)'
-                          : 'var(--noise-outcome-opacity)',
-                      strokeOpacity: activeStage
-                        ? related
-                          ? 1
-                          : 0.14
-                        : 'var(--noise-ribbon-stroke-opacity)',
-                    }}
-                  />
-                );
-              })}
-
-              {/* Suppressed/ignored side-spur. */}
-              {layout.spurPath ? (
-                <>
-                  <path
-                    d={layout.spurPath}
-                    fill="none"
-                    stroke={token('muted-foreground', 0.4)}
-                    strokeWidth={1}
-                    strokeDasharray="2 3"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  {layout.spurNub ? (
-                    <circle cx={layout.spurNub.x} cy={layout.spurNub.y} r={2.5} fill={token('muted-foreground', 0.7)} />
-                  ) : null}
-                </>
-              ) : null}
-
-              {/* Node anchors on top of the ribbons. */}
-              {layout.rects.map((rc) => (
-                <rect
-                  key={rc.key}
-                  data-node-key={rc.key}
-                  x={rc.x}
-                  y={rc.y}
-                  width={rc.w}
-                  height={rc.h}
-                  rx={0}
-                  fill={rc.fill}
-                  stroke={rc.fill}
-                  strokeWidth={0.5}
-                  vectorEffect="non-scaling-stroke"
-                  opacity={activeStage && activeStage !== rc.key ? 0.48 : 1}
-                  className="transition-opacity duration-fast ease-standard"
-                />
-              ))}
-              </svg>
-
-            {/* HTML overlay (decorative): per-connector drop-off badges + spur chip. */}
-              <div className="pointer-events-none absolute inset-0" aria-hidden>
-              {layout.badges.map((b, i) => (
-                <span
-                  key={i}
-                  data-loss-annotation
-                  className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap px-1 text-2xs font-medium tabular-nums text-muted-foreground"
-                  style={{ left: `${b.leftPct}%`, top: `${b.topPct}%` }}
-                >
-                  −{b.drop} · {b.pct}% filtered
-                </span>
-              ))}
-              {layout.spurChip ? (
-                <span
-                  className="absolute -translate-x-1/2 whitespace-nowrap px-1 text-2xs tabular-nums text-muted-foreground"
-                  style={{ left: `${layout.spurChip.leftPct}%`, top: `${layout.spurChip.topPct}%` }}
-                >
-                  −{dropTotal} excluded
-                </span>
-              ) : null}
-              </div>
-            </div>
-
-          {/* The interactive + labelled rail: one focusable, hover-detailed stage per column. */}
-            <div
-              data-testid="noise-stage-rail"
-              className={cn(
-                'grid items-start gap-1',
-                flat && 'grid-cols-2 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
-                flat && flatGridColumns,
-              )}
-              style={gridStyle}
-            >
-              {chips}
-            </div>
-
-            {dropTotal > 0 ? (
-              <p className="mt-1 border-t border-border pt-2 text-xs text-muted-foreground">
-                {dropSuppressed} suppressed · {dropIgnored} ignored removed before clustering
-              </p>
-            ) : null}
-          </div>
-          </div>
-        )}
+        {hidden ? null : flowView}
       </section>
 
       {expandable ? (
@@ -1227,6 +1788,10 @@ export function NoiseFunnel({
                   onStageClick={onStageClick}
                   variant="flat"
                   wideInspection
+                  openCases={validOpenCases ?? undefined}
+                  onOpenCasesClick={onOpenCasesClick}
+                  view={view}
+                  onViewChange={setView}
                 />
               </div>
               <div className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">

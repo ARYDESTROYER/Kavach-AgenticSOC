@@ -303,7 +303,9 @@ background data refreshes still follow the `LoadingState` / `LoadingBar` contrac
 Motion explains state change: route entry, disclosure, row insertion/removal, or a
 terminal live marker. It does not decorate static content. Honor
 `prefers-reduced-motion`; no required information depends on animation. Only the newest
-terminal timeline marker pulses.
+terminal timeline marker may pulse continuously. A successfully committed data refresh
+may replay one short transform/opacity-only cue tied to the new payload; it must never
+run on its own timer or imply that a request is in flight when it is not.
 
 ## Detection-rule authoring honesty
 
@@ -397,26 +399,39 @@ one `LoadingBar`, and a refresh error is reported without replacing that data.
 
 ## Operational flow visualizations
 
-The Dashboard Noise Reduction view uses the established horizontal ribbon with an
-aligned stage rail. The ribbon supplies directional context; the labelled count,
-percentage, definition, coverage, and truncation evidence is authoritative:
+The Dashboard Noise Reduction instrument uses one horizontal, Carbon-informed graph in
+two presentation modes. **Simple** is the default direct-labelled operational view.
+**Detailed** keeps the same graph and arithmetic, then adds the reduction summary and
+complete stage evidence rail. The selected mode carries into full-screen inspection.
+Labelled counts, definitions, coverage, and truncation evidence are authoritative:
 
 - Preserve the familiar left-to-right lifecycle order and the current selected-window
   scope. Do not invent, relabel, or hide volume to make a branch look fuller.
+- **Alerts ingested**, **After clustering**, and **Cases opened** change unit. Show those
+  transitions as thin fixed-weight conversion connectors with exact counts; do not encode
+  alert, cluster, and case totals as one proportional ribbon.
 - Treat **Auto-cleared by AI** and **Escalated** as the conserved split of opened cases.
-  **Closed by human** is an overlapping analyst-owned subset of Escalated, not volume
-  to add as a third partition. The restored fan may place these operational views beside
-  one another for scanability, so the visible definition and rail—not curve topology—must
-  state the relationship.
+  Split Escalated again into **Closed by human** and **Not analyst-closed** so every filled
+  ribbon has the same value and width at both endpoints. Do not draw Cases directly to
+  Closed by human or normalize an overlapping fan.
+- **Open cases** is current lifecycle state from the selected-window posture count. It is
+  not equal to Escalated minus human closure, so keep it outside the conserved graph as a
+  labelled, keyboard-operable queue action. If the bounded scan is truncated, display the
+  count as a lower bound and retain the complete-active-case drill-through.
 - When the backend emits an **Awaiting review / Candidate** cohort, keep it distinct
-  from the mandatory lifecycle; it is not a parent of Cases opened.
-- Keep the stage rail aligned, readable in both themes, and usable without reading the
-  curves. Stage detail must be available to keyboard and pointer users, not hover-only.
+  from the mandatory lifecycle; it is not a parent of Cases opened and receives no
+  conserved ribbon.
+- Keep direct labels and the Detailed evidence rail readable in both themes. Stage detail
+  must be available to keyboard and pointer users, not hover-only. At narrow widths,
+  replace the graph with its authoritative evidence rail instead of crushing its labels.
 - Outcome activation opens the matching selected-window Cases filter. Earlier stages
   open the selected-window Cases context because raw alert and cluster records are not
   exposed through the case list.
 - Counter coverage, the bounded case-store page, the bounded lineage sample, and any
   truncation remain visible. A chart must never imply that partial evidence is complete.
+- A successful payload may replay one short left-to-right matte sweep clipped to the
+  conserved ribbons. Key it to `generated_at`, remove it under reduced motion, and use no
+  gradient, blur, glow, autonomous five-second loop, or additional animation dependency.
 
 The implementation layers, public design-system exports, source-asset rules, and
 machine-readable catalog contract are documented in the

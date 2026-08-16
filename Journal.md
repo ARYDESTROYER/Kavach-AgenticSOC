@@ -9831,3 +9831,23 @@
 - Tests: backend **2,673 passed / 4 skipped** (+15 new regressions in `test_precedent_authority.py`, each pinning one confirmed finding); Console **+7** in `analyst-policy-builder.test.tsx`; `tsc --noEmit`, ESLint, design gates and `scripts/check_docs.py` (79 pages) clean.
 - Status: complete; `decide()` byte-identical and untouched.
 - Next: push to the restarted branch and open a PR for review.
+### 2026-08-16 18:42Z — `/root` — Noise-reduction flow polish iteration started
+- Context: Incorporate operator feedback on the Overview noise-reduction visualization in an isolated branch: use the available width better, show the complete Alerts ingested → After clustering → Cases progression, offer Simple and Detailed views, improve labels, and add restrained activity and open-case attention cues without weakening data truthfulness or accessibility.
+- Did: Created `codex/sankey-flow-toggle-polish` from exact `Testing` commit `ac958c0b2c230af0eae1f03cb293a4c22b4f7cde`; reviewed the repository handoff, agent rules, Console design standard, browser-testing workflow, and the supplied Apple design guidance boundary; kept `Testing` untouched and delegated read-only semantic, component-architecture, and motion audits.
+- Tests: Pending implementation, focused accessibility/topology tests, strict Console gates, production build, and native browser acceptance.
+- Status: in-progress.
+- Next: Verify whether a genuine open-case count is available separately from the conserved case outcome flow, then implement the smallest truthful Simple/Detailed architecture and validate both modes in the real dashboard.
+
+### 2026-08-16 19:10Z — `/root` — Noise flow semantics, mode architecture, and focused contracts complete
+- Context: Complete the implementation checkpoint before full Console and native-browser acceptance of the isolated Sankey iteration.
+- Did: Replaced the overlapping outcome fan with one shared Carbon-informed graph: fixed-weight Alerts ingested → After clustering → Cases conversion context, then conserved Cases → Auto-cleared/Escalated → Closed by human/Not analyst-closed ribbons. Added the Simple/Detailed RadioGroup, mode-preserving full-screen inspection, collision-aware labels, zero-branch omission, a separate selected-window Open-cases action backed by posture queue depth, and one-shot `generated_at`-keyed refresh/open attention feedback that is absent under reduced motion. Updated the Console UI standard with the mixed-unit, lifecycle, and motion contracts.
+- Tests: TypeScript passed; scoped ESLint passed; focused NoiseFunnel and Overview integration passed **29/29**; `git diff --check` passed.
+- Status: implementation and focused contract checkpoint complete; full Console gates, production build, and native browser acceptance remain.
+- Next: Run the strict Console suite and production build, then host the exact branch locally and inspect both modes, full screen, themes, responsive layouts, keyboard behavior, motion, and console health in the real product.
+
+### 2026-08-16 19:25Z — `/root` — Noise-reduction flow polish complete and locally accepted
+- Context: Freeze and accept the isolated Overview Sankey iteration requested for review before any publication or merge to `Testing`.
+- Did: Completed the compact Simple view and evidence-rich Detailed view over one truthful graph model; retained the mixed-unit Alerts ingested → After clustering → Cases conversion context, conserved case-outcome topology, real selected-window Open-cases action, refresh-causal matte sweep, reduced-motion behavior, and mode-preserving full-screen inspection. Native browser acceptance covered light and dark themes, 1440 px and 1024 px desktop layouts, a 375 px compact layout without horizontal overflow, full-screen labels and lineage, keyboard RadioGroup switching, active-case drill-through, a real LIVE refresh cycle, and a fresh warning/error-free console.
+- Tests: Full Console Vitest passed **2,004/2,004 across 296 files**; full ESLint passed; design token, contrast, arbitrary-style, raw-color, and color-vision gates passed; the production build passed and transformed **3,195 modules**; final `git diff --check` passed.
+- Status: complete and locally accepted on `codex/sankey-flow-toggle-polish`; the source `Testing` checkout remains untouched, and no push, PR, merge, or remote CI run was performed.
+- Next: Review the locally hosted branch; if accepted, push this branch and open a PR targeting `Testing` so the exact commit receives remote CI before merge.

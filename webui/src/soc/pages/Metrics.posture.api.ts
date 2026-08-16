@@ -129,6 +129,12 @@ export interface PostureResponse {
   window_hours: number;
   generated_at: string;
   case_count: number;
+  /** True when the server's bounded case scan omitted older store rows. */
+  truncated?: boolean;
+  /** Total rows reported by the case store before the selected-window filter. */
+  store_total?: number;
+  /** Rows inspected before the selected-window filter. */
+  fetched?: number;
   lifecycle: PostureLifecycle;
   quality: PostureQuality;
   aging: PostureAging;

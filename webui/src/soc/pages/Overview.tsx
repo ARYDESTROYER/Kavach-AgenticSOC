@@ -1335,6 +1335,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
     [navigate, navWindow],
   );
 
+  const onOpenCasesClick = React.useCallback(() => {
+    if (!navigate) return;
+    navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow });
+  }, [navigate, navWindow]);
+
   // ----- The header control cluster --------------------------------------- //
   const headerControls = (
     <>
@@ -1568,6 +1573,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   <NoiseFunnel
                     data={noise}
                     onStageClick={onStageClick}
+                    openCases={{
+                      count: posture?.aging.queue_depth ?? derived.open,
+                      partial: posture ? posture.truncated === true : cases.length >= 200,
+                    }}
+                    onOpenCasesClick={onOpenCasesClick}
                     hidden={noiseHidden}
                     onToggleHidden={toggleNoiseHidden}
                     expandable
