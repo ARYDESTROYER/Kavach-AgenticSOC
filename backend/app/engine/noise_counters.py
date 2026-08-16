@@ -220,6 +220,11 @@ def _is_auto_cleared(case: Case) -> bool:
     )
 
 
+def _is_policy_closed(case: Case) -> bool:
+    """Closed by an operator's analyst RULE POLICY — neither AI nor human case work."""
+    return getattr(case, "decision_by", None) == DecisionBy.ANALYST_POLICY
+
+
 def _is_human_closed(case: Case) -> bool:
     """The last stage of the funnel: a case that reached a TERMINAL state (resolved/
     closed) with explicit ANALYST decision authority. This intentionally excludes
@@ -307,10 +312,19 @@ def build_noise_reduction(
     esc_bands = zero_bands()
     ac_bands = zero_bands()
     closed_bands = zero_bands()
-    nh = esc = ac = closed = 0
+    policy_bands = zero_bands()
+    nh = esc = ac = closed = policy = 0
     for c in window_cases:
         band = _band_of_case(c, prefs)
         cases_bands[band] = cases_bands.get(band, 0) + 1
+        if _is_policy_closed(c):
+            # Closed by an operator's analyst RULE POLICY. Its OWN mutually exclusive
+            # bucket: it is not an AI auto-clear (no model ran) and not human case work
+            # (nobody worked this case), and without this branch it would silently land
+            # in the Escalated residual fold below and be rendered as escalated volume.
+            policy += 1
+            policy_bands[band] = policy_bands.get(band, 0) + 1
+            continue
         if _is_human_closed(c):
             closed += 1
             closed_bands[band] = closed_bands.get(band, 0) + 1
@@ -335,7 +349,9 @@ def build_noise_reduction(
     # the nh-based reduction headline below are left unchanged (kept for other
     # consumers); only THIS stage folds the otherwise-invisible buckets in. Advisory
     # only (#3) — nothing here is read by ``decide()``.
-    esc_stage_total = esc + nh + max(0, cases_total - nh - esc - ac)  # == cases_total − ac
+    # ``policy`` is subtracted alongside ``ac``: a declared-benign close is not work
+    # raised for a human, so folding it into Escalated would overstate human load.
+    esc_stage_total = esc + nh + max(0, cases_total - nh - esc - ac - policy)
     esc_stage_bands = zero_bands()
     for band in SEVERITY_BANDS:
         band_residual = max(
@@ -343,7 +359,8 @@ def build_noise_reduction(
             cases_bands.get(band, 0)
             - nh_bands.get(band, 0)
             - esc_bands.get(band, 0)
-            - ac_bands.get(band, 0),
+            - ac_bands.get(band, 0)
+            - policy_bands.get(band, 0),
         )
         esc_stage_bands[band] = nh_bands.get(band, 0) + esc_bands.get(band, 0) + band_residual
 
@@ -382,6 +399,12 @@ def build_noise_reduction(
         # decision authority, not deterministic auto-close.
         _stage("closed", "Closed by human", source="cases", deterministic=False,
                total=closed, by_severity=closed_bands),
+        # Mutually exclusive with Auto-cleared and Escalated (subtracted from the
+        # residual fold above), so the three terminal nodes still account for every
+        # windowed case. ``deterministic=True`` — it IS a deterministic close, just an
+        # operator's rather than the agent's.
+        _stage("policy_closed", "Closed by analyst policy", source="cases",
+               deterministic=True, total=policy, by_severity=policy_bands),
     ]
 
     overall = _reduction(nh, ingested_total) if (available and isinstance(ingested_total, int)) else DASH

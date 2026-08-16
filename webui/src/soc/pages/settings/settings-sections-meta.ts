@@ -291,8 +291,10 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
       'drop event',
       'mute',
       'noise',
+      'analyst policy',
+      'declared benign',
     ],
-    ownedKeys: ['sla', 'priority_matrix', 'suppression_rules'],
+    ownedKeys: ['sla', 'priority_matrix', 'suppression_rules', 'analyst_rule_policies'],
   },
   {
     id: 'automation',
@@ -349,8 +351,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     icon: ShieldAlert,
     perm: { resource: 'settings', action: 'manage' },
     grid: true,
-    keywords: ['rag', 'retrieval', 'knowledge', 'threat context', 'mitre', 'runbook', 'playbook', 'ioc', 'resolved cases'],
-    ownedKeys: ['rag', 'threat_context'],
+    keywords: ['rag', 'retrieval', 'knowledge', 'threat context', 'mitre', 'runbook', 'playbook', 'ioc', 'resolved cases', 'precedent', 'promotion', 'futility'],
+    ownedKeys: ['rag', 'threat_context', 'precedent'],
   },
 
   /* ---- Security & access (org, HIGH blast radius) ----------------------- */

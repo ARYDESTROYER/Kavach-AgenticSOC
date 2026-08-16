@@ -199,8 +199,16 @@ describe('Round-6 de-dup — automation links to the single rule editor (deep-li
     expect(SECTION_BY_ID.detection_rules).toBeTruthy();
   });
 
-  it('the case_policy section owns exactly the three orphaned G6 editor keys', () => {
-    expect(SECTION_KEYS.case_policy).toEqual(['sla', 'priority_matrix', 'suppression_rules']);
+  it('the case_policy section owns the orphaned G6 editor keys plus analyst policies', () => {
+    // `analyst_rule_policies` is the operator's rule-level "declared benign" list. It
+    // belongs beside `suppression_rules` (the event-drop list) because an operator
+    // reaching for one is choosing between the two.
+    expect(SECTION_KEYS.case_policy).toEqual([
+      'sla',
+      'priority_matrix',
+      'suppression_rules',
+      'analyst_rule_policies',
+    ]);
   });
 
   it('detection owns the asset-criticality keys (its new Asset criticality card)', () => {

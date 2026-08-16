@@ -274,10 +274,15 @@ async def test_both_indexing_paths_write_identical_superset_text(
     assert "FOURTH evidence item" not in incremental_text
 
     # Metadata is aligned too — the bulk path used to omit ``status`` and ``note``.
+    # ``rule_identity``/``rule_ids`` are the matchable rule-identity keys precedent
+    # promotion gates on; both paths must write them or the two would disagree.
     assert set(bulk_item["metadata"]) == {
         "case_id", "verdict", "outcome", "entity", "status", "note",
         "ground_truth_source", "trust_class", "document_id",
+        "rule_identity", "rule_ids",
     }
+    assert bulk_item["metadata"]["rule_identity"] == "ssh_bruteforce"
+    assert bulk_item["metadata"]["rule_ids"] == ["ssh_bruteforce"]
     for key, value in bulk_item["metadata"].items():
         assert incremental_meta.get(key) == value, f"metadata {key} diverged"
     assert bulk_item["metadata"]["status"] == CaseStatus.CLOSED.value

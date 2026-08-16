@@ -1650,6 +1650,18 @@ class Case(BaseModel):
     retrieval_observation_status: Literal[
         "measured", "not_measured", "unavailable"
     ] = "unavailable"
+    # The deterministic rule-identity precedent fact this investigation was given, and
+    # WHY it did or did not qualify (``engine.precedent.PrecedentSignal.as_dict()``).
+    # Additive and nullable: ``None`` means the run predates the seam or never reached
+    # the investigator, never "no precedent exists" — an explicit ``status`` says which.
+    # Recorded so a close that leaned on analyst precedent is auditable and reversible,
+    # and so a NEEDS_HUMAN that ignored abundant precedent explains itself. NEVER read
+    # by ``engine.case_manager.decide()`` (#3) — it is evidence, not authority.
+    precedent_signal: dict[str, Any] | None = None
+    # The operator declaration that closed this case without an LLM call, when one did
+    # (``engine.precedent.AnalystPolicyMatch.as_dict()``). ``None`` on every ordinary
+    # case. Paired with ``decision_by == analyst_policy``.
+    analyst_policy: dict[str, Any] | None = None
 
     @field_validator("knowledge_used", mode="before")
     @classmethod

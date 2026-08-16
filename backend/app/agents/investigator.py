@@ -17,6 +17,7 @@ from ..audit.audit_log import AuditLogger
 from ..config import Preferences
 from ..constants import ActionType, Role, ToolTier, Verdict
 from ..engine.cost_gate import CaseBudget
+from ..engine.precedent import PrecedentSignal
 from ..llm.gateway import GatewayError, LLMGateway
 from ..models import Cluster, EnrichmentResult, MemoryEntry, RagChunk, VerdictResult
 from ..tools.base import ToolRegistry
@@ -43,6 +44,7 @@ def _context_summary(
     enrichment: EnrichmentResult | None,
     rag_chunks: list[RagChunk] | None,
     memory: list[MemoryEntry] | None,
+    precedent: PrecedentSignal | None = None,
 ) -> str:
     """Compose a concise, human-readable summary of the context INJECTED into the
     investigation — the explainability backbone (the case-rationale "why").
@@ -69,6 +71,16 @@ def _context_summary(
         parts.append(
             f"enrichment: reputation={enrichment.reputation_score} "
             f"malicious={enrichment.is_malicious} country={enrichment.country}"
+        )
+
+    # The precedent status is recorded whether or not it qualified, so the trace can
+    # show WHY promotion did not apply (insufficient / conflicting / not retrieved)
+    # instead of leaving its absence unexplained.
+    if precedent is not None and precedent.status not in ("disabled", "not_applicable"):
+        parts.append(
+            f"precedent({precedent.status}): "
+            f"fp={precedent.confirmed_false_positive} tp={precedent.confirmed_true_positive} "
+            f"retrieved={precedent.retrieved_matching}"
         )
 
     return " | ".join(parts) if parts else "no injected context"
@@ -100,6 +112,7 @@ class Investigator:
         persona: AgentPersona | None = None,
         playbook: "Playbook | None" = None,
         memory: list[MemoryEntry] | None = None,
+        precedent: PrecedentSignal | None = None,
         cost_sink: list[float] | None = None,
     ) -> tuple[VerdictResult, float]:
         cost = 0.0
@@ -132,8 +145,13 @@ class Investigator:
             # Operator MEMORY (durable trusted facts) is injected as a DISTINCT block
             # ABOVE the untrusted evidence and BELOW the playbook procedure — it can
             # only INFORM; the deterministic policy still decides close/escalate.
+            # The code-computed analyst-precedent summary is injected as its OWN
+            # TRUSTED block (only when the operator enabled promotion AND the signal
+            # qualified). It is EVIDENCE, not authority: the deterministic policy still
+            # decides close/escalate (#3).
             context = render_cluster(
                 cluster, enrichment, rag_chunks, playbook=playbook_text, memory=memory,
+                precedent=precedent,
             )
             messages = [
                 {"role": "system", "content": system},
@@ -157,7 +175,7 @@ class Investigator:
             await self._audit.record(
                 action_type=ActionType.CONTEXT, surface=surface, actor="context",
                 case_id=case_id,
-                result_summary=_context_summary(enrichment, rag_chunks, memory),
+                result_summary=_context_summary(enrichment, rag_chunks, memory, precedent),
                 tool_input={
                     "persona": (persona.id if persona else "generalist"),
                     "playbook": (f"{playbook.id} v{playbook.version}" if playbook else None),
@@ -167,6 +185,7 @@ class Investigator:
                         else None
                     ),
                     "memory": [truncate(m.text, 200) for m in (memory or []) if (m.text or "").strip()][:20],
+                    "precedent": (precedent.as_dict() if precedent is not None else None),
                     "knowledge": [
                         {
                             "source": ch.source,

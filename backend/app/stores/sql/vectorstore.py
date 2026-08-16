@@ -144,6 +144,9 @@ class SqlVectorStore(VectorStore):
         out.sort(key=lambda c: int((c.metadata or {}).get("chunk_index", 0) or 0))
         return out
 
+    async def list_all_chunks(self) -> list[StoredChunk]:
+        return await self._load_all()
+
     async def delete_document(self, document_id: str) -> int:
         async with self._sm() as session:
             rows = (await session.execute(select(RagChunkRow))).scalars().all()

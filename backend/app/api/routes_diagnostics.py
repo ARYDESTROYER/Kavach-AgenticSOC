@@ -55,6 +55,11 @@ from ..engine.metrics import (
     auto_close_health,
     precedent_ground_truth,
 )
+from ..engine.precedent import (
+    evaluate_futility,
+    rule_outcome_tally,
+    unavailable_distribution,
+)
 from ..state import AppState
 from ..utils import iso_now
 from .deps import get_state, require_permission
@@ -290,6 +295,108 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
     }
 
 
+_MAX_DISTRIBUTION_ROWS = 50
+_MAX_FUTILE_RULES = 20
+
+
+async def _precedent_effectiveness_block(state: AppState, cases: list) -> dict[str, Any]:
+    """Is the precedent an operator has built actually CHANGING anything?
+
+    Two silent failures live here, and both cost an operator real review time:
+
+    * **Starvation by success.** The bounded precedent window is filled newest-first, so
+      a bulk analyst action on ONE rule can evict every other rule's precedent — the
+      precedent-corpus outage again, this time triggered by an operator doing exactly
+      what the product asked of them. Publishing the per-rule distribution makes that
+      visible BEFORE it bites, instead of after auto-close collapses.
+    * **Futility.** For a detection whose alerts carry no per-case evidence, an
+      investigation can never verify that THIS instance is benign, so it keeps routing
+      to a human however much confirmed history stands behind the rule. The product
+      nonetheless asks for more confirmations — indefinitely, with no signal that they
+      cannot help. Naming those rules, with the two remedies that CAN work, is the
+      difference between a dead end and a decision.
+
+    Read-only, seed-free and advisory (#3). Every count is honest about its bound: an
+    unreadable corpus reports ``available: false`` rather than an empty distribution, and
+    a truncated corpus read marks its counts as a lower bound.
+    """
+    rag = getattr(state, "rag_service", None)
+    prefs = getattr(state, "prefs", None)
+    block = getattr(prefs, "precedent", None)
+    promotion = getattr(block, "promotion", None)
+    futility_cfg = getattr(block, "futility", None)
+    window_cfg = getattr(block, "window", None)
+
+    reader = getattr(rag, "precedent_distribution", None) if rag is not None else None
+    if reader is None:
+        distribution = unavailable_distribution(
+            "this deployment's retrieval service does not expose a per-rule precedent "
+            "distribution"
+        )
+    else:
+        try:
+            distribution = await reader()
+        except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+            logger.warning("diagnostics precedent distribution soft-failed: %s", exc)
+            distribution = unavailable_distribution(
+                f"the precedent corpus could not be read ({type(exc).__name__})"
+            )
+
+    tallies = rule_outcome_tally(cases)
+    # WHY the report did not run matters as much as its result. An empty ``futile_rules``
+    # can mean "measured, nothing found" or "never evaluated", and rendering the second
+    # as the first puts a green badge on a deployment nobody has actually checked.
+    if futility_cfg is None:
+        futility_measured, futility_reason = False, (
+            "this deployment has no precedent-futility configuration, so the report did "
+            "not run"
+        )
+    elif not bool(getattr(futility_cfg, "enabled", True)):
+        futility_measured, futility_reason = False, (
+            "precedent-futility reporting is turned off for this deployment"
+        )
+    elif distribution.disabled:
+        futility_measured, futility_reason = False, distribution.reason
+    elif not distribution.available:
+        futility_measured, futility_reason = False, (
+            distribution.reason or "the precedent corpus could not be read"
+        )
+    elif distribution.truncated:
+        # A truncated read yields LOWER BOUNDS. Recommending that an operator
+        # permanently declare a rule benign on evidence that could not be fully read is
+        # exactly the kind of confident-looking wrong answer this surface exists to
+        # prevent, so the report is withheld rather than published.
+        futility_measured, futility_reason = False, (
+            "the precedent corpus read was truncated, so per-rule counts are lower "
+            "bounds and cannot support a recommendation"
+        )
+    else:
+        futility_measured, futility_reason = True, ""
+
+    futile = (
+        evaluate_futility(
+            distribution=distribution,
+            tallies=tallies,
+            config=futility_cfg,
+            promotion_enabled=bool(getattr(promotion, "enabled", False)),
+        )
+        if futility_measured
+        else []
+    )
+    return {
+        "promotion_enabled": bool(getattr(promotion, "enabled", False)),
+        "promotion_min_confirmed": int(getattr(promotion, "min_confirmed", 0) or 0),
+        "window_size": int(getattr(window_cfg, "size", 0) or 0),
+        "window_stratified": bool(getattr(window_cfg, "stratify_by_rule", False)),
+        "distribution": distribution.as_dict(limit=_MAX_DISTRIBUTION_ROWS),
+        # True only when the report actually ran; ``futility_reason`` says why not.
+        "futility_measured": futility_measured,
+        "futility_reason": futility_reason,
+        "futile_rules": futile[:_MAX_FUTILE_RULES],
+        "futile_rule_count": len(futile),
+    }
+
+
 def _schema_migration_block(state: AppState) -> dict[str, Any]:
     """The in-place SQL schema-migration outcome.
 
@@ -335,7 +442,10 @@ def _alert(severity: str, alert_id: str, title: str, detail: str, remediation: s
 
 
 def _build_alerts(
-    precedent: dict[str, Any], migration: dict[str, Any], auto_close: dict[str, Any]
+    precedent: dict[str, Any],
+    migration: dict[str, Any],
+    auto_close: dict[str, Any],
+    effectiveness: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Turn the three blocks into an operator-readable ``(alerts, unknowns)`` pair.
 
@@ -441,6 +551,71 @@ def _build_alerts(
             )
         )
 
+    # Precedent effectiveness — the "more confirmations will not help" signal. This is a
+    # WARNING, not a critical: nothing is broken, but the operator is currently being
+    # asked to spend review time on something that cannot change the outcome.
+    if effectiveness:
+        distribution = effectiveness.get("distribution") or {}
+        if distribution.get("disabled"):
+            # The operator turned the precedent source off. That is configured
+            # behaviour, not an unmeasurable signal, and reporting it as an unknown
+            # would permanently deny a correctly-configured deployment a clean bill of
+            # health — the same distinction the corpus block already makes.
+            pass
+        elif not distribution.get("available"):
+            unknowns.append(
+                _alert(
+                    "unknown", "precedent_distribution_unknown",
+                    "Per-rule precedent distribution is unknown",
+                    str(distribution.get("reason") or "the corpus could not be read"),
+                    "Check the vector store / state backend connectivity.",
+                )
+            )
+        elif distribution.get("truncated"):
+            unknowns.append(
+                _alert(
+                    "unknown", "precedent_distribution_truncated",
+                    "Per-rule precedent counts are a lower bound",
+                    "The precedent corpus read hit its scan ceiling, so every per-rule "
+                    "count below is a lower bound. Precedent promotion and the "
+                    "'more confirmations will not help' report are both withheld rather "
+                    "than answered from a partial read.",
+                    "Reduce the corpus, or move to a backend that can read it whole.",
+                )
+            )
+        if not effectiveness.get("futility_measured") and not distribution.get("disabled"):
+            unknowns.append(
+                _alert(
+                    "unknown", "precedent_futility_not_measured",
+                    "Whether analyst precedent is helping could not be measured",
+                    str(effectiveness.get("futility_reason") or "the report did not run"),
+                    "",
+                )
+            )
+        for row in effectiveness.get("futile_rules") or []:
+            alerts.append(
+                _alert(
+                    "warning",
+                    f"precedent_not_effective:{row.get('rule_identity')}",
+                    f"Analyst precedent is not changing the outcome for {row.get('rules')}",
+                    str(row.get("detail") or ""),
+                    str(row.get("remediation") or ""),
+                )
+            )
+        unattributed = int(distribution.get("unattributed_documents") or 0)
+        if distribution.get("available") and unattributed > 0:
+            unknowns.append(
+                _alert(
+                    "unknown", "precedent_rule_identity_missing",
+                    f"{unattributed} precedent document(s) carry no rule identity",
+                    "These were projected before rule identity became precedent metadata, "
+                    "so they are retrievable but cannot be rule-matched or counted per "
+                    "rule. They are reported separately rather than counted as absent.",
+                    "They are re-tagged automatically on the next retrieval projection; "
+                    "re-confirm or re-index the affected cases to converge sooner.",
+                )
+            )
+
     return alerts, unknowns
 
 
@@ -467,6 +642,7 @@ async def diagnostics_health(
     spend, a projection, or any write. Advisory only; never read by ``decide()`` (#3)."""
     cases, store_total = await _load_cases(state)
     precedent = await _precedent_corpus_block(state, cases, store_total)
+    effectiveness = await _precedent_effectiveness_block(state, cases)
     migration = _schema_migration_block(state)
     auto_close = auto_close_health(
         cases,
@@ -474,13 +650,16 @@ async def diagnostics_health(
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
         store_total=store_total,
     )
-    alerts, unknowns = _build_alerts(precedent, migration, auto_close)
+    alerts, unknowns = _build_alerts(precedent, migration, auto_close, effectiveness)
     return {
         "generated_at": iso_now(),
         "window_hours": int(window_hours),
         "demo_active": bool(getattr(state, "demo_active", False)),
         "state_backend": str(getattr(getattr(state, "secrets", None), "state_backend", "") or ""),
         "precedent_corpus": precedent,
+        # Per-rule precedent distribution + the "more confirmations will not help"
+        # finding. Advisory; never read by decide() (#3).
+        "precedent_effectiveness": effectiveness,
         "schema_migration": migration,
         "auto_close": auto_close,
         "alerts": alerts,

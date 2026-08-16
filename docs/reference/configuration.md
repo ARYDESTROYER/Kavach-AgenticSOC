@@ -204,8 +204,10 @@ Every `Preferences` field has a default. Major blocks include:
 - sources, feeds, OCSF field mappings, polling, and data scope;
 - correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;
 - model routing, concurrency caps, batch processing, budgets, and pricing overlays;
-- deterministic auto-close policy, case ID format, priority, and SLA targets;
-- playbooks, RAG, memory, enrichment, threat context, and personas;
+- deterministic auto-close policy, analyst rule policies, case ID format, priority, and
+  SLA targets;
+- playbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent
+  promotion, window fairness, and futility reporting;
 - auth policy, MFA/SSO metadata, RBAC, sessions, notifications, and realtime events;
 - branding, terminology, themes, saved views, dashboard defaults, and the desired
   own-state storage lifecycle;

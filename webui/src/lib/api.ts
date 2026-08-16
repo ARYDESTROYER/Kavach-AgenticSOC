@@ -60,6 +60,7 @@ import type {
   NoiseLineage,
   NoiseReduction,
   AutoCloseHealth,
+  AnalystRulePolicyConfig,
   DiagnosticsHealth,
   NotificationPreview,
   NotificationProviders,
@@ -1364,6 +1365,37 @@ export const api = {
       query: { window_hours: windowHours },
       signal,
     }),
+
+  // ---- Analyst rule policies (Detection & Rules) ------------------------ //
+  // An operator's explicit, audited, revocable declaration that a detection is benign
+  // in THIS estate. Matching clusters close deterministically with NO model call, as
+  // `decision_by='analyst_policy'` — the exit from "confirm more cases" for a rule
+  // whose alerts carry no per-case evidence to confirm against. `rules:read` to list,
+  // `rules:manage` to mutate. Pass `'new'` as the id to let the server mint one.
+  listAnalystPolicies: () =>
+    request<{
+      policies: AnalystRulePolicyConfig[];
+      total: number;
+      live: number;
+      max_policies: number;
+    }>('GET', 'rules/analyst-policies'),
+  upsertAnalystPolicy: (policyId: string, body: Record<string, unknown>) =>
+    request<{ policy: AnalystRulePolicyConfig; created: boolean }>(
+      'PUT',
+      `rules/analyst-policies/${encodeURIComponent(policyId)}`,
+      { body },
+    ),
+  setAnalystPolicyEnabled: (policyId: string, enabled: boolean) =>
+    request<{ policy: AnalystRulePolicyConfig }>(
+      'POST',
+      `rules/analyst-policies/${encodeURIComponent(policyId)}/enabled`,
+      { body: { enabled } },
+    ),
+  deleteAnalystPolicy: (policyId: string) =>
+    request<{ deleted: number; id: string }>(
+      'DELETE',
+      `rules/analyst-policies/${encodeURIComponent(policyId)}`,
+    ),
 
   // ---- Analytics surfaces ---------------------------------------------- //
   listCases: (query?: Record<string, unknown>) =>

@@ -24,6 +24,7 @@ from typing import Any
 from ..constants import CaseStatus, DecisionBy, TERMINAL_CASE_STATUSES, Verdict
 from ..models import Case
 from .analyst_outcomes import analyst_confirmed_outcome
+from .precedent import is_policy_closed
 
 # A labelled placeholder for a metric that could not be computed because the
 # underlying transition / event never occurred (rather than a misleading 0). The UI
@@ -91,7 +92,15 @@ def _stat_block(samples: list[float], *, missing_reason: str) -> dict[str, Any]:
 
 
 def feedback_stats(cases: list[Case]) -> dict:
-    """Aggregate analyst feedback across cases (the eval/quality loop)."""
+    """Aggregate analyst feedback across cases (the eval/quality loop).
+
+    Excludes cases closed by an operator's analyst RULE POLICY: no model produced a
+    verdict on them, so an analyst disagreeing (or agreeing) with a judgement that was
+    never made says nothing about the agent's quality. The grade itself is still real
+    ground truth and is counted as such by the tuner and the precedent projection — it
+    is only this AGREEMENT-WITH-THE-AGENT view it must stay out of.
+    """
+    cases = [c for c in cases if not is_policy_closed(c)]
     entries = [fb for c in cases for fb in (c.feedback or [])]
     graded_cases = sum(1 for c in cases if c.feedback)
     if not entries:
@@ -314,7 +323,7 @@ _TERMINAL = frozenset(TERMINAL_CASE_STATUSES)
 # Non-human transition authors (DecisionBy). A transition whose ``by`` is one of these
 # is a deterministic/agent action, NOT a human acknowledgment/response — the autopilot
 # risk gate auto-escalates at case creation with by="system"/"agent" (audit #9).
-_NONHUMAN_ACTORS = frozenset({"system", "agent"})
+_NONHUMAN_ACTORS = frozenset({"system", "agent", DecisionBy.ANALYST_POLICY.value})
 
 
 def _first_transition_at(
@@ -497,7 +506,18 @@ def quality_metrics(cases: list[Case]) -> dict[str, Any]:
     * ``containment_rate`` — terminal cases / total (worked to completion).
     * ``automation_rate`` — cases whose terminal decision was made by the AGENT
       (``decision_by == agent``) / terminal cases (deterministic auto-close share).
+    * ``policy_closed_cases`` — cases closed by an operator's analyst RULE POLICY.
+      Reported separately and EXCLUDED from every rate above: no model ran on them, so
+      they are neither agent success nor agent failure.
     """
+    # A case closed by an operator's analyst RULE POLICY never reached the agent: no
+    # model ran, no verdict exists, and no investigation was attempted. Counting it
+    # would distort every rate below in both directions (it would deflate
+    # ``automation_rate`` by joining its denominator, and inflate ``containment_rate``
+    # by looking like worked-to-completion volume), so it is excluded from the agent's
+    # measured performance entirely and reported as its own explicit count instead.
+    policy_closed = [c for c in cases if is_policy_closed(c)]
+    cases = [c for c in cases if not is_policy_closed(c)]
     total = len(cases)
     verdicted = sum(1 for c in cases if c.verdict is not None)
     tp = sum(1 for c in cases if c.verdict == Verdict.TRUE_POSITIVE)
@@ -523,6 +543,8 @@ def quality_metrics(cases: list[Case]) -> dict[str, Any]:
         "escalated_cases": escalated,
         "terminal_cases": len(terminal),
         "auto_closed_cases": auto_closed,
+        # Excluded from every rate above; surfaced so the volume stays visible.
+        "policy_closed_cases": len(policy_closed),
         "alert_to_incident_ratio": _ratio(tp, total),
         "false_positive_rate": _ratio(fp, verdicted),
         "escalation_rate": _ratio(escalated, total),
@@ -873,7 +895,7 @@ def _auto_close_tally(
     it counts as *auto-closed* when the deterministic decision author was the AGENT
     and the case is terminal — the same ``decision_by == agent`` tally
     :func:`quality_metrics` already uses for ``automation_rate``."""
-    decided = auto_closed = routed_to_human = analyst_decided = 0
+    decided = auto_closed = routed_to_human = analyst_decided = policy_closed = 0
     for case in cases:
         at = _decision_dt(case)
         if at is None:
@@ -881,6 +903,15 @@ def _auto_close_tally(
         if start is not None and at < start:
             continue
         if end is not None and at >= end:
+            continue
+        # An analyst-rule-policy close never reached a verdict, so it would already
+        # fall out below — but say so EXPLICITLY: silently relying on that would put
+        # it in ``routed_to_human`` the moment anything else set a verdict, and enough
+        # policy closes there can flip auto-close health to a false ``collapsed``.
+        # Counted AFTER the window guards, so the current/baseline/lifetime blocks each
+        # report their own window's policy volume rather than the whole fetched set.
+        if is_policy_closed(case):
+            policy_closed += 1
             continue
         if case.verdict is None:
             continue
@@ -897,6 +928,8 @@ def _auto_close_tally(
         "auto_closed": auto_closed,
         "routed_to_human": routed_to_human,
         "analyst_decided": analyst_decided,
+        # Outside the rate entirely (numerator AND denominator); reported for context.
+        "policy_closed": policy_closed,
     }
 
 
@@ -1130,10 +1163,20 @@ def precedent_ground_truth(
     terminal = 0
     by_outcome: Counter[str] = Counter()
     by_evidence: Counter[str] = Counter()
+    policy_closed = 0
     for case in cases:
+        outcome, evidence = analyst_confirmed_outcome(case)
+        # An UNGRADED policy close is terminal but was never a candidate for grading, so
+        # counting it would widen the "ungraded terminal cases" gap that drives the
+        # starved narrative and make a healthy corpus look like a labelling failure. A
+        # policy close an analyst LATER GRADED is real independent evidence and is
+        # counted exactly like any other — the same rule ``analyst_confirmed_case_ids``
+        # and the RAG projection already apply, so the three cannot disagree.
+        if outcome is None and is_policy_closed(case):
+            policy_closed += 1
+            continue
         if (case.status.value if case.status else "") in _TERMINAL:
             terminal += 1
-        outcome, evidence = analyst_confirmed_outcome(case)
         if outcome is None:
             continue
         confirmed += 1
@@ -1142,6 +1185,7 @@ def precedent_ground_truth(
     return {
         "analyst_confirmed_cases": confirmed,
         "terminal_cases": terminal,
+        "policy_closed_cases": policy_closed,
         "scanned_cases": len(cases),
         "by_outcome": dict(by_outcome),
         "by_evidence_source": dict(by_evidence),

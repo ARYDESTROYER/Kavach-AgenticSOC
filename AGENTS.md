@@ -229,6 +229,16 @@ backend/app/
                      + deltas for the forward Standup; aggregate-only #7) ·
                      priority (read-time severity/impact/urgency/priority derivation —
                      advisory, never feeds decide()) ·
+                     precedent (pure rule-identity precedent authority: canonical
+                     rule_identity · per-rule PrecedentDistribution · evaluate_precedent_signal
+                     [EVIDENCE promotion only — rule identity is the gate, similarity alone
+                     never qualifies, unconfirmed tier never promotable] ·
+                     match_analyst_rule_policy [operator "declared benign" → deterministic
+                     $0 close under DecisionBy.ANALYST_POLICY, evaluated BEFORE any verdict
+                     so decide() is untouched #3, excluded from every agent-performance
+                     statistic and invisible to analyst_confirmed_outcome] ·
+                     stratified_selection [round-robin precedent window so one rule's bulk
+                     analyst action cannot starve the rest] · evaluate_futility) ·
                      budget (pure pre-flight BudgetGate; over-budget → NEEDS_HUMAN) ·
                      threshold_automation (#3-safe rule actions → HITL proposal) ·
                      threat_context (IOC reputation + MITRE + related cases, fail-open) ·
@@ -381,7 +391,10 @@ backend/app/
                      event-driven `baseline_producer` `on_ingest` health] ·
                      routes_telemetry [query-backed, versioned telemetry-gap evidence;
                      connector absence alone never creates a recommendation] ·
-                     routes_diagnostics [read-only precedent/migration/auto-close health] ·
+                     routes_diagnostics [read-only precedent/migration/auto-close health +
+                     per-rule precedent distribution and futility findings] ·
+                     routes_analyst_policy [`/api/rules/analyst-policies*` operator
+                     "declared benign" CRUD under rules:read/manage] ·
                      routes_jobs [`POST/GET /api/jobs`, self-scoped list/detail/cancel,
                      verified artifact download, related permission-scoped LLM Batch
                      and scheduler projections; successful submit/retry/cancel plus

@@ -103,12 +103,12 @@ the exact request model and every operation under a prefix.
 | Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
 | Workspace | `POST /api/chat`, `/api/chat/conversations*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat with per-user history, entity investigation, cross-surface search, scan queues, and personas |
-| Detection and automation | `/api/rules*`, `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
+| Detection and automation | `/api/rules*` (including `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
 | Playbooks | `GET/POST /api/playbooks`, `GET/PUT /api/playbooks/{playbook_id}`, `POST /api/playbooks/reload`, `/dry-run`, `GET /coverage`, `/selection/{case_id}`, `POST /api/cases/{case_id}/run-playbook` | Durable catalog/open/edit, deterministic diagnostics and coverage, selection provenance, and case execution |
 | Knowledge and memory | `/api/rag/*`, `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, manage operator memory, and manage protected/owned runbooks |
 | Enrichment and MITRE | `/api/enrichment/*`, `/api/mitre/coverage*`, `GET /api/cases/{case_id}/threat-context` | IOC enrichment, provider configuration, ATT&CK coverage, and Navigator export |
 | Dashboards and metrics | `/api/dashboards*`, `/api/metrics*`, `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, usage, feedback, and cost estimates |
-| Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface |
+| Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface, including the per-rule precedent distribution and futility findings |
 | Standup and handoff | `/api/standup*` | Shift report, acknowledgements, and action items |
 | Notifications | `/api/notifications/providers`, `/channels/*`, `/preview`, `/test`, `/prefs`, `/inbox*` | Channel catalog/secrets, safe previews, tests, per-user preferences, and in-app inbox |
 | Application background jobs | `POST/GET /api/jobs`, `GET /api/jobs/{job_id}`, `POST /cancel`, `GET /artifact` | Self-scoped durable work, progress, cooperative cancellation, bounded failures, result projections, and verified retained artifacts |
@@ -226,6 +226,26 @@ Runbook content is trusted operator-controlled knowledge and is projected under 
 stable `runbook:<id>` document identity. These routes never execute it as a playbook
 and never call or modify deterministic case-policy authority.
 
+## Analyst rule policies
+
+`GET /api/rules/analyst-policies` (`rules:read`) lists every operator declaration that a
+detection is benign in this environment, each with a derived `live` flag
+(enabled and not expired). `PUT /api/rules/analyst-policies/{policy_id}`,
+`POST /api/rules/analyst-policies/{policy_id}/enabled`, and
+`DELETE /api/rules/analyst-policies/{policy_id}` require `rules:manage`. Pass `new` as
+the id to have the server mint one. Author and creation instant are recorded
+server-side and survive later edits; every mutation appends an audit row.
+
+A cluster whose detections are **all** declared is closed with the `false_positive`
+disposition and the `analyst_policy` decision owner, with no model call. The case is
+still created, audited, and reopenable — this is not the event drop that
+`suppression_rules` performs. The evaluation happens before any verdict exists, so it
+neither reads nor extends the auto-close policy.
+
+`analyst_policy` closes are excluded from false-positive rate, automation rate,
+auto-close health, the noise-reduction funnel, case lineage, tuner observed volume, and
+improvement evidence, and are never accepted as analyst-confirmed outcomes.
+
 ## Threshold tuning and approvals
 
 `GET /api/tuning/recommendations` (`automation:read`) distinguishes the full observed
@@ -259,6 +279,29 @@ decisions return `409`, storage failures remain visible/retryable, and a trusted
 Memory approval succeeds only after confirmed persistence. Approve and reject both
 require strict append-only control-audit evidence keyed by proposal id before final
 status, so an unavailable audit ledger fails closed and a retry reuses the same row.
+
+## Analyst-confirmed precedent evidence
+
+`GET /api/diagnostics/health` (`settings:read`) returns `precedent_effectiveness`
+alongside the existing corpus block:
+
+- `distribution` — analyst-confirmed precedent counted per rule identity (the canonical,
+  order-independent detection set), with `available`, `truncated`, `unattributed_documents`
+  (precedent recorded before rule identity was captured), and `total_confirmed`. An
+  unreadable corpus reports `available: false`, never an empty distribution.
+- `futile_rules` — rules holding abundant analyst-confirmed benign precedent whose cases
+  still route to a human, each with its counts, an explanation, and remediation. Each also
+  appears as a `precedent_not_effective:{rule}` warning in `alerts`.
+- `promotion_enabled`, `window_size`, and `window_stratified` describe the active policy.
+
+When `precedent.promotion` is enabled, each investigated case records `precedent_signal`:
+`status` (`qualified`, `insufficient`, `conflicting`, `not_retrieved`, `unavailable`,
+`disabled`, or `not_applicable`), the confirmed benign/malicious counts for the matched
+rule identity, how many matching precedents were retrieved, and the thresholds applied.
+Rule identity must match exactly; similarity alone never qualifies, and the lower-trust
+`model_unconfirmed` tier is never promotable. The signal is evidence supplied to the
+investigator — the verdict remains the model's and the close decision remains the
+deterministic policy's.
 
 ## Memory and RAG trust
 

@@ -25,6 +25,37 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Analyst-confirmed precedent no longer arrives without rule identity, and a
+  precedent-rich rule can no longer be silently ignored.** A field report described an
+  operator reviewing 349 cases of one detection rule, confirming every one benign through
+  the supported `confirm_fp` path, and watching the precedent corpus grow 15 → 314 — while
+  the very next case of that rule still returned `NEEDS_HUMAN` at 0.98 confidence.
+  Retrieval was working: six analyst-confirmed benign precedents for the identical rule
+  were retrieved, one at a perfect score. The investigator was making an
+  **evidence-sufficiency** judgement ("these alerts carry no HTTP or execution context"),
+  which precedent volume can never move — so confirming 349 cases, or 3,490, would have
+  produced the same result. The precedent projection now records rule identity as
+  matchable metadata (`rule_identity` / `rule_ids`, on both trust tiers), existing corpora
+  are re-tagged in place from the case store on the next projection with no re-embedding,
+  and the new per-rule signal below can act on it.
+- **A bulk analyst action on one rule can no longer starve every other rule's precedent.**
+  The bounded precedent window was filled newest-first across all rules, so 229
+  confirmations newer than every other labelled case would have taken all 200 slots and
+  dropped every other rule — including one carrying most of the deployment's auto-close
+  volume — to zero. That is the precedent-starvation outage in a new form, triggered by an
+  operator doing exactly what the product asked of them. The window is now allocated
+  round-robin across rule identities (`precedent.window.stratify_by_rule`, ON), so every
+  active rule keeps a floor inside the same bounded window.
+- **A `VectorStore` corpus-wide read is one pass, not one per document.** Adding
+  `list_all_chunks()` removes an O(documents x corpus) fan-out that the per-rule precedent
+  distribution and the rule-identity re-tag would otherwise have paid on every read: a
+  deployment with 846 precedent documents would have performed 846 full corpus scans to
+  answer one diagnostics request. The re-tag also short-circuits once the corpus has
+  converged, so the one-time migration is genuinely one-time.
+- **`GET /api/triage/*` no longer labels every close "Auto-closed by policy".** The
+  decision headline compared `decision_by` against the literal string `"human"`, which no
+  `DecisionBy` value has ever equalled, so an analyst's own close was reported as
+  automation. It now compares against the real vocabulary.
 - **Overview posture values can no longer cross time ranges.** The shared posture
   loader keys state to `window_hours` plus comparison mode, aborts superseded reads,
   validates the response's echoed window, and hides an old snapshot synchronously while
@@ -84,6 +115,49 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **Analyst rule policies — an operator can state a rule-level fact and have it honoured
+  deterministically.** For a detection whose alerts carry no per-case evidence, no amount
+  of confirmation can help: the investigation cannot verify that *this* instance is
+  benign, so it correctly routes to a human every time. `Preferences.analyst_rule_policies`
+  is the exit — an explicit, audited, revocable declaration that a detection is benign in
+  this estate. A matching cluster is CLOSED with `disposition=false_positive` and the new
+  `DecisionBy.ANALYST_POLICY`, **with no LLM call at all**. Managed through
+  `GET/PUT/DELETE /api/rules/analyst-policies[/{id}]` and
+  `POST /api/rules/analyst-policies/{id}/enabled` under the unified `rules:read` /
+  `rules:manage` grant. Unlike `suppression_rules` (a field==value event DROP) the case
+  stays visible, audited and reopenable, so the volume remains countable. Every rule on a
+  cluster must be declared before it closes, so a cluster that also fired an undeclared
+  detection is still investigated. `decide()` is untouched (#3): the declaration is
+  evaluated before any verdict exists, and it is excluded from every agent-performance
+  statistic — false-positive rate, automation rate, auto-close health, the Noise-Reduction
+  funnel, case lineage, tuner observed volume and agent-improvement evidence — so it can
+  never flatter the agent. It is deliberately invisible to `analyst_confirmed_outcome`, so
+  the automation can never train on its own output.
+- **Analyst-confirmed precedent promotion (`precedent.promotion`, opt-in, OFF by
+  default).** When the rule identity under investigation carries a unanimous, sufficiently
+  large body of analyst-confirmed benign outcomes, the investigator is now told so
+  explicitly and in **structured** form — a code-computed count in its own TRUSTED prompt
+  block — rather than being left to infer it from a handful of retrieved prose snippets.
+  This is *evidence promotion*, not a close authority: the verdict still comes from the
+  model and `decide()` still applies the operator's auto-close policy. Gates: promotion
+  enabled, rule identity matches exactly (a perfect-similarity hit from a **different**
+  rule never qualifies), the rule's analyst history is unanimous (`max_conflicting`,
+  default 0), at least `min_confirmed` confirmed benign outcomes exist, and at least one
+  matching precedent was actually retrieved for this case above `min_similarity`. The
+  agent's own lower-trust `model_unconfirmed` tier can never be promoted. The result is
+  recorded on the case as `precedent_signal` — with an explicit status when it did *not*
+  qualify — and surfaced on the Deterministic decision card, so a close that leaned on
+  institutional history is auditable and reversible.
+- **The product now says when more confirmations cannot help.** `GET
+  /api/diagnostics/health` gains `precedent_effectiveness`: the per-rule precedent
+  distribution (so starvation is visible before it bites) and a `futile_rules` list naming
+  every rule that holds abundant analyst-confirmed precedent yet still routes its cases to
+  a human, with the two remedies that *can* work — enrich the source, or apply an analyst
+  rule policy. Each becomes a `precedent_not_effective:{rule}` warning on the existing
+  alerts list, so it also reaches the Overview degradation strip. Precedent projected
+  before rule identity existed is reported separately as `unattributed_documents` rather
+  than counted as absent. The Console's **Analytics → Effectiveness** health panel adds a
+  "Precedent by rule" tile.
 - **Durable application background jobs.** `POST /api/jobs` now admits self-scoped,
   idempotent long work into one bounded strict-CAS StateStore registry. Renewable
   five-minute leases, audit-before-effect and audit-before-visible transitions, restart recovery, live-grant
@@ -273,6 +347,36 @@ and, just as importantly, makes each of these conditions a state an operator can
 - **Disabling `rag.use_resolved_cases` no longer deletes precedent chunks.** They remain in
   the store and simply stop being retrievable, so re-enabling the source restores the
   accumulated corpus instead of starting from nothing.
+- **The precedent projection window is now shared fairly across detection rules.** This
+  changes WHICH analyst-confirmed cases are projected on the next re-seed — the window size
+  is unchanged (`precedent.window.size`, 200), but a rule that previously took every slot
+  now keeps a proportional share. Set `precedent.window.stratify_by_rule` to `false` to
+  restore the previous newest-first behaviour.
+- **Existing precedent is re-tagged with rule identity on the next projection.** The
+  re-tag reads rule ids from the case store (never parsed out of chunk prose), reuses the
+  existing document identity, and does not re-embed, so it costs no gateway spend. Chunks
+  whose case can no longer be read are left alone and reported as
+  `unattributed_documents` — they stay retrievable but cannot be rule-matched, so
+  precedent promotion will not count them until their case is re-confirmed or re-indexed.
+- **`DecisionBy` has a fourth value, `analyst_policy`.** It appears only on cases closed by
+  an operator's analyst rule policy, so nothing changes until a declaration exists. Any
+  integration that switches exhaustively on `decision_by` should treat it as neither agent
+  nor human: it is excluded from agent-performance statistics by design, and treating it as
+  an analyst outcome would let the automation train on its own output.
+- **An analyst rule policy never applies to a case the agent has already investigated.**
+  A cluster signature is entity-centric and excludes rule ids, so a later alert carrying
+  only a declared rule can re-enter an open case. A case that already carries a verdict is
+  left entirely alone, and coverage is checked against the rule set the closed record will
+  actually carry (cluster + case), so an undeclared detection can never be absorbed into a
+  no-model close. Analyst-owned state on an un-investigated case — grades, tags, comments,
+  assignment — survives the close.
+- **A grade recorded on a policy-closed case is ground truth but not agent quality.** It
+  counts for the threshold tuner and the precedent corpus (an analyst labelled the alert),
+  and is excluded from agreement/correction rates (no model judged it, so agreeing or
+  disagreeing with it measures nothing about the agent).
+- **Precedent promotion is OFF by default and must be enabled deliberately.** It changes
+  what the investigator is told, so it is not adopted silently on upgrade. The window
+  fairness fix and the futility report are read-side only and are on.
 - **Pending tuning proposals drafted before this release cannot be approved.** They carry
   no evidence fingerprint, so they are reported as `unverified` and refused with
   `evidence_fingerprint_missing`. Reject them (bulk reject is the fast path) and let the

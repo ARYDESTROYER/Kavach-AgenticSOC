@@ -3672,6 +3672,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rules/analyst-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Analyst Policies
+         * @description Every operator declaration, with a derived ``live`` flag per row.
+         */
+        get: operations["list_analyst_policies_api_rules_analyst_policies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/analyst-policies/{policy_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upsert Analyst Policy
+         * @description Create or replace ONE declaration.
+         *
+         *     ``policy_id`` of ``new`` mints a server-side id, so a client never has to invent
+         *     one. The rule id is normalised with the SAME function the tuner and precedent
+         *     matcher use, so "the same rule" means one thing everywhere.
+         */
+        put: operations["upsert_analyst_policy_api_rules_analyst_policies__policy_id__put"];
+        post?: never;
+        /**
+         * Delete Analyst Policy
+         * @description Delete a declaration. Cases it already closed stay closed (and reopenable).
+         */
+        delete: operations["delete_analyst_policy_api_rules_analyst_policies__policy_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rules/analyst-policies/{policy_id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Analyst Policy Enabled
+         * @description Revoke (or restore) a declaration without losing it or its provenance.
+         */
+        post: operations["set_analyst_policy_enabled_api_rules_analyst_policies__policy_id__enabled_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rules/case-automation/{rule_id}": {
         parameters: {
             query?: never;
@@ -5543,6 +5611,8 @@ export interface components {
              * @default
              */
             agent_persona: string;
+            /** Analyst Policy */
+            analyst_policy?: Record<string, never> | null;
             /** App Version */
             app_version?: string | null;
             /**
@@ -5633,6 +5703,8 @@ export interface components {
              * @default
              */
             playbook_id: string;
+            /** Precedent Signal */
+            precedent_signal?: Record<string, never> | null;
             /** Priority Level */
             priority_level?: string | null;
             /**
@@ -6273,7 +6345,7 @@ export interface components {
          * DecisionBy
          * @enum {string}
          */
-        DecisionBy: "agent" | "analyst" | "system";
+        DecisionBy: "agent" | "analyst" | "system" | "analyst_policy";
         /** DemoEnableBody */
         DemoEnableBody: {
             /** Alert Interval Seconds */
@@ -8360,12 +8432,26 @@ export interface components {
             objection_window_minutes: number;
         };
         /**
-         * _EnabledIn
-         * @description Enable/disable a rule (a lifecycle toggle body).
+         * _PolicyIn
+         * @description The writable shape. ``id`` comes from the path; provenance is set server-side.
          */
-        _EnabledIn: {
-            /** Enabled */
+        _PolicyIn: {
+            /**
+             * Enabled
+             * @default true
+             */
             enabled: boolean;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Source Id */
+            source_id?: string | null;
         };
         /**
          * _PreviewDecisionIn
@@ -8426,6 +8512,27 @@ export interface components {
             source_id?: string | null;
             /** To */
             to?: string | null;
+        };
+        /**
+         * _EnabledIn
+         * @description Enable/disable a declaration.
+         *
+         *     Typed on purpose: a raw ``dict`` + ``bool(body.get("enabled"))`` coerces the JSON
+         *     STRING ``"false"`` to True, so a client that sends ``{"enabled": "false"}`` would be
+         *     told the declaration was revoked while it kept closing cases. A missing field would
+         *     silently disable instead of failing.
+         */
+        app__api__routes_analyst_policy___EnabledIn: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * _EnabledIn
+         * @description Enable/disable a rule (a lifecycle toggle body).
+         */
+        app__api__routes_rules___EnabledIn: {
+            /** Enabled */
+            enabled: boolean;
         };
     };
     responses: never;
@@ -13890,6 +13997,127 @@ export interface operations {
             };
         };
     };
+    list_analyst_policies_api_rules_analyst_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    upsert_analyst_policy_api_rules_analyst_policies__policy_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_PolicyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_analyst_policy_api_rules_analyst_policies__policy_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_analyst_policy_enabled_api_rules_analyst_policies__policy_id__enabled_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["app__api__routes_analyst_policy___EnabledIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     upsert_case_automation_rule_api_rules_case_automation__rule_id__put: {
         parameters: {
             query?: never;
@@ -13967,7 +14195,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["_EnabledIn"];
+                "application/json": components["schemas"]["app__api__routes_rules___EnabledIn"];
             };
         };
         responses: {
@@ -14134,7 +14362,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["_EnabledIn"];
+                "application/json": components["schemas"]["app__api__routes_rules___EnabledIn"];
             };
         };
         responses: {

@@ -43,6 +43,48 @@ disabled or its confidence/risk bar is not cleared, the case routes to a human.
 `NEEDS_HUMAN`, a missing verdict, and an unknown verdict are never auto-closable.
 That rule is enforced in code and is not exposed as a setting.
 
+## Analyst rule policies
+
+The auto-close policy applies to a verdict. Some detections never produce one worth
+applying it to: if a rule's alerts carry no request, payload, or execution context, an
+investigation cannot verify that a given instance is benign, so it routes to a human
+however many prior cases of that rule an analyst has confirmed benign. Confirming more
+cases cannot change that, because the judgement is about missing evidence rather than
+about precedent.
+
+An analyst rule policy is the operator's own statement about their environment: this
+detection is benign here. A cluster whose detections are all declared is closed with the
+`false_positive` disposition and the `analyst_policy` decision owner, without any model
+call. The declaration is recorded with its author, reason, optional source scope, and
+optional expiry, and is revoked by disabling, expiring, or deleting it.
+
+Three properties keep it honest:
+
+- the case stays visible, audited, and reopenable — nothing is dropped before a case
+  exists, which is what a suppression rule does instead;
+- every detection on the cluster must be declared, so a cluster that also fired an
+  undeclared detection is still investigated normally; and
+- the close is excluded from agent-performance measurement and is never read as an
+  analyst-confirmed outcome, so it can neither flatter the agent nor become training
+  evidence for the automation it replaces.
+
+This path runs before a verdict exists. It does not change, read, or extend the
+auto-close policy above.
+
+## Analyst-confirmed precedent
+
+Retrieval already surfaces resolved cases as context. When enabled, precedent promotion
+additionally tells the investigator, as a computed count rather than retrieved prose, how
+many analyst-confirmed benign and malicious outcomes exist for the **exact** detection
+rule set under investigation.
+
+It is evidence, not authority. The verdict still comes from the model and the policy
+above still decides the outcome. It requires the rule identity to match — a
+high-similarity match from a different rule never qualifies — an unanimous confirmed
+history, a minimum confirmed count, and at least one matching precedent actually
+retrieved for the case. The agent's own unreviewed auto-closes are never promotable. What
+was promoted, or why it was not, is recorded on the case.
+
 ## Escalation and analyst action
 
 A high-severity true positive that does not auto-close can be escalated for priority

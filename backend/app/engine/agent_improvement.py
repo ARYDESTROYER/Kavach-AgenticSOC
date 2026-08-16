@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from ..constants import TERMINAL_CASE_STATUSES
+from ..constants import DecisionBy, TERMINAL_CASE_STATUSES
 from ..models import Case, FeedbackEntry
 from .metrics import percentile, truncation_marker
 
@@ -39,6 +39,10 @@ _NON_HUMAN_ACTORS = frozenset(
         "poller",
         "scheduler",
         "tuner",
+        # An operator's analyst RULE POLICY close is automation output, not a human
+        # working a case: counting it as human would fabricate turnaround/closure
+        # samples for work nobody performed.
+        DecisionBy.ANALYST_POLICY.value,
     }
 )
 _ACK_STATUSES = frozenset({"investigating", "escalated", "on_hold"})
@@ -137,6 +141,13 @@ def _select_feedback(
     selected: list[_FeedbackSample] = []
     excluded: Counter[str] = Counter()
     for case in cases:
+        if _enum_value(case.decision_by) == DecisionBy.ANALYST_POLICY.value:
+            # No model produced a verdict on a policy-closed case, so a grade on it can
+            # neither agree nor disagree with the agent. Counting it would put an
+            # operator's own declaration into the agent's measured quality — in either
+            # direction, depending only on how the analyst happened to grade it.
+            excluded["analyst_policy_close"] += 1
+            continue
         valid: list[tuple[datetime, int, FeedbackEntry]] = []
         case_excluded: Counter[str] = Counter()
         for index, feedback in enumerate(case.feedback or []):
@@ -666,6 +677,11 @@ def _closure_samples(
 
         actor = (terminal.by or "").strip().lower()
         decision_owner = _enum_value(case.decision_by)
+        if decision_owner == DecisionBy.ANALYST_POLICY.value:
+            # Neither agent nor human: the operator answered at the RULE level before
+            # any case existed, so this closure is evidence about neither party's
+            # effectiveness and belongs in no observed-time-saved sample.
+            continue
         if actor == "agent" or decision_owner == "agent":
             owner = "agent"
         elif _is_human(actor) and decision_owner != "system":

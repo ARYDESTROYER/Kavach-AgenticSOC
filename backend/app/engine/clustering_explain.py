@@ -169,7 +169,14 @@ def build_case_lineage(case: Case) -> dict[str, Any]:
         and decision_by == DecisionBy.AGENT.value
         and verdict == Verdict.FALSE_POSITIVE.value
     )
-    if auto_cleared:
+    if decision_by == DecisionBy.ANALYST_POLICY.value:
+        # Closed by an operator's analyst RULE POLICY. Explicitly its own outcome:
+        # the generic terminal fallback below would label it "Closed by human", which
+        # credits a person for work no person did on this case.
+        outcome_key = "policy_closed"
+        outcome_label = "Closed by analyst policy"
+        funnel_stage = "policy_closed"
+    elif auto_cleared:
         outcome_key = "auto_cleared"
         outcome_label = "Auto-cleared by AI"
         funnel_stage = "auto_cleared"

@@ -34,6 +34,28 @@ Overview consumes the same shared degradation reducer but shows only a compact w
 when a degradation is positively detected. The full evidence, reasons, remediation,
 window, and retry action remain here so Overview does not become a second health page.
 
+### Precedent by rule
+
+A single "analyst-confirmed precedents" total hides two failures, so the panel also
+reports how that precedent is spread across detection rules (`settings:read`, from the
+same diagnostic rollup).
+
+The first failure is starvation by success: the projection window is bounded, so one
+rule's bulk confirmation can crowd out every other rule's precedent. The per-rule
+distribution makes that visible before auto-close is affected.
+
+The second is futility. A rule can hold hundreds of analyst-confirmed benign outcomes and
+still route every case to a human, because its alerts carry no per-case evidence for an
+investigation to verify. Those rules are named explicitly, with the two remedies that can
+work — enrich the source so the alerts carry that evidence, or declare the detection
+benign with an [analyst rule policy](../automation/rules.md). Confirming more cases of
+such a rule will not change the outcome on its own, and the panel says so rather than
+leaving the request open-ended.
+
+Precedent recorded before rule identity was captured is reported separately as
+unattributed rather than counted as absent; it converges automatically on the next
+retrieval projection. An unreadable corpus reports "Unknown", never zero.
+
 ## Timing definitions
 
 Agentic SOC reports distributions, including p50 and p90 where available:

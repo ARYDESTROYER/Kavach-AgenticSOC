@@ -51,11 +51,39 @@ function terminalDecisionSpan(timeline: TimelineResponse | null): TraceSpan | nu
   return decisions.length ? decisions[decisions.length - 1] : null;
 }
 
-/** Who the recorded decider was — a human analyst vs the automated pipeline. */
+/** The decision owner that means "an operator's rule-level declaration closed this". */
+const ANALYST_POLICY = 'analyst_policy';
+
+/** Who the recorded decider was — a human analyst vs the automated pipeline.
+ *
+ *  `analyst_policy` is checked FIRST and explicitly: it contains the substring
+ *  "analyst", so the generic heuristic below would credit a person for a case no
+ *  person ever worked. It is an operator's rule-level declaration applied
+ *  deterministically, which is neither human case work nor agent judgement. */
 function decidedBy(decisionBy?: string | null): { text: string; isHuman: boolean } {
-  const d = (decisionBy || '').toLowerCase();
+  const d = (decisionBy || '').toLowerCase().trim();
+  if (d === ANALYST_POLICY) return { text: 'Analyst policy', isHuman: false };
   const isHuman = d.includes('human') || d.includes('analyst') || d.includes('operator');
   return { text: decisionBy ? humanizeToken(decisionBy) : 'Automated pipeline', isHuman };
+}
+
+/** The rule-level declaration that closed this case, when one did. */
+function analystPolicyRules(c: Case): string[] {
+  const policy = (c as { analyst_policy?: { rule_ids?: unknown } }).analyst_policy;
+  const rules = policy?.rule_ids;
+  return Array.isArray(rules) ? rules.map((r) => String(r)) : [];
+}
+
+/** The qualifying analyst-precedent fact this investigation was given, if any. */
+interface PrecedentSignalView {
+  status?: string;
+  qualifies?: boolean;
+  confirmed_false_positive?: number;
+  rule_ids?: unknown;
+}
+function precedentSignal(c: Case): PrecedentSignalView | null {
+  const raw = (c as { precedent_signal?: PrecedentSignalView | null }).precedent_signal;
+  return raw && typeof raw === 'object' ? raw : null;
 }
 
 /* --------------------------------------------------------------- clause row -- */
@@ -106,6 +134,8 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
   // The FP objection deadline: prefer the span payload, else the flat case field.
   const objectionWindow = d.objection_window_expires_at ?? c.objection_window_expires_at ?? null;
   const autoClosed = isAutoClosedByAI(status, decisionByRaw);
+  const policyRules = analystPolicyRules(c);
+  const precedent = precedentSignal(c);
   const autoClosable = clause?.auto_closable;
 
   return (
@@ -145,7 +175,36 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
           objectionWindowExpiresAt={objectionWindow}
           showObjection
         />
+        {policyRules.length ? (
+          <Badge variant="info" className="gap-1">
+            <Lock className="h-3 w-3" />
+            Closed by analyst policy
+          </Badge>
+        ) : null}
       </div>
+
+      {/* An operator's rule-level declaration closed this with NO model call, so the
+          usual verdict/confidence story below does not apply. Say so plainly rather
+          than showing an empty verdict the reader has to interpret. */}
+      {policyRules.length ? (
+        <p className="mt-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+          {`Closed by an operator declaration that ${policyRules.join(', ')} is benign in this
+            environment. No investigation ran and no model was called, so there is no verdict
+            or confidence to report. Revoke the declaration in Detection & Rules to resume
+            investigating this detection.`}
+        </p>
+      ) : null}
+
+      {/* Why a close leaned on institutional history — auditable and reversible. */}
+      {precedent?.qualifies ? (
+        <p className="mt-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+          {`Analyst-confirmed precedent was promoted for this investigation:
+            ${precedent.confirmed_false_positive ?? 0} prior confirmed-benign outcome(s) for
+            this exact detection rule were supplied to the investigator as evidence. The
+            verdict remained the model's and the close/escalate decision remained the
+            deterministic policy's.`}
+        </p>
+      ) : null}
 
       {/* ------------------------------------------------ outcome badge row */}
       {/* "Verdict lands" — a one-shot scale-settle on mount (never a loop). */}

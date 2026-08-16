@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import CorrelationMode, EntityStrategy, EntityType, IndexRole, IngestMode, SourceType
-from .utils import dotted_get, iso_now, slug
+from .utils import dotted_get, iso_now, new_id, slug
 
 # The provider names the per-role ModelConfig may carry. Widened in Round 3 Wave 2b to
 # make the cloud-hosted providers (azure/bedrock/vertex) + any OpenAI-compatible
@@ -1763,6 +1763,144 @@ class SuppressionRule(BaseModel):
         return True
 
 
+class AnalystRulePolicy(BaseModel):
+    """An operator's explicit, audited, revocable statement about their OWN estate.
+
+    This is the answer to a structural dead end: for a detection whose alerts carry no
+    per-case evidence (no payload, no URI, no response code), an investigation can never
+    verify that THIS instance is benign, so it correctly returns ``NEEDS_HUMAN`` however
+    many analyst-confirmed benign outcomes stand behind the rule. Precedent volume
+    cannot fix an evidence-sufficiency judgement. An operator therefore needs a way to
+    assert a RULE-LEVEL fact and have the system act on it deterministically, instead of
+    repeatedly trying to persuade a model with per-case evidence the source never emits.
+
+    Semantics, and what it deliberately is NOT:
+
+    * A matching cluster is CLOSED with ``disposition=false_positive`` and
+      ``decision_by=analyst_policy`` (:class:`~app.constants.DecisionBy`), with **no LLM
+      call at all** — cheaper, faster and more honest than a per-case argument.
+    * It is NOT :class:`SuppressionRule` (field==value), which DROPS matching events
+      before a case exists. This closes a VISIBLE, audited case, so the declaration
+      stays reviewable and reversible and the volume stays countable.
+    * It is NOT :class:`RuleSuppression` (the per-rule editor's alert-storm metadata),
+      which is storage-only and never drops anything.
+    * It is excluded from every agent-performance statistic (FP rate, automation rate,
+      auto-close health, noise funnel, agent-improvement evidence) so it can never
+      flatter the agent, and it is invisible to
+      ``engine.analyst_outcomes.analyst_confirmed_outcome`` so it can never become
+      training evidence for the automation that it replaces.
+    * ``decide()`` is untouched (#3): this is a separate operator-authored path that
+      runs BEFORE any verdict exists, never a new close authority layered onto the
+      verdict policy.
+
+    Revoking is ``enabled=False`` (or an ``expires_at`` lapse, or deleting the row);
+    already-closed cases stay closed and remain reopenable by an analyst as usual.
+    """
+
+    id: str = Field(default_factory=lambda: new_id("arp-"))
+    # The detection rule this declaration is about. Matched against the cluster's rule
+    # values after the same normalisation the tuner uses, and ALL of a cluster's rules
+    # must be declared before it closes (a cluster that also fired an undeclared
+    # detection is not the thing the operator declared benign).
+    rule_id: str
+    # Why. Required in spirit (the audit trail is the point); empty is permitted so an
+    # API client is never blocked, but the Console asks for it.
+    reason: str = ""
+    # Optional scope: when set, the declaration applies only to that source instance.
+    # Empty/None means every source.
+    source_id: str | None = None
+    enabled: bool = True
+    created_by: str = ""
+    created_at: str = Field(default_factory=iso_now)
+    expires_at: datetime | None = None
+
+    def is_live(self, now: datetime | None = None) -> bool:
+        """True when this declaration should be honoured: enabled AND not expired.
+
+        Mirrors :meth:`SuppressionRule.is_live` exactly so the two operator off-switches
+        behave identically. A naive ``expires_at`` is treated as UTC.
+        """
+        if not self.enabled:
+            return False
+        if self.expires_at is not None:
+            ref = now or datetime.now(timezone.utc)
+            exp = self.expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+            if exp <= ref:
+                return False
+        return True
+
+
+class PrecedentPromotionConfig(BaseModel):
+    """Give analyst-confirmed precedent real weight for the SAME detection rule.
+
+    EVIDENCE PROMOTION, not a close authority. When the rule identity under
+    investigation carries a unanimous, sufficiently large body of analyst-confirmed
+    benign outcomes, the investigator is told so explicitly and in STRUCTURED form —
+    a code-computed count — instead of being left to infer it from a handful of
+    retrieved prose snippets. The verdict still comes from the model and
+    ``engine.case_manager.decide()`` still applies the auto-close policy (#3).
+
+    Default OFF: promoting precedent changes what the model is told, and that is an
+    operator decision, not something a deployment should silently acquire on upgrade.
+    """
+
+    enabled: bool = False
+    # Minimum analyst-confirmed FALSE POSITIVE outcomes for the EXACT rule identity.
+    min_confirmed: int = Field(default=25, ge=1, le=100000)
+    # Secondary relevance floor on the retrieval RANK score of the matching precedent.
+    # NOTE: with hybrid retrieval on, that score is a min-max-normalised blend of vector
+    # similarity and BM25 — comparable within one retrieval, not across backends or
+    # queries. RULE IDENTITY is the authoritative gate; this is only a relevance floor.
+    min_similarity: float = Field(default=0.5, ge=0.0, le=1.0)
+    # How many analyst-confirmed TRUE POSITIVE outcomes the rule may carry and still be
+    # promotable. Default 0: a rule the analysts disagree about is not "benign here".
+    max_conflicting: int = Field(default=0, ge=0, le=1000)
+
+
+class PrecedentWindowConfig(BaseModel):
+    """How the bounded precedent projection window is filled.
+
+    A flat newest-N window lets ANY bulk analyst action on one rule evict every other
+    rule's precedent — precedent starvation again, this time triggered by an operator
+    doing exactly what the product asked of them. Stratifying round-robin across rule
+    identities gives every active rule an equal floor within the same bounded window.
+    """
+
+    size: int = Field(default=200, ge=1, le=5000)
+    stratify_by_rule: bool = True
+
+
+class PrecedentFutilityConfig(BaseModel):
+    """Surface rules whose precedent is abundant but is not changing the outcome.
+
+    Read-only observability. Without it the product asks for more analyst confirmations
+    indefinitely with no signal that they cannot help.
+    """
+
+    enabled: bool = True
+    min_confirmed: int = Field(default=25, ge=1, le=100000)
+    min_recent_cases: int = Field(default=10, ge=1, le=100000)
+    max_auto_close_rate: float = Field(default=0.05, ge=0.0, le=1.0)
+
+
+class PrecedentConfig(BaseModel):
+    """Rule-identity precedent: promotion, window fairness and futility reporting.
+
+    Nothing in this block is read by ``engine.case_manager.decide()`` (#3).
+    """
+
+    promotion: PrecedentPromotionConfig = Field(default_factory=PrecedentPromotionConfig)
+    window: PrecedentWindowConfig = Field(default_factory=PrecedentWindowConfig)
+    futility: PrecedentFutilityConfig = Field(default_factory=PrecedentFutilityConfig)
+    # How long the per-rule corpus distribution may be reused before it is recomputed.
+    # 0 disables the cache (recompute on every investigation).
+    distribution_ttl_seconds: int = Field(default=300, ge=0, le=3600)
+
+
 class AssetNetwork(BaseModel):
     """An internal-asset network: every IP inside ``cidr`` carries ``criticality``
     in the deterministic risk score's asset_criticality component (Section 6.2)."""
@@ -2689,6 +2827,11 @@ class Preferences(BaseModel):
     # --- Cost gate / caps (Section 6.3) ---
     caps: CapsConfig = Field(default_factory=CapsConfig)
     suppression_rules: list[SuppressionRule] = Field(default_factory=list)
+    # Operator declarations that a detection is benign in THIS estate. Honoured
+    # deterministically with no LLM call, under the distinct ``analyst_policy`` decision
+    # owner, and excluded from every agent-performance statistic. Empty by default —
+    # nothing changes until an operator explicitly declares something.
+    analyst_rule_policies: list[AnalystRulePolicy] = Field(default_factory=list)
 
     # --- Automated scans (Surface 3) ---
     # Autopilot overhaul: the master switch defaults ON so a zero-config install actually
@@ -2784,6 +2927,13 @@ class Preferences(BaseModel):
     batch: BatchConfig = Field(default_factory=BatchConfig)
     baseline: BaselineConfig = Field(default_factory=BaselineConfig)
     campaign: CampaignConfig = Field(default_factory=CampaignConfig)
+
+    # --- Rule-identity precedent (promotion / window fairness / futility) ---
+    # Promotion is OFF by default (it changes what the investigator is told). The window
+    # stratification and the futility report are ON: both are $0 read-side fairness and
+    # observability fixes, and a flat precedent window is an outage waiting to happen.
+    # None of it feeds ``case_manager.decide()`` (#3).
+    precedent: PrecedentConfig = Field(default_factory=PrecedentConfig)
 
     # --- Autopilot posture (overhaul) ---
     # One sensitivity dial that scales the three cost/aggression knobs

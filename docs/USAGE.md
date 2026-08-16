@@ -1116,9 +1116,25 @@ threshold (`group_by`, count, and window). Polling cadence belongs to the source
 The API may contain additive `mitre`, `schedule`, or `suppression` metadata written by
 older or external clients; the Console preserves that metadata during unrelated edits
 but does not present it as an active rule control. Per-rule schedule and suppression
-metadata are not executed by the current runtime. Multi-predicate, per-rule schedule,
-and per-rule suppression authoring remain unavailable until their persistence and
-execution contracts exist end to end.
+metadata are not executed by the current runtime. Multi-predicate authoring and per-rule
+schedule authoring remain unavailable until their persistence and execution contracts
+exist end to end.
+
+**Analyst rule policies are a SEPARATE, executable surface.** They are deliberately not
+the `RuleSuppression` metadata above (which stays storage-only) and not
+`Preferences.suppression_rules` (which drops events before a case exists).
+`Preferences.analyst_rule_policies` records an operator's explicit, audited, revocable
+declaration that a detection is benign in this environment; a cluster whose rules are ALL
+declared is closed with `disposition=false_positive` and
+`decision_by=analyst_policy`, with no LLM call. It exists because precedent volume cannot
+resolve an evidence-sufficiency judgement: for a rule whose alerts carry no request /
+payload / execution context, an investigation can never verify a given instance is
+benign, so it routes to a human however many prior cases an analyst confirms. `decide()`
+is untouched — the declaration is evaluated before a verdict exists — and the close is
+excluded from every agent-performance statistic and from
+`analyst_confirmed_outcome`, so it can neither flatter the agent nor become training
+evidence. CRUD lives at `/api/rules/analyst-policies*` under `rules:read` /
+`rules:manage`.
 
 **Test/Preview — never bills the LLM, never decides.** `POST
 /api/rules/preview` runs a rule's single predicate against recent events
