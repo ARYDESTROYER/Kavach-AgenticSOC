@@ -9865,3 +9865,10 @@
 - Tests: Strict Console passed **2,024/2,024 across 299 files** plus its **5/5** output-contract harness; focused NoiseFunnel/policy/Overview passed **34/34**; TypeScript, full ESLint, production build (**3,195 modules**), documentation consistency, token/contrast/arbitrary-style/raw-color/color-vision gates, and `git diff --check` passed. Native browser acceptance in the live product verified the 618px inline graph with both upstream ribbons, zero direct-label bounding-box collisions, right-aligned Open cases, light/dark rendering, Simple and Detailed switching, exact Detailed `640×220`/`preserveAspectRatio="none"`/five-edge legacy topology, both full-screen modes, selected-mode persistence, lineage loading, and a fresh warning/error-free console.
 - Status: complete and locally accepted on `codex/sankey-flow-toggle-polish`, based on `origin/Testing` `5786e5d16c6b0c0ad97fd295319504c55adaca1a`; UI and backend remain hosted locally for review, and no push, PR, merge, or remote mutation was performed.
 - Next: Review the local branch at the supplied localhost URL; only after approval, publish this exact branch and open the Testing-targeted review workflow.
+
+### 2026-08-16 20:35Z — `/root` — Approved Sankey candidate publication to Testing started
+- Context: Publish the user-approved Sankey Simple/Detailed candidate directly to the case-sensitive remote `Testing` integration branch.
+- Did: Reopened the exact locally accepted feature head, preserved the intentionally separate source checkout, and began a guarded publication preflight that will refresh `origin/Testing`, prove fast-forward ancestry, and use only a normal non-force push.
+- Tests: The exact product candidate is already locally accepted by the full Console, build, design, documentation, and browser matrix recorded above; remote-head reconciliation and final integrity checks are pending.
+- Status: in-progress; no remote branch mutation has occurred in this publication session yet.
+- Next: Fetch the current remote head, reconcile only if necessary, verify the exact candidate, push fast-forward to `Testing`, then confirm the remote SHA and post-push CI.
