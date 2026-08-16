@@ -5,8 +5,8 @@
  *   1. the page is titled "Security Command Center";
  *   2. the Active Risk Index (#1 — the ONE risk instrument) is its own flat cell in the
  *      integrated instrument band, a sibling of the plain header, never nested inside it;
- *   3. the Noise-Reduction funnel renders the six-stage flow ending in "Closed by human"
- *      (fetched via the typeof-guarded `api.noiseReduction`), and its stages drill through;
+ *   3. the Noise-Reduction instrument renders mixed-unit conversion context followed by
+ *      a conserved case flow, plus real selected-window Open-case context;
  *   4. the KPI micro-strip is 5 alert/case tiles (LLM spend is not a hero tile).
  *
  * Offline — the api + posture fetch are mocked; no auth, no #3 behaviour touched.
@@ -162,24 +162,52 @@ describe('Overview — Security Command Center', () => {
     expect(screen.getAllByTestId('active-risk-index')).toHaveLength(1);
   });
 
-  it('mounts the six-stage Noise-Reduction funnel ending in "Closed by human"', async () => {
+  it('mounts the compact Noise-Reduction flow with conversion context and Open cases', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('noise-funnel')).toBeInTheDocument());
     expect(noiseMock).toHaveBeenCalled();
     const funnel = screen.getByTestId('noise-funnel');
-    // The new terminal stage renders.
-    expect(within(funnel).getByText('Closed by human')).toBeInTheDocument();
-    expect(within(funnel).getByText('Auto-cleared by AI')).toBeInTheDocument();
-    expect(within(funnel).getByText(/reduced by/i)).toBeInTheDocument();
-    // The six dashboard rail stages are text-only: no shield/bot phase glyphs.
-    expect(within(funnel).getByRole('button', { name: /^Cases opened:/i }).querySelector('svg')).toBeNull();
-    // At narrow widths the six labels wrap into a readable 2/3-column grid; desktop
-    // restores the single six-column rail shown in the supplied reference.
+    expect(within(funnel).getByTestId('noise-simple-view')).toBeInTheDocument();
+    expect(within(funnel).getByRole('radio', { name: 'Simple' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // Conversion context and the conserved terminal path render in the compact graph.
+    expect(within(funnel).getAllByText('Alerts ingested').length).toBeGreaterThan(0);
+    expect(within(funnel).getAllByText('After clustering').length).toBeGreaterThan(0);
+    expect(within(funnel).getAllByText('Closed by human').length).toBeGreaterThan(0);
+    expect(within(funnel).getAllByText('Auto-cleared by AI').length).toBeGreaterThan(0);
+    expect(within(funnel).queryByTestId('noise-reduction-summary')).toBeNull();
+    const conversionRibbons = Array.from(
+      within(funnel)
+        .getByTestId('noise-flow-band')
+        .querySelectorAll<SVGPathElement>('[data-edge-kind="conversion"]'),
+    );
+    expect(conversionRibbons).toHaveLength(2);
+    expect(
+      conversionRibbons.map((ribbon) => [
+        ribbon.dataset.sourceStage,
+        ribbon.dataset.targetStage,
+      ]),
+    ).toEqual([
+      ['ingested', 'clustered'],
+      ['clustered', 'cases'],
+    ]);
+    conversionRibbons.forEach((ribbon) => {
+      expect(ribbon.getAttribute('d')).toMatch(/Z$/);
+      expect(ribbon).not.toHaveAttribute('fill', 'none');
+    });
+    expect(within(funnel).getByTestId('noise-flow-band').querySelectorAll(
+      '[data-edge-kind="conserved"]',
+    )).toHaveLength(4);
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases');
+    // The evidence rail is the responsive fallback in Simple, then becomes persistent
+    // when the operator explicitly chooses Detailed.
     expect(within(funnel).getByTestId('noise-stage-rail')).toHaveClass(
       'grid-cols-2',
       'sm:grid-cols-3',
-      'lg:grid-cols-6',
+      '@[38rem]/noise:hidden',
     );
   });
 
@@ -212,16 +240,30 @@ describe('Overview — Security Command Center', () => {
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
     const funnel = await screen.findByTestId('noise-funnel');
-    await userEvent.click(within(funnel).getByRole('button', { name: /^Escalated:/i }));
+    await userEvent.click(funnel.querySelector<HTMLButtonElement>('[data-flow-label="escalated"]')!);
     expect(onNavigate).toHaveBeenLastCalledWith(
       'cases',
       expect.objectContaining({ noiseOutcome: 'escalated', window: expect.any(Number) }),
     );
     // The terminal `closed` stage drills to the closed-case list.
-    await userEvent.click(within(funnel).getByRole('button', { name: /^Closed by human:/i }));
+    await userEvent.click(funnel.querySelector<HTMLButtonElement>('[data-flow-label="closed"]')!);
     expect(onNavigate).toHaveBeenLastCalledWith(
       'cases',
       expect.objectContaining({ noiseOutcome: 'closed', window: expect.any(Number) }),
+    );
+  });
+
+  it('opens the complete active-case cohort from the separate Open cases control', async () => {
+    const onNavigate = vi.fn();
+    render(<Overview onNavigate={onNavigate} />);
+    await screen.findByTestId('page-hero');
+    const funnel = await screen.findByTestId('noise-funnel');
+
+    await userEvent.click(within(funnel).getByTestId('noise-open-cases'));
+
+    expect(onNavigate).toHaveBeenLastCalledWith(
+      'cases',
+      expect.objectContaining({ status: '__active__', window: expect.any(Number) }),
     );
   });
 

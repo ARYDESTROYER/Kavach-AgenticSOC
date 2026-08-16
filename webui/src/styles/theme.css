@@ -396,6 +396,68 @@
     }
   }
 
+  /* Noise Reduction refresh feedback. Both effects are one-shot and keyed to a
+     successfully committed payload; LIVE mode naturally replays them on its existing
+     visibility-aware poll. Their resting state is invisible, and reduced-motion users
+     never receive a translated or expanding substitute. */
+  @keyframes noise-flow-refresh-sweep {
+    0% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    16% {
+      opacity: 0.75;
+    }
+    82% {
+      opacity: 0.5;
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(var(--noise-sweep-distance));
+    }
+  }
+
+  @keyframes noise-open-cases-pulse {
+    0% {
+      opacity: 0;
+      transform: scale(0.65);
+    }
+    24% {
+      opacity: 0.75;
+    }
+    100% {
+      opacity: 0;
+      transform: scale(2.35);
+    }
+  }
+
+  .noise-flow-refresh-sweep,
+  .noise-open-cases-pulse {
+    opacity: 0;
+    pointer-events: none;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .noise-flow-refresh-sweep {
+      animation: noise-flow-refresh-sweep 760ms var(--motion-ease-standard, ease-out) 1 both;
+      will-change: transform, opacity;
+    }
+
+    .noise-open-cases-pulse {
+      animation: noise-open-cases-pulse 820ms var(--motion-ease-standard, ease-out) 1 both;
+      will-change: transform, opacity;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .noise-flow-refresh-sweep,
+    .noise-open-cases-pulse {
+      display: none;
+    }
+  }
+
   /* Thin, subtle scrollbars (both themes). */
   * {
     scrollbar-width: thin;
