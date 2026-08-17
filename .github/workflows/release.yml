@@ -674,21 +674,21 @@ jobs:
 
       - name: Attest published image provenance
         if: steps.assets.outputs.plan_exists != 'true'
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.release.outputs.image_prefix }}/backend
           subject-digest: ${{ steps.images.outputs.backend_digest }}
           push-to-registry: true
       - name: Attest Web Console image provenance
         if: steps.assets.outputs.plan_exists != 'true'
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.release.outputs.image_prefix }}/webui
           subject-digest: ${{ steps.images.outputs.webui_digest }}
           push-to-registry: true
       - name: Attest update supervisor image provenance
         if: steps.assets.outputs.plan_exists != 'true'
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.release.outputs.image_prefix }}/updater
           subject-digest: ${{ steps.images.outputs.updater_digest }}
