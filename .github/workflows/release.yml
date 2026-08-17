@@ -246,7 +246,7 @@ jobs:
       - name: Build and publish backend by immutable digest
         if: steps.assets.outputs.plan_exists != 'true'
         id: backend
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: backend
           file: backend/Dockerfile
@@ -266,7 +266,7 @@ jobs:
       - name: Build and publish Web Console by immutable digest
         if: steps.assets.outputs.plan_exists != 'true'
         id: webui
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: webui/Dockerfile
@@ -285,7 +285,7 @@ jobs:
       - name: Build and publish update supervisor by immutable digest
         if: steps.assets.outputs.plan_exists != 'true'
         id: updater
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: updater
           file: updater/Dockerfile
