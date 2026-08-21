@@ -60,8 +60,15 @@ class Router:
                 Role.ROUTER, messages, model_cfg, surface=surface, case_id=case_id
             )
         except GatewayError as exc:
-            logger.warning("Router unavailable (%s); defaulting to UNCERTAIN", exc)
-            return TriageResult(TriageBucket.UNCERTAIN, 0.0, f"router unavailable: {exc}")
+            failure_class = getattr(exc, "failure_class", "") or ""
+            logger.warning(
+                "Router unavailable (class=%s): %s; defaulting to UNCERTAIN",
+                failure_class or "unclassified", exc,
+            )
+            detail = f" [{failure_class}]" if failure_class else ""
+            return TriageResult(
+                TriageBucket.UNCERTAIN, 0.0, f"router unavailable{detail}: {exc}"
+            )
 
         obj = extract_json(res.text) or {}
         bucket = _parse_bucket(obj.get("bucket"))

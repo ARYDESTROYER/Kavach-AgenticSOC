@@ -50,6 +50,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
+from ..constants import CaseStatus
+from ..engine.analyst_outcomes import analyst_confirmed_outcome
 from ..engine.metrics import (
     analyst_confirmed_case_ids,
     auto_close_health,
@@ -290,9 +292,203 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
         "total_documents": len(docs),
         "chunks_by_source": dict(sorted(chunks_by_source.items())),
         "documents_by_source": dict(sorted(documents_by_source.items())),
+        # True only when the emptiness is a DEGRADATION (previously projected or
+        # seeding already ran), never on a cold start.
+        "corpus_degraded": bool(getattr(rag, "corpus_degraded", False)),
         "projection": _projection_block(rag),
         "ground_truth": precedent_ground_truth(cases, store_total=store_total),
+        # The last REFUSED projection (in-process, falling back to the durable
+        # record so a restart does not erase the evidence).
+        "last_refusal": await _last_refusal(rag),
+        # "N documents vs M qualifying source records" — see _reconciliation_block.
+        "reconciliation": _reconciliation_block(
+            rag_cfg,
+            window=getattr(getattr(state, "prefs", None), "precedent", None),
+            available=available,
+            rag_enabled=rag_enabled,
+            precedent_enabled=precedent_enabled,
+            confirmed_exact=confirmed_exact,
+            analyst_confirmed_documents=analyst_confirmed_documents,
+            ground_truth=precedent_ground_truth(cases, store_total=store_total),
+            projectable_records=_projectable_precedent_records(cases),
+            corpus_may_be_truncated=_corpus_may_be_truncated(rag, total_chunks),
+        ),
     }
+
+
+def _projectable_precedent_records(cases: list) -> int:
+    """Analyst-confirmed cases the precedent projection can ACTUALLY draw from.
+
+    Deliberately NOT ``precedent_ground_truth()["analyst_confirmed_cases"]``: that
+    counts every analyst-confirmed case regardless of status, while the projection
+    scans only CLOSED and RESOLVED cases (see ``RagService._resolved_case_items``).
+    Analyst feedback on an escalated or in-progress case is perfectly ordinary, and
+    counting it as projectable would manufacture a deficit against a corpus that is
+    behaving exactly as designed. The two must be measured over the same population.
+    """
+    terminal = {CaseStatus.CLOSED.value, CaseStatus.RESOLVED.value}
+    count = 0
+    for case in cases:
+        status = getattr(getattr(case, "status", None), "value", None)
+        if str(status or "") not in terminal:
+            continue
+        if analyst_confirmed_outcome(case)[0] is not None:
+            count += 1
+    return count
+
+
+async def _last_refusal(rag: Any) -> dict[str, Any]:
+    """The last refused/failed projection: in-process first, durable record second.
+
+    The in-process value is authoritative when present (it is this process's own
+    truth); the persisted record covers the restart that erased the evidence both
+    times this happened in production. Fail-open — never breaks the endpoint.
+    """
+    live = getattr(rag, "last_refusal", None)
+    if isinstance(live, dict) and live:
+        return {**live, "scope": "in_process"}
+    health = getattr(rag, "_health", None)
+    if health is None:
+        return {}
+    try:
+        doc = await health.load()
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("RAG health record read soft-failed: %s", exc)
+        return {}
+    stored = (doc or {}).get("last_refusal")
+    if isinstance(stored, dict) and stored:
+        return {**stored, "scope": "durable"}
+    return {}
+
+
+def _corpus_may_be_truncated(rag: Any, total_chunks: int) -> bool:
+    """Whether the corpus read may have hit its backend scan ceiling.
+
+    The ES vector store answers document metadata from ONE bounded page, so a corpus
+    at that ceiling may have been cut short — and a reconciliation built on a
+    truncated read would manufacture a deficit on any large corpus. Fail SAFE: if we
+    cannot tell, treat the read as possibly truncated.
+    """
+    probe = getattr(rag, "_read_may_be_truncated", None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe(int(total_chunks)))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _reconciliation_block(
+    rag_cfg: Any,
+    *,
+    window: Any,
+    available: bool,
+    precedent_enabled: bool,
+    confirmed_exact: bool,
+    analyst_confirmed_documents: int,
+    ground_truth: dict[str, Any],
+    corpus_may_be_truncated: bool,
+    rag_enabled: bool = True,
+    projectable_records: int | None = None,
+) -> dict[str, Any]:
+    """Compare the corpus (N) with the qualifying source history (M).
+
+    The corpus is a PROJECTION of the case history. The source of truth survived both
+    incidents intact — 892 analyst-confirmed cases were still in the database while the
+    corpus held zero — so comparing the two is the earliest available signal that the
+    projection, rather than the history, is what broke.
+
+    ``N < M`` is NORMAL and never alerts: the precedent projection is a bounded window
+    over the newest qualifying cases, so the honest expectation is
+    ``min(M, window_size)``. A deficit is only claimed when the corpus holds less than
+    ``rag.min_projection_retention`` of that expectation — the same floor the projection
+    guard itself uses, so the two cannot disagree.
+
+    Every uncertainty is reported as a ``reason`` and NOT as a deficit: an unreadable
+    corpus, a lower-bound confirmed count, a truncated case read and a truncated corpus
+    read all mean "we could not tell", which is a different answer from "the corpus is
+    fine".
+    """
+    block: dict[str, Any] = {
+        "measured": False,
+        "deficit": False,
+        "reason": "",
+        "detail": "",
+        "corpus_documents": int(analyst_confirmed_documents),
+        "qualifying_source_records": None,
+        "expected_documents": None,
+        "window_size": None,
+    }
+    if not rag_enabled or not precedent_enabled:
+        # Configured behaviour, not an unmeasurable signal. Retrieval switched off
+        # means no precedent is projected on purpose; alerting on that would report a
+        # correctly-configured deployment as broken.
+        block["reason"] = ""
+        return block
+    if not available:
+        block["reason"] = "the corpus could not be read"
+        return block
+    if not confirmed_exact:
+        block["reason"] = (
+            "the analyst-confirmed corpus count is a lower bound rather than a total"
+        )
+        return block
+    if corpus_may_be_truncated:
+        block["reason"] = (
+            "the corpus read hit its scan ceiling, so the document count is a lower bound"
+        )
+        return block
+    if not isinstance(ground_truth, dict) or ground_truth.get("truncated"):
+        block["reason"] = (
+            "the case history read was truncated, so the qualifying-record count is a "
+            "lower bound"
+        )
+        return block
+    # Count only what the projection can actually draw from (terminal + confirmed).
+    qualifying = (
+        projectable_records
+        if isinstance(projectable_records, int)
+        else ground_truth.get("analyst_confirmed_cases")
+    )
+    if not isinstance(qualifying, int):
+        block["reason"] = "the qualifying analyst-confirmed record count is unavailable"
+        return block
+
+    # The operator's bounded precedent window (prefs.precedent.window).
+    try:
+        from ..config import PrecedentWindowConfig
+
+        configured = getattr(window, "window", None)
+        window_size = int(
+            getattr(configured, "size", None) or PrecedentWindowConfig().size
+        )
+    except Exception:  # noqa: BLE001
+        window_size = 200
+    expected = min(int(qualifying), max(0, window_size))
+    block.update(
+        measured=True,
+        qualifying_source_records=int(qualifying),
+        expected_documents=int(expected),
+        window_size=int(window_size),
+    )
+    if expected <= 0:
+        # Nothing qualifies yet: an empty corpus is a labelling gap, not a defect.
+        return block
+    retention = float(getattr(rag_cfg, "min_projection_retention", 0.0) or 0.0)
+    # Even with the ratio guard disabled, a total absence against a qualifying history
+    # is still a deficit — that is the exact shape of both incidents.
+    floor = expected * retention if retention > 0.0 else 0.0
+    if analyst_confirmed_documents < floor or (
+        expected > 0 and analyst_confirmed_documents == 0
+    ):
+        block["deficit"] = True
+        block["detail"] = (
+            f"the corpus holds {analyst_confirmed_documents} analyst-confirmed "
+            f"precedent document(s) but the case history qualifies {qualifying} "
+            f"record(s) (expected about {expected} within the current window of "
+            f"{window_size})"
+        )
+    return block
 
 
 _MAX_DISTRIBUTION_ROWS = 50
@@ -441,11 +637,34 @@ def _alert(severity: str, alert_id: str, title: str, detail: str, remediation: s
     }
 
 
+def _provider_health_block(state: AppState) -> dict[str, Any]:
+    """Aggregate LLM/embedding provider health — the outage nothing could name.
+
+    An HTTP 401 on every call is not a per-case failure, it is a system state. Each
+    individual failure was already handled correctly (the case failed to a human, the
+    ledger recorded an error row), which is exactly why the AGGREGATE condition stayed
+    invisible for three days while the operator chased latency and evidence quality.
+
+    Provider NAMES are already public configuration; no key, endpoint, prompt or
+    provider response text is ever included here (#9). Advisory only (#3).
+    """
+    tracker = getattr(state, "_provider_health", None)
+    if tracker is None:
+        return {"available": False, "state": "unknown", "degraded": False, "providers": {}}
+    try:
+        snapshot = tracker.snapshot()
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("provider-health snapshot soft-failed: %s", exc)
+        return {"available": False, "state": "unknown", "degraded": False, "providers": {}}
+    return {"available": True, **snapshot}
+
+
 def _build_alerts(
     precedent: dict[str, Any],
     migration: dict[str, Any],
     auto_close: dict[str, Any],
     effectiveness: dict[str, Any] | None = None,
+    provider_health: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Turn the three blocks into an operator-readable ``(alerts, unknowns)`` pair.
 
@@ -477,7 +696,85 @@ def _build_alerts(
             )
         )
 
+    # ------------------------------------------------------------------ #
+    # The corpus reached ZERO. The loudest signal this module can produce.
+    # ------------------------------------------------------------------ #
+    # A knowledge corpus at zero is not "a small corpus": every investigation runs
+    # with no runbook, no ATT&CK context and no precedent, so auto-close stops
+    # entirely. It is reported ahead of the precedent-specific signals because it
+    # subsumes them — precedent starvation is a symptom when the whole corpus is gone.
+    if precedent.get("available") and precedent.get("rag_enabled"):
+        # ``corpus_degraded`` carries the cold-start distinction: an empty corpus on a
+        # deployment that has never projected is "not seeded yet", not a loss. Without
+        # this the very first boot reports a CRITICAL corpus outage.
+        if int(precedent.get("total_chunks") or 0) == 0 and precedent.get("corpus_degraded"):
+            alerts.append(
+                _alert(
+                    "critical", "rag_corpus_empty",
+                    "The knowledge corpus is EMPTY",
+                    "Retrieval is enabled but the corpus holds 0 chunks, so every "
+                    "investigation runs with no runbook, ATT&CK or precedent context "
+                    "and auto-close cannot fire.",
+                    "Rebuild the corpus (Jobs -> rebuild knowledge corpus). If the "
+                    "rebuild is refused, check the embedding provider credentials "
+                    "first — a projection is refused rather than allowed to replace a "
+                    "good corpus with an empty one.",
+                )
+            )
+
+    # ------------------------------------------------------------------ #
+    # RECONCILIATION: "corpus has N documents but M qualifying records exist".
+    # ------------------------------------------------------------------ #
+    # The early-warning signal for BOTH incidents. The corpus is a PROJECTION of the
+    # case history, so a large divergence between what the history qualifies and what
+    # the corpus holds means the projection is broken — visible long before auto-close
+    # drifts far enough for anyone to notice.
+    #
+    # N < M is normal and must NOT alert: the precedent projection is a BOUNDED window
+    # (PrecedentWindowConfig.size, default 200) over the newest qualifying cases. The
+    # comparison is therefore against ``min(M, window_size)``, not raw M. Every honesty
+    # gate is respected — an unreadable corpus, a lower-bound count or a truncated case
+    # read yields an ``unknown``, never an alert.
+    reconciliation = precedent.get("reconciliation") or {}
+    if reconciliation.get("measured"):
+        if reconciliation.get("deficit"):
+            alerts.append(
+                _alert(
+                    "critical", "precedent_projection_deficit",
+                    "The precedent corpus holds far fewer documents than the case "
+                    "history qualifies",
+                    str(reconciliation.get("detail") or ""),
+                    "The corpus is a projection of the case history, so a large "
+                    "divergence means the projection is broken rather than the history "
+                    "being small. Rebuild the corpus and check the embedding provider.",
+                )
+            )
+    elif reconciliation.get("reason"):
+        unknowns.append(
+            _alert(
+                "unknown", "precedent_projection_reconciliation_unknown",
+                "Corpus-vs-source-history reconciliation could not be measured",
+                str(reconciliation.get("reason") or ""),
+                "",
+            )
+        )
+
     projection = precedent.get("projection") or {}
+    # A REFUSED projection is a first-class condition: the rebuild did not happen and
+    # the corpus is whatever it was before, which may be stale or already empty.
+    refusal = precedent.get("last_refusal") or {}
+    if refusal.get("collapsed"):
+        alerts.append(
+            _alert(
+                "critical", "rag_projection_refused",
+                "The last knowledge projection was REFUSED",
+                str(refusal.get("reason") or "")[:400],
+                "The existing corpus was preserved rather than replaced by an empty or "
+                "drastically smaller one. Fix the underlying cause (most often the "
+                "embedding provider) and rebuild.",
+            )
+        )
+
     if projection.get("available"):
         for name in projection.get("collapsed_sources") or []:
             alerts.append(
@@ -507,6 +804,47 @@ def _build_alerts(
                 "",
             )
         )
+
+    # ------------------------------------------------------------------ #
+    # Provider outage. A distinct state, never folded into a generic error.
+    # ------------------------------------------------------------------ #
+    if provider_health and provider_health.get("available") and provider_health.get("degraded"):
+        provider_state = str(provider_health.get("state") or "")
+        names = ", ".join(
+            name
+            for name, row in sorted((provider_health.get("providers") or {}).items())
+            if str(row.get("state") or "ok") != "ok"
+        )
+        if provider_state == "unauthenticated":
+            alerts.append(
+                _alert(
+                    "critical", "llm_provider_unauthenticated",
+                    "The model provider is rejecting our credentials",
+                    f"Consecutive authentication failures from: {names or 'the configured provider'}. "
+                    "Every investigation is failing to a human and the knowledge corpus "
+                    "cannot be rebuilt while this persists.",
+                    "Check the provider API key (expired, revoked, or rotated). Case "
+                    "verdicts are unaffected — no case is auto-closed on a failed call.",
+                )
+            )
+        elif provider_state == "quota_exhausted":
+            alerts.append(
+                _alert(
+                    "critical", "llm_provider_quota_exhausted",
+                    "The model provider is refusing calls for quota/rate reasons",
+                    f"Consecutive quota failures from: {names or 'the configured provider'}.",
+                    "Check the provider plan limits and rate ceilings.",
+                )
+            )
+        else:
+            alerts.append(
+                _alert(
+                    "warning", "llm_provider_unavailable",
+                    "The model provider is not answering",
+                    f"Consecutive failures from: {names or 'the configured provider'}.",
+                    "Check provider status and network egress.",
+                )
+            )
 
     if migration.get("failed"):
         alerts.append(
@@ -650,7 +988,10 @@ async def diagnostics_health(
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
         store_total=store_total,
     )
-    alerts, unknowns = _build_alerts(precedent, migration, auto_close, effectiveness)
+    provider_health = _provider_health_block(state)
+    alerts, unknowns = _build_alerts(
+        precedent, migration, auto_close, effectiveness, provider_health
+    )
     return {
         "generated_at": iso_now(),
         "window_hours": int(window_hours),
@@ -661,6 +1002,8 @@ async def diagnostics_health(
         # finding. Advisory; never read by decide() (#3).
         "precedent_effectiveness": effectiveness,
         "schema_migration": migration,
+        # Aggregate model-provider health (consecutive auth/quota/transport failures).
+        "llm_provider": provider_health,
         "auto_close": auto_close,
         "alerts": alerts,
         "unknowns": unknowns,

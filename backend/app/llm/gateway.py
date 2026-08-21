@@ -24,6 +24,7 @@ from .providers import (
     BaseProvider,
     CompletionResult,
     MockProvider,
+    ProviderError,
     ensure_providers_discovered,
 )
 
@@ -31,7 +32,85 @@ logger = logging.getLogger("tlsoc.gateway")
 
 
 class GatewayError(RuntimeError):
-    """Raised when a model call cannot be completed. Triggers fail-to-human."""
+    """Raised when a model call cannot be completed. Triggers fail-to-human.
+
+    ``failure_class`` carries one :data:`PROVIDER_FAILURE_CLASSES` literal when the
+    gateway could classify the underlying provider fault, so a caller can report the
+    REAL cause (an expired key) instead of whatever downstream symptom it observed (a
+    time cap). It is always one of our own closed-vocabulary strings — never provider
+    response text (#9) — and defaults to ``""`` so every existing raiser is unchanged.
+    """
+
+    failure_class: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Provider-failure classification — a CLOSED vocabulary of our own literals.
+# --------------------------------------------------------------------------- #
+# A provider outage is not a per-call accident: 401 on every call is a SYSTEM
+# state, and the product must be able to say so. These codes are the only values
+# that ever travel with a failure, because the alternative — ``str(exc)`` — splices
+# up to 300 bytes of the provider's response body (providers.classify_http_error)
+# into a value that later reaches metadata, health surfaces and operator UI. That
+# text is attacker-influenceable UNTRUSTED DATA (#9) and must never become a label.
+#
+# ``not_configured`` is deliberately distinct from every failure code: a deployment
+# with no embedding key is running the supported offline/Demo profile, where local
+# hash embeddings are the INTENDED behaviour (Gate 2), not a degradation.
+FAILURE_NOT_CONFIGURED = "not_configured"
+FAILURE_UNAUTHENTICATED = "unauthenticated"
+FAILURE_QUOTA = "quota"
+FAILURE_UNSUPPORTED = "unsupported"
+FAILURE_UNAVAILABLE = "unavailable"
+
+#: Every code a provider failure may be reported as. Anything unrecognised
+#: degrades to ``unavailable`` rather than leaking provider text.
+PROVIDER_FAILURE_CLASSES = frozenset(
+    {
+        FAILURE_NOT_CONFIGURED,
+        FAILURE_UNAUTHENTICATED,
+        FAILURE_QUOTA,
+        FAILURE_UNSUPPORTED,
+        FAILURE_UNAVAILABLE,
+    }
+)
+
+
+def classify_provider_failure(exc: BaseException) -> str:
+    """Map a provider exception onto one :data:`PROVIDER_FAILURE_CLASSES` literal.
+
+    Pure and total: every input yields exactly one closed-vocabulary code, and no
+    provider-supplied text is ever returned. ``ProviderError.status`` is populated by
+    ``providers.classify_http_error``, so an HTTP 401/403 is distinguishable from a
+    429 quota exhaustion and from a transport failure — which is the whole point:
+    the incident's operator chased latency for days because a 401 was indistinguishable
+    from a timeout.
+    """
+    status = getattr(exc, "status", None)
+    if not isinstance(status, int):
+        # Not every provider routes through ``with_retry``/``ProviderError``: Azure,
+        # Bedrock and Vertex call ``raise_for_status()`` directly, so a RAW
+        # ``httpx.HTTPStatusError`` reaches us with its code on ``response``. Without
+        # this, a 401 from those providers degraded to "unavailable" and the operator
+        # was told the model was slow rather than that the key was rejected — the
+        # exact confusion this classification exists to end.
+        response = getattr(exc, "response", None)
+        code = getattr(response, "status_code", None)
+        if isinstance(code, int):
+            status = code
+    if isinstance(status, int):
+        if status in (401, 403):
+            return FAILURE_UNAUTHENTICATED
+        if status == 429:
+            return FAILURE_QUOTA
+    if isinstance(exc, NotImplementedError):
+        # e.g. Anthropic/Bedrock/Vertex expose no embedding endpoint at all.
+        return FAILURE_UNSUPPORTED
+    # A missing key is raised as GatewayError("<Provider> API key not configured")
+    # BEFORE any request is made, so it is a configuration state, not an outage.
+    if isinstance(exc, GatewayError) and "not configured" in str(exc):
+        return FAILURE_NOT_CONFIGURED
+    return FAILURE_UNAVAILABLE
 
 
 @dataclass(frozen=True)
@@ -48,6 +127,11 @@ class EmbeddingBatch:
     provider: str
     model: str
     fallback: bool = False
+    #: Why the fallback engaged, as one :data:`PROVIDER_FAILURE_CLASSES` literal
+    #: (``""`` when the configured provider actually answered). ``not_configured``
+    #: is the supported keyless profile; every other value is an OUTAGE, and RAG
+    #: refuses to persist chunks embedded under one.
+    fallback_reason: str = ""
 
 
 # A plausible per-token blended rate for the Demo Mode cost page (Sonnet-ish).
@@ -78,6 +162,7 @@ class LLMGateway:
         budget_gate: Any = None,
         custom_models: Any = None,
         discounted_policy: Callable[[], Any] | None = None,
+        provider_health: Any = None,
     ) -> None:
         self._secrets = secrets
         self._usage = usage_store
@@ -106,6 +191,60 @@ class LLMGateway:
         # historical direct/test constructor; AppState supplies it so a settings
         # change takes effect without reconstructing callers.
         self._discounted_policy = discounted_policy
+        # Aggregate provider health (see llm/provider_health.py). Owned by AppState so
+        # a consecutive-failure run SURVIVES the gateway rebuilds that follow a
+        # credential change; optional/defaulted so every historical constructor and
+        # every direct test construction is unchanged. Advisory only — never read by
+        # case_manager.decide() (#3), and it adds no ledger row (#6).
+        self._provider_health = provider_health
+
+    # ------------------------------------------------------------------ #
+    # Provider-health bookkeeping. Fail-open by construction: observability
+    # must never be able to break a model call.
+    # ------------------------------------------------------------------ #
+    def _note_provider_success(
+        self, model_cfg: ModelConfig, channel: str = "completion"
+    ) -> None:
+        tracker = self._provider_health
+        if tracker is None:
+            return
+        try:
+            tracker.record_success(
+                str(model_cfg.provider), str(model_cfg.model), channel
+            )
+        except Exception:  # noqa: BLE001 — never let telemetry surface an error
+            logger.debug("provider-health success note failed", exc_info=True)
+
+    def _note_provider_failure(
+        self, model_cfg: ModelConfig, failure_class: str, channel: str = "completion"
+    ) -> None:
+        tracker = self._provider_health
+        if tracker is None:
+            return
+        try:
+            tracker.record_failure(
+                str(model_cfg.provider), str(failure_class), str(model_cfg.model), channel
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("provider-health failure note failed", exc_info=True)
+
+    def provider_health_state(self) -> str:
+        """The worst active provider-health state, or ``"ok"``.
+
+        Public so a caller that observed a DOWNSTREAM symptom (most importantly the
+        pipeline's investigation time cap) can name the real upstream cause instead.
+        During the incident this exists for, cases whose actual failure was HTTP 401
+        displayed "Investigation exceeded the 120s time cap", and the operator chased
+        latency and evidence quality for days. Returns one closed-vocabulary state and
+        never raises.
+        """
+        tracker = self._provider_health
+        if tracker is None:
+            return "ok"
+        try:
+            return str(tracker.snapshot().get("state") or "ok")
+        except Exception:  # noqa: BLE001
+            return "ok"
 
     async def recorded_case_pipeline_cost(self, case_id: str) -> float | None:
         """Read authoritative all-time investigation-pipeline spend for one case.
@@ -275,11 +414,21 @@ class LLMGateway:
             )
         except Exception as exc:  # noqa: BLE001
             latency = int((time.perf_counter() - started) * 1000)
+            failure_class = classify_provider_failure(exc)
+            self._note_provider_failure(model_cfg, failure_class)
             await self._record(role_str, surface, case_id, model_cfg.model, 0, 0, latency,
                                UsageOutcome.ERROR)
-            logger.warning("LLM call failed (role=%s model=%s): %s", role_str, model_cfg.model, exc)
-            raise GatewayError(str(exc)) from exc
+            logger.warning("LLM call failed (role=%s model=%s class=%s): %s",
+                           role_str, model_cfg.model, failure_class, exc)
+            # Carry the CLOSED-VOCABULARY class on the exception so the pipeline can
+            # name the real cause instead of reporting a downstream time cap. The
+            # message itself is unchanged (callers and tests match on it), and the
+            # provider's own text is never promoted into a label (#9).
+            error = GatewayError(str(exc))
+            error.failure_class = failure_class
+            raise error from exc
 
+        self._note_provider_success(model_cfg)
         latency = int((time.perf_counter() - started) * 1000)
         model_used = result.model or model_cfg.model
         cache_read = int(getattr(result, "cache_read_tokens", 0) or 0)
@@ -379,13 +528,33 @@ class LLMGateway:
         started = time.perf_counter()
         provider_used = str(model_cfg.provider)
         fallback = False
+        fallback_reason = ""
         try:
             provider = self._provider(model_cfg.provider, for_embedding=True,
                                        model=model_cfg.model, endpoint=model_cfg)
             result = await provider.embed(texts, model_cfg.model)
             model_used = model_cfg.model
+            self._note_provider_success(model_cfg)
         except Exception as exc:  # noqa: BLE001
-            logger.info("Embedding provider unavailable (%s); using local hash embeddings", exc)
+            fallback_reason = classify_provider_failure(exc)
+            if fallback_reason == FAILURE_NOT_CONFIGURED:
+                # The supported keyless profile: local hashing is the intended
+                # behaviour here, so this stays an INFO-level note.
+                logger.info(
+                    "No embedding provider configured; using local hash embeddings"
+                )
+            else:
+                # An OUTAGE. This used to log at INFO and was indistinguishable from
+                # the keyless profile, so 47+ occurrences of a total auth failure left
+                # no operator-visible trace. Retrieval still degrades gracefully, but
+                # the condition is now named and loud.
+                logger.error(
+                    "Embedding provider FAILED (%s) for model=%s; retrieval is degraded "
+                    "to local hash embeddings and NO chunk will be persisted in that "
+                    "space: %s",
+                    fallback_reason, model_cfg.model, exc,
+                )
+            self._note_provider_failure(model_cfg, fallback_reason, "embedding")
             # Record the provider failure so the ledger shows the outage, then fall
             # back to local hashing so RAG keeps working (graceful degradation).
             await self._record(Role.EMBEDDING.value, surface, case_id,
@@ -413,6 +582,7 @@ class LLMGateway:
             provider=provider_used,
             model=model_used,
             fallback=fallback,
+            fallback_reason=fallback_reason,
         )
 
     # ----- endpoint (base_url) resolution for a runtime-added custom model -----

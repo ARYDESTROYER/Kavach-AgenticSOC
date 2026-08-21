@@ -235,6 +235,21 @@ NOISE_KEY = "noise_counters"
 NOISE_DOC_ID = "noise_counters"         # ES doc id within CONFIG_INDEX
 
 # --------------------------------------------------------------------------- #
+# RAG CORPUS HEALTH — the durable record of the last knowledge projection.
+# --------------------------------------------------------------------------- #
+# Same single-KV-document pattern as NOISE_NS above: no new ES index, SQL table or
+# migration. ``RagService.last_projection`` is IN-PROCESS only, so the evidence of a
+# corpus collapse died with the container both times it happened in production — and
+# a restart is exactly what an operator does when they notice something is wrong.
+# This document persists the last projection outcome and the last REFUSAL so the
+# condition survives that restart and can be reported on a health surface.
+# Advisory observability only: never read by ``case_manager.decide()`` (#3), and
+# every read/write is fail-open so a store glitch can never break seeding.
+RAG_HEALTH_NS = "rag_health"
+RAG_HEALTH_KEY = "rag_health"
+RAG_HEALTH_DOC_ID = "rag_health"        # ES doc id within CONFIG_INDEX
+
+# --------------------------------------------------------------------------- #
 # Operator-added CUSTOM MODELS (self-hosted / LiteLLM / vLLM / Ollama — any
 # OpenAI-compatible endpoint) registered at RUNTIME from the UI, so a local model
 # can be added with no rebuild. Same single-KV-document pattern as PRICE_OVERLAY_NS
@@ -562,6 +577,7 @@ class JobKind(str, Enum):
     PRECEDENT_BOOTSTRAP = "precedent_bootstrap"
     RUNBOOK_REINDEX = "runbook_reindex"
     RAG_IMPORT = "rag_import"
+    RAG_REBUILD = "rag_rebuild"
     TIERED_RESET = "tiered_reset"
     STORAGE_LIFECYCLE_APPLY = "storage_lifecycle_apply"
 

@@ -82,7 +82,7 @@ def job_url(job: Job) -> str:
         return f"#/cases?status={status}"
     if kind in {JobKind.DATA_EXPORT_ARCHIVE, JobKind.DATA_EXPORT_SEGMENT}:
         return "#/settings?s=data_export"
-    if kind in {JobKind.PRECEDENT_BOOTSTRAP, JobKind.RAG_IMPORT}:
+    if kind in {JobKind.PRECEDENT_BOOTSTRAP, JobKind.RAG_IMPORT, JobKind.RAG_REBUILD}:
         return "#/knowledge"
     if kind == JobKind.RUNBOOK_REINDEX:
         return "#/runbooks"
@@ -250,6 +250,7 @@ class JobRunner:
                 JobKind.DATA_EXPORT_SEGMENT: self._export_segment,
                 JobKind.PRECEDENT_BOOTSTRAP: self._precedent_bootstrap,
                 JobKind.RUNBOOK_REINDEX: self._runbook_reindex,
+                JobKind.RAG_REBUILD: self._rag_rebuild,
                 JobKind.RAG_IMPORT: self._rag_import,
                 JobKind.TIERED_RESET: self._tiered_reset,
                 JobKind.STORAGE_LIFECYCLE_APPLY: self._storage_apply,
@@ -1043,6 +1044,43 @@ class JobRunner:
             token,
             status,
             result=JobResult(kind="runbook_reindex", counts=counts),
+        )
+
+    async def _rag_rebuild(self, job: Job, token: str) -> None:
+        """Rebuild the whole knowledge projection — the documented recovery action.
+
+        Idempotent and safe on a healthy deployment: it reuses the staged-then-verified
+        seeding path, so it either converges on the same corpus or refuses and leaves
+        the existing one intact. A REFUSED rebuild is reported as FAILED rather than
+        succeeded-with-zero, so "the corpus is still broken" can never read as done.
+        """
+        await self.checkpoint(job.job_id, token)
+        await self.store.begin_item(job.job_id, token, "rebuild")
+        result = await self.state.rag.rebuild_corpus()
+        refused = bool(result.get("refused"))
+        # Carry the REFUSAL REASON onto the job. A rebuild that failed with an empty
+        # failure list tells the operator only "it did not work" — which is the exact
+        # silence this whole change exists to remove. The reason is our own message
+        # text, never provider or document content (#9).
+        reason = str(result.get("refusal_reason") or "").strip()
+        current = await self.store.complete_item(
+            job.job_id,
+            token,
+            "rebuild",
+            error=(reason or "the knowledge projection was refused") if refused else None,
+        )
+        counts = {
+            "chunks_before": int(result.get("chunks_before", 0) or 0),
+            "chunks_after": int(result.get("chunks_after", 0) or 0),
+            "total": 1,
+            "succeeded": 0 if refused else 1,
+            "failed": 1 if refused else 0,
+        }
+        await self._finish(
+            current,
+            token,
+            JobStatus.FAILED if refused else JobStatus.SUCCEEDED,
+            result=JobResult(kind="rag_rebuild", counts=counts),
         )
 
     async def _rag_import(self, job: Job, token: str) -> None:

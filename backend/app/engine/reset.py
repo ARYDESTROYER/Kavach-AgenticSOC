@@ -647,6 +647,24 @@ async def _reset_rag(app_state: Any) -> bool:
             await store.clear()
             if int(await store.count()) != 0:
                 raise RuntimeError("RAG store retained chunks after clear")
+        # The corpus is now empty, so the service's seed cache is a LIE: without this
+        # it still reports "seeded" with a matching signature and ``ensure_seeded``
+        # short-circuits forever, leaving a reset deployment permanently corpus-less
+        # whenever the pre-reset preferences already matched the factory defaults.
+        service._seeded = False           # noqa: SLF001 - reset owns store lifecycle
+        service._seed_signature = None    # noqa: SLF001
+        service.corpus_known_empty = True
+        # An empty corpus straight after a reset is EXPECTED, not a degradation.
+        service.corpus_degraded = False
+        service.last_refusal = None
+        # Forget any provider-outage run too: the deployment is being returned to a
+        # clean state, and stale failure evidence must not follow it there.
+        tracker = getattr(app_state, "_provider_health", None)
+        if tracker is not None:
+            try:
+                tracker.reset()
+            except Exception as exc:  # noqa: BLE001 — never fail a reset on telemetry
+                logger.warning("provider-health reset failed (%s); continuing", exc)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG reset failed (%s)", exc)

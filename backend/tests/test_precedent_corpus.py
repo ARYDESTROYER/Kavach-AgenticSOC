@@ -524,23 +524,98 @@ async def test_projection_outcome_is_recorded_and_a_collapse_warns(
     }
     assert mitre["after"] > 0 and mitre["shrank"] is False
 
-    # Force a real collapse of an ENABLED source: withdraw every runbook item.
+    before_count = await app_state.rag._store.count()
+    before_docs = await app_state.rag._store.list_documents()
+
+    # A projection that would collapse an ENABLED source is REFUSED, not published:
+    # withdraw every seed item and the rebuild must keep the existing corpus.
     async def _no_runbooks() -> list[dict[str, Any]]:
         return []
 
     app_state.rag._runbook_seed_items = _no_runbooks  # type: ignore[method-assign]
     app_state.rag._enabled_seeds = _no_runbooks       # type: ignore[method-assign]
     app_state.rag._seeded = False
-    with caplog.at_level(logging.WARNING, logger="tlsoc.tools.rag"):
+    with caplog.at_level(logging.ERROR, logger="tlsoc.tools.rag"):
         await app_state.rag.ensure_seeded()
 
-    collapsed = app_state.rag.last_projection["mitre"]
-    assert collapsed["before"] > 0 and collapsed["after"] == 0
-    assert collapsed["collapsed"] is True and collapsed["shrank"] is True
+    # The corpus survived, byte for byte.
+    assert await app_state.rag._store.count() == before_count
+    assert await app_state.rag._store.list_documents() == before_docs
+    # The refusal is a first-class, ERROR-level, inspectable record — not an INFO
+    # line that reads the same whether the corpus holds 2,000 chunks or none.
+    refusal = app_state.rag.last_refusal
+    assert refusal is not None and refusal["collapsed"] is True
+    assert refusal["outgoing_total"] == before_count
     assert any(
-        "SHRANK an enabled source" in record.message and record.levelno >= logging.WARNING
+        "projection REFUSED" in record.message and record.levelno >= logging.ERROR
         for record in caplog.records
-    ), "a collapsing corpus must not look like an ordinary startup INFO line"
+    ), "a corpus-destroying projection must not look like an ordinary startup line"
+    # The seed did NOT latch, so the next call retries instead of believing it is done.
+    assert app_state.rag._seeded is False
+
+
+async def test_a_partial_projection_below_the_retention_floor_is_refused(
+    app_state: AppState,
+) -> None:
+    """A rebuild may not silently lose most of the corpus either."""
+    _enable_precedent(app_state)
+    await app_state.rag.ensure_seeded()
+    before_count = await app_state.rag._store.count()
+    assert before_count > 4
+
+    full_seeds = await app_state.rag._enabled_seeds()
+
+    async def _one_seed() -> list[dict[str, Any]]:
+        return full_seeds[:1]
+
+    app_state.rag._enabled_seeds = _one_seed  # type: ignore[method-assign]
+    app_state.rag._seeded = False
+    await app_state.rag.ensure_seeded()
+
+    assert await app_state.rag._store.count() == before_count
+    assert (app_state.rag.last_refusal or {}).get("collapsed") is True
+
+
+async def test_the_retention_floor_is_configurable_and_can_be_disabled(
+    app_state: AppState,
+) -> None:
+    """An operator who genuinely wants a smaller corpus can still have one."""
+    _enable_precedent(app_state)
+    await app_state.rag.ensure_seeded()
+    before_count = await app_state.rag._store.count()
+
+    prefs = app_state.rag._prefs
+    app_state.rag.set_prefs(
+        prefs.model_copy(
+            update={
+                "rag": prefs.rag.model_copy(update={"min_projection_retention": 0.0})
+            }
+        )
+    )
+    full_seeds = await app_state.rag._enabled_seeds()
+
+    async def _one_seed() -> list[dict[str, Any]]:
+        return full_seeds[:1]
+
+    app_state.rag._enabled_seeds = _one_seed  # type: ignore[method-assign]
+    app_state.rag._seeded = False
+    await app_state.rag.ensure_seeded()
+
+    # The shrink is allowed with the ratio guard off...
+    assert await app_state.rag._store.count() < before_count
+    assert app_state.rag.last_refusal is None
+
+    # ...but reaching ZERO is refused regardless: it is never a legitimate rebuild.
+    async def _no_seeds() -> list[dict[str, Any]]:
+        return []
+
+    surviving = await app_state.rag._store.count()
+    app_state.rag._runbook_seed_items = _no_seeds  # type: ignore[method-assign]
+    app_state.rag._enabled_seeds = _no_seeds       # type: ignore[method-assign]
+    app_state.rag._seeded = False
+    await app_state.rag.ensure_seeded()
+    assert await app_state.rag._store.count() == surviving
+    assert (app_state.rag.last_refusal or {}).get("collapsed") is True
 
 
 async def test_disabling_a_source_is_recorded_without_a_warning(

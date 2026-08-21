@@ -32,6 +32,7 @@ from .engine.release_discovery import ReleaseDiscoveryService
 from .es.base import BaseESClient
 from .es.indices import bootstrap_indices
 from .llm.gateway import LLMGateway
+from .llm.provider_health import ProviderHealth
 from .llm.providers import BaseProvider
 from .stores.cases import CaseStore
 from .stores.config_store import ConfigStore
@@ -149,6 +150,12 @@ class AppState:
         # source keeps the conservative cold-start flat window. Advisory only — never feeds
         # decide() (#3).
         self._source_event_ticks: dict[str, int] = {}
+        # Aggregate LLM/embedding provider health (consecutive auth/quota/transport
+        # failures per provider). Kept across _wire() rebuilds — a credential change
+        # rebuilds the gateway, and a failure run that reset on every rebuild could
+        # never cross its threshold, which is precisely the outage this must catch.
+        # Advisory only — never feeds decide() (#3), and it writes no ledger row (#6).
+        self._provider_health = ProviderHealth()
         # Serialize preference writes. ``config_store.save`` is a full-document replace
         # with no CAS, and ``update_prefs`` assigns ``self.prefs`` outside any lock, so
         # two concurrent writers (e.g. an operator source edit racing the nightly
@@ -620,6 +627,7 @@ class AppState:
             price_overlay=self.price_overlay, budget_gate=self.budget_gate,
             custom_models=self.custom_models,
             discounted_policy=lambda: self.prefs.batch,
+            provider_health=self._provider_health,
         )
         # Auth service (Wave 2). Disabled unless secrets.auth_enabled — the no-auth
         # "old version" is the default. Building it is cheap and re-runs on rewire.
@@ -1129,8 +1137,13 @@ class AppState:
         (#3), recomputes a ``cluster_signature`` (#4), or slows the poll/ingest path (its
         record path is fail-open)."""
         from .stores.noise_counters import NoiseCounterStore
+        from .stores.rag_health import RagHealthStore
 
         self._real_noise_counters = NoiseCounterStore(self._kv)
+        # Durable RAG projection-health record. ``RagService.last_projection`` is
+        # in-process only, so the evidence of a corpus collapse died on restart —
+        # which is the first thing an operator does when something looks wrong.
+        self._rag_health = RagHealthStore(self._kv)
 
     @property
     def enrichment_registry(self):
@@ -2334,6 +2347,7 @@ class AppState:
                 store=store,
                 cases=self._real_cases,
                 runbooks=self.runbooks,
+                health=getattr(self, "_rag_health", None),
             )
         try:
             from .es.client import RealESClient
@@ -2350,6 +2364,7 @@ class AppState:
             store=store,
             cases=self._real_cases,
             runbooks=self.runbooks,
+            health=getattr(self, "_rag_health", None),
         )
 
     def rebuild_log_source(self) -> None:
@@ -2510,6 +2525,13 @@ class AppState:
         # Durable operator jobs are independent of polling/scheduler enablement and
         # must recover queued/expired work even in push-only or test-controlled runs.
         await self.job_runner.start()
+        # Publish corpus emptiness so a deployment that restarts with a lost knowledge
+        # corpus reports DEGRADED immediately, rather than waiting for the first
+        # investigation to discover it. Seed-free, one cheap count, fail-open.
+        try:
+            await self.rag.refresh_corpus_health()
+        except Exception as exc:  # noqa: BLE001 — never block startup on a probe
+            logger.warning("RAG corpus health probe failed on startup (%s); continuing", exc)
         if start_poller and not factory_recovery:
             self.poller.start()
             self._receivers_enabled = True

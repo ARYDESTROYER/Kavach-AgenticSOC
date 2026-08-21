@@ -135,6 +135,44 @@ healthy first: an unreadable corpus reports "Unknown" rather than zero, and prec
 recorded before rule identity was captured is reported as unattributed until the next
 retrieval projection re-tags it.
 
+## The knowledge corpus is empty, or auto-close has stopped
+
+The Console health pill reads **Degraded** with "Knowledge corpus empty", or auto-close
+has fallen to zero while alert volume held steady.
+
+An empty corpus means every investigation runs with no runbook, ATT&CK or precedent
+context, so cases route to a human however confident the model is. Check
+**Analytics → Metrics → Effectiveness**, or `GET /api/diagnostics/health`, which reports
+the corpus size, the last projection outcome, any refused projection, and the
+reconciliation between corpus documents and the qualifying case history.
+
+Work through it in this order:
+
+1. **Check the model provider first.** If health also reports "Model provider rejecting
+   credentials", that is the cause: the corpus cannot be rebuilt while embedding calls
+   fail, and the product deliberately refuses to rebuild it in a degraded embedding
+   space rather than filling it with unusable vectors. Fix the API key (expired,
+   revoked, or rotated) and the corpus rebuilds on its own.
+2. **Look for a refused projection.** "Knowledge rebuild refused" means a rebuild would
+   have replaced the corpus with an empty or drastically smaller one and was rejected;
+   your existing corpus was preserved. The refusal record names the reason and survives
+   a restart.
+3. **Rebuild explicitly** if the corpus is genuinely empty and the provider is healthy:
+   submit a `rag_rebuild` background job (requires `rag:manage`). It is idempotent and
+   safe on a healthy deployment — it either converges on the same corpus or refuses and
+   leaves the existing one intact. See [background jobs](background-jobs.md).
+
+A reconciliation warning — *"the corpus holds N analyst-confirmed precedent documents
+but the case history qualifies M records"* — is the early warning for this failure. The
+corpus is a projection of the case history, so a large divergence means the projection
+broke, not that the history is small. Note that `N` is expected to be smaller than `M`
+whenever `M` exceeds the precedent window size; only a large shortfall is reported.
+
+If a rebuild legitimately produces a much smaller corpus (you disabled sources on
+purpose), lower `rag.min_projection_retention`, or set it to `0` to disable the ratio
+guard. A projection reaching **zero** is refused regardless — that is never a
+legitimate rebuild of a non-empty corpus.
+
 ## Escalation package
 
 Provide sanitized build info, deployment shape, state backend, failing endpoint/status,

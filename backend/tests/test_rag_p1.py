@@ -13,8 +13,8 @@ from app.agents.common import rag_query
 from app.config import Preferences, Secrets
 from app.constants import CaseStatus, DecisionBy, Disposition, EntityType, Verdict
 from app.es.fake import InMemoryESClient
-from app.llm.gateway import LLMGateway
-from app.llm.providers import EmbeddingResult, MockProvider
+from app.llm.gateway import GatewayError, LLMGateway
+from app.llm.providers import EmbeddingResult, MockProvider, ProviderError
 from app.models import Case, Cluster, Entity, EvidenceItem, RawEvent
 from app.stores.cases import CaseStore
 from app.stores.usage import UsageStore
@@ -61,6 +61,20 @@ class _ShortBatchProvider(MockProvider):
 class _FailEmbeddingProvider(MockProvider):
     async def embed(self, texts: list[str], model: str) -> EmbeddingResult:
         raise RuntimeError("embedding endpoint unavailable")
+
+
+class _AuthFailEmbeddingProvider(MockProvider):
+    """The incident's provider: HTTP 401 on every embedding call."""
+
+    async def embed(self, texts: list[str], model: str) -> EmbeddingResult:
+        raise ProviderError("HTTP 401: invalid_api_key", retryable=False, status=401)
+
+
+class _NoKeyEmbeddingProvider(MockProvider):
+    """The supported keyless profile: no key was ever configured."""
+
+    async def embed(self, texts: list[str], model: str) -> EmbeddingResult:
+        raise GatewayError("OpenAI API key not configured")
 
 
 class _SwitchingCardinalityProvider(MockProvider):
@@ -313,8 +327,52 @@ async def test_failed_embedding_space_reseed_rolls_back_prior_corpus() -> None:
     assert await rag._store.embedding_space() == ("text-embedding-3-small", 8)
 
 
-async def test_fallback_embedding_space_records_actual_model_and_provider() -> None:
+async def test_degraded_embedding_provider_never_persists_a_fallback_chunk() -> None:
+    """A provider outage must NEVER produce a durable hash-space write.
+
+    This previously asserted the opposite — that a failed provider still seeded the
+    corpus from local hash embeddings — which is precisely the defect: those vectors
+    are meaningless in the real embedding space, are indistinguishable from real ones
+    once stored, and poisoned the corpus for the whole outage window. Degrading a
+    READ is fine; degrading a WRITE is corruption.
+    """
     rag = RagService(_gateway_with(_FailEmbeddingProvider()), Preferences())
+    await rag.ensure_seeded()
+    assert await rag._store.count() == 0
+    # Nothing was written, so the store has no embedding space at all.
+    assert await rag._store.embedding_space() is None
+    # The seed did not latch: the next call retries rather than believing it is done.
+    assert rag._seeded is False
+
+
+async def test_degraded_provider_leaves_a_healthy_corpus_intact() -> None:
+    """The corpus that existed before the outage survives it untouched."""
+    provider = _DimProvider(dim=8)
+    prefs = Preferences()
+    gateway = _gateway_with(provider)
+    rag = RagService(gateway, prefs)
+    await rag.ensure_seeded()
+    before_count = await rag._store.count()
+    before_docs = await rag._store.list_documents()
+    assert before_count > 0
+
+    # The provider now 401s on every call, exactly as in the incident.
+    gateway._providers["openai"] = _AuthFailEmbeddingProvider()
+    rag._seeded = False
+    rag._seed_signature = None
+    await rag.ensure_seeded()
+
+    assert await rag._store.count() == before_count
+    assert await rag._store.list_documents() == before_docs
+    # And every surviving chunk is still in the REAL space, never the hash space.
+    for doc in before_docs:
+        for chunk in await rag._store.list_chunks(doc["document_id"]):
+            assert chunk.metadata.get("embedding_fallback") is not True
+
+
+async def test_keyless_profile_still_seeds_with_local_embeddings() -> None:
+    """The supported keyless/offline profile is NOT an outage and must keep working."""
+    rag = RagService(_gateway_with(_NoKeyEmbeddingProvider()), Preferences())
     await rag.ensure_seeded()
     assert await rag._store.count() > 0
     space = await rag._store.embedding_space()
@@ -325,6 +383,8 @@ async def test_fallback_embedding_space_records_actual_model_and_provider() -> N
     assert chunk.embedding_model == "mock-embed"
     assert chunk.metadata["embedding_provider"] == "mock"
     assert chunk.metadata["embedding_fallback"] is True
+    # ...and it is attributable as the intentional keyless space, not an outage.
+    assert chunk.metadata["embedding_fallback_reason"] == "not_configured"
 
 
 def test_inmemory_store_raises_on_dim_mismatch() -> None:

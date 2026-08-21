@@ -40,7 +40,7 @@ from ..engine.precedent import (
     unavailable_distribution,
 )
 from ..engine.runbooks import corpus_items as runbook_corpus_items
-from ..llm.gateway import LLMGateway
+from ..llm.gateway import FAILURE_NOT_CONFIGURED, LLMGateway
 from ..models import RagChunk
 from ..utils import iso_now
 from .base import Tool, ToolResult
@@ -56,8 +56,20 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..engine.runbook_service import RunbookService
     from ..models import Case
     from ..stores.cases import CaseStore
+    from ..stores.rag_health import RagHealthStore
 
 logger = logging.getLogger("tlsoc.tools.rag")
+
+
+class ProjectionCollapsed(RuntimeError):
+    """A rebuilt projection was empty (or a fraction of) the corpus it would replace.
+
+    Distinct from an ordinary seeding error so the two can be logged at DIFFERENT
+    levels: a transient seed failure is a WARNING an operator may reasonably ignore,
+    while losing the corpus is an ERROR with a persisted health state. The single
+    ``RAG seeded with N chunk(s)`` INFO line was the only trace of this outcome BOTH
+    times it happened in production; it must never be the sole record again.
+    """
 
 # Built-in seed corpus sources — guarded from deletion via the management API
 # unless an explicit force=True is passed (so an operator cannot accidentally wipe
@@ -84,6 +96,21 @@ RESOLVED_CASE_SOURCE = "resolved_case"
 # per-document delete via ``delete_document(..., force=True)``) — just never as a
 # side effect of reprojecting some other source.
 FULLY_RECONCILED_SEED_SOURCES = frozenset(SEED_SOURCES - {RESOLVED_CASE_SOURCE})
+
+# The scope the collapse guard compares in ``ensure_seeded``: exactly the sources that
+# projection can DESTROY, which is exactly what ``_drop_stale_managed_projection``
+# sweeps.
+#
+# Everything else is deliberately excluded, for two different reasons:
+#   * ``imported`` / ``threat_context`` — preserved in place, never re-embedded and
+#     never swept here. Counting them made an ordinary reseed look like a catastrophic
+#     shrink on any deployment with a sizeable imported library.
+#   * ``resolved_case`` — a BOUNDED WINDOW over the newest qualifying cases, not a
+#     reconciliation. Its projected size legitimately varies (and is legitimately zero
+#     when nothing currently qualifies), and it is never swept, so a smaller precedent
+#     projection deletes nothing. Guarding it would refuse every projection on a
+#     deployment holding precedent that the current window no longer covers.
+MANAGED_PROJECTION_SOURCES = FULLY_RECONCILED_SEED_SOURCES
 
 # Bounded scan for the precedent projection. The window counts QUALIFYING
 # (analyst-confirmed) cases, not raw terminal ones, so an autonomous deployment's
@@ -454,12 +481,17 @@ class RagService:
         store: VectorStore | None = None,
         cases: "CaseStore | None" = None,
         runbooks: "RunbookService | None" = None,
+        health: "RagHealthStore | None" = None,
     ) -> None:
         self._gateway = gateway
         self._prefs = prefs
         self._store: VectorStore = store or InMemoryVectorStore()
         self._cases = cases
         self._runbooks = runbooks
+        # Optional durable projection-health record (see stores/rag_health.py).
+        # Defaulted None so every historical/test construction is unchanged; when
+        # absent, the in-process ``last_projection`` below is the only record.
+        self._health = health
         self._seeded = False
         self._seed_signature: tuple[Any, ...] | None = None
         self._seed_lock = asyncio.Lock()
@@ -469,6 +501,28 @@ class RagService:
         #   {source, before, after, delta, shrank, collapsed, source_enabled, at}
         # ``before``/``after`` are stored chunk counts either side of the projection.
         self.last_projection: dict[str, dict[str, Any]] = {}
+        # The last REFUSED projection, in-process, for the health surfaces that must
+        # answer without touching the store (``/api/health`` is anonymous and must
+        # never be able to trigger a corpus scan or an embedding spend). Shape:
+        #   {reason, collapsed, outgoing_total, at}
+        self.last_refusal: dict[str, Any] | None = None
+        # Whether the corpus is POSITIVELY KNOWN to be empty, from the most recent
+        # count this service actually read. Deliberately a two-state flag with a
+        # "not known empty" default: an unread corpus must never be reported as a
+        # degradation. Updated by every path that already reads the count, so the
+        # anonymous ``/api/health`` probe can answer without touching the store (and
+        # therefore without being able to trigger an embedding spend).
+        self.corpus_known_empty: bool = False
+        # Whether that emptiness is a DEGRADATION rather than an expected state.
+        #
+        # "Empty" alone is not a fault: a freshly started deployment has not seeded
+        # yet, and an operator who disabled every source has an empty corpus on
+        # purpose. It becomes a degradation once the corpus is empty even though a
+        # projection has been attempted or previously succeeded — which is exactly
+        # the incident state (seeding reported complete, corpus at zero, for 3 days).
+        # Kept separate so a cold start can never raise a false alarm and the real
+        # condition can never be dismissed as one.
+        self.corpus_degraded: bool = False
         # Cached per-rule analyst-confirmed precedent distribution + the monotonic
         # instant it was computed. In-process only and TTL-bounded; every precedent
         # write invalidates it, so a stale count can never outlive a corpus change.
@@ -504,6 +558,23 @@ class RagService:
             # (size + per-rule stratification), so a settings change must reseed.
             # Appended, never inserted.
             self._window_config().model_dump_json(),
+            # The EMBEDDING SPACE the corpus is projected into.
+            #
+            # Scope note, so this is not mis-cited later: this term tracks the
+            # CONFIGURED embedding MODEL, which does not change during a provider
+            # outage — recovery from an outage is handled by the corpus-emptiness
+            # self-heal in ``retrieve_observed`` and by ``rebuild_corpus``, not by this
+            # tuple. What it does fix is the adjacent hole: an operator changing the
+            # embedding model previously left the cached signature untouched, so
+            # ``ensure_seeded`` short-circuited and the corpus kept serving vectors
+            # from a space the queries no longer live in.
+            #
+            # This is a REAL SPEND event when an operator changes the embedding model:
+            # the whole corpus is re-embedded. That is the correct behaviour — vectors
+            # from two different models are not comparable — and it is exactly what the
+            # existing ``EmbeddingSpaceMismatch``/``_reseed`` path already does on read.
+            # Appended, never inserted.
+            self._embedding_space()[0],
         )
 
     def _unconfirmed_cfg(self) -> "UnconfirmedPrecedentConfig":
@@ -568,6 +639,11 @@ class RagService:
         return removed
 
     def _embedding_space(self) -> tuple[str, int]:
+        """The CONFIGURED embedding space identity, as ``(model, dim)``.
+
+        Part of ``_source_signature`` so a change of embedding model reprojects the
+        corpus rather than mixing incomparable vector spaces.
+        """
         cfg = self._prefs.model_for("embedding")
         # dim is settled at first embed; the model id is the stable space tag.
         return (cfg.model, 0)
@@ -646,6 +722,26 @@ class RagService:
         batch = await self._gateway.embed_with_provenance(
             texts, self._prefs.model_for("embedding"), surface="rag"
         )
+        # ------------------------------------------------------------------ #
+        # A DEGRADED embedding space may never become a durable write.
+        # ------------------------------------------------------------------ #
+        # The gateway falls back to deterministic local hash embeddings when the
+        # configured provider cannot answer. For a READ that is a good trade:
+        # degraded retrieval beats no retrieval. For a WRITE it is corruption —
+        # hash-space vectors are meaningless in the real embedding space, and once
+        # persisted they are indistinguishable from real ones, so the corpus is
+        # silently wrong until someone reprojects it (which is exactly how a
+        # provider outage turned into three days of 0% auto-close).
+        #
+        # ``not_configured`` is the ONE fallback we still persist: a deployment with
+        # no embedding key is running the supported keyless/offline profile (Gate 2),
+        # where hash embeddings are the intended and self-consistent space.
+        if batch.fallback and batch.fallback_reason != FAILURE_NOT_CONFIGURED:
+            raise EmbeddingSpaceMismatch(
+                "refusing to persist chunks embedded by the local fallback: the "
+                f"configured embedding provider is degraded ({batch.fallback_reason or 'unavailable'}). "
+                "The existing corpus is left intact."
+            )
         vectors = batch.vectors
         if len(vectors) != len(items):
             raise EmbeddingSpaceMismatch(
@@ -656,6 +752,14 @@ class RagService:
             raise EmbeddingSpaceMismatch(
                 f"embedding batch has invalid or inconsistent dimensions: {sorted(dims)}"
             )
+        # A correctly SHAPED but all-zero vector is not a usable embedding: cosine
+        # similarity against it is undefined and it silently ranks as a constant.
+        # The documented contract already promises this check ("all-zero vectors fail
+        # before a partial write"); only the dimension half was actually implemented.
+        if any(not any(vector) for vector in vectors):
+            raise EmbeddingSpaceMismatch(
+                "embedding batch contains an all-zero vector; refusing a partial write"
+            )
         return [
             StoredChunk(
                 text=s["text"],
@@ -664,6 +768,13 @@ class RagService:
                     **dict(s.get("metadata", {})),
                     "embedding_provider": batch.provider,
                     "embedding_fallback": batch.fallback,
+                    # Closed-vocabulary provenance so a MIXED-space corpus is
+                    # detectable rather than silently wrong. Only ``""`` (the real
+                    # provider answered) and ``not_configured`` (the supported keyless
+                    # profile) can ever reach a durable chunk — the guard above
+                    # refuses every other value — but the tag is written either way so
+                    # the space a chunk was produced in is always attributable.
+                    "embedding_fallback_reason": batch.fallback_reason,
                     "configured_embedding_model": configured_model,
                 },
                 embedding=vec,
@@ -773,8 +884,99 @@ class RagService:
             )
         return out
 
-    async def _chunk_counts_by_source(self) -> dict[str, int]:
-        """Stored chunk count per source, or ``{}`` when the store cannot be read."""
+    def _guard_projection_collapse(
+        self,
+        outgoing: dict[str, int] | None,
+        chunks: list[StoredChunk],
+        *,
+        scope: frozenset[str] | None = None,
+    ) -> None:
+        """Refuse a projection that collapsed or shrank past the configured floor.
+
+        A projection is a rebuild of a source of truth that has NOT shrunk. So a
+        rebuild that yields zero documents while the previous corpus held thousands
+        is never a legitimately smaller corpus — it is a failed build (a provider
+        outage, an unreadable store, a load error). Publishing it destroys the corpus
+        and, because the stale sweep runs immediately afterwards, does so
+        irreversibly.
+
+        Raising here is deliberate and load-bearing: every caller stages the new
+        projection BEFORE any old document is removed, so an exception at this point
+        leaves the previous corpus completely intact. That is the whole
+        "keep the previous corpus and raise" requirement.
+        """
+        if outgoing is None:
+            # The previous corpus could not be READ, so "did this shrink?" is
+            # unanswerable. Fail SAFE rather than open: allow a projection that
+            # produced content (it cannot be a collapse), and refuse only the
+            # empty one, whose safety we cannot establish.
+            if not chunks:
+                raise ProjectionCollapsed(
+                    "RAG projection produced 0 chunk(s) and the previous corpus could "
+                    "not be read to prove the replacement is safe; refusing. The "
+                    "existing corpus is left intact."
+                )
+            return
+        # Compare LIKE WITH LIKE — on BOTH sides.
+        #
+        # ``chunks`` is the new projection; ``outgoing`` counts every stored chunk,
+        # including operator imports and threat-context documents that this projection
+        # never rebuilds and never sweeps. Comparing those two populations refused an
+        # ordinary reseed on any deployment whose imported library outnumbered its seed
+        # corpus — a safety guard turning itself into an outage. ``scope`` names the
+        # sources this projection is responsible for, and BOTH sides are restricted to
+        # it before any comparison.
+        # A source the operator just DISABLED is EXPECTED to project to zero, so its
+        # existing chunks must not count as something the rebuild "lost" — otherwise
+        # turning a knowledge source off refuses every subsequent projection forever
+        # AND strands that source's chunks in the corpus, because the sweep that would
+        # remove them never runs. This is the same distinction
+        # ``_record_projection_outcome`` already makes before warning.
+        incoming_by_source = Counter(str(chunk.source or "unknown") for chunk in chunks)
+        if scope is None:
+            relevant = {
+                name: count
+                for name, count in outgoing.items()
+                if self._source_enabled(name)
+            }
+            incoming_total = len(chunks)
+        else:
+            relevant = {
+                name: count
+                for name, count in outgoing.items()
+                if name in scope and self._source_enabled(name)
+            }
+            incoming_total = sum(
+                count for name, count in incoming_by_source.items() if name in scope
+            )
+        outgoing_total = sum(int(v or 0) for v in relevant.values())
+        if outgoing_total <= 0:
+            # Nothing to lose: a first seed (or a genuinely empty corpus) proceeds.
+            return
+        if incoming_total == 0:
+            raise ProjectionCollapsed(
+                "RAG projection produced 0 chunk(s) while the previous corpus held "
+                f"{outgoing_total}; refusing to replace a live corpus with an empty "
+                "one. The existing corpus is left intact."
+            )
+        retention = float(getattr(self._prefs.rag, "min_projection_retention", 0.0) or 0.0)
+        if retention > 0.0 and incoming_total < outgoing_total * retention:
+            raise ProjectionCollapsed(
+                f"RAG projection SHRANK from {outgoing_total} to {incoming_total} "
+                f"chunk(s), below the configured retention floor "
+                f"({retention:.0%}); refusing the rebuild and keeping the existing "
+                "corpus. Raise rag.min_projection_retention if this shrink is intended."
+            )
+
+    async def _chunk_counts_by_source(self) -> dict[str, int] | None:
+        """Stored chunk count per source, or ``None`` when the store cannot be read.
+
+        ``None`` and ``{}`` mean very different things and must never be conflated:
+        an EMPTY corpus is a real, trustworthy zero, while an UNREADABLE one is an
+        unknown. Returning ``{}`` for both previously disabled the collapse guard in
+        exactly the failure mode it exists for, and let a transient stats() error
+        publish "the corpus is empty" on the public health endpoint.
+        """
         try:
             stats = await self._store.stats()
             return {
@@ -783,10 +985,10 @@ class RagService:
             }
         except Exception as exc:  # noqa: BLE001 — observability must never break seeding
             logger.warning("Reading RAG source counts failed: %s", exc)
-            return {}
+            return None
 
     def _record_projection_outcome(
-        self, outgoing: dict[str, int], incoming: dict[str, int]
+        self, outgoing: dict[str, int] | None, incoming: dict[str, int] | None
     ) -> None:
         """Compare the OUTGOING corpus with the INCOMING one, per source.
 
@@ -800,8 +1002,19 @@ class RagService:
         """
         at = iso_now()
         outcome: dict[str, dict[str, Any]] = {}
-        for source in sorted(set(outgoing) | set(incoming)):
-            before = int(outgoing.get(source, 0))
+        if incoming is None:
+            # The post-projection read failed. The projection itself SUCCEEDED, so the
+            # corpus is not empty — publishing a zeroed outcome here would manufacture
+            # exactly the false collapse signal this record exists to make trustworthy.
+            logger.warning(
+                "RAG projection succeeded but its outcome could not be read; leaving "
+                "the previous projection record in place"
+            )
+            self.last_refusal = None
+            return
+        known_outgoing = outgoing or {}
+        for source in sorted(set(known_outgoing) | set(incoming)):
+            before = int(known_outgoing.get(source, 0))
             after = int(incoming.get(source, 0))
             enabled = self._source_enabled(source)
             outcome[source] = {
@@ -825,6 +1038,51 @@ class RagService:
                     " — the source COLLAPSED to zero" if after == 0 else "",
                 )
         self.last_projection = outcome
+        # A projection completed, so any standing refusal is resolved.
+        self.last_refusal = None
+        self.corpus_known_empty = sum(int(v or 0) for v in incoming.values()) == 0
+        # A projection just RAN. If it produced nothing while sources are enabled,
+        # the corpus is empty for a reason that is not configuration.
+        self.corpus_degraded = bool(
+            self.corpus_known_empty and self._any_source_enabled()
+        )
+
+    async def _persist_projection_health(self) -> None:
+        """Persist the just-recorded successful projection. Fail-open."""
+        if self._health is None:
+            return
+        try:
+            await self._health.record_projection(dict(self.last_projection))
+        except Exception as exc:  # noqa: BLE001 — never fail a good projection
+            logger.warning("RAG health record could not be persisted: %s", exc)
+
+    async def _record_projection_refusal(
+        self, outgoing: dict[str, int] | None, reason: str, *, collapsed: bool = True
+    ) -> None:
+        """Publish + persist a projection that did NOT happen.
+
+        ``_record_projection_outcome`` only ever ran on the SUCCESS paths, so the one
+        outcome that actually matters — the rebuild that was refused, or failed —
+        left no structured record at all. Fail-open: recording a refusal must never
+        turn into a second failure.
+        """
+        record = {
+            "reason": str(reason)[:500],
+            "collapsed": bool(collapsed),
+            "outgoing_total": sum(int(v or 0) for v in (outgoing or {}).values()),
+            "at": iso_now(),
+        }
+        self.last_refusal = record
+        if self._health is None:
+            return
+        try:
+            await self._health.record_refusal(
+                reason=record["reason"],
+                collapsed=record["collapsed"],
+                outgoing_total=record["outgoing_total"],
+            )
+        except Exception as exc:  # noqa: BLE001 — never mask the original failure
+            logger.warning("RAG health refusal could not be persisted: %s", exc)
 
     async def _reconcile_legacy_resolved_case_documents(self) -> int:
         """One-time, tolerant migration of pre-fix incrementally indexed precedent.
@@ -883,6 +1141,10 @@ class RagService:
             signature = self._source_signature()
             if self._seeded and self._seed_signature == signature:
                 return
+            # ``None`` means the previous corpus could not be READ (distinct from an
+            # empty one); the guard fails safe on that rather than silently switching
+            # itself off.
+            outgoing: dict[str, int] | None = None
             try:
                 outgoing = await self._chunk_counts_by_source()
                 # Converge any pre-fix precedent onto per-case document identity
@@ -901,6 +1163,18 @@ class RagService:
                     seeds.extend(await self._unconfirmed_precedent_addition(seeds))
                 managed = self._managed_items(seeds)
                 chunks = await self._embed_items(managed)
+                # REFUSE a collapsed/shrunken rebuild BEFORE anything is written and,
+                # critically, before the stale sweep below deletes the documents this
+                # projection was supposed to replace.
+                #
+                # Scoped to MANAGED_PROJECTION_SOURCES: those are the sources this
+                # projection actually rebuilds, and (for the fully reconciled ones) the
+                # only sources ``_drop_stale_managed_projection`` can delete. Operator
+                # imports and threat-context documents are neither rebuilt nor swept
+                # here, so counting them would compare two different populations.
+                self._guard_projection_collapse(
+                    outgoing, chunks, scope=MANAGED_PROJECTION_SOURCES
+                )
                 if chunks:
                     await self._store.add(chunks)
                 expected = await self._verify_projection(chunks)
@@ -915,10 +1189,125 @@ class RagService:
                 self._record_projection_outcome(
                     outgoing, await self._chunk_counts_by_source()
                 )
+                await self._persist_projection_health()
+            except ProjectionCollapsed as exc:
+                # The corpus-destroying outcome. Loud (ERROR), and recorded as a
+                # durable health state so it survives the restart that erased the
+                # evidence both times this happened.
+                self._seeded = False
+                self._seed_signature = None
+                logger.error(
+                    "RAG projection REFUSED — the existing corpus was preserved: %s", exc
+                )
+                await self._record_projection_refusal(outgoing, str(exc))
             except Exception as exc:  # noqa: BLE001
                 self._seeded = False
                 self._seed_signature = None
                 logger.warning("RAG seeding failed; store left as-is: %s", exc)
+                await self._record_projection_refusal(outgoing, str(exc), collapsed=False)
+
+    async def refresh_corpus_health(self) -> bool | None:
+        """Read the corpus size WITHOUT seeding and publish the emptiness flag.
+
+        Called at startup so a deployment that comes back up with a lost corpus
+        reports degraded immediately, instead of waiting for the first investigation
+        to discover it. Seed-free and fail-open by construction: it must never
+        trigger an embedding spend, and an unreadable store leaves the flag untouched
+        (unknown is not a degradation).
+
+        Returns the emptiness verdict, or ``None`` when the store could not be read.
+        """
+        try:
+            count = int(await self._store.count())
+        except Exception as exc:  # noqa: BLE001 — a probe never breaks startup
+            logger.warning("RAG corpus health probe could not read the store: %s", exc)
+            return None
+        self.corpus_known_empty = count == 0
+        if count > 0:
+            self.corpus_degraded = False
+            return False
+        # Empty. Distinguish "never seeded yet" (a cold start — expected) from
+        # "we HAD a corpus and it is gone" (the incident). The durable projection
+        # record is what makes that distinction survive the restart.
+        previously_projected = False
+        if self._health is not None:
+            try:
+                doc = await self._health.load()
+                previously_projected = bool((doc or {}).get("healthy_at"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RAG health record unreadable during probe: %s", exc)
+        self.corpus_degraded = bool(
+            (previously_projected or self._seeded) and self._any_source_enabled()
+        )
+        if self.corpus_degraded:
+            logger.error(
+                "RAG corpus is EMPTY at startup although it was previously projected: "
+                "every investigation will run with no runbook, ATT&CK or precedent "
+                "context until it is rebuilt"
+            )
+        return self.corpus_known_empty
+
+    def _any_source_enabled(self) -> bool:
+        """Whether retrieval is on AND at least one knowledge source is enabled.
+
+        An operator who turned every source off has an empty corpus on purpose; that
+        is configuration, not a fault, and must never raise a health alarm.
+        """
+        cfg = self._prefs.rag
+        if not bool(getattr(cfg, "enabled", False)):
+            return False
+        return any(
+            bool(getattr(cfg, name, False))
+            for name in (
+                "use_runbooks",
+                "use_mitre",
+                "use_suppression_rules",
+                "use_resolved_cases",
+                "use_threat_context",
+            )
+        )
+
+    async def rebuild_corpus(self) -> dict[str, Any]:
+        """Explicitly rebuild the whole knowledge projection. Idempotent.
+
+        The recovery gap this closes: ``ensure_seeded`` is lazy AND signature-cached,
+        so once it has run it considers itself done regardless of what the corpus
+        actually holds. After the incident's provider outage cleared, the corpus did
+        NOT come back — recovery took a container recreate plus a manual investigation
+        to trigger the lazy path. There was no supported "rebuild the corpus" action at
+        all: the only trigger was poking a private attribute, which only tests did.
+
+        Safe to call repeatedly and safe to call on a healthy deployment: it reuses the
+        SAME staged-then-verified projection path as ordinary seeding, so the existing
+        corpus is preserved if the rebuild cannot complete (and is refused outright if
+        it would collapse). Stable document ids mean a successful rebuild converges on
+        the identical corpus rather than duplicating it.
+
+        Returns a JSON-safe summary: the chunk count before and after, whether the
+        projection was refused, and the per-source outcome.
+        """
+        before = await self._store.count()
+        # Reset the cache OUTSIDE the seed lock: ``_seed_lock`` is a plain,
+        # non-reentrant asyncio.Lock that ``ensure_seeded`` acquires itself.
+        self._seeded = False
+        self._seed_signature = None
+        await self.ensure_seeded()
+        after = await self._store.count()
+        self.corpus_known_empty = int(after) == 0
+        self.corpus_degraded = bool(self.corpus_known_empty and self._any_source_enabled())
+        refusal = self.last_refusal
+        return {
+            "chunks_before": int(before),
+            "chunks_after": int(after),
+            "rebuilt": bool(self._seeded),
+            "refused": refusal is not None,
+            "refusal_reason": str((refusal or {}).get("reason") or ""),
+            "by_source": {
+                name: {"before": row.get("before"), "after": row.get("after")}
+                for name, row in dict(self.last_projection).items()
+            },
+            "at": iso_now(),
+        }
 
     async def reindex_runbooks(self, ids: set[str] | None = None) -> dict[str, Any]:
         """Reconcile only the runbook projection, preserving every other source.
@@ -1927,9 +2316,38 @@ class RagService:
             )
             store_count = await self._store.count()
             if store_count == 0:
-                return RagRetrievalObservation(
-                    [], False, unavailable_reason or "corpus_empty"
-                )
+                # SELF-HEAL. An empty corpus with a satisfied seed cache is the dead
+                # end this whole class of incident ends in: ``ensure_seeded`` believes
+                # it is done, so nothing ever rebuilds and every investigation runs
+                # with zero knowledge and zero precedent — indefinitely. Once, clear
+                # the cache and rebuild, so a corpus that was lost (or refused during
+                # a provider outage) comes back on its own the moment the provider
+                # does. Bounded to ONE attempt per retrieval so it can never become a
+                # reseed storm, and honest when the retry also yields nothing.
+                if self._seeded:
+                    logger.error(
+                        "RAG corpus is EMPTY while seeding reported complete; "
+                        "invalidating the seed cache and rebuilding once"
+                    )
+                    self._seeded = False
+                    self._seed_signature = None
+                    await self.ensure_seeded()
+                    store_count = await self._store.count()
+                    unavailable_reason = (
+                        None
+                        if self._seeded and self._seed_signature == self._source_signature()
+                        else "seeding_failed"
+                    )
+                if store_count == 0:
+                    # We attempted a rebuild and the corpus is STILL empty while an
+                    # investigation needs it. That is unambiguously a degradation.
+                    self.corpus_known_empty = True
+                    self.corpus_degraded = self._any_source_enabled()
+                    return RagRetrievalObservation(
+                        [], False, unavailable_reason or "corpus_empty"
+                    )
+            self.corpus_known_empty = False
+            self.corpus_degraded = False
             k = top_k or cfg.top_k
             # Over-fetch a candidate pool for hybrid re-ranking; identical to ``k``
             # when hybrid is disabled. Source filtering gets a small bounded cushion
@@ -2125,6 +2543,15 @@ class RagService:
                     if str(item.get("doc_id") or "") not in staged_doc_ids
                 )
                 replacement = await self._embed_items(managed)
+                # A vector-space migration is the one path that must physically clear
+                # the store, so an empty replacement here is unrecoverable rather than
+                # merely wrong. Refuse BEFORE the clear (nothing has been destroyed
+                # yet, so this needs no rollback).
+                #
+                # UNSCOPED on purpose: unlike ``ensure_seeded``, this replacement is a
+                # whole-store rebuild — it re-embeds operator imports and carries over
+                # preserved precedent — so the whole corpus is the right comparison.
+                self._guard_projection_collapse(outgoing, replacement)
 
                 await self._store.clear()
                 cleared = True
@@ -2145,9 +2572,19 @@ class RagService:
                 self._record_projection_outcome(
                     outgoing, await self._chunk_counts_by_source()
                 )
+                await self._persist_projection_health()
             except Exception as exc:
                 self._seeded = False
                 self._seed_signature = None
+                # A migration refused for collapse is the same corpus-destroying
+                # outcome as in ensure_seeded, and must leave the same first-class
+                # record rather than being flattened into a generic migration error.
+                if isinstance(exc, ProjectionCollapsed):
+                    logger.error(
+                        "RAG vector-space migration REFUSED — the existing corpus was "
+                        "preserved: %s", exc,
+                    )
+                    await self._record_projection_refusal(outgoing, str(exc))
                 if cleared:
                     try:
                         await self._store.clear()

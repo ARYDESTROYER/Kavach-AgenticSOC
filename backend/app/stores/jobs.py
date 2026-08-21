@@ -43,6 +43,10 @@ _RETRY_SAFE_KINDS = frozenset(
         JobKind.DATA_EXPORT_SEGMENT,
         JobKind.PRECEDENT_BOOTSTRAP,
         JobKind.RUNBOOK_REINDEX,
+        # A corpus rebuild is genuinely idempotent: it is staged-then-verified,
+        # uses stable document ids (so a repeat converges on the identical corpus
+        # rather than duplicating it), and preserves the existing corpus on failure.
+        JobKind.RAG_REBUILD,
     }
 )
 
@@ -121,6 +125,8 @@ def public_job(job: Job) -> JobPublic:
                 raw.get("document_count", len(list(raw.get("documents") or [])))
             )
         }
+    elif kind == "rag_rebuild":
+        params = {}
     elif kind == "tiered_reset":
         params = {"scope": raw.get("scope")}
     elif kind == "storage_lifecycle_apply":
@@ -185,6 +191,8 @@ def _compact_params(job: Job) -> dict[str, Any]:
                 raw.get("document_count", len(list(raw.get("documents") or [])))
             )
         }
+    if kind == JobKind.RAG_REBUILD:
+        return {}
     if kind == JobKind.TIERED_RESET:
         return {"scope": str(raw.get("scope") or "")[:20]}
     if kind == JobKind.STORAGE_LIFECYCLE_APPLY:

@@ -55,7 +55,10 @@ class Formatter:
                 Role.FORMATTER, messages, model_cfg, surface=surface, case_id=case_id
             )
         except GatewayError as exc:
-            logger.warning("Formatter unavailable (%s); preserving draft verdict", exc)
+            logger.warning(
+                "Formatter unavailable (class=%s): %s; preserving draft verdict",
+                getattr(exc, "failure_class", "") or "unclassified", exc,
+            )
             return draft, 0.0
 
         formatted = coerce_verdict(extract_json(res.text))

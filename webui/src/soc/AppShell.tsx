@@ -196,6 +196,50 @@ interface HealthView {
 /** The in-memory ES fallback's class name (own-state runs in memory, no persistence). */
 const isInMemoryStore = (t?: string): boolean => t === 'InMemoryESClient';
 
+/**
+ * Local copy for each opaque degradation code the public `/api/health` may report.
+ * The endpoint is unauthenticated, so it deliberately carries codes rather than
+ * counts or source names; the human-readable explanation lives here.
+ */
+const DEGRADED_LABELS: Record<string, { label: string; help: string }> = {
+  rag_corpus_empty: {
+    label: 'Knowledge corpus empty',
+    help:
+      'The knowledge corpus holds no documents, so every investigation runs without ' +
+      'runbook, ATT&CK or precedent context and auto-close cannot fire.\n\n' +
+      'How to fix: rebuild the corpus from Jobs. If the rebuild is refused, check the ' +
+      'embedding provider credentials first.',
+  },
+  rag_projection_refused: {
+    label: 'Knowledge rebuild refused',
+    help:
+      'The last knowledge projection was refused because it would have replaced the ' +
+      'corpus with an empty or drastically smaller one. The existing corpus was kept.\n\n' +
+      'How to fix: resolve the underlying cause (most often the embedding provider), ' +
+      'then rebuild.',
+  },
+  llm_provider_unauthenticated: {
+    label: 'Model provider rejecting credentials',
+    help:
+      'The model provider is returning authentication failures, so investigations ' +
+      'cannot run. No case is auto-closed on a failed call, so verdicts are unaffected.\n\n' +
+      'How to fix: check whether the provider API key has expired, been revoked, or ' +
+      'been rotated.',
+  },
+  llm_provider_quota_exhausted: {
+    label: 'Model provider quota exhausted',
+    help:
+      'The model provider is refusing calls for quota or rate-limit reasons.\n\n' +
+      'How to fix: check the provider plan limits and rate ceilings.',
+  },
+  llm_provider_unavailable: {
+    label: 'Model provider unavailable',
+    help:
+      'The model provider is not answering.\n\n' +
+      'How to fix: check provider status and network egress from the backend.',
+  },
+};
+
 export function healthView(health: HealthResponse | null, err: boolean): HealthView {
   if (err) {
     return {
@@ -244,6 +288,29 @@ export function healthView(health: HealthResponse | null, err: boolean): HealthV
         'a backend restart.\n\n' +
         'How to fix: set STATE_BACKEND=elasticsearch or postgres and configure ' +
         'connectivity (see DEPLOY.md).',
+    };
+  }
+  // A reachable state store is NOT a healthy product. The incident this branch
+  // exists for ran for three days with a green "Healthy" pill while the knowledge
+  // corpus sat at zero and auto-close was 0%: the operator's only signal was a
+  // business metric drifting. A degradation the backend positively detected must
+  // reach the one surface that is polled continuously and always visible.
+  if (stateStoreConnected && health?.degraded) {
+    const reasons = health.degraded_reasons ?? [];
+    const detail = reasons.map((code) => DEGRADED_LABELS[code]?.label ?? code).join(' · ');
+    const help = reasons
+      .map((code) => DEGRADED_LABELS[code]?.help ?? `Reported degradation: ${code}.`)
+      .join('\n\n');
+    return {
+      tone: 'warning',
+      label: 'Degraded',
+      icon: AlertTriangle,
+      detail: detail || 'A subsystem is impaired',
+      title: 'Degraded',
+      help:
+        (help ||
+          'The backend reports a degraded subsystem but did not name it.') +
+        '\n\nSee Analytics -> Effectiveness for the full agent-health diagnostics.',
     };
   }
   if (stateStoreConnected) {

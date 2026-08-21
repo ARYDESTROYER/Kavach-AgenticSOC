@@ -128,4 +128,11 @@ def test_health_response_model_matches_shape() -> None:
     assert set(HealthResponse.model_fields) == {
         "status", "version", "es_connected", "state_store_connected",
         "state_backend", "store_type", "setup_complete",
+        # Additive subsystem-degradation signal. ``status`` deliberately keeps its
+        # historical state-store-readiness meaning (release/update tooling gates on
+        # it), so a degraded corpus or provider is reported alongside it.
+        "degraded", "degraded_reasons",
     }
+    # Both default to "not degraded", so an existing client and every historical
+    # response shape are unaffected.
+    assert HealthResponse.model_fields["degraded"].default is False
