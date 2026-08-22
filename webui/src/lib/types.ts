@@ -2953,7 +2953,7 @@ export interface Metrics {
   avg_risk_score: number;
   /**
    * Active Risk Index (Round-7; additive) — the canonical top-right instrument on the
-   * Security Command Center. The mean deterministic `risk_score` over NON-TERMINAL
+   * Cyber Defence Center. The mean deterministic `risk_score` over NON-TERMINAL
    * (still-open) cases only, 0..100 (0.0 when there are no open cases). Distinct from
    * `avg_risk_score` (which spans ALL cases). Advisory presentation only (never #3).
    */
@@ -2984,6 +2984,50 @@ export interface Metrics {
   /** Compact cost summary (shares the UsageSummary shape; fields optional). */
   cost: Partial<UsageSummary> & Record<string, unknown>;
   window_hours?: number;
+  [key: string]: unknown;
+}
+
+// --------------------------------------------------------------------------- //
+// Bucketed metric trends (GET /api/metrics/trends?window_hours=) — the hover-
+// trendline series behind the Overview (Cyber Defence Center) landing metrics.
+// Buckets are zero-filled across the whole window and cohort-bucketed by case
+// `created_at`; `fp_rate` mirrors the posture false-positive-rate semantics per
+// bucket (null when the bucket has no verdicted denominator) and `alerts` comes
+// from the durable noise counters (null when counters are absent). Aggregate
+// counts only — no raw log text (#9). Advisory presentation only — never #3.
+// --------------------------------------------------------------------------- //
+
+/** One zero-filled trend bucket. `t` is the bucket-start instant (UTC ISO). */
+export interface MetricsTrendBucket {
+  t: string;
+  /** Cases created in this bucket. */
+  new_cases: number;
+  /** Of this bucket's arrival cohort: now closed / auto-closed / FP-verdicted /
+   *  needs-human / escalated. */
+  closed: number;
+  auto_closed: number;
+  false_positives: number;
+  needs_human: number;
+  escalated: number;
+  /** Percent 0-100, or null when the bucket has no verdicted denominator. */
+  fp_rate: number | null;
+  /** Raw alerts ingested (durable noise counters), or null when unavailable. */
+  alerts: number | null;
+}
+
+/**
+ * GET /api/metrics/trends — the bucketed trend payload (24-48 buckets spanning
+ * the requested window). `truncated` reports a bounded case scan honestly.
+ */
+export interface MetricsTrends {
+  window_hours: number;
+  bucket_minutes: number;
+  generated_at: string;
+  buckets: MetricsTrendBucket[];
+  /** True when the bounded case fetch could not cover the whole window. */
+  truncated: boolean;
+  store_total: number;
+  fetched: number;
   [key: string]: unknown;
 }
 
@@ -3374,7 +3418,7 @@ export type Provenance = 'source' | 'ai' | 'code';
 // A durable "total raw alerts by severity → what the AI reduced it to" funnel: the
 // `ingested`/`clustered` stages come from durable noise counters (by severity band),
 // the `cases` + outcome stages from a live tally of the case store. Powers the
-// "Noise reduced by N%" headline on the Security Command Center. Every value is an
+// "Noise reduced by N%" headline on the Cyber Defence Center. Every value is an
 // aggregate count / label (no raw log text). Advisory presentation only — never #3.
 // --------------------------------------------------------------------------- //
 /**

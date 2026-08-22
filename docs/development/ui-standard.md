@@ -6,7 +6,7 @@ description: The current enforceable visual, interaction, loading, navigation, a
 # Console UI standard
 
 This is the current implementation contract for the Agentic SOC Console. It turns the
-Security Command Center visual language into reusable rules for every route. New work
+Cyber Defence Center visual language into reusable rules for every route. New work
 must use these primitives; existing pages migrate toward them as they are touched.
 
 ## Migration contract

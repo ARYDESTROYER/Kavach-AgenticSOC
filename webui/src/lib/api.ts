@@ -56,6 +56,7 @@ import type {
   MemoryEntry,
   MemoryResponse,
   Metrics,
+  MetricsTrends,
   ModelsResponse,
   NoiseLineage,
   NoiseReduction,
@@ -1314,6 +1315,16 @@ export const api = {
   // ---- Metrics + feedback analytics ------------------------------------ //
   getMetrics: (windowHours = 24) =>
     request<Metrics>('GET', 'metrics', { query: { window_hours: windowHours } }),
+  // GET /api/metrics/trends?window_hours= — zero-filled, case-cohort-bucketed trend
+  // series (plus durable alert counters) powering the Overview hover trendlines.
+  // metrics:view server-side; aggregate counts only (#9); advisory only (#3). Kept
+  // typeof-guardable at the call site (mirrors `noiseReduction`/`sourcesCoverage`)
+  // so a minimal test/mock surface never has to stub it.
+  metricsTrends: (windowHours = 24, signal?: AbortSignal) =>
+    request<MetricsTrends>('GET', 'metrics/trends', {
+      query: { window_hours: windowHours },
+      signal,
+    }),
   getFeedbackStats: () => request<FeedbackStats>('GET', 'feedback/stats'),
   getAgentImprovement: (params?: {
     asOf?: string;

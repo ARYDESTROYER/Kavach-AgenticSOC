@@ -48,7 +48,7 @@ surface into **six top-level nav groups**:
 
 | Group | What lives there |
 |---|---|
-| **Overview** | Dashboard (the Security Command Center), Dashboards (custom, §21), Standup (§7) — each a full page |
+| **Overview** | Dashboard (the Cyber Defence Center), Dashboards (custom, §21), Standup (§7) — each a full page |
 | **Triage** | Cases (§3), **Case Manager** (§3), Campaigns (§16), Logs (a unified cross-source log browser, §2a), Workspace → **Chat** (§5) and **Entity investigation** (§4) as left-nav children, Approvals |
 | **Intelligence** | Knowledge corpus (§9), Reference runbooks, Operator memory (§10), Response playbooks, Agent personas |
 | **Analytics** | Metrics, **Agent effectiveness** (§7a), Cost (§8), Models (§22), Baseline (§17), Batch jobs (§22) |
@@ -67,7 +67,7 @@ Every analytics/triage surface calls its backend endpoints directly; every
 endpoint below is also usable via `curl` (§33). RBAC (`<Can>` guards) hides an
 item a signed-in user's role can't reach; with auth off, everything shows.
 
-### Security Command Center dashboard
+### Cyber Defence Center dashboard
 
 **Overview → Dashboard** is the shift landing page. One time-range control scopes
 the five primary KPIs: **Open Cases**, **Critical / High**, **Escalated to Human**,
@@ -75,12 +75,22 @@ the five primary KPIs: **Open Cases**, **Critical / High**, **Escalated to Human
 statuses (`new`, `open`, `needs_human`, `investigating`, `escalated`, `on_hold`).
 Critical / High spans both open and resolved cases in the window and states the
 split as `N open + M resolved`; it never silently drops an unknown lifecycle.
+False Positive Rate shows the selected-window rate only — it carries no
+period-over-period percentage chip.
+
+Hovering or keyboard-focusing a landing metric reveals its recent trendline for the
+same window (`GET /api/metrics/trends` zero-filled case-cohort buckets, the per-day
+timing series, or the spend ledger series). Each hover card names the exact series
+it draws and its bucketing; a metric with no measured series shows a quiet "No trend
+data yet" line, and the combined Critical / High tile deliberately has no trendline
+because no per-severity series exists.
 
 False Positive Rate and Auto-resolved use the server posture rollup for the exact
-selected range. A range change immediately hides the previous posture snapshot,
-cancels the superseded request, and accepts only a response whose echoed window still
-matches the selector. A slower earlier request cannot repaint those tiles beneath a
-new range; loading/unavailable copy appears instead of mixed-window values.
+selected range. A range change keeps the last successful posture snapshot mounted —
+explicitly marked by the tiles' `Loading …` sub-line — while the superseded request
+is cancelled and the new window loads, so the dashboard never blanks. Only a
+response whose echoed window still matches the selector is accepted; a slower
+earlier request cannot repaint those tiles beneath a new range.
 
 The next row uses the available height for a current-open-queue **Active Risk
 Index**, Open-above-Resolved severity rings, and exactly four **Latest Cases**.

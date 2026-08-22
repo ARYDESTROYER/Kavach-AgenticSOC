@@ -1,4 +1,4 @@
-/** Degradation-only Agent-health warning for the Security Command Center. */
+/** Degradation-only Agent-health warning for the Cyber Defence Center. */
 import { AlertTriangle, ArrowRight } from 'lucide-react';
 
 import { cn } from '@/lib/cn';

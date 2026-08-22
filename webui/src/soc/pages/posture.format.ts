@@ -33,7 +33,7 @@ interface LifecycleMetricCopy {
 
 /**
  * The ONE honest source of the lifecycle-timing copy shared by the Overview
- * ("Security Command Center") + Metrics posture surfaces. It mirrors exactly what
+ * ("Cyber Defence Center") + Metrics posture surfaces. It mirrors exactly what
  * `engine/metrics.py::lifecycle_intervals` measures — no invented "MTTD".
  *
  * The backend measures each interval from case CREATION (or the explicit detection

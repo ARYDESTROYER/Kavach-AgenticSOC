@@ -1,8 +1,8 @@
 /**
- * Overview — Security Command Center integration test (Stitch-inspired command center).
+ * Overview — Cyber Defence Center integration test (Stitch-inspired command center).
  *
  * Pins the four command-center signatures:
- *   1. the page is titled "Security Command Center";
+ *   1. the page is titled "Cyber Defence Center";
  *   2. the Active Risk Index (#1 — the ONE risk instrument) is its own flat cell in the
  *      integrated instrument band, a sibling of the plain header, never nested inside it;
  *   3. the Noise-Reduction instrument renders mixed-unit conversion context followed by
@@ -105,7 +105,7 @@ const NOISE: NoiseReduction = {
   cases_meta: { truncated: false, store_total: 40, fetched: 40 },
 };
 
-describe('Overview — Security Command Center', () => {
+describe('Overview — Cyber Defence Center', () => {
   beforeEach(() => {
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
@@ -119,11 +119,13 @@ describe('Overview — Security Command Center', () => {
     noiseMock.mockResolvedValue(NOISE);
   });
 
-  it('is titled "Security Command Center"', async () => {
+  it('is titled "Cyber Defence Center" (the rename smoke)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     const hero = await screen.findByTestId('page-hero');
-    expect(PAGE_TITLE).toBe('Security Command Center');
-    expect(hero).toHaveTextContent('Security Command Center');
+    expect(PAGE_TITLE).toBe('Cyber Defence Center');
+    expect(hero).toHaveTextContent('Cyber Defence Center');
+    // The retired title never leaks back into the masthead.
+    expect(hero).not.toHaveTextContent('Security Command Center');
   });
 
   it('opens on Last 24 hours with LIVE refresh visibly active', async () => {

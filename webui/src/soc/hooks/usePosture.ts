@@ -10,11 +10,20 @@
  * (`pages/Metrics.posture.api.ts`) with a parameter-keyed response guard and request
  * cancellation — no new endpoint or payload field.
  *
- *   usePosture(hours, period) -> { data: PostureResponse|null, loading, error, reload }
+ *   usePosture(hours, period) -> { data, loading, error, stale, reload }
  *
  * `period` selects the period-over-period comparison window: `'prev'` includes the
  * `compare` block (deltas vs the prior equal window); `'none'` (default) omits it. It
  * re-fetches whenever `hours` or `period` change.
+ *
+ * STALE-WHILE-REVALIDATE: changing the window keeps the LAST SUCCESSFUL snapshot as
+ * `data` (flagged `stale: true`) while the new window's request is in flight, instead
+ * of nulling it and blanking every posture consumer. The consumer stays responsible
+ * for labelling stale content (Overview shows its "Loading Nh" sub); a fresh payload
+ * replaces the snapshot atomically and clears the flag. Correctness is unchanged:
+ * the response still echoes its measured window and a mismatched payload is rejected,
+ * a superseded request can never write state, and a failed request drops the data
+ * (an error is reported explicitly, never rendered as a healthy snapshot).
  *
  * SECURITY (#9): every label/entity in `PostureResponse` is operator-/log-derived; the
  * consuming components render them as PLAIN text. This hook only moves the SHAPE around.
@@ -29,10 +38,20 @@ import type { AsyncState } from './useAsync';
 /** The comparison window for the posture rollup. `'prev'` → include deltas. */
 export type PosturePeriod = 'none' | 'prev';
 
+/** `AsyncState` plus the stale-while-revalidate marker. */
+export interface PostureState extends AsyncState<PostureResponse> {
+  /**
+   * True while `data` is a RETAINED previous-parameter snapshot shown during an
+   * in-flight window change. Consumers must present stale data with an explicit
+   * loading/refresh indicator, never as fresh selected-window truth.
+   */
+  stale: boolean;
+}
+
 export function usePosture(
   hours: number,
   period: PosturePeriod = 'none',
-): AsyncState<PostureResponse> {
+): PostureState {
   const requestKey = `${hours}:${period}`;
   const paramsRef = React.useRef({ hours, period, requestKey });
   paramsRef.current = { hours, period, requestKey };
@@ -44,11 +63,14 @@ export function usePosture(
   const mountedRef = React.useRef(true);
 
   const [snapshot, setSnapshot] = React.useState<{
+    /** The request key this snapshot's load state belongs to. */
     key: string | null;
     data: PostureResponse | null;
+    /** The request key `data` was fetched for (staleness authority). */
+    dataKey: string | null;
     loading: boolean;
     error: unknown;
-  }>({ key: null, data: null, loading: true, error: null });
+  }>({ key: null, data: null, dataKey: null, loading: true, error: null });
 
   /**
    * Stable by design: a timer may retain this callback across a range change, but
@@ -63,9 +85,13 @@ export function usePosture(
     const controller = new AbortController();
     controllerRef.current = controller;
 
+    // Stale-while-revalidate: retain the last successful snapshot (and the key it
+    // belongs to) while the new request is in flight, so a window change never
+    // blanks the consuming dashboard. `dataKey` keeps the staleness truthful.
     setSnapshot((previous) => ({
       key: issued.requestKey,
-      data: previous.key === issued.requestKey ? previous.data : null,
+      data: previous.data,
+      dataKey: previous.dataKey,
       loading: true,
       error: null,
     }));
@@ -93,7 +119,13 @@ export function usePosture(
         );
       }
 
-      setSnapshot({ key: issued.requestKey, data: result, loading: false, error: null });
+      setSnapshot({
+        key: issued.requestKey,
+        data: result,
+        dataKey: issued.requestKey,
+        loading: false,
+        error: null,
+      });
     } catch (nextError) {
       if (
         !mountedRef.current ||
@@ -103,7 +135,15 @@ export function usePosture(
       ) {
         return;
       }
-      setSnapshot({ key: issued.requestKey, data: null, loading: false, error: nextError });
+      // A failed read is reported explicitly; a stale snapshot must never keep
+      // masquerading as usable data beneath an error state.
+      setSnapshot({
+        key: issued.requestKey,
+        data: null,
+        dataKey: null,
+        loading: false,
+        error: nextError,
+      });
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
     }
@@ -126,12 +166,15 @@ export function usePosture(
   }, []);
 
   // Parameter-keyed projection is synchronous: on the render where the selector
-  // changes, an old successful snapshot is already hidden before the new effect runs.
+  // changes, the retained snapshot is ALREADY flagged stale (dataKey !== requestKey)
+  // and loading is true, before the new effect even runs.
   const current = snapshot.key === requestKey;
+  const stale = snapshot.data != null && snapshot.dataKey !== requestKey;
   return {
-    data: current ? snapshot.data : null,
+    data: snapshot.data,
     loading: current ? snapshot.loading : true,
     error: current ? snapshot.error : null,
+    stale,
     reload: run,
   };
 }
