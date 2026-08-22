@@ -76,7 +76,12 @@ class _Record:
 
     ``mfa_enabled`` is mirrored so :meth:`login` can decide synchronously whether to
     return a pending half-session; the TOTP SECRET itself is NEVER mirrored here (it
-    stays on the persistent User record and is read by the route layer for phase 2)."""
+    stays on the persistent User record and is read by the route layer for phase 2).
+    ``mfa_required`` mirrors the admin-set per-user enrollment MANDATE (distinct from
+    ``mfa_enabled`` = actually enrolled). ``env_managed`` marks a BASE-layer
+    (env-supplied) account with NO persisted User record — such an account can never
+    complete MFA enrollment, so :meth:`requires_mfa` must never demand it (lockout
+    guard); a store record overlaying the same username clears the flag."""
 
     password_hash: str
     role: str = _DEFAULT_ROLE
@@ -84,6 +89,8 @@ class _Record:
     must_change_password: bool = False
     groups: list[str] = field(default_factory=list)
     mfa_enabled: bool = False
+    mfa_required: bool = False
+    env_managed: bool = False
 
 
 class AuthService:
@@ -141,7 +148,11 @@ class AuthService:
         self._base: dict[str, _Record] = {}
         for uname, h in (users or {}).items():
             role = UserRole.SUPER_ADMIN.value if uname == admin_username else _DEFAULT_ROLE
-            self._base[uname.strip().lower()] = _Record(password_hash=h, role=role, active=True)
+            # env_managed=True: no persisted User record exists for a base-layer
+            # account, so it can never complete MFA enrollment (see requires_mfa).
+            self._base[uname.strip().lower()] = _Record(
+                password_hash=h, role=role, active=True, env_managed=True,
+            )
         # The live, lookup-keyed-by-lowercase view (base, store overlay on top).
         self._records: dict[str, _Record] = dict(self._base)
 
@@ -187,6 +198,7 @@ class AuthService:
                 must_change_password=bool(u.must_change_password),
                 groups=list(getattr(u, "groups", []) or []),
                 mfa_enabled=bool(getattr(u, "mfa_enabled", False)),
+                mfa_required=bool(getattr(u, "mfa_required", False)),
             )
         if not (store_users or []) and not allow_empty:
             # Records in the LIVE view that are not identical to the env base layer are
@@ -368,11 +380,21 @@ class AuthService:
     # ----- MFA (Wave 2 / F3) -------------------------------------------------- #
     def requires_mfa(self, username: str) -> bool:
         """Whether ``username`` must clear a second factor before getting a session:
-        the user has MFA enabled, OR its role is in the enforce-for-roles set."""
+        the user has MFA ENROLLED, OR is under an enrollment MANDATE — the admin-set
+        per-user ``mfa_required`` flag, or its role in the enforce-for-roles set.
+
+        LOCKOUT GUARD: an env-managed base-layer account (no persisted ``User``
+        record) can NEVER complete enrollment — /auth/mfa/confirm + the login-phase
+        enroll routes 400 for it — so a role/per-user mandate is never applied to it
+        (demanding a factor it cannot set up would permanently lock it out)."""
         rec = self._lookup(username)
         if rec is None or not rec.active:
             return False
-        return bool(rec.mfa_enabled) or (rec.role in self._mfa_enforce_roles)
+        if rec.mfa_enabled:
+            return True
+        if rec.env_managed:
+            return False
+        return bool(rec.mfa_required) or (rec.role in self._mfa_enforce_roles)
 
     def mfa_enabled(self, username: str) -> bool:
         """Whether ``username`` currently has MFA ENROLLED (from the synced view).

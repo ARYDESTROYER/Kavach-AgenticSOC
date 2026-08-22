@@ -33,10 +33,17 @@ PUBLIC_API_PATHS = frozenset(
         # single-use token/state (NOT a full session), so they are reachable before a
         # session exists WITHOUT weakening deny-by-default:
         #   * mfa/verify   — gated by the short-lived pending_token (mfa:"pending").
+        #   * mfa/enroll-setup + mfa/enroll-confirm — mandated-MFA enrollment DURING
+        #     login (required-but-not-enrolled): gated by the SAME short-lived
+        #     pending_token; enroll-confirm additionally proves TOTP possession
+        #     before any session is minted. A pending token remains rejected by
+        #     every full-session verify, so deny-by-default is not weakened.
         #   * sso/providers — read-only list of ENABLED providers (no secrets).
         #   * sso/authorize — builds the IdP redirect (stashes single-use state/nonce).
         #   * sso/callback  — validates state, exchanges the code server-side.
         "/api/auth/mfa/verify",
+        "/api/auth/mfa/enroll-setup",
+        "/api/auth/mfa/enroll-confirm",
         "/api/auth/sso/providers",
         "/api/auth/sso/authorize",
         "/api/auth/sso/callback",

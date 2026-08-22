@@ -3350,6 +3350,22 @@ async def auth_login(
     # return a SHORT-LIVED pending token the client exchanges at /auth/mfa/verify
     # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED. ---
     if auth.requires_mfa(user.username):
+        # --- Mandated-enrollment phase 1 (additive): the account is REQUIRED to use
+        # MFA (per-user ``mfa_required`` mandate or role enforce_for_roles) but has
+        # not ENROLLED yet, so a code challenge is impossible. Return the SAME
+        # short-lived pending token plus ``mfa_enrollment_required`` — the client
+        # completes enrollment at /auth/mfa/enroll-setup + /auth/mfa/enroll-confirm
+        # (which then mints the full session). No cookie/session here either. ---
+        if not auth.mfa_enabled(user.username):
+            await state.control_audit.record(
+                action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
+                result_summary="password ok; mfa enrollment required",
+            )
+            return {
+                "requires_mfa": True,
+                "mfa_enrollment_required": True,
+                "pending_token": auth.begin_mfa(user.username),
+            }
         await state.control_audit.record(
             action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
             result_summary="password ok; mfa challenge issued",
@@ -4090,6 +4106,158 @@ async def mfa_verify(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Mandated MFA enrollment DURING login (additive). When login returns
+# ``mfa_enrollment_required`` (required-but-not-enrolled), the client completes
+# enrollment here, gated by the SAME short-lived pending token (mfa:"pending") the
+# code-challenge path uses — NOT a full session (there is none yet). Both routes:
+#   * accept ONLY the pending-token kind (``pending_subject``; ``verify()`` keeps
+#     rejecting pending tokens everywhere else, so a pending token still cannot
+#     reach any protected route);
+#   * 400 for an env-managed account (no persisted User → cannot enroll; the
+#     requires_mfa lockout guard means it is never sent here anyway);
+#   * 400 for an ALREADY-ENROLLED account — a password-only attacker holding a
+#     pending token must never be able to REPLACE the existing factor (they must
+#     clear /auth/mfa/verify with the real one);
+#   * are audited at every step (#2).
+# --------------------------------------------------------------------------- #
+class MfaEnrollSetupBody(BaseModel):
+    pending_token: str
+
+
+class MfaEnrollConfirmBody(BaseModel):
+    pending_token: str
+    code: str
+
+
+async def _enroll_pending_user(state: AppState, pending_token: str):
+    """Resolve + guard the pending-token principal for the login-phase enrollment
+    routes. Returns ``(username, User)`` or raises 400/401 (see block comment)."""
+    auth = state.auth
+    if not auth.is_enabled:
+        raise HTTPException(status_code=400, detail="authentication is disabled")
+    username = auth.pending_subject(pending_token)
+    if username is None:
+        raise HTTPException(status_code=401, detail="invalid or expired pending session")
+    user = await state.users.get(username)
+    if user is None:
+        raise HTTPException(
+            status_code=400,
+            detail="this account is managed via environment configuration and cannot enroll MFA",
+        )
+    if user.mfa_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="MFA is already enrolled for this account; verify with your existing factor",
+        )
+    if not auth.requires_mfa(username):
+        raise HTTPException(
+            status_code=400, detail="MFA enrollment is not required for this account"
+        )
+    return username, user
+
+
+@router.post("/auth/mfa/enroll-setup")
+async def mfa_enroll_setup(
+    body: MfaEnrollSetupBody, state: AppState = Depends(get_state)
+) -> dict[str, Any]:
+    """Begin MANDATED MFA enrollment during login (PUBLIC — gated by the pending
+    token). Same response shape as the session-authed /auth/mfa/setup: a PENDING
+    TOTP secret + otpauth URI + one-time recovery codes. Nothing is persisted until
+    the user proves possession via /auth/mfa/enroll-confirm."""
+    from ..auth import mfa as mfa_mod
+
+    username, _user = await _enroll_pending_user(state, body.pending_token)
+    digits, period = _mfa_params(state)
+    secret = mfa_mod.generate_secret()
+    recovery = mfa_mod.generate_recovery_codes(10)
+    uri = mfa_mod.provisioning_uri(
+        secret, username, _mfa_issuer(state), digits=digits, period=period
+    )
+    _MFA_PENDING_ENROLL[username.strip().lower()] = {
+        "secret": secret,
+        "recovery_hashes": [mfa_mod.hash_recovery_code(c) for c in recovery],
+    }
+    await state.control_audit.record(
+        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
+        result_summary="mfa enrollment started (login-mandated)",
+    )
+    return {"secret": secret, "otpauth_uri": uri, "recovery_codes": recovery}
+
+
+@router.post("/auth/mfa/enroll-confirm")
+async def mfa_enroll_confirm(
+    body: MfaEnrollConfirmBody, request: Request, response: Response,
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Complete MANDATED MFA enrollment during login (PUBLIC — gated by the pending
+    token): verify the TOTP code against the PENDING secret, persist the enrollment
+    (exactly like /auth/mfa/confirm), then mint the FULL session + cookie exactly
+    like the /auth/mfa/verify success tail — the user lands fully signed in."""
+    from ..auth import mfa as mfa_mod
+
+    auth = state.auth
+    username, user = await _enroll_pending_user(state, body.pending_token)
+    pending = _MFA_PENDING_ENROLL.get(username.strip().lower())
+    if not pending:
+        raise HTTPException(
+            status_code=400, detail="no pending MFA enrollment; call enroll-setup first"
+        )
+    digits, period = _mfa_params(state)
+    ok, step = mfa_mod.verify_totp(
+        pending["secret"], body.code, window=1, period=period, digits=digits
+    )
+    if not ok:
+        await state.control_audit.record(
+            action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
+            result_summary="mfa enrollment confirm failed",
+        )
+        raise HTTPException(status_code=401, detail="invalid code")
+    # Persist the enrollment (the same block as /auth/mfa/confirm).
+    obf = mfa_mod.obfuscate_secret(pending["secret"], state.secrets.mfa_server_key())
+    updated = user.model_copy(update={
+        "mfa_enabled": True,
+        "mfa_secret": obf,
+        "mfa_recovery_hashes": list(pending["recovery_hashes"]),
+        "mfa_last_step": int(step),
+    })
+    await state.users.save(updated)
+    await state.refresh_users()
+    _MFA_PENDING_ENROLL.pop(username.strip().lower(), None)
+    await state.control_audit.record(
+        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
+        result_summary="mfa enabled (login-mandated enrollment)",
+    )
+    # Mint the FULL session — the /auth/mfa/verify success tail.
+    minted = auth.mint_session(username)
+    if minted is None:  # pragma: no cover — username verified above
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token, principal = minted
+    try:
+        await state.users.update(username, last_login_at=iso_now())
+    except Exception:  # noqa: BLE001
+        pass
+    await state.control_audit.record(
+        action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
+        result_summary="mfa login ok (totp; enrolled at login)",
+    )
+    await _register_session(state, request, token, mfa_method="totp")
+    response.set_cookie(
+        "tlsoc_token", token, httponly=True, samesite="lax",
+        secure=state.secrets.auth_cookie_secure,
+        max_age=state.secrets.auth_token_hours * 3600,
+    )
+    return {
+        "token": token,
+        "user": {
+            "username": principal.username,
+            "role": _resolved_role(state, principal),
+            "must_change_password": bool(principal.must_change_password),
+            "mfa_enabled": True,
+        },
+    }
+
+
 @router.post("/auth/mfa/disable")
 async def mfa_disable(
     body: MfaCodeBody, request: Request, state: AppState = Depends(get_state)
@@ -4464,6 +4632,18 @@ class UserCreateBody(BaseModel):
     username: str
     password: str
     role: str = UserRole.ANALYST_TIER1.value
+    # Admin-set profile/contact fields (optional, additive — plain text, #9).
+    # ``display_name`` doubles as the full name (the existing field — no duplicate).
+    display_name: str = ""
+    email: str = ""
+    phone: str = ""
+    # The MFA-enrollment MANDATE (required ≠ enrolled — never mints a secret; the
+    # ``mfa_enabled`` admin-enable guard below does NOT apply to this flag).
+    mfa_required: bool = False
+    # Existing CUSTOM roles to assign at creation (by name; validated exactly like
+    # PUT /api/users/{u}/roles and persisted into prefs["custom_roles"] the same
+    # way). The BASE ``role`` must remain one of the six built-ins.
+    custom_roles: list[str] | None = None
 
 
 class UserUpdateBody(BaseModel):
@@ -4474,6 +4654,12 @@ class UserUpdateBody(BaseModel):
     # device). Only False is honored here; enabling MFA is always a self-service
     # enroll (setup→confirm) so the user actually possesses the authenticator.
     mfa_enabled: bool | None = None
+    # Admin-set profile/contact fields + the MFA mandate (None = leave unchanged;
+    # clearing a text field is an explicit empty string).
+    display_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    mfa_required: bool | None = None
 
 
 _VALID_ROLES = {r.value for r in UserRole}
@@ -4483,6 +4669,65 @@ def _validate_role(role: str) -> str:
     if role not in _VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown role: {role}")
     return role
+
+
+def _validate_email_text(value: str) -> str:
+    """Lenient contact-email sanity: capped plain text that contains an ``@`` and no
+    whitespace. Contact metadata, not an auth identifier — kept deliberately loose."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    _validate_profile_text(v, "email")
+    if "@" not in v or any(ch.isspace() for ch in v):
+        raise HTTPException(
+            status_code=400, detail="email must contain '@' and no whitespace"
+        )
+    return v
+
+
+_PHONE_CHARSET = frozenset("+0123456789 -()")
+
+
+def _validate_phone_text(value: str) -> str:
+    """Lenient phone sanity: capped plain text over the charset ``+ 0-9 space - ( )``."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    _validate_profile_text(v, "phone")
+    if not all(ch in _PHONE_CHARSET for ch in v):
+        raise HTTPException(
+            status_code=400,
+            detail="phone may only contain digits, spaces, and + - ( )",
+        )
+    return v
+
+
+async def _validate_custom_role_names(
+    state: AppState, names: list[str]
+) -> list[str]:
+    """Validate a custom-role assignment list EXACTLY like the assign path in
+    routes_roles.py (``PUT /api/users/{u}/roles``): reject a built-in name (400) and
+    a name absent from the resolved matrix (400); de-duplicate, preserve order."""
+    from ..rbac.policy import resolve_matrix
+
+    from .deps import _rbac_config_with_custom_roles
+
+    matrix = resolve_matrix(await _rbac_config_with_custom_roles(state))
+    cleaned: list[str] = []
+    for nm in names:
+        nm_s = str(nm).strip()
+        if not nm_s:
+            continue
+        if nm_s in _VALID_ROLES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{nm_s}' is a built-in role, not a custom role",
+            )
+        if nm_s not in matrix:
+            raise HTTPException(status_code=400, detail=f"unknown custom role: {nm_s}")
+        if nm_s not in cleaned:
+            cleaned.append(nm_s)
+    return cleaned
 
 
 @router.get("/users")
@@ -4505,6 +4750,15 @@ async def create_user(
     if len(pw) < 8:
         raise HTTPException(status_code=400, detail="password must be at least 8 characters")
     _validate_role(body.role)
+    display_name = _validate_profile_text((body.display_name or "").strip(), "display_name")
+    email = _validate_email_text(body.email)
+    phone = _validate_phone_text(body.phone)
+    # Custom roles at creation: validated exactly like the assign path and carried
+    # in prefs["custom_roles"] (the same shape PUT /users/{u}/roles writes). No
+    # lockout guard is needed here — creation can only ADD grants, never remove.
+    custom_roles: list[str] = []
+    if body.custom_roles is not None:
+        custom_roles = await _validate_custom_role_names(state, body.custom_roles)
     from ..auth.passwords import hash_password
 
     try:
@@ -4514,13 +4768,26 @@ async def create_user(
             role=body.role,
             active=True,
             must_change_password=True,
+            display_name=display_name,
+            email=email,
+            phone=phone,
+            mfa_required=bool(body.mfa_required),
+            prefs=({"custom_roles": custom_roles} if custom_roles else None),
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await state.refresh_users()
+    extras = []
+    if bool(body.mfa_required):
+        extras.append("mfa_required")
+    if custom_roles:
+        extras.append(f"custom={custom_roles}")
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
-        result_summary=f"created user '{user.username}' ({user.role})",
+        result_summary=(
+            f"created user '{user.username}' ({user.role})"
+            + (f" [{' '.join(extras)}]" if extras else "")
+        ),
     )
     return {"ok": True, "user": user.public()}
 
@@ -4571,6 +4838,18 @@ async def update_user(
             status_code=400,
             detail="MFA can only be enabled by the user via self-service enrollment",
         )
+    # The MFA-enrollment MANDATE is admin-settable BOTH ways (required ≠ enrolled —
+    # it never mints a secret, so the enable-guard above does not apply to it).
+    if body.mfa_required is not None:
+        patch["mfa_required"] = bool(body.mfa_required)
+    if body.display_name is not None:
+        patch["display_name"] = _validate_profile_text(
+            str(body.display_name).strip(), "display_name"
+        )
+    if body.email is not None:
+        patch["email"] = _validate_email_text(body.email)
+    if body.phone is not None:
+        patch["phone"] = _validate_phone_text(body.phone)
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
     demoting = body.role is not None and body.role != UserRole.SUPER_ADMIN.value

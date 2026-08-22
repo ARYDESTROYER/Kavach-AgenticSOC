@@ -129,7 +129,35 @@ async def test_user_public_view_hides_hash() -> None:
     u = await store.create(username="bob", password_hash="SECRET-HASH")
     pub = u.public()
     assert "password_hash" not in pub
+    assert "SECRET" not in str(pub)
     assert pub["username"] == "bob"
+    # The admin-managed contact fields + the MFA mandate ride in public() with
+    # clean defaults (additive — old docs project the same keys).
+    assert pub["display_name"] == ""
+    assert pub["email"] == ""
+    assert pub["phone"] == ""
+    assert pub["mfa_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_user_store_create_and_update_new_admin_fields() -> None:
+    store = UserStore(EsKVStore(InMemoryESClient()))
+    u = await store.create(
+        username="carla", password_hash="h",
+        display_name="Carla C", email="carla@example.com", phone="+1 555 0100",
+        mfa_required=True, prefs={"custom_roles": ["closer"]},
+    )
+    assert u.display_name == "Carla C"
+    assert u.email == "carla@example.com"
+    assert u.phone == "+1 555 0100"
+    assert u.mfa_required is True
+    assert u.prefs == {"custom_roles": ["closer"]}
+    # The new fields are in the update() allowlist (a patch actually persists).
+    await store.update("carla", email="new@x.io", phone="+44 20", mfa_required=False)
+    got = await store.get("carla")
+    assert got.email == "new@x.io"
+    assert got.phone == "+44 20"
+    assert got.mfa_required is False
 
 
 # --------------------------------------------------------------------------- #

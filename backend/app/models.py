@@ -645,6 +645,12 @@ class User(BaseModel):
     mfa_secret: str = ""
     mfa_recovery_hashes: list[str] = Field(default_factory=list)
     mfa_last_step: int = 0
+    # ``mfa_required`` is an ADMIN-SET MANDATE (users:manage): the account must
+    # enroll + clear a second factor at its next login. DISTINCT from
+    # ``mfa_enabled`` (the user is actually ENROLLED) — setting the mandate never
+    # mints or implies a TOTP secret. Additive + defaulted so old stored KV docs
+    # load unchanged (no migration).
+    mfa_required: bool = False
 
     # --- SSO (Wave 2 / F4; additive). When a user is provisioned via OIDC these
     # record the originating provider id + the IdP's stable subject so a returning
@@ -665,6 +671,14 @@ class User(BaseModel):
     locale: str = ""
     prefs: dict[str, Any] = Field(default_factory=dict)
 
+    # --- Admin-managed contact fields (additive + defaulted → old stored KV docs
+    # load unchanged). ``email``/``phone`` are FIRST-CLASS contact fields set at
+    # creation (or later) by a users:manage admin; ``alt_email`` stays the separate
+    # self-service "alternate email". Non-secret, operator/user-influenceable →
+    # rendered as PLAIN text only (#9), never interpolated into a prompt. ---
+    email: str = ""
+    phone: str = ""
+
     @field_validator("avatar")
     @classmethod
     def _check_avatar(cls, v: str) -> str:
@@ -681,6 +695,8 @@ class User(BaseModel):
             "created_at": self.created_at,
             "last_login_at": self.last_login_at,
             "mfa_enabled": self.mfa_enabled,
+            # The admin-set enrollment mandate (a boolean policy flag — no secret).
+            "mfa_required": self.mfa_required,
             "oauth_provider": self.oauth_provider,
             # Self-service profile (non-secret; W2).
             "display_name": self.display_name,
@@ -690,6 +706,9 @@ class User(BaseModel):
             "timezone": self.timezone,
             "locale": self.locale,
             "prefs": self.prefs,
+            # Admin-managed contact fields (non-secret).
+            "email": self.email,
+            "phone": self.phone,
         }
 
 
