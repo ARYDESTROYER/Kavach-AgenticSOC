@@ -232,8 +232,21 @@ class Investigator:
                         surface=surface, case_id=case_id,
                     )
                 except GatewayError as exc:
-                    logger.warning("Investigator model error (%s); failing to human", exc)
-                    return _fail_to_human(f"investigator model error: {exc}", cluster, prefs), cost
+                    # Name the CLASS of provider fault (an expired key, an exhausted
+                    # quota) rather than only the raw message, so the operator-visible
+                    # reason distinguishes a credential problem from a slow model.
+                    failure_class = getattr(exc, "failure_class", "") or ""
+                    logger.warning(
+                        "Investigator model error (class=%s): %s; failing to human",
+                        failure_class or "unclassified", exc,
+                    )
+                    detail = f" [{failure_class}]" if failure_class else ""
+                    return (
+                        _fail_to_human(
+                            f"investigator model error{detail}: {exc}", cluster, prefs
+                        ),
+                        cost,
+                    )
 
                 cost += res.cost
                 _account(res.cost)  # leaf: this ReAct gateway call is now on the ledger

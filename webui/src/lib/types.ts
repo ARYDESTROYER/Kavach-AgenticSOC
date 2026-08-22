@@ -996,6 +996,18 @@ export interface HealthResponse {
   state_backend?: 'elasticsearch' | 'postgres' | 'sqlite' | string;
   store_type?: string;
   setup_complete?: boolean;
+  /**
+   * A subsystem the product depends on is impaired while the state store itself is
+   * reachable (e.g. an empty knowledge corpus, or a provider rejecting our
+   * credentials). Additive: `status` keeps its historical state-store meaning.
+   */
+  degraded?: boolean;
+  /**
+   * Opaque, closed-vocabulary codes naming each active degradation. `/api/health` is
+   * public, so it carries no counts or source names — the authenticated
+   * `/api/diagnostics/health` surface owns that detail.
+   */
+  degraded_reasons?: string[];
 }
 
 /** Public, non-secret runtime release identity from `/api/health/build-info`. */
@@ -1256,6 +1268,7 @@ export type BackgroundJobKind =
   | 'precedent_bootstrap'
   | 'runbook_reindex'
   | 'rag_import'
+  | 'rag_rebuild'
   | 'tiered_reset'
   | 'storage_lifecycle_apply';
 

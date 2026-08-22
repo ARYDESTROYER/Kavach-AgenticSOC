@@ -21,6 +21,32 @@ Readiness does not prove that every connector, model provider, enrichment servic
 notification channel is healthy. Use source health/coverage, provider tests, and
 notification tests for those dependencies.
 
+### Subsystem degradation on `/api/health`
+
+`status` reports state-store readiness only, and keeps that meaning for compatibility.
+A subsystem that is impaired while the state store is fine is reported separately:
+
+| Field | Meaning |
+|---|---|
+| `degraded` | At least one depended-on subsystem is impaired |
+| `degraded_reasons` | Opaque codes naming each active degradation |
+
+Current codes are `rag_corpus_empty`, `rag_projection_refused`,
+`llm_provider_unauthenticated`, `llm_provider_quota_exhausted`, and
+`llm_provider_unavailable`. `degraded` is a genuine product-level alarm: an empty
+knowledge corpus means every investigation runs without runbook, ATT&CK, or precedent
+context, and auto-close cannot fire. Alert on it.
+
+This endpoint is **unauthenticated**, so it deliberately publishes codes only — never
+corpus counts, source names, provider names, or detection posture. The
+`settings:read`-gated `/api/diagnostics/health` carries that detail, including the
+corpus-versus-source-history reconciliation and the last projection outcome. Both are
+read-only and never trigger a projection or an embedding spend.
+
+A degradation raised by a genuinely empty corpus resolves automatically once the
+underlying cause clears; see [background jobs](background-jobs.md) for the explicit
+rebuild and [troubleshooting](troubleshooting.md) for the diagnosis order.
+
 ## What to back up
 
 - The selected `StateStore`: cases, audit, usage, configuration, cursors, users,

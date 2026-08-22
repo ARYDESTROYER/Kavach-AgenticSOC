@@ -138,6 +138,22 @@ class HealthResponse(BaseModel):
     )
     store_type: str
     setup_complete: bool
+    degraded: bool = Field(
+        default=False,
+        description=(
+            "Whether a subsystem the product depends on is impaired while the state "
+            "store itself is reachable. Additive: `status` keeps its historical "
+            "meaning (state-store readiness) so existing clients are unaffected."
+        ),
+    )
+    degraded_reasons: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Opaque, closed-vocabulary codes naming each active degradation. This "
+            "endpoint is PUBLIC, so it carries no counts, source names or posture "
+            "detail — the authenticated /api/diagnostics/health surface owns those."
+        ),
+    )
 
 
 class LivenessResponse(BaseModel):
@@ -220,14 +236,76 @@ def _release_channel(configured: str | None = None) -> str:
     return "testing"
 
 
+# --------------------------------------------------------------------------- #
+# Public degradation codes. CLOSED vocabulary, deliberately opaque.
+# --------------------------------------------------------------------------- #
+# ``/api/health`` is anonymous (the Console reads it before login), so it may never
+# publish corpus counts, source names or detection posture — that detail lives on the
+# ``settings:read``-gated ``/api/diagnostics/health``. But the incident this exists for
+# ran for three days with this endpoint returning ``ok`` and the Console showing
+# "Healthy" while the corpus sat at zero, so a coarse, count-free signal must be here:
+# it is the only surface polled continuously and visible without a page visit.
+DEGRADED_RAG_CORPUS_EMPTY = "rag_corpus_empty"
+DEGRADED_RAG_PROJECTION_REFUSED = "rag_projection_refused"
+DEGRADED_LLM_PROVIDER_UNAUTHENTICATED = "llm_provider_unauthenticated"
+DEGRADED_LLM_PROVIDER_QUOTA = "llm_provider_quota_exhausted"
+DEGRADED_LLM_PROVIDER_UNAVAILABLE = "llm_provider_unavailable"
+
+
+def _degraded_reasons(state: AppState) -> list[str]:
+    """Active degradations, from CACHED in-process state only.
+
+    Hard constraint: this runs on an anonymous, un-rate-limited endpoint that the
+    Console polls every 15 seconds, so it must never touch the vector store, the case
+    store or the network. In particular it must never reach ``rag_stats()`` /
+    ``list_documents()``, which call ``ensure_seeded()`` first — that would let an
+    unauthenticated caller trigger an embedding spend (#6). Every value read here is
+    already resident in memory. Fail-open: a health read never raises.
+    """
+    reasons: list[str] = []
+    try:
+        rag = getattr(state, "rag", None)
+        rag_cfg = getattr(getattr(state, "prefs", None), "rag", None)
+        if rag is not None and bool(getattr(rag_cfg, "enabled", False)):
+            # ``corpus_empty`` is published by the retrieval path, which already knows
+            # the count it just read — no extra read is performed here.
+            if bool(getattr(rag, "corpus_degraded", False)):
+                reasons.append(DEGRADED_RAG_CORPUS_EMPTY)
+            refusal = getattr(rag, "last_refusal", None)
+            if isinstance(refusal, dict) and refusal.get("collapsed"):
+                reasons.append(DEGRADED_RAG_PROJECTION_REFUSED)
+    except Exception:  # noqa: BLE001 — health must never fail on observability
+        logger.debug("RAG degradation probe failed", exc_info=True)
+    try:
+        tracker = getattr(state, "_provider_health", None)
+        provider_state = tracker.snapshot()["state"] if tracker is not None else "ok"
+        reasons.extend(
+            {
+                "unauthenticated": [DEGRADED_LLM_PROVIDER_UNAUTHENTICATED],
+                "quota_exhausted": [DEGRADED_LLM_PROVIDER_QUOTA],
+                "unavailable": [DEGRADED_LLM_PROVIDER_UNAVAILABLE],
+                "unsupported": [DEGRADED_LLM_PROVIDER_UNAVAILABLE],
+            }.get(str(provider_state), [])
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("provider degradation probe failed", exc_info=True)
+    return sorted(set(reasons))
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health(state: AppState = Depends(get_state)) -> HealthResponse:
     ready, store_type = await _state_store_probe(state)
     state_backend = str(
         getattr(state.secrets, "state_backend", "elasticsearch") or "elasticsearch"
     )
+    reasons = _degraded_reasons(state)
     return HealthResponse(
+        # ``status`` keeps its historical meaning — state-store readiness — because
+        # release/update tooling gates on `status == 'ok'`. A subsystem degradation is
+        # reported additively so it can be surfaced without blocking those flows.
         status="ok" if ready else "degraded",
+        degraded=bool(reasons),
+        degraded_reasons=reasons,
         version=__version__,
         # Backward-compatible wire name: this now truthfully represents the OWN-state
         # backend (ES, PostgreSQL, or SQLite), which is what existing clients use it for.

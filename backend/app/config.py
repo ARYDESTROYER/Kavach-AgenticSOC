@@ -1198,6 +1198,24 @@ class RagConfig(BaseModel):
     unconfirmed_precedent: UnconfirmedPrecedentConfig = Field(
         default_factory=UnconfirmedPrecedentConfig
     )
+    # --- Projection collapse guard -------------------------------------------------
+    # The smallest fraction of the PREVIOUS corpus a freshly built projection may hold
+    # before the rebuild is treated as FAILED and refused. A projection that shrinks
+    # dramatically is not a smaller corpus, it is a broken build: the source of truth
+    # is unchanged, so the only thing that can have shrunk is our ability to read or
+    # embed it. Refusing keeps the last known-good corpus instead of replacing it with
+    # a fraction of itself (or with nothing — a projection reaching ZERO is refused
+    # unconditionally, independent of this ratio).
+    #
+    # 0.5 means "a rebuild may never silently lose half the corpus". Set to 0.0 to
+    # disable the ratio guard entirely; the zero-projection guard is NOT tunable, on
+    # purpose — an empty corpus is never a legitimate rebuild of a non-empty one.
+    #
+    # Advisory to projection VALIDATION only. It is never read by
+    # ``case_manager.decide()`` (#3) and never changes WHAT is projected — so it is
+    # deliberately absent from ``RagService._source_signature()``, where it would
+    # force a full (billable) re-embed on every threshold tweak.
+    min_projection_retention: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class PersonaConfig(BaseModel):

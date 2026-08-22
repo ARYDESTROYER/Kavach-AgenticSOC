@@ -59,6 +59,22 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger("tlsoc.agents.pipeline")
 
+# Operator-facing copy for a provider outage observed BEHIND a downstream symptom.
+# The incident's cases displayed "Investigation exceeded the 120s time cap" when the
+# real failure was HTTP 401 on every call, so the operator spent days on latency and
+# evidence quality. A time cap reached because the provider is rejecting our
+# credentials is a credential problem, and must say so.
+_PROVIDER_FAILURE_CAUSE = {
+    "unauthenticated": (
+        "the model provider is rejecting our credentials (authentication failure)"
+    ),
+    "quota_exhausted": (
+        "the model provider is refusing calls for quota/rate-limit reasons"
+    ),
+    "unavailable": "the model provider is not responding",
+    "unsupported": "the configured model does not support this operation",
+}
+
 # Case spend is displayed at six decimal places.  A ledger sum can legitimately
 # differ from ``round(previous_display + current_raw, 6)`` by one micro-dollar
 # because the previous display value was already rounded.  This is the only
@@ -617,6 +633,10 @@ class InvestigationPipeline:
                     logger.warning("Loading operator memory failed (%s); continuing", exc)
                     memory_entries = []
 
+            # Set only when a run failed for a reason the verdict text cannot express
+            # (currently: a provider outage behind the investigation time cap).
+            # Declared before the branch so every path binds it.
+            timeout_error: str | None = None
             if budget.kill_switch:
                 procedure_provenance = {
                     "consultation_path": "kill_switch",
@@ -672,10 +692,19 @@ class InvestigationPipeline:
                     # returned), so there is no double counting.
                     partial_cost = sum(cost_accum)
                     cost += partial_cost
+                    # A time cap is a SYMPTOM. When the gateway has already observed a
+                    # sustained provider failure, that is the real cause, and reporting
+                    # the cap instead sends the operator after latency and evidence
+                    # quality — which is exactly what happened for three days. The
+                    # verdict itself is unchanged (NEEDS_HUMAN, #3); only the
+                    # explanation becomes truthful.
+                    provider_state = self._gateway.provider_health_state()
+                    provider_cause = _PROVIDER_FAILURE_CAUSE.get(provider_state, "")
                     logger.warning(
                         "Investigation for %s exceeded caps.timeout_seconds=%ss; capping to "
-                        "human (accounted partial cost=%s)",
+                        "human (accounted partial cost=%s)%s",
                         cluster.signature, prefs.caps.timeout_seconds, round(partial_cost, 6),
+                        f" — underlying cause: {provider_cause}" if provider_cause else "",
                     )
                     await self._audit.record(
                         action_type=ActionType.ERROR, surface=source_surface.value,
@@ -683,14 +712,28 @@ class InvestigationPipeline:
                         result_summary=(
                             f"investigation timed out after {prefs.caps.timeout_seconds}s; "
                             f"capped to NEEDS_HUMAN (partial cost={round(partial_cost, 6)})"
+                            + (f"; underlying cause: {provider_cause}" if provider_cause else "")
                         ),
                     )
-                    verdict = VerdictResult(
-                        verdict=Verdict.NEEDS_HUMAN,
-                        recommended_action=(
+                    if provider_cause:
+                        timeout_error = (
+                            f"The investigation reached the {prefs.caps.timeout_seconds}s "
+                            f"time cap because {provider_cause}. This is a system-wide "
+                            "condition, not a problem with this alert."
+                        )
+                        recommended_action = (
+                            f"Investigation could not run: {provider_cause}. "
+                            "Manual review required until the provider is restored."
+                        )
+                    else:
+                        timeout_error = None
+                        recommended_action = (
                             f"Investigation exceeded the {prefs.caps.timeout_seconds}s time "
                             "cap; manual review required."
-                        ),
+                        )
+                    verdict = VerdictResult(
+                        verdict=Verdict.NEEDS_HUMAN,
+                        recommended_action=recommended_action,
                         reproduce_query=entity_kql(cluster, prefs),
                     )
                     if procedure_provenance.get("retrieval_status") != "measured":
@@ -753,6 +796,7 @@ class InvestigationPipeline:
                 ),
                 retrieval_measured=retrieval_measured,
                 precedent_signal=procedure_provenance.get("precedent"),
+                error=timeout_error,
             )
             # ``Case.token_cost`` is a rounded cumulative presentation field. Adding
             # a new raw run cost to the previously rounded value can drift by a
@@ -1156,6 +1200,7 @@ class InvestigationPipeline:
         knowledge_used: list[dict[str, Any]] | None = None,
         retrieval_measured: bool = False,
         precedent_signal: dict[str, Any] | None = None,
+        error: str | None = None,
     ) -> Case:
         member_ids = list(dict.fromkeys(
             (existing.member_event_ids if existing else []) + cluster.member_event_ids
@@ -1194,6 +1239,10 @@ class InvestigationPipeline:
             case_id=case_id,
             case_number=(existing.case_number if existing and existing.case_number else case_number),
             cluster_signature=cluster.signature,
+            # Surfaces the REAL upstream cause on a run that failed for a reason the
+            # verdict text alone cannot express (e.g. a provider outage behind a
+            # timeout). None on every ordinary run, so existing cases are unchanged.
+            error=truncate(error, 500) if error else None,
             **originating_record_provenance(existing),
             created_at=created_at,
             updated_at=iso_now(),

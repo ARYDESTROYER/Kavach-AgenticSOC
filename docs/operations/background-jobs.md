@@ -24,6 +24,7 @@ The current job registry covers:
 - resolved-case precedent bootstrap;
 - Runbook retrieval reindex;
 - bounded Knowledge imports;
+- knowledge-corpus rebuild (`rag_rebuild`);
 - cases, sources, and factory reset;
 - Storage & retention policy apply; and
 - read-only projections of related asynchronous LLM Batch work and scheduler health.
@@ -49,6 +50,28 @@ policy GET/PUT and preview remain direct operations.
 The application updater is **not** part of this registry. It retains its separate,
 hardened supervisor-owned job and receipt protocol under `/api/system-updates/*`.
 Application background jobs neither replace nor relax that update boundary.
+
+### Rebuilding the knowledge corpus
+
+`rag_rebuild` reprojects the whole enabled knowledge corpus. It takes no parameters —
+the failure it recovers from is "the corpus is gone and nothing will bring it back",
+and asking an operator to first work out which sources are missing would reintroduce
+exactly the diagnosis step that makes this expensive. It requires `rag:manage`.
+
+The rebuild is **idempotent and non-destructive**. It reuses the same
+staged-then-verified projection path as ordinary seeding, so it either converges on the
+identical corpus (document ids are stable, so a repeat never duplicates) or it is
+refused and the existing corpus is left untouched. A refused rebuild finishes as
+`failed`, never as a success with zero documents, so "the corpus is still broken" can
+never read as done.
+
+Use it when health reports an empty corpus or a refused projection. If the rebuild is
+refused, fix the underlying cause first — most often the embedding provider — because
+the product deliberately refuses to persist chunks embedded in a degraded fallback
+space. See [troubleshooting](troubleshooting.md).
+
+Most recoveries need no job at all: the corpus rebuilds on its own once the provider
+recovers.
 
 ## Lifecycle and visibility
 

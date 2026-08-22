@@ -6555,6 +6555,17 @@ export interface components {
          */
         HealthResponse: {
             /**
+             * Degraded
+             * @description Whether a subsystem the product depends on is impaired while the state store itself is reachable. Additive: `status` keeps its historical meaning (state-store readiness) so existing clients are unaffected.
+             * @default false
+             */
+            degraded: boolean;
+            /**
+             * Degraded Reasons
+             * @description Opaque, closed-vocabulary codes naming each active degradation. This endpoint is PUBLIC, so it carries no counts, source names or posture detail — the authenticated /api/diagnostics/health surface owns those.
+             */
+            degraded_reasons?: string[];
+            /**
              * Es Connected
              * @description Compatibility alias for state_store_connected; this does not describe log-source Elasticsearch connectivity.
              */
@@ -6618,7 +6629,7 @@ export interface components {
          * @description Registered server-owned long-operation kinds.
          * @enum {string}
          */
-        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "tiered_reset" | "storage_lifecycle_apply";
+        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "rag_rebuild" | "tiered_reset" | "storage_lifecycle_apply";
         /** JobListResponse */
         JobListResponse: {
             /** Jobs */

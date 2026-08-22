@@ -2591,6 +2591,20 @@
       "HealthResponse": {
         "description": "The public health envelope (also read by the webui to detect an in-memory\nstore, ``store_type``).\n\n``es_connected`` is a compatibility-stable alias that historically named the\nonly supported state backend. New clients must use ``state_store_connected``;\nboth fields deliberately carry the same own-state readiness result.",
         "properties": {
+          "degraded": {
+            "default": false,
+            "description": "Whether a subsystem the product depends on is impaired while the state store itself is reachable. Additive: `status` keeps its historical meaning (state-store readiness) so existing clients are unaffected.",
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "degraded_reasons": {
+            "description": "Opaque, closed-vocabulary codes naming each active degradation. This endpoint is PUBLIC, so it carries no counts, source names or posture detail — the authenticated /api/diagnostics/health surface owns those.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Degraded Reasons",
+            "type": "array"
+          },
           "es_connected": {
             "description": "Compatibility alias for state_store_connected; this does not describe log-source Elasticsearch connectivity.",
             "title": "Es Connected",
@@ -2745,6 +2759,7 @@
           "precedent_bootstrap",
           "runbook_reindex",
           "rag_import",
+          "rag_rebuild",
           "tiered_reset",
           "storage_lifecycle_apply"
         ],

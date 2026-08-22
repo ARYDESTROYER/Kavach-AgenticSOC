@@ -25,6 +25,66 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **A provider outage can no longer silently empty the knowledge corpus, and the
+  product can no longer report itself healthy while it happens.** A field report
+  described a deployment that lost its LLM/embedding API key: every call returned HTTP
+  401. The suite degraded exactly as designed — embeddings fell back to local hashing,
+  each case failed to a human, no wrong verdict was produced — and then destroyed its
+  own knowledge corpus without a single alarm. Chunks written during the outage carried
+  hash-space vectors that are meaningless in the real embedding space and carried no
+  marker distinguishing them; the next reprojection invalidated that space, re-seeded,
+  and left the corpus at **zero rows**. Because `ensure_seeded()` is lazy and
+  signature-cached, it considered itself finished and never rebuilt. For **three days**
+  every case retrieved 0 knowledge and 0 precedents and returned `NEEDS_HUMAN` at
+  0.96–0.98 confidence, auto-close sat at **0%** — and `GET /api/health` returned
+  `status: ok` with the Console showing **Healthy** throughout. The source of truth was
+  never lost: 892 analyst-confirmed cases were still in the database, and one forced
+  re-seed restored the corpus and resumed `FALSE_POSITIVE` verdicts immediately. This
+  was the second corpus loss of the same shape; the first also left
+  `RAG seeded with N chunk(s)` at INFO as its only trace.
+
+  - **A degraded embedding space can never become a durable write.** The gateway now
+    classifies each provider failure into a closed vocabulary
+    (`unauthenticated` / `quota` / `unsupported` / `unavailable` / `not_configured`) and
+    carries it on `EmbeddingBatch.fallback_reason`. RAG refuses to build a chunk from
+    any fallback batch except `not_configured` — the supported keyless/offline profile,
+    where local hashing is the intended, self-consistent space. Degrading a *read* is
+    still correct; degrading a *write* is corruption. Every chunk is additionally
+    stamped with `embedding_fallback_reason`, so a mixed-space corpus is detectable
+    rather than silently wrong, and an all-zero vector is now rejected before a partial
+    write (a contract the documentation already promised).
+  - **A projection can no longer reach zero.** A rebuild that yields no chunks while the
+    previous corpus held some, or that falls below the new
+    `rag.min_projection_retention` floor (default 0.5), is refused as a failed build:
+    the previous corpus is kept, the seed does not latch, and the condition is logged at
+    **ERROR** with a structured, durable record — not the INFO line that reads the same
+    whether the count is 2,000 or 0. The refusal record survives restart in a
+    `rag_health` KV document (no new index, table, or migration).
+  - **An empty corpus is a first-class health failure.** `GET /api/health` gained
+    additive `degraded` / `degraded_reasons` fields carrying opaque, count-free codes
+    (the endpoint is anonymous, so corpus detail stays on the `settings:read`-gated
+    `/api/diagnostics/health`), and the Console's health pill now shows **Degraded**
+    with a specific explanation instead of green "Healthy". Diagnostics gained the
+    reconciliation check the incident asked for — *"the corpus holds N documents but the
+    case history qualifies M records"* — measured against the bounded precedent window
+    so a normal `N < M` never alarms, and reported as an explicit unknown whenever a
+    truncated or lower-bound read means the answer cannot be trusted.
+  - **A provider outage is now a visible system state.** Consecutive authentication or
+    quota failures are tracked per provider and surface as
+    `llm_provider: unauthenticated` (distinct from quota and transport failures), and a
+    case that reached the investigation time cap *because* the provider is rejecting our
+    credentials now says so instead of reporting the time cap. The operator in the field
+    report chased latency and evidence quality for days because of that message.
+  - **Recovery is automatic or one action.** The seed signature now includes the
+    embedding-space identity, a retrieval that finds an empty corpus behind a satisfied
+    seed cache rebuilds once on its own, and a new `rag_rebuild` background Job provides
+    an explicit, idempotent, documented rebuild. A tiered reset now also invalidates the
+    seed cache, closing a path where a reset deployment could stay corpus-less forever.
+
+  Non-negotiable #3 is untouched: `decide()` is byte-identical, the verdict on a failed
+  run stays `NEEDS_HUMAN`, and nothing added here is read by the close/escalate decision.
+  Ledger behaviour (#6) is unchanged — the same number of usage rows per call.
+
 - **Analyst-confirmed precedent no longer arrives without rule identity, and a
   precedent-rich rule can no longer be silently ignored.** A field report described an
   operator reviewing 349 cases of one detection rule, confirming every one benign through

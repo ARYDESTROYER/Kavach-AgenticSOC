@@ -167,6 +167,16 @@ class RagImportParams(_Strict):
     documents: list[RagDocument] = Field(min_length=1, max_length=20)
 
 
+class RagRebuildParams(_Strict):
+    """No parameters: the rebuild always reconciles the WHOLE enabled projection.
+
+    Deliberately empty rather than offering a per-source selector. The failure this
+    action exists to recover from is "the corpus is gone / partial and nothing will
+    bring it back"; asking an operator to first work out WHICH sources are missing
+    would reintroduce the diagnosis step that took three days.
+    """
+
+
 class ResetParams(_Strict):
     scope: ResetScope
     confirm: str
@@ -196,6 +206,7 @@ _PARAM_MODELS: dict[JobKind, type[BaseModel]] = {
     JobKind.PRECEDENT_BOOTSTRAP: PrecedentParams,
     JobKind.RUNBOOK_REINDEX: RunbookParams,
     JobKind.RAG_IMPORT: RagImportParams,
+    JobKind.RAG_REBUILD: RagRebuildParams,
     JobKind.TIERED_RESET: ResetParams,
     JobKind.STORAGE_LIFECYCLE_APPLY: StorageParams,
 }
@@ -245,6 +256,8 @@ def _items(kind: JobKind, params: dict[str, Any]) -> tuple[dict[str, str], str]:
         return {scope: "pending" for scope in scopes}, "scopes"
     if kind == JobKind.PRECEDENT_BOOTSTRAP:
         return ({"bootstrap": "pending"} if params.get("dry_run") else {}), "cases"
+    if kind == JobKind.RAG_REBUILD:
+        return {"rebuild": "pending"}, "items"
     key = "reindex" if kind == JobKind.RUNBOOK_REINDEX else (
         "reset" if kind == JobKind.TIERED_RESET else "apply"
     )
@@ -271,7 +284,7 @@ def _grants(kind: JobKind, params: dict[str, Any]) -> list[tuple[str, str]]:
         return [("rag", "manage"), ("cases", "write")]
     if kind == JobKind.RUNBOOK_REINDEX:
         return [("runbooks", "manage")]
-    if kind == JobKind.RAG_IMPORT:
+    if kind in {JobKind.RAG_IMPORT, JobKind.RAG_REBUILD}:
         return [("rag", "manage")]
     if kind == JobKind.TIERED_RESET:
         return [("users", "manage")]
