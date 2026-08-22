@@ -230,6 +230,13 @@ export interface LoginResult {
   user?: AuthUser;
   /** Present (true) when the account needs a second factor before a session. */
   requires_mfa?: boolean;
+  /**
+   * Present (true) when MFA is MANDATED for the account but not yet ENROLLED: no
+   * code challenge is possible, so the client must complete enrollment at
+   * /api/auth/mfa/enroll-setup + /enroll-confirm using the same `pending_token`
+   * (confirm mints the full session). Branch on this BEFORE `requires_mfa`.
+   */
+  mfa_enrollment_required?: boolean;
   /** A short-lived half-auth token to exchange at /api/auth/mfa/verify. */
   pending_token?: string;
 }
@@ -306,6 +313,47 @@ export interface User {
   must_change_password: boolean;
   created_at: string;
   last_login_at: string | null;
+  /** Whether the user has ENROLLED a TOTP factor (self-service; admin can only force-disable). */
+  mfa_enabled?: boolean;
+  /**
+   * The admin-set MFA MANDATE (required ≠ enrolled — no secret is minted). A mandated
+   * but unenrolled user is walked through enrollment at their next sign-in.
+   */
+  mfa_required?: boolean;
+  /** Full/display name ("" when unset). Operator-entered → render as PLAIN text (#9). */
+  display_name?: string;
+  /** Contact email ("" when unset). Operator-entered → render as PLAIN text (#9). */
+  email?: string;
+  /** Contact/mobile number ("" when unset). Operator-entered → render as PLAIN text (#9). */
+  phone?: string;
+  /**
+   * Free-form per-user bag; the custom-role assignment rides here under
+   * `custom_roles` (names only — see PUT /api/users/{username}/roles).
+   */
+  prefs?: { custom_roles?: string[] } & Record<string, unknown>;
+}
+
+/**
+ * POST /api/users — the create-user request (users:manage). Everything beyond
+ * username/password/role is additive; the SERVER stays authoritative for validation
+ * (password ≥ 8, base role must be a built-in, email/phone sanity checks, and
+ * `custom_roles` must name EXISTING custom roles).
+ */
+export interface UserCreateOptions {
+  username: string;
+  password: string;
+  /** Base role — one of the six built-ins (backend default: analyst_tier1). */
+  role?: string;
+  /** Full name (≤200 chars; plain text, #9). */
+  display_name?: string;
+  /** Contact email (≤200 chars; must contain "@", no whitespace — server-validated). */
+  email?: string;
+  /** Mobile number (charset "+ 0-9 space - ( )" — server-validated). */
+  phone?: string;
+  /** Mandate MFA: they must set up an authenticator at their next sign-in. */
+  mfa_required?: boolean;
+  /** EXISTING custom roles to attach at creation (persisted like the assign endpoint). */
+  custom_roles?: string[];
 }
 
 export interface UsersResponse {

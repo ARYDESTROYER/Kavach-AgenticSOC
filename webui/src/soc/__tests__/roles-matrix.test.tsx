@@ -85,6 +85,14 @@ describe('RoleMatrixEditor resource vocabulary', () => {
       screen.getByRole('button', { name: /data_export:export/i }),
     ).toBeInTheDocument();
   });
+
+  it('carries the Round-11 drift-fixed resources (runbooks / system_updates / rules)', () => {
+    // These existed in backend rbac/policy.RESOURCES but were missing from the
+    // client mirror, so the editor grid + permission summary never showed them.
+    expect(RESOURCE_ACTIONS.runbooks).toEqual(['read', 'manage']);
+    expect(RESOURCE_ACTIONS.system_updates).toEqual(['read', 'apply', 'rollback']);
+    expect(RESOURCE_ACTIONS.rules).toEqual(['read', 'manage']);
+  });
 });
 
 describe('PreviewDiff render', () => {
