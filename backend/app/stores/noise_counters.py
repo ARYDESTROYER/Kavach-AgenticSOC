@@ -398,6 +398,48 @@ class NoiseCounterStore:
             "by_source": by_source,
         }
 
+    async def read_hourly_ingested(
+        self, hours: int, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """Per-epoch-hour TOTAL ingested-alert tallies over the trailing ``hours``.
+
+        Additive read-only projection for the bucketed trends rollup
+        (``GET /api/metrics/trends``): each retained hourly bucket's ``ingested``
+        severity bands are summed into one integer, keyed by the epoch hour, so a
+        consumer can re-bucket raw-alert volume onto arbitrary (whole-hour) trend
+        buckets. Returns ``{"available": bool, "since": iso|None,
+        "hours": {epoch_hour:int -> int}}`` — ``available`` has exactly the
+        :meth:`read_window` semantics (False → warming up, the caller renders null,
+        never a fake 0). Never raises: a load glitch degrades to unavailable."""
+        moment = now or now_utc()
+        doc = await self._load()
+        since = doc.get("since")
+        raw_buckets = doc.get("buckets")
+        buckets = raw_buckets if isinstance(raw_buckets, dict) else {}
+        available = bool(buckets) and isinstance(since, str) and bool(since)
+
+        now_ts = moment.timestamp()
+        hours = max(0, int(hours or 0))
+        from_hour = int((now_ts - hours * 3600.0) // 3600) if hours > 0 else None
+        to_hour_exclusive = int(now_ts // 3600) + 1  # incl. the current partial hour
+
+        out: dict[int, int] = {}
+        for key, raw in buckets.items():
+            hour = _safe_int(key)
+            if hour is None:
+                continue
+            if from_hour is not None and hour < from_hour:
+                continue
+            if hour >= to_hour_exclusive:
+                continue
+            counts = _norm_counts(raw)
+            out[hour] = sum(counts["ingested"].values())
+        return {
+            "available": available,
+            "since": since if available else None,
+            "hours": out,
+        }
+
     async def clear(self) -> None:
         """Drop ALL counters (a cases/logs-tier reset). Never raises."""
         def _change(_current: dict | None) -> dict:

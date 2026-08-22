@@ -1396,10 +1396,12 @@ async def sources_coverage(
 
     Returns ``{sources_total, sources_enabled, sources_silent, events_per_min,
     alerts_triaged_24h, worst_last_event_seconds}`` computed over the configured sources,
-    or over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h`` is
-    the count of cases opened in the last 24h computed with the SAME window filter the
-    ``/metrics/noise-reduction`` endpoint uses, so the two agree. Never raises — every
-    sub-lookup degrades to a safe zero (#3/#4/#6/#9 untouched)."""
+    or over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h``
+    is the count of cases created in the last 24h, answered by a repository COUNT
+    push-down (``CaseRepository.count_created_since`` — one backend count, zero full
+    documents fetched) over the same 24h window the ``/metrics/noise-reduction``
+    funnel's ``cases`` stage uses. Never raises — every sub-lookup degrades to a safe
+    zero (#3/#4/#6/#9 untouched)."""
     # Demo reads are intentionally scoped to the throwaway demo stack, just like cases,
     # metrics, usage, and RAG. Including the four real simulator rows avoids the previous
     # misleading 0/0 coverage tile without leaking tenant-source health into a demo.
@@ -1420,14 +1422,15 @@ async def sources_coverage(
         if lev > 0:
             worst = max(worst, (now_ms - lev) // 1000)
 
-    # Cases opened in the last 24h — the SAME newest-N page + 24h window the noise-reduction
-    # funnel's ``cases`` stage uses, so ``alerts_triaged_24h`` is cross-consistent with it.
+    # Cases created in the last 24h — a pure repository COUNT (no 5000-document fetch
+    # just to ``len()`` a window). The 24h boundary is the same cutoff the noise-
+    # reduction funnel's ``cases`` stage windows on, so the two stay consistent.
     alerts_triaged = 0
     try:
-        cases, _total = await state.cases.list(limit=5000)
-        from ..engine.metrics import _window_filter
+        from datetime import timedelta
 
-        alerts_triaged = len(_window_filter(list(cases), window_hours=24))
+        since_iso = (now_utc() - timedelta(hours=24)).isoformat()
+        alerts_triaged = int(await state.cases.count_created_since(since_iso))
     except Exception:  # noqa: BLE001 — a store hiccup degrades to 0, never a 500
         alerts_triaged = 0
 
@@ -3073,7 +3076,14 @@ async def playbook_update(
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
 async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
-    cases, total = await state.cases.list(limit=2000)
+    # Served through the shared short-TTL page cache (api/metrics_shared) so the
+    # Overview's LIVE 5s poll re-serves one scan instead of re-fetching 2000 full
+    # documents per refresh. Keyed by (store identity, limit) — Demo Mode's store
+    # swap self-invalidates, and the 2000-row limit keeps this response's
+    # truncation semantics byte-identical.
+    from .metrics_shared import fetch_case_page
+
+    cases, total = await fetch_case_page(state.cases, 2000)
     out = compute_metrics(cases, total_cases=total)
     try:
         out["cost"] = await state.usage_store.summary(window_hours=max(1, window_hours))

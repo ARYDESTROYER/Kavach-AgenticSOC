@@ -128,6 +128,20 @@ def _no_outbound_network(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     monkeypatch.setattr(socket, "gethostbyname", _gethostbyname)
 
 
+@pytest.fixture(autouse=True)
+def _reset_case_page_cache():
+    """Autouse: clear the shared short-TTL case-page cache between tests.
+
+    The cache is already self-invalidating (entries are guarded by store-object
+    identity + a fetch-limit key), but clearing it keeps every test hermetic no
+    matter how fixtures compose or how fast the suite runs."""
+    from app.api import metrics_shared
+
+    metrics_shared.invalidate_case_page_cache()
+    yield
+    metrics_shared.invalidate_case_page_cache()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register the ``allow_network`` opt-out marker (``--strict-markers`` is on)."""
     config.addinivalue_line(

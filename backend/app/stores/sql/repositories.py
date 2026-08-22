@@ -212,6 +212,19 @@ class SqlCaseRepository(CaseRepository):
         async with self._sm() as session:
             return int((await session.execute(stmt)).scalar() or 0)
 
+    async def count_created_since(self, since_iso: str) -> int:
+        """Native COUNT push-down on the materialized ``created_at`` column: cases
+        created at/after ``since_iso`` (inclusive), across every surface/status. Same
+        ISO-string comparison idiom as :meth:`count_new_scans` (the column stores the
+        app's own consistently-formatted ISO timestamps)."""
+        stmt = (
+            select(func.count())
+            .select_from(CaseRow)
+            .where(CaseRow.created_at >= since_iso)
+        )
+        async with self._sm() as session:
+            return int((await session.execute(stmt)).scalar() or 0)
+
 
 class SqlAuditRepository(AuditRepository):
     """Append-only audit log. INSERT only — no update/delete path exists."""
