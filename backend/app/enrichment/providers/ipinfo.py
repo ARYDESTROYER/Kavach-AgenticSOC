@@ -38,6 +38,18 @@ class IPInfoProvider(EnrichmentProvider):
             free_tier="Keyless free tier (~50k/mo); optional token raises the limit",
             docs_url="https://ipinfo.io/developers",
             default_enabled=True,
+            setup_steps=[
+                "Nothing required — IPinfo's keyless tier works out of the box and "
+                "this provider ships enabled.",
+                "Optional: create a free ipinfo.io account and set TLSOC_IPINFO_TOKEN "
+                "in .env (compose maps it to IPINFO_TOKEN) to raise the rate limit.",
+            ],
+            example=(
+                "Instant geo/ASN context on every IP in a case: a login for a "
+                "Mumbai-based employee sourced from a Frankfurt hosting ASN reads "
+                "very differently from one on their home ISP — without the analyst "
+                "leaving the console."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

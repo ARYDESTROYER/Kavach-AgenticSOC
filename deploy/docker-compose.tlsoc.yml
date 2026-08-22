@@ -85,6 +85,21 @@ services:
       - HIBP_API_KEY=${TLSOC_HIBP_API_KEY:-}
       - HONEYPOT_ACCESS_KEY=${TLSOC_HONEYPOT_ACCESS_KEY:-}
       - ABUSECH_AUTH_KEY=${TLSOC_ABUSECH_AUTH_KEY:-}
+      # --- Round-11 enrichment providers (all optional + default-off; the keyless
+      #     ones — CIRCL hashlookup / DShield / Onionoo / Spamhaus / Cymru MHR /
+      #     Robtex / crt.sh — run without any key). ---
+      - CROWDSEC_API_KEY=${TLSOC_CROWDSEC_API_KEY:-}
+      - GOOGLE_SAFEBROWSING_API_KEY=${TLSOC_GOOGLE_SAFEBROWSING_API_KEY:-}
+      - IPQUALITYSCORE_API_KEY=${TLSOC_IPQUALITYSCORE_API_KEY:-}
+      - IPDATA_API_KEY=${TLSOC_IPDATA_API_KEY:-}
+      - APIVOID_API_KEY=${TLSOC_APIVOID_API_KEY:-}
+      - MALTIVERSE_API_KEY=${TLSOC_MALTIVERSE_API_KEY:-}
+      - SECURITYTRAILS_API_KEY=${TLSOC_SECURITYTRAILS_API_KEY:-}
+      - CRIMINALIP_API_KEY=${TLSOC_CRIMINALIP_API_KEY:-}
+      - NETLAS_API_KEY=${TLSOC_NETLAS_API_KEY:-}
+      - HYBRID_ANALYSIS_API_KEY=${TLSOC_HYBRID_ANALYSIS_API_KEY:-}
+      - METADEFENDER_API_KEY=${TLSOC_METADEFENDER_API_KEY:-}
+      - EMAILREP_API_KEY=${TLSOC_EMAILREP_API_KEY:-}
       # --- Cache (optional; in-memory fallback if Redis is absent) ---
       - REDIS_URL=${TLSOC_REDIS_URL:-redis://tlsoc-redis:6379/0}
       - LOG_LEVEL=${TLSOC_LOG_LEVEL:-INFO}

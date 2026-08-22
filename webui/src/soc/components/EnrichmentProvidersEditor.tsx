@@ -28,6 +28,8 @@ import {
   Gift,
   Globe,
   KeyRound,
+  Lightbulb,
+  ListOrdered,
   Loader2,
   RefreshCw,
   Search,
@@ -168,10 +170,16 @@ const ProviderCard: React.FC<{
   onSecretConfigured: (name: string, key: string, configured: boolean, keyPresent: boolean) => void;
 }> = ({ provider, canManage, toggling, onToggle, onSecretConfigured }) => {
   const [open, setOpen] = React.useState(false);
+  const [setupOpen, setSetupOpen] = React.useState(false);
   const hasSecrets = provider.secret_fields.length > 0;
   const enabled = provider.enabled_by_config;
   // A key-gated provider that is enabled but missing its key can't actually run.
   const needsKey = enabled && !provider.keyless && !provider.key_present;
+  // setup_steps/example are FIXED manifest strings (trusted UI copy) — still
+  // rendered defensively as plain text only (never markup).
+  const setupSteps = (provider.setup_steps ?? []).filter(
+    (s): s is string => typeof s === 'string' && s.length > 0,
+  );
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -208,6 +216,13 @@ const ProviderCard: React.FC<{
           {provider.description ? (
             <p className="text-sm text-muted-foreground">{provider.description}</p>
           ) : null}
+          {provider.example ? (
+            <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+              <Lightbulb className="mt-0.5 size-3 shrink-0" aria-hidden />
+              {/* example is a fixed manifest UI string — plain text only */}
+              <span className="italic">{provider.example}</span>
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             {provider.indicator_kinds.map((k) => (
               <Badge key={k} variant="secondary" className="text-[10px]">
@@ -232,6 +247,31 @@ const ProviderCard: React.FC<{
               Provider docs
               <ExternalLink className="size-3" aria-hidden />
             </a>
+          ) : null}
+          {setupSteps.length > 0 ? (
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setSetupOpen((o) => !o)}
+                aria-expanded={setupOpen}
+                className="inline-flex items-center gap-1 rounded-sm text-xs font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ListOrdered className="size-3.5" aria-hidden />
+                How to set up
+                <ChevronDown
+                  className={cn('size-3.5 transition-transform', setupOpen && 'rotate-180')}
+                  aria-hidden
+                />
+              </button>
+              {setupOpen ? (
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+                  {/* setup_steps are fixed manifest UI strings — plain text only */}
+                  {setupSteps.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              ) : null}
+            </div>
           ) : null}
         </div>
 

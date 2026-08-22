@@ -65,6 +65,20 @@ class OTXProvider(EnrichmentProvider):
             free_tier="Free with an OTX account",
             docs_url="https://otx.alienvault.com/api",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at otx.alienvault.com and open Settings → "
+                "API Integration.",
+                "Copy the OTX API key (free, generous limits).",
+                "Set TLSOC_OTX_API_KEY in .env (compose maps it to OTX_API_KEY), or "
+                "paste it in this card (in-memory until restart).",
+                "Flip this provider's toggle ON — one key covers IPs, domains, URLs "
+                "and hashes.",
+            ],
+            example=(
+                "Ties an indicator to named community campaigns: a domain sitting in "
+                "four OTX pulses titled 'AgentTesla phishing wave' immediately "
+                "explains WHAT the alert likely is, not just that it is bad."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

@@ -66,6 +66,21 @@ class XForceProvider(EnrichmentProvider):
             free_tier="Free X-Force account (rate-limited)",
             docs_url="https://api.xforce.ibmcloud.com/doc/",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at exchange.xforce.ibmcloud.com and open "
+                "Settings → API access.",
+                "Generate the API key AND API password pair (both are required — "
+                "they form HTTP Basic auth).",
+                "Set TLSOC_XFORCE_API_KEY and TLSOC_XFORCE_API_PASSWORD in .env "
+                "(compose maps them to XFORCE_API_KEY / XFORCE_API_PASSWORD), or "
+                "paste both in this card (in-memory until restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "IBM's 1..10 risk band plus category labels ('Botnet Command and "
+                "Control Server') gives a second vendor-grade verdict when "
+                "VirusTotal and the community feeds disagree."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

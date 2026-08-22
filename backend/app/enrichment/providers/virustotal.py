@@ -59,6 +59,20 @@ class VirusTotalProvider(EnrichmentProvider):
             free_tier="~4 lookups/min, 500/day (free public key)",
             docs_url="https://docs.virustotal.com/reference/overview",
             default_enabled=True,
+            setup_steps=[
+                "Sign up at virustotal.com and open your profile → API key.",
+                "Copy the free public API key (~4 lookups/min, 500/day).",
+                "Set TLSOC_VIRUSTOTAL_API_KEY in .env (compose maps it to "
+                "VIRUSTOTAL_API_KEY), or paste it in this card (in-memory until "
+                "restart).",
+                "Enabled by default — covers IPs, domains, URLs and file hashes with "
+                "one key.",
+            ],
+            example=(
+                "A file hash flagged malicious by 43 of 70 AV engines turns a vague "
+                "'suspicious process' alert into a confirmed malware case; a 0/70 "
+                "hash lets the analyst deprioritise it in seconds."
+            ),
         )
 
     def _endpoint(self, value: str, kind: IndicatorKind) -> str:

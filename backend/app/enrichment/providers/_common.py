@@ -184,6 +184,26 @@ _BUCKET_SPECS: dict[str, tuple[float, float, float]] = {
     "urlscan": (1.0, 2.0, 2.0),
     "projecthoneypot": (1.0, 1.0, 2.0),
     "spur": (1.0, 1.0, 2.0),
+    # --- Round 11 providers ---
+    "circl_hashlookup": (2.0, 1.0, 4.0),     # keyless; be polite
+    "dshield": (1.0, 2.0, 2.0),              # SANS ISC asks for gentle use
+    "onionoo": (1.0, 2.0, 2.0),
+    "spamhaus": (2.0, 1.0, 4.0),             # DNS; low-volume free use only
+    "cymru_mhr": (2.0, 1.0, 4.0),            # DNS
+    "robtex": (1.0, 3.0, 1.0),               # free API is heavily rate-limited
+    "crt_sh": (1.0, 5.0, 1.0),               # crt.sh is often slow; be very gentle
+    "crowdsec": (1.0, 2.0, 2.0),             # free CTI key: small daily quota
+    "google_safebrowsing": (5.0, 1.0, 5.0),
+    "ipqualityscore": (1.0, 1.0, 2.0),       # ~5k lookups/month free
+    "ipdata": (1.0, 1.0, 2.0),               # 1,500 req/day free
+    "apivoid": (1.0, 2.0, 2.0),              # credit-based
+    "maltiverse": (1.0, 1.0, 2.0),
+    "securitytrails": (1.0, 6.0, 1.0),       # free: 50 queries/month
+    "criminalip": (1.0, 2.0, 2.0),
+    "netlas": (1.0, 2.0, 2.0),
+    "hybrid_analysis": (1.0, 3.0, 2.0),      # 200 req/h vetted free tier
+    "metadefender": (1.0, 2.0, 2.0),
+    "emailrep": (1.0, 3.0, 1.0),             # free key: tight daily quota
 }
 
 

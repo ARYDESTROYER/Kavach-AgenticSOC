@@ -48,6 +48,18 @@ class HIBPProvider(EnrichmentProvider):
             free_tier="Paid API key required",
             docs_url="https://haveibeenpwned.com/API/v3",
             default_enabled=False,
+            setup_steps=[
+                "Buy an API key at haveibeenpwned.com/API/Key (small monthly "
+                "subscription; no free tier).",
+                "Set TLSOC_HIBP_API_KEY in .env (compose maps it to HIBP_API_KEY), "
+                "or paste it in this card (in-memory until restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "On an impossible-travel or password-spray case, knowing the target "
+                "account appears in 12 public breaches makes credential reuse the "
+                "leading hypothesis and prioritises a forced reset."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:
