@@ -7,7 +7,8 @@
 > Everything in here is verified against the repo as of the date below — not from memory.
 
 - **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-08-13
-- **Status:** Round 10 and the additive Security Command Center / Case Manager work are
+- **Status:** Round 10 and the additive Cyber Defence Center (the landing dashboard,
+  renamed from Security Command Center) / Case Manager work are
   integrated on `Testing`. A **backend deep-audit hardening pass
   (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10 high / 24 med / 13 low)
   from a 24-auditor + adversarial-verify Workflow — **one atomic commit per finding, no
@@ -443,9 +444,14 @@ backend/app/
                    idempotency, bounded failures, terminal compaction, sanitized
                    factory receipt; no new index/table)
   enrichment/      Round 3 — EnrichmentProvider SPI: base/registry/dispatch/aggregate +
-                   providers/ (19 registered classes, +17 new in Round 3: abuseipdb/virustotal/
+                   providers/ (38 registered classes: +17 in Round 3 — abuseipdb/virustotal/
                    greynoise/shodan(+internetdb)/censys/binaryedge/ipinfo/otx/pulsedive/spur/
-                   xforce/urlscan/hibp/projecthoneypot/abusech[urlhaus+threatfox+malwarebazaar=3]/rdap)
+                   xforce/urlscan/hibp/projecthoneypot/abusech[urlhaus+threatfox+malwarebazaar=3]/rdap —
+                   +19 in Round 11: keyless circl_hashlookup/dshield/onionoo [default-on] +
+                   spamhaus/cymru_mhr/robtex/crt_sh [default-off]; keyed crowdsec/
+                   google_safebrowsing/ipqualityscore/ipdata/apivoid/maltiverse/securitytrails/
+                   criminalip/netlas/hybrid_analysis/metadefender/emailrep; manifests carry
+                   setup_steps + example rendered by the Settings provider cards)
   realtime.py      Round 3 — multiplexed SSE EventBus (GET /api/events, default ON, polling fallback)
   connectors/      SPI + registry · elastic/opensearch/wazuh · demo.py · receivers/
   engine/          correlation · risk · case_manager (decide()/apply() — #3) · case_id · poller ·
