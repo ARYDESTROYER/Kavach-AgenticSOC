@@ -25,6 +25,41 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **The MFA enrollment QR code is now actually scannable.** The hand-rolled QR encoder
+  carried three ISO/IEC 18004 conformance defects: it never placed the two
+  version-information blocks required from symbol version 7 upward (every real
+  `otpauth://` provisioning URI is version 7+, so data bits landed in the modules a
+  scanner reads the version from), the first format-information copy was transposed
+  against the spec placement order, and the Reed-Solomon remainder loop applied the
+  generator polynomial one position late — so the error-correction bytes were not a
+  valid codeword at *any* version and every scan relied on reader error tolerance.
+  All three are fixed; the rewritten test suite includes an independent structural
+  decoder (format/version BCH checks, function-map rebuild, un-masking, zigzag walk,
+  block de-interleave, zero-syndrome verification, byte-mode round-trip at v3/v7/v10)
+  that fails on each defect individually when reverted.
+- **Changing the dashboard time range no longer stalls the headline numbers or blanks
+  the page.** Five endpoints behind the Overview (posture, noise-reduction,
+  auto-close-health, diagnostics health, sources coverage) each independently fetched
+  and re-validated a 5,000-document case page on every refresh — multiplied by the 5s
+  LIVE poll. A shared single-flight case-page cache (5s TTL, keyed by fetch limit,
+  guarded by store identity so Demo Mode's store swap self-invalidates) collapses the
+  fan-out to one scan per window; the sources-coverage count is pushed down to the
+  store (`count_created_since`: an ES `_count`, a SQL `COUNT`, a format-robust base
+  fallback) and fetches zero documents; the posture computation builds its per-case
+  timing index once (byte-identical outputs, ~31% faster at 5k cases). On the Console,
+  a window change now keeps the last snapshot visible with an explicit stale indicator
+  instead of flashing empty tiles, and a supersession guard stops a superseded
+  window's late responses from repainting newer data.
+- **A role-level MFA enforcement can no longer dead-end the env-seeded admin.**
+  `requires_mfa()` now refuses to mandate an env-managed account (it has no persisted
+  user record and could never complete enrollment) — previously
+  `mfa.enforce_for_roles` covering the seeded admin's role produced an unanswerable
+  challenge.
+- **The role editor grid no longer hides three resources.** The client's
+  permission-vocabulary mirror was missing `runbooks`, `system_updates`, and `rules`
+  relative to the backend policy, so those rows were silently absent from the custom
+  role matrix editor.
+
 - **A provider outage can no longer silently empty the knowledge corpus, and the
   product can no longer report itself healthy while it happens.** A field report
   described a deployment that lost its LLM/embedding API key: every call returned HTTP
@@ -215,6 +250,46 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **Admin-mandated MFA, enforced inside the login phase.** A per-user `mfa_required`
+  flag (settable at creation or later; distinct from `mfa_enabled`, which means
+  *enrolled* — it never mints a secret and is not caught by the
+  admin-cannot-enable-MFA guard). A mandated-but-unenrolled user's login returns an
+  additive `mfa_enrollment_required` phase-1 response with a short-lived pending
+  token; two pending-token-gated endpoints (`POST /api/auth/mfa/enroll-setup`,
+  `/enroll-confirm`) let the user complete authenticator enrollment during sign-in and
+  land in a full session — there is no way past the screen without enrolling. Pending
+  tokens stay rejected on every other surface, an already-enrolled account cannot
+  replace its factor through this path, and every step is audited.
+- **User accounts carry contact identity, and creation shows what a role grants.**
+  Create/edit now accept full name, email, and mobile number (rendered as plain text
+  everywhere), plus the Require-MFA switch; the users table shows MFA status
+  (On / Required / —) and a name-and-email line. The create dialog displays a live
+  per-resource permission summary for the selected role (wildcards exploded against
+  the shared vocabulary; unknown server resources rendered honestly), lets existing
+  custom roles be attached at creation (validated exactly like post-hoc assignment),
+  and offers inline fine-graining: an "Adjust permissions…" flow opens the existing
+  role matrix editor seeded to inherit the chosen base role, behind the standard
+  fresh-auth step-up.
+- **19 new enrichment providers (38 registered) with built-in setup guides.** Keyless
+  and default-on: CIRCL hashlookup, SANS ISC DShield, Tor Onionoo. Keyless but
+  default-off (resolver/latency caveats): Spamhaus ZEN/DBL, Team Cymru MHR, Robtex,
+  crt.sh. Keyed, default-off: CrowdSec CTI, Google Safe Browsing, IPQualityScore,
+  ipdata, APIVoid, Maltiverse, SecurityTrails, Criminal IP, Netlas, Hybrid Analysis,
+  MetaDefender, EmailRep. Every provider manifest (existing ones included) now carries
+  `setup_steps` — concrete operator steps naming the exact env var — and an `example`
+  of how the source helps triage, rendered on the provider cards as a collapsible
+  "How to set up" guide. Score discipline holds: verdict feeds 80-90, graded
+  reputations map directly, context feeds cap at 40 and never set `malicious`, so no
+  context source alone can cross the fusion cut.
+- **Hover trendlines on every landing-dashboard metric with an honest series.** A new
+  `GET /api/metrics/trends` (metrics:view) serves zero-filled, UTC-aligned cohort
+  buckets that reconcile with the quality metrics — `fp_rate` distinguishes a real
+  zero from not-measured, alert volume comes from the durable noise counters — and a
+  reusable hover/focus affordance (WCAG 1.4.13 keyboard-reachable) reveals the
+  trendline, window, and bucket disclosure for 11 landing metrics. Metrics with no
+  honest series (Critical/High split, Active Risk Index, Dwell) deliberately show
+  none rather than an invented one.
+
 - **A Console home for both new controls.** `analyst_rule_policies` is an array-of-model
   and `precedent.promotion` a nested object, and the generic Advanced settings form can
   only DESCRIBE structured fields ("edit in its dedicated section") — a section that did
@@ -400,6 +475,16 @@ and, just as importantly, makes each of these conditions a state an operator can
   fixed bug for a permanent hole in the audit log.
 
 ### Changed
+
+- **The landing dashboard is now the "Cyber Defence Center"** (renamed from
+  "Security Command Center"; the exported constant and boot-guard anchor are
+  unchanged, and append-only history keeps the old name). The design pass unifies the
+  band framing across the KPI strip, instrument band, and operations band, gives the
+  burndown chart a real legend, and discloses the new hover-trend affordance in a
+  quiet footnote — all inside the existing token system.
+- **The false-positive-rate tile no longer shows a comparison percentage.** The delta
+  chip compared against the previous window without saying so; it and its footnote are
+  removed (the Analytics posture page's compare machinery is untouched).
 
 - **Proposals carry an evidence fingerprint and derived provenance.** A proposal records a
   deterministic fingerprint over the keys defining its recommendation and over the
