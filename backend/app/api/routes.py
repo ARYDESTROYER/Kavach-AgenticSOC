@@ -3874,7 +3874,25 @@ async def update_account_me(
             raise HTTPException(
                 status_code=400, detail=f"prefs too large (max {_MAX_PREFS_JSON_LEN} bytes)"
             )
-        patch["prefs"] = body.prefs
+        # INVARIANT — ``prefs["custom_roles"]`` is a RESERVED key owned by the
+        # admin surfaces (``PUT /api/users/{u}/roles`` in routes_roles.py and the
+        # users:manage creation path): it is the assignment record that
+        # ``deps._assigned_custom_roles`` UNIONs into every live RBAC decision.
+        # A self-service profile update must NEVER add, remove, or reorder the
+        # caller's admin-assigned custom roles — otherwise any authenticated user
+        # could grant themselves an existing custom role's permissions by writing
+        # this key, bypassing the users:manage + fresh-auth gate. Whatever the
+        # client sent for the key is therefore discarded and the CURRENTLY STORED
+        # value is carried forward verbatim (stored absent → stripped). The rest
+        # of the bag stays a full replacement, so clients that round-trip the
+        # prefs they read from ``public()`` keep working unchanged (no 4xx).
+        sanitized_prefs = dict(body.prefs)
+        stored_prefs = user.prefs or {}
+        if "custom_roles" in stored_prefs:
+            sanitized_prefs["custom_roles"] = stored_prefs["custom_roles"]
+        else:
+            sanitized_prefs.pop("custom_roles", None)
+        patch["prefs"] = sanitized_prefs
     if not patch:
         raise HTTPException(status_code=400, detail="no changes provided")
     updated = await state.users.update(principal.username, **patch)
