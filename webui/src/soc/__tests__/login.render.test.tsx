@@ -554,6 +554,19 @@ describe('Login — mandated MFA enrollment during login', () => {
     expect(
       screen.getByText(/administrator requires multi-factor authentication/i),
     ).toBeInTheDocument();
+    // Entering the mode unmounts the sign-in form — focus moves to the mode
+    // HEADING (tabIndex=-1 + programmatic focus) so SR/keyboard users land on
+    // "Set up two-factor authentication" instead of dropping to <body>, and the
+    // heading's describedby hands them the requirement explanation.
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: 'Set up two-factor authentication',
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveAttribute('aria-describedby', 'login-mode-description');
+    expect(document.getElementById('login-mode-description')?.textContent).toMatch(
+      /administrator requires multi-factor authentication/i,
+    );
     // The setup call was rerouted to the pending-token-gated enroll endpoint.
     await waitFor(() => expect(enrollSetupMock).toHaveBeenCalledWith('pend-enroll-1'));
     // QR-fallback secret + otpauth URI + recovery codes all render at the setup step.
@@ -582,6 +595,9 @@ describe('Login — mandated MFA enrollment during login', () => {
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '123456' },
     });
+    // Confirm success destroys the one-time recovery codes → the explicit
+    // saved-codes acknowledgment gates the submit.
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
     fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
 
     await waitFor(() =>
@@ -609,6 +625,7 @@ describe('Login — mandated MFA enrollment during login', () => {
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '123456' },
     });
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
     fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
 
     expect(await screen.findByText('Set a new password')).toBeInTheDocument();

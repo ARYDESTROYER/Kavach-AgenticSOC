@@ -28,7 +28,10 @@ function explodeActions(resource: string, actions: string[]): string[] {
   const literal = actions.filter((a) => a !== '*');
   if (literal.length === actions.length) return literal;
   const vocab = RESOURCE_ACTIONS[resource];
-  if (!vocab) return literal.length ? literal : ['all actions'];
+  // Unknown vocabulary: the list contained "*" (or we'd have returned above) — keep
+  // the wildcard disclosure NEXT TO any literals (['read','*'] is a real wire shape
+  // when a custom role inherits a wildcard base; the '*' must never silently drop).
+  if (!vocab) return [...literal, 'all actions'];
   // Union the vocabulary with any literal extras, preserving vocabulary order.
   return [...vocab, ...literal.filter((a) => !vocab.includes(a))];
 }
@@ -112,7 +115,15 @@ export function RolePermissionSummary({
           Full administrative access — every action on every resource.
         </p>
       ) : (
-        <ul className={`space-y-1.5 overflow-y-auto px-3 py-2.5 ${maxHeightClassName}`}>
+        // The grant list is a bounded scroller; without a tab stop, keyboard users
+        // cannot scroll it in browsers that only keyboard-scroll focusable
+        // scrollers (Safari). Named + visibly focus-ringed.
+        <ul
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+          tabIndex={0}
+          aria-label={`Permissions granted by ${roleLabel(roleName)}`}
+          className={`space-y-1.5 overflow-y-auto rounded-b-md px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${maxHeightClassName}`}
+        >
           {rows.map(({ resource, actions }) => (
             <li key={resource} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
               <span className="min-w-[7rem] text-xs font-medium text-foreground">

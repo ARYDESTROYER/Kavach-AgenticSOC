@@ -1664,7 +1664,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
             </Stagger>
             {bucketTrends ? (
               <p className="px-0.5 text-2xs text-muted-foreground">
-                Hover or focus a metric for its {bucketTrends.label} trend.
+                {/* Device-honest affordance copy: hover-capable inputs get the
+                    hover/focus instruction; touch-only devices (hover: none) are
+                    told to tap — the trend card toggles on tap there. Both spans
+                    ship; the CSS media variant picks exactly one. */}
+                <span className="hidden [@media(hover:hover)]:inline">
+                  Hover or focus a metric for its {bucketTrends.label} trend.
+                </span>
+                <span className="[@media(hover:hover)]:hidden">
+                  Tap a metric for its {bucketTrends.label} trend.
+                </span>
               </p>
             ) : null}
           </div>
@@ -1936,6 +1945,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     format={humanizeMins}
                     colorToken={s.accent}
                     side="top"
+                    // The tile's HelpTip (?) button is already a tab stop and focus
+                    // bubbles to the trigger (Radix opens the card on trigger focus),
+                    // so the wrapper must not add a second stop; the tile itself is
+                    // not clickable, so a press explicitly toggles the card (touch).
+                    focusable={false}
+                    toggleOnClick={true}
                   >
                     {tile}
                   </MetricHoverTrend>

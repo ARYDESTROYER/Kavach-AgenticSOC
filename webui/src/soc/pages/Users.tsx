@@ -257,6 +257,8 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       id: 'mfa',
       header: 'MFA',
       align: 'center',
+      // The mandate is conveyed as VISIBLE text (the title tooltips below are
+      // mouse-only supplements, never the sole carrier of the requirement).
       cell: (u) =>
         u.mfa_enabled ? (
           <Badge
@@ -264,7 +266,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
             className="text-2xs"
             title={u.mfa_required ? 'Two-factor enrolled · required by admin' : 'Two-factor enrolled'}
           >
-            On
+            {u.mfa_required ? 'On · required' : 'On'}
           </Badge>
         ) : u.mfa_required ? (
           <Badge
@@ -276,7 +278,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
           </Badge>
         ) : (
           <span className="text-sm text-muted-foreground" title="Two-factor not enrolled">
-            —
+            Off
           </span>
         ),
     },
@@ -978,7 +980,10 @@ function InlineCustomRoleDialog({
         grants: draft.grants,
         denies: draft.denies,
       });
-      toast.success(`Created custom role ${res.role.name} and attached it to this user.`);
+      // Truthful wording: the role is durably created NOW, but it is only
+      // pre-selected in the not-yet-submitted Add-user form — attachment happens
+      // when (and only if) the user is actually created.
+      toast.success(`Created custom role ${res.role.name} — it will be attached when the user is created.`);
       onCreated(res.role);
     } catch (e) {
       // A declined/failed re-auth step-up surfaces here too — keep the dialog open.
@@ -995,7 +1000,8 @@ function InlineCustomRoleDialog({
           <DialogTitle>Adjust permissions</DialogTitle>
           <DialogDescription>
             Creates a reusable custom role starting from {roleLabel(baseRole)} — toggle
-            each cell: not set → grant → deny. It is attached to the new user on save.
+            each cell: not set → grant → deny. It is pre-selected here and attached
+            when the user is created.
           </DialogDescription>
         </DialogHeader>
 

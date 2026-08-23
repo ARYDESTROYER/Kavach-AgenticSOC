@@ -87,6 +87,26 @@ const USERS = [
     mfa_enabled: false,
     mfa_required: true,
   },
+  {
+    username: 'erin',
+    role: 'auditor',
+    active: true,
+    created_at: '2026-06-01T00:00:00Z',
+    last_login_at: null,
+    must_change_password: false,
+    mfa_enabled: true,
+    mfa_required: true,
+  },
+  {
+    username: 'frank',
+    role: 'auditor',
+    active: true,
+    created_at: '2026-06-01T00:00:00Z',
+    last_login_at: null,
+    must_change_password: false,
+    mfa_enabled: false,
+    mfa_required: false,
+  },
 ] as unknown as User[];
 
 const MATRIX = {
@@ -248,11 +268,18 @@ describe('Users — Add-user dialog (Round 11)', () => {
     );
   });
 
-  it('surfaces MFA state in the table: enrolled → On, mandated-but-unenrolled → Required', async () => {
+  it('surfaces MFA state as VISIBLE text — On, On · required, Required, and Off', async () => {
     renderUsers();
     await screen.findByText('alice');
+    // alice: enrolled, no mandate → plain "On".
     expect(screen.getByText('On')).toBeInTheDocument();
+    // erin: enrolled AND mandated — the mandate is visible text, not a
+    // title-attribute tooltip (mouse-only).
+    expect(screen.getByText('On · required')).toBeInTheDocument();
+    // bob: mandated-but-unenrolled keeps the warning.
     expect(screen.getByText('Required')).toBeInTheDocument();
+    // frank: unenrolled, no mandate → a visible muted "Off" (never a bare dash).
+    expect(screen.getByText('Off')).toBeInTheDocument();
     // Full name / email render as plain secondary text (#9 — never markup).
     expect(screen.getByText('Alice A · alice@example.com')).toBeInTheDocument();
   });

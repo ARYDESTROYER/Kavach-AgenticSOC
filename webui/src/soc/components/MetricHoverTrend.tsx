@@ -19,8 +19,15 @@
  * Accessibility (WCAG 1.4.13): the trigger participates in the tab order (either the
  * child is itself focusable — pass `focusable={false}` — or the wrapper takes
  * `tabIndex=0`, mirroring `CaseHoverCard`), Radix opens the card on focus as well as
- * hover, the content itself is hoverable, and the sparkline carries a text summary
- * via its `role="img"` label. Colors come from the token palette only.
+ * hover (focus events bubble, so a focusable CHILD reaching focus opens it too), the
+ * content itself is hoverable, and the sparkline carries a text summary via its
+ * `role="img"` label. Colors come from the token palette only.
+ *
+ * Touch access: hover cannot open the card on touch-only devices (Radix ignores
+ * touch pointers and suppresses trigger focus), so `toggleOnClick` (default: the
+ * `focusable` value) makes a press on the wrapper toggle the card. Wrappers whose
+ * CHILD is itself clickable keep the default OFF so navigation presses never fight
+ * the card; Escape and press-outside dismissal keep working via Radix.
  */
 import * as React from 'react';
 
@@ -64,6 +71,17 @@ export interface MetricHoverTrendProps extends MetricTrendSeries {
    * card stays focus-reachable without adding a second tab stop.
    */
   focusable?: boolean;
+  /**
+   * Toggle the card on a press (tap/click) of the wrapper — the only way to reach
+   * it on touch-only devices, where hover never fires and Radix suppresses trigger
+   * focus. Defaults to the `focusable` value: non-clickable wrapped stats become
+   * tappable, while a wrapper around a clickable child (`focusable={false}`) stays
+   * inert so navigation presses never fight the card. Pass `true` explicitly for a
+   * `focusable={false}` wrapper whose child is NOT clickable (e.g. a tile whose
+   * only focusable element is a HelpTip). Presses on interactive descendants
+   * (buttons, links, inputs) are always ignored.
+   */
+  toggleOnClick?: boolean;
   side?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['side'];
   align?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['align'];
   openDelay?: number;
@@ -83,6 +101,7 @@ export function MetricHoverTrend({
   format,
   colorToken = 'primary',
   focusable = true,
+  toggleOnClick,
   side,
   align = 'center',
   openDelay = 160,
@@ -100,8 +119,42 @@ export function MetricHoverTrend({
   const first = measured[0]?.value;
   const latest = measured[measured.length - 1]?.value;
 
+  // Controlled open so a press can toggle the card (touch has no hover); Radix
+  // still drives every hover/focus/dismiss transition through onOpenChange, so
+  // desktop pointer behavior and Escape/press-outside dismissal are unchanged.
+  const toggle = toggleOnClick ?? focusable;
+  const [open, setOpen] = React.useState(false);
+  // Radix dismisses an open card on pointerdown OUTSIDE the portalled content —
+  // and the trigger IS outside it — so by pointerup `open` may already read false
+  // again. Record the pre-press state on pointerdown and commit the toggle on
+  // pointerup, so a press on the trigger of an open card closes it instead of
+  // instantly re-opening it.
+  const pressWasOpenRef = React.useRef<boolean | null>(null);
+
+  /** True when the press landed on an interactive descendant (never toggle those). */
+  const onInteractiveDescendant = (e: React.PointerEvent<HTMLDivElement>): boolean => {
+    const el =
+      e.target instanceof Element
+        ? e.target.closest('button, a, input, select, textarea, [role="button"]')
+        : null;
+    return !!el && e.currentTarget.contains(el);
+  };
+
+  const handlePressStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    pressWasOpenRef.current = onInteractiveDescendant(e) ? null : open;
+  };
+  const handlePressEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (onInteractiveDescendant(e)) {
+      pressWasOpenRef.current = null;
+      return;
+    }
+    const wasOpen = pressWasOpenRef.current ?? open;
+    pressWasOpenRef.current = null;
+    setOpen(!wasOpen);
+  };
+
   return (
-    <HoverCard openDelay={openDelay} closeDelay={closeDelay}>
+    <HoverCard open={open} onOpenChange={setOpen} openDelay={openDelay} closeDelay={closeDelay}>
       <HoverCardTrigger asChild>
         {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- the Radix HoverCard
             trigger must be focus-reachable so the trend card opens for keyboard users
@@ -110,6 +163,8 @@ export function MetricHoverTrend({
         <div
           data-testid="metric-trend-trigger"
           tabIndex={focusable ? 0 : undefined}
+          onPointerDown={toggle ? handlePressStart : undefined}
+          onPointerUp={toggle ? handlePressEnd : undefined}
           className={cn(
             'h-full min-w-0',
             // A quiet "there is more here" affordance on the non-clickable triggers;

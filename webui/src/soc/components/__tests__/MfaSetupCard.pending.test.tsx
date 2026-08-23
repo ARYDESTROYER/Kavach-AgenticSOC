@@ -8,7 +8,9 @@
  *     (`onComplete` receives the verify-shaped LoginResult);
  *   - hide the mid-flow Cancel affordance (the parent owns the only exits);
  *   - surface an expired/invalid pending token (401) via `onPendingExpired`, while a
- *     wrong TOTP code stays an inline retryable error.
+ *     wrong TOTP code stays an inline retryable error;
+ *   - gate the submit behind an explicit "I have saved my recovery codes" ack: a
+ *     successful confirm IS the login and destroys the only copy of the codes.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -107,6 +109,8 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '654321' },
     });
+    // The saved-recovery-codes ack is required before the login-completing confirm.
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
     fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
 
     await waitFor(() => expect(enrollConfirmMock).toHaveBeenCalledWith('pend-7', '654321'));
@@ -114,6 +118,36 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     await waitFor(() => expect(onComplete).toHaveBeenCalledWith(loginResult));
     // The login-phase completion path is onComplete, not the session-mode callback.
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('gates "Verify & sign in" on the saved-recovery-codes acknowledgment', async () => {
+    enrollConfirmMock.mockResolvedValue({ token: 't-1', user: { username: 'bob' } });
+    render(<MfaSetupCard enabled={false} frameless pendingToken="pend-7" />);
+    await screen.findByText('PENDSECRET23456789');
+
+    // Code alone is NOT enough: success would immediately destroy the only copy
+    // of the recovery codes, so the explicit ack must be ticked too.
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
+      target: { value: '654321' },
+    });
+    const submit = screen.getByRole('button', { name: 'Verify & sign in' });
+    expect(submit).toBeDisabled();
+
+    const ack = screen.getByLabelText(/saved my recovery codes/i);
+    fireEvent.click(ack);
+    expect(screen.getByRole('button', { name: 'Verify & sign in' })).toBeEnabled();
+
+    // Un-ticking re-disables — the gate is the checkbox, not a one-shot flag.
+    fireEvent.click(ack);
+    expect(screen.getByRole('button', { name: 'Verify & sign in' })).toBeDisabled();
+  });
+
+  it('suppresses the confirm-input autoFocus in pendingToken mode (reading order starts at the setup steps)', async () => {
+    render(<MfaSetupCard enabled={false} frameless pendingToken="pend-7" />);
+    await screen.findByText('PENDSECRET23456789');
+    // The parent (login) owns focus on its mode heading; the code input must not
+    // yank focus past the QR/secret/recovery-codes steps when the payload lands.
+    expect(screen.getByLabelText(/enter the 6-digit code/i)).not.toHaveFocus();
   });
 
   it('reports an expired pending token at setup via onPendingExpired', async () => {
@@ -146,6 +180,7 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '000000' },
     });
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
     fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
 
     expect(await screen.findByText('invalid code')).toBeInTheDocument();
@@ -167,16 +202,28 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
       target: { value: '654321' },
     });
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
     fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
 
     await waitFor(() => expect(onPendingExpired).toHaveBeenCalled());
   });
 
   it('does not auto-start or reroute WITHOUT a pending token (session mode unchanged)', async () => {
+    setupMock.mockResolvedValue({ ...SETUP_PAYLOAD });
     render(<MfaSetupCard enabled={false} frameless />);
     // No auto-start: the explicit action button renders and nothing was called.
     expect(screen.getByRole('button', { name: /enable two-factor/i })).toBeInTheDocument();
     expect(setupMock).not.toHaveBeenCalled();
     expect(enrollSetupMock).not.toHaveBeenCalled();
+
+    // Session-authed enrollment keeps its existing flow: no saved-codes ack gate
+    // (Cancel + re-setup remain available), and the code alone enables the submit.
+    fireEvent.click(screen.getByRole('button', { name: /enable two-factor/i }));
+    await screen.findByText('PENDSECRET23456789');
+    expect(screen.queryByLabelText(/saved my recovery codes/i)).toBeNull();
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
+      target: { value: '654321' },
+    });
+    expect(screen.getByRole('button', { name: 'Verify & enable' })).toBeEnabled();
   });
 });

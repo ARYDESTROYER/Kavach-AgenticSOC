@@ -209,6 +209,18 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [password, setPassword] = React.useState('');
   const signinIdentityRef = React.useRef<HTMLInputElement>(null);
   const signinPasswordRef = React.useRef<HTMLInputElement>(null);
+  // Mandated-MFA enrollment focus target: entering 'mfa-enroll-required' unmounts
+  // the sign-in form (focus would drop to <body> and the requirement would go
+  // unannounced), so the mode HEADING takes programmatic focus instead — SR +
+  // keyboard users land on "Set up two-factor authentication", whose
+  // aria-describedby reads the requirement explanation.
+  const modeHeadingRef = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    if (mode !== 'mfa-enroll-required') return;
+    // Same deferred pattern the sign-in steps use for their input focus.
+    const t = window.setTimeout(() => modeHeadingRef.current?.focus(), 0);
+    return () => window.clearTimeout(t);
+  }, [mode]);
   const [themePaletteSettling, setThemePaletteSettling] = React.useState(false);
   const themePaletteFrameRef = React.useRef<number | null>(null);
   const [confirm, setConfirm] = React.useState('');
@@ -626,10 +638,22 @@ export default function Login({ onAuthenticated }: LoginProps) {
           className="rounded-none border-0 bg-transparent shadow-none"
         >
             <CardHeader className="space-y-0 px-0 pb-0 pt-0 text-left">
-              <h1 className="break-words text-display font-medium text-foreground">
+              {/* tabIndex={-1}: the mandated-MFA transition focuses this heading
+                  programmatically (see modeHeadingRef) — never a tab stop. The
+                  describedby hands SRs the mode description (i.e. WHY enrollment
+                  is required) as the heading's accessible context on focus. */}
+              <h1
+                ref={modeHeadingRef}
+                tabIndex={-1}
+                aria-describedby="login-mode-description"
+                className="break-words text-display font-medium text-foreground outline-none"
+              >
                 {activeTitle}
               </h1>
-              <CardDescription className="mt-3 max-w-sm break-words text-base leading-5">
+              <CardDescription
+                id="login-mode-description"
+                className="mt-3 max-w-sm break-words text-base leading-5"
+              >
                 {activeDescription}
               </CardDescription>
             </CardHeader>

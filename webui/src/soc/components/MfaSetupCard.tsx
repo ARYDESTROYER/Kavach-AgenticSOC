@@ -16,7 +16,10 @@
  * rerouted to the PUBLIC pending-token-gated endpoints (/auth/mfa/enroll-setup +
  * /enroll-confirm; byte-same setup payload, recovery codes included). Enrollment
  * auto-starts (the step is mandatory), the mid-flow Cancel affordance is hidden (the
- * parent owns the only exits), and a successful confirm IS a completed login: the
+ * parent owns the only exits), the confirm input never steals focus (the parent's
+ * mode heading owns it, keeping the QR/secret/recovery reading order), a required
+ * "I have saved my recovery codes" acknowledgment gates the submit (success destroys
+ * the only copy of the codes), and a successful confirm IS a completed login: the
  * server mints the session + cookie and `onComplete` receives the verify-shaped
  * LoginResult. A rejected/expired pending token surfaces via `onPendingExpired`.
  *
@@ -43,6 +46,7 @@ import { api, ApiError } from '@/lib/api';
 import { copyText } from '@/lib/clipboard';
 import type { LoginResult, MfaSetupResult } from '@/lib/types';
 import { Button } from '@/ui/button';
+import { Checkbox } from '@/ui/checkbox';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
 import { Alert, AlertDescription } from '@/ui/alert';
@@ -129,6 +133,10 @@ export function MfaSetupCard({
   const [enroll, setEnroll] = React.useState<MfaSetupResult | null>(null);
   const [qrFailed, setQrFailed] = React.useState(false);
   const [confirmCode, setConfirmCode] = React.useState('');
+  // pendingToken mode: a successful confirm IS the login and immediately destroys
+  // the only copy of the recovery codes, so an explicit "I saved them" ack gates
+  // the submit (session-authed mode keeps its Cancel/onChanged flow unchanged).
+  const [savedAck, setSavedAck] = React.useState(false);
   // Disable state.
   const [disabling, setDisabling] = React.useState(false);
   const [disableCode, setDisableCode] = React.useState('');
@@ -158,6 +166,7 @@ export function MfaSetupCard({
         : await api.auth.mfa.setup();
       setEnroll(res);
       setConfirmCode('');
+      setSavedAck(false);
     } catch (e) {
       if (isPendingRejected(e, 'setup')) {
         onPendingExpired?.();
@@ -386,6 +395,22 @@ export function MfaSetupCard({
                   <span key={c} className="rounded border border-border bg-card px-2 py-1">{c}</span>
                 ))}
               </div>
+              {/* Login-phase mandated mode only: confirming immediately completes the
+                  login and this one-time view of the codes is gone — require an
+                  explicit save acknowledgment before "Verify & sign in" enables. */}
+              {pendingToken ? (
+                <div className="flex items-center gap-2 pt-1">
+                  <Checkbox
+                    id="mfa-recovery-saved"
+                    checked={savedAck}
+                    onCheckedChange={(v) => setSavedAck(v === true)}
+                    disabled={busy}
+                  />
+                  <Label htmlFor="mfa-recovery-saved" className="text-xs font-normal">
+                    I have saved my recovery codes somewhere safe
+                  </Label>
+                </div>
+              ) : null}
             </div>
 
             <form onSubmit={confirm} className="space-y-2" noValidate>
@@ -400,10 +425,18 @@ export function MfaSetupCard({
                   value={confirmCode}
                   onChange={(ev) => setConfirmCode(ev.target.value)}
                   disabled={busy}
-                  /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
-                  autoFocus
+                  /* No autoFocus in the login-phase mandated mode: the enroll payload
+                     resolves AFTER the mode heading takes focus, and yanking focus to
+                     the last field would skip the secret/QR/recovery-codes reading
+                     order. Session-authed mode keeps the deliberate placement. */
+                  /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog flow (session mode only); suppressed in pendingToken mode */
+                  autoFocus={pendingToken ? undefined : true}
                 />
-                <Button type="submit" size="sm" disabled={busy || confirmCode.trim().length < 6}>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={busy || confirmCode.trim().length < 6 || (!!pendingToken && !savedAck)}
+                >
                   {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Check aria-hidden />}
                   {/* In the login-phase mandated mode a successful confirm IS the login. */}
                   {pendingToken ? 'Verify & sign in' : 'Verify & enable'}

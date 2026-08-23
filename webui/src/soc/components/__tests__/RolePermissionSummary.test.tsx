@@ -17,6 +17,9 @@ import { RESOURCE_ACTIONS, type GrantMap } from '@/soc/pages/Roles.api';
 const MATRIX: Record<string, GrantMap> = {
   analyst_tier1: { cases: ['read', 'comment'], playbooks: ['read', 'run'] },
   wild: { cases: ['*'], mystery_resource: ['*'] },
+  // A real wire shape: a custom role inheriting a wildcard base can resolve an
+  // UNKNOWN resource to literals + '*' in one list.
+  mixed_wild: { mystery_resource: ['read', '*'] },
   super_admin: Object.fromEntries(Object.keys(RESOURCE_ACTIONS).map((r) => [r, ['*']])),
 };
 
@@ -35,6 +38,14 @@ describe('summarizeRoleGrants', () => {
     // "all actions" chip instead of silently disappearing (the drift-proof path).
     const mystery = rows.find((r) => r.resource === 'mystery_resource');
     expect(mystery?.actions).toEqual(['all actions']);
+  });
+
+  it('keeps the wildcard disclosure when an UNKNOWN resource mixes literals with "*"', () => {
+    // ['read','*'] on a resource the mirror does not know: dropping the '*' would
+    // silently hide the wildcard grant — it must survive as the honest chip.
+    const rows = summarizeRoleGrants(MATRIX, 'mixed_wild');
+    const mystery = rows.find((r) => r.resource === 'mystery_resource');
+    expect(mystery?.actions).toEqual(['read', 'all actions']);
   });
 
   it('returns [] for an unknown role or missing matrix', () => {
@@ -70,5 +81,13 @@ describe('RolePermissionSummary render', () => {
   it('states plainly when a role grants nothing', () => {
     render(<RolePermissionSummary roleName="ghost" matrix={MATRIX} />);
     expect(screen.getByText('No permissions granted by this role.')).toBeInTheDocument();
+  });
+
+  it('makes the scrolling grant list keyboard-reachable and named', () => {
+    // The bounded scroller must be focusable (Safari only keyboard-scrolls
+    // focusable scrollers) and carry an accessible name.
+    render(<RolePermissionSummary roleName="analyst_tier1" matrix={MATRIX} />);
+    const list = screen.getByRole('list', { name: 'Permissions granted by Analyst — Tier 1' });
+    expect(list).toHaveAttribute('tabindex', '0');
   });
 });

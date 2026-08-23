@@ -15,7 +15,7 @@
  * Fully offline: api + posture fetch mocked; no #3 behaviour touched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { act } from 'react';
 
@@ -126,9 +126,15 @@ describe('Overview — hover trendlines', () => {
     await waitFor(() =>
       expect(trendsMock).toHaveBeenCalledWith(24, expect.any(AbortSignal)),
     );
-    // The quiet discoverability line replaces the removed delta footnote.
+    // The quiet discoverability line replaces the removed delta footnote. It is
+    // device-honest: the hover/focus copy shows only on hover-capable devices,
+    // while touch-only devices (hover: none) get the tap instruction — both spans
+    // ship and CSS media picks exactly one.
     expect(
       await screen.findByText(/Hover or focus a metric for its last 24 hours · 1h buckets trend\./i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Tap a metric for its last 24 hours · 1h buckets trend\./i),
     ).toBeInTheDocument();
   });
 
@@ -215,6 +221,57 @@ describe('Overview — hover trendlines', () => {
     expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
     await userEvent.hover(tile);
     // Give any (wrong) hover card a beat to appear, then assert none did.
+    await new Promise((r) => setTimeout(r, 350));
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+  });
+
+  it('MTTA/MTTR tiles stay ONE tab stop: the HelpTip button focus bubbles open the trend card', async () => {
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    // The full timing trio lives under the collapsed Deeper-analytics fold.
+    await userEvent.click(await screen.findByRole('button', { name: /Deeper analytics/i }));
+    const helpBtn = await screen.findByRole('button', { name: 'About MTTA' });
+
+    // focusable={false}: the wrapper adds NO second tab stop of its own …
+    const trigger = helpBtn.closest('[data-testid="metric-trend-trigger"]') as HTMLElement;
+    expect(trigger).not.toBeNull();
+    expect(trigger).not.toHaveAttribute('tabindex');
+
+    // … and focusing the tile's HelpTip (?) button — its only tab stop — bubbles
+    // to the Radix trigger and opens the trend card (keyboard path retained).
+    act(() => helpBtn.focus());
+    const card = await findTrendCard();
+    expect(within(card).getByText('MTTA · daily mean')).toBeInTheDocument();
+  });
+
+  it('a press (tap) on a non-clickable wrapped metric opens its trend card (touch access)', async () => {
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    // The MTTD timing stat is a non-clickable wrapped metric: its wrapper is the
+    // focusable trigger, so a press toggles the card (hover never fires on touch).
+    const mttdLabel = await screen.findByText('MTTD', { selector: 'div' });
+    const trigger = mttdLabel.closest('[data-testid="metric-trend-trigger"]') as HTMLElement;
+    expect(trigger).not.toBeNull();
+
+    fireEvent.pointerDown(trigger);
+    fireEvent.pointerUp(trigger);
+    const card = await findTrendCard();
+    expect(within(card).getByText('MTTD · daily mean')).toBeInTheDocument();
+  });
+
+  it('clicking a navigating KPI tile still navigates and does NOT open a trend card', async () => {
+    const onNavigate = vi.fn();
+    render(<Overview onNavigate={onNavigate} />);
+    await screen.findByTestId('page-hero');
+    const tile = await screen.findByTestId('kpi-open-cases');
+
+    // A plain click (no hover): the tile's own drill-through wins outright.
+    fireEvent.pointerDown(tile);
+    fireEvent.pointerUp(tile);
+    fireEvent.click(tile);
+
+    expect(onNavigate).toHaveBeenCalledWith('cases', expect.anything());
+    // Give any (wrong) card a beat to appear, then assert none did.
     await new Promise((r) => setTimeout(r, 350));
     expect(screen.queryByTestId('metric-trend-card')).toBeNull();
   });
