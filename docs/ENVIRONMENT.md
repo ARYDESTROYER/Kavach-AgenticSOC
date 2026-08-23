@@ -242,7 +242,7 @@ GHCR packages must be public and anonymously pullable by exact digest. See
 | `TLSOC_AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` / `TLSOC_AWS_REGION` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | **Round 3** — AWS Bedrock cloud LLM (stdlib SigV4, no boto3) (optional) |
 | `TLSOC_VERTEX_PROJECT` / `_LOCATION` / `_API_KEY` | `VERTEX_PROJECT` / `VERTEX_LOCATION` / `VERTEX_API_KEY` | **Round 3** — Google Vertex cloud LLM (short-lived OAuth Bearer) (optional) |
 | `TLSOC_GREYNOISE_API_KEY` · `TLSOC_SHODAN_API_KEY` · `TLSOC_CENSYS_API_ID`/`_SECRET` · `TLSOC_BINARYEDGE_API_KEY` · `TLSOC_IPINFO_TOKEN` · `TLSOC_OTX_API_KEY` · `TLSOC_PULSEDIVE_API_KEY` · `TLSOC_SPUR_API_KEY` · `TLSOC_XFORCE_API_KEY`/`_PASSWORD` · `TLSOC_URLSCAN_API_KEY` · `TLSOC_HIBP_API_KEY` · `TLSOC_HONEYPOT_ACCESS_KEY` · `TLSOC_ABUSECH_AUTH_KEY` | the same names unprefixed | **Round 3** — the 17-provider enrichment SPI (§2.7); all optional + default-off; keyless providers (Shodan InternetDB / IPinfo Lite / abuse.ch trio / RDAP-DoH) need no key and are default-on |
-| `TLSOC_CROWDSEC_API_KEY` · `TLSOC_GOOGLE_SAFEBROWSING_API_KEY` · `TLSOC_IPQUALITYSCORE_API_KEY` · `TLSOC_IPDATA_API_KEY` · `TLSOC_APIVOID_API_KEY` · `TLSOC_MALTIVERSE_API_KEY` · `TLSOC_SECURITYTRAILS_API_KEY` · `TLSOC_CRIMINALIP_API_KEY` · `TLSOC_NETLAS_API_KEY` · `TLSOC_HYBRID_ANALYSIS_API_KEY` · `TLSOC_METADEFENDER_API_KEY` · `TLSOC_EMAILREP_API_KEY` | the same names unprefixed | **Round 11** — 12 more keyed enrichment providers (§2.7; registry now 38 total); all optional + default-off. The 7 new keyless providers need no env var at all: CIRCL hashlookup / DShield / Onionoo are default-on; Spamhaus / Cymru MHR (need the host's own resolver) and Robtex / crt.sh (slow) are default-off toggles in Settings → Enrichment |
+| `TLSOC_CROWDSEC_API_KEY` · `TLSOC_GOOGLE_SAFEBROWSING_API_KEY` · `TLSOC_IPQUALITYSCORE_API_KEY` · `TLSOC_IPDATA_API_KEY` · `TLSOC_APIVOID_API_KEY` · `TLSOC_MALTIVERSE_API_KEY` · `TLSOC_SECURITYTRAILS_API_KEY` · `TLSOC_CRIMINALIP_API_KEY` · `TLSOC_NETLAS_API_KEY` · `TLSOC_HYBRID_ANALYSIS_API_KEY` · `TLSOC_METADEFENDER_API_KEY` · `TLSOC_EMAILREP_API_KEY` | the same names unprefixed | **Round 11** — 12 more keyed enrichment providers (§2.7; registry now 38 total); all optional + default-off. On the agnostic stack these ride the `deploy/docker-compose.enrichment-keys.yml` overlay (the frozen v1 base cannot change); the legacy stack forwards them directly. The 7 new keyless providers need no env var at all: CIRCL hashlookup / DShield / Onionoo are default-on; Spamhaus / Cymru MHR (need the host's own resolver) and Robtex / crt.sh (slow) are default-off toggles in Settings → Enrichment |
 | `TLSOC_LITELLM_API_KEY` | `LITELLM_API_KEY` | **Round 9** — optional key for a self-hosted LiteLLM-proxy / vLLM / Ollama / LM Studio endpoint (the `openai_compatible` provider path). **Not forwarded by the agnostic compose today** — add a matching `- LITELLM_API_KEY=${TLSOC_LITELLM_API_KEY:-}` line to `tlsoc-backend`'s `environment:` block yourself if you need it. Also settable at runtime via the "Add local model" dialog (`POST /api/llm/models/custom`), or omit entirely for a no-auth local endpoint (falls back to `OPENAI_API_KEY`). |
 | `TLSOC_EMBEDDING_API_KEY` | `EMBEDDING_API_KEY` | embeddings (falls back to the OpenAI key) |
 | `TLSOC_REDIS_URL` | `REDIS_URL` | enrichment cache (degrades to in-memory) |
@@ -394,11 +394,17 @@ discipline is unchanged (#3): verdict feeds score 80–90, graded reputations ma
 0..100, and context-only sources cap at ≤40 with `malicious=False`, so no context
 provider alone can cross the default `max()` fusion cut.
 
-> Compose note: both reference compose files (agnostic + legacy) map every cloud-LLM
-> and enrichment key above (`TLSOC_*` → the unprefixed backend names) — no manual
-> `environment:` edits are needed for these. The one exception is `LITELLM_API_KEY`
-> (§2.3), which is not forwarded today. Running the backend directly, it reads the
-> unprefixed names from the environment as-is.
+> Compose note: the legacy compose file maps every cloud-LLM and enrichment key
+> above (`TLSOC_*` → the unprefixed backend names). The **agnostic** base compose
+> is the frozen supervised-update v1 contract (`deploy/update-base-v1.sha256` —
+> its bytes must not change or installed hosts are stranded), so it maps the keys
+> through **Round 3** only; the 12 **Round-11** keyed vars ship as the additive
+> overlay `deploy/docker-compose.enrichment-keys.yml`:
+> `./scripts/agentic-soc-compose.sh -f deploy/docker-compose.enrichment-keys.yml up -d`.
+> (Keys can also be set at runtime in Settings → Enrichment — the in-memory
+> secret tier, lost on restart.) `LITELLM_API_KEY` (§2.3) is not forwarded by
+> either file today. Running the backend directly, it reads the unprefixed names
+> from the environment as-is.
 
 ### 2.8 Autopilot defaults (Round 10 — UI-editable Preferences, not env)
 

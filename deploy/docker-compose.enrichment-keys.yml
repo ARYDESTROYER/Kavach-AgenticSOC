@@ -1,0 +1,32 @@
+# Optional overlay: Round-11 enrichment provider keys for the AGNOSTIC stack.
+#
+# The canonical base (docker-compose.agnostic.yml) is the supervised-update v1
+# contract: its bytes are frozen by deploy/update-base-v1.sha256 and MUST NOT
+# change, or already-installed hosts are stranded (see AGENTS.md, release
+# section). New env passthrough therefore ships as this additive overlay.
+#
+# Usage (the launcher forwards extra Compose flags verbatim):
+#   ./scripts/agentic-soc-compose.sh -f deploy/docker-compose.enrichment-keys.yml up -d
+#
+# Every key is optional and its provider is default-off; the Round-11 keyless
+# providers (CIRCL hashlookup / DShield / Onionoo / Spamhaus / Cymru MHR /
+# Robtex / crt.sh) need no key and no overlay. Keys can also be set at runtime
+# in Settings -> Enrichment (the in-memory secret tier, lost on restart) — this
+# overlay is the durable env path. The legacy-ELK stack
+# (docker-compose.tlsoc.yml) is not updater-frozen and maps these keys
+# directly.
+services:
+  tlsoc-backend:
+    environment:
+      - CROWDSEC_API_KEY=${TLSOC_CROWDSEC_API_KEY:-}
+      - GOOGLE_SAFEBROWSING_API_KEY=${TLSOC_GOOGLE_SAFEBROWSING_API_KEY:-}
+      - IPQUALITYSCORE_API_KEY=${TLSOC_IPQUALITYSCORE_API_KEY:-}
+      - IPDATA_API_KEY=${TLSOC_IPDATA_API_KEY:-}
+      - APIVOID_API_KEY=${TLSOC_APIVOID_API_KEY:-}
+      - MALTIVERSE_API_KEY=${TLSOC_MALTIVERSE_API_KEY:-}
+      - SECURITYTRAILS_API_KEY=${TLSOC_SECURITYTRAILS_API_KEY:-}
+      - CRIMINALIP_API_KEY=${TLSOC_CRIMINALIP_API_KEY:-}
+      - NETLAS_API_KEY=${TLSOC_NETLAS_API_KEY:-}
+      - HYBRID_ANALYSIS_API_KEY=${TLSOC_HYBRID_ANALYSIS_API_KEY:-}
+      - METADEFENDER_API_KEY=${TLSOC_METADEFENDER_API_KEY:-}
+      - EMAILREP_API_KEY=${TLSOC_EMAILREP_API_KEY:-}
