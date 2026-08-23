@@ -156,6 +156,10 @@ def test_trend_metrics_cohort_counts_reconcile_with_quality_semantics() -> None:
     assert earlier["new_cases"] == 2
     assert earlier["needs_human"] == 1
     assert earlier["escalated"] == 1
+    # The SAME case is both NEEDS_HUMAN-verdicted and escalated — the honest
+    # "sent to human" series counts it ONCE (summing nh+escalated would say 2).
+    assert earlier["sent_to_human"] == 1
+    assert newest["sent_to_human"] == 0
     assert earlier["fp_rate"] == 0.0         # 0 FP of 1 verdicted → a real 0, not null
     # Reconciliation with the posture tiles: bucket sums equal quality_metrics tallies.
     quality = M.quality_metrics(cases)
@@ -232,7 +236,7 @@ async def test_trends_endpoint_contract_shape(metrics_client, app_state) -> None
     for row in body["buckets"]:
         assert set(row) == {
             "t", "new_cases", "closed", "auto_closed", "false_positives",
-            "needs_human", "escalated", "fp_rate", "alerts",
+            "needs_human", "escalated", "sent_to_human", "fp_rate", "alerts",
         }
     assert sum(r_["false_positives"] for r_ in body["buckets"]) == 1
     assert sum(r_["auto_closed"] for r_ in body["buckets"]) == 1

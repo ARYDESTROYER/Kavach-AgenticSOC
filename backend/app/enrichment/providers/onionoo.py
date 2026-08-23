@@ -19,6 +19,25 @@ from ._common import http_json_soft, rate_guard
 _URL = "https://onionoo.torproject.org/details"
 
 
+def _relay_has_address(relay: dict, ip: str) -> bool:
+    """True only when the relay actually carries the queried address.
+
+    Onionoo's ``search`` parameter matches IP addresses by PREFIX, so querying
+    ``185.220.101.1`` also returns relays at ``185.220.101.10``/``.1xx``. A hit
+    is only authoritative after an exact comparison against the relay's
+    ``or_addresses`` (``"ip:port"`` / ``"[v6]:port"``) and ``exit_addresses``.
+    """
+    want = ip.strip().lower().strip("[]")
+    for entry in relay.get("or_addresses") or []:
+        addr = str(entry).rsplit(":", 1)[0].strip().lower().strip("[]")
+        if addr == want:
+            return True
+    for entry in relay.get("exit_addresses") or []:
+        if str(entry).strip().lower().strip("[]") == want:
+            return True
+    return False
+
+
 class OnionooProvider(EnrichmentProvider):
     name = "onionoo"
 
@@ -56,7 +75,11 @@ class OnionooProvider(EnrichmentProvider):
         data = await http_json_soft(_URL, params={"search": value}, timeout=4.0)
         relays = data.get("relays") if isinstance(data, dict) else None
         relays = relays if isinstance(relays, list) else []
-        matched = [r for r in relays if isinstance(r, dict)]
+        # Onionoo search is a prefix match — keep only relays whose addresses
+        # contain the exact queried IP, or a shared prefix mints false Tor tags.
+        matched = [
+            r for r in relays if isinstance(r, dict) and _relay_has_address(r, value)
+        ]
         if not matched:
             return ProviderResult(
                 provider=self.name, indicator=value, indicator_kind=kind.value,

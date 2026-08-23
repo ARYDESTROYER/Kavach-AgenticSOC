@@ -136,6 +136,8 @@ async def test_onionoo_exit_node_is_anonymity_context(monkeypatch) -> None:
 
     _patch_http(monkeypatch,
                 {"relays": [{"nickname": "fastexit1", "flags": ["Exit", "Running"],
+                             "or_addresses": ["185.220.101.1:443"],
+                             "exit_addresses": ["185.220.101.1"],
                              "running": True, "country": "de"}]},
                 target_module="app.enrichment.providers.onionoo")
     prov = onionoo.OnionooProvider(EnrichmentConfig(), _secrets())
@@ -148,7 +150,9 @@ async def test_onionoo_exit_node_is_anonymity_context(monkeypatch) -> None:
 async def test_onionoo_non_exit_relay_and_miss(monkeypatch) -> None:
     from app.enrichment.providers import onionoo
 
-    _patch_http(monkeypatch, {"relays": [{"nickname": "mid", "flags": ["Fast"], "running": True}]},
+    _patch_http(monkeypatch,
+                {"relays": [{"nickname": "mid", "flags": ["Fast"], "running": True,
+                             "or_addresses": ["192.0.2.7:9001"]}]},
                 target_module="app.enrichment.providers.onionoo")
     prov = onionoo.OnionooProvider(EnrichmentConfig(), _secrets())
     r = await prov.lookup("192.0.2.7", IndicatorKind.IP)
@@ -156,6 +160,26 @@ async def test_onionoo_non_exit_relay_and_miss(monkeypatch) -> None:
     _patch_http(monkeypatch, {"relays": []}, target_module="app.enrichment.providers.onionoo")
     r2 = await prov.lookup("192.0.2.8", IndicatorKind.IP)
     assert r2.ok and r2.score == 0 and r2.raw["tor_relay"] is False
+
+
+async def test_onionoo_prefix_match_is_not_a_tor_hit(monkeypatch) -> None:
+    """Onionoo ``search`` is a PREFIX match — a relay at 185.220.101.10 must not
+    tag the distinct IP 185.220.101.1 as Tor (false 'tor_exit' evidence)."""
+    from app.enrichment.providers import onionoo
+
+    _patch_http(monkeypatch,
+                {"relays": [{"nickname": "otherexit", "flags": ["Exit", "Running"],
+                             "or_addresses": ["185.220.101.10:443", "[2001:db8::1]:9001"],
+                             "exit_addresses": ["185.220.101.10"],
+                             "running": True}]},
+                target_module="app.enrichment.providers.onionoo")
+    prov = onionoo.OnionooProvider(EnrichmentConfig(), _secrets())
+    r = await prov.lookup("185.220.101.1", IndicatorKind.IP)
+    assert r.ok and r.score == 0 and r.raw["tor_relay"] is False
+    assert r.tags == []
+    # The IPv6 or_address form ("[addr]:port") still exact-matches correctly.
+    r6 = await prov.lookup("2001:db8::1", IndicatorKind.IP)
+    assert r6.ok and r6.score == 40 and "tor_exit" in r6.tags
 
 
 # --------------------------------------------------------------------------- #

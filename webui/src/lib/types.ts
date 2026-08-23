@@ -3057,6 +3057,10 @@ export interface MetricsTrendBucket {
   false_positives: number;
   needs_human: number;
   escalated: number;
+  /** Cohort cases counted ONCE that reached a human (NEEDS_HUMAN verdict OR
+   *  escalated). `needs_human` and `escalated` overlap — never sum them;
+   *  chart this field instead. Optional: older backends omit it. */
+  sent_to_human?: number;
   /** Percent 0-100, or null when the bucket has no verdicted denominator. */
   fp_rate: number | null;
   /** Raw alerts ingested (durable noise counters), or null when unavailable. */

@@ -983,6 +983,11 @@ def trend_metrics(
       them: ``closed`` == its ``terminal_cases``, ``auto_closed`` == its
       ``decision_by==AGENT`` terminal tally, ``escalated`` == its escalated
       condition).
+    * ``sent_to_human`` — cohort cases counted ONCE that reached a human either
+      way: verdict ``NEEDS_HUMAN`` or the escalated condition. ``needs_human``
+      (a verdict tally) and ``escalated`` (a status/history tally) OVERLAP — an
+      escalated NEEDS_HUMAN case is in both — so consumers must never sum them;
+      this field is the honest single-count series for "sent to human".
     * ``fp_rate`` — ``false_positives / verdicted`` WITHIN the bucket (the same
       numerator/denominator as posture's ``false_positive_rate``), expressed 0-100;
       ``null`` when the bucket has no verdicted case.
@@ -1052,6 +1057,16 @@ def trend_metrics(
             or (c.escalation_level or 0) > 0
             or _timings_for(c, timings).escalated_any is not None
         )
+        # Once-counted union: `needs_human` (verdict) and `escalated` (status/
+        # history) overlap on an escalated NEEDS_HUMAN case — never sum them.
+        sent_to_human = sum(
+            1
+            for c in graded
+            if c.verdict == Verdict.NEEDS_HUMAN
+            or (c.status == CaseStatus.ESCALATED)
+            or (c.escalation_level or 0) > 0
+            or _timings_for(c, timings).escalated_any is not None
+        )
 
         alerts: int | None = None
         if alerts_available:
@@ -1072,6 +1087,7 @@ def trend_metrics(
             "false_positives": fp,
             "needs_human": nh,
             "escalated": escalated,
+            "sent_to_human": sent_to_human,
             "fp_rate": round(100.0 * fp / verdicted, 1) if verdicted else None,
             "alerts": alerts,
         })

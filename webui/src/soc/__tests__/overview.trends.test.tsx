@@ -90,9 +90,11 @@ const TRENDS: MetricsTrends = {
   bucket_minutes: 60,
   generated_at: '2026-07-01T08:00:00Z',
   buckets: [
-    { t: '2026-07-01T05:00:00Z', new_cases: 2, closed: 1, auto_closed: 1, false_positives: 0, needs_human: 1, escalated: 0, fp_rate: null, alerts: null },
-    { t: '2026-07-01T06:00:00Z', new_cases: 0, closed: 0, auto_closed: 0, false_positives: 0, needs_human: 0, escalated: 0, fp_rate: 25, alerts: null },
-    { t: '2026-07-01T07:00:00Z', new_cases: 5, closed: 2, auto_closed: 3, false_positives: 1, needs_human: 2, escalated: 1, fp_rate: 50, alerts: null },
+    { t: '2026-07-01T05:00:00Z', new_cases: 2, closed: 1, auto_closed: 1, false_positives: 0, needs_human: 1, escalated: 0, sent_to_human: 1, fp_rate: null, alerts: null },
+    { t: '2026-07-01T06:00:00Z', new_cases: 0, closed: 0, auto_closed: 0, false_positives: 0, needs_human: 0, escalated: 0, sent_to_human: 0, fp_rate: 25, alerts: null },
+    // needs_human 2 + escalated 1 OVERLAP on one case: the honest once-counted
+    // union is 2 — a client-side nh+esc sum would wrongly chart 3.
+    { t: '2026-07-01T07:00:00Z', new_cases: 5, closed: 2, auto_closed: 3, false_positives: 1, needs_human: 2, escalated: 1, sent_to_human: 2, fp_rate: 50, alerts: null },
   ],
   truncated: false,
   store_total: 7,
@@ -144,6 +146,20 @@ describe('Overview — hover trendlines', () => {
     // First/latest come from buckets.new_cases = [2, 0, 5].
     expect(within(card).getByText('first 2')).toBeInTheDocument();
     expect(within(card).getByText('latest 5')).toBeInTheDocument();
+  });
+
+  it('hover on the Escalated tile charts the once-counted sent_to_human series', async () => {
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(screen.getByTestId('kpi-escalated-to-human')).toBeInTheDocument());
+
+    await userEvent.hover(screen.getByTestId('kpi-escalated-to-human'));
+    const card = await findTrendCard();
+    expect(within(card).getByText('Sent to human')).toBeInTheDocument();
+    // buckets.sent_to_human = [1, 0, 2]. The last bucket has needs_human 2 and
+    // escalated 1 overlapping on one case — a nh+esc sum would wrongly show 3.
+    expect(within(card).getByText('first 1')).toBeInTheDocument();
+    expect(within(card).getByText('latest 2')).toBeInTheDocument();
   });
 
   it('hover on the Auto-resolved tile reveals the auto_closed series', async () => {

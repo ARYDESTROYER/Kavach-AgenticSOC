@@ -1293,13 +1293,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
       newCases: series((b) => finiteOrNull(b.new_cases)),
       closed: series((b) => finiteOrNull(b.closed)),
       autoClosed: series((b) => finiteOrNull(b.auto_closed)),
-      // Mirrors the tile's definition (status needs_human OR escalated); both bucket
-      // counts are disjoint status tallies of the same arrival cohort.
-      sentToHuman: series((b) => {
-        const nh = finiteOrNull(b.needs_human);
-        const esc = finiteOrNull(b.escalated);
-        return nh == null || esc == null ? null : nh + esc;
-      }),
+      // The server's once-counted union (NEEDS_HUMAN verdict OR escalated) —
+      // `needs_human` and `escalated` overlap on an escalated needs-human case,
+      // so summing them here would double-count; chart the honest field only.
+      sentToHuman: series((b) => finiteOrNull(b.sent_to_human)),
       // Nulls (no verdicted denominator in the bucket) stay nulls — the hover card
       // renders measured points only and discloses the measured/total bucket count.
       fpRate: series((b) => finiteOrNull(b.fp_rate)),
@@ -1423,7 +1420,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           metric: 'Sent to human',
           points: bucketTrends?.sentToHuman,
           windowLabel: bucketLabel,
-          caption: 'needs-human + escalated · by case-arrival bucket',
+          caption: 'needs-human or escalated, counted once · by case-arrival bucket',
           format: fmtInt,
           colorToken: 'low',
         },
