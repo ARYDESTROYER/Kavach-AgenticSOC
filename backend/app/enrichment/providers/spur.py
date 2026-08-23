@@ -46,6 +46,18 @@ class SpurProvider(EnrichmentProvider):
             free_tier="Commercial; token required",
             docs_url="https://docs.spur.us/",
             default_enabled=False,
+            setup_steps=[
+                "Request a Spur account/token at spur.us (commercial; trials "
+                "available).",
+                "Set TLSOC_SPUR_API_KEY in .env (compose maps it to SPUR_API_KEY), "
+                "or paste the token in this card (in-memory until restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "Flags residential-proxy / VPN / Tor exits: a credential-stuffing "
+                "login from a residential-proxy IP is not mistaken for the "
+                "road-warrior VP on hotel Wi-Fi — and vice versa."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

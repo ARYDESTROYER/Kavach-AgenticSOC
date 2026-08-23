@@ -54,6 +54,13 @@ export interface EnrichmentProviderManifest {
   /** Whether this provider ships ON by default. */
   default_enabled: boolean;
   version?: string | null;
+  /**
+   * Ordered operator setup steps (Round 11) — fixed manifest strings (trusted UI
+   * copy, plain text). Rendered as a collapsible "How to set up" ordered list.
+   */
+  setup_steps?: string[] | null;
+  /** One-or-two-sentence "how this helps triage" blurb (fixed manifest string). */
+  example?: string | null;
 }
 
 export interface EnrichmentProvidersResponse {

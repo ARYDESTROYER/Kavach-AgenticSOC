@@ -76,6 +76,20 @@ class ProjectHoneypotProvider(EnrichmentProvider):
             free_tier="Free http:BL key (DNS-based; per-key daily quota)",
             docs_url="https://www.projecthoneypot.org/httpbl_api.php",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at projecthoneypot.org and request an http:BL "
+                "access key (12 lowercase letters).",
+                "Set TLSOC_HONEYPOT_ACCESS_KEY in .env (compose maps it to "
+                "HONEYPOT_ACCESS_KEY), or paste it in this card (in-memory until "
+                "restart).",
+                "Flip this provider's toggle ON. Lookups are DNS queries — the "
+                "backend host needs outbound DNS resolution.",
+            ],
+            example=(
+                "Classifies a web-facing source IP as a known comment spammer or "
+                "email harvester with a 0..255 threat score — ideal for cutting "
+                "through noisy WAF and form-abuse alerts."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

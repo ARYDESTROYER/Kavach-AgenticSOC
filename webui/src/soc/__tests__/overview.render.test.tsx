@@ -1,5 +1,5 @@
 /**
- * Overview (Security Command Center) — render test for the Stitch-inspired command center.
+ * Overview (Cyber Defence Center) — render test for the Stitch-inspired command center.
  *
  * Pins the load-bearing dashboard contract:
  *   1. the PLAIN header (page-hero, no hero card chrome, exactly one h1, PAGE_TITLE);
@@ -8,9 +8,12 @@
  *   3. the integrated instrument band = Active Risk + resolved/open snapshots + latest cases;
  *   4. the operations band = Noise-Reduction flow + compact burndown/timing rail;
  *   5. timing reads the SERVER posture (honest DASH / "not measured" for missing samples);
- *   6. KPI deltas are wired from the server `posture.compare` (unit-matched tiles only);
+ *   6. NO period-over-period delta chips on the KPI strip (the FP-rate compare chip was
+ *      deliberately removed — its baseline was not explainable at a glance);
  *   7. tiles + snapshot CTAs deep-link to the filtered case list carrying the window;
- *   8. blocking load uses the shared centered Console loading grammar.
+ *   8. blocking load uses the shared centered Console loading grammar;
+ *   9. a window change keeps the last posture snapshot visible (stale-while-revalidate,
+ *      labelled by the "Loading Nh" sub) and still discards late cross-window payloads.
  *
  * Fully offline. `noiseReduction` is intentionally omitted so the funnel band self-omits.
  */
@@ -147,7 +150,7 @@ const POSTURE_CMP: PostureResponse = {
   },
 };
 
-describe('Overview — Security Command Center (rebuild)', () => {
+describe('Overview — Cyber Defence Center (rebuild)', () => {
   beforeEach(() => {
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
@@ -220,7 +223,7 @@ describe('Overview — Security Command Center (rebuild)', () => {
     expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('Closed by agent')).toBeInTheDocument();
   });
 
-  it('never renders delayed 24h posture under the LIVE 7d selector', async () => {
+  it('keeps the last posture snapshot visible (labelled stale) across a window change, then swaps atomically', async () => {
     const requests: Array<{
       hours: number;
       signal: AbortSignal;
@@ -258,20 +261,32 @@ describe('Overview — Security Command Center (rebuild)', () => {
       ),
     );
 
-    // The selector render hides both posture values synchronously; neither is
-    // allowed to masquerade as selected-window data while 168h is in flight.
+    // STALE-WHILE-REVALIDATE: the previous snapshot's numbers stay mounted while
+    // 168h is in flight — no perceived blanking — and the "Loading 7 days" sub is
+    // the explicit stale/refresh indicator on the posture tiles.
     expect(screen.getByRole('button', { name: /Time range: Last 7 days/i })).toBeInTheDocument();
-    expect(within(screen.getByTestId('kpi-false-positive-rate')).queryByText('48%')).toBeNull();
-    expect(within(screen.getByTestId('kpi-auto-resolved')).queryByText('25')).toBeNull();
+    expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument();
+    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('25')).toBeInTheDocument();
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('Loading 7 days'),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('kpi-auto-resolved')).getByText('Loading 7 days'),
     ).toBeInTheDocument();
 
     await waitFor(() => expect(requests).toHaveLength(3));
     expect(requests[1].signal.aborted).toBe(true);
+    expect(requests[2].hours).toBe(168);
     requests[2].resolve({
       ...POSTURE_CMP,
       window_hours: 168,
+      lifecycle: {
+        ...POSTURE_CMP.lifecycle,
+        // A distinct 168h ACK clock — the plain-text Respond stat proves the swap
+        // (the KPI numerals roll via the motion spring, so a static text consumer
+        // is the reliable fresh-payload witness).
+        mtta_minutes: { p50: 240, p90: 600, mean: 300, max: 900, count: 9, available: true, reason: '' },
+      },
       quality: {
         ...POSTURE_CMP.quality,
         total_cases: 1412,
@@ -284,19 +299,32 @@ describe('Overview — Security Command Center (rebuild)', () => {
         false_positive_rate: { value: 0.8307, prev: 0.8628, delta_pct: -3.7 },
       },
     });
-    await waitFor(() =>
-      expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('83%')).toBeInTheDocument(),
-    );
-    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('1,355')).toBeInTheDocument();
+    // The fresh 168h payload replaces the stale snapshot atomically...
+    const timingRegion = screen.getByRole('region', { name: /Mean time to detect/i });
+    await waitFor(() => expect(within(timingRegion).getByText('4h')).toBeInTheDocument());
+    // ...and the stale indicator clears with it (the subs return to their captions).
+    expect(
+      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('Loading 7 days'),
+    ).toBeNull();
+    expect(
+      within(screen.getByTestId('kpi-false-positive-rate')).getByText('Closed as false pos.'),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('kpi-auto-resolved')).getByText('Closed by agent'),
+    ).toBeInTheDocument();
 
     // Even if the aborted transport settles late, its 24h data remains discarded.
     requests[1].resolve({
       ...POSTURE_CMP,
+      lifecycle: {
+        ...POSTURE_CMP.lifecycle,
+        mtta_minutes: { p50: 45, p90: 120, mean: 60, max: 200, count: 2, available: true, reason: '' },
+      },
       quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.49, auto_closed_cases: 25 },
     });
     await Promise.resolve();
-    expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('83%')).toBeInTheDocument();
-    expect(within(screen.getByTestId('kpi-auto-resolved')).queryByText('25')).toBeNull();
+    expect(within(timingRegion).getByText('4h')).toBeInTheDocument();
+    expect(within(timingRegion).queryByText('45m')).toBeNull();
   });
 
   it('mounts the instrument band: Active Risk + two donut snapshots + latest cases', async () => {
@@ -449,27 +477,34 @@ describe('Overview — Security Command Center (rebuild)', () => {
     );
   });
 
-  it('attaches a delta ONLY to a unit-matched tile (FP-rate), never to the count tiles', async () => {
+  it('renders NO period-over-period delta chip on any KPI tile (FP-rate compare removed)', async () => {
     fetchPostureMock.mockResolvedValue(POSTURE_CMP);
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    // The False-Positive-RATE tile is unit-matched to `compare.false_positive_rate`.
     await waitFor(() =>
       expect(
-        within(screen.getByTestId('kpi-false-positive-rate')).getByText('-16.7%'),
+        within(screen.getByTestId('kpi-false-positive-rate')).getByText('50%'),
       ).toBeInTheDocument(),
     );
-    // The COUNT tiles must NOT borrow a rate/total delta (a KpiTile delta is the only
-    // role="img" in the tile, so its absence proves no delta is drawn).
-    expect(within(screen.getByTestId('kpi-open-cases')).queryByRole('img')).toBeNull();
-    expect(within(screen.getByTestId('kpi-escalated-to-human')).queryByRole('img')).toBeNull();
-    expect(within(screen.getByTestId('kpi-auto-resolved')).queryByRole('img')).toBeNull();
+    // The FP-rate tile shows the rate ONLY — the "-16.7%" compare chip is gone (its
+    // baseline was not explainable at a glance) and no other tile borrows a delta
+    // (a KpiTile delta was the only role="img" in a tile, so its absence proves it).
+    for (const id of [
+      'kpi-open-cases',
+      'kpi-critical-high',
+      'kpi-escalated-to-human',
+      'kpi-false-positive-rate',
+      'kpi-auto-resolved',
+    ]) {
+      expect(within(screen.getByTestId(id)).queryByRole('img')).toBeNull();
+    }
     const strip = screen.getByTestId('kpi-strip');
+    expect(within(strip).queryByText('-16.7%')).toBeNull(); // false_positive_rate
     expect(within(strip).queryByText('-20%')).toBeNull(); // escalation_rate
     expect(within(strip).queryByText('+25%')).toBeNull(); // automation_rate
     expect(within(strip).queryByText('-25%')).toBeNull(); // case_count
-    // The comparison window is stated ONCE under the strip.
-    expect(screen.getByText(/Deltas compare the previous/i)).toBeInTheDocument();
+    // With no deltas left, the comparison footnote is gone too.
+    expect(screen.queryByText(/Deltas compare the previous/i)).toBeNull();
   });
 
   it('deep-links the Open KPI to the complete active-case lifecycle in this window', async () => {

@@ -47,6 +47,22 @@ class GreyNoiseProvider(EnrichmentProvider):
             free_tier="~50 lookups/week (free Community key)",
             docs_url="https://docs.greynoise.io/reference/get_v3-community-ip",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at viz.greynoise.io and open Account → API key.",
+                "Copy the Community API key (~50 lookups/week — cached results "
+                "stretch it a long way).",
+                "Set TLSOC_GREYNOISE_API_KEY in .env (compose maps it to "
+                "GREYNOISE_API_KEY), or paste it in this card (in-memory until "
+                "restart).",
+                "Flip this provider's toggle ON — key-gated providers stay off until "
+                "you opt in.",
+            ],
+            example=(
+                "GreyNoise tells you an IP hammering your firewall is a known "
+                "internet-wide scanner (benign background noise) rather than a "
+                "targeted attacker — the single fastest way to close mass-scan "
+                "false positives."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

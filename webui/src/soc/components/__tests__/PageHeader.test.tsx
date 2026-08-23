@@ -109,7 +109,7 @@ describe('PageHeader — W0.9 compaction', () => {
     const hero = render(
       <PageHeader
         variant="hero"
-        title="Security Command Center"
+        title="Cyber Defence Center"
         description="Live posture across every connected source."
         actions={<button type="button">Refresh</button>}
       />,

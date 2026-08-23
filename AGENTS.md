@@ -196,12 +196,18 @@ backend/app/
                      (built-ins + tlsoc.enrichers entry-point, filtered by toggle+key) ·
                      dispatch (enrich_indicator: type-routed IP/domain/hash/url/email,
                      fail-open, Redis-cached) · aggregate (fuse — default max() byte-
-                     identical, weighted fusion opt-in) · providers/ (19 registered
-                     classes, +17 new in Round 3: abuseipdb · virustotal · greynoise ·
+                     identical, weighted fusion opt-in) · providers/ (38 registered
+                     classes; +17 in Round 3: abuseipdb · virustotal · greynoise ·
                      shodan · shodan_internetdb · censys · binaryedge · ipinfo · otx ·
                      pulsedive · spur · xforce · urlscan · hibp · projecthoneypot ·
                      abusech [urlhaus/threatfox/malwarebazaar = 3 classes] · rdap;
-                     keyless ones default-on)
+                     +19 in Round 11: keyless-on circl_hashlookup · dshield · onionoo,
+                     keyless-off spamhaus · cymru_mhr · robtex · crt_sh, keyed-off
+                     crowdsec · google_safebrowsing · ipqualityscore · ipdata · apivoid ·
+                     maltiverse · securitytrails · criminalip · netlas · hybrid_analysis ·
+                     metadefender · emailrep; quota-safe keyless ones default-on; every
+                     manifest carries setup_steps + example rendered as provider-card
+                     setup guides)
   realtime.py        multiplexed SSE EventBus (Round 3): in-process asyncio pub/sub +
                      bounded per-subscriber ring + Last-Event-ID replay + heartbeat;
                      GET /api/events (default ON; polling is the graceful fallback);
@@ -961,6 +967,23 @@ a retelling — do not re-derive round detail from here.
   correctness; SSE + cache + rate-limit + lock-registry bounds. **#3 verified clean —
   `decide()` untouched.** Green: 1942 pytest / webui 1349 Vitest unchanged. See the
   2026-07-15 `Journal.md` entry + the matching `CHANGELOG.md` Development snapshot.
+- **Round 11** (2026-08-22, on `claude/dashboard-user-management-improvements-av091r`,
+  PR to `Testing`) — 10 operator requests in five groups, each built/tested by its own
+  sub-agent and adversarially reviewed: the landing dashboard renamed **Cyber Defence
+  Center** + hover/focus trendlines on every metric with an honest series (new
+  `GET /api/metrics/trends` cohort buckets) + FP-rate compare-chip removal + a
+  token-only design pass; the FP%/auto-closed slowness fixed at the root (a shared
+  single-flight 5s case-page cache in `api/metrics_shared.py` collapsing a 5-endpoint
+  ×5,000-doc fan-out to one scan, `count_created_since` push-down, ~31% faster
+  posture math byte-identical, stale-while-revalidate on window change); **admin-
+  mandated MFA enforced inside the login phase** (per-user `mfa_required` +
+  pending-token-gated `enroll-setup`/`enroll-confirm`, env-admin lockout fixed);
+  richer user creation (display_name/email/phone/custom_roles at creation, live
+  role-permission summary + inline custom-role fine-graining); **19 new enrichment
+  providers (38 total) with manifest setup_steps/example setup guides**; and the
+  TOTP QR encoder made ISO/IEC 18004-conformant (version-info blocks for v≥7,
+  format-copy order, Reed-Solomon off-by-one — QR scanning works now). See the
+  2026-08-22 `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the

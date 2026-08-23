@@ -337,7 +337,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Enrichment',
     blurb: 'Threat-intel lookups (AbuseIPDB / VirusTotal / GeoIP), cached in Redis.',
     icon: Globe,
-    keywords: ['enrichment', 'abuseipdb', 'virustotal', 'geoip', 'reputation', 'cache', 'ttl'],
+    keywords: ['enrichment', 'abuseipdb', 'virustotal', 'geoip', 'reputation', 'cache', 'ttl', 'circl', 'hashlookup', 'dshield', 'onionoo', 'tor', 'spamhaus', 'cymru', 'robtex', 'crt.sh', 'crowdsec', 'safe browsing', 'ipqualityscore', 'ipdata', 'apivoid', 'maltiverse', 'securitytrails', 'criminal ip', 'netlas', 'hybrid analysis', 'metadefender', 'emailrep'],
     // Owns NO page-dirty keys: the section's enable/fusion/provider toggles AND the
     // cache TTL all persist via IMMEDIATE settings PUTs (self-contained provider
     // editor), so the buffered page-save can never re-send a stale `enrichment` block

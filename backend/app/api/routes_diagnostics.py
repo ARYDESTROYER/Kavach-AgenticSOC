@@ -65,6 +65,7 @@ from ..engine.precedent import (
 from ..state import AppState
 from ..utils import iso_now
 from .deps import get_state, require_permission
+from .metrics_shared import fetch_case_page
 
 logger = logging.getLogger("tlsoc.api.diagnostics")
 router = APIRouter(prefix="/api")
@@ -90,9 +91,15 @@ def _precedent_source() -> str:
 
 async def _load_cases(state: AppState) -> tuple[list, int]:
     """Newest-first case page + the store's reported total. A store error degrades to
-    an empty page rather than failing the request; the caller reports the gap."""
+    an empty page rather than failing the request; the caller reports the gap.
+
+    Served through the SHARED short-TTL page cache (``api/metrics_shared``) — the
+    Overview health strip fires this endpoint alongside the posture/noise rollups
+    every refresh, and all of them read the same newest-N page. The cache is keyed by
+    (store identity, fetch limit), so a monkeypatched ``_STORE_FETCH_LIMIT`` or a
+    Demo Mode store swap always bypasses stale pages."""
     try:
-        cases, total = await state.cases.list(limit=_STORE_FETCH_LIMIT)
+        cases, total = await fetch_case_page(state.cases, _STORE_FETCH_LIMIT)
         return list(cases), int(total)
     except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
         logger.warning("diagnostics case load soft-failed: %s", exc)

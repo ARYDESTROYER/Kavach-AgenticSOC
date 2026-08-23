@@ -1,9 +1,11 @@
 /**
- * usePosture — parameter-keyed, abortable posture reads.
+ * usePosture — parameter-keyed, abortable, stale-while-revalidate posture reads.
  *
  *   1. calls fetchPosture with the window hours + no compare by default;
  *   2. period='prev' passes 'prev' so the server returns the compare block;
- *   3. surfaces the resolved payload as data.
+ *   3. surfaces the resolved payload as data;
+ *   4. a window change RETAINS the last successful snapshot (flagged `stale`) while
+ *      the new request is in flight, and still discards a late cross-window payload.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -42,7 +44,63 @@ describe('usePosture', () => {
     expect(fetchPostureMock).toHaveBeenCalledWith(72, 'prev', expect.any(AbortSignal));
   });
 
-  it('hides the previous window immediately and discards a delayed stale response', async () => {
+  it('keeps the previous snapshot flagged stale across a window change and discards a delayed cross-window response', async () => {
+    const requests: Array<{
+      hours: number;
+      signal: AbortSignal;
+      resolve: (value: unknown) => void;
+    }> = [];
+    fetchPostureMock.mockImplementation(
+      (hours: number, _period: string, signal: AbortSignal) =>
+        new Promise((resolve) => requests.push({ hours, signal, resolve })),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ hours }) => usePosture(hours, 'prev'),
+      { initialProps: { hours: 24 } },
+    );
+    await waitFor(() => expect(requests).toHaveLength(1));
+    // Nothing has succeeded yet — there is no snapshot to retain.
+    expect(result.current.data).toBeNull();
+    expect(result.current.stale).toBe(false);
+
+    await act(async () => {
+      requests[0].resolve({
+        window_hours: 24,
+        quality: { false_positive_rate: 0.48, auto_closed_cases: 25 },
+      });
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.window_hours).toBe(24);
+    expect(result.current.stale).toBe(false);
+
+    // STALE-WHILE-REVALIDATE: the window change keeps the 24h snapshot mounted,
+    // synchronously flagged stale + loading, instead of nulling it (no blanking).
+    rerender({ hours: 168 });
+    expect(result.current.data?.window_hours).toBe(24);
+    expect(result.current.stale).toBe(true);
+    expect(result.current.loading).toBe(true);
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1].hours).toBe(168);
+
+    await act(async () => {
+      requests[1].resolve({
+        window_hours: 168,
+        quality: { false_positive_rate: 0.83, auto_closed_cases: 1355 },
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.data).toMatchObject({
+        window_hours: 168,
+        quality: { false_positive_rate: 0.83, auto_closed_cases: 1355 },
+      }),
+    );
+    // The fresh payload clears the stale flag atomically.
+    expect(result.current.stale).toBe(false);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('discards a delayed cross-window response after the fresh payload landed', async () => {
     const requests: Array<{
       hours: number;
       signal: AbortSignal;
@@ -60,10 +118,7 @@ describe('usePosture', () => {
     await waitFor(() => expect(requests).toHaveLength(1));
 
     rerender({ hours: 168 });
-    expect(result.current.data).toBeNull();
-    expect(result.current.loading).toBe(true);
     await waitFor(() => expect(requests).toHaveLength(2));
-    expect(requests[0].signal.aborted).toBe(true);
 
     await act(async () => {
       requests[1].resolve({
@@ -71,15 +126,10 @@ describe('usePosture', () => {
         quality: { false_positive_rate: 0.83, auto_closed_cases: 1355 },
       });
     });
-    await waitFor(() =>
-      expect(result.current.data).toMatchObject({
-        window_hours: 168,
-        quality: { false_positive_rate: 0.83, auto_closed_cases: 1355 },
-      }),
-    );
+    await waitFor(() => expect(result.current.data?.window_hours).toBe(168));
 
     // A transport/mock may still settle after abort. The parameter key, not timing,
-    // remains the final authority.
+    // remains the final authority — the late 24h payload never overwrites 168h.
     await act(async () => {
       requests[0].resolve({
         window_hours: 24,
@@ -88,6 +138,7 @@ describe('usePosture', () => {
     });
     expect(result.current.data?.window_hours).toBe(168);
     expect(result.current.data?.quality.false_positive_rate).toBe(0.83);
+    expect(result.current.stale).toBe(false);
   });
 
   it('makes a retained LIVE reload callback issue the latest range during rapid churn', async () => {

@@ -353,7 +353,7 @@ def _created_dt(case: Case) -> datetime | None:
     return _as_dt(case.detected_at) or _parse_iso(case.created_at)
 
 
-def _resolved_dt(case: Case) -> datetime | None:
+def _resolved_dt(case: Case, timings: "_CaseTimings | None" = None) -> datetime | None:
     """The instant a case became TERMINAL (RESOLVED/CLOSED), else None when the case is
     currently open. A currently NON-terminal case is never counted as resolved — even if
     it was closed and later REOPENED: ``status_history`` is append-only, so a stale
@@ -362,13 +362,93 @@ def _resolved_dt(case: Case) -> datetime | None:
     trend. Advisory/reporting only — never read by ``decide()`` (#3)."""
     if (case.status.value if case.status else "") not in _TERMINAL:
         return None
+    if timings is not None:
+        return timings.terminal_any if timings.terminal_any is not None else timings.updated_iso
     end = _first_transition_at(case, _TERMINAL)
     if end is not None:
         return end
     return _parse_iso(case.updated_at)  # terminal but no recorded transition
 
 
-def lifecycle_intervals(cases: list[Case]) -> dict[str, Any]:
+_ESCALATED_VALUE = CaseStatus.ESCALATED.value
+
+
+class _CaseTimings:
+    """Per-case parsed timestamps + earliest status-history transitions, computed in
+    ONE pass so :func:`posture_metrics` (and :func:`trend_metrics`) do not re-parse the
+    same ISO strings / re-walk the same ``status_history`` up to ~6× per case across
+    their sub-computations.
+
+    Every field reproduces EXACTLY the value the corresponding ad-hoc lookup would
+    produce (:func:`_parse_iso` / :func:`_as_dt` / :func:`_created_dt` /
+    :func:`_first_transition_at` are pure), so threading a timings index through the
+    sub-functions is a pure micro-optimisation: outputs stay byte-identical."""
+
+    __slots__ = (
+        "created", "created_iso", "updated_iso",
+        "ack_anchor", "resp_anchor",
+        "ack_human", "resp_human", "terminal_any", "escalated_any",
+    )
+
+    def __init__(self, case: Case) -> None:
+        # _parse_iso(case.created_at) — the MTTD clock (deliberately NOT detected_at).
+        self.created_iso = _parse_iso(case.created_at)
+        # _parse_iso(case.updated_at) — the terminal-without-history fallback.
+        self.updated_iso = _parse_iso(case.updated_at)
+        # _created_dt(case) — detection instant when populated, else creation.
+        self.created = _as_dt(case.detected_at) or self.created_iso
+        # The explicit lifecycle anchors.
+        self.ack_anchor = _as_dt(case.acknowledged_at)
+        self.resp_anchor = _as_dt(case.first_response_at)
+        # One status_history walk for all four "earliest transition into ..." lookups:
+        #   ack_human      == _first_transition_at(case, _ACK_STATUSES, by_human=True)
+        #   resp_human     == _first_transition_at(case, _RESPONSE_STATUSES, by_human=True)
+        #   terminal_any   == _first_transition_at(case, _TERMINAL)
+        #   escalated_any  == _first_transition_at(case, {ESCALATED})
+        ack = resp = term = esc = None
+        for entry in case.status_history or []:
+            to_status = entry.to_status or ""
+            in_ack = to_status in _ACK_STATUSES
+            in_resp = to_status in _RESPONSE_STATUSES
+            in_term = to_status in _TERMINAL
+            is_esc = to_status == _ESCALATED_VALUE
+            if not (in_ack or in_resp or in_term or is_esc):
+                continue
+            dt = _parse_iso(entry.at)
+            if dt is None:
+                continue
+            if (in_ack or in_resp) and (entry.by or "").strip().lower() not in _NONHUMAN_ACTORS:
+                if in_ack and (ack is None or dt < ack):
+                    ack = dt
+                if in_resp and (resp is None or dt < resp):
+                    resp = dt
+            if in_term and (term is None or dt < term):
+                term = dt
+            if is_esc and (esc is None or dt < esc):
+                esc = dt
+        self.ack_human = ack
+        self.resp_human = resp
+        self.terminal_any = term
+        self.escalated_any = esc
+
+
+def _timings_for(case: Case, index: dict[int, _CaseTimings] | None) -> _CaseTimings:
+    """The (possibly memoized) :class:`_CaseTimings` for ``case``. With ``index`` set
+    (one dict per rollup call, keyed by object identity) each case is parsed once and
+    shared across every sub-computation; with ``index=None`` behavior is a plain
+    compute (the standalone-call path used directly by tests)."""
+    if index is None:
+        return _CaseTimings(case)
+    timings = index.get(id(case))
+    if timings is None:
+        timings = _CaseTimings(case)
+        index[id(case)] = timings
+    return timings
+
+
+def lifecycle_intervals(
+    cases: list[Case], *, _timings: dict[int, _CaseTimings] | None = None
+) -> dict[str, Any]:
     """MTTA / MTTR / dwell as p50+p90+mean over the case set.
 
     * **MTTA** (time-to-acknowledge): created → first ACK transition (or the
@@ -398,30 +478,31 @@ def lifecycle_intervals(cases: list[Case]) -> dict[str, Any]:
     mttd: list[float] = []
 
     for case in cases:
+        timings = _timings_for(case, _timings)
         # MTTD is measured from ``created_at`` (case-open), independent of the
         # ack/response clocks, so a case with no ack/response still contributes a
         # detection-latency sample. Computed first, before the ``start`` guard.
         fs = getattr(case, "first_seen_millis", 0) or 0
         if isinstance(fs, (int, float)) and fs > 0:
-            created = _parse_iso(case.created_at)
+            created = timings.created_iso
             if created is not None:
                 created_ms = created.timestamp() * 1000.0
                 if created_ms >= fs:
                     mttd.append((created_ms - fs) / 60000.0)
 
-        start = _created_dt(case)
+        start = timings.created
         if start is None:
             continue
 
-        ack = _as_dt(case.acknowledged_at) or _first_transition_at(case, _ACK_STATUSES, by_human=True)
+        ack = timings.ack_anchor or timings.ack_human
         if ack and ack >= start:
             mtta.append((ack - start).total_seconds() / 60.0)
 
-        resp = _as_dt(case.first_response_at) or _first_transition_at(case, _RESPONSE_STATUSES, by_human=True)
+        resp = timings.resp_anchor or timings.resp_human
         if resp and resp >= start:
             dwell.append((resp - start).total_seconds() / 60.0)
 
-        end = _resolved_dt(case)  # guarded: a reopened (currently-open) case isn't resolved
+        end = _resolved_dt(case, timings)  # guarded: a reopened (currently-open) case isn't resolved
         if end and end >= start:
             mttr.append((end - start).total_seconds() / 60.0)
 
@@ -496,7 +577,9 @@ def _ratio(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4) if denominator else 0.0
 
 
-def quality_metrics(cases: list[Case]) -> dict[str, Any]:
+def quality_metrics(
+    cases: list[Case], *, _timings: dict[int, _CaseTimings] | None = None
+) -> dict[str, Any]:
     """Triage-quality rates COUNTED from observed verdict / status_history /
     decision_by — never *decided* here. All are pure tallies (#3 untouched).
 
@@ -529,7 +612,7 @@ def quality_metrics(cases: list[Case]) -> dict[str, Any]:
         for c in cases
         if (c.status == CaseStatus.ESCALATED)
         or (c.escalation_level or 0) > 0
-        or _first_transition_at(c, frozenset({CaseStatus.ESCALATED.value})) is not None
+        or _timings_for(c, _timings).escalated_any is not None
     )
     terminal = [c for c in cases if (c.status.value if c.status else "") in _TERMINAL]
     auto_closed = sum(1 for c in terminal if c.decision_by == DecisionBy.AGENT)
@@ -564,7 +647,13 @@ _AGE_BUCKETS: tuple[tuple[str, float, float], ...] = (
 )
 
 
-def aging(cases: list[Case], *, now: datetime | None = None, oldest_n: int = 10) -> dict[str, Any]:
+def aging(
+    cases: list[Case],
+    *,
+    now: datetime | None = None,
+    oldest_n: int = 10,
+    _timings: dict[int, _CaseTimings] | None = None,
+) -> dict[str, Any]:
     """Queue depth + age distribution of OPEN (non-terminal) cases, the oldest-N,
     and an arrival-vs-closure balance. Pure; ``now`` injectable for determinism."""
     now = now or datetime.now(timezone.utc)
@@ -573,7 +662,7 @@ def aging(cases: list[Case], *, now: datetime | None = None, oldest_n: int = 10)
     buckets: Counter[str] = Counter()
     aged: list[tuple[float, Case]] = []
     for c in open_cases:
-        start = _created_dt(c)
+        start = _timings_for(c, _timings).created if _timings is not None else _created_dt(c)
         if start is None:
             continue
         age_h = max(0.0, (now - start).total_seconds() / 3600.0)
@@ -608,7 +697,13 @@ def aging(cases: list[Case], *, now: datetime | None = None, oldest_n: int = 10)
     }
 
 
-def sla_metrics(cases: list[Case], sla_policy: Any, *, now: datetime | None = None) -> dict[str, Any]:
+def sla_metrics(
+    cases: list[Case],
+    sla_policy: Any,
+    *,
+    now: datetime | None = None,
+    _timings: dict[int, _CaseTimings] | None = None,
+) -> dict[str, Any]:
     """SLA attainment vs ``Preferences.sla`` (response + resolve targets per P-level).
 
     DETERMINISTIC + advisory (#3): we compare each case's elapsed response/resolution
@@ -633,7 +728,8 @@ def sla_metrics(cases: list[Case], sla_policy: Any, *, now: datetime | None = No
         target = targets.get(prio)
         if target is None:
             continue  # no target for this (or no) priority → not SLA-scored
-        start = _created_dt(c)
+        timings = _timings_for(c, _timings)
+        start = timings.created
         if start is None:
             # Unparseable created_at → no clock to measure. Exclude from the
             # attainment denominator (matching the guard-before-count idiom used
@@ -643,7 +739,7 @@ def sla_metrics(cases: list[Case], sla_policy: Any, *, now: datetime | None = No
         evaluated += 1
 
         # Response clock: created → first response (status_history / anchor), else now.
-        resp_at = _as_dt(c.first_response_at) or _first_transition_at(c, _RESPONSE_STATUSES, by_human=True)
+        resp_at = timings.resp_anchor or timings.resp_human
         resp_target = float(getattr(target, "response_minutes", 0) or 0)
         if resp_target > 0:
             elapsed = ((resp_at or now) - start).total_seconds() / 60.0
@@ -659,9 +755,9 @@ def sla_metrics(cases: list[Case], sla_policy: Any, *, now: datetime | None = No
                 breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached"))
 
         # Resolution clock: created → terminal transition, else live to now.
-        end = _first_transition_at(c, _TERMINAL)
+        end = timings.terminal_any
         if end is None and (c.status.value if c.status else "") in _TERMINAL:
-            end = _parse_iso(c.updated_at)
+            end = timings.updated_iso
         resolve_target = float(getattr(target, "resolve_minutes", 0) or 0)
         if resolve_target > 0:
             elapsed = ((end or now) - start).total_seconds() / 60.0
@@ -702,7 +798,13 @@ def _breach_row(case: Case, clock: str, elapsed: float, target: float, state: st
     }
 
 
-def _window_filter(cases: list[Case], *, window_hours: int, now: datetime | None = None) -> list[Case]:
+def _window_filter(
+    cases: list[Case],
+    *,
+    window_hours: int,
+    now: datetime | None = None,
+    _timings: dict[int, _CaseTimings] | None = None,
+) -> list[Case]:
     """Cases created within the last ``window_hours`` (0/negative → no filter).
 
     A case with an UNPARSEABLE created_at has no usable timestamp, so it cannot
@@ -717,7 +819,7 @@ def _window_filter(cases: list[Case], *, window_hours: int, now: datetime | None
     cutoff = now.timestamp() - window_hours * 3600.0
     out: list[Case] = []
     for c in cases:
-        start = _created_dt(c)
+        start = _timings_for(c, _timings).created if _timings is not None else _created_dt(c)
         if start is not None and start.timestamp() >= cutoff:
             out.append(c)
     return out
@@ -775,11 +877,16 @@ def posture_metrics(
     now = now or datetime.now(timezone.utc)
     window_hours = max(0, int(window_hours))
 
-    current = _window_filter(cases, window_hours=window_hours, now=now)
-    lifecycle = lifecycle_intervals(current)
-    quality = quality_metrics(current)
-    age = aging(current, now=now)
-    sla = sla_metrics(current, sla_policy, now=now)
+    # ONE shared per-case timings index for the whole rollup: every sub-computation
+    # (current AND prev window) reuses the same parsed timestamps / status_history
+    # transitions instead of re-deriving them per metric. Pure memoization of pure
+    # lookups — outputs are byte-identical to the un-threaded path.
+    timings: dict[int, _CaseTimings] = {}
+    current = _window_filter(cases, window_hours=window_hours, now=now, _timings=timings)
+    lifecycle = lifecycle_intervals(current, _timings=timings)
+    quality = quality_metrics(current, _timings=timings)
+    age = aging(current, now=now, _timings=timings)
+    sla = sla_metrics(current, sla_policy, now=now, _timings=timings)
 
     rollup: dict[str, Any] = {
         "window_hours": window_hours,
@@ -799,11 +906,11 @@ def posture_metrics(
         prev_window = [
             c
             for c in cases
-            if (s := _created_dt(c)) is not None
+            if (s := _timings_for(c, timings).created) is not None
             and prev_end - window_hours * 3600.0 <= s.timestamp() < prev_end
         ]
-        prev_quality = quality_metrics(prev_window)
-        prev_life = lifecycle_intervals(prev_window)
+        prev_quality = quality_metrics(prev_window, _timings=timings)
+        prev_life = lifecycle_intervals(prev_window, _timings=timings)
         rollup["compare"] = {
             "mode": "prev",
             "case_count": _compare_block(len(current), len(prev_window)),
@@ -828,6 +935,170 @@ def posture_metrics(
         }
 
     return rollup
+
+
+# --------------------------------------------------------------------------- #
+# Bucketed trends (the Overview hover-trendline feed).
+# --------------------------------------------------------------------------- #
+
+# The FROZEN bucket-width ladder for GET /api/metrics/trends: chosen so the bucket
+# count for the canonical Console windows (24h/72h/168h/720h) lands in the 24-48
+# range. Frozen contract — the Overview trendline is built against exactly this.
+def _trend_bucket_minutes(window_hours: int) -> int:
+    if window_hours <= 24:
+        return 60
+    if window_hours <= 72:
+        return 180
+    if window_hours <= 168:
+        return 360
+    return 1440
+
+
+def trend_metrics(
+    cases: list[Case],
+    *,
+    window_hours: int = 24,
+    now: datetime | None = None,
+    store_total: int | None = None,
+    alert_counters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bucketed case-cohort trends over the trailing ``window_hours`` — the pure
+    computation behind ``GET /api/metrics/trends`` (the Overview hover-trendline).
+
+    ``window_hours`` is clamped to [1, 720]. Buckets are UTC, aligned to whole
+    multiples of the bucket width (:func:`_trend_bucket_minutes` — 60/180/360/1440
+    minutes, all whole-hour multiples), and zero-filled so they cover the entire
+    window; the newest bucket is the current PARTIAL one.
+
+    Cohort view: each case is attributed to the bucket its creation instant falls in
+    (the same :func:`_created_dt` clock every posture window filter uses), and the
+    per-bucket counts reuse EXACTLY the :func:`quality_metrics` semantics so the
+    trendline reconciles with the posture tiles:
+
+    * ``new_cases`` — every case created in the bucket (raw arrival volume,
+      policy-closed included — matching posture's ``case_count``).
+    * ``closed`` / ``auto_closed`` / ``false_positives`` / ``needs_human`` /
+      ``escalated`` — the quality tallies over the bucket cohort (operator
+      analyst-rule-policy closes excluded, exactly as ``quality_metrics`` excludes
+      them: ``closed`` == its ``terminal_cases``, ``auto_closed`` == its
+      ``decision_by==AGENT`` terminal tally, ``escalated`` == its escalated
+      condition).
+    * ``sent_to_human`` — cohort cases counted ONCE that reached a human either
+      way: verdict ``NEEDS_HUMAN`` or the escalated condition. ``needs_human``
+      (a verdict tally) and ``escalated`` (a status/history tally) OVERLAP — an
+      escalated NEEDS_HUMAN case is in both — so consumers must never sum them;
+      this field is the honest single-count series for "sent to human".
+    * ``fp_rate`` — ``false_positives / verdicted`` WITHIN the bucket (the same
+      numerator/denominator as posture's ``false_positive_rate``), expressed 0-100;
+      ``null`` when the bucket has no verdicted case.
+    * ``alerts`` — raw ingested-alert volume from the durable noise counters'
+      per-hour tallies summed into the bucket; ``null`` for every bucket when the
+      counters are unavailable/warming up, and ``null`` for buckets that predate the
+      counters' first observation (honest gap, never a fake 0).
+
+    ``alert_counters`` is the (fail-open) result of
+    ``NoiseCounterStore.read_hourly_ingested`` — ``{"available", "since",
+    "hours": {epoch_hour: int}}`` — or None when the read failed.
+
+    Pure + deterministic given ``cases``/``now``; advisory only — nothing here is
+    ever read by ``case_manager.decide()`` (#3). Carries the same
+    ``truncated``/``store_total``/``fetched`` honesty marker as the other rollups.
+    """
+    now = now or datetime.now(timezone.utc)
+    window_hours = max(1, min(720, int(window_hours)))
+    bucket_minutes = _trend_bucket_minutes(window_hours)
+    bucket_secs = bucket_minutes * 60
+
+    now_ts = now.timestamp()
+    last_start = int(now_ts // bucket_secs) * bucket_secs
+    first_start = int((now_ts - window_hours * 3600.0) // bucket_secs) * bucket_secs
+    starts = list(range(first_start, last_start + 1, bucket_secs))
+
+    # Attribute each case to its creation bucket (one timings parse per case).
+    timings: dict[int, _CaseTimings] = {}
+    cohorts: dict[int, list[Case]] = {s: [] for s in starts}
+    for case in cases:
+        created = _timings_for(case, timings).created
+        if created is None:
+            continue  # no usable timestamp → cannot honestly land in any bucket
+        bucket = int(created.timestamp() // bucket_secs) * bucket_secs
+        members = cohorts.get(bucket)
+        if members is not None:
+            members.append(case)
+
+    # Per-hour ingested-alert tallies (already fail-open at the route).
+    alerts_available = bool(alert_counters and alert_counters.get("available"))
+    alert_hours: dict[int, int] = {}
+    coverage_start_ts: float | None = None
+    if alerts_available:
+        for key, value in (alert_counters.get("hours") or {}).items():
+            try:
+                alert_hours[int(key)] = max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+        since_dt = _parse_iso(alert_counters.get("since"))
+        coverage_start_ts = since_dt.timestamp() if since_dt is not None else None
+
+    rows: list[dict[str, Any]] = []
+    for start in starts:
+        cohort = cohorts[start]
+        # EXACTLY the quality_metrics population rule: analyst-rule-policy closes are
+        # excluded from every tallied outcome (no model ran on them).
+        graded = [c for c in cohort if not is_policy_closed(c)]
+        verdicted = sum(1 for c in graded if c.verdict is not None)
+        fp = sum(1 for c in graded if c.verdict == Verdict.FALSE_POSITIVE)
+        nh = sum(1 for c in graded if c.verdict == Verdict.NEEDS_HUMAN)
+        terminal = [c for c in graded if (c.status.value if c.status else "") in _TERMINAL]
+        auto_closed = sum(1 for c in terminal if c.decision_by == DecisionBy.AGENT)
+        escalated = sum(
+            1
+            for c in graded
+            if (c.status == CaseStatus.ESCALATED)
+            or (c.escalation_level or 0) > 0
+            or _timings_for(c, timings).escalated_any is not None
+        )
+        # Once-counted union: `needs_human` (verdict) and `escalated` (status/
+        # history) overlap on an escalated NEEDS_HUMAN case — never sum them.
+        sent_to_human = sum(
+            1
+            for c in graded
+            if c.verdict == Verdict.NEEDS_HUMAN
+            or (c.status == CaseStatus.ESCALATED)
+            or (c.escalation_level or 0) > 0
+            or _timings_for(c, timings).escalated_any is not None
+        )
+
+        alerts: int | None = None
+        if alerts_available:
+            end = start + bucket_secs
+            # Buckets that end before the counters' first observation are an honest
+            # null (the store was not recording yet), never a fabricated 0.
+            if coverage_start_ts is None or end > coverage_start_ts:
+                alerts = sum(
+                    alert_hours.get(hour, 0)
+                    for hour in range(start // 3600, end // 3600)
+                )
+
+        rows.append({
+            "t": datetime.fromtimestamp(start, tz=timezone.utc).isoformat(),
+            "new_cases": len(cohort),
+            "closed": len(terminal),
+            "auto_closed": auto_closed,
+            "false_positives": fp,
+            "needs_human": nh,
+            "escalated": escalated,
+            "sent_to_human": sent_to_human,
+            "fp_rate": round(100.0 * fp / verdicted, 1) if verdicted else None,
+            "alerts": alerts,
+        })
+
+    return {
+        "window_hours": window_hours,
+        "bucket_minutes": bucket_minutes,
+        "generated_at": now.isoformat(),
+        "buckets": rows,
+        **truncation_marker(len(cases), store_total),
+    }
 
 
 # --------------------------------------------------------------------------- #

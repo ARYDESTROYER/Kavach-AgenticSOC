@@ -143,6 +143,24 @@ class Secrets(BaseSettings):
     # ``Auth-Key`` header; unset keeps the keyless public-endpoint behaviour unchanged.
     honeypot_access_key: str | None = None
     abusech_auth_key: str | None = None
+    # --- Round 11 enrichment expansion keys (ALL optional + defaulted None, SECRET
+    # tier — same contract as above: env / in-memory only, never persisted, never
+    # returned; the UI sees a configured-boolean only). Each pairs with an
+    # ``EnrichmentConfig.use_*`` toggle; the keyless Round-11 providers
+    # (circl hashlookup / dshield / onionoo / spamhaus / cymru mhr / robtex / crt.sh)
+    # need no key here. ---
+    crowdsec_api_key: str | None = None
+    google_safebrowsing_api_key: str | None = None
+    ipqualityscore_api_key: str | None = None
+    ipdata_api_key: str | None = None
+    apivoid_api_key: str | None = None
+    maltiverse_api_key: str | None = None
+    securitytrails_api_key: str | None = None
+    criminalip_api_key: str | None = None
+    netlas_api_key: str | None = None
+    hybrid_analysis_api_key: str | None = None
+    metadefender_api_key: str | None = None
+    emailrep_api_key: str | None = None
 
     # --- Embeddings (defaults to the OpenAI key when blank) ---
     embedding_api_key: str | None = None
@@ -389,6 +407,19 @@ class Secrets(BaseSettings):
             "xforce_api_password": bool(self.xforce_api_password),
             "urlscan_api_key": bool(self.urlscan_api_key),
             "hibp_api_key": bool(self.hibp_api_key),
+            # Round 11 enrichment expansion keys (configured-booleans only).
+            "crowdsec_api_key": bool(self.crowdsec_api_key),
+            "google_safebrowsing_api_key": bool(self.google_safebrowsing_api_key),
+            "ipqualityscore_api_key": bool(self.ipqualityscore_api_key),
+            "ipdata_api_key": bool(self.ipdata_api_key),
+            "apivoid_api_key": bool(self.apivoid_api_key),
+            "maltiverse_api_key": bool(self.maltiverse_api_key),
+            "securitytrails_api_key": bool(self.securitytrails_api_key),
+            "criminalip_api_key": bool(self.criminalip_api_key),
+            "netlas_api_key": bool(self.netlas_api_key),
+            "hybrid_analysis_api_key": bool(self.hybrid_analysis_api_key),
+            "metadefender_api_key": bool(self.metadefender_api_key),
+            "emailrep_api_key": bool(self.emailrep_api_key),
             "embedding_api_key": bool(self.embedding_key()),
             # Wave 2: configured-booleans only (never the values).
             "mfa_obfuscation_key": bool(self.mfa_obfuscation_key),
@@ -1098,6 +1129,30 @@ class EnrichmentConfig(BaseModel):
     # Project Honeypot http:BL (key-gated; needs ``Secrets.honeypot_access_key``).
     # Default OFF — the operator opts in after configuring the access key.
     use_honeypot: bool = False
+    # --- Round 11 enrichment expansion (ALL additive + defaulted; each toggle
+    # enables one provider; keys live in ``Secrets``). Keyless + quota-safe ones
+    # default ON; keyless-but-caveated ones (Spamhaus/Cymru need the host's OWN
+    # resolver — public resolvers are refused; Robtex/crt.sh can be slow) default
+    # OFF; every key-gated provider defaults OFF. ---
+    use_circl_hashlookup: bool = True      # keyless (known-good hash lookup)
+    use_dshield: bool = True               # keyless (SANS ISC sensor sightings)
+    use_onionoo: bool = True               # keyless (Tor relay/exit context)
+    use_spamhaus: bool = False             # keyless DNSBL; needs own resolver
+    use_cymru_mhr: bool = False            # keyless DNS hash lookup; needs own resolver
+    use_robtex: bool = False               # keyless passive-DNS context (slow free tier)
+    use_crt_sh: bool = False               # keyless cert-transparency context (slow)
+    use_crowdsec: bool = False
+    use_google_safebrowsing: bool = False
+    use_ipqualityscore: bool = False
+    use_ipdata: bool = False
+    use_apivoid: bool = False
+    use_maltiverse: bool = False
+    use_securitytrails: bool = False
+    use_criminalip: bool = False
+    use_netlas: bool = False
+    use_hybrid_analysis: bool = False
+    use_metadefender: bool = False
+    use_emailrep: bool = False
     # When True, a later wave FUSES the per-provider results into one normalised
     # reputation score (instead of using each provider in isolation). Default OFF.
     fusion_enabled: bool = False

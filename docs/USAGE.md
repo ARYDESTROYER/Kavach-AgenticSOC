@@ -48,7 +48,7 @@ surface into **six top-level nav groups**:
 
 | Group | What lives there |
 |---|---|
-| **Overview** | Dashboard (the Security Command Center), Dashboards (custom, §21), Standup (§7) — each a full page |
+| **Overview** | Dashboard (the Cyber Defence Center), Dashboards (custom, §21), Standup (§7) — each a full page |
 | **Triage** | Cases (§3), **Case Manager** (§3), Campaigns (§16), Logs (a unified cross-source log browser, §2a), Workspace → **Chat** (§5) and **Entity investigation** (§4) as left-nav children, Approvals |
 | **Intelligence** | Knowledge corpus (§9), Reference runbooks, Operator memory (§10), Response playbooks, Agent personas |
 | **Analytics** | Metrics, **Agent effectiveness** (§7a), Cost (§8), Models (§22), Baseline (§17), Batch jobs (§22) |
@@ -67,7 +67,7 @@ Every analytics/triage surface calls its backend endpoints directly; every
 endpoint below is also usable via `curl` (§33). RBAC (`<Can>` guards) hides an
 item a signed-in user's role can't reach; with auth off, everything shows.
 
-### Security Command Center dashboard
+### Cyber Defence Center dashboard
 
 **Overview → Dashboard** is the shift landing page. One time-range control scopes
 the five primary KPIs: **Open Cases**, **Critical / High**, **Escalated to Human**,
@@ -75,12 +75,32 @@ the five primary KPIs: **Open Cases**, **Critical / High**, **Escalated to Human
 statuses (`new`, `open`, `needs_human`, `investigating`, `escalated`, `on_hold`).
 Critical / High spans both open and resolved cases in the window and states the
 split as `N open + M resolved`; it never silently drops an unknown lifecycle.
+False Positive Rate shows the selected-window rate only — it carries no
+period-over-period percentage chip.
+
+Hovering or keyboard-focusing a landing metric reveals its recent trendline for the
+same window (`GET /api/metrics/trends` zero-filled case-cohort buckets, the per-day
+timing series, or the spend ledger series). Each hover card names the exact series
+it draws and its bucketing; a metric with no measured series shows a quiet "No trend
+data yet" line, and the combined Critical / High tile deliberately has no trendline
+because no per-severity series exists.
+
+`GET /api/metrics/trends?window_hours=24` (`metrics:view`) is the hover-trendline
+feed: `window_hours` clamps to 1..720 and the UTC-aligned, zero-filled buckets follow
+a fixed width ladder (≤24 h → 60 min, ≤72 h → 180, ≤168 h → 360, else 1440), with the
+newest bucket partial. Per bucket it reports new/closed/auto-closed/FP/needs-human/
+escalated case counts, an `fp_rate` (null when no verdicted case), and raw `alerts`
+from the durable noise counters (null while they warm up); a
+`truncated`/`store_total`/`fetched` marker keeps a partial (newest-5000) tally
+honest. Like the other dashboard rollups it is served from a shared short-TTL (~5 s)
+case-page cache, so the LIVE fan-out costs one store scan per refresh window.
 
 False Positive Rate and Auto-resolved use the server posture rollup for the exact
-selected range. A range change immediately hides the previous posture snapshot,
-cancels the superseded request, and accepts only a response whose echoed window still
-matches the selector. A slower earlier request cannot repaint those tiles beneath a
-new range; loading/unavailable copy appears instead of mixed-window values.
+selected range. A range change keeps the last successful posture snapshot mounted —
+explicitly marked by the tiles' `Loading …` sub-line — while the superseded request
+is cancelled and the new window loads, so the dashboard never blanks. Only a
+response whose echoed window still matches the selector is accepted; a slower
+earlier request cannot repaint those tiles beneath a new range.
 
 The next row uses the available height for a current-open-queue **Active Risk
 Index**, Open-above-Resolved severity rings, and exactly four **Latest Cases**.
@@ -1351,17 +1371,25 @@ updates live.
 
 ---
 
-## 19. Enrichment providers (19 registered)
+## 19. Enrichment providers (38 registered)
 
 **Settings → Integrations → Enrichment** (`GET /api/enrichment/providers`) lists
 every registered indicator-reputation provider's manifest plus its current
-config/key state (booleans only — secret values are never returned):
-**AbuseIPDB, VirusTotal, GreyNoise, Shodan, Shodan InternetDB, Censys, BinaryEdge,
-IPinfo, OTX, Pulsedive, Spur, XForce, URLScan, HIBP, ProjectHoneypot, RDAP,
-URLhaus, ThreatFox,** and **MalwareBazaar** — 19 classes across 17 files (the
-abuse.ch trio — URLhaus/ThreatFox/MalwareBazaar — share one file). Several
-**keyless** providers default ON (Shodan InternetDB, IPinfo, the abuse.ch trio,
-RDAP); the rest need a key set in the secret tier.
+config/key state (booleans only — secret values are never returned) — **38
+registered classes**. Round 3's 19: **AbuseIPDB, VirusTotal, GreyNoise, Shodan,
+Shodan InternetDB, Censys, BinaryEdge, IPinfo, OTX, Pulsedive, Spur, XForce,
+URLScan, HIBP, ProjectHoneypot, RDAP, URLhaus, ThreatFox,** and **MalwareBazaar**
+(the abuse.ch trio shares one file). Round 11 adds 19 more — keyless **CIRCL
+hashlookup, DShield, Onionoo, Spamhaus, Cymru MHR, Robtex,** and **crt.sh**, plus
+keyed **CrowdSec, Google Safe Browsing, IPQualityScore, ipdata, APIVoid,
+Maltiverse, SecurityTrails, Criminal IP, Netlas, Hybrid Analysis, MetaDefender,**
+and **EmailRep**. The quota-safe **keyless** providers default ON (Shodan
+InternetDB, IPinfo, the abuse.ch trio, RDAP, CIRCL hashlookup, DShield, Onionoo);
+Spamhaus + Cymru MHR (DNS lookups needing the host's own resolver) and Robtex +
+crt.sh (slow free tiers) are keyless but default OFF; every keyed provider needs
+its key set in the secret tier. Each provider card renders the manifest's
+per-provider **"How to set up"** steps (naming the exact env var to set) and an
+**example** blurb of how that source helps triage.
 
 | Action | Endpoint |
 |---|---|
@@ -1734,11 +1762,21 @@ Manage users (super_admin only) on **Settings → Security & access → Users**:
 curl -s localhost:8088/api/users                                   # list
 curl -s -X POST localhost:8088/api/users \
   -H 'content-type: application/json' \
-  -d '{"username":"alice","password":"<temp>","role":"analyst_tier2"}'
+  -d '{"username":"alice","password":"<temp>","role":"analyst_tier2",
+       "display_name":"Alice Ng","email":"alice@example.org","phone":"+91 ...",
+       "mfa_required":true,"custom_roles":["tier1_plus"]}'
 curl -s -X PUT localhost:8088/api/users/alice \
   -H 'content-type: application/json' -d '{"role":"soc_manager","active":true}'
 curl -s -X DELETE localhost:8088/api/users/alice
 ```
+
+Beyond `username`/`password`/`role`, creation accepts the optional profile fields
+`display_name` (doubles as the full name), `email`, and `phone`, the `mfa_required`
+enrolment mandate (see MFA below), and creation-time `custom_roles` (validated
+exactly like `PUT /api/users/{username}/roles`). Update accepts the same profile
+fields plus `mfa_required` (`null` = leave unchanged; clearing a text field is an
+explicit empty string); custom roles are re-assigned post-hoc via the roles
+endpoint. All additive — the base `role` must remain one of the six built-ins.
 
 ### Custom roles
 
@@ -1782,6 +1820,19 @@ After that, **login is two-phase**: the password call returns
 `POST /api/auth/mfa/verify` to receive the real JWT (a recovery code works here too,
 once). Disable with `POST /api/auth/mfa/disable` (self, requires a current code; an
 admin can force-disable). `mfa.enforce_for_roles` can require MFA for chosen roles.
+
+**Admin-mandated enrolment:** an admin can set **Require MFA** on a user at create
+or edit time (the `mfa_required` flag — required ≠ enrolled; it never mints a
+secret). At the next login, a mandated-but-unenrolled user's password call returns
+`{ requires_mfa, mfa_enrollment_required, pending_token }` and the login screen
+walks them through authenticator enrolment **inside the login flow** —
+`POST /api/auth/mfa/enroll-setup` (QR + recovery codes) then
+`POST /api/auth/mfa/enroll-confirm` (proves possession, persists the enrolment,
+and mints the full session) — before any session is issued. Both routes are gated
+by the same short-lived pending token (never a session); an already-enrolled
+account cannot replace its factor through this path, every step is audited, and
+the env-managed admin fallback is never mandated (it has no persisted user record
+to enrol).
 
 ### Configuring SSO (OIDC)
 
@@ -2646,6 +2697,7 @@ curl -s "localhost:8088/api/scans/notifications?since=now-24h"
 
 # Standup, aggregate agent-effectiveness evidence, and cost
 curl -s "localhost:8088/api/standup/report?window_hours=24"
+curl -s "localhost:8088/api/metrics/trends?window_hours=24"   # dashboard hover-trendline buckets (§0)
 curl -s "localhost:8088/api/metrics/agent-improvement"
 curl -s "localhost:8088/api/diagnostics/health?window_hours=24"
 curl -s "localhost:8088/api/metrics/auto-close-health?window_hours=24"
@@ -2710,7 +2762,8 @@ curl -s -X POST localhost:8088/api/poll
 ### Auth, users + RBAC (only when TLSOC_AUTH_ENABLED=true)
 
 ```bash
-# Login (returns {requires_mfa, pending_token} when the user has MFA; else {token, user})
+# Login (returns {requires_mfa, pending_token} when the user has MFA — plus
+# mfa_enrollment_required:true when MFA is mandated but not yet enrolled (§24); else {token, user})
 curl -s -X POST localhost:8088/api/auth/login \
   -H 'content-type: application/json' -d '{"username":"Admin","password":"Admin@123"}'
 # Forced on the seeded admin's first login:
@@ -2745,6 +2798,9 @@ curl -s -X POST localhost:8088/api/auth/mfa/setup     # -> {secret, otpauth_uri,
 curl -s -X POST localhost:8088/api/auth/mfa/confirm -H 'content-type: application/json' -d '{"code":"123456"}'
 # Login phase 2: exchange the pending_token + a TOTP (or recovery) code for a session
 curl -s -X POST localhost:8088/api/auth/mfa/verify  -H 'content-type: application/json' -d '{"pending_token":"...","code":"123456"}'
+# Admin-mandated enrolment DURING login (§24; pending-token-gated, confirm mints the session)
+curl -s -X POST localhost:8088/api/auth/mfa/enroll-setup   -H 'content-type: application/json' -d '{"pending_token":"..."}'
+curl -s -X POST localhost:8088/api/auth/mfa/enroll-confirm -H 'content-type: application/json' -d '{"pending_token":"...","code":"123456"}'
 
 # SSO (OIDC)
 curl -s localhost:8088/api/auth/sso/providers

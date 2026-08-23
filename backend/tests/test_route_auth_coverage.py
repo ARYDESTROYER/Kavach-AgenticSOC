@@ -109,6 +109,10 @@ _AUTHZ_EXEMPT_AUTH_FLOW = frozenset({
     "/api/auth/refresh", "/api/auth/reauth",
     "/api/auth/mfa/setup", "/api/auth/mfa/confirm", "/api/auth/mfa/verify",
     "/api/auth/mfa/disable",
+    # Mandated-MFA enrollment DURING login (required-but-not-enrolled): both are
+    # gated by the short-lived single-use pending token (mfa:"pending"), NOT an RBAC
+    # grant — a full session does not exist yet at that point of the login flow.
+    "/api/auth/mfa/enroll-setup", "/api/auth/mfa/enroll-confirm",
     # /api/setup/complete + /api/setup/secrets now carry require_permission("settings",
     # "manage") (audit #2): a no-op when auth is off (OOBE default), a real grant when
     # auth is on — so they are gated, not exempt.
@@ -404,6 +408,8 @@ def test_public_paths_are_minimal_and_known() -> None:
         "/api/setup/status", "/api/setup/account",
         # Wave 2 — each guarded by a single-use token/state, not a session.
         "/api/auth/mfa/verify",
+        # Mandated-MFA login-phase enrollment — guarded by the same pending token.
+        "/api/auth/mfa/enroll-setup", "/api/auth/mfa/enroll-confirm",
         "/api/auth/sso/providers", "/api/auth/sso/authorize", "/api/auth/sso/callback",
         # Wave 3 — refresh is self-authenticating via the opaque refresh token (the
         # access token may have expired); guarded by the refresh-hash match + reuse
@@ -540,6 +546,18 @@ def test_wave7_org_routes_are_admin_gated() -> None:
     assert require_admin not in _calls("/api/prefs/user", "PUT")
     assert require_admin not in _calls("/api/views", "POST")
     assert require_admin not in _calls("/api/prefs/user/tables/{table_id}", "PUT")
+
+
+def test_mandated_mfa_enroll_routes_registered_and_public() -> None:
+    # The mandated-MFA login-phase enrollment routes exist on the real app AND are
+    # deliberately on the public allowlist: they run BEFORE a session exists and are
+    # gated by the short-lived pending token (mfa:"pending") instead — the same
+    # trust model as /api/auth/mfa/verify. (A pending token is still rejected by
+    # every full-session verify, covered by the mandate flow tests.)
+    paths = {r.path for r in app.routes if isinstance(r, APIRoute)}
+    for expected in ("/api/auth/mfa/enroll-setup", "/api/auth/mfa/enroll-confirm"):
+        assert expected in paths, f"missing mandated-MFA enroll route {expected}"
+        assert expected in PUBLIC_API_PATHS, f"{expected} must be pending-token public"
 
 
 def test_wave5_demo_routes_registered_and_not_public() -> None:

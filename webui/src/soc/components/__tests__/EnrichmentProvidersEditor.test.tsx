@@ -77,6 +77,11 @@ const PROVIDERS = [
     docs_url: 'https://www.abuseipdb.com/api',
     default_enabled: true,
     version: '1',
+    setup_steps: [
+      'Create a free account at abuseipdb.com.',
+      'Set TLSOC_ABUSEIPDB_API_KEY in .env.',
+    ],
+    example: 'Separates known scanners from first-seen sources instantly.',
   },
   {
     name: 'urlhaus',
@@ -92,6 +97,8 @@ const PROVIDERS = [
     docs_url: null,
     default_enabled: true,
     version: '1',
+    setup_steps: ['Nothing required — URLhaus is keyless.'],
+    example: 'Turns a suspicious URL into a confirmed malware-delivery case.',
   },
 ];
 
@@ -191,5 +198,46 @@ describe('EnrichmentProvidersEditor (Feature 7)', () => {
     const master = screen.getByRole('switch', { name: /^enrichment enabled$/i });
     fireEvent.click(master);
     await waitFor(() => expect(setConfigMock).toHaveBeenCalledWith({ enabled: false }));
+  });
+
+  it('renders the manifest example blurb under the description (plain text)', async () => {
+    renderEditor();
+    await screen.findByText('AbuseIPDB');
+
+    expect(
+      screen.getByText('Separates known scanners from first-seen sources instantly.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Turns a suspicious URL into a confirmed malware-delivery case.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows setup steps in a collapsible, keyboard-reachable ordered list', async () => {
+    renderEditor();
+    await screen.findByText('AbuseIPDB');
+
+    // Steps are hidden until the "How to set up" toggle is expanded.
+    expect(screen.queryByText('Create a free account at abuseipdb.com.')).not.toBeInTheDocument();
+
+    const toggles = screen.getAllByRole('button', { name: /how to set up/i });
+    expect(toggles.length).toBe(2); // one per provider with steps
+    expect(toggles[0]).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggles[0]);
+    expect(toggles[0]).toHaveAttribute('aria-expanded', 'true');
+
+    // The steps render as an ORDERED list of plain-text items.
+    const step1 = await screen.findByText('Create a free account at abuseipdb.com.');
+    expect(step1.tagName).toBe('LI');
+    expect(step1.closest('ol')).not.toBeNull();
+    expect(screen.getByText('Set TLSOC_ABUSEIPDB_API_KEY in .env.')).toBeInTheDocument();
+
+    // Collapsing hides them again.
+    fireEvent.click(toggles[0]);
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Create a free account at abuseipdb.com.'),
+      ).not.toBeInTheDocument(),
+    );
   });
 });

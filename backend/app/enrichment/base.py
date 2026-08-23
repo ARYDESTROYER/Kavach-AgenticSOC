@@ -66,7 +66,13 @@ class ProviderManifest(BaseModel):
     enables it; ``secret_fields`` are the SECRET-tier keys it needs (empty ⇒ the
     provider is KEYLESS and needs no key to run). ``free_tier`` is a human note about
     rate limits; ``default_enabled`` mirrors the shipped ``EnrichmentConfig`` default
-    so the UI can show the out-of-the-box state."""
+    so the UI can show the out-of-the-box state.
+
+    ``setup_steps`` (Round 11) is an ordered list of concrete operator steps to get
+    the provider running (where to create the account/key, which env var / Settings
+    field to set, free-tier notes); ``example`` is a one-or-two-sentence "how this
+    helps triage" blurb. Both are FIXED manifest strings hard-coded by the provider
+    author — trusted UI copy, never derived from provider responses (#9)."""
 
     name: str
     display_name: str = ""
@@ -79,6 +85,9 @@ class ProviderManifest(BaseModel):
     docs_url: str | None = None
     default_enabled: bool = False
     version: str = "1.0.0"
+    # Round 11: operator setup guide + usefulness example (fixed, trusted UI copy).
+    setup_steps: list[str] = Field(default_factory=list)
+    example: str = ""
 
 
 # --------------------------------------------------------------------------- #

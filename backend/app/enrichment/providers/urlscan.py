@@ -45,6 +45,21 @@ class URLScanProvider(EnrichmentProvider):
             free_tier="Free tier (rate-limited) with an account key",
             docs_url="https://urlscan.io/docs/api/",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at urlscan.io and open Settings → API.",
+                "Create an API key (the free tier is rate-limited but ample for "
+                "triage lookups).",
+                "Set TLSOC_URLSCAN_API_KEY in .env (compose maps it to "
+                "URLSCAN_API_KEY), or paste it in this card (in-memory until "
+                "restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "Answers 'what does this link actually do?' from prior sandboxed "
+                "scans: a URL whose last urlscan verdict is 'malicious — phishing' "
+                "closes the loop on a suspicious-email case without anyone clicking "
+                "it."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

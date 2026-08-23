@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from ..build_identity import stamp_new_record
@@ -201,6 +202,21 @@ def _rev_of(value: Any) -> int:
             return 0
     return 0
 
+
+def _parse_iso_utc(ts: Any) -> datetime | None:
+    """Best-effort aware-UTC datetime for an ISO string (None when unparseable).
+
+    Used by the :meth:`CaseRepository.count_created_since` compatibility fallback so
+    the comparison is timestamp-correct across ``Z``/offset/naive formats rather than
+    a fragile lexicographic string compare."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
 class CaseRepository(ABC):
     """Persists :class:`Case` documents (Section 7.1).
 
@@ -239,6 +255,30 @@ class CaseRepository(ABC):
     @abstractmethod
     async def count_new_scans(self, since_iso: str) -> int:
         """Count automated-scan cases created strictly after ``since_iso``."""
+
+    async def count_created_since(self, since_iso: str) -> int:
+        """Count cases created at/after ``since_iso`` (inclusive), across every
+        surface/status.
+
+        A pure COUNT push-down for callers that only need the number (e.g. the
+        sources-coverage "alerts triaged in 24h" tile) — fetching and validating
+        thousands of full Case documents just to ``len()`` a window is the exact
+        cost this avoids. Modeled on :meth:`count_new_scans`; the bundled ES/SQL
+        repositories override it with a native backend count.
+
+        This NON-abstract default keeps third-party repositories source-compatible:
+        it falls back to counting over one bounded ``list()`` page (a correct
+        lower bound; exact whenever the store holds fewer rows than the page)."""
+        floor = _parse_iso_utc(since_iso)
+        if floor is None:
+            return 0
+        cases, _total = await self.list(limit=10000)
+        count = 0
+        for case in cases:
+            created = _parse_iso_utc(getattr(case, "created_at", None))
+            if created is not None and created >= floor:
+                count += 1
+        return count
 
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,

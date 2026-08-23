@@ -48,6 +48,20 @@ class ShodanProvider(EnrichmentProvider):
             free_tier="Membership / pay-as-you-go; ~1 req/s",
             docs_url="https://developer.shodan.io/api",
             default_enabled=False,
+            setup_steps=[
+                "Log in at account.shodan.io (a one-time Membership unlocks API "
+                "credits) and copy your API key.",
+                "Set TLSOC_SHODAN_API_KEY in .env (compose maps it to "
+                "SHODAN_API_KEY), or paste it in this card (in-memory until restart).",
+                "Flip this provider's toggle ON. The keyless InternetDB provider "
+                "already covers basic exposure — enable this one for org/ISP, OS and "
+                "richer banner detail.",
+            ],
+            example=(
+                "Adds the who-and-what behind an IP: the same alert reads differently "
+                "when Shodan shows the source is a hosting-provider VPS tagged "
+                "'malware' versus a university mail server."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

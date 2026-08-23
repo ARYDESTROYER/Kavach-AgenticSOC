@@ -125,6 +125,9 @@ export const rolesApi = {
  * appears for every action a resource supports even when no role grants it yet. The
  * server is authoritative — an unknown resource/action submitted in a draft is
  * dropped leniently — but keeping this in sync gives the editor a complete grid.
+ * (Round-11 drift fix: `runbooks`, `system_updates`, and `rules` had been added to
+ * the backend vocabulary but were missing from this mirror, so the editor grid and
+ * the role-permission summary never showed them.)
  */
 export const RESOURCE_ACTIONS: Record<string, string[]> = {
   cases: ['read', 'write', 'close', 'assign', 'comment', 'reinvestigate'],
@@ -133,10 +136,12 @@ export const RESOURCE_ACTIONS: Record<string, string[]> = {
   users: ['manage'],
   proposals: ['read', 'approve'],
   playbooks: ['read', 'run', 'manage'],
+  runbooks: ['read', 'manage'],
   rag: ['read', 'manage'],
   memory: ['read', 'manage'],
   cost: ['view'],
   data_export: ['export'],
+  system_updates: ['read', 'apply', 'rollback'],
   audit: ['view'],
   metrics: ['view'],
   notifications: ['read', 'manage'],
@@ -149,6 +154,7 @@ export const RESOURCE_ACTIONS: Record<string, string[]> = {
   models: ['read', 'manage'],
   enrichment: ['read', 'manage'],
   inapp: ['read', 'manage'],
+  rules: ['read', 'manage'],
 };
 
 /** Stable, readable ordering of resources for the editor grid + matrix viewer. */

@@ -27,6 +27,9 @@ const brandingMock = vi.fn();
 // The low-level api.post — the OOBE setup client (login.api.ts) posts /setup/account
 // and MfaSetupCard posts /auth/mfa/*; capture the calls per-path here.
 const postMock = vi.fn();
+// Mandated login-phase enrollment (Round 11): the pending-token-gated endpoints.
+const enrollSetupMock = vi.fn();
+const enrollConfirmMock = vi.fn();
 
 vi.mock('@/lib/api', () => {
   class ApiError extends Error {
@@ -61,6 +64,8 @@ vi.mock('@/lib/api', () => {
           confirm: vi.fn().mockResolvedValue({ ok: true }),
           verify: vi.fn().mockResolvedValue({ user: {} }),
           disable: vi.fn().mockResolvedValue({ ok: true }),
+          enrollSetup: (t: string) => enrollSetupMock(t),
+          enrollConfirm: (t: string, c: string) => enrollConfirmMock(t, c),
         },
         sso: {
           providers: () => ssoProvidersMock(),
@@ -88,6 +93,8 @@ const BASE_BRANDING = {
 import { ThemeProvider } from '../theme';
 import { TooltipProvider } from '@/ui/tooltip';
 import Login from '../pages/Login';
+// The MOCKED ApiError (status, message) — for driving 401 expired-pending paths.
+import { ApiError as ApiErrorFromMock } from '@/lib/api';
 
 function renderLogin() {
   return render(
@@ -487,4 +494,157 @@ describe('Login — white-label copy + layouts', () => {
       expect(await screen.findByLabelText('Password')).toBeInTheDocument();
     },
   );
+});
+
+// --------------------------------------------------------------------------- //
+// Round 11: MANDATED MFA enrollment DURING login. When the login response carries
+// `mfa_enrollment_required` (required-but-unenrolled), the user completes TOTP
+// enrollment inside the login itself — pending-token-gated enroll-setup/confirm —
+// and confirm success IS the completed login. There is NO skip affordance.
+// --------------------------------------------------------------------------- //
+describe('Login — mandated MFA enrollment during login', () => {
+  beforeEach(() => {
+    loginMock.mockReset();
+    setupStatusMock.mockReset();
+    ssoProvidersMock.mockReset();
+    brandingMock.mockReset();
+    postMock.mockReset();
+    enrollSetupMock.mockReset();
+    enrollConfirmMock.mockReset();
+    brandingMock.mockResolvedValue({ ...BASE_BRANDING });
+    ssoProvidersMock.mockResolvedValue({ providers: [] });
+    setupStatusMock.mockResolvedValue({ setup_complete: true, seeded_default: false });
+    loginMock.mockResolvedValue({
+      requires_mfa: true,
+      mfa_enrollment_required: true,
+      pending_token: 'pend-enroll-1',
+    });
+    enrollSetupMock.mockResolvedValue({
+      secret: 'ENROLLSECRET234567',
+      otpauth_uri: 'otpauth://totp/Acme%20SOC:alice?secret=ENROLLSECRET234567',
+      recovery_codes: ['1111-2222', '3333-4444'],
+    });
+    enrollConfirmMock.mockResolvedValue({
+      token: 't',
+      user: { username: 'alice', role: 'analyst_tier1', must_change_password: false, mfa_enabled: true },
+    });
+  });
+
+  async function driveToEnroll() {
+    const { passwordInput } = await advanceSigninToPassword('alice');
+    fireEvent.change(passwordInput, { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(
+      await screen.findByText('Set up two-factor authentication'),
+    ).toBeInTheDocument();
+  }
+
+  it('renders the auto-started setup step with recovery codes and NO skip affordance', async () => {
+    const onAuth = vi.fn();
+    render(
+      <ThemeProvider>
+        <TooltipProvider>
+          <Login onAuthenticated={onAuth} />
+        </TooltipProvider>
+      </ThemeProvider>,
+    );
+    await driveToEnroll();
+
+    // The plain explanation of WHY this step is mandatory.
+    expect(
+      screen.getByText(/administrator requires multi-factor authentication/i),
+    ).toBeInTheDocument();
+    // Entering the mode unmounts the sign-in form — focus moves to the mode
+    // HEADING (tabIndex=-1 + programmatic focus) so SR/keyboard users land on
+    // "Set up two-factor authentication" instead of dropping to <body>, and the
+    // heading's describedby hands them the requirement explanation.
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: 'Set up two-factor authentication',
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveAttribute('aria-describedby', 'login-mode-description');
+    expect(document.getElementById('login-mode-description')?.textContent).toMatch(
+      /administrator requires multi-factor authentication/i,
+    );
+    // The setup call was rerouted to the pending-token-gated enroll endpoint.
+    await waitFor(() => expect(enrollSetupMock).toHaveBeenCalledWith('pend-enroll-1'));
+    // QR-fallback secret + otpauth URI + recovery codes all render at the setup step.
+    expect(await screen.findByText('ENROLLSECRET234567')).toBeInTheDocument();
+    expect(screen.getByText(/otpauth:\/\/totp\/Acme%20SOC:alice/)).toBeInTheDocument();
+    expect(screen.getByText('1111-2222')).toBeInTheDocument();
+    expect(screen.getByText('3333-4444')).toBeInTheDocument();
+    // NO way to skip into the console; the only exits are enrollment or sign-in.
+    expect(screen.queryByRole('button', { name: /skip/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to sign in' })).toBeInTheDocument();
+    expect(onAuth).not.toHaveBeenCalled();
+  });
+
+  it('confirm success is a COMPLETED login (session minted server-side)', async () => {
+    const onAuth = vi.fn();
+    render(
+      <ThemeProvider>
+        <TooltipProvider>
+          <Login onAuthenticated={onAuth} />
+        </TooltipProvider>
+      </ThemeProvider>,
+    );
+    await driveToEnroll();
+    await screen.findByText('ENROLLSECRET234567');
+
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
+      target: { value: '123456' },
+    });
+    // Confirm success destroys the one-time recovery codes → the explicit
+    // saved-codes acknowledgment gates the submit.
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+
+    await waitFor(() =>
+      expect(enrollConfirmMock).toHaveBeenCalledWith('pend-enroll-1', '123456'),
+    );
+    await waitFor(() => expect(onAuth).toHaveBeenCalled());
+  });
+
+  it('routes into the forced password change when the fresh session still must change it', async () => {
+    enrollConfirmMock.mockResolvedValue({
+      token: 't',
+      user: { username: 'alice', role: 'analyst_tier1', must_change_password: true, mfa_enabled: true },
+    });
+    const onAuth = vi.fn();
+    render(
+      <ThemeProvider>
+        <TooltipProvider>
+          <Login onAuthenticated={onAuth} />
+        </TooltipProvider>
+      </ThemeProvider>,
+    );
+    await driveToEnroll();
+    await screen.findByText('ENROLLSECRET234567');
+
+    fireEvent.change(screen.getByLabelText(/enter the 6-digit code/i), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+
+    expect(await screen.findByText('Set a new password')).toBeInTheDocument();
+    expect(onAuth).not.toHaveBeenCalled();
+  });
+
+  it('returns to sign-in with a clear message when the pending token has expired', async () => {
+    enrollSetupMock.mockRejectedValue(
+      new ApiErrorFromMock(401, 'invalid or expired pending session'),
+    );
+    renderLogin();
+    const { passwordInput } = await advanceSigninToPassword('alice');
+    fireEvent.change(passwordInput, { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    // The expired pending is handled gracefully: a plain explanation + the password
+    // step again (identity preserved) — never a dead-end or a silent failure.
+    expect(await screen.findByText(/setup session expired/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText('Password')).toBeInTheDocument();
+    expect(enrollSetupMock).toHaveBeenCalledWith('pend-enroll-1');
+  });
 });

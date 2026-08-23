@@ -29,7 +29,7 @@ through every headline feature in order. Budget ~25-30 minutes for the full tour
 > (campaigns, entity baseline, threshold auto-tuning), **case collaboration**
 > (threads/tasks/@mentions), **custom dashboards**, a **local/self-hosted model
 > provider**, **MITRE ATT&CK coverage + Navigator export**, the **audit viewer**,
-> and the Overview **Security Command Center**.
+> and the Overview **Cyber Defence Center**.
 
 ---
 
@@ -432,12 +432,12 @@ cursors. It is **fully reversible in one click**.
   attributed to the operator in the **real** append-only audit, which becomes
   visible here after **Exit & clear**.
 
-### 3r. Overview — the Security Command Center
+### 3r. Overview — the Cyber Defence Center
 - Land on the **Overview** (Dashboard). Walk it top to bottom:
   - **Masthead** — the time-range picker, auto-refresh, and a "last updated" stamp.
   - **KPI strip** — 5 tiles: **Open Cases**, **Critical / High**, **Escalated To
     Human**, **False Positive Rate**, **Auto-Resolved** (all populated by Demo
-    Mode, with period-over-period deltas).
+    Mode; hover or focus a tile to reveal its selected-window trendline).
   - **Hero row** — the **Active Risk Index** (the one risk instrument on the
     page — the old Active-Risk-Index glitch is fixed), plus a "Cases resolved"
     and an "Open cases" donut snapshot.

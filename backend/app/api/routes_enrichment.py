@@ -130,6 +130,11 @@ async def list_enrichment_providers(
                 "docs_url": m.docs_url,
                 "default_enabled": m.default_enabled,
                 "version": m.version,
+                # Round 11: fixed manifest UI copy — an ordered operator setup guide
+                # + a one-line "how this helps triage" example (trusted, hard-coded
+                # strings; never derived from provider responses).
+                "setup_steps": [str(s) for s in m.setup_steps],
+                "example": m.example,
             }
         )
     return {

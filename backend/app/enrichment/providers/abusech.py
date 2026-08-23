@@ -71,6 +71,18 @@ class URLhausProvider(EnrichmentProvider):
             free_tier="Keyless community API",
             docs_url="https://urlhaus-api.abuse.ch/",
             default_enabled=True,
+            setup_steps=[
+                "Nothing required — URLhaus is keyless and ships enabled.",
+                "Optional: create a free abuse.ch account, generate an Auth-Key and "
+                "set TLSOC_ABUSECH_AUTH_KEY in .env (compose maps it to "
+                "ABUSECH_AUTH_KEY) — one key lifts the rate caps for URLhaus, "
+                "ThreatFox and MalwareBazaar together.",
+            ],
+            example=(
+                "A proxied download URL that URLhaus lists as an active Emotet "
+                "payload host turns a 'user visited unusual URL' alert into a "
+                "confirmed malware-delivery case on the spot."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:
@@ -128,6 +140,17 @@ class ThreatFoxProvider(EnrichmentProvider):
             free_tier="Keyless community API",
             docs_url="https://threatfox-api.abuse.ch/",
             default_enabled=True,
+            setup_steps=[
+                "Nothing required — ThreatFox is keyless and ships enabled.",
+                "Optional: set TLSOC_ABUSECH_AUTH_KEY in .env (shared abuse.ch "
+                "Auth-Key; compose maps it to ABUSECH_AUTH_KEY) to lift the keyless "
+                "rate caps.",
+            ],
+            example=(
+                "Matches an outbound connection against known IOCs with malware "
+                "attribution: '198.51.100.7 = Cobalt Strike C2, confidence 90' is "
+                "the difference between a routine egress alert and an incident."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:
@@ -186,6 +209,17 @@ class MalwareBazaarProvider(EnrichmentProvider):
             free_tier="Keyless community API",
             docs_url="https://bazaar.abuse.ch/api/",
             default_enabled=True,
+            setup_steps=[
+                "Nothing required — MalwareBazaar is keyless and ships enabled.",
+                "Optional: set TLSOC_ABUSECH_AUTH_KEY in .env (shared abuse.ch "
+                "Auth-Key; compose maps it to ABUSECH_AUTH_KEY) to lift the keyless "
+                "rate caps.",
+            ],
+            example=(
+                "A quarantined file's hash resolving to a known AgentTesla sample "
+                "(with family and file-type tags) confirms the EDR verdict and hands "
+                "the analyst the malware family for the case summary."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

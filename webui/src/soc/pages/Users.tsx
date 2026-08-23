@@ -19,11 +19,15 @@ import {
   RefreshCw,
   Loader2,
   ShieldCheck,
+  Pencil,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import type { RolesResponse, User } from '@/lib/types';
-import { rolesApi, BUILTIN_ROLES } from './Roles.api';
+import { rolesApi, BUILTIN_ROLES, type CustomRole, type GrantMap } from './Roles.api';
+import { RolePermissionSummary } from '@/soc/components/RolePermissionSummary';
+import { RoleMatrixEditor, type RoleDraft } from '@/soc/components/RoleMatrixEditor';
 import { humanizeAge } from '@/lib/format';
 import { Button } from '@/ui/button';
 import { Badge } from '@/ui/badge';
@@ -102,11 +106,15 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
   // Custom (non built-in) role names from the resolved matrix — offered when
   // assigning a user a base role + custom_roles[] (Round 3 / Feature 6).
   const [customRoleNames, setCustomRoleNames] = React.useState<string[]>([]);
+  // The FULL resolved role → resource → [actions] matrix (Round 11): threaded into
+  // the create dialog so an admin SEES what each role grants before choosing it.
+  const [matrix, setMatrix] = React.useState<Record<string, GrantMap>>({});
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
   const [addOpen, setAddOpen] = React.useState(false);
   const [resetFor, setResetFor] = React.useState<User | null>(null);
   const [rolesFor, setRolesFor] = React.useState<User | null>(null);
+  const [editFor, setEditFor] = React.useState<User | null>(null);
   const [deleteFor, setDeleteFor] = React.useState<User | null>(null);
   const [busyUser, setBusyUser] = React.useState<string | null>(null);
 
@@ -121,6 +129,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       setUsers(u.users);
       const matrixRes = r as RolesResponse;
       setRoles(matrixRes.roles);
+      setMatrix(matrixRes.matrix ?? {});
       setCustomRoleNames(
         Object.keys(matrixRes.matrix ?? {}).filter((n) => !BUILTIN_ROLES.has(n)),
       );
@@ -182,17 +191,27 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       header: 'Username',
       sortable: false,
       cell: (u) => (
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-foreground">{u.username}</span>
-          {u.username === me ? (
-            <Badge variant="secondary" className="text-2xs">
-              You
-            </Badge>
-          ) : null}
-          {u.must_change_password ? (
-            <Badge variant="warning" className="text-2xs">
-              Must reset
-            </Badge>
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-foreground">{u.username}</span>
+            {u.username === me ? (
+              <Badge variant="secondary" className="text-2xs">
+                You
+              </Badge>
+            ) : null}
+            {u.must_change_password ? (
+              <Badge variant="warning" className="text-2xs">
+                Must reset
+              </Badge>
+            ) : null}
+          </div>
+          {/* Full name + email are operator-entered → PLAIN text only (#9). */}
+          {u.display_name || u.email ? (
+            <span className="text-xs text-muted-foreground">
+              {u.display_name || ''}
+              {u.display_name && u.email ? ' · ' : ''}
+              {u.email || ''}
+            </span>
           ) : null}
         </div>
       ),
@@ -235,6 +254,35 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       ),
     },
     {
+      id: 'mfa',
+      header: 'MFA',
+      align: 'center',
+      // The mandate is conveyed as VISIBLE text (the title tooltips below are
+      // mouse-only supplements, never the sole carrier of the requirement).
+      cell: (u) =>
+        u.mfa_enabled ? (
+          <Badge
+            variant="success"
+            className="text-2xs"
+            title={u.mfa_required ? 'Two-factor enrolled · required by admin' : 'Two-factor enrolled'}
+          >
+            {u.mfa_required ? 'On · required' : 'On'}
+          </Badge>
+        ) : u.mfa_required ? (
+          <Badge
+            variant="warning"
+            className="text-2xs"
+            title="Two-factor required — they must set up an authenticator at their next sign-in"
+          >
+            Required
+          </Badge>
+        ) : (
+          <span className="text-sm text-muted-foreground" title="Two-factor not enrolled">
+            Off
+          </span>
+        ),
+    },
+    {
       id: 'last_login_at',
       header: 'Last sign-in',
       cell: (u) => (
@@ -267,6 +315,17 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
               <ShieldCheck className="h-4 w-4" aria-hidden />
             </Button>
           ) : null}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setEditFor(u)}
+            disabled={busyUser === u.username}
+            aria-label={`Edit ${u.username}`}
+            title="Edit profile & MFA requirement"
+          >
+            <Pencil className="h-4 w-4" aria-hidden />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -338,11 +397,25 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       <AddUserDialog
         open={addOpen}
         roles={roles}
+        matrix={matrix}
+        customRoleNames={customRoleNames}
         defaultRole={roles.includes('analyst_tier1') ? 'analyst_tier1' : roles[0] ?? 'analyst_tier1'}
         onOpenChange={setAddOpen}
         onCreated={() => {
           setAddOpen(false);
           void load();
+        }}
+        onRolesChanged={() => void load({ background: true })}
+      />
+
+      <EditUserDialog
+        user={editFor}
+        onOpenChange={(open) => {
+          if (!open) setEditFor(null);
+        }}
+        onDone={() => {
+          setEditFor(null);
+          void load({ background: true });
         }}
       />
 
@@ -392,12 +465,10 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
 // --------------------------------------------------------------------------- //
 // Assign-roles dialog (base role + custom_roles[]) — Round 3 / Feature 6.
 // --------------------------------------------------------------------------- //
-/** Read a user's currently-assigned custom roles from its prefs bag (defensive:
- * the typed `User` does not surface `prefs`, so we narrow an unknown cast). */
+/** Read a user's currently-assigned custom roles from its typed prefs bag
+ * (defensive: the wire value is free-form JSON, so the array check stays). */
 function userCustomRoles(user: User | null): string[] {
-  if (!user) return [];
-  const prefs = (user as unknown as { prefs?: { custom_roles?: unknown } }).prefs;
-  const raw = prefs?.custom_roles;
+  const raw: unknown = user?.prefs?.custom_roles;
   return Array.isArray(raw) ? raw.map((x) => String(x)) : [];
 }
 
@@ -535,42 +606,103 @@ function AssignRolesDialog({
 }
 
 // --------------------------------------------------------------------------- //
-// Add-user dialog
+// Add-user dialog (Round 11): profile/contact fields, an MFA mandate, LIVE
+// role-permission visibility, and creation-time fine-graining via custom roles.
 // --------------------------------------------------------------------------- //
 function AddUserDialog({
   open,
   roles,
+  matrix,
+  customRoleNames,
   defaultRole,
   onOpenChange,
   onCreated,
+  onRolesChanged,
 }: {
   open: boolean;
   roles: string[];
+  /** The FULL resolved matrix (role → resource → [actions]) from GET /api/roles. */
+  matrix: Record<string, GrantMap>;
+  customRoleNames: string[];
   defaultRole: string;
   onOpenChange: (v: boolean) => void;
   onCreated: () => void;
+  /** A custom role was created inline — let the parent refresh its role lists. */
+  onRolesChanged?: () => void;
 }) {
   const [username, setUsername] = React.useState('');
+  const [displayName, setDisplayName] = React.useState('');
+  const [email, setEmail] = React.useState('');
+  const [phone, setPhone] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [role, setRole] = React.useState(defaultRole);
+  const [mfaRequired, setMfaRequired] = React.useState(false);
+  // Custom roles toggled ON for this new user + any created inline this session.
+  const [assigned, setAssigned] = React.useState<Set<string>>(new Set());
+  const [inlineRoles, setInlineRoles] = React.useState<CustomRole[]>([]);
+  const [roleEditorOpen, setRoleEditorOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
       setUsername('');
+      setDisplayName('');
+      setEmail('');
+      setPhone('');
       setPassword('');
       setRole(defaultRole);
+      setMfaRequired(false);
+      setAssigned(new Set());
+      setInlineRoles([]);
+      setRoleEditorOpen(false);
     }
   }, [open, defaultRole]);
 
+  // The offerable custom roles: everything the matrix already knows + anything
+  // created inline this session (dedup; the parent reload catches up in background).
+  const availableCustomRoles = React.useMemo(() => {
+    const seen = new Set(customRoleNames);
+    const extras = inlineRoles.map((r) => r.name).filter((n) => !seen.has(n));
+    return [...customRoleNames, ...extras];
+  }, [customRoleNames, inlineRoles]);
+
+  // Inline-created roles are not in the parent-fetched matrix yet — overlay their
+  // RESOLVED preview rows so the summary/editor baseline stays truthful.
+  const effectiveMatrix = React.useMemo(() => {
+    if (inlineRoles.length === 0) return matrix;
+    const next = { ...matrix };
+    for (const r of inlineRoles) if (!next[r.name]) next[r.name] = r.grants;
+    return next;
+  }, [matrix, inlineRoles]);
+
+  const toggleCustomRole = (name: string) => {
+    setAssigned((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
   const submit = async () => {
+    // Client-side we only mirror the cheap password-length gate; email/phone stay
+    // LENIENT here — the server is the validation authority (400s surface as toasts).
     if (password.length < 8) {
       toast.error('Password must be at least 8 characters.');
       return;
     }
     setBusy(true);
     try {
-      await api.users.create(username.trim(), password, role);
+      await api.users.create({
+        username: username.trim(),
+        password,
+        role,
+        display_name: displayName.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        mfa_required: mfaRequired,
+        ...(assigned.size ? { custom_roles: Array.from(assigned) } : {}),
+      });
       toast.success(`Created ${username.trim()}. They must reset the password on first sign-in.`);
       onCreated();
     } catch (e) {
@@ -582,25 +714,72 @@ function AddUserDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add user</DialogTitle>
           <DialogDescription>
             The new account must change its password on first sign-in.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-1">
-          <div className="space-y-1.5">
-            <Label htmlFor="new-user-name">Username</Label>
-            <Input
-              id="new-user-name"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="off"
-              disabled={busy}
-              /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
-              autoFocus
-            />
+        <div className="space-y-5 py-1">
+          {/* ---- Identity + contact ---------------------------------------- */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-name">Username</Label>
+              <Input
+                id="new-user-name"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="off"
+                disabled={busy}
+                /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-fullname">
+                Full name <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                id="new-user-fullname"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                autoComplete="off"
+                placeholder="e.g. Alex Morgan"
+                maxLength={200}
+                disabled={busy}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-email">
+                Email <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                id="new-user-email"
+                inputMode="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="off"
+                placeholder="alex@example.com"
+                maxLength={200}
+                disabled={busy}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-phone">
+                Mobile number <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                id="new-user-phone"
+                inputMode="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete="off"
+                placeholder="+91 98765 43210"
+                maxLength={200}
+                disabled={busy}
+              />
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="new-user-pass">Temporary password</Label>
@@ -612,21 +791,110 @@ function AddUserDialog({
               autoComplete="new-password"
               disabled={busy}
             />
+            <p className="text-xs text-muted-foreground">
+              At least 8 characters. They&apos;ll be asked to replace it at first sign-in.
+            </p>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="new-user-role">Role</Label>
-            <Select value={role} onValueChange={setRole} disabled={busy}>
-              <SelectTrigger id="new-user-role">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {roles.map((r) => (
-                  <SelectItem key={r} value={r}>
-                    {roleLabel(r)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+
+          {/* ---- Access: role + LIVE permission visibility + fine-graining --- */}
+          <div className="space-y-3 border-t border-border pt-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Access
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-role">Role</Label>
+              <Select value={role} onValueChange={setRole} disabled={busy}>
+                <SelectTrigger id="new-user-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {roles.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {roleLabel(r)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Updates live as the role changes, so the admin SEES what the role
+                grants before creating the account. */}
+            <RolePermissionSummary roleName={role} matrix={effectiveMatrix} />
+            <div className="space-y-2" role="group" aria-labelledby="new-user-custom-roles-label">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span
+                  id="new-user-custom-roles-label"
+                  className="text-sm font-medium leading-none text-foreground"
+                >
+                  Fine-tune with custom roles
+                </span>
+                {/* Custom roles ARE the per-user override mechanism: this seeds a new
+                    role from the selected base role in the full matrix editor.
+                    (POST /api/roles is fresh-auth-gated — the global re-auth dialog
+                    handles the step-up transparently.) */}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 px-2 text-xs"
+                  onClick={() => setRoleEditorOpen(true)}
+                  disabled={busy}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+                  Adjust permissions…
+                </Button>
+              </div>
+              {availableCustomRoles.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Attach custom roles to add or deny specific permissions on top of the
+                  base role. None exist yet — &ldquo;Adjust permissions…&rdquo; creates one.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {availableCustomRoles.map((name) => {
+                    const on = assigned.has(name);
+                    return (
+                      <Button
+                        key={name}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => toggleCustomRole(name)}
+                        aria-pressed={on}
+                        className={
+                          on
+                            ? 'h-auto rounded-md border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary'
+                            : 'h-auto rounded-md border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground'
+                        }
+                      >
+                        {name}
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ---- Security: the MFA mandate ---------------------------------- */}
+          <div className="space-y-3 border-t border-border pt-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Security
+            </p>
+            <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="new-user-mfa">Require multi-factor authentication</Label>
+                <p className="text-xs text-muted-foreground">
+                  They must set up an authenticator at their next sign-in.
+                </p>
+              </div>
+              <Switch
+                id="new-user-mfa"
+                checked={mfaRequired}
+                onCheckedChange={setMfaRequired}
+                disabled={busy}
+              />
+            </div>
           </div>
         </div>
         <DialogFooter>
@@ -636,6 +904,258 @@ function AddUserDialog({
           <Button onClick={() => void submit()} disabled={busy || !username.trim() || !password}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <UserPlus className="h-4 w-4" aria-hidden />}
             Create
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+
+      <InlineCustomRoleDialog
+        open={roleEditorOpen}
+        baseRole={role}
+        matrix={effectiveMatrix}
+        onOpenChange={setRoleEditorOpen}
+        onCreated={(created) => {
+          setInlineRoles((prev) => [...prev.filter((r) => r.name !== created.name), created]);
+          setAssigned((prev) => new Set(prev).add(created.name));
+          setRoleEditorOpen(false);
+          onRolesChanged?.();
+        }}
+      />
+    </Dialog>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Inline custom-role creation from the add-user dialog ("Adjust permissions…").
+// Seeds the existing RoleMatrixEditor with `inherits: [baseRole]` so the new role
+// STARTS as the selected role and the admin adds/denies from there. Persisting via
+// POST /api/roles is fresh-auth-gated; the api client's global re-auth dialog
+// handles the 401 `reauth_required` step-up + one retry transparently.
+// --------------------------------------------------------------------------- //
+function InlineCustomRoleDialog({
+  open,
+  baseRole,
+  matrix,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  baseRole: string;
+  matrix: Record<string, GrantMap>;
+  onOpenChange: (v: boolean) => void;
+  onCreated: (role: CustomRole) => void;
+}) {
+  const [draft, setDraft] = React.useState<RoleDraft>({
+    name: '',
+    description: '',
+    inherits: [],
+    grants: {},
+    denies: {},
+  });
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setDraft({
+        name: '',
+        description: '',
+        // Start FROM the selected base role (only builtins are offerable as base).
+        inherits: BUILTIN_ROLES.has(baseRole) ? [baseRole] : [],
+        grants: {},
+        denies: {},
+      });
+    }
+  }, [open, baseRole]);
+
+  const nameTaken = draft.name.trim() !== '' && !!matrix[draft.name.trim()];
+  const nameIsBuiltin = BUILTIN_ROLES.has(draft.name.trim());
+  const canSubmit = draft.name.trim().length > 0 && !nameTaken && !nameIsBuiltin;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await rolesApi.create({
+        name: draft.name.trim(),
+        description: draft.description,
+        inherits: draft.inherits,
+        grants: draft.grants,
+        denies: draft.denies,
+      });
+      // Truthful wording: the role is durably created NOW, but it is only
+      // pre-selected in the not-yet-submitted Add-user form — attachment happens
+      // when (and only if) the user is actually created.
+      toast.success(`Created custom role ${res.role.name} — it will be attached when the user is created.`);
+      onCreated(res.role);
+    } catch (e) {
+      // A declined/failed re-auth step-up surfaces here too — keep the dialog open.
+      toast.error(errMsg(e, 'Could not create the custom role.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90dvh] max-w-4xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Adjust permissions</DialogTitle>
+          <DialogDescription>
+            Creates a reusable custom role starting from {roleLabel(baseRole)} — toggle
+            each cell: not set → grant → deny. It is pre-selected here and attached
+            when the user is created.
+          </DialogDescription>
+        </DialogHeader>
+
+        <RoleMatrixEditor draft={draft} onChange={setDraft} matrix={matrix} disabled={saving} />
+
+        {nameTaken ? (
+          <p className="text-sm text-warning-text">
+            A role named {draft.name.trim()} already exists — manage it from Roles &amp;
+            permissions, or pick another name.
+          </p>
+        ) : null}
+        {nameIsBuiltin ? (
+          <p className="text-sm text-warning-text">
+            {draft.name.trim()} is a built-in role and cannot be redefined.
+          </p>
+        ) : null}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={() => void save()} disabled={!canSubmit || saving}>
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <ShieldCheck className="h-4 w-4" aria-hidden />
+            )}
+            Create role &amp; attach
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Edit-user dialog (Round 11): admin-editable profile/contact fields + the MFA
+// mandate (toggle BOTH ways — distinct from mfa_enabled, which stays self-service).
+// --------------------------------------------------------------------------- //
+function EditUserDialog({
+  user,
+  onOpenChange,
+  onDone,
+}: {
+  user: User | null;
+  onOpenChange: (v: boolean) => void;
+  onDone: () => void;
+}) {
+  const [displayName, setDisplayName] = React.useState('');
+  const [email, setEmail] = React.useState('');
+  const [phone, setPhone] = React.useState('');
+  const [mfaRequired, setMfaRequired] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (user) {
+      setDisplayName(user.display_name ?? '');
+      setEmail(user.email ?? '');
+      setPhone(user.phone ?? '');
+      setMfaRequired(Boolean(user.mfa_required));
+    }
+  }, [user]);
+
+  const submit = async () => {
+    if (!user) return;
+    setBusy(true);
+    try {
+      await api.users.update(user.username, {
+        display_name: displayName.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        mfa_required: mfaRequired,
+      });
+      toast.success(`Updated ${user.username}.`);
+      onDone();
+    } catch (e) {
+      toast.error(errMsg(e, 'Could not update the user.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!user} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit user</DialogTitle>
+          <DialogDescription>
+            Update profile details and the two-factor requirement
+            {user ? ` for ${user.username}` : ''}.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-1">
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-user-fullname">Full name</Label>
+            <Input
+              id="edit-user-fullname"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              autoComplete="off"
+              maxLength={200}
+              disabled={busy}
+            />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-user-email">Email</Label>
+              <Input
+                id="edit-user-email"
+                inputMode="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="off"
+                maxLength={200}
+                disabled={busy}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-user-phone">Mobile number</Label>
+              <Input
+                id="edit-user-phone"
+                inputMode="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete="off"
+                maxLength={200}
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface p-3">
+            <div className="space-y-0.5">
+              <Label htmlFor="edit-user-mfa">Require multi-factor authentication</Label>
+              <p className="text-xs text-muted-foreground">
+                {user?.mfa_enabled
+                  ? 'Already enrolled. Turning this off keeps their authenticator; it only removes the requirement.'
+                  : 'They must set up an authenticator at their next sign-in.'}
+              </p>
+            </div>
+            <Switch
+              id="edit-user-mfa"
+              checked={mfaRequired}
+              onCheckedChange={setMfaRequired}
+              disabled={busy}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={busy}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Pencil className="h-4 w-4" aria-hidden />}
+            Save changes
           </Button>
         </DialogFooter>
       </DialogContent>

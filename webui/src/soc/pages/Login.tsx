@@ -1,13 +1,19 @@
 /**
  * Login — branded sign-in surface for the SOC console, with Wave-1/2 identity flows.
  *
- * FOUR modes, decided from GET /api/setup/status (public) + the login response:
+ * Modes, decided from GET /api/setup/status (public) + the login response:
  *   1. FIRST-RUN ("create your admin account") — `needs_user` true (auth on, no
  *      users yet): POST /api/setup/init-admin, then sign in.            (`setup`)
  *   2. NORMAL sign-in — POST /api/auth/login.                           (`signin`)
  *   3. TWO-FACTOR — when the password is correct but MFA is required, exchange the
  *      pending token at /api/auth/mfa/verify.                           (`mfa`)
  *   4. SET-A-NEW-PASSWORD — when `must_change_password`.                (`change`)
+ *   5. MANDATED MFA ENROLLMENT — when the login returns
+ *      `mfa_enrollment_required` (the account MUST use MFA but has not enrolled):
+ *      complete enrollment inside the login via the pending-token-gated
+ *      /api/auth/mfa/enroll-setup + /enroll-confirm (confirm mints the session).
+ *      There is NO skip — the only exits are finishing enrollment or going back
+ *      to sign-in.                                        (`mfa-enroll-required`)
  *
  * The page deliberately stays minimal: one quiet, vertically-centred identity slab in
  * every stored layout, with no marketing hero or decorative command-center chrome.
@@ -75,8 +81,10 @@ export interface LoginProps {
 }
 
 // `setup` is the OOBE create-first-admin flow; `mfa-enroll` is the optional
-// prompted MFA step shown AFTER the admin account is created (never forced).
-type Mode = 'signin' | 'setup' | 'change' | 'mfa' | 'mfa-enroll';
+// prompted MFA step shown AFTER the admin account is created (never forced);
+// `mfa-enroll-required` is the MANDATED enrollment step DURING login (no session
+// yet — gated by the pending token; cannot be skipped into the console).
+type Mode = 'signin' | 'setup' | 'change' | 'mfa' | 'mfa-enroll' | 'mfa-enroll-required';
 type LoginThemeMode = 'system' | 'light' | 'dark';
 type SigninStep = 'identity' | 'password';
 
@@ -201,6 +209,18 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [password, setPassword] = React.useState('');
   const signinIdentityRef = React.useRef<HTMLInputElement>(null);
   const signinPasswordRef = React.useRef<HTMLInputElement>(null);
+  // Mandated-MFA enrollment focus target: entering 'mfa-enroll-required' unmounts
+  // the sign-in form (focus would drop to <body> and the requirement would go
+  // unannounced), so the mode HEADING takes programmatic focus instead — SR +
+  // keyboard users land on "Set up two-factor authentication", whose
+  // aria-describedby reads the requirement explanation.
+  const modeHeadingRef = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    if (mode !== 'mfa-enroll-required') return;
+    // Same deferred pattern the sign-in steps use for their input focus.
+    const t = window.setTimeout(() => modeHeadingRef.current?.focus(), 0);
+    return () => window.clearTimeout(t);
+  }, [mode]);
   const [themePaletteSettling, setThemePaletteSettling] = React.useState(false);
   const themePaletteFrameRef = React.useRef<number | null>(null);
   const [confirm, setConfirm] = React.useState('');
@@ -403,6 +423,17 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setErrorDetail(null);
     try {
       const res: LoginResult = await api.auth.login(username.trim(), password);
+      // MANDATED-BUT-UNENROLLED (branch FIRST — the response also carries
+      // requires_mfa): the account must use MFA but has no factor yet, so a code
+      // challenge is impossible. Walk the user through enrollment IN the login,
+      // gated by the same short-lived pending token (still no session).
+      if (res.requires_mfa && res.mfa_enrollment_required && res.pending_token) {
+        setPendingToken(res.pending_token);
+        setMfaCode('');
+        setMode('mfa-enroll-required');
+        setBusy(false);
+        return;
+      }
       // Wave 2 (MFA): the password is correct but a second factor is required. The
       // backend returns a short-lived pending token instead of a session.
       if (res.requires_mfa && res.pending_token) {
@@ -472,6 +503,35 @@ export default function Login({ onAuthenticated }: LoginProps) {
     }
   };
 
+  // --- Mode (mandated MFA enrollment during login) -------------------------- //
+  // The enroll-confirm endpoint minted the FULL session and returned the exact
+  // /auth/mfa/verify success payload — finish exactly the way submitMfa does
+  // (incl. the forced password change, which the fresh cookie lets us perform).
+  const completeEnrollLogin = (res: LoginResult) => {
+    if (res.user?.must_change_password) {
+      setNewPassword('');
+      setConfirm('');
+      setMode('change');
+      return;
+    }
+    onAuthenticated();
+  };
+
+  // The short-lived pending token lapsed mid-enrollment (401). Return to the
+  // password step (identity preserved) with a clear, non-alarming explanation —
+  // signing in again simply restarts the 5-minute enrollment window.
+  const expireEnrollLogin = () => {
+    setMode('signin');
+    setSigninStep('password');
+    setPendingToken('');
+    setPassword('');
+    setError(
+      'Your setup session expired. Sign in again to continue setting up two-factor authentication.',
+    );
+    setErrorDetail(null);
+    window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
+  };
+
   // --- Mode 3: set a new password (forced change) --------------------------- //
   const submitChange = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -501,6 +561,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     change: 'Set a new password',
     mfa: 'Two-factor authentication',
     'mfa-enroll': 'Secure your account',
+    'mfa-enroll-required': 'Set up two-factor authentication',
   };
   const descByMode: Record<Mode, string> = {
     signin: loginSubtitle || `Sign in to continue to ${wordmark}.`,
@@ -512,6 +573,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
       : 'Enter the 6-digit code from your authenticator app.',
     'mfa-enroll':
       'Optional but recommended: add a second factor now. You can skip and set it up later.',
+    'mfa-enroll-required':
+      'Your administrator requires multi-factor authentication for this account. ' +
+      'Set up an authenticator app now to finish signing in.',
   };
   const activeTitle =
     mode === 'signin'
@@ -574,10 +638,22 @@ export default function Login({ onAuthenticated }: LoginProps) {
           className="rounded-none border-0 bg-transparent shadow-none"
         >
             <CardHeader className="space-y-0 px-0 pb-0 pt-0 text-left">
-              <h1 className="break-words text-display font-medium text-foreground">
+              {/* tabIndex={-1}: the mandated-MFA transition focuses this heading
+                  programmatically (see modeHeadingRef) — never a tab stop. The
+                  describedby hands SRs the mode description (i.e. WHY enrollment
+                  is required) as the heading's accessible context on focus. */}
+              <h1
+                ref={modeHeadingRef}
+                tabIndex={-1}
+                aria-describedby="login-mode-description"
+                className="break-words text-display font-medium text-foreground outline-none"
+              >
                 {activeTitle}
               </h1>
-              <CardDescription className="mt-3 max-w-sm break-words text-base leading-5">
+              <CardDescription
+                id="login-mode-description"
+                className="mt-3 max-w-sm break-words text-base leading-5"
+              >
                 {activeDescription}
               </CardDescription>
             </CardHeader>
@@ -705,6 +781,44 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   >
                     Skip for now &amp; continue
                   </Button>
+                </div>
+              ) : null}
+
+              {/* ---- Mode: MANDATED MFA enrollment during login -------------- */}
+              {mode === 'mfa-enroll-required' ? (
+                <div className="space-y-4">
+                  {/* frameless (single card grammar) + the pending token reroutes the
+                      card's setup/confirm to the PUBLIC enroll endpoints and makes a
+                      successful confirm a COMPLETED login. Deliberately NO skip: there
+                      is no session yet and the mandate is not optional — the only
+                      exits are finishing enrollment or going back to sign-in. The
+                      min-h reserve absorbs the QR growth (same as the optional step). */}
+                  <div className="min-h-[24rem]">
+                    <MfaSetupCard
+                      enabled={false}
+                      frameless
+                      pendingToken={pendingToken}
+                      onComplete={completeEnrollLogin}
+                      onPendingExpired={expireEnrollLogin}
+                    />
+                  </div>
+                  <div className="text-center">
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      onClick={() => {
+                        setMode('signin');
+                        setSigninStep('identity');
+                        setPendingToken('');
+                        setPassword('');
+                        setError(null);
+                        setErrorDetail(null);
+                      }}
+                    >
+                      Back to sign in
+                    </Button>
+                  </div>
                 </div>
               ) : null}
 

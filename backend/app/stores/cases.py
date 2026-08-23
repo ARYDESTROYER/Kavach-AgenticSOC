@@ -129,6 +129,13 @@ class CaseStore(CaseRepository):
         }
         return await self._es.count(CASES_READ_PATTERN, body)
 
+    async def count_created_since(self, since_iso: str) -> int:
+        """Native COUNT push-down: cases created at/after ``since_iso`` (inclusive),
+        across every surface/status — one ``_count`` request, zero documents fetched.
+        Same idiom as :meth:`count_new_scans` (which is exclusive + scan-scoped)."""
+        body = {"query": {"range": {"created_at": {"gte": since_iso}}}}
+        return await self._es.count(CASES_READ_PATTERN, body)
+
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,
     ) -> tuple[list[Case], Any | None, int | None, str]:

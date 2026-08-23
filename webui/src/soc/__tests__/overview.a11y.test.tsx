@@ -1,5 +1,5 @@
 /**
- * Overview (Security Command Center) — jest-axe accessibility smoke (Round-7 W1.A).
+ * Overview (Cyber Defence Center) — jest-axe accessibility smoke (Round-7 W1.A).
  *
  * The landing surface: a compact hero (one h1), a TRIMMED KPI strip of drill-down tiles,
  * named widget regions (autonomy split, response timing, connector health, case volume,

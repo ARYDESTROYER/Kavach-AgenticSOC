@@ -51,6 +51,21 @@ class AbuseIPDBProvider(EnrichmentProvider):
             free_tier="~1000 checks/day (free key required)",
             docs_url="https://docs.abuseipdb.com/",
             default_enabled=True,
+            setup_steps=[
+                "Create a free account at abuseipdb.com and open Account → API.",
+                "Create an API key (the free tier allows ~1,000 checks/day).",
+                "Set TLSOC_ABUSEIPDB_API_KEY in .env (compose maps it to "
+                "ABUSEIPDB_API_KEY), or paste the key in this card — UI-set keys are "
+                "in-memory only and are lost on restart.",
+                "The provider is enabled by default; it starts firing as soon as the "
+                "key is present.",
+            ],
+            example=(
+                "An SSH brute-force alert from an IP with a 100/100 abuse-confidence "
+                "score and 400 prior reports is a very different case from one with a "
+                "clean history — the crowd-sourced score separates known scanners "
+                "from first-seen sources instantly."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

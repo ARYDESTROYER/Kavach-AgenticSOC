@@ -39,6 +39,18 @@ class ShodanInternetDBProvider(EnrichmentProvider):
             free_tier="Keyless, no signup (rate-limited; be polite)",
             docs_url="https://internetdb.shodan.io/",
             default_enabled=True,
+            setup_steps=[
+                "Nothing to set up — InternetDB is keyless and this provider ships "
+                "enabled.",
+                "Optionally disable it here if your environment blocks outbound "
+                "HTTPS to internetdb.shodan.io.",
+            ],
+            example=(
+                "Shows what the internet sees on the IP in a case — an 'RDP "
+                "brute-force' alert against a host InternetDB says exposes port 3389 "
+                "plus known CVEs is materially more urgent than one against a host "
+                "with nothing exposed."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

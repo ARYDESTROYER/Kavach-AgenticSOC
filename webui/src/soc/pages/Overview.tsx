@@ -1,5 +1,5 @@
 /**
- * Overview — the Security Command Center (default landing surface).
+ * Overview — the Cyber Defence Center (default landing surface).
  *
  * A dense command-center dashboard adapted from the operator-provided Stitch concept:
  *
@@ -15,13 +15,23 @@
  *                  case-volume, workload, top signatures/entities).
  *
  * Data: `usePosture(hours, 'prev')` is the AUTHORITATIVE server-side lifecycle rollup
- * (MTTA/MTTR/dwell/MTTD p50 + SLA + quality rates + period-over-period deltas).
+ * (MTTA/MTTR/dwell/MTTD p50 + SLA + quality rates + period-over-period deltas). It is
+ * STALE-WHILE-REVALIDATE: a window change keeps the last successful snapshot mounted
+ * (marked by the tiles' "Loading Nh" sub) instead of blanking every posture consumer.
  * `listCases` (current + previous window), `getMetrics` (burndown + timing_trend +
- * by_status), `usageSummary`, and `noiseReduction` are fetched with allSettled so one
- * failing call degrades a single widget, never the page. Usage and Noise Reduction keep
- * independent availability/error state: a failed refresh retains the last usable value,
- * names the unavailable slice, and offers a slice-only Retry. `noiseReduction` is typeof-
- * guarded so a minimal test/mock surface can still omit the optional funnel contract.
+ * by_status), `usageSummary`, `noiseReduction`, and `metricsTrends` (the hover-trend
+ * bucket series) are fetched with allSettled so one failing call degrades a single
+ * widget, never the page; a superseded window's late-settling batch is discarded.
+ * Usage and Noise Reduction keep independent availability/error state: a failed refresh
+ * retains the last usable value, names the unavailable slice, and offers a slice-only
+ * Retry. `noiseReduction`/`sourcesCoverage`/`metricsTrends` are typeof-guarded so a
+ * minimal test/mock surface can still omit the optional contracts.
+ *
+ * Hover trendlines: every landing metric with an HONEST server series reveals it on
+ * hover/focus via `MetricHoverTrend` (metrics/trends buckets, `timing_trend`, or the
+ * usage `cost_over_time` ledger series). A metric with no genuine series (e.g. the
+ * combined Critical/High tile, the Active Risk Index) deliberately shows the quiet
+ * no-data line or no affordance rather than an invented decorative trend.
  *
  * Security (#9): every label/value here is a humanized enum, a formatted number, or
  * backend-derived text rendered as PLAIN text. No untrusted string is injected as markup.
@@ -49,7 +59,15 @@ import {
 
 import { useNavigateOptional, type Navigate } from '@/soc/router';
 import { api } from '@/lib/api';
-import type { Case, Metrics, NoiseReduction, SourceCoverage, UsageSummary } from '@/lib/types';
+import type {
+  Case,
+  Metrics,
+  MetricsTrends,
+  MetricsTrendBucket,
+  NoiseReduction,
+  SourceCoverage,
+  UsageSummary,
+} from '@/lib/types';
 import {
   DASH,
   fmtMoney,
@@ -71,7 +89,12 @@ import {
   type RefreshValue,
 } from '@/soc/components/TimeRangePicker';
 import { DashboardGroup } from '@/soc/components/DashboardGroup';
-import { KpiTile, type KpiAccent, type KpiDelta } from '@/soc/components/KpiTile';
+import { KpiTile, type KpiAccent } from '@/soc/components/KpiTile';
+import {
+  MetricHoverTrend,
+  type MetricTrendPoint,
+  type MetricTrendSeries,
+} from '@/soc/components/MetricHoverTrend';
 import { ActiveRiskIndex } from '@/soc/components/ActiveRiskIndex';
 import { CaseHoverCard } from '@/soc/components/CaseHoverCard';
 import { NoiseFunnel } from '@/soc/components/NoiseFunnel';
@@ -96,7 +119,6 @@ import { Button } from '@/ui/button';
 import {
   humanizeMinutes as humanizeMins,
   ratioPct,
-  deltaView,
   LIFECYCLE_METRICS,
   type LifecycleMetricKey,
 } from './posture.format';
@@ -108,7 +130,7 @@ import type { StatBlock } from './Metrics.posture.api';
  * constant so the title can be reworded here WITHOUT breaking the tests that check
  * "the app booted" (they import this constant rather than hardcoding the copy).
  */
-export const PAGE_TITLE = 'Security Command Center';
+export const PAGE_TITLE = 'Cyber Defence Center';
 
 interface OverviewProps {
   /**
@@ -164,15 +186,6 @@ const fmtInt = (n: number): string => fmtNumber(n);
  * unabbreviated counts via `fmtNumber`.
  */
 const fmtSnapshotCenter = (n: number): string => fmtTokens(n);
-
-/**
- * Adapt a `deltaView()` result to the KpiTile `delta` prop. Only render a delta when a
- * real comparison exists; the "new growth" case carries a 0 so the tile draws a neutral
- * marker with the "new" label.
- */
-function toKpiDelta(dv: ReturnType<typeof deltaView>): KpiDelta | undefined {
-  return dv.show ? { value: dv.value ?? 0, label: dv.label } : undefined;
-}
 
 /** Round a resolved range down to whole hours (min 1) for the window-scoped fetches. */
 function rangeHours(range: TimeRange): number {
@@ -274,6 +287,26 @@ function formatWholePercent(value: number): string {
   return `${Math.round(value)}%`;
 }
 
+/** A finite number, or null — keeps a malformed trend bucket honest (never a fake 0). */
+function finiteOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** Trend disclosures state sub-2-day windows in hours ("24 hours", never "1 day"). */
+function trendSpanLabel(hours: number): string {
+  return hours < 48 ? `${hours} hour${hours === 1 ? '' : 's'}` : windowLabel(hours);
+}
+
+/** The hover-trend window disclosure, e.g. "last 24 hours · 1h buckets". */
+function trendWindowLabel(t: MetricsTrends): string {
+  const mins = finiteOrNull(t.bucket_minutes);
+  const bucket =
+    mins == null || mins <= 0 ? null : mins % 60 === 0 ? `${mins / 60}h` : `${mins}m`;
+  return bucket
+    ? `last ${trendSpanLabel(t.window_hours)} · ${bucket} buckets`
+    : `last ${trendSpanLabel(t.window_hours)}`;
+}
+
 /** One KPI-strip tile descriptor (built in a memo, rendered as a <KpiTile>). */
 interface KpiItem {
   label: string;
@@ -283,11 +316,16 @@ interface KpiItem {
   accent: KpiAccent;
   goodDirection: 'up' | 'down' | 'none';
   onClick?: () => void;
-  delta?: KpiDelta;
   countTo?: number;
   format?: (n: number) => string;
   spark?: number[];
   sparkMinPoints?: number;
+  /**
+   * The honest hover/focus trendline for this metric (server series only). Omitted
+   * when NO genuine series exists for the tile (e.g. the combined Critical/High
+   * union has no per-severity bucket series) — never an invented decorative trend.
+   */
+  trend?: MetricTrendSeries;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -341,6 +379,7 @@ function SnapshotCard({
   ariaLabel,
   ctaLabel,
   onClick,
+  trend,
 }: {
   title: string;
   caption: string;
@@ -351,6 +390,8 @@ function SnapshotCard({
   ariaLabel: string;
   ctaLabel: string;
   onClick?: () => void;
+  /** Optional honest hover trendline for the snapshot total. */
+  trend?: MetricTrendSeries;
 }) {
   const segments = sevSegments(counts);
   const legend = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
@@ -418,6 +459,19 @@ function SnapshotCard({
     </>
   );
 
+  const body = onClick ? (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={ctaLabel}
+      className="mt-1.5 flex w-full min-w-0 items-center gap-3 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {content}
+    </button>
+  ) : (
+    <div className="mt-1.5 flex items-center gap-3 p-0.5">{content}</div>
+  );
+
   return (
     <section className="min-w-0 border-b border-border/70 py-3 last:border-b-0">
       <div className="flex items-start justify-between gap-2">
@@ -427,17 +481,14 @@ function SnapshotCard({
         </div>
         <TrendChip delta={delta} goodDirection={goodDirection} />
       </div>
-      {onClick ? (
-        <button
-          type="button"
-          onClick={onClick}
-          aria-label={ctaLabel}
-          className="mt-1.5 flex w-full min-w-0 items-center gap-3 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {content}
-        </button>
+      {trend ? (
+        // The CTA button (when present) is the focus stop; the wrapper only adds the
+        // hover/focus-reachable trend card (WCAG 1.4.13 via MetricHoverTrend).
+        <MetricHoverTrend {...trend} focusable={!onClick} side="top">
+          {body}
+        </MetricHoverTrend>
       ) : (
-        <div className="mt-1.5 flex items-center gap-3 p-0.5">{content}</div>
+        body
       )}
     </section>
   );
@@ -755,7 +806,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const [usage, setUsage] = React.useState<UsageSummary | null>(null);
   const [noise, setNoise] = React.useState<NoiseReduction | null>(null);
   const [coverage, setCoverage] = React.useState<SourceCoverage | null>(null);
+  const [trends, setTrends] = React.useState<MetricsTrends | null>(null);
   const noiseSupported = typeof api.noiseReduction === 'function';
+  const trendsSupported = typeof api.metricsTrends === 'function';
   const [usageLoad, setUsageLoad] = React.useState<SliceLoadState>({
     availability: 'loading',
     error: null,
@@ -767,7 +820,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
 
+  // Monotonic batch token: a window change (or manual refresh) supersedes any batch
+  // still in flight, so a late-settling previous-window response can never repaint
+  // the dashboard beneath the newly selected range (the stale-window guard). The
+  // paired AbortController actually cancels the superseded transport where the
+  // client method accepts a signal (`metricsTrends` today); every other slice is
+  // covered by the seq check alone.
+  const loadSeqRef = React.useRef(0);
+  const loadAbortRef = React.useRef<AbortController | null>(null);
+
   const load = React.useCallback(async () => {
+    const seq = (loadSeqRef.current += 1);
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
@@ -783,7 +849,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         typeof api.sourcesCoverage === 'function'
           ? api.sourcesCoverage()
           : Promise.resolve(null);
-      const [c, m, u, n, pc, cov] = await Promise.allSettled([
+      // The hover-trend bucket series — typeof-guarded exactly like the two above so a
+      // minimal test/mock surface simply resolves null and every hover card degrades to
+      // its quiet "No trend data yet." line.
+      const trendsP: Promise<MetricsTrends | null> =
+        trendsSupported ? api.metricsTrends(hours, controller.signal) : Promise.resolve(null);
+      const [c, m, u, n, pc, cov, t] = await Promise.allSettled([
         // #37: window the current case sample by created-at so the case-derived widgets
         // honour the range (backend caps at 200 by created-desc).
         api.listCases({ limit: 200, from: `now-${hours}h` }),
@@ -794,7 +865,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // snapshot trend deltas (omitted gracefully when the fetch fails).
         api.listCases({ limit: 200, from: `now-${2 * hours}h`, to: `now-${hours}h` }),
         coverageP,
+        trendsP,
       ]);
+      // Superseded by a newer window/refresh — that batch owns the state now.
+      if (seq !== loadSeqRef.current) return;
       if (c.status === 'fulfilled') setCases(c.value.cases ?? []);
       if (m.status === 'fulfilled') setMetrics(m.value);
       if (u.status === 'fulfilled') {
@@ -820,21 +894,28 @@ export default function Overview({ onNavigate }: OverviewProps) {
         });
       }
       if (cov.status === 'fulfilled') setCoverage(cov.value ?? null);
+      // Trends degrade quietly: a failed/omitted read clears the series (the hover
+      // cards show "No trend data yet.") rather than showing another window's trend.
+      setTrends(t.status === 'fulfilled' ? t.value ?? null : null);
       setPrevCases(pc.status === 'fulfilled' ? pc.value.cases ?? [] : null);
       // Only surface a page-level error if the load is wholly empty.
       if (c.status === 'rejected' && m.status === 'rejected') {
         setError(c.reason ?? m.reason ?? new Error('Failed to load dashboard data.'));
       }
     } catch (e) {
-      setError(e);
+      if (seq === loadSeqRef.current) setError(e);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
-  }, [hours, noiseSupported]);
+  }, [hours, noiseSupported, trendsSupported]);
 
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // Unmount: cancel whatever batch is still in flight (the seq guard already
+  // discards its result; this releases the transport too).
+  React.useEffect(() => () => loadAbortRef.current?.abort(), []);
 
   // Server-side posture rollup — the AUTHORITATIVE lifecycle (MTTA/MTTR/dwell/MTTD p50 +
   // SLA + quality rates). `'prev'` also asks for the period-over-period `compare` block.
@@ -842,13 +923,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
     data: postureResponse,
     loading: postureLoading,
     error: postureError,
+    stale: postureStale,
     reload: reloadPosture,
   } = usePosture(hours, 'prev');
   // Defensive echo check at the rendering boundary. The hook already rejects a
   // mismatched payload; keeping this projection here makes every posture consumer
   // visibly tied to the selected window and prevents a future hook regression from
-  // reintroducing cross-window tiles.
-  const posture = postureResponse?.window_hours === hours ? postureResponse : null;
+  // reintroducing cross-window tiles. The ONE deliberate exception is the hook's
+  // stale-while-revalidate snapshot: while the new window is in flight the previous
+  // snapshot stays mounted, explicitly marked by the tiles' "Loading Nh" sub, so a
+  // range change never blanks the dashboard.
+  const posture =
+    postureResponse && (postureResponse.window_hours === hours || postureStale)
+      ? postureResponse
+      : null;
 
   /** Retry only the LLM spend slice; healthy dashboard siblings never reload or blank. */
   const retryUsage = React.useCallback(async () => {
@@ -1040,6 +1128,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
       const b = life?.[statKey];
       const copy = LIFECYCLE_METRICS[metric];
       return {
+        key: metric,
         label: copy.label,
         help: copy.help,
         value: b && b.available ? humanizeMins(b.p50) : DASH,
@@ -1189,6 +1278,55 @@ export default function Overview({ onNavigate }: OverviewProps) {
     return source.sort((a, b) => b[1] - a[1]).map(([status, value]) => ({ status, value }));
   }, [metrics, cases]);
 
+  // ----- Hover trendlines — honest server series only ---------------------- //
+  // The bucket payload echoes its measured window; mirror the posture projection's
+  // render-boundary check so a previous window's buckets can never sit beneath the
+  // newly selected range while a refresh is in flight.
+  const trendsForWindow = trends && trends.window_hours === hours ? trends : null;
+  const bucketTrends = React.useMemo(() => {
+    if (!trendsForWindow?.buckets?.length) return null;
+    const buckets = trendsForWindow.buckets;
+    const series = (pick: (b: MetricsTrendBucket) => number | null): MetricTrendPoint[] =>
+      buckets.map((b) => ({ label: String(b.t ?? ''), value: pick(b) }));
+    return {
+      label: trendWindowLabel(trendsForWindow),
+      newCases: series((b) => finiteOrNull(b.new_cases)),
+      closed: series((b) => finiteOrNull(b.closed)),
+      autoClosed: series((b) => finiteOrNull(b.auto_closed)),
+      // The server's once-counted union (NEEDS_HUMAN verdict OR escalated) —
+      // `needs_human` and `escalated` overlap on an escalated needs-human case,
+      // so summing them here would double-count; chart the honest field only.
+      sentToHuman: series((b) => finiteOrNull(b.sent_to_human)),
+      // Nulls (no verdicted denominator in the bucket) stay nulls — the hover card
+      // renders measured points only and discloses the measured/total bucket count.
+      fpRate: series((b) => finiteOrNull(b.fp_rate)),
+    };
+  }, [trendsForWindow]);
+  /** Window disclosure when no bucket payload is available (quiet no-data card). */
+  const trendFallbackLabel = `last ${trendSpanLabel(hours)}`;
+
+  // Per-UTC-day lifecycle timing series (GET /api/metrics `timing_trend`) — genuinely
+  // MTTD/respond/resolve, so the timing stats reuse it instead of the case sample.
+  const timingTrends = React.useMemo(() => {
+    const rows = metrics?.timing_trend ?? [];
+    if (!rows.length) return null;
+    const series = (pick: (r: (typeof rows)[number]) => number | null): MetricTrendPoint[] =>
+      rows.map((r) => ({ label: String(r.date ?? ''), value: finiteOrNull(pick(r)) }));
+    return {
+      label: `per UTC day · ${rows.length} day${rows.length === 1 ? '' : 's'}`,
+      mttd: series((r) => r.mttd),
+      respond: series((r) => r.respond),
+      resolve: series((r) => r.resolve),
+    };
+  }, [metrics]);
+
+  // The ledger's own spend-over-time series (usage summary `cost_over_time`).
+  const spendTrend = React.useMemo<MetricTrendPoint[] | undefined>(() => {
+    const rows = usage?.cost_over_time ?? [];
+    const pts = rows.map((r) => ({ label: String(r.ts ?? ''), value: finiteOrNull(r.cost) }));
+    return pts.length ? pts : undefined;
+  }, [usage]);
+
   // ----- KPI micro-strip — 5 alert/case signal tiles --------------------- //
   const kpis: KpiItem[] = React.useMemo(() => {
     const compare = posture?.compare;
@@ -1225,6 +1363,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
       : postureError
         ? 'Posture unavailable'
         : undefined;
+    const bucketLabel = bucketTrends?.label ?? trendFallbackLabel;
     return [
       {
         label: 'Open Cases',
@@ -1236,6 +1375,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
         accent: 'primary',
         spark: openTrend,
         goodDirection: 'down',
+        // There is no open-count-over-time series; the honest related series is the
+        // arrival cohort, and the card names it as such.
+        trend: {
+          metric: 'New cases opened',
+          points: bucketTrends?.newCases,
+          windowLabel: bucketLabel,
+          caption: 'case arrivals per bucket',
+          format: fmtInt,
+          colorToken: 'primary',
+        },
         onClick: navigate
           ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
           : undefined,
@@ -1267,6 +1416,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
         accent: 'low',
         spark: escalatedTrend,
         goodDirection: 'down',
+        trend: {
+          metric: 'Sent to human',
+          points: bucketTrends?.sentToHuman,
+          windowLabel: bucketLabel,
+          caption: 'needs-human or escalated, counted once · by case-arrival bucket',
+          format: fmtInt,
+          colorToken: 'low',
+        },
         onClick: navigate
           ? () => navigate('cases', { status: 'needs_human', window: navWindow })
           : undefined,
@@ -1282,7 +1439,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
         spark: falsePositiveTrend,
         sparkMinPoints: 2,
         goodDirection: 'down',
-        delta: toKpiDelta(deltaView(compare?.false_positive_rate)),
+        trend: {
+          metric: 'False positive rate',
+          points: bucketTrends?.fpRate,
+          windowLabel: bucketLabel,
+          caption: 'per case-arrival bucket · unverdicted buckets not measured',
+          format: formatWholePercent,
+          colorToken: 'medium',
+        },
         onClick: navigate ? () => navigate('metrics', { tab: 'posture' }) : undefined,
       },
       {
@@ -1295,6 +1459,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
         accent: 'success',
         spark: resolvedTrend,
         goodDirection: 'up',
+        trend: {
+          metric: 'Auto-resolved cases',
+          points: bucketTrends?.autoClosed,
+          windowLabel: bucketLabel,
+          caption: 'by case-arrival bucket',
+          format: fmtInt,
+          colorToken: 'success',
+        },
         onClick: navigate
           ? () => navigate('cases', { status: 'closed', window: navWindow })
           : undefined,
@@ -1312,6 +1484,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
     postureError,
     hours,
     navigate,
+    bucketTrends,
+    trendFallbackLabel,
   ]);
 
   // ----- Noise-Reduction funnel drill-through ----------------------------- //
@@ -1452,31 +1626,54 @@ export default function Overview({ onNavigate }: OverviewProps) {
           <div className="space-y-1.5">
             <Stagger
               data-testid="kpi-strip"
-              className="grid grid-cols-1 border-y border-border/70 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5"
+              className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5"
               itemClassName="h-full min-w-0 border-b border-border/70 sm:border-r xl:border-b-0 xl:last:border-r-0"
             >
-              {kpis.map((kpi) => (
-                <KpiTile
-                  key={kpi.label}
-                  label={kpi.label}
-                  value={kpi.value}
-                  sub={kpi.sub}
-                  icon={kpi.icon}
-                  accent={kpi.accent}
-                  variant="strip"
-                  goodDirection={kpi.goodDirection}
-                  delta={kpi.delta}
-                  countTo={kpi.countTo}
-                  format={kpi.format}
-                  spark={kpi.spark}
-                  sparkMinPoints={kpi.sparkMinPoints}
-                  onClick={kpi.onClick}
-                />
-              ))}
+              {kpis.map((kpi) => {
+                const tile = (
+                  <KpiTile
+                    label={kpi.label}
+                    value={kpi.value}
+                    sub={kpi.sub}
+                    icon={kpi.icon}
+                    accent={kpi.accent}
+                    variant="strip"
+                    goodDirection={kpi.goodDirection}
+                    countTo={kpi.countTo}
+                    format={kpi.format}
+                    spark={kpi.spark}
+                    sparkMinPoints={kpi.sparkMinPoints}
+                    onClick={kpi.onClick}
+                  />
+                );
+                // Hover/focus reveals the metric's honest trend; a clickable tile is
+                // already the focus stop, so the wrapper adds no second tab stop.
+                return kpi.trend ? (
+                  <MetricHoverTrend
+                    key={kpi.label}
+                    {...kpi.trend}
+                    focusable={!kpi.onClick}
+                    side="bottom"
+                  >
+                    {tile}
+                  </MetricHoverTrend>
+                ) : (
+                  <React.Fragment key={kpi.label}>{tile}</React.Fragment>
+                );
+              })}
             </Stagger>
-            {posture?.compare ? (
+            {bucketTrends ? (
               <p className="px-0.5 text-2xs text-muted-foreground">
-                Deltas compare the previous {windowLabel(hours)}.
+                {/* Device-honest affordance copy: hover-capable inputs get the
+                    hover/focus instruction; touch-only devices (hover: none) are
+                    told to tap — the trend card toggles on tap there. Both spans
+                    ship; the CSS media variant picks exactly one. */}
+                <span className="hidden [@media(hover:hover)]:inline">
+                  Hover or focus a metric for its {bucketTrends.label} trend.
+                </span>
+                <span className="[@media(hover:hover)]:hidden">
+                  Tap a metric for its {bucketTrends.label} trend.
+                </span>
               </p>
             ) : null}
           </div>
@@ -1486,7 +1683,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
             variant="rise"
             delay={40}
             data-testid="hero-row"
-            className="grid min-w-0 items-stretch border-b border-border/70 lg:grid-cols-12"
+            className="grid min-w-0 items-stretch border-y border-border lg:grid-cols-12"
           >
             <div className="min-w-0 border-b border-border/70 lg:col-span-4 lg:border-b-0 lg:border-r">
               <ActiveRiskIndex
@@ -1511,6 +1708,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 counts={derived.openSev}
                 ariaLabel="Open cases by severity"
                 ctaLabel="View open cases"
+                trend={{
+                  metric: 'New cases opened',
+                  points: bucketTrends?.newCases,
+                  windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                  caption: 'case arrivals per bucket',
+                  format: fmtInt,
+                  colorToken: 'primary',
+                }}
                 onClick={navigate
                   ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
                   : undefined}
@@ -1524,6 +1729,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 counts={derived.resolvedSev}
                 ariaLabel="Resolved cases by severity"
                 ctaLabel="View resolved cases"
+                trend={{
+                  metric: 'Cases now closed',
+                  points: bucketTrends?.closed,
+                  windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                  caption: 'by case-arrival bucket',
+                  format: fmtInt,
+                  colorToken: 'success',
+                }}
                 onClick={navigate ? () => navigate('cases', { status: 'closed', window: navWindow }) : undefined}
               />
             </section>
@@ -1541,7 +1754,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           <Reveal
             variant="rise"
             delay={70}
-            className="grid min-w-0 border-b border-border/70 xl:grid-cols-12"
+            className="grid min-w-0 border-y border-border xl:grid-cols-12"
           >
             {noiseCellVisible ? (
               <div className="min-w-0 border-b border-border/70 p-4 xl:col-span-8 xl:border-b-0 xl:border-r">
@@ -1602,7 +1815,17 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     </h2>
                     <p className="mt-0.5 text-2xs text-muted-foreground">opened vs resolved over time</p>
                   </div>
-                  <span className="font-mono text-2xs text-muted-foreground">opn vs res</span>
+                  {/* A real legend keyed to the chart's status-axis tokens (was "opn vs res"). */}
+                  <span className="flex shrink-0 items-center gap-3 text-2xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-info" aria-hidden />
+                      Opened
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
+                      Resolved
+                    </span>
+                  </span>
                 </div>
                 <div className="mt-3">
                   <BurnDownChart
@@ -1637,24 +1860,42 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 </div>
                 <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
                   <div className="pr-4">
-                    <TimingStat
-                      label="MTTD"
-                      sub="Detect · log arrival → case"
-                      block={mttdBlock}
-                      dotClass="bg-info"
-                      compact
-                      help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
-                    />
+                    <MetricHoverTrend
+                      metric="MTTD · daily mean"
+                      points={timingTrends?.mttd}
+                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                      format={humanizeMins}
+                      colorToken="info"
+                      side="top"
+                    >
+                      <TimingStat
+                        label="MTTD"
+                        sub="Detect · log arrival → case"
+                        block={mttdBlock}
+                        dotClass="bg-info"
+                        compact
+                        help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                      />
+                    </MetricHoverTrend>
                   </div>
                   <div className="pl-4">
-                    <TimingStat
-                      label="Respond"
-                      sub="First human action e.g. assignment / ack"
-                      block={respondBlock}
-                      dotClass="bg-success"
-                      compact
-                      help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
-                    />
+                    <MetricHoverTrend
+                      metric="Respond · daily mean"
+                      points={timingTrends?.respond}
+                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                      format={humanizeMins}
+                      colorToken="success"
+                      side="top"
+                    >
+                      <TimingStat
+                        label="Respond"
+                        sub="First human action e.g. assignment / ack"
+                        block={respondBlock}
+                        dotClass="bg-success"
+                        compact
+                        help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
+                      />
+                    </MetricHoverTrend>
                   </div>
                 </div>
               </section>
@@ -1670,43 +1911,87 @@ export default function Overview({ onNavigate }: OverviewProps) {
           >
             {/* Full response timing (MTTA · MTTR · Dwell) + spend tripwire */}
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {timing.map((s) => (
+              {timing.map((s) => {
+                // Honest per-metric series: MTTA reuses the ACK-based `respond` daily
+                // series, MTTR the `resolve` series. Dwell has NO server series at all,
+                // so its tile carries no trend affordance — never a borrowed trend.
+                const timingSeries =
+                  s.key === 'mtta'
+                    ? timingTrends?.respond
+                    : s.key === 'mttr'
+                      ? timingTrends?.resolve
+                      : undefined;
+                const tile = (
+                  <KpiTile
+                    variant="bar"
+                    label={s.label}
+                    value={s.value}
+                    sub={s.sub}
+                    accent={s.accent}
+                    icon={Clock3}
+                    goodDirection="down"
+                    help={s.help}
+                  />
+                );
+                if (s.key === 'dwell') {
+                  return <React.Fragment key={s.label}>{tile}</React.Fragment>;
+                }
+                return (
+                  <MetricHoverTrend
+                    key={s.label}
+                    metric={`${s.label} · daily mean`}
+                    points={timingSeries}
+                    windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                    format={humanizeMins}
+                    colorToken={s.accent}
+                    side="top"
+                    // The tile's HelpTip (?) button is already a tab stop and focus
+                    // bubbles to the trigger (Radix opens the card on trigger focus),
+                    // so the wrapper must not add a second stop; the tile itself is
+                    // not clickable, so a press explicitly toggles the card (touch).
+                    focusable={false}
+                    toggleOnClick={true}
+                  >
+                    {tile}
+                  </MetricHoverTrend>
+                );
+              })}
+              <MetricHoverTrend
+                metric="LLM spend"
+                points={spendTrend}
+                windowLabel={trendFallbackLabel}
+                format={(n) => fmtMoney(n, usage?.currency)}
+                colorToken="primary"
+                // The tile is itself a button (retry / drill-through) whenever an
+                // action exists; only a nav-less static tile needs the wrapper stop.
+                focusable={!(usageUnavailable || Boolean(navigate))}
+                side="top"
+              >
                 <KpiTile
-                  key={s.label}
                   variant="bar"
-                  label={s.label}
-                  value={s.value}
-                  sub={s.sub}
-                  accent={s.accent}
-                  icon={Clock3}
+                  testId="llm-spend-detail"
+                  label="LLM spend"
+                  value={usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)}
+                  sub={
+                    usageUnavailable
+                      ? usageFailureSub
+                      : typeof usage?.total_tokens === 'number'
+                      ? `${fmtTokens(usage.total_tokens)} tokens · ${fmtNumber(usage.call_count)} calls`
+                      : 'No spend recorded'
+                  }
+                  icon={CircleDollarSign}
+                  accent={usageUnavailable ? 'critical' : 'primary'}
                   goodDirection="down"
-                  help={s.help}
+                  onClick={
+                    usageUnavailable
+                      ? () => void retryUsage()
+                      : navigate
+                        ? () => navigate('metrics', { tab: 'cost' })
+                        : undefined
+                  }
+                  className={usageUnavailable ? 'border-critical/30' : undefined}
                 />
-              ))}
-              <KpiTile
-                variant="bar"
-                testId="llm-spend-detail"
-                label="LLM spend"
-                value={usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)}
-                sub={
-                  usageUnavailable
-                    ? usageFailureSub
-                    : typeof usage?.total_tokens === 'number'
-                    ? `${fmtTokens(usage.total_tokens)} tokens · ${fmtNumber(usage.call_count)} calls`
-                    : 'No spend recorded'
-                }
-                icon={CircleDollarSign}
-                accent={usageUnavailable ? 'critical' : 'primary'}
-                goodDirection="down"
-                onClick={
-                  usageUnavailable
-                    ? () => void retryUsage()
-                    : navigate
-                      ? () => navigate('metrics', { tab: 'cost' })
-                      : undefined
-                }
-                className={usageUnavailable ? 'border-critical/30' : undefined}
-              />
+              </MetricHoverTrend>
             </div>
 
             {/* Autonomy split (#3) · connector health */}

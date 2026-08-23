@@ -32,12 +32,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..engine.agent_improvement import agent_improvement_metrics
 from ..engine.clustering_explain import build_case_lineage
-from ..engine.metrics import _window_filter, auto_close_health, posture_metrics
+from ..engine.metrics import (
+    _window_filter,
+    auto_close_health,
+    posture_metrics,
+    trend_metrics,
+)
 from ..engine.mitre_coverage import compute_mitre_coverage, navigator_layer
 from ..engine.noise_counters import build_noise_reduction
 from ..state import AppState
 from ..utils import iso_now
 from .deps import get_state, require_permission
+from .metrics_shared import fetch_case_page
 
 logger = logging.getLogger("tlsoc.api.metrics")
 router = APIRouter(prefix="/api")
@@ -60,10 +66,16 @@ async def _load_cases(state: AppState) -> tuple[list, int]:
     truncated/partial result honestly instead of silently returning a number computed
     over only the newest N cases.
 
+    Served through the SHARED short-TTL page cache (``api/metrics_shared``) so the
+    dashboard's parallel endpoint fan-out and its LIVE poll cadence perform ONE store
+    scan per TTL window instead of one per endpoint per refresh. The cache is keyed
+    by the (store identity, fetch limit) pair, so a monkeypatched
+    ``_STORE_FETCH_LIMIT`` or a Demo Mode store swap always bypasses stale pages.
+
     Defensive: a store error degrades to an empty list (total 0) rather than failing
     the request (a dashboard query must never 500 on a transient store hiccup)."""
     try:
-        cases, total = await state.cases.list(limit=_STORE_FETCH_LIMIT)
+        cases, total = await fetch_case_page(state.cases, _STORE_FETCH_LIMIT)
         return cases, int(total)
     except Exception as exc:  # noqa: BLE001 — dashboards degrade, never fail hard
         logger.warning("posture/coverage case load soft-failed: %s", exc)
@@ -215,6 +227,57 @@ async def metrics_posture(
         window_hours=max(0, int(window_hours)),
         compare=(compare or "").strip().lower(),
         store_total=store_total,
+    )
+
+
+@router.get("/metrics/trends")
+async def metrics_trends(
+    window_hours: int = 24,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """Bucketed case-cohort + raw-alert trends over the trailing ``window_hours``
+    (clamped to 1..720) — the Overview hover-trendline feed.
+
+    FROZEN response contract::
+
+        {"window_hours": int, "bucket_minutes": int, "generated_at": iso8601,
+         "buckets": [{"t": iso8601 bucket-start UTC, "new_cases": int, "closed": int,
+                      "auto_closed": int, "false_positives": int, "needs_human": int,
+                      "escalated": int, "fp_rate": float 0-100 | null,
+                      "alerts": int | null}],
+         "truncated": bool, "store_total": int, "fetched": int}
+
+    ``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,
+    <=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole
+    window, newest bucket partial. Cohort counts reuse the exact
+    ``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they
+    reconcile with the posture tiles; ``fp_rate`` mirrors posture's
+    ``false_positive_rate`` numerator/denominator within the bucket (null when no
+    verdicted case). ``alerts`` comes from the durable noise counters' per-hour
+    ingested tallies (null when the counters are warming up / unreadable, and for
+    buckets predating their first observation).
+
+    Served from the SAME shared short-TTL case page as the other posture rollups
+    (one store scan per TTL window), computed over up to the most-recent
+    ``_STORE_FETCH_LIMIT`` cases — the ``truncated``/``store_total``/``fetched``
+    marker keeps a partial (newest-N) tally honest. DETERMINISTIC + advisory:
+    nothing here is read by ``case_manager.decide()`` (#3)."""
+    cases, store_total = await _load_cases(state)
+    wh = max(1, min(720, int(window_hours)))
+    alert_counters: dict[str, Any] | None = None
+    try:
+        # +24h of hourly slack so the aligned FIRST bucket (which can start up to one
+        # full bucket — max 24h — before the window edge) is fully covered.
+        alert_counters = await state.noise_counters.read_hourly_ingested(wh + 24)
+    except Exception as exc:  # noqa: BLE001 — a counter glitch degrades to null alerts
+        logger.warning("trends counter read soft-failed: %s", exc)
+        alert_counters = None
+    return trend_metrics(
+        cases,
+        window_hours=wh,
+        store_total=store_total,
+        alert_counters=alert_counters,
     )
 
 

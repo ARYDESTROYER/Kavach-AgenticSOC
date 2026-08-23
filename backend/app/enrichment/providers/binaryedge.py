@@ -44,6 +44,19 @@ class BinaryEdgeProvider(EnrichmentProvider):
             free_tier="Free tier ~ 250 requests/month",
             docs_url="https://docs.binaryedge.io/api-v2/",
             default_enabled=False,
+            setup_steps=[
+                "Sign up at app.binaryedge.io (free tier: ~250 requests/month) and "
+                "open Account → API.",
+                "Set TLSOC_BINARYEDGE_API_KEY in .env (compose maps it to "
+                "BINARYEDGE_API_KEY), or paste it in this card (in-memory until "
+                "restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "A third scan-data angle on an IP's open ports and services — useful "
+                "when Shodan/Censys disagree or have stale data for the address in "
+                "your case."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

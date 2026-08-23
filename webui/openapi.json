@@ -3181,6 +3181,37 @@
         "title": "MfaCodeBody",
         "type": "object"
       },
+      "MfaEnrollConfirmBody": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "pending_token": {
+            "title": "Pending Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pending_token",
+          "code"
+        ],
+        "title": "MfaEnrollConfirmBody",
+        "type": "object"
+      },
+      "MfaEnrollSetupBody": {
+        "properties": {
+          "pending_token": {
+            "title": "Pending Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pending_token"
+        ],
+        "title": "MfaEnrollSetupBody",
+        "type": "object"
+      },
       "MfaVerifyBody": {
         "properties": {
           "code": {
@@ -6420,8 +6451,42 @@
       },
       "UserCreateBody": {
         "properties": {
+          "custom_roles": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Roles"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "default": "",
+            "title": "Email",
+            "type": "string"
+          },
+          "mfa_required": {
+            "default": false,
+            "title": "Mfa Required",
+            "type": "boolean"
+          },
           "password": {
             "title": "Password",
+            "type": "string"
+          },
+          "phone": {
+            "default": "",
+            "title": "Phone",
             "type": "string"
           },
           "role": {
@@ -6576,6 +6641,28 @@
             ],
             "title": "Active"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
           "mfa_enabled": {
             "anyOf": [
               {
@@ -6587,6 +6674,17 @@
             ],
             "title": "Mfa Enabled"
           },
+          "mfa_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mfa Required"
+          },
           "password": {
             "anyOf": [
               {
@@ -6597,6 +6695,17 @@
               }
             ],
             "title": "Password"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           },
           "role": {
             "anyOf": [
@@ -7708,6 +7817,86 @@
           }
         },
         "summary": "Mfa Disable"
+      }
+    },
+    "/api/auth/mfa/enroll-confirm": {
+      "post": {
+        "description": "Complete MANDATED MFA enrollment during login (PUBLIC — gated by the pending\ntoken): verify the TOTP code against the PENDING secret, persist the enrollment\n(exactly like /auth/mfa/confirm), then mint the FULL session + cookie exactly\nlike the /auth/mfa/verify success tail — the user lands fully signed in.",
+        "operationId": "mfa_enroll_confirm_api_auth_mfa_enroll_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaEnrollConfirmBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Mfa Enroll Confirm Api Auth Mfa Enroll Confirm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mfa Enroll Confirm"
+      }
+    },
+    "/api/auth/mfa/enroll-setup": {
+      "post": {
+        "description": "Begin MANDATED MFA enrollment during login (PUBLIC — gated by the pending\ntoken). Same response shape as the session-authed /auth/mfa/setup: a PENDING\nTOTP secret + otpauth URI + one-time recovery codes. Nothing is persisted until\nthe user proves possession via /auth/mfa/enroll-confirm.",
+        "operationId": "mfa_enroll_setup_api_auth_mfa_enroll_setup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaEnrollSetupBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Mfa Enroll Setup Api Auth Mfa Enroll Setup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mfa Enroll Setup"
       }
     },
     "/api/auth/mfa/setup": {
@@ -12394,6 +12583,48 @@
         "summary": "Metrics Posture"
       }
     },
+    "/api/metrics/trends": {
+      "get": {
+        "description": "Bucketed case-cohort + raw-alert trends over the trailing ``window_hours``\n(clamped to 1..720) — the Overview hover-trendline feed.\n\nFROZEN response contract::\n\n    {\"window_hours\": int, \"bucket_minutes\": int, \"generated_at\": iso8601,\n     \"buckets\": [{\"t\": iso8601 bucket-start UTC, \"new_cases\": int, \"closed\": int,\n                  \"auto_closed\": int, \"false_positives\": int, \"needs_human\": int,\n                  \"escalated\": int, \"fp_rate\": float 0-100 | null,\n                  \"alerts\": int | null}],\n     \"truncated\": bool, \"store_total\": int, \"fetched\": int}\n\n``bucket_minutes`` follows the frozen ladder (<=24h → 60, <=72h → 180,\n<=168h → 360, else 1440); buckets are UTC-aligned, zero-filled across the whole\nwindow, newest bucket partial. Cohort counts reuse the exact\n``engine.metrics.quality_metrics`` field/verdict/decision_by semantics so they\nreconcile with the posture tiles; ``fp_rate`` mirrors posture's\n``false_positive_rate`` numerator/denominator within the bucket (null when no\nverdicted case). ``alerts`` comes from the durable noise counters' per-hour\ningested tallies (null when the counters are warming up / unreadable, and for\nbuckets predating their first observation).\n\nServed from the SAME shared short-TTL case page as the other posture rollups\n(one store scan per TTL window), computed over up to the most-recent\n``_STORE_FETCH_LIMIT`` cases — the ``truncated``/``store_total``/``fetched``\nmarker keeps a partial (newest-N) tally honest. DETERMINISTIC + advisory:\nnothing here is read by ``case_manager.decide()`` (#3).",
+        "operationId": "metrics_trends_api_metrics_trends_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Window Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Metrics Trends Api Metrics Trends Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Trends"
+      }
+    },
     "/api/mitre/coverage": {
       "get": {
         "description": "Per-tactic MITRE ATT&CK technique coverage tallied from our case load against\nthe bundled corpus, over up to the most-recent 5000 cases (the response's\n``truncated`` flag is True when the store held more — the covered tally is then a\nlower bound). ``window_hours=0`` (default) covers ALL fetched cases; a positive\nvalue time-bounds to created-within. Invalid/forged technique ids are dropped (#9).",
@@ -15714,7 +15945,7 @@
     },
     "/api/sources/coverage": {
       "get": {
-        "description": "Aggregate ingest-coverage rollup — the \"am I seeing everything?\" big-number tile\n(A5.5; Google SecOps Health-Hub model). Read-only, advisory, NO secrets.\n\nReturns ``{sources_total, sources_enabled, sources_silent, events_per_min,\nalerts_triaged_24h, worst_last_event_seconds}`` computed over the configured sources,\nor over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h`` is\nthe count of cases opened in the last 24h computed with the SAME window filter the\n``/metrics/noise-reduction`` endpoint uses, so the two agree. Never raises — every\nsub-lookup degrades to a safe zero (#3/#4/#6/#9 untouched).",
+        "description": "Aggregate ingest-coverage rollup — the \"am I seeing everything?\" big-number tile\n(A5.5; Google SecOps Health-Hub model). Read-only, advisory, NO secrets.\n\nReturns ``{sources_total, sources_enabled, sources_silent, events_per_min,\nalerts_triaged_24h, worst_last_event_seconds}`` computed over the configured sources,\nor over the isolated native demo sources while Demo Mode is active. ``alerts_triaged_24h``\nis the count of cases created in the last 24h, answered by a repository COUNT\npush-down (``CaseRepository.count_created_since`` — one backend count, zero full\ndocuments fetched) over the same 24h window the ``/metrics/noise-reduction``\nfunnel's ``cases`` stage uses. Never raises — every sub-lookup degrades to a safe\nzero (#3/#4/#6/#9 untouched).",
         "operationId": "sources_coverage_api_sources_coverage_get",
         "responses": {
           "200": {

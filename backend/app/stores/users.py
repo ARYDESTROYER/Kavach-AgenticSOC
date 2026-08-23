@@ -164,8 +164,19 @@ class UserStore:
         role: str = UserRole.ANALYST_TIER1.value,
         active: bool = True,
         must_change_password: bool = False,
+        display_name: str = "",
+        email: str = "",
+        phone: str = "",
+        mfa_required: bool = False,
+        prefs: dict | None = None,
     ) -> User:
-        """Create a user. Raises ``ValueError`` if the username already exists."""
+        """Create a user. Raises ``ValueError`` if the username already exists.
+
+        ``display_name``/``email``/``phone`` are the admin-set profile/contact
+        fields; ``mfa_required`` is the admin MFA-enrollment mandate (NEVER the
+        enrolled ``mfa_enabled`` flag — no secret is minted here); ``prefs`` seeds
+        the free-form prefs bag (e.g. ``{"custom_roles": [...]}`` — the same shape
+        ``PUT /api/users/{u}/roles`` writes). All optional + defaulted (additive)."""
         uname = (username or "").strip()
         if not uname:
             raise ValueError("username is required")
@@ -175,6 +186,11 @@ class UserStore:
             role=role,
             active=active,
             must_change_password=must_change_password,
+            display_name=display_name or "",
+            email=email or "",
+            phone=phone or "",
+            mfa_required=bool(mfa_required),
+            prefs=dict(prefs or {}),
         )
 
         def apply(entries: list[User]) -> User:
@@ -228,6 +244,9 @@ class UserStore:
             "oauth_provider", "oauth_sub",
             # Wave 2 (W2) self-service profile — patched via /api/account/me.
             "display_name", "alias", "avatar", "alt_email", "timezone", "locale", "prefs",
+            # Admin-managed contact fields + the MFA-enrollment mandate — patched
+            # via PUT /api/users/{username} (users:manage).
+            "email", "phone", "mfa_required",
         }
 
         def apply(entries: list[User]) -> User | None:

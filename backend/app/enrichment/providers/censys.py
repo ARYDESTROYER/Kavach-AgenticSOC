@@ -55,6 +55,21 @@ class CensysProvider(EnrichmentProvider):
             free_tier="Free tier ~ 1 req / 2.5 s",
             docs_url="https://search.censys.io/api",
             default_enabled=False,
+            setup_steps=[
+                "Create a free account at search.censys.io and open Account → API.",
+                "Copy BOTH the API ID and the API secret (they are used together as "
+                "HTTP Basic auth).",
+                "Set TLSOC_CENSYS_API_ID and TLSOC_CENSYS_API_SECRET in .env "
+                "(compose maps them to CENSYS_API_ID / CENSYS_API_SECRET), or paste "
+                "both in this card (in-memory until restart).",
+                "Flip this provider's toggle ON.",
+            ],
+            example=(
+                "Independent second opinion on host exposure: when a case hinges on "
+                "whether an internal service was actually reachable from the "
+                "internet, Censys' scan data confirms or refutes it without touching "
+                "the host."
+            ),
         )
 
     async def _lookup(self, value: str, kind: IndicatorKind) -> ProviderResult:

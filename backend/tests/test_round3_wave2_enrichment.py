@@ -67,6 +67,13 @@ def test_all_providers_registered_and_well_formed() -> None:
         "abuseipdb", "virustotal", "greynoise", "shodan_internetdb", "shodan",
         "censys", "binaryedge", "ipinfo", "otx", "pulsedive", "spur", "xforce",
         "urlhaus", "threatfox", "malwarebazaar", "rdap", "urlscan", "hibp",
+        # Round 11 keyless
+        "circl_hashlookup", "dshield", "onionoo", "spamhaus", "cymru_mhr",
+        "robtex", "crt_sh",
+        # Round 11 key-gated
+        "crowdsec", "google_safebrowsing", "ipqualityscore", "ipdata", "apivoid",
+        "maltiverse", "securitytrails", "criminalip", "netlas", "hybrid_analysis",
+        "metadefender", "emailrep",
     }
     assert expected.issubset(names)
     # Project Honeypot is REGISTERED as of Round 3 Wave 2b (its config gaps —
@@ -79,29 +86,73 @@ def test_all_providers_registered_and_well_formed() -> None:
         # A key-gated provider declares secret fields; a keyless one declares none.
         if not m.keyless:
             assert m.secret_fields, m.name
+        # Round 11: every manifest carries the operator setup guide + example blurb.
+        assert m.setup_steps and all(isinstance(s, str) and s for s in m.setup_steps), m.name
+        assert isinstance(m.example, str) and m.example, m.name
 
 
 def test_keyless_providers_default_on_key_gated_default_off() -> None:
     by = {c.manifest().name: c.manifest() for c in BUILTIN_PROVIDERS}
-    for keyless_on in ("shodan_internetdb", "ipinfo", "urlhaus", "threatfox", "malwarebazaar", "rdap"):
+    for keyless_on in (
+        "shodan_internetdb", "ipinfo", "urlhaus", "threatfox", "malwarebazaar", "rdap",
+        # Round 11 quota-safe keyless trio
+        "circl_hashlookup", "dshield", "onionoo",
+    ):
         assert by[keyless_on].default_enabled is True, keyless_on
         assert (by[keyless_on].keyless or not by[keyless_on].secret_fields), keyless_on
-    for keyed_off in ("greynoise", "shodan", "censys", "binaryedge", "otx", "pulsedive", "spur", "xforce", "urlscan", "hibp"):
+    # Round 11 keyless-but-caveated providers (own-resolver / latency caveats):
+    # keyless yet DEFAULT-OFF — a supported combination via the use_* toggle.
+    for keyless_off in ("spamhaus", "cymru_mhr", "robtex", "crt_sh"):
+        assert by[keyless_off].default_enabled is False, keyless_off
+        assert (by[keyless_off].keyless or not by[keyless_off].secret_fields), keyless_off
+    for keyed_off in (
+        "greynoise", "shodan", "censys", "binaryedge", "otx", "pulsedive", "spur",
+        "xforce", "urlscan", "hibp",
+        # Round 11 key-gated providers
+        "crowdsec", "google_safebrowsing", "ipqualityscore", "ipdata", "apivoid",
+        "maltiverse", "securitytrails", "criminalip", "netlas", "hybrid_analysis",
+        "metadefender", "emailrep",
+    ):
         assert by[keyed_off].default_enabled is False, keyed_off
         assert by[keyed_off].secret_fields, keyed_off
 
 
+def test_manifest_default_enabled_mirrors_shipped_enrichment_config() -> None:
+    # The manifest's default_enabled must MIRROR the shipped EnrichmentConfig default
+    # for its config_key (the UI shows the out-of-the-box state from the manifest).
+    cfg = EnrichmentConfig()
+    for cls in BUILTIN_PROVIDERS:
+        m = cls.manifest()
+        if not m.config_key:
+            continue
+        assert hasattr(cfg, m.config_key), m.name
+        assert bool(getattr(cfg, m.config_key)) is bool(m.default_enabled), m.name
+
+
 def test_registry_routes_indicator_kinds_to_the_right_providers() -> None:
     reg = get_provider_registry()
-    # An email indicator → only HIBP handles it (and only when keyed+on).
+    # An email indicator → only HIBP fires out of the box (the Round-11 EMAIL
+    # handlers — emailrep / ipqualityscore — are key-gated + default-OFF).
     s = _secrets(hibp_api_key="k")
     cfg = EnrichmentConfig(use_hibp=True)
     email_providers = [c.name for c in reg.for_indicator(IndicatorKind.EMAIL, cfg, s)]
     assert email_providers == ["hibp"]
+    # Enabling + keying EmailRep adds it as the second EMAIL provider.
+    s2 = _secrets(hibp_api_key="k", emailrep_api_key="e")
+    cfg2 = EnrichmentConfig(use_hibp=True, use_emailrep=True)
+    email_providers2 = [c.name for c in reg.for_indicator(IndicatorKind.EMAIL, cfg2, s2)]
+    assert email_providers2 == ["emailrep", "hibp"]  # sorted by name, deterministic
     # A file hash → the keyless abuse.ch + (keyed) providers that handle FILE_HASH.
     hash_providers = set(c.name for c in reg.for_indicator(IndicatorKind.FILE_HASH, EnrichmentConfig(), _secrets()))
-    assert {"malwarebazaar", "threatfox"}.issubset(hash_providers)  # keyless, default-on
+    assert {"malwarebazaar", "threatfox", "circl_hashlookup"}.issubset(hash_providers)  # keyless, default-on
     assert "hibp" not in hash_providers
+    # The keyless-but-default-OFF Round-11 providers do NOT fire out of the box.
+    ip_providers = set(c.name for c in reg.for_indicator(IndicatorKind.IP, EnrichmentConfig(), _secrets()))
+    assert {"dshield", "onionoo"}.issubset(ip_providers)          # keyless, default-on
+    assert "spamhaus" not in ip_providers and "robtex" not in ip_providers
+    assert "cymru_mhr" not in set(
+        c.name for c in reg.for_indicator(IndicatorKind.FILE_HASH, EnrichmentConfig(), _secrets())
+    )
 
 
 # --------------------------------------------------------------------------- #
