@@ -329,6 +329,31 @@ def test_unified_logs_reports_per_source_mode_and_bound(client):
     assert client.get("/api/logs?limit=9999").json()["limit"] == 200
 
 
+def test_browse_does_not_claim_more_when_the_total_is_exactly_complete(client):
+    """Regression: an exact connector total must SHORT-CIRCUIT the saturated-page
+    heuristic. INDEX_A holds exactly 5 docs, so a limit=5 read is both saturated and
+    complete — advertising "(more exist)" there would send the operator off to narrow a
+    range that hides nothing."""
+    assert client.post("/api/sources", json={
+        "id": "elk-a", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX_A}}).status_code == 200
+
+    exact = client.get("/api/sources/elk-a/logs?limit=5").json()
+    assert exact["count"] == 5 and exact["total"] == 5 and exact["limit"] == 5
+    assert exact["truncated"] is False
+
+    scoped = client.get("/api/logs", params={"limit": 5, "source_id": "elk-a"}).json()
+    assert scoped["count"] == 5 and scoped["truncated"] is False
+    assert scoped["sources"][0]["truncated"] is False
+
+    # One row short of the known total and BOTH routes say there is more.
+    short = client.get("/api/sources/elk-a/logs?limit=4").json()
+    assert short["count"] == 4 and short["total"] == 5 and short["truncated"] is True
+    short_merged = client.get("/api/logs", params={"limit": 4, "source_id": "elk-a"}).json()
+    assert short_merged["truncated"] is True
+    assert short_merged["sources"][0]["truncated"] is True
+
+
 def test_unified_logs_failed_source_still_reports_its_mode(client, monkeypatch):
     """A failing source keeps an honest `mode` on its status entry, so the UI can still
     explain why a time range did or did not apply to it."""
@@ -345,6 +370,9 @@ def test_unified_logs_failed_source_still_reports_its_mode(client, monkeypatch):
     entry = next(s for s in client.get("/api/logs?limit=5").json()["sources"]
                  if s["source_id"] == "elk-a")
     assert entry["ok"] is False and entry["error"] and entry["mode"] == "search"
+    # A read that returned nothing cut nothing: `ok: False` is the honest "you are
+    # missing rows here" signal, not `truncated`.
+    assert entry["truncated"] is False
 
 
 def test_unified_logs_includes_push_source(client):

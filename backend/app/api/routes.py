@@ -994,12 +994,16 @@ def _browse_truncated(returned: int, limit: int, total: int | None) -> bool:
     """Honest "there is more than this" flag for a bounded browse read.
 
     Browse has NO pagination: every read is "the most recent ``limit`` rows". When a
-    connector reports a match ``total`` we can answer exactly; otherwise (push live-tail
-    buffers, connectors that omit ``total``) a full page is the only evidence available,
-    so a saturated page is reported as truncated. ``False`` never means "complete" for a
-    caller that wants completeness — it only means nothing was demonstrably cut."""
-    if total is not None and total > returned:
-        return True
+    connector reports a coherent match ``total`` we answer EXACTLY from it and stop —
+    a known total equal to the returned row count means nothing was cut, even when the
+    page is exactly saturated (``total == returned == limit`` is complete, not "more
+    exist"). Only when the total is absent or incoherent (push live-tail buffers,
+    connectors that omit or under-report ``total``) is a full page the sole evidence
+    available, and a saturated page is then reported as truncated. ``False`` never
+    means "complete" for a caller that wants completeness — it only means nothing was
+    demonstrably cut."""
+    if total is not None and total >= returned:
+        return total > returned
     return returned >= limit
 
 
@@ -1028,7 +1032,11 @@ async def source_logs(
     ``"search"`` = a real backing search (``from``/``to``/``query`` apply, and
     ``total`` reports the match count when the connector supplies one) and
     ``"buffer"`` = a push source's process-local, volatile in-memory live-tail ring,
-    where ``from``/``to``/``query`` are IGNORED and nothing survives a restart."""
+    where ``from``/``to``/``query`` are IGNORED and nothing survives a restart.
+    ``mode`` describes the FILTERS, never the durability of the backing store: a Demo
+    Mode adapter reports ``"search"`` because it really does apply
+    ``from``/``to``/``query`` and really does report a match ``total``, even though the
+    ring it searches is itself in-memory."""
     limit = max(1, min(int(limit or 100), 200))  # hard cap
     # The four protocol-faithful demo adapters never enter prefs.sources. Their bounded
     # native-derived rings are exposed through the same browse row contract, with source
@@ -1057,7 +1065,11 @@ async def source_logs(
                 row["source_name"] = source_name
             return {
                 "source_id": source_id,
-                "mode": "buffer",
+                # A demo adapter runs a REAL filtered search over its ring: the
+                # `contains`/`time_from`/`time_to` above are all honoured and `total`
+                # is a real match count, so the honest mode is "search". Calling it a
+                # "buffer" would tell the operator the range/query did not apply.
+                "mode": "search",
                 "count": len(rows),
                 "total": result.total,
                 "limit": limit,
@@ -1177,12 +1189,19 @@ async def unified_logs(
     (``from``/``to``/``query`` apply) and ``"buffer"`` = a push source's process-local,
     volatile in-memory live-tail ring, where ``from``/``to``/``query`` are IGNORED and
     nothing survives a restart. Without it a caller cannot tell a time-ranged query from
-    a ring read in the merged view.
+    a ring read in the merged view. ``mode`` describes the FILTERS, not the durability
+    of the backing store: a Demo Mode adapter reports ``"search"`` because it really
+    does apply ``from``/``to``/``query``.
 
     BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and applied per source AND on
     the merge; there is NO pagination, cursor, or offset. The envelope echoes the
     effective ``limit`` and a ``truncated`` flag so a caller can say "most recent N"
-    rather than implying it has seen everything."""
+    rather than implying it has seen everything. Each per-source status carries its own
+    ``truncated``, computed by the SAME ``_browse_truncated`` rule the per-source
+    sibling route uses, and the envelope ``truncated`` is the OR of the merge being cut
+    with any single source being cut — so scoping to one source, or running a
+    single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
+    for that same read."""
     import asyncio
 
     limit = max(1, min(int(limit or 100), 200))  # hard cap (per source AND on the merge)
@@ -1214,7 +1233,12 @@ async def unified_logs(
                     detail="Browsing logs is not supported for this source",
                 )
 
-    async def _read_pull(src) -> list[dict[str, Any]]:
+    # Every read returns (rows, total) where `total` is the connector's match count
+    # when it supplies one and None when it cannot (live-tail rings). The pair is what
+    # lets the merged envelope apply the SAME `_browse_truncated` rule per source that
+    # `GET /sources/{id}/logs` applies, instead of only asking whether the merge itself
+    # overflowed (which one source can never do, since each is read at `limit`).
+    async def _read_pull(src) -> tuple[list[dict[str, Any]], int | None]:
         es_client, owned = state.es_client_for_source(src)
         try:
             from ..connectors.base import StructuredQuery
@@ -1232,7 +1256,7 @@ async def unified_logs(
                 size=limit, sort_desc=True,
             )
             result = await conn.search(state.prefs, sq)
-            return [_log_row(ev) for ev in result.events]
+            return [_log_row(ev) for ev in result.events], result.total
         finally:
             if owned:
                 try:
@@ -1240,14 +1264,17 @@ async def unified_logs(
                 except Exception:  # noqa: BLE001
                     pass
 
-    async def _read_push(src) -> list[dict[str, Any]]:
-        return [_log_row(ev)
+    async def _read_push(src) -> tuple[list[dict[str, Any]], int | None]:
+        # A live-tail ring has no match total to report — None keeps the saturated-page
+        # heuristic in `_browse_truncated`.
+        rows = [_log_row(ev)
                 for ev in state.ingest_service.recent_events_for_source(src.id, limit)]
+        return rows, None
 
-    async def _read_demo(src) -> list[dict[str, Any]]:
+    async def _read_demo(src) -> tuple[list[dict[str, Any]], int | None]:
         conn = state.demo_source_connector(src.id)
         if conn is None:
-            return []
+            return [], None
         from ..connectors.base import StructuredQuery
 
         result = await conn.search(
@@ -1257,7 +1284,7 @@ async def unified_logs(
                 size=limit, sort_desc=True,
             ),
         )
-        return [_log_row(ev) for ev in result.events]
+        return [_log_row(ev) for ev in result.events], result.total
 
     # Select the enabled + browse-capable sources and pair each read coroutine with its
     # source (for provenance + error attribution). Unsupported sources are skipped.
@@ -1274,7 +1301,9 @@ async def unified_logs(
             if source_id is not None and sid != source_id:
                 continue
             src = SimpleNamespace(id=sid, display_name=row.get("display_name") or sid)
-            targets.append((src, _read_demo(src), "buffer"))
+            # "search", not "buffer": the demo adapter's read is a real filtered search
+            # over its ring (from/to/query all apply, and it reports a match total).
+            targets.append((src, _read_demo(src), "search"))
     else:
         for src in state.prefs.sources:
             if not src.enabled or not _source_can_browse(reg, src):
@@ -1298,6 +1327,7 @@ async def unified_logs(
 
     merged: list[dict[str, Any]] = []
     source_status: list[dict[str, Any]] = []
+    any_source_truncated = False
     for (src, _coro, mode), outcome in zip(targets, results):
         if isinstance(outcome, Exception):
             source_status.append({
@@ -1307,20 +1337,29 @@ async def unified_logs(
                           else str(outcome)),
                 "count": 0,
                 "mode": mode,
+                # A read that failed returned nothing; it cut nothing either. The
+                # honest signal for "you are missing rows here" is `ok: False`.
+                "truncated": False,
             })
             continue
-        rows = outcome or []
+        rows, total = outcome if isinstance(outcome, tuple) else (outcome or [], None)
         for row in rows:
             # MANDATORY provenance — overwrite (never trust a per-source row to self-label).
             row["source_id"] = src.id
             row["source_name"] = src.display_name or src.id
         merged.extend(rows)
+        # The SAME rule the per-source sibling route applies to this identical read.
+        src_truncated = _browse_truncated(len(rows), limit, total)
+        any_source_truncated = any_source_truncated or src_truncated
         source_status.append({
             "source_id": src.id, "source_name": src.display_name or src.id,
             "ok": True, "count": len(rows),
             # "search" = a real backing query (from/to/query applied); "buffer" = a
             # volatile process-local live-tail ring that IGNORES from/to/query.
             "mode": mode,
+            # This source's own rows were demonstrably cut (its page saturated, or its
+            # connector reported more matches than it returned).
+            "truncated": src_truncated,
         })
 
     # Merge newest-first by ts (ISO strings sort lexicographically for UTC; empty ts
@@ -1333,12 +1372,16 @@ async def unified_logs(
         "count": len(merged),
         "sources": source_status,
         "partial": any(not s["ok"] for s in source_status),
-        # The bound is part of the contract: this is the most recent `count` rows, not a
-        # complete result. `truncated` is True when the merge was cut; False still does
-        # NOT mean "complete", because each source was itself read with the same cap and
-        # there is no pagination.
+        # The bound is part of the contract: this is the most recent `count` rows, not
+        # a complete result.
         "limit": limit,
-        "truncated": gathered > limit,
+        # True when the MERGE was cut, OR when any single source's own read was cut —
+        # each source is itself read at `limit`, so with one target the merge can never
+        # overflow and only the per-source signal is honest. Without the OR this route
+        # reported `false` for the very same read the per-source sibling reports as
+        # truncated. `false` still does not mean "complete" for a caller that wants
+        # completeness (there is no pagination) — it means nothing was demonstrably cut.
+        "truncated": gathered > limit or any_source_truncated,
     }
 
 

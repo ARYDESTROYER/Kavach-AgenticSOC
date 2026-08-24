@@ -329,3 +329,78 @@ def test_route_source_logs_envelope_declares_its_bound(client):
     buf = client.get("/api/sources/wh/logs?limit=50").json()
     assert buf["mode"] == "buffer"
     assert buf["limit"] == 50 and buf["count"] == 3 and buf["truncated"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 8) route-level: the two browse routes report the SAME `truncated` for the SAME
+#    read. Every per-source read is already capped at `limit`, so a merge over a
+#    single target can never overflow — the merged flag must therefore OR in the
+#    per-source saturation instead of only asking whether the merge itself was cut.
+# --------------------------------------------------------------------------- #
+def test_single_saturated_source_is_truncated_in_both_browse_routes(client):
+    """Regression: `/api/logs` used to report `truncated: false` for the exact rows
+    `/api/sources/{id}/logs` reported as truncated, because it only tested
+    `gathered > limit` and one source is itself read at `limit`. Two routes, one
+    documented contract — they must agree."""
+    assert client.post("/api/sources", json={
+        "id": "elk", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX}}).status_code == 200
+
+    # The fixture seeds _MAX_SIZE + 50 docs, so a 100-row page is demonstrably cut.
+    per_source = client.get("/api/sources/elk/logs?limit=100").json()
+    assert per_source["mode"] == "search"
+    assert per_source["count"] == 100 and per_source["total"] == _MAX_SIZE + 50
+    assert per_source["truncated"] is True
+
+    # Both the all-sources path (one configured source) and the explicit scope.
+    for params in ({"limit": 100}, {"limit": 100, "source_id": "elk"}):
+        merged = client.get("/api/logs", params=params).json()
+        assert merged["count"] == per_source["count"] == 100, params
+        assert merged["truncated"] is True, params
+        entry = next(s for s in merged["sources"] if s["source_id"] == "elk")
+        # The per-source status carries the same honest per-source flag.
+        assert entry["truncated"] is True, params
+
+
+def test_single_saturated_push_buffer_is_truncated_in_both_browse_routes(client):
+    """The live-tail ring has no match total, so a saturated page is the only evidence
+    of a cut — and both routes must read that evidence identically."""
+    assert client.post("/api/sources", json={
+        "id": "wh", "source_type": "webhook"}).status_code == 200
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    assert client.post("/api/ingest/wh", json=[
+        {"src_ip": "5.5.5.5", "user": "eve", "severity": "high", "signature": "s",
+         "@timestamp": now, "id": f"evt-{i}"} for i in range(6)]).status_code == 200
+
+    per_source = client.get("/api/sources/wh/logs?limit=3").json()
+    assert per_source["mode"] == "buffer"
+    assert per_source["count"] == 3 and per_source["truncated"] is True
+
+    merged = client.get("/api/logs", params={"limit": 3, "source_id": "wh"}).json()
+    assert merged["count"] == 3 and merged["truncated"] is True
+    assert merged["sources"][0]["truncated"] is True
+    assert merged["sources"][0]["mode"] == "buffer"
+
+    # Unsaturated, still no total → nothing was demonstrably cut, on either route.
+    assert client.get("/api/sources/wh/logs?limit=50").json()["truncated"] is False
+    loose = client.get("/api/logs", params={"limit": 50, "source_id": "wh"}).json()
+    assert loose["truncated"] is False and loose["sources"][0]["truncated"] is False
+
+
+def test_browse_truncated_answers_exactly_from_a_known_total():
+    """`_browse_truncated` is the single rule both routes share. A coherent connector
+    total answers EXACTLY (a complete page is not "more exist"); only an absent or
+    incoherent total falls back to the saturated-page heuristic."""
+    from app.api.routes import _browse_truncated
+
+    # Known, coherent total → exact answer, saturation irrelevant.
+    assert _browse_truncated(5, 5, 5) is False   # complete AND saturated
+    assert _browse_truncated(5, 5, 9) is True
+    assert _browse_truncated(4, 5, 5) is True    # connector returned fewer than asked
+    assert _browse_truncated(0, 5, 0) is False
+    # Absent total (live-tail ring) → saturated page is the only evidence.
+    assert _browse_truncated(5, 5, None) is True
+    assert _browse_truncated(3, 5, None) is False
+    # Incoherent total (below what was actually returned) is not trusted.
+    assert _browse_truncated(5, 5, 2) is True

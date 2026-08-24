@@ -379,7 +379,8 @@ Read this before building on it:
 |---|---|
 | **Capability is server-authoritative** | `GET /api/sources` returns **`can_browse`** per source, computed by the *same* predicate the browse routes gate on. The Console never re-derives it from connector manifests or health — one definition, so the "Browse logs" affordance can never disagree with what the endpoint will do. |
 | **Bounded, never complete** | `limit` is clamped to **1..200** (applied per source *and* on the merge) and there is **no pagination, cursor, offset, or `search_after`**. Both envelopes echo the effective **`limit`** and a **`truncated`** flag, so a surface says *"most recent N"* rather than implying completeness. `truncated: false` only means nothing was demonstrably cut — it is **not** proof you have seen everything. |
-| **Two read modes** | Each response (and each `sources[]` entry in the unified envelope) carries **`mode`**. `"search"` = a real backing query against a pull source, where `from`/`to`/`query` apply. `"buffer"` = a push source's in-memory live-tail ring, where `from`/`to`/`query` are **ignored**. |
+| **One `truncated` rule, both routes** | `truncated` is computed the same way everywhere. When the connector reports a **coherent match total** the answer is exact: `total > returned`. A page that is saturated *and* complete (`total == returned == limit`) is **not** advertised as having more. Only when a total is absent or incoherent — a live-tail ring, a connector that omits it — does a **saturated page** stand in as the evidence of a cut. In the unified envelope every `sources[]` entry carries its **own** `truncated` by that same rule, and the envelope flag is `merge was cut OR any single source was cut`. Each source is itself read at `limit`, so a one-source read (a `source_id` scope, or a single-source deployment) can never overflow the merge — without the OR the two routes would report opposite flags for identical data. |
+| **Two read modes** | Each response (and each `sources[]` entry in the unified envelope) carries **`mode`**. `"search"` = a real backing query where `from`/`to`/`query` apply and a match `total` is reported when the connector supplies one. `"buffer"` = an in-memory live-tail ring where `from`/`to`/`query` are **ignored** and no total exists. `mode` describes the **filters**, never the durability of the backing store: a **Demo Mode** adapter reports `"search"` because it genuinely applies `from`/`to`/`query` over its ring — see *Buffers are volatile* for the separate durability fact. |
 | **Buffers are volatile** | The push live-tail ring is **process-local and in-memory** (500 events per source), so it is lost on restart and is not shared across replicas. It is a live tail, not storage. |
 | **Rows are NOT OCSF** | Browse deliberately bypasses OCSF normalisation. `_raw` is the **verbatim source-native document** — the strongest untrusted-data case in the product. Every field on every row is attacker-influenceable: render as plain text, `_raw` only inside a code block, never as markup (#9). No browsed row is ever sent to a model (#7). |
 | **Scoped read-only key** | Pull reads run through `state.es_client_for_source()`, which honours the source's own URL/TLS and **explicitly drops the management key** (#1). |
@@ -2575,8 +2576,11 @@ curl -s "localhost:8088/api/sources/prod-es/logs?limit=50&query=ssh&from=now-15m
 #      "logs": [{ "ts": "...", "source_ip": "...", "user": "...", "host": "...",
 #                 "rule": "...", "severity": "...", "message": "...", "_raw": { ... } }] }
 # 404 unknown source · 501 browse-unsupported connector · 502 read failure
-# `limit`/`truncated` = the bound (most recent N, NO pagination); `mode` = search vs
-# a volatile push live-tail buffer that IGNORES from/to/query.
+# `limit`/`truncated` = the bound (most recent N, NO pagination); `mode` = a real
+# filtered search (from/to/query apply) vs a live-tail buffer that IGNORES them.
+# `truncated` is exact when the connector reports a total (`total > count`), and falls
+# back to "the page saturated" only when no total exists: total==count==limit is
+# COMPLETE, not "more exist".
 
 # Which sources can be browsed at all (server-authoritative, same predicate)
 curl -s localhost:8088/api/sources | jq '.sources[] | {id, can_browse}'
@@ -2585,7 +2589,9 @@ curl -s localhost:8088/api/sources | jq '.sources[] | {id, can_browse}'
 curl -s "localhost:8088/api/logs?limit=50&query=ssh&from=now-15m&to=now"
 # -> { "logs": [...], "count": 50, "partial": false, "limit": 50, "truncated": true,
 #      "sources": [{ "source_id": "...", "source_name": "...", "ok": true,
-#                    "count": 25, "mode": "search" }] }
+#                    "count": 25, "mode": "search", "truncated": true }] }
+# Envelope `truncated` = the merge was cut OR any single source was cut, so a
+# one-source read agrees with GET /api/sources/{id}/logs on the identical data.
 
 # ...or scope the same fan-out to ONE source (404 unknown · 501 not browsable)
 curl -s "localhost:8088/api/logs?limit=50&source_id=prod-es"
