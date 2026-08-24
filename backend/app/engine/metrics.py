@@ -592,6 +592,29 @@ def quality_metrics(
     * ``policy_closed_cases`` — cases closed by an operator's analyst RULE POLICY.
       Reported separately and EXCLUDED from every rate above: no model ran on them, so
       they are neither agent success nor agent failure.
+    * ``auto_closed_cases`` / ``human_closed_cases`` / ``system_closed_cases`` — the
+      three-way ``decision_by`` partition of ``terminal_cases``, all over the SAME
+      policy-excluded population: ``decision_by == AGENT``, ``decision_by ==
+      ANALYST``, and the honest RESIDUAL (``SYSTEM`` deterministic routing plus
+      legacy records carrying no provenance at all). They sum EXACTLY to
+      ``terminal_cases``, so a "human vs AI" share always adds up to 100% with the
+      unattributed remainder VISIBLE — never silently folded into either side.
+      ``human_closed_cases`` deliberately does NOT mean ``terminal_cases -
+      auto_closed_cases``: that difference over-states human work by absorbing
+      SYSTEM and legacy-null closes.
+
+    HONESTY CAVEAT — ``decision_by`` is LAST-WRITER, not an immutable close author.
+    Every analyst lifecycle action in ``api/routes.py`` (close, confirm_fp, reopen,
+    escalate, deescalate, hold, resume, resolve, **acknowledge**, set_disposition,
+    set_status) stamps ``decision_by = ANALYST`` unconditionally, and a same-status
+    move is permitted. So an AGENT-auto-closed case that a human merely ACKNOWLEDGES
+    or re-tags afterwards migrates from ``auto_closed_cases`` into
+    ``human_closed_cases``. These counts report the LAST recorded decider, not proof
+    of who performed the close, and any surface attributing work to "the AI" vs "a
+    human" from them MUST disclose that. This is deliberately not "fixed" here:
+    the append-only ``status_history`` / ``{"event": "decision"}`` entries hold the
+    durable record if a non-erasable predicate is ever wanted, but switching the
+    predicate would silently move the shipped ``automation_rate`` series.
     """
     # A case closed by an operator's analyst RULE POLICY never reached the agent: no
     # model ran, no verdict exists, and no investigation was attempted. Counting it
@@ -616,6 +639,11 @@ def quality_metrics(
     )
     terminal = [c for c in cases if (c.status.value if c.status else "") in _TERMINAL]
     auto_closed = sum(1 for c in terminal if c.decision_by == DecisionBy.AGENT)
+    human_closed = sum(1 for c in terminal if c.decision_by == DecisionBy.ANALYST)
+    # The honest residual: SYSTEM routing + legacy records with no recorded
+    # provenance. Neither agent nor human work, so it is reported on its own instead
+    # of inflating either side. auto + human + system == len(terminal), always.
+    system_closed = len(terminal) - auto_closed - human_closed
 
     return {
         "total_cases": total,
@@ -626,6 +654,10 @@ def quality_metrics(
         "escalated_cases": escalated,
         "terminal_cases": len(terminal),
         "auto_closed_cases": auto_closed,
+        # Partition of terminal_cases by LAST-WRITER decision_by (see the caveat in
+        # the docstring): AGENT / ANALYST / residual. Sums to terminal_cases.
+        "human_closed_cases": human_closed,
+        "system_closed_cases": system_closed,
         # Excluded from every rate above; surfaced so the volume stays visible.
         "policy_closed_cases": len(policy_closed),
         "alert_to_incident_ratio": _ratio(tp, total),
@@ -983,6 +1015,30 @@ def trend_metrics(
       them: ``closed`` == its ``terminal_cases``, ``auto_closed`` == its
       ``decision_by==AGENT`` terminal tally, ``escalated`` == its escalated
       condition).
+    * ``auto_closed`` / ``human_closed`` / ``system_closed`` — the three-way
+      ``decision_by`` partition of ``closed``, over the SAME graded (policy-excluded)
+      cohort: ``AGENT``, ``ANALYST``, and the honest RESIDUAL (``SYSTEM``
+      deterministic routing plus legacy records with no recorded provenance).
+      ``auto_closed + human_closed + system_closed == closed`` EXACTLY in every
+      bucket and in total, so a Human-vs-AI card is a real partition; render
+      ``system_closed`` as its own "system / unattributed" band and never fold it
+      into either side (``closed - auto_closed`` is NOT human work). Cohort
+      semantics are unchanged: a case is attributed to the bucket it was CREATED
+      in, so this series answers "of the cases that arrived in this bucket, how many
+      are NOW closed by a human vs by the agent" — never "how many closes happened
+      this hour". A bucket whose cohort has no terminal case reports three real
+      zeros, not nulls.
+
+    HONESTY CAVEAT — ``decision_by`` is LAST-WRITER, not an immutable close author.
+    Every analyst lifecycle action in ``api/routes.py`` (close, confirm_fp, reopen,
+    escalate, deescalate, hold, resume, resolve, **acknowledge**, set_disposition,
+    set_status) stamps ``decision_by = ANALYST`` unconditionally, and a same-status
+    move is permitted — so an AGENT-auto-closed case a human later merely
+    ACKNOWLEDGES or re-tags moves from ``auto_closed`` into ``human_closed``. These
+    are LAST-recorded-decider tallies, not proof of who performed the close, and the
+    UI must disclose that rather than claiming "the AI closed X%". See
+    :func:`quality_metrics` for the full note; the predicate is deliberately left
+    as-is so the shipped ``auto_closed`` series does not silently move.
     * ``sent_to_human`` — cohort cases counted ONCE that reached a human either
       way: verdict ``NEEDS_HUMAN`` or the escalated condition. ``needs_human``
       (a verdict tally) and ``escalated`` (a status/history tally) OVERLAP — an
@@ -1050,6 +1106,10 @@ def trend_metrics(
         nh = sum(1 for c in graded if c.verdict == Verdict.NEEDS_HUMAN)
         terminal = [c for c in graded if (c.status.value if c.status else "") in _TERMINAL]
         auto_closed = sum(1 for c in terminal if c.decision_by == DecisionBy.AGENT)
+        human_closed = sum(1 for c in terminal if c.decision_by == DecisionBy.ANALYST)
+        # Residual, so the partition can never over-attribute: SYSTEM routing and
+        # legacy/absent provenance are neither agent nor human work.
+        system_closed = len(terminal) - auto_closed - human_closed
         escalated = sum(
             1
             for c in graded
@@ -1084,6 +1144,8 @@ def trend_metrics(
             "new_cases": len(cohort),
             "closed": len(terminal),
             "auto_closed": auto_closed,
+            "human_closed": human_closed,
+            "system_closed": system_closed,
             "false_positives": fp,
             "needs_human": nh,
             "escalated": escalated,

@@ -102,6 +102,11 @@ def test_trend_metrics_bucket_math_and_zero_fill() -> None:
         assert row["new_cases"] == 0 and row["closed"] == 0
         assert row["auto_closed"] == 0 and row["false_positives"] == 0
         assert row["needs_human"] == 0 and row["escalated"] == 0
+        # A bucket with no closes reports three REAL zeros for the human/AI split
+        # (a "no closes" bucket is a measured zero, not an unavailable measurement).
+        assert row["human_closed"] == 0 and row["system_closed"] == 0
+        assert row["human_closed"] is not None and row["system_closed"] is not None
+        assert row["auto_closed"] + row["human_closed"] + row["system_closed"] == row["closed"]
         assert row["fp_rate"] is None and row["alerts"] is None
     # The honesty marker rides along.
     assert out["truncated"] is False and out["store_total"] == 0 and out["fetched"] == 0
@@ -168,6 +173,101 @@ def test_trend_metrics_cohort_counts_reconcile_with_quality_semantics() -> None:
     assert sum(r["closed"] for r in out["buckets"]) == quality["terminal_cases"]
     assert sum(r["escalated"] for r in out["buckets"]) == quality["escalated_cases"]
     assert sum(r["needs_human"] for r in out["buckets"]) == quality["needs_human_cases"]
+    assert sum(r["human_closed"] for r in out["buckets"]) == quality["human_closed_cases"]
+    assert sum(r["system_closed"] for r in out["buckets"]) == quality["system_closed_cases"]
+    # The human/AI split is a PARTITION of `closed`, per bucket and in total.
+    for row in out["buckets"]:
+        assert row["auto_closed"] + row["human_closed"] + row["system_closed"] == row["closed"]
+    assert (
+        quality["auto_closed_cases"]
+        + quality["human_closed_cases"]
+        + quality["system_closed_cases"]
+    ) == quality["terminal_cases"]
+
+
+def test_trend_metrics_human_vs_ai_split_partitions_closed() -> None:
+    """The Human-vs-AI card's feed: a mixed bucket splits ``closed`` THREE ways.
+
+    AGENT / ANALYST / residual (SYSTEM + legacy records with no ``decision_by``) sum
+    to ``closed`` exactly, and an operator analyst-rule-policy close stays outside
+    all three (no model ran on it), exactly as ``quality_metrics`` excludes it.
+    """
+    at = NOW - timedelta(minutes=20)
+    cases = [
+        _case("ai", created=_iso(at), verdict=Verdict.FALSE_POSITIVE,
+              status=CaseStatus.CLOSED, decision_by=DecisionBy.AGENT),
+        _case("human", created=_iso(at), verdict=Verdict.TRUE_POSITIVE,
+              status=CaseStatus.RESOLVED, decision_by=DecisionBy.ANALYST),
+        _case("sys", created=_iso(at), verdict=Verdict.NEEDS_HUMAN,
+              status=CaseStatus.CLOSED, decision_by=DecisionBy.SYSTEM),
+        # Legacy record: terminal with NO recorded provenance — never claimed as
+        # either human or AI work.
+        _case("legacy", created=_iso(at), verdict=Verdict.TRUE_POSITIVE,
+              status=CaseStatus.CLOSED, decision_by=None),
+        # Policy close: arrival volume only, excluded from every tallied outcome.
+        _case("policy", created=_iso(at), status=CaseStatus.CLOSED,
+              decision_by=DecisionBy.ANALYST_POLICY),
+        # An open case in the same bucket is not terminal at all.
+        _case("open", created=_iso(at)),
+    ]
+    out = M.trend_metrics(cases, window_hours=24, now=NOW)
+    row = {r["t"]: r for r in out["buckets"]}[
+        at.replace(minute=0, second=0, microsecond=0).isoformat()
+    ]
+    assert row["new_cases"] == 6      # policy close + open case count as arrivals
+    assert row["closed"] == 4         # policy close excluded from the graded cohort
+    assert row["auto_closed"] == 1
+    assert row["human_closed"] == 1   # ONLY decision_by == ANALYST
+    assert row["system_closed"] == 2  # SYSTEM + legacy-null residual
+    assert row["auto_closed"] + row["human_closed"] + row["system_closed"] == row["closed"]
+    # `closed - auto_closed` would be 3 — the exact over-attribution of human work
+    # that the explicit residual exists to prevent.
+    assert row["human_closed"] != row["closed"] - row["auto_closed"]
+    # Every other bucket is an untouched zero partition.
+    for other in out["buckets"]:
+        if other["t"] == row["t"]:
+            continue
+        assert other["closed"] == other["human_closed"] == other["system_closed"] == 0
+
+    # ...and the same partition holds in the reconciling quality_metrics rollup.
+    quality = M.quality_metrics(cases)
+    assert quality["terminal_cases"] == 4
+    assert quality["auto_closed_cases"] == 1
+    assert quality["human_closed_cases"] == 1
+    assert quality["system_closed_cases"] == 2
+    assert quality["policy_closed_cases"] == 1
+    assert (
+        quality["auto_closed_cases"]
+        + quality["human_closed_cases"]
+        + quality["system_closed_cases"]
+    ) == quality["terminal_cases"]
+    # The additive fields do not disturb the shipped auto-close rate.
+    assert quality["automation_rate"] == round(1 / 4, 4)
+
+
+def test_quality_metrics_close_attribution_is_last_writer_not_immutable() -> None:
+    """Documents the honesty caveat the UI must disclose.
+
+    ``decision_by`` is LAST-WRITER: an AGENT auto-close that a human later merely
+    acknowledges is re-stamped ANALYST by the lifecycle routes, and the tallies then
+    attribute it to the human. Pinned so nobody "fixes" it silently.
+    """
+    before = M.quality_metrics([
+        _case("c1", created=_iso(NOW), verdict=Verdict.FALSE_POSITIVE,
+              status=CaseStatus.CLOSED, decision_by=DecisionBy.AGENT),
+    ])
+    assert before["auto_closed_cases"] == 1 and before["human_closed_cases"] == 0
+    # The SAME case after a human touch re-stamps decision_by (routes.py behaviour).
+    after = M.quality_metrics([
+        _case("c1", created=_iso(NOW), verdict=Verdict.FALSE_POSITIVE,
+              status=CaseStatus.CLOSED, decision_by=DecisionBy.ANALYST),
+    ])
+    assert after["auto_closed_cases"] == 0 and after["human_closed_cases"] == 1
+    # Either way the partition still reconciles with terminal_cases.
+    for q in (before, after):
+        assert (
+            q["auto_closed_cases"] + q["human_closed_cases"] + q["system_closed_cases"]
+        ) == q["terminal_cases"] == 1
 
 
 def test_trend_metrics_alerts_from_counters_and_honest_nulls() -> None:
@@ -235,8 +335,9 @@ async def test_trends_endpoint_contract_shape(metrics_client, app_state) -> None
     assert len(body["buckets"]) == 25
     for row in body["buckets"]:
         assert set(row) == {
-            "t", "new_cases", "closed", "auto_closed", "false_positives",
-            "needs_human", "escalated", "sent_to_human", "fp_rate", "alerts",
+            "t", "new_cases", "closed", "auto_closed", "human_closed",
+            "system_closed", "false_positives", "needs_human", "escalated",
+            "sent_to_human", "fp_rate", "alerts",
         }
     assert sum(r_["false_positives"] for r_ in body["buckets"]) == 1
     assert sum(r_["auto_closed"] for r_ in body["buckets"]) == 1
