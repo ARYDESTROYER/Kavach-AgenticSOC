@@ -425,14 +425,24 @@ are authoritative:
   primary and the share is rendered quietly beside it. Simple uses exactly one share rule:
   each stage's share of the stage it came from—clusters of alerts ingested, cases of
   clusters, the conserved case split of cases opened, and human closure of escalated
-  cases. That denominator must be named wherever the share is announced (the accessible
-  label and the hover card name it in words; a disclosure beside the graph states the rule
-  for sighted readers), because two shares with different bases must never invite
-  comparison. The first stage is the baseline and shows an em dash rather than a
-  self-referential 100%. A zero, absent, or unmeasured denominator also renders an em
-  dash and says why—never a fabricated 0%, and never a share carried over from another
-  base. Detailed keeps its own published funnel-top ("of ingested") arithmetic in the
-  evidence rail; do not restate Simple's rule there or Detailed's rule in Simple.
+  cases. That one rule governs **every surface Simple can render**. The flow band and the
+  narrow-width evidence rail are alternative presentations of the same flow and are never
+  on screen together, so the rail repeats the graph's parent-relative shares—including the
+  em-dash baseline—rather than Detailed's funnel-top arithmetic. That denominator must be
+  named wherever the share is announced (the accessible label and the hover card name it
+  in words; a disclosure beside the graph states the rule for sighted readers), because
+  two shares with different bases must never invite comparison. The first stage is the
+  baseline and shows an em dash rather than a self-referential 100%. A zero, absent, or
+  unmeasured denominator also renders an em dash and says why—never a fabricated 0%, and
+  never a share carried over from another base. Detailed keeps its own published
+  funnel-top ("of ingested") arithmetic in the evidence rail; do not restate Simple's rule
+  there or Detailed's rule in Simple.
+- A disclosure must describe the surface that is actually rendered at the reader's width.
+  Gate a sentence about ribbons and display compression to the same container condition as
+  the flow band, drop it when conservation fails and only the rail renders, and give the
+  rail its own sentence whenever the rail is what shows. Copy that states one rule while
+  the visible percentages follow another is a defect, not a wording preference; keep any
+  always-rendered clause true on every surface it can be read against.
 - **Open cases** is current lifecycle state from the selected-window posture count. It is
   not equal to Escalated minus human closure, so keep it outside the conserved graph as a
   labelled, keyboard-operable queue action. If the bounded scan is truncated, display the
@@ -442,7 +452,8 @@ are authoritative:
   side evidence, while Detailed retains Testing's side-cohort branch.
 - Keep Simple's direct labels and Detailed's evidence rail readable in both themes. Stage
   detail must be available to keyboard and pointer users, not hover-only. At narrow widths,
-  use the evidence rail rather than crushing either desktop graph's labels.
+  use the evidence rail rather than crushing either desktop graph's labels—and carry that
+  view's share rule and disclosure into the rail with it.
 - Outcome activation opens the matching selected-window Cases filter. Earlier stages
   open the selected-window Cases context because raw alert and cluster records are not
   exposed through the case list.
@@ -673,7 +684,13 @@ scroll inside that frame.
 - Radix primitives provide menu, dialog, radio, tabs, tooltip, and focus behavior.
 - Render source/log/user text as plain text. Truncation has an accessible full-value
   path (hover/focus detail, title, or expanded view).
-- Maintain WCAG AA token contrast in both themes and never disable paste.
+- An operationally load-bearing caveat—a filter that never ran, a volatile buffer, a
+  result that is not what the controls asked for—is visible text or an accessible string.
+  A `title` on a non-focusable element is a mouse-only affordance and never the sole
+  carrier of such a caveat.
+- Maintain WCAG AA token contrast in both themes and never disable paste. A measured
+  `*-text` token has no headroom left: do not dim it with an `opacity-*` modifier on the
+  wash it was tuned for—use the token as rendered, or pick a different token.
 
 Before handoff, run typecheck, lint, design gates, focused tests, the complete Console
 suite, and the production build. Use the in-app browser to inspect both themes, a narrow

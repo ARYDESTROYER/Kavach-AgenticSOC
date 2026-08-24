@@ -858,6 +858,95 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     expect(tiny.sentence).toBe('less than 1% of cases opened');
   });
 
+  /** The percentage one aligned-rail chip actually prints beside its count. */
+  function railShareText(chip: HTMLElement): string {
+    const count = chip.querySelector('[data-testid="count-up"]');
+    expect(count).not.toBeNull();
+    return count!.nextElementSibling!.textContent!.trim();
+  }
+
+  it('prints Simple\'s one share rule on the narrow rail too, matching the disclosure', () => {
+    render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+
+    // The two Simple surfaces are mutually exclusive: the flow band needs a >=38rem
+    // container and the rail replaces it below that. Whatever a reader sees at their
+    // width, it must obey the ONE rule the disclosure states.
+    expect(screen.getByTestId('noise-flow-band')).toHaveClass('hidden', '@[38rem]/noise:block');
+    const rail = screen.getByTestId('noise-stage-rail');
+    expect(rail).toHaveClass('@[38rem]/noise:hidden');
+
+    const chip = (name: RegExp) => within(rail).getByRole('button', { name });
+    // Parent-relative, exactly like the graph labels — and the baseline is an em dash,
+    // never the self-referential "100% of ingested" that contradicted the footnote.
+    expect(railShareText(chip(/^Ingested: 1000 alerts, the flow baseline/i))).toBe('—');
+    expect(railShareText(chip(/^Clustered: 220 clusters, 22% of alerts ingested$/i))).toBe('22%');
+    expect(railShareText(chip(/^Cases opened: 40 cases, 18% of clusters$/i))).toBe('18%');
+    expect(railShareText(chip(/^Auto-cleared: 25 cases, 63% of cases opened$/i))).toBe('63%');
+    expect(railShareText(chip(/^Escalated: 15 cases, 38% of cases opened$/i))).toBe('38%');
+    expect(railShareText(chip(/^Closed by human: 7 cases, 47% of escalated cases$/i))).toBe('47%');
+    expect(within(rail).queryByText('100%')).toBeNull();
+    expect(within(rail).queryByText(/of ingested/i)).toBeNull();
+
+    // The share rule is stated unconditionally BECAUSE it now holds on both surfaces;
+    // only the surface-specific sentence is gated to the container that renders it.
+    const disclosure = screen.getByTestId('noise-share-disclosure');
+    expect(disclosure).toHaveTextContent(
+      /each percentage is that stage's share of the stage it came from/i,
+    );
+    expect(disclosure).toHaveTextContent(/first stage is the baseline, so it shows an em dash/i);
+    expect(disclosure.querySelector('[data-disclosure-surface="flow"]')).toHaveClass(
+      'hidden',
+      '@[38rem]/noise:inline',
+    );
+    expect(disclosure.querySelector('[data-disclosure-surface="rail"]')).toHaveClass(
+      '@[38rem]/noise:hidden',
+    );
+  });
+
+  it('describes the flow band alone once it is the only rendered surface', () => {
+    render(<NoiseFunnel data={fixture()} animate={false} variant="flat" wideInspection />);
+
+    // Wide inspection always draws the band and drops the rail entirely.
+    expect(screen.getByTestId('noise-flow-band')).not.toHaveClass('hidden');
+    expect(screen.getByTestId('noise-stage-rail')).toHaveClass('hidden');
+    const disclosure = screen.getByTestId('noise-share-disclosure');
+    expect(disclosure.querySelector('[data-disclosure-surface="flow"]')).not.toHaveClass('hidden');
+    expect(disclosure.querySelector('[data-disclosure-surface="rail"]')).toBeNull();
+    // The surface sentence and the always-true share rule read as one paragraph.
+    expect(disclosure).toHaveTextContent(
+      /Filled ribbons show the alert .+ display scale\. Labels are the exact counts/i,
+    );
+  });
+
+  it('never claims ribbons when the graph is withheld and the rail is all there is', () => {
+    render(
+      <NoiseFunnel
+        data={withStageTotals({ cases: 41, auto_cleared: 25, escalated: 15 })}
+        animate={false}
+        variant="flat"
+      />,
+    );
+
+    // Conservation failed → a status box replaces the graph and the rail shows at EVERY
+    // width, so the ribbon sentence must be gone and the rail sentence ungated.
+    expect(screen.getByTestId('noise-flow-integrity')).toBeInTheDocument();
+    const rail = screen.getByTestId('noise-stage-rail');
+    expect(rail).not.toHaveClass('@[38rem]/noise:hidden');
+    const disclosure = screen.getByTestId('noise-share-disclosure');
+    expect(disclosure.querySelector('[data-disclosure-surface="flow"]')).toBeNull();
+    expect(disclosure.querySelector('[data-disclosure-surface="rail"]')).not.toHaveClass(
+      '@[38rem]/noise:hidden',
+    );
+    expect(disclosure).not.toHaveTextContent(/Filled ribbons/i);
+    expect(disclosure).toHaveTextContent(
+      /stage rail lists this window's stages in flow order\. Labels are the exact counts/i,
+    );
+    // The rail still obeys the stated rule, baseline em dash included.
+    expect(
+      railShareText(within(rail).getByRole('button', { name: /^Ingested: 1000 alerts/i })),
+    ).toBe('—');
+  });
+
   it('leaves the Detailed presentation and its share-of-ingested rail untouched', async () => {
     const user = userEvent.setup();
     const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
@@ -896,9 +985,13 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     expect(shareText(view.container, 'escalated')).toBe('· 23%');
     // Human closure is measured against Escalated, never against opened cases.
     expect(shareText(view.container, 'closed')).toBe('· 78%');
+    // BOTH Simple surfaces (the graph label and the stage rail chip that replaces it at
+    // narrow widths) announce the same parent-relative denominator.
     expect(
-      screen.getByRole('button', { name: /^Closed by analyst policy: 6 cases, 15% of cases opened/i }),
-    ).toBeInTheDocument();
+      screen.getAllByRole('button', {
+        name: /^Closed by analyst policy: 6 cases, 15% of cases opened/i,
+      }),
+    ).toHaveLength(2);
   });
 });
 

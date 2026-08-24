@@ -114,42 +114,64 @@ function modeNote(mode: string | undefined): string {
 
 const SourceStatusStrip: React.FC<{ sources: UnifiedLogSourceStatus[] }> = ({ sources }) => {
   if (sources.length === 0) return null;
+  // The live-tail caveat is operationally load-bearing (the time range and search never
+  // ran against these sources), so it is rendered as VISIBLE text — reachable without a
+  // pointer and announced by a screen reader — instead of a hover-only `title`. Mirrors
+  // the single-source sheet's disclosure so both read paths explain themselves the same way.
+  const bufferSources = sources.filter((s) => s.mode === 'buffer');
   return (
-    <div className="flex flex-wrap items-center gap-2" data-testid="unified-source-status">
-      {sources.map((s) => {
-        // The error string is source/connector-derived → surfaced as a plain-text title
-        // only, never markup. The mode note is our own static copy.
-        const note = modeNote(s.mode);
-        const title = s.ok
-          ? note || undefined
-          : [s.error || 'This source could not be read.', note].filter(Boolean).join(' ');
-        return (
-          <Badge
-            key={s.source_id}
-            variant={s.ok ? 'success' : 'warning'}
-            className="max-w-full gap-1.5"
-            title={title}
-          >
-            {s.ok ? (
-              <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden />
-            ) : (
-              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
-            )}
-            {/* source_name is operator-set text → plain text. */}
-            <span className="truncate">{s.source_name || s.source_id}</span>
-            <span className="tabular-nums text-xs opacity-80">
-              {s.ok ? s.count : (s.error || 'error')}
-            </span>
-            {s.mode ? (
-              // Server-reported read path — makes "the time range did not apply here"
-              // visible instead of tribal knowledge.
-              <span className="text-xs uppercase tracking-wide opacity-70">
-                {s.mode === 'buffer' ? 'live tail' : s.mode}
+    <div className="space-y-1.5" data-testid="unified-source-status">
+      <div className="flex flex-wrap items-center gap-2">
+        {sources.map((s) => {
+          // The error string is source/connector-derived → surfaced as a plain-text title
+          // only, never markup. The mode note is our own static copy.
+          const note = modeNote(s.mode);
+          const title = s.ok
+            ? note || undefined
+            : [s.error || 'This source could not be read.', note].filter(Boolean).join(' ');
+          return (
+            <Badge
+              key={s.source_id}
+              variant={s.ok ? 'success' : 'warning'}
+              className="max-w-full gap-1.5"
+              title={title}
+            >
+              {s.ok ? (
+                <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden />
+              ) : (
+                <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
+              )}
+              {/* source_name is operator-set text → plain text. */}
+              <span className="truncate">{s.source_name || s.source_id}</span>
+              {/* The badge's own AA-tuned `-text` token carries these; an opacity modifier
+                  would composite them below 4.5:1 on the light-theme wash. */}
+              <span className="tabular-nums text-xs">
+                {s.ok ? s.count : (s.error || 'error')}
               </span>
-            ) : null}
-          </Badge>
-        );
-      })}
+              {s.mode ? (
+                // Server-reported read path — makes "the time range did not apply here"
+                // visible instead of tribal knowledge.
+                <span className="text-xs uppercase tracking-wide">
+                  {s.mode === 'buffer' ? 'live tail' : s.mode}
+                </span>
+              ) : null}
+            </Badge>
+          );
+        })}
+      </div>
+      {bufferSources.length > 0 ? (
+        <p
+          className="text-xs leading-relaxed text-muted-foreground"
+          data-testid="unified-buffer-caveat"
+        >
+          {/* source_name is operator-set text → plain text, never markup. */}
+          Live-tail {bufferSources.length === 1 ? 'source' : 'sources'} (
+          {bufferSources.map((s) => s.source_name || s.source_id).join(', ')}) return an
+          in-memory buffer: the time range and search box do not apply to{' '}
+          {bufferSources.length === 1 ? 'it' : 'them'}, and that buffer does not survive a
+          backend restart.
+        </p>
+      ) : null}
     </div>
   );
 };

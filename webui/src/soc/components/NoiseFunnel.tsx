@@ -162,10 +162,11 @@ const LEGACY_NOISE_FUNNEL_HELP_TEXT =
 
 export const NOISE_FUNNEL_HELP_TEXT =
   'Simple view draws the complete alert-to-cluster-to-case flow with filled, tapered ' +
-  'ribbons and exact stage labels. Ribbon thickness uses a compressed display scale so ' +
+  'ribbons and exact stage labels, falling back to the aligned stage rail when the ' +
+  'graph does not fit. Ribbon thickness uses a compressed display scale so ' +
   'small stages stay visible; alerts, clusters, and cases remain different units. Every ' +
-  'label carries its exact count plus that stage’s share of the stage it came from, ' +
-  'so no two printed percentages share a hidden denominator. From ' +
+  'label on either surface carries its exact count plus that stage’s share of the stage ' +
+  'it came from, so no two printed percentages share a hidden denominator. From ' +
   'Cases opened onward, Auto-cleared, optional analyst-policy closes, and Escalated form ' +
   'the conserved case split.';
 
@@ -1487,7 +1488,21 @@ export function NoiseFunnel({
       : null;
 
   const chips = derived.rows.map((row, index) => {
-    const pctLabel = formatShare(row.pctRetained);
+    // Simple publishes exactly ONE share rule across every surface it can render. The
+    // flow band and this rail are mutually exclusive presentations of the SAME flow (the
+    // rail is what a narrow container gets), so the rail must print the parent-relative
+    // share the graph prints and the disclosure beneath both describes — otherwise the
+    // page states one rule and shows another at narrow widths. Detailed keeps its own
+    // published funnel-top ("of ingested") rail arithmetic, unchanged.
+    const railShare =
+      view === 'simple'
+        ? stageShare(
+            row.key,
+            row.total,
+            rowByKey.get(parentStageKey(row.key) ?? '')?.total ?? null,
+          )
+        : null;
+    const pctLabel = railShare ? railShare.text : formatShare(row.pctRetained);
     const accessiblePct = pctLabel === '<1%' ? 'less than 1%' : pctLabel;
     const unit =
       row.key === 'ingested'
@@ -1505,7 +1520,9 @@ export function NoiseFunnel({
             : row.total === 1
               ? 'case'
               : 'cases';
-    const accessibleLabel = `${row.label}: ${row.total} ${unit}, ${accessiblePct} ${relativeTo}`;
+    const accessibleLabel = railShare
+      ? `${row.label}: ${row.total} ${unit}, ${railShare.sentence}`
+      : `${row.label}: ${row.total} ${unit}, ${accessiblePct} ${relativeTo}`;
     const detailId = `${uid}-${row.key}-detail`;
     const useSimplePolicyCopy = view === 'simple' && hasPolicyClosed;
     const relationship =
@@ -1843,6 +1860,18 @@ export function NoiseFunnel({
       </div>
     </div>
   );
+
+  // Which Simple surface a reader is actually looking at. The flow band and the stage
+  // rail are mutually exclusive: the band needs a >=38rem container, and below that the
+  // rail replaces it. When the conservation invariant fails (or nothing was opened) the
+  // band shows a status box instead of a graph and the rail is the only stage surface at
+  // EVERY width. The disclosure below is composed from these so it can never describe a
+  // surface that is not on screen.
+  const simpleFlowDrawn = simpleLayout.valid && simpleLayout.nodes.length > 0;
+  /** The rail is the narrow-container fallback (hidden once the band fits). */
+  const simpleRailIsFallback = simpleFlowDrawn && !wideInspection;
+  /** The rail is on screen at some width (always, unless the wide band replaced it). */
+  const simpleRailRendered = !simpleFlowDrawn || !wideInspection;
 
   const simpleFlowView = (
     <div
@@ -2317,12 +2346,31 @@ export function NoiseFunnel({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
-          <p className="text-2xs leading-relaxed text-muted-foreground">
-            Filled ribbons show the alert → cluster → case reduction. Thickness uses a
-            compressed display scale; labels are the exact counts and units. Each label&apos;s
-            percentage is that stage&apos;s share of the stage it came from — clusters of alerts
-            ingested, cases of clusters, the case split of cases opened, and human closure of
-            escalated cases. Alerts ingested is the baseline, so it shows an em dash.
+          <p
+            className="text-2xs leading-relaxed text-muted-foreground"
+            data-testid="noise-share-disclosure"
+          >
+            {simpleFlowDrawn ? (
+              <span
+                data-disclosure-surface="flow"
+                className={cn(simpleRailIsFallback && 'hidden @[38rem]/noise:inline')}
+              >
+                Filled ribbons show the alert → cluster → case reduction, and thickness uses
+                a compressed display scale.{' '}
+              </span>
+            ) : null}
+            {simpleRailRendered ? (
+              <span
+                data-disclosure-surface="rail"
+                className={cn(simpleRailIsFallback && '@[38rem]/noise:hidden')}
+              >
+                The aligned stage rail lists this window&apos;s stages in flow order.{' '}
+              </span>
+            ) : null}
+            Labels are the exact counts and units, and each percentage is that stage&apos;s
+            share of the stage it came from — clusters of alerts ingested, cases of clusters,
+            the case split of cases opened, and human closure of escalated cases. The first
+            stage is the baseline, so it shows an em dash.
           </p>
           {validOpenCases ? (
             <button
@@ -2414,7 +2462,7 @@ export function NoiseFunnel({
         <p id={topologyDescriptionId} className="sr-only">
           {view === 'detailed'
             ? 'Alerts move through clustering into opened cases. Auto-cleared and Escalated partition opened cases. Closed by human is a subset of Escalated. The graph is directional context; the labelled counts and percentages are authoritative.'
-            : 'Alerts move through clustering into opened cases as filled, tapered ribbons. Alerts, clusters, and cases are different units, and ribbon thickness uses a compressed display scale; labels are the exact values. Every stage label also states its share of the stage it came from, and each spoken share names that denominator; the first stage is the baseline and shows an em dash. Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases. Closed by human is a subset of Escalated. Not analyst-closed is the remaining conserved complement, while Open cases is a separate current lifecycle count.'}
+            : 'Alerts move through clustering into opened cases. Where the flow graph fits it is drawn as filled, tapered ribbons whose thickness uses a compressed display scale; at narrower widths the same stages are listed in the aligned stage rail instead. Alerts, clusters, and cases are different units, and labels are the exact values. On whichever surface is rendered, every stage label also states its share of the stage it came from, and each spoken share names that denominator; the first stage is the baseline and shows an em dash. Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases. Closed by human is a subset of Escalated. Not analyst-closed is the remaining conserved complement, while Open cases is a separate current lifecycle count.'}
         </p>
         <Header
           hidden={hidden}

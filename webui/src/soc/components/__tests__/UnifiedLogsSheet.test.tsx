@@ -148,6 +148,36 @@ describe('UnifiedLogsView', () => {
     expect(within(strip).getByText('live tail')).toBeInTheDocument();
   });
 
+  it('exposes the live-tail caveat as visible text instead of a hover-only title', async () => {
+    render(<UnifiedLogsView />);
+
+    const strip = await screen.findByTestId('unified-source-status');
+    // Reachable with no pointer and no focusable element: the operationally load-bearing
+    // caveat is rendered text, so keyboard and screen-reader users receive it too.
+    const caveat = within(strip).getByTestId('unified-buffer-caveat');
+    expect(caveat).toHaveTextContent('Wazuh EDR');
+    expect(caveat).toHaveTextContent(/the time range and search box do not apply/i);
+    expect(caveat).toHaveTextContent(/does not survive a backend restart/i);
+    expect(caveat).not.toHaveAttribute('aria-hidden');
+
+    // The badge's own AA-tuned `-text` token carries the mode marker and the count; an
+    // opacity modifier would composite 12px text below 4.5:1 in the light theme.
+    expect(within(strip).getByText('live tail').className).not.toMatch(/\bopacity-/);
+    expect(within(strip).getByText('search').className).not.toMatch(/\bopacity-/);
+    expect(within(strip).getByText('2').className).not.toMatch(/\bopacity-/);
+  });
+
+  it('omits the live-tail caveat when every source was read by search', async () => {
+    fetchUnifiedLogsMock.mockResolvedValue({
+      ...RESPONSE,
+      sources: RESPONSE.sources.map((s) => ({ ...s, mode: 'search' })),
+    });
+    render(<UnifiedLogsView />);
+
+    const strip = await screen.findByTestId('unified-source-status');
+    expect(within(strip).queryByTestId('unified-buffer-caveat')).toBeNull();
+  });
+
   it('states the bound honestly ("most recent N", and says when more exist)', async () => {
     render(<UnifiedLogsView />);
     // Not truncated → no "more exist" claim, but the count is still framed as a window.
