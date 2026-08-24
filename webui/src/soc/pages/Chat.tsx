@@ -16,7 +16,6 @@ import type {
   ChatConversation,
   ChatConversationSummary,
 } from "@/lib/types";
-import { useDemo } from "@/soc/demo";
 import { PageHeader } from "@/soc/components/PageHeader";
 import { PageContainer } from "@/soc/components/PageContainer";
 import {
@@ -74,7 +73,6 @@ export default function Chat({ caseId }: ChatProps = {}) {
   const refreshPendingRef = React.useRef(false);
   const historyChannelRef = React.useRef<BroadcastChannel | null>(null);
   const confirm = useConfirm();
-  const { active: demoActive } = useDemo();
   const historyEnabled = !caseId;
 
   const [conversations, setConversations] = React.useState<
@@ -100,9 +98,10 @@ export default function Chat({ caseId }: ChatProps = {}) {
   const [historyTruncated, setHistoryTruncated] = React.useState(false);
   const [historyTotal, setHistoryTotal] = React.useState(0);
 
-  const frameHeight = demoActive
-    ? "h-[calc(100dvh-10rem)]"
-    : "h-[calc(100dvh-5.5rem)]";
+  // The shell no longer injects a full-width demo banner above the routed content
+  // (demo mode is a top-bar chip now), so the frame subtracts exactly one band —
+  // the sticky top bar + the content inset — in every tenant state.
+  const frameHeight = "h-[calc(100dvh-5.5rem)]";
 
   React.useEffect(() => {
     conversationsRef.current = conversations;

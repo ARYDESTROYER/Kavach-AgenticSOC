@@ -3,9 +3,9 @@
  *
  * A single, app-wide source of truth for the demo tenant state (off | seeded |
  * live). It polls GET /api/demo/status on an interval and re-fetches on demand
- * (after enable/reset/disable, or on navigation) so every surface — the shell
- * banner, the SAMPLE badge on demo rows, the "(simulated)" cost suffix, the muted
- * health chip, and the destructive-action guard — reflects the live state.
+ * (after enable/reset/disable, or on navigation) so every surface — the shell's
+ * top-bar demo chip, the SAMPLE badge on demo rows, the "(simulated)" cost suffix,
+ * the muted health chip, and the destructive-action guard — reflects the live state.
  *
  * BACK-COMPAT / ISOLATION: when demo is OFF (the default) every value here is inert:
  * `active` is false, `useDemoGuard()` returns "not guarded", and nothing renders. A

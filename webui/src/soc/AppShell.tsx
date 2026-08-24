@@ -7,7 +7,9 @@
  *   with disclosure groups + fly-outs when collapsed; the active item is highlighted
  *   with a quiet accent surface + edge rail. Width toggles with Cmd/Ctrl-B (persisted).
  * - Top bar: product breadcrumb ("<Product> / <Page>" using OUR product name from
- *   branding), and on the right a theme toggle, version badge, a health pill
+ *   branding), and on the right a theme toggle, a compact demo-mode chip (shown at
+ *   every width while the demo tenant is active — it replaced the full-width banner
+ *   that used to eat content real estate on every route), version badge, a health pill
  *   (polls /api/health, debounced), an optional user chip + logout, and a Cmd-K
  *   hint that opens a cmdk command palette for navigation.
  * - Content: `bg-canvas`, the single gutter/vertical-rhythm authority for every
@@ -87,7 +89,7 @@ import {
 import { useTheme } from './theme';
 import { usePrefs } from './prefs';
 import { useDemo } from './demo';
-import { DemoBanner } from './components/DemoBanner';
+import { DemoIndicator } from './components/DemoIndicator';
 import { AnnouncerProvider } from './components/announcer';
 import { CommandPalette } from './components/CommandPalette';
 import { GlassSurface } from './components/GlassSurface';
@@ -1082,8 +1084,9 @@ export const AppShell: React.FC<AppShellProps> = ({
   // state runs in a throwaway in-memory store, so a "Store degraded"/unreachable
   // warning is expected and irrelevant — MUTE it to a calm demo note rather than
   // alarming the operator. The backend-unreachable critical state still shows.
+  const demoMutedHealth = demoActive && baseHv.tone !== 'critical';
   const hv: HealthView =
-    demoActive && baseHv.tone !== 'critical'
+    demoMutedHealth
       ? {
           tone: 'muted',
           label: 'Demo mode',
@@ -1345,6 +1348,14 @@ export const AppShell: React.FC<AppShellProps> = ({
               </>
             ) : null}
 
+            {/* Demo mode — a safety-relevant state, so it stays INLINE in the bar at
+                every width (never folded into the compact-controls Sheet) and sits
+                beside the release badge with the other identity chips. Its popover
+                carries the isolation statement plus Reset / Exit & clear. It only
+                announces where the health pill below is absent, so a screen reader
+                hears the state exactly once. Renders nothing when demo is off. */}
+            <DemoIndicator onNavigate={onNavigate} announce={isMobile} />
+
             {/* Release identity is build-time first, then reconciled with the public
                 backend build-info endpoint. It never infers Stable from SemVer. */}
             <ReleaseBadge buildInfo={buildInfo} />
@@ -1534,7 +1545,10 @@ export const AppShell: React.FC<AppShellProps> = ({
                       <div
                         className="rounded-md border border-border p-3"
                         role="status"
-                        aria-live="polite"
+                        // While demo mutes health to "Demo mode", the inline demo chip is
+                        // the single polite announcer at this breakpoint — this restated
+                        // card must not announce the same state a second time.
+                        aria-live={demoMutedHealth ? 'off' : 'polite'}
                         aria-label={`Platform health: ${hv.label}`}
                       >
                         <p className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -1648,15 +1662,11 @@ export const AppShell: React.FC<AppShellProps> = ({
               share CONTENT_INSET so the gutter/vertical rhythm is identical. */}
           {useMotionRoute && RouteMotion ? (
             <RouteMotion routeKey={page} className={CONTENT_INSET}>
-              {/* Demo-mode banner — renders only when the demo tenant is active. */}
-              <DemoBanner />
-              <div className={cn(demoActive && 'mt-4')}>{children}</div>
+              {children}
             </RouteMotion>
           ) : (
             <div key={page} className={cn(CONTENT_INSET, 'animate-fade-in')}>
-              {/* Demo-mode banner — renders only when the demo tenant is active. */}
-              <DemoBanner />
-              <div className={cn(demoActive && 'mt-4')}>{children}</div>
+              {children}
             </div>
           )}
         </main>
