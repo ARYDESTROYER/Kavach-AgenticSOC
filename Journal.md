@@ -10097,3 +10097,34 @@
   focus ring now a crisp ring above the halo, busy keeps the gradient.
 - Status: done
 - Next: nothing outstanding.
+
+### 2026-08-24 16:12Z — orchestrator — Review round 2 closeout: test-quality findings
+- Context: the review workflow settled (38 agents, 3 confirmed defects — all fixed in `8ebc5c1`).
+  One verify agent died on an API error, so I evaluated its dimension's findings myself rather
+  than treating silence as a pass. Five were about MY OWN tests being weaker than they read.
+- Did:
+  - **The layer-model test could not detect a dropped layer.** `min(sweep+tint) < min(bare)`
+    holds even if either layer is zeroed. The reviewer demonstrated it with two live mutations
+    (renaming the sweep keyframe; moving the tint opacity behind a var). Both are already caught
+    by the fail-loudly guard added in `8ebc5c1` — verified by re-running both mutations — but the
+    test itself is now non-vacuous: it compares `sweep+tint` against sweep-only AND bare+tint
+    separately, so each layer must be contributing, and asserts the extracted opacities directly
+    via a new `layers` field rather than inferring them from a ratio.
+  - **The gate now verifies the premise its own exclusions rest on.** It excludes the halo and
+    the flair because each paints behind an opaque child — an assumption about z-index that
+    nothing read. A DOM-order test cannot cover it (an explicit z-index beats document order
+    both ways), so the gate reads both declarations and fails if the order inverts. The
+    structural test is renamed to say it pins DOM structure, not paint order.
+  - **The system reset had no test that clicked it** — the sole route back to OS-following, and
+    the thing ui-standard and the CHANGELOG both rest on. Added, and mutation-tested: changing
+    `onChange('system')` to `onChange('light')` fails it.
+  - The auth-accents test named for the sweep now actually asserts the sweep stays hidden in
+    that arrangement, instead of duplicating the bare name check.
+  - **Stale bundle figures corrected.** `bundle-first-paint.test.ts` claimed "~264 kB" against a
+    400 kB ceiling; the real entry chunk is ~390 kB, so headroom is ~10 kB, not ~136 kB.
+    `AGENTS.md` carried the same drift ("entry stays 281.44 kB"). Both now say what is true and
+    point at the artifact.
+- Tests: webui **310 files / 2156 passed**, zero stderr; eslint 0/0; tsc clean; gates 6/6
+  (364 checks — 362 contrast composites + 2 layering premises); full docs+app build clean.
+- Status: done
+- Next: nothing outstanding. Branch is 3 commits ahead of `Testing`, clean fast-forward.

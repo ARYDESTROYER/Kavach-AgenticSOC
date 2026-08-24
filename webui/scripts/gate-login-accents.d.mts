@@ -20,9 +20,21 @@ export interface LoginAccentResult {
   detail?: string;
 }
 
+export interface LoginAccentLayers {
+  /** Peak opacity the sweep keyframe reaches. */
+  sweepPeak: number;
+  /** Alpha of the sweep gradient's core stop. */
+  sweepCoreAlpha: number;
+  /** Declared opacity of the overlay tint, per theme. */
+  tintLight: number;
+  tintDark: number;
+}
+
 export interface LoginAccentCheck {
   ok: boolean;
   results: LoginAccentResult[];
+  /** What the compositing model actually used; absent on an early hard failure. */
+  layers?: LoginAccentLayers;
 }
 
 /** [r, g, b] with each channel in 0..1 — the scale `theme-css.mjs` uses. */

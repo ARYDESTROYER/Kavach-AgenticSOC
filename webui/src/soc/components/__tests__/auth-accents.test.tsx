@@ -28,13 +28,18 @@ describe('ShineButton', () => {
     expect(sweep).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('keeps the halo and sweep out of the accessible tree even when an icon is present', () => {
+  it('keeps the sweep hidden and the name intact when an icon is present', () => {
     render(
       <ShineButton icon={<svg data-testid="spinner" aria-hidden />}>Signing in…</ShineButton>,
     );
     // The icon must not leak into the name — the busy label is the whole name.
-    expect(screen.getByRole('button', { name: 'Signing in…' })).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Signing in…' });
     expect(screen.getByTestId('spinner')).toBeInTheDocument();
+    // And the decoration stays hidden in this arrangement too, not just the bare one.
+    expect(button.querySelector('.login-shine-button__sweep')).toHaveAttribute(
+      'aria-hidden',
+      'true',
+    );
   });
 
   it('renders the icon inside the face but OUTSIDE the gradient-clipped label', () => {
@@ -134,9 +139,13 @@ describe('ThemeModePill', () => {
     expect(pill).toHaveTextContent('Dark mode');
   });
 
-  it('paints the opaque track above the flair, and keeps glyphs out of the label cell', () => {
-    // Both are the structural reasons the measured contrast holds: a glow must never
-    // tint the surface the label sits on, and a glyph must never drift under it.
+  it('orders the flair, the track and the three cells as the CSS layering expects', () => {
+    // DOM order is only a PROXY for the paint order here — an explicit z-index beats
+    // it in both directions, so the real guarantee (flair below an opaque track) is
+    // asserted from theme.css by the `login accents` gate, in design-gates.test.ts.
+    // What this pins is the structure that CSS is written against: the flair and
+    // track exist and are out of flow, and the glyphs own the two fixed side cells
+    // so the label can never drift over the bright end of either ramp.
     render(<ThemeModePill dark={false} onToggle={() => {}} />);
     const pill = screen.getByRole('button', { name: /^Light mode/ });
     const children = Array.from(pill.children);

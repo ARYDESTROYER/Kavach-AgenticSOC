@@ -232,6 +232,18 @@ describe('Login — four-mode render', () => {
       'aria-pressed',
       'false',
     );
+    // ...and the reset is the ONLY route back to following the OS from this screen,
+    // so exercise it rather than only asserting its pressed state.
+    fireEvent.click(screen.getByRole('button', { name: 'Use system theme' }));
+    expect(window.localStorage.getItem('soc.theme')).toBe('system');
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    // `system` resolves back to light under jsdom's matchMedia, so the pill follows.
+    expect(
+      screen.getByRole('button', { name: 'Light mode — switch to dark mode' }),
+    ).toHaveAttribute('data-appearance', 'light');
     expect(document.querySelector('[data-login-shell]')).toHaveAttribute(
       'data-login-theme-palette-settling',
       'true',

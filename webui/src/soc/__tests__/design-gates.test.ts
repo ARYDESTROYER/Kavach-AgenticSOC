@@ -161,18 +161,55 @@ describe('design gate: login identity accents (raw-gradient surfaces)', () => {
 
   it('measures the sweep and tint layers, not just the bare gradient', () => {
     // The face alone clears the bar comfortably; the tight cases are the composites
-    // with the sweep blob and the overlay tint on top. If the layering model ever
-    // stops being applied, this gate silently becomes a no-op — so assert the
-    // composite states are actually present and are the binding constraint.
+    // with the sweep blob and the overlay tint on top.
+    //
+    // Comparing `sweep+tint` against `bare` alone would NOT prove both layers are
+    // applied — dropping either one still leaves the combined figure lower than
+    // bare. So compare it against each single-layer minimum separately: it must be
+    // tighter than sweep-only (proving the tint contributes) AND tighter than
+    // bare+tint (proving the sweep does).
     const { results } = checkLoginAccents();
-    const swept = results.filter((r) => /sweep\+tint/.test(r.name));
-    expect(swept.length).toBeGreaterThan(0);
-    const bare = results.filter((r) => /\/bare\]/.test(r.name));
-    expect(bare.length).toBeGreaterThan(0);
-    const minSwept = Math.min(...swept.map((r) => r.ratio ?? Infinity));
-    const minBare = Math.min(...bare.map((r) => r.ratio ?? Infinity));
-    expect(minSwept).toBeLessThan(minBare);
-    expect(minSwept).toBeGreaterThanOrEqual(TEXT_BAR);
+    const minOf = (re: RegExp) => {
+      const hits = results.filter((r) => re.test(r.name));
+      expect(hits.length, `no composites matched ${re}`).toBeGreaterThan(0);
+      return Math.min(...hits.map((r) => r.ratio ?? Infinity));
+    };
+    const bare = minOf(/\/bare\]/);
+    const bareTint = minOf(/\/bare\+tint\]/);
+    const sweep = minOf(/\/sweep\]/);
+    const sweepTint = minOf(/\/sweep\+tint\]/);
+
+    expect(sweepTint).toBeLessThan(bare);
+    expect(sweepTint).toBeLessThan(sweep); // the tint is contributing
+    expect(sweepTint).toBeLessThan(bareTint); // the sweep is contributing
+    expect(sweepTint).toBeGreaterThanOrEqual(TEXT_BAR);
+  });
+
+  it('populates every layer of the compositing model with a non-zero value', () => {
+    // The ratios cannot reveal a zeroed layer on their own — a dropped layer just
+    // makes the numbers look better. These are the two extraction points that can
+    // silently fail (the keyframe lookup and the declared tint opacity), so assert
+    // the extracted values directly.
+    const { layers } = checkLoginAccents();
+    expect(layers).toBeDefined();
+    expect(layers!.sweepPeak).toBeGreaterThan(0);
+    expect(layers!.sweepCoreAlpha).toBeGreaterThan(0);
+    expect(layers!.tintLight).toBeGreaterThan(0);
+    expect(layers!.tintDark).toBeGreaterThan(0);
+    // The dark tint is the heavier of the two; if that inverts, the per-theme
+    // lookup has gone stale.
+    expect(layers!.tintDark).toBeGreaterThan(layers!.tintLight);
+  });
+
+  it('verifies the layering premise its own exclusions rest on', () => {
+    // The gate excludes the halo and the flair because each paints behind an
+    // opaque child. That is an assumption about z-index, and an explicit z-index
+    // beats DOM order in both directions — so a structural DOM-order test cannot
+    // cover it. The gate reads the declarations and fails if the order inverts.
+    const { results } = checkLoginAccents();
+    const layering = results.filter((r) => /paints below the opaque/.test(r.name));
+    expect(layering.length).toBe(2);
+    for (const r of layering) expect(r.pass, r.name).toBe(true);
   });
 
   it('fails loudly rather than silently measuring fewer layers', () => {

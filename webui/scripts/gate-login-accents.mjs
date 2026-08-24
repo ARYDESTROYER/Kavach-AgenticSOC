@@ -263,6 +263,39 @@ export function checkLoginAccents() {
   };
   const tintLight = readOpacity('.login-auth-canvas .login-shine-button__face::after');
   const tintDark = readOpacity('.dark .login-auth-canvas .login-shine-button__face::after');
+
+  // The gate EXCLUDES the halo and the flair from the model, on the grounds that
+  // each paints behind an opaque child. That is an assumption about z-index, and
+  // an assumption a gate relies on is one the gate should check — otherwise a
+  // later layering change silently invalidates the measurement while everything
+  // stays green. A DOM-order test cannot cover this; an explicit z-index wins
+  // over document order in both directions.
+  const zIndex = (selector) => {
+    const m = /(?:^|[;{\s])z-index\s*:\s*(-?\d+)/.exec(
+      stripComments(ruleBody(css, selector)),
+    );
+    return m ? Number(m[1]) : null;
+  };
+  const layering = [
+    {
+      name: 'shine halo paints below the opaque face',
+      below: zIndex('.login-auth-canvas .login-shine-button::before'),
+      above: zIndex('.login-auth-canvas .login-shine-button__face'),
+    },
+    {
+      name: 'pill flair paints below the opaque track',
+      below: zIndex('.login-auth-canvas .login-theme-pill__flair'),
+      above: zIndex('.login-auth-canvas .login-theme-pill__track'),
+    },
+  ];
+  for (const layer of layering) {
+    results.push({
+      name: `${layer.name} (${layer.below} < ${layer.above})`,
+      bar: null,
+      ratio: null,
+      pass: layer.below !== null && layer.above !== null && layer.below < layer.above,
+    });
+  }
   if (tintLight === null || tintDark === null || sweepPeak <= 0) {
     return {
       ok: false,
@@ -375,5 +408,11 @@ export function checkLoginAccents() {
     });
   }
 
-  return { ok: results.every((r) => r.pass), results };
+  return {
+    ok: results.every((r) => r.pass),
+    results,
+    // What the model actually used. A test asserts these are non-zero, because a
+    // zeroed layer is invisible in the ratios alone.
+    layers: { sweepPeak, sweepCoreAlpha, tintLight, tintDark },
+  };
 }
