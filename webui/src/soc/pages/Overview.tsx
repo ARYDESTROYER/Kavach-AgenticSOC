@@ -38,8 +38,14 @@
  * Scale context: every KPI numeral is paired with the denominator it is a share of,
  * and each pair comes from ONE payload so numerator and denominator always describe
  * the same population. A share whose evidence is bounded (the 200-case sample cap or a
- * truncated posture scan) or whose denominator is missing renders an em dash — never a
- * synthetic 0%.
+ * truncated posture scan), whose denominator is missing, or whose denominator does not
+ * describe this window renders an em dash with the reason NAMED in the tile's sub —
+ * never a synthetic 0%, and never a rounded-down 0% beside a non-zero numeral ("<1%").
+ * A truncated posture withholds the whole posture-fed strip (the false-positive RATE
+ * included, since its verdicted denominator is bounded too) in the same render where
+ * the Human-vs-AI card withholds the identical partition; and "Escalated To Human" is
+ * share-less by construction, because `GET /api/metrics` is an all-time, cap-2,000
+ * fetch that no window-scoped denominator reconciles with.
  *
  * Security (#9): every label/value here is a humanized enum, a formatted number, or
  * backend-derived text rendered as PLAIN text. No untrusted string is injected as markup.
@@ -180,6 +186,14 @@ const NUDGE_KEY = 'tlsoc.overview.automationNudge';
 /** Per-browser hide flag for the Noise-Reduction funnel band (the per-user hide toggle). */
 const NOISE_HIDE_KEY = 'tlsoc.overview.noiseFunnelHidden';
 
+/**
+ * The ONE sentence every bounded-evidence tile uses to name why its share is an em
+ * dash. Shared so the 200-row case-sample cap and a truncated posture scan read
+ * identically, and so the strip's language matches the Human-vs-AI card's
+ * "bounded sample, shares unavailable".
+ */
+const BOUNDED_SAMPLE_SUB = 'Bounded sample · share unavailable';
+
 /** Format an integer count for a count-up tile (thousands-separated). */
 const fmtInt = (n: number): string => fmtNumber(n);
 
@@ -316,17 +330,28 @@ function trendWindowLabel(t: MetricsTrends): string {
 
 /**
  * A short, deterministic UTC axis label for one trend bucket. Day-sized buckets read
- * as `MM-DD`, anything finer as `HH:mm`; an unparseable instant falls back to the raw
- * value so the axis never silently renames a bucket. UTC on purpose — the buckets are
- * UTC-aligned server-side, so a local-time label would misplace them.
+ * as `MM-DD`, anything finer as `HH:mm` — but ONLY while the window itself fits inside
+ * one day. A multi-day window with sub-day buckets (the 7-day preset is 6h buckets, the
+ * 72h preset 3h) would otherwise repeat the same four `HH:mm` ticks once per day and
+ * leave a hovered spike unlocatable, so those read `MM-DD HH:mm`. An unparseable
+ * instant falls back to the raw value so the axis never silently renames a bucket. UTC
+ * on purpose — the buckets are UTC-aligned server-side, so a local-time label would
+ * misplace them.
  */
-function bucketAxisLabel(t: unknown, bucketMinutes: number | null | undefined): string {
+function bucketAxisLabel(
+  t: unknown,
+  bucketMinutes: number | null | undefined,
+  windowHours?: number | null,
+): string {
   const raw = String(t ?? '');
   const ms = Date.parse(raw);
   if (!Number.isFinite(ms)) return raw;
   const iso = new Date(ms).toISOString();
   const daily = typeof bucketMinutes === 'number' && bucketMinutes >= 1440;
-  return daily ? iso.slice(5, 10) : iso.slice(11, 16);
+  if (daily) return iso.slice(5, 10);
+  const spansDays =
+    typeof windowHours === 'number' && Number.isFinite(windowHours) && windowHours > 24;
+  return spansDays ? `${iso.slice(5, 10)} ${iso.slice(11, 16)}` : iso.slice(11, 16);
 }
 
 /**
@@ -339,7 +364,11 @@ function shareContext(value: number | undefined, denominator: number | undefined
   if (typeof denominator !== 'number' || !Number.isFinite(denominator) || denominator <= 0) {
     return undefined;
   }
-  return `${Math.round((value / denominator) * 100)}% of ${fmtNumber(denominator)}`;
+  // A real but tiny band reads "<1%", never a rounded-down "0%" beside a non-zero
+  // numeral — the same rule the Noise-Reduction funnel applies to its stage shares.
+  const rounded = Math.round((value / denominator) * 100);
+  const pct = value > 0 && rounded === 0 ? '<1%' : `${rounded}%`;
+  return `${pct} of ${fmtNumber(denominator)}`;
 }
 
 /** One KPI-strip tile descriptor (built in a memo, rendered as a <KpiTile>). */
@@ -582,7 +611,7 @@ function TimingStat({
         {value}
       </div>
       <div className="mt-1 text-2xs text-muted-foreground">{sub}</div>
-      <div className="text-2xs text-muted-foreground/80">{detail}</div>
+      <div className="text-2xs text-muted-foreground">{detail}</div>
     </div>
   );
 }
@@ -682,7 +711,7 @@ function TopCasesPanel({
                           {displayTitle}
                         </span>
                       </span>
-                      <span className="block font-mono text-2xs text-muted-foreground/70">
+                      <span className="block font-mono text-2xs text-muted-foreground">
                         {age || 'Just now'}
                       </span>
                     </span>
@@ -1345,6 +1374,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
     reason: string;
     series: HumanVsAiPoint[] | null;
     truncated: boolean;
+    /**
+     * True when `totals` came from the STALE posture snapshot — i.e. it describes the
+     * PREVIOUS window while `windowLabel` already names the newly selected one. The
+     * KPI tiles mark that state with a "Loading Nh" sub; the card has no such sub, so
+     * it withholds the counts rather than publishing them under the wrong label.
+     */
+    stale: boolean;
     alerts: number | null;
   }>(() => {
     const partition = (
@@ -1381,7 +1417,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
       );
     const series: HumanVsAiPoint[] | null = supported
       ? buckets.map((b) => ({
-          x: bucketAxisLabel(b.t, trendsForWindow?.bucket_minutes),
+          x: bucketAxisLabel(b.t, trendsForWindow?.bucket_minutes, trendsForWindow?.window_hours),
           ai: finiteOrNull(b.auto_closed),
           human: finiteOrNull(b.human_closed),
           system: finiteOrNull(b.system_closed),
@@ -1395,6 +1431,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
       q?.system_closed_cases,
       q?.terminal_cases,
     );
+    // Whether the partition below is the previous window's (see `stale` above). Only
+    // the posture branch can be stale — the bucket branch is rejected outright on a
+    // window mismatch, so anything it produces already matches the selected window.
+    const staleTotals = totals != null && postureStale;
     let reason = q
       ? 'This backend does not report how closed cases were attributed.'
       : 'Close attribution is unavailable for this window.';
@@ -1420,8 +1460,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
       ? buckets.reduce((a, b) => a + (b.alerts as number), 0)
       : null;
 
-    return { totals, reason, series, truncated, alerts };
-  }, [posture, trendsForWindow]);
+    return { totals, reason, series, truncated, stale: staleTotals, alerts };
+  }, [posture, postureStale, trendsForWindow]);
 
   // Per-UTC-day lifecycle timing series (GET /api/metrics `timing_trend`) — genuinely
   // MTTD/respond/resolve, so the timing stats reuse it instead of the case sample.
@@ -1448,12 +1488,24 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // ----- KPI micro-strip — 5 alert/case signal tiles --------------------- //
   const kpis: KpiItem[] = React.useMemo(() => {
     const quality = posture?.quality;
+    /**
+     * The posture scan was BOUNDED: `quality` under-counts every band it reports, so
+     * no rate or share taken off it is measurable. The Human-vs-AI instrument already
+     * withholds exactly this evidence; the strip must not publish the same numbers a
+     * few pixels above the card that just declared them unavailable.
+     */
+    const postureTruncated = posture?.truncated === true;
     const fpRate = quality?.false_positive_rate;
-    const fpPercent = typeof fpRate === 'number' ? Math.round(fpRate * 100) : undefined;
+    const fpPercent =
+      !postureTruncated && typeof fpRate === 'number' ? Math.round(fpRate * 100) : undefined;
     const autoResolved = quality?.auto_closed_cases;
-    // Prefer the server aggregate so the numerator and its denominator
-    // (`metrics.total_cases`) come from ONE payload; the bounded-sample fallback is
-    // deliberately share-less (see `escalatedFallback`).
+    /**
+     * `GET /api/metrics` is NOT window-filtered and is hard-capped at the newest 2,000
+     * cases with no truncation marker, so `total_cases` is a fetch bound, not the
+     * window's case population. Pairing it with this window-scoped dashboard's numeral
+     * would present a cap as a population, so the tile states its count and names the
+     * missing denominator instead of quoting a whole-store share.
+     */
     const escalatedFromMetrics = metrics?.needs_human_cases;
     const escalated = escalatedFromMetrics ?? escalatedFallback;
 
@@ -1495,9 +1547,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // Same-sample numerator and denominator; suppressed outright when the sample
         // is bounded rather than quoting a share "of 200".
         secondary: shareContext(derived.open, sampleTotal) ?? DASH,
-        sub: sampleTruncated
-          ? 'Bounded sample · share unavailable'
-          : 'Every active lifecycle state',
+        sub: sampleTruncated ? BOUNDED_SAMPLE_SUB : 'Every active lifecycle state',
         icon: Inbox,
         accent: 'primary',
         spark: openTrend,
@@ -1548,11 +1598,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         value: fmtNumber(escalated),
         countTo: escalated,
         format: fmtInt,
-        // Numerator and denominator both from `GET /api/metrics`. NOT paired with
-        // posture's `escalation_rate`, whose numerator is a different population
-        // (ever-escalated), which would make the two disagree on screen.
-        secondary: shareContext(escalatedFromMetrics, metrics?.total_cases) ?? DASH,
-        sub: 'Awaiting review',
+        // No honest denominator exists for this numeral: `metrics.total_cases` is an
+        // all-time, cap-2,000 fetch bound (not the window population) and posture's
+        // `needs_human_cases` counts a different population (VERDICT needs-human, not
+        // status awaiting-review), so neither reconciles with the count shown here.
+        secondary: DASH,
+        sub: 'Awaiting review · all cases, no window share',
         icon: Workflow,
         accent: 'low',
         spark: escalatedTrend,
@@ -1576,14 +1627,17 @@ export default function Overview({ onNavigate }: OverviewProps) {
         countTo: fpPercent,
         format: formatWholePercent,
         // This numeral is ALREADY a percentage, so the missing half is its sample
-        // size: the server's exact fp / verdicted counts behind the rate.
+        // size: the server's exact fp / verdicted counts behind the rate. Both halves
+        // — and the rate above them — come off the bounded scan, so a truncated
+        // posture withholds all of them rather than quoting a bounded ratio as fact.
         secondary:
+          !postureTruncated &&
           typeof quality?.false_positive_cases === 'number' &&
           typeof quality?.verdicted_cases === 'number' &&
           quality.verdicted_cases > 0
             ? `${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`
             : DASH,
-        sub: postureSub ?? 'Closed as false positive',
+        sub: postureSub ?? (postureTruncated ? BOUNDED_SAMPLE_SUB : 'Closed as false positive'),
         icon: Percent,
         accent: 'medium',
         // The former two-point prev→cur spark drew a straight line that read as a
@@ -1606,9 +1660,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
         value: fmtNumber(autoResolved),
         countTo: typeof autoResolved === 'number' ? autoResolved : undefined,
         format: fmtInt,
-        // The server's own `automation_rate` denominator: terminal (closed) cases.
-        secondary: shareContext(autoResolved, quality?.terminal_cases) ?? DASH,
-        sub: postureSub ?? 'Closed by agent',
+        // The server's own `automation_rate` denominator: terminal (closed) cases —
+        // the SAME auto-closed/terminal partition the Human-vs-AI card withholds on a
+        // bounded scan, so this share is gated on exactly that condition.
+        secondary: postureTruncated
+          ? DASH
+          : (shareContext(autoResolved, quality?.terminal_cases) ?? DASH),
+        sub: postureSub ?? (postureTruncated ? BOUNDED_SAMPLE_SUB : 'Closed by agent'),
         icon: ShieldCheck,
         accent: 'success',
         spark: resolvedTrend,
@@ -1868,6 +1926,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 series={humanVsAi.series}
                 windowLabel={bucketTrends?.label ?? trendFallbackLabel}
                 truncated={humanVsAi.truncated}
+                stale={humanVsAi.stale}
                 alertsIngested={humanVsAi.alerts}
                 className="h-full w-full"
               />

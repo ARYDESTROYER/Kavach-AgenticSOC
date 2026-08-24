@@ -24,6 +24,9 @@
  *     two percentages that silently fail to sum to 100.
  *   - A missing/unreconciling partition renders an em dash per band — NEVER a
  *     reassuring 0% (ui-standard "Evidence-led analytics").
+ *   - A STALE partition (the previous window's payload, while the newly selected
+ *     window is still in flight) is withheld entirely: `windowLabel` already names the
+ *     new window, so printing last window's counts beneath it would be a mislabel.
  *   - A bucket with no measurement is a GAP in the line (MultiSeriesTrend renders
  *     `null` as a gap), never a fabricated zero.
  *   - Alert volume, when shown, is a plainly LABELLED ingest-hour tally. It is a
@@ -83,6 +86,13 @@ export interface HumanVsAiCardProps {
   windowLabel: string;
   /** True when the underlying case scan was bounded (shares stay unavailable). */
   truncated?: boolean;
+  /**
+   * True while `totals` still describes the PREVIOUS window (stale-while-revalidate)
+   * and `windowLabel` already names the NEWLY selected one. The card then withholds
+   * every count/share rather than publishing last window's numbers under this
+   * window's label — a mislabel is worse than a moment of em dashes.
+   */
+  stale?: boolean;
   /** Raw alerts ingested in the window (labelled ingest tally), or null/undefined. */
   alertsIngested?: number | null;
   className?: string;
@@ -167,17 +177,21 @@ export function HumanVsAiCard({
   series,
   windowLabel,
   truncated = false,
+  stale = false,
   alertsIngested,
   className,
 }: HumanVsAiCardProps) {
+  // A stale partition belongs to the previous window; `windowLabel` already names the
+  // new one, so the counts are withheld until the fresh payload lands.
+  const shown = stale ? null : totals;
   // Truncated evidence cannot support a share: a bounded scan under-counts every
   // band, so the percentages are suppressed rather than quietly understated.
   const shares = React.useMemo(
     () =>
-      totals && !truncated
-        ? reconcilingShares([totals.ai, totals.human, totals.system], totals.closed)
+      shown && !truncated
+        ? reconcilingShares([shown.ai, shown.human, shown.system], shown.closed)
         : null,
-    [totals, truncated],
+    [shown, truncated],
   );
 
   return (
@@ -204,7 +218,7 @@ export function HumanVsAiCard({
 
       <ul className="mt-2.5 grid grid-cols-3 gap-2" data-testid="human-vs-ai-totals">
         {BANDS.map((band, i) => {
-          const count = totals ? fmtNumber(totals[band.key]) : DASH;
+          const count = shown ? fmtNumber(shown[band.key]) : DASH;
           const pct = shares ? `${shares[i]}%` : DASH;
           return (
             <li key={band.key} className="min-w-0" data-testid={`human-vs-ai-${band.key}`}>
@@ -252,22 +266,26 @@ export function HumanVsAiCard({
       )}
 
       <div className="mt-1.5 space-y-0.5">
-        {totals ? null : (
+        {shown ? null : stale ? (
+          <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-stale">
+            Loading this window — the previous window&rsquo;s counts are withheld.
+          </p>
+        ) : (
           <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-unavailable">
             {unavailableReason}
           </p>
         )}
         <p className="text-2xs text-muted-foreground">
           Share of closed cases · by case-arrival bucket · {windowLabel}
-          {truncated ? ' · bounded sample, shares unavailable' : ''}
+          {truncated && !stale ? ' · bounded sample, shares unavailable' : ''}
         </p>
         {typeof alertsIngested === 'number' && Number.isFinite(alertsIngested) ? (
-          <p className="text-2xs text-muted-foreground/80" data-testid="human-vs-ai-alerts">
+          <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-alerts">
             Ingest context: {fmtNumber(alertsIngested)} alerts ingested (an ingest-hour tally, not
             this case cohort).
           </p>
         ) : null}
-        <p className="text-2xs text-muted-foreground/80">
+        <p className="text-2xs text-muted-foreground">
           Advisory only — the agent recommends; the deterministic case manager decides. This
           dashboard never influences that.
         </p>

@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 const { fetchPostureMock } = vi.hoisted(() => ({ fetchPostureMock: vi.fn() }));
 vi.mock('../pages/Metrics.posture.api', async () => {
@@ -117,6 +118,21 @@ const TRENDS: MetricsTrends = {
   truncated: false,
   store_total: 12,
   fetched: 12,
+};
+
+/**
+ * The 7-day preset: the backend returns 6h buckets for any window <= 168h, so four
+ * ticks per day repeat once per day unless the label carries the date.
+ */
+const TRENDS_7D: MetricsTrends = {
+  ...TRENDS,
+  window_hours: 168,
+  bucket_minutes: 360,
+  buckets: [
+    { ...BUCKETS[0], t: '2026-07-01T00:00:00Z' },
+    { ...BUCKETS[1], t: '2026-07-01T06:00:00Z' },
+    { ...BUCKETS[2], t: '2026-07-02T00:00:00Z' },
+  ],
 };
 
 /** The same buckets with the partition stripped (an older backend's payload). */
@@ -283,6 +299,133 @@ describe('Overview — Human vs AI card', () => {
       expect(within(cell).getByText('—')).toBeInTheDocument();
     }
     expect(within(card).getByText(/bounded sample, shares unavailable/i)).toBeInTheDocument();
+  });
+
+  it('withholds the SAME bounded partition from the KPI strip in that same render', async () => {
+    // Regression (HIGH): the card suppressed its shares on `posture.truncated` while
+    // the strip a few pixels above published the identical numbers off the identical
+    // truncated `posture.quality` — Auto-Resolved's "60% of 10" IS the card's agent
+    // band (auto_closed/terminal), and the FP tile printed a rate + sample size taken
+    // off the same bounded scan. One page cannot declare a share unmeasurable and
+    // print it. Both must go dark, with the bound NAMED, in this one render.
+    fetchPostureMock.mockResolvedValue(posture(QUALITY, { truncated: true }));
+    render(<Overview onNavigate={vi.fn()} />);
+    const card = await screen.findByTestId('human-vs-ai');
+    await waitFor(() =>
+      expect(within(within(card).getByTestId('human-vs-ai-ai')).getByText('6')).toBeInTheDocument(),
+    );
+    expect(within(card).getByText(/bounded sample, shares unavailable/i)).toBeInTheDocument();
+
+    // Auto-Resolved: the COUNT is still a count, but its share is the card's band.
+    const auto = within(screen.getByTestId('kpi-auto-resolved'));
+    await waitFor(() => expect(auto.getByText('6')).toBeInTheDocument());
+    expect(auto.getByText('—')).toBeInTheDocument();
+    expect(auto.queryByText('60% of 10')).toBeNull();
+    expect(auto.queryByText(/% of/)).toBeNull();
+    expect(auto.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
+
+    // False Positive Rate: the rate's own denominator (verdicted_cases) is bounded
+    // too, so the rate AND the sample size behind it are withheld.
+    const fp = within(screen.getByTestId('kpi-false-positive-rate'));
+    expect(fp.queryByText('50%')).toBeNull();
+    expect(fp.queryByText('4 of 8 verdicted')).toBeNull();
+    expect(fp.getAllByText('—').length).toBeGreaterThan(0);
+    expect(fp.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
+  });
+
+  it('withholds the previous window\u2019s partition while the new window is in flight', async () => {
+    // Regression: `usePosture` is stale-while-revalidate and Overview deliberately
+    // accepts the stale snapshot, but `trends` is REJECTED on a window mismatch — so
+    // the card's footer label fell back to the NEWLY selected window while the counts
+    // were still the previous one's. The KPI tiles mark that state with a
+    // "Loading 7 days" sub; the card had no marker at all.
+    const pending: Array<(value: PostureResponse) => void> = [];
+    fetchPostureMock.mockImplementation(
+      () => new Promise<PostureResponse>((resolve) => pending.push(resolve)),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(pending).toHaveLength(1));
+    pending[0](posture(QUALITY));
+
+    const card = await screen.findByTestId('human-vs-ai');
+    await waitFor(() =>
+      expect(within(within(card).getByTestId('human-vs-ai-ai')).getByText('6')).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', {
+        name: /Last 7 days/i,
+      }),
+    );
+
+    // The label already says 7 days, so the 24h counts must NOT be under it.
+    expect(within(card).getByText(/last 7 days/i)).toBeInTheDocument();
+    for (const band of ['ai', 'human', 'system']) {
+      const cell = within(card).getByTestId(`human-vs-ai-${band}`);
+      expect(within(cell).getAllByText('—')).toHaveLength(2); // count AND share
+    }
+    expect(within(card).queryByText('60%')).toBeNull();
+    expect(within(card).getByTestId('human-vs-ai-stale')).toBeInTheDocument();
+
+    // …and the fresh 168h payload restores real counts under that same label.
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1](
+      posture(
+        {
+          ...QUALITY,
+          auto_closed_cases: 9,
+          human_closed_cases: 4,
+          system_closed_cases: 2,
+          terminal_cases: 15,
+        },
+        { window_hours: 168 },
+      ),
+    );
+    await waitFor(() =>
+      expect(within(within(card).getByTestId('human-vs-ai-ai')).getByText('9')).toBeInTheDocument(),
+    );
+    expect(within(card).queryByTestId('human-vs-ai-stale')).toBeNull();
+  });
+
+  it('dates the trend axis when the window spans more than one day', async () => {
+    // Regression: `bucketAxisLabel` only dated a tick at bucket_minutes >= 1440, but
+    // the backend returns 360-minute buckets for the 7-day preset (and 180 for 72h).
+    // The axis therefore read 00:00 06:00 12:00 18:00 seven times over and the tooltip
+    // header was a bare "12:00", so a spike could not be located to a day.
+    fetchPostureMock.mockImplementation((h: number) =>
+      Promise.resolve(posture(QUALITY, { window_hours: h })),
+    );
+    trendsMock.mockImplementation((h: number) => Promise.resolve(h === 168 ? TRENDS_7D : TRENDS));
+    const user = userEvent.setup();
+    const { container } = render(<Overview onNavigate={vi.fn()} />);
+    const card = await screen.findByTestId('human-vs-ai');
+    await within(card).findByTestId('human-vs-ai-chart');
+
+    const ticks = () =>
+      Array.from(container.querySelectorAll('.recharts-cartesian-axis-tick-value')).map(
+        (n) => n.textContent ?? '',
+      );
+    // A 24h window fits inside one day: a bare HH:mm tick is unambiguous there.
+    expect(ticks().length).toBeGreaterThan(0);
+    for (const tick of ticks()) expect(tick).toMatch(/^\d{2}:\d{2}$/);
+
+    await user.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await user.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', {
+        name: /Last 7 days/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(ticks().some((t) => /^\d{2}-\d{2} \d{2}:\d{2}$/.test(t))).toBe(true),
+    );
+    const dated = ticks();
+    for (const tick of dated) expect(tick).toMatch(/^\d{2}-\d{2} \d{2}:\d{2}$/);
+    // Two calendar days are distinguishable, which is the whole point.
+    expect(new Set(dated.map((t) => t.slice(0, 5))).size).toBeGreaterThan(1);
+    expect(new Set(dated).size).toBe(dated.length);
   });
 
   it('reports unavailable when the partition does not add up to the closed total', async () => {

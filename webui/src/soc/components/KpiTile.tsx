@@ -309,10 +309,16 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     const secondaryNode =
       secondary === undefined || secondary === null || secondary === '' ? null : (
         <span
+          // `min-w-0` + `truncate` (not a bare `whitespace-nowrap`): at the landing
+          // strip's 5-column breakpoint an unbounded context string ("12,345 of 48,901
+          // verdicted") is wider than the tile, and the tile's `overflow-hidden` used to
+          // clip it mid-word with no ellipsis. It now shrinks with an ellipsis, and a
+          // plain-text context carries its full value in `title`.
           className={cn(
-            'mb-0.5 whitespace-nowrap font-mono font-medium tabular-nums text-muted-foreground',
+            'mb-0.5 min-w-0 truncate font-mono font-medium tabular-nums text-muted-foreground',
             strip && !compact ? 'text-xs' : 'text-2xs',
           )}
+          title={typeof secondary === 'string' ? secondary : undefined}
         >
           {secondary}
         </span>
@@ -365,7 +371,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
         </div>
-        <div className={cn('flex items-end gap-2', strip ? 'mt-2' : 'mt-3')}>
+        <div className={cn('flex min-w-0 items-end gap-2', strip ? 'mt-2' : 'mt-3')}>
           <span
             className={cn(
               'font-semibold leading-none tracking-tight tabular-nums',

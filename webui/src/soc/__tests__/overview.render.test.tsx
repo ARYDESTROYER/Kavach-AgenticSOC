@@ -224,7 +224,13 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(
       within(screen.getByTestId('kpi-critical')).getByText('1 open + 0 resolved'),
     ).toBeInTheDocument();
-    expect(within(screen.getByTestId('kpi-escalated-to-human')).getByText('Awaiting review')).toBeInTheDocument();
+    // The sub NAMES why this tile carries no share: its count is an all-time,
+    // cap-2,000 `GET /api/metrics` aggregate, not a window population.
+    expect(
+      within(screen.getByTestId('kpi-escalated-to-human')).getByText(
+        'Awaiting review · all cases, no window share',
+      ),
+    ).toBeInTheDocument();
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('Closed as false positive'),
     ).toBeInTheDocument();
@@ -240,13 +246,15 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // (3 rows), so the shares reconcile exactly against what the page itself counted.
     expect(within(screen.getByTestId('kpi-open-cases')).getByText('67% of 3')).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-critical')).getByText('33% of 3')).toBeInTheDocument();
-    // Escalated: both halves come from GET /api/metrics (needs_human 1 / total 3) —
-    // never paired with posture's differently-populated escalation_rate.
-    await waitFor(() =>
-      expect(
-        within(screen.getByTestId('kpi-escalated-to-human')).getByText('33% of 3'),
-      ).toBeInTheDocument(),
-    );
+    // Escalated: `GET /api/metrics` is NOT window-filtered and is hard-capped at the
+    // newest 2,000 cases, so `total_cases` is a fetch bound rather than this window's
+    // population — and posture's `needs_human_cases` counts a DIFFERENT population
+    // (verdict, not status). With no reconciling denominator the tile shows an em
+    // dash, never a whole-store share dressed as a window share.
+    const escalated = within(screen.getByTestId('kpi-escalated-to-human'));
+    await waitFor(() => expect(escalated.getByText('1')).toBeInTheDocument());
+    expect(escalated.getByText('—')).toBeInTheDocument();
+    expect(escalated.queryByText(/% of/)).toBeNull();
     // FP rate is ALREADY a percent, so its context is the sample size behind it.
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('1 of 2 verdicted'),
@@ -292,6 +300,46 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(
       within(screen.getByTestId('kpi-open-cases')).getByText('Bounded sample · share unavailable'),
     ).toBeInTheDocument();
+  });
+
+  it('never presents the /api/metrics fetch cap as this window\u2019s case population', async () => {
+    // Regression: `GET /api/metrics` is NOT window-filtered and is hard-capped at the
+    // newest 2,000 cases with NO truncation marker, so `total_cases` is a fetch bound.
+    // The tile used to divide `needs_human_cases` by it and print "7% of 2,000" beside
+    // a TimeRangePicker set to (say) the last hour — a cap dressed as a population,
+    // scoped to a window it never honoured.
+    getMetricsMock.mockResolvedValue({
+      ...METRICS,
+      total_cases: 2000,
+      needs_human_cases: 137,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = within(await screen.findByTestId('kpi-escalated-to-human'));
+    await waitFor(() => expect(tile.getByText('137')).toBeInTheDocument());
+    expect(tile.queryByText('7% of 2,000')).toBeNull();
+    expect(tile.queryByText(/of 2,000/)).toBeNull();
+    expect(tile.queryByText(/% of/)).toBeNull();
+    // The em dash carries a NAMED reason, so the absence is evidence, not an omission.
+    expect(tile.getByText('—')).toBeInTheDocument();
+    expect(tile.getByText('Awaiting review · all cases, no window share')).toBeInTheDocument();
+  });
+
+  it('renders "<1%" — never a rounded-down 0% — for a real but tiny band', async () => {
+    // Regression: `shareContext` rounded 1/5,000 to "0% of 5,000" beside a non-zero
+    // numeral, which reads as "nothing was auto-resolved" when one case was. The
+    // Noise-Reduction funnel already floors at "<1%"; the strip now shares that rule.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      quality: { ...QUALITY, auto_closed_cases: 1, terminal_cases: 5000 },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = within(await screen.findByTestId('kpi-auto-resolved'));
+    await waitFor(() => expect(tile.getByText('<1% of 5,000')).toBeInTheDocument());
+    expect(tile.queryByText('0% of 5,000')).toBeNull();
+    // A genuine zero still reads "0%" — the floor applies only to a non-zero count.
+    expect(tile.queryByText(/^0%/)).toBeNull();
   });
 
   it('keeps the last posture snapshot visible (labelled stale) across a window change, then swaps atomically', async () => {

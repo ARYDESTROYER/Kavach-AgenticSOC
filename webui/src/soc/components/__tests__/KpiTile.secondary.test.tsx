@@ -74,6 +74,30 @@ describe('KpiTile — secondary scale context', () => {
     expect(within(tile).getByRole('img')).toHaveAccessibleName(/changed up by \+12%, improved/i);
   });
 
+  it('shrinks with an ellipsis instead of clipping mid-word in a narrow tile', () => {
+    // Regression: the strip's 5-column breakpoint leaves ~163px inside a tile, and the
+    // secondary used to be a bare `whitespace-nowrap` span in a flex row with no
+    // `min-w-0`. Inside the tile's `overflow-hidden` that hard-clipped a long context
+    // ("12,345 of 48,901 verdicted") mid-word with no ellipsis. It must now be
+    // shrinkable + truncating, and carry its full text in `title`.
+    render(
+      <KpiTile
+        label="False Positive Rate"
+        value="13%"
+        secondary="12,345 of 48,901 verdicted"
+        variant="strip"
+      />,
+    );
+    const tile = screen.getByTestId('kpi-false-positive-rate');
+    const context = within(tile).getByText('12,345 of 48,901 verdicted');
+    // `truncate` = overflow-hidden + text-ellipsis + whitespace-nowrap.
+    expect(context).toHaveClass('min-w-0', 'truncate');
+    expect(context.className).not.toMatch(/(^|\s)whitespace-nowrap(\s|$)/);
+    expect(context).toHaveAttribute('title', '12,345 of 48,901 verdicted');
+    // A flex child only shrinks when the ROW can shrink below its content width.
+    expect(context.parentElement).toHaveClass('min-w-0');
+  });
+
   it('keeps the pinned testid when a label is reworded but testId is passed', () => {
     // The Overview Critical tile relies on this: narrowing "Critical / High" to
     // "Critical" must not silently rename `kpi-critical-high` -> `kpi-critical`
