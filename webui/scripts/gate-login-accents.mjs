@@ -35,25 +35,48 @@ import { THEME_CSS_PATH, hexToRgb, contrastRatio } from './lib/theme-css.mjs';
 /** WCAG AA for normal-size text. */
 export const TEXT_BAR = 4.5;
 
+/** Safety margin on top of the slid label cell, as a fraction of the pill width. */
+const PILL_MARGIN_FRACTION = 0.01;
+
 /**
- * Geometry of the pill, mirrored from the `.login-theme-pill` declarations.
+ * Read the pill's geometry OUT of the CSS rather than mirroring it here.
  *
- * `labelSlideRem` is load-bearing, not decorative: the label translates by that
- * much toward whichever glyph is showing, so a glyph-free cell boundary is NOT
- * the edge of the measured zone — the slid label overhangs it. Measuring only the
- * cell would report the light state ~0.5 points higher than it really is.
+ * A hardcoded copy is the classic way a gate goes quietly wrong: someone widens
+ * the pill or the glyph cells, the measured label zone silently stays where it
+ * was, and the gate keeps reporting a ratio for a region the label no longer
+ * occupies. Everything below is derived from the declarations themselves, and a
+ * missing one is a hard failure rather than a default.
+ *
+ * `labelSlide` is load-bearing, not decorative: the label translates by that much
+ * toward whichever glyph is showing, so the glyph cell boundary is NOT the edge of
+ * the measured zone — the slid label overhangs it.
  */
-const PILL = {
-  angleDeg: 95,
-  widthRem: 13.375,
-  heightRem: 2.875,
-  sideCellRem: 2.75,
-  paddingInlineRem: 0.4375,
-  /** `.login-theme-pill__label` transform, applied in BOTH directions. */
-  labelSlideRem: 0.375,
-  /** Safety margin on top of the slid cell, as a fraction of the pill width. */
-  marginFraction: 0.01,
-};
+function readPillGeometry(css) {
+  const pill = stripComments(ruleBody(css, '.login-auth-canvas .login-theme-pill'));
+  const label = stripComments(ruleBody(css, '.login-auth-canvas .login-theme-pill__label'));
+  const rem = (body, prop) => {
+    const m = new RegExp(`(?:^|[;{\\s])${prop}\\s*:\\s*([\\d.]+)rem`, 'm').exec(body);
+    return m ? Number(m[1]) : null;
+  };
+  const angle = /linear-gradient\(\s*([\d.]+)deg/.exec(
+    customProperty(ruleBody(css, '.login-auth-canvas'), 'login-pill-light') ?? '',
+  );
+  const cols = /grid-template-columns\s*:\s*([\d.]+)rem/.exec(pill);
+  const slide = /transform\s*:\s*translate3d\(\s*(-?[\d.]+)rem/.exec(label);
+
+  const geometry = {
+    angleDeg: angle ? Number(angle[1]) : null,
+    widthRem: rem(pill, 'width'),
+    heightRem: rem(pill, 'height'),
+    sideCellRem: cols ? Number(cols[1]) : null,
+    paddingInlineRem: rem(pill, 'padding-inline'),
+    labelSlideRem: slide ? Math.abs(Number(slide[1])) : null,
+  };
+  const missing = Object.entries(geometry)
+    .filter(([, v]) => v === null || Number.isNaN(v))
+    .map(([k]) => k);
+  return { geometry, missing };
+}
 
 function readCss() {
   return fs.readFileSync(THEME_CSS_PATH, 'utf8');
@@ -95,11 +118,24 @@ function ruleBody(css, selector) {
   return ruleBodies(css, selector).join('\n');
 }
 
-/** The raw value of a custom property declared in `body`. */
+/** Remove /* … *\/ comments so a commented-out declaration can never be read. */
+function stripComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/**
+ * The EFFECTIVE value of a custom property declared in `body`.
+ *
+ * Takes the LAST declaration, not the first: within one origin the cascade gives
+ * the later declaration priority, so a gate that read the first would measure a
+ * value the browser never paints.
+ */
 function customProperty(body, name) {
-  const re = new RegExp(`--${name}\\s*:\\s*([^;]+);`, 'm');
-  const m = re.exec(body);
-  return m ? m[1].trim().replace(/\s+/g, ' ') : null;
+  const re = new RegExp(`--${name}\\s*:\\s*([^;]+);`, 'g');
+  let last = null;
+  let m;
+  while ((m = re.exec(stripComments(body))) !== null) last = m[1];
+  return last === null ? null : last.trim().replace(/\s+/g, ' ');
 }
 
 /**
@@ -116,7 +152,11 @@ export function gradientStops(value) {
     // a colour is a real stop position.
     const rgb = m[1].startsWith('#') ? hexToRgb(m[1]) : rgbFunc(m[1]);
     if (!rgb) continue;
-    stops.push({ rgb, pos: m[2] === undefined ? null : Number(m[2]) / 100, raw: m[1] });
+    stops.push({
+      rgb,
+      pos: m[2] === undefined ? null : Number(m[2]) / 100,
+      raw: m[1],
+    });
   }
   return stops;
 }
@@ -178,7 +218,7 @@ export function gradientPositionAt(f, { angleDeg, widthRem, heightRem }) {
 
 export function checkLoginAccents() {
   const css = readCss();
-  const canvas = ruleBody(css, '.login-auth-canvas');
+  const canvas = stripComments(ruleBody(css, '.login-auth-canvas'));
   const results = [];
 
   // ---- Shine CTA -------------------------------------------------------- //
@@ -213,14 +253,33 @@ export function checkLoginAccents() {
     0,
   );
 
-  // Tint opacity per theme, straight from the declarations.
-  const tintLight = Number(
-    /opacity:\s*([\d.]+)/.exec(ruleBody(css, '.login-shine-button__face::after'))?.[1] ?? '0',
-  );
-  const tintDark = Number(
-    /opacity:\s*([\d.]+)/.exec(ruleBody(css, '.dark .login-shine-button__face::after'))?.[1] ??
-      '0',
-  );
+  // Tint opacity per theme, straight from the declarations. A missing value is a
+  // hard failure, never a silent 0: defaulting would drop the tint layer from the
+  // model and quietly report a HIGHER ratio than the browser paints — the exact
+  // way a contrast gate passes vacuously.
+  const readOpacity = (selector) => {
+    const m = /opacity:\s*([\d.]+)/.exec(stripComments(ruleBody(css, selector)));
+    return m ? Number(m[1]) : null;
+  };
+  const tintLight = readOpacity('.login-auth-canvas .login-shine-button__face::after');
+  const tintDark = readOpacity('.dark .login-auth-canvas .login-shine-button__face::after');
+  if (tintLight === null || tintDark === null || sweepPeak <= 0) {
+    return {
+      ok: false,
+      results: [
+        {
+          name: 'shine layer opacities unreadable',
+          pass: false,
+          bar: TEXT_BAR,
+          ratio: null,
+          detail:
+            `tint light=${tintLight}, tint dark=${tintDark}, sweep peak=${sweepPeak} — ` +
+            'a layer the label sits on could not be measured, so the result would ' +
+            'understate the composite.',
+        },
+      ],
+    };
+  }
 
   // The hover label flattens to solid white, which every state must also clear.
   const labelColours = [...labelStops.map((s) => s.rgb), [1, 1, 1]];
@@ -233,7 +292,10 @@ export function checkLoginAccents() {
       // Every paint layer that can sit between the face and the glyphs.
       const layerings = [
         { label: 'bare', rgb: face.rgb },
-        { label: 'sweep', rgb: over(face.rgb, sweepCore.rgb, sweepPeak * sweepCoreAlpha) },
+        {
+          label: 'sweep',
+          rgb: over(face.rgb, sweepCore.rgb, sweepPeak * sweepCoreAlpha),
+        },
       ];
       const composites = [];
       for (const layer of layerings) {
@@ -261,13 +323,23 @@ export function checkLoginAccents() {
   }
 
   // ---- Appearance pill -------------------------------------------------- //
+  const { geometry: PILL, missing } = readPillGeometry(css);
+  if (missing.length > 0) {
+    results.push({
+      name: `pill geometry unreadable from CSS (${missing.join(', ')})`,
+      bar: TEXT_BAR,
+      ratio: null,
+      pass: false,
+    });
+    return { ok: false, results };
+  }
   const contentRem = PILL.widthRem - 2 * PILL.paddingInlineRem;
   // Widen the cell by the label slide in both directions — the label moves left in
   // one state and right in the other, so the union of both is what must hold.
   const cellStartRem = PILL.paddingInlineRem + PILL.sideCellRem - PILL.labelSlideRem;
   const cellEndRem = PILL.paddingInlineRem + contentRem - PILL.sideCellRem + PILL.labelSlideRem;
-  const from = gradientPositionAt(cellStartRem / PILL.widthRem, PILL) - PILL.marginFraction;
-  const to = gradientPositionAt(cellEndRem / PILL.widthRem, PILL) + PILL.marginFraction;
+  const from = gradientPositionAt(cellStartRem / PILL.widthRem, PILL) - PILL_MARGIN_FRACTION;
+  const to = gradientPositionAt(cellEndRem / PILL.widthRem, PILL) + PILL_MARGIN_FRACTION;
 
   for (const [state, gradientToken, inkToken] of [
     ['light', 'login-pill-light', 'login-pill-ink-light'],

@@ -58,6 +58,25 @@ describe('ShineButton', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toHaveAttribute('type', 'submit');
   });
 
+  it('marks the busy state distinctly from the inert one', () => {
+    // The CTA is `disabled` both while nothing is typed AND while submitting.
+    // Those must not look the same: flattening the button the instant it is
+    // clicked reads as the form going dead, so the CSS excludes `[data-busy]`
+    // from the disabled treatment and this is the hook it keys off.
+    const { rerender } = render(
+      <ShineButton disabled>Sign in</ShineButton>,
+    );
+    expect(screen.getByRole('button', { name: 'Sign in' })).not.toHaveAttribute('data-busy');
+    rerender(
+      <ShineButton disabled busy icon={<svg data-testid="spinner" aria-hidden />}>
+        Signing in…
+      </ShineButton>,
+    );
+    const busyButton = screen.getByRole('button', { name: 'Signing in…' });
+    expect(busyButton).toHaveAttribute('data-busy', 'true');
+    expect(busyButton).toBeDisabled();
+  });
+
   it('forwards disabled and does not fire onClick while disabled', () => {
     const onClick = vi.fn();
     render(

@@ -20,14 +20,27 @@
      * from radix-ui.com/colors (zero dep). See DESIGN_STANDARD §1.1.         *
      * ===================================================================== */
     /* Radix SLATE (light) */
-    --slate-1: 240 20% 99%;  --slate-2: 240 20% 98%;  --slate-3: 240 11% 95%;
-    --slate-4: 240 10% 92%;  --slate-5: 230 11% 89%;  --slate-6: 226 12% 85%;
-    --slate-7: 225 12% 80%;  --slate-8: 222 12% 70%;  --slate-9: 220 9%  46%;
-    --slate-10: 220 9% 42%;  --slate-11: 220 12% 40%; --slate-12: 222 47% 11%;
+    --slate-1: 240 20% 99%;
+    --slate-2: 240 20% 98%;
+    --slate-3: 240 11% 95%;
+    --slate-4: 240 10% 92%;
+    --slate-5: 230 11% 89%;
+    --slate-6: 226 12% 85%;
+    --slate-7: 225 12% 80%;
+    --slate-8: 222 12% 70%;
+    --slate-9: 220 9% 46%;
+    --slate-10: 220 9% 42%;
+    --slate-11: 220 12% 40%;
+    --slate-12: 222 47% 11%;
     /* Radix BLUE (light) */
-    --blue-1: 210 100% 99%;  --blue-6: 213 62% 84%;   --blue-7: 213 71% 76%;
-    --blue-8: 214 90% 48%;   --blue-9: 214 90% 42%;   --blue-10: 214 92% 38%;
-    --blue-11: 213 90% 40%;  --blue-12: 216 60% 20%;
+    --blue-1: 210 100% 99%;
+    --blue-6: 213 62% 84%;
+    --blue-7: 213 71% 76%;
+    --blue-8: 214 90% 48%;
+    --blue-9: 214 90% 42%;
+    --blue-10: 214 92% 38%;
+    --blue-11: 213 90% 40%;
+    --blue-12: 216 60% 20%;
 
     /* ===================================================================== *
      * TIER 2 — SEMANTIC (role tokens; the ONLY tier that flips :root/.dark). *
@@ -35,38 +48,40 @@
      * luminance over the resolved HSL). See DESIGN_STANDARD §1.2.            *
      * ===================================================================== */
     /* ---- Light theme — clean white/very-light-gray -------------------- */
-    --canvas: var(--slate-2);            /* app body */
-    --surface: var(--slate-2);           /* raised tile */
-    --surface-sunken: var(--slate-3);    /* NEW — wells/code/log/JSON */
-    --background: var(--slate-1);        /* lowest */
-    --foreground: var(--slate-12);       /* 16.1:1 on canvas (measured) */
+    --canvas: var(--slate-2); /* app body */
+    --surface: var(--slate-2); /* raised tile */
+    --surface-sunken: var(--slate-3); /* NEW — wells/code/log/JSON */
+    --background: var(--slate-1); /* lowest */
+    --foreground: var(--slate-12); /* 16.1:1 on canvas (measured) */
 
     --card: var(--slate-1);
-    --card-foreground: var(--slate-12);  /* 16.1:1 on card (measured) */
-    --popover: var(--slate-1);           /* all floating surfaces */
+    --card-foreground: var(--slate-12); /* 16.1:1 on card (measured) */
+    --popover: var(--slate-1); /* all floating surfaces */
     --popover-foreground: var(--slate-12);
 
-    --primary: var(--blue-9);            /* white-on-fill 6.02:1 (measured) */
+    --primary: var(--blue-9); /* white-on-fill 6.02:1 (measured) */
     --primary-foreground: 0 0% 100%;
     --secondary: var(--slate-3);
     --secondary-foreground: var(--slate-11);
     --muted: var(--slate-3);
-    --muted-foreground: 220 12% 40%;     /* 6.14:1 on card (measured) */
+    --muted-foreground: 220 12% 40%; /* 6.14:1 on card (measured) */
     /* `accent` is the calm neutral HOVER/SELECTED surface (shadcn convention) —
        NOT a brand colour. Consumers pair it with `text-foreground` / use washes
        (`bg-accent/30`), so it must stay a quiet neutral that reads in both themes.
        Brand/severity hues live in their own tokens (primary / info / critical…). */
-    --accent: var(--slate-5);            /* hover/selected only */
+    --accent: var(--slate-5); /* hover/selected only */
     --accent-foreground: var(--slate-12);
-    --hover: var(--slate-4);             /* NEW — interactive hover (one notch below accent) */
+    --hover: var(
+      --slate-4
+    ); /* NEW — interactive hover (one notch below accent) */
 
     /* Border policy (DESIGN_STANDARD §1.2): `--border` is a DECORATIVE hairline
        (~1.45:1, Radix step 6) for card/table gridlines. When a border is the ONLY
        thing conveying a control/focus edge, use `--border-strong`/`--input` (≥3:1). */
-    --border: var(--slate-6);            /* hairline delimiter ~1.45:1 */
-    --border-strong: 220 15% 58%;        /* NEW — structural/interactive 3.27:1 (measured) */
-    --input: 220 15% 58%;                /* interactive control border 3.27:1 (measured) */
-    --ring: var(--blue-8);               /* 4.86:1 on white (measured, ≥3.0) */
+    --border: var(--slate-6); /* hairline delimiter ~1.45:1 */
+    --border-strong: 220 15% 58%; /* NEW — structural/interactive 3.27:1 (measured) */
+    --input: 220 15% 58%; /* interactive control border 3.27:1 (measured) */
+    --ring: var(--blue-8); /* 4.86:1 on white (measured, ≥3.0) */
 
     /* ---- The 3 orthogonal semantic axes (DESIGN_STANDARD §1.3) ---------- *
      * Each ships a triad: --<t> (solid fill) · --<t>-foreground (on-color   *
@@ -74,15 +89,31 @@
      * to clear 4.5:1 as text). SEVERITY has NO green (--low is BLUE); the    *
      * verdict FP axis maps to --info (blue-grey), not green.                 */
     /* SEVERITY / RISK — red → orange → gold → blue → blue-grey. *-text measured on white card. */
-    --critical: 358 75% 45%;  --critical-foreground: 0 0% 100%;  --critical-text: 358 75% 42%; /* 6.36:1 */
-    --high:     22 90% 44%;    --high-foreground: 0 0% 100%;      --high-text: 22 90% 37%;      /* 4.69:1 on its 10% wash */
-    --medium:   40 96% 38%;    --medium-foreground: 222 47% 11%;  --medium-text: 40 96% 29%;    /* fill-on-card 3.26:1; text 4.68:1 on its 10% wash */
-    --low:      212 90% 45%;   --low-foreground: 0 0% 100%;       --low-text: 212 90% 42%;      /* 5.63:1 (BLUE, was green) */
-    --info:     220 12% 46%;   --info-foreground: 0 0% 100%;      --info-text: 215 16% 42%;     /* 5.65:1 (blue-grey) */
+    --critical: 358 75% 45%;
+    --critical-foreground: 0 0% 100%;
+    --critical-text: 358 75% 42%; /* 6.36:1 */
+    --high: 22 90% 44%;
+    --high-foreground: 0 0% 100%;
+    --high-text: 22 90% 37%; /* 4.69:1 on its 10% wash */
+    --medium: 40 96% 38%;
+    --medium-foreground: 222 47% 11%;
+    --medium-text: 40 96% 29%; /* fill-on-card 3.26:1; text 4.68:1 on its 10% wash */
+    --low: 212 90% 45%;
+    --low-foreground: 0 0% 100%;
+    --low-text: 212 90% 42%; /* 5.63:1 (BLUE, was green) */
+    --info: 220 12% 46%;
+    --info-foreground: 0 0% 100%;
+    --info-text: 215 16% 42%; /* 5.65:1 (blue-grey) */
     /* STATUS — the ONLY place green lives (always paired with a check icon). */
-    --success: 158 74% 34%;   --success-foreground: 0 0% 100%;   --success-text: 158 74% 27%;  /* 4.77:1 on its 10% wash */
-    --warning: 36 92% 42%;     --warning-foreground: 222 47% 11%; --warning-text: 36 96% 31%;   /* 4.62:1 on its 10% wash */
-    --danger:  358 75% 45%;    --danger-foreground: 0 0% 100%;    --danger-text: 358 75% 42%;   /* aliases critical */
+    --success: 158 74% 34%;
+    --success-foreground: 0 0% 100%;
+    --success-text: 158 74% 27%; /* 4.77:1 on its 10% wash */
+    --warning: 36 92% 42%;
+    --warning-foreground: 222 47% 11%;
+    --warning-text: 36 96% 31%; /* 4.62:1 on its 10% wash */
+    --danger: 358 75% 45%;
+    --danger-foreground: 0 0% 100%;
+    --danger-text: 358 75% 42%; /* aliases critical */
 
     --radius: 0.625rem;
 
@@ -108,14 +139,18 @@
        `accent2` still resolves through `var(--accent2, var(--primary))`. */
     --accent2: 243 75% 59%;
     /* Optional display font family for hero titles (operator-selectable, enum). */
-    --font-display: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --font-display:
+      "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", Roboto, sans-serif;
     /* ---- Material-pack chrome vars (the 'quiet' pack === today). The 'command'
        pack raises these via theme.tsx; consumers (GlassSurface, shell) read them
        so 'quiet' renders identically to the pre-wave UI. */
-    --glass-tint: var(--slate-2);  /* the surface tint a glass panel blurs over   */
-    --glass-opacity: 0.82;         /* fill opacity of a glass panel (0..1)         */
-    --glow-strength: 0;            /* 0 = no glow (quiet); command raises it       */
-    --grid-opacity: 0;             /* 0 = no command-grid overlay (quiet)          */
+    --glass-tint: var(
+      --slate-2
+    ); /* the surface tint a glass panel blurs over   */
+    --glass-opacity: 0.82; /* fill opacity of a glass panel (0..1)         */
+    --glow-strength: 0; /* 0 = no glow (quiet); command raises it       */
+    --grid-opacity: 0; /* 0 = no command-grid overlay (quiet)          */
 
     /* Noise-reduction flow: restrained matte links; semantic colour is reserved
        for outcome branches and focus raises only the inspected path. */
@@ -128,22 +163,28 @@
        keep the severity/status/verdict tokens. Light: on white cards; yellow
        darkened, black→grey. All ≥3.0 UI, most ≥4.5. */
     --chart-1: 211 100% 36%; /* blue           6.75:1 */
-    --chart-2: 32 100% 37%;  /* orange         4.20:1 */
+    --chart-2: 32 100% 37%; /* orange         4.20:1 */
     --chart-3: 163 100% 26%; /* bluish-green   4.67:1 */
-    --chart-4: 326 40% 50%;  /* reddish-purple ~4.6:1 */
-    --chart-5: 202 75% 40%;  /* sky-blue       4.67:1 */
-    --chart-6: 24 100% 38%;  /* vermillion     4.81:1 */
-    --chart-7: 45 92% 32%;   /* dark yellow    4.14:1 */
-    --chart-8: 0 0% 42%;     /* grey (Other)   5.32:1 */
+    --chart-4: 326 40% 50%; /* reddish-purple ~4.6:1 */
+    --chart-5: 202 75% 40%; /* sky-blue       4.67:1 */
+    --chart-6: 24 100% 38%; /* vermillion     4.81:1 */
+    --chart-7: 45 92% 32%; /* dark yellow    4.14:1 */
+    --chart-8: 0 0% 42%; /* grey (Other)   5.32:1 */
 
     /* ---- Elevation / shadow (DESIGN_STANDARD §1.5). Per-theme --shadow-color +
        composed levels; tailwind boxShadow points at these. Borders for tiled/
        scrolled content; shadows only for detached floating portals. */
     --shadow-color: 222 30% 12%;
-    --elev-1: 0 1px 2px hsl(var(--shadow-color) / 0.06), 0 1px 3px hsl(var(--shadow-color) / 0.08);
-    --elev-2: 0 4px 12px -4px hsl(var(--shadow-color) / 0.12), 0 8px 24px -10px hsl(var(--shadow-color) / 0.14);
+    --elev-1:
+      0 1px 2px hsl(var(--shadow-color) / 0.06),
+      0 1px 3px hsl(var(--shadow-color) / 0.08);
+    --elev-2:
+      0 4px 12px -4px hsl(var(--shadow-color) / 0.12),
+      0 8px 24px -10px hsl(var(--shadow-color) / 0.14);
     --shadow-menu: 0 4px 16px -2px hsl(var(--shadow-color) / 0.18);
-    --shadow-overlay: 0 8px 24px -4px hsl(var(--shadow-color) / 0.22), 0 2px 8px -2px hsl(var(--shadow-color) / 0.18);
+    --shadow-overlay:
+      0 8px 24px -4px hsl(var(--shadow-color) / 0.22),
+      0 2px 8px -2px hsl(var(--shadow-color) / 0.18);
 
     /* ---- Mode-agnostic layout + motion tokens (declared ONCE — DESIGN_STANDARD
        §4.2/§6.4). `--header-h` is consumed by the compact PageHeader + condensed
@@ -165,29 +206,44 @@
        The canvas is an exact #050505 near-black; depth comes from neutral luminance
        steps, hairlines, and an ultraviolet selection surface instead of blue haze. */
     /* TIER 1 — reference neutral + ultraviolet ramps (bare HSL triples). */
-    --slate-1: 0 0% 2%;      --slate-2: 0 0% 4%;      --slate-3: 0 0% 7%;
-    --slate-4: 0 0% 9%;      --slate-5: 255 13% 19%;  --slate-6: 220 5% 11%;
-    --slate-7: 256 10% 30%;  --slate-8: 257 9% 40%;   --slate-9: 257 8% 48%;
-    --slate-10: 257 9% 58%;  --slate-11: 262 19% 80%; --slate-12: 15 7% 89%;
+    --slate-1: 0 0% 2%;
+    --slate-2: 0 0% 4%;
+    --slate-3: 0 0% 7%;
+    --slate-4: 0 0% 9%;
+    --slate-5: 255 13% 19%;
+    --slate-6: 220 5% 11%;
+    --slate-7: 256 10% 30%;
+    --slate-8: 257 9% 40%;
+    --slate-9: 257 8% 48%;
+    --slate-10: 257 9% 58%;
+    --slate-11: 262 19% 80%;
+    --slate-12: 15 7% 89%;
     /* Primary ultraviolet — #cdbdfa is the exact reference accent. */
-    --blue-1: 255 30% 8%;    --blue-6: 256 31% 46%;   --blue-7: 256 42% 61%;
-    --blue-8: 256 86% 86%;   --blue-9: 256 86% 86%;   --blue-10: 256 88% 89%;
-    --blue-11: 256 90% 92%;  --blue-12: 256 100% 96%;
+    --blue-1: 255 30% 8%;
+    --blue-6: 256 31% 46%;
+    --blue-7: 256 42% 61%;
+    --blue-8: 256 86% 86%;
+    --blue-9: 256 86% 86%;
+    --blue-10: 256 88% 89%;
+    --blue-11: 256 90% 92%;
+    --blue-12: 256 100% 96%;
 
     /* TIER 2 — semantic aliases (dark). Ratios MEASURED (DESIGN_STANDARD §1.2). */
-    --canvas: var(--slate-1);            /* #050505 reference canvas */
-    --surface: var(--slate-1);           /* shell/sidebar stay flush with canvas */
-    --surface-sunken: var(--slate-1);    /* NEW — one step darker than card */
+    --canvas: var(--slate-1); /* #050505 reference canvas */
+    --surface: var(--slate-1); /* shell/sidebar stay flush with canvas */
+    --surface-sunken: var(--slate-1); /* NEW — one step darker than card */
     --background: var(--slate-1);
-    --foreground: var(--slate-12);       /* #e5e2e1 — 15.8:1 on canvas */
+    --foreground: var(--slate-12); /* #e5e2e1 — 15.8:1 on canvas */
 
     --card: var(--slate-2);
     --card-foreground: var(--slate-12);
-    --popover: var(--slate-2);           /* near-black detached menus match command chrome */
+    --popover: var(
+      --slate-2
+    ); /* near-black detached menus match command chrome */
     --popover-foreground: var(--slate-12);
 
-    --primary: var(--blue-9);            /* exact #cdbdfa */
-    --primary-foreground: var(--slate-1);/* near-black on lavender, 11.9:1 */
+    --primary: var(--blue-9); /* exact #cdbdfa */
+    --primary-foreground: var(--slate-1); /* near-black on lavender, 11.9:1 */
     --secondary: var(--slate-3);
     --secondary-foreground: var(--slate-11);
     --muted: var(--slate-3);
@@ -197,22 +253,38 @@
     --accent-foreground: var(--slate-12);
     --hover: var(--slate-4);
 
-    --border: var(--slate-6);            /* exact #1b1c1e reference hairline */
-    --border-strong: var(--slate-9);      /* structural/interactive, ≥3:1 */
+    --border: var(--slate-6); /* exact #1b1c1e reference hairline */
+    --border-strong: var(--slate-9); /* structural/interactive, ≥3:1 */
     --input: var(--slate-9);
     --ring: var(--blue-8);
 
     /* ---- 3 semantic axes (dark). *-text measured as text on card. ---------- */
     /* SEVERITY / RISK — no green (--low is BLUE); --info blue-grey. */
-    --critical: 2 68% 58%;    --critical-foreground: var(--slate-1); --critical-text: 2 68% 58%;   /* #dd524c */
-    --high:     27 81% 62%;   --high-foreground: var(--slate-1);     --high-text: 27 81% 62%;      /* #ed974f */
-    --medium:   46 74% 64%;   --medium-foreground: var(--slate-1);   --medium-text: 46 74% 64%;    /* warm reference gold */
-    --low:      221 82% 62%;  --low-foreground: var(--slate-1);      --low-text: 217 86% 70%;      /* #4e81ee / #71a4f4 */
-    --info:     217 28% 63%;  --info-foreground: var(--slate-1);     --info-text: 217 35% 72%;
+    --critical: 2 68% 58%;
+    --critical-foreground: var(--slate-1);
+    --critical-text: 2 68% 58%; /* #dd524c */
+    --high: 27 81% 62%;
+    --high-foreground: var(--slate-1);
+    --high-text: 27 81% 62%; /* #ed974f */
+    --medium: 46 74% 64%;
+    --medium-foreground: var(--slate-1);
+    --medium-text: 46 74% 64%; /* warm reference gold */
+    --low: 221 82% 62%;
+    --low-foreground: var(--slate-1);
+    --low-text: 217 86% 70%; /* #4e81ee / #71a4f4 */
+    --info: 217 28% 63%;
+    --info-foreground: var(--slate-1);
+    --info-text: 217 35% 72%;
     /* STATUS — exact lime success from the reference; warning stays gold. */
-    --success: 84 56% 53%;   --success-foreground: var(--slate-1); --success-text: 84 56% 53%;   /* #94ca42 */
-    --warning: 46 74% 64%;   --warning-foreground: var(--slate-1); --warning-text: 46 74% 64%;
-    --danger:  2 68% 58%;    --danger-foreground: var(--slate-1);  --danger-text: 2 68% 58%;
+    --success: 84 56% 53%;
+    --success-foreground: var(--slate-1);
+    --success-text: 84 56% 53%; /* #94ca42 */
+    --warning: 46 74% 64%;
+    --warning-foreground: var(--slate-1);
+    --warning-text: 46 74% 64%;
+    --danger: 2 68% 58%;
+    --danger-foreground: var(--slate-1);
+    --danger-text: 2 68% 58%;
 
     /* ---- Round-3 extra token set (dark values). radius/density/font-display are
        MODE-AGNOSTIC and declared ONCE in :root (they resolve on <html> in both
@@ -226,20 +298,28 @@
     --glow-strength: 0;
     --grid-opacity: 0;
 
-    --noise-ribbon-opacity: 0.30;
+    --noise-ribbon-opacity: 0.3;
     --noise-outcome-opacity: 0.26;
     --noise-ribbon-stroke-opacity: 0.44;
 
     /* ---- Chart ramp (dark): lift L, drop chroma slightly; yellow bright. */
-    --chart-1: 217 86% 70%;  --chart-2: 27 81% 62%;  --chart-3: 84 56% 53%;   --chart-4: 256 86% 86%;
-    --chart-5: 185 56% 59%;  --chart-6: 2 68% 58%;   --chart-7: 46 74% 64%;   --chart-8: 0 0% 72%;
+    --chart-1: 217 86% 70%;
+    --chart-2: 27 81% 62%;
+    --chart-3: 84 56% 53%;
+    --chart-4: 256 86% 86%;
+    --chart-5: 185 56% 59%;
+    --chart-6: 2 68% 58%;
+    --chart-7: 46 74% 64%;
+    --chart-8: 0 0% 72%;
 
     /* ---- Elevation / shadow (dark): near-black, larger + darker. */
     --shadow-color: 0 0% 0%;
-    --elev-1: 0 1px 2px hsl(0 0% 0% / 0.40), 0 1px 3px hsl(0 0% 0% / 0.30);
-    --elev-2: 0 4px 12px -4px hsl(0 0% 0% / 0.50), 0 8px 24px -10px hsl(0 0% 0% / 0.45);
+    --elev-1: 0 1px 2px hsl(0 0% 0% / 0.4), 0 1px 3px hsl(0 0% 0% / 0.3);
+    --elev-2:
+      0 4px 12px -4px hsl(0 0% 0% / 0.5), 0 8px 24px -10px hsl(0 0% 0% / 0.45);
     --shadow-menu: 0 4px 16px -2px hsl(0 0% 0% / 0.55);
-    --shadow-overlay: 0 8px 24px -4px hsl(0 0% 0% / 0.60), 0 2px 8px -2px hsl(0 0% 0% / 0.50);
+    --shadow-overlay:
+      0 8px 24px -4px hsl(0 0% 0% / 0.6), 0 2px 8px -2px hsl(0 0% 0% / 0.5);
   }
 
   * {
@@ -265,14 +345,22 @@
     font-variant-numeric: tabular-nums;
     /* Inter disambiguation on body + tables: 0/O, 1/l/I. `ss01`/`cv01`/`zero` are
        the Inter stylistic sets; `calt` keeps contextual ligatures. */
-    font-feature-settings: 'ss01' 1, 'cv01' 1, 'zero' 1, 'calt' 1;
+    font-feature-settings:
+      "ss01" 1,
+      "cv01" 1,
+      "zero" 1,
+      "calt" 1;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
   /* Extend the Inter disambiguation to tabular surfaces explicitly (tables inherit
      body, but keep it declared so a scoped font reset can't drop it). */
   table {
-    font-feature-settings: 'ss01' 1, 'cv01' 1, 'zero' 1, 'calt' 1;
+    font-feature-settings:
+      "ss01" 1,
+      "cv01" 1,
+      "zero" 1,
+      "calt" 1;
   }
   /* On mono/log/IOC/code surfaces turn `calt` OFF so `->`/`!=`/`===` ligatures
      never distort an attacker-controlled token (#9 legibility). */
@@ -281,7 +369,7 @@
   kbd,
   samp,
   .font-mono {
-    font-feature-settings: 'calt' 0;
+    font-feature-settings: "calt" 0;
   }
 }
 
@@ -298,11 +386,21 @@
    * tracking — contrast is unchanged (inherits `text-foreground`).
    * ------------------------------------------------------------------------ */
   .text-display {
-    font-family: var(--font-display, 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif);
+    font-family: var(
+      --font-display,
+      "Inter Variable",
+      "Inter",
+      ui-sans-serif,
+      system-ui,
+      sans-serif
+    );
     font-weight: 650;
     letter-spacing: -0.02em;
     /* Enable contextual ligatures + tabular-stable rendering for big titles. */
-    font-feature-settings: 'ss01' 1, 'cv01' 1, 'calt' 1;
+    font-feature-settings:
+      "ss01" 1,
+      "cv01" 1,
+      "calt" 1;
     text-wrap: balance;
   }
 
@@ -325,10 +423,20 @@
      Purely typographic (family/weight/tracking/size) — contrast is inherited, so
      it stays WCAG-AA. The `text-wrap: balance` keeps long titles tidy. */
   .hero-display h1 {
-    font-family: var(--font-display, 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif);
+    font-family: var(
+      --font-display,
+      "Inter Variable",
+      "Inter",
+      ui-sans-serif,
+      system-ui,
+      sans-serif
+    );
     font-weight: 650;
     letter-spacing: -0.02em;
-    font-feature-settings: 'ss01' 1, 'cv01' 1, 'calt' 1;
+    font-feature-settings:
+      "ss01" 1,
+      "cv01" 1,
+      "calt" 1;
     text-wrap: balance;
     font-size: clamp(1.5rem, 1.15rem + 1.6vw, 2.125rem);
     line-height: 1.12;
@@ -378,7 +486,8 @@
     }
 
     .console-progress-ring__arc {
-      animation: console-progress-ring-dash 1.35s var(--motion-ease-standard, ease-in-out) infinite;
+      animation: console-progress-ring-dash 1.35s
+        var(--motion-ease-standard, ease-in-out) infinite;
     }
   }
 
@@ -387,7 +496,7 @@
       forced-color-adjust: none;
     }
 
-    .console-progress-ring [data-loading-track='true'] {
+    .console-progress-ring [data-loading-track="true"] {
       stroke: GrayText;
     }
 
@@ -441,12 +550,14 @@
 
   @media (prefers-reduced-motion: no-preference) {
     .noise-flow-refresh-sweep {
-      animation: noise-flow-refresh-sweep 760ms var(--motion-ease-standard, ease-out) 1 both;
+      animation: noise-flow-refresh-sweep 760ms
+        var(--motion-ease-standard, ease-out) 1 both;
       will-change: transform, opacity;
     }
 
     .noise-open-cases-pulse {
-      animation: noise-open-cases-pulse 820ms var(--motion-ease-standard, ease-out) 1 both;
+      animation: noise-open-cases-pulse 820ms
+        var(--motion-ease-standard, ease-out) 1 both;
       will-change: transform, opacity;
     }
   }
@@ -484,7 +595,7 @@
      ENTIRELY by `--grid-opacity` (0 in quiet → invisible), so applying it on a
      quiet shell is a no-op. Decorative only — always pair with aria-hidden. */
   .command-grid::before {
-    content: '';
+    content: "";
     position: absolute;
     inset: 0;
     pointer-events: none;
@@ -494,7 +605,11 @@
     background-size: 32px 32px;
     opacity: var(--grid-opacity);
     mask-image: radial-gradient(120% 120% at 50% 0%, black 0%, transparent 75%);
-    -webkit-mask-image: radial-gradient(120% 120% at 50% 0%, black 0%, transparent 75%);
+    -webkit-mask-image: radial-gradient(
+      120% 120% at 50% 0%,
+      black 0%,
+      transparent 75%
+    );
   }
 }
 
@@ -646,7 +761,7 @@
 }
 
 /* A Light/Dark switch changes the neutral palette, not the tile's motion state. */
-.login-auth-canvas[data-login-theme-palette-settling='true'] .login-auth-cell {
+.login-auth-canvas[data-login-theme-palette-settling="true"] .login-auth-cell {
   transition-property: opacity, top, left;
 }
 
@@ -671,7 +786,7 @@
   top: 50%;
   height: 100dvh;
   border-left: 0.5px solid var(--login-guide);
-  content: '';
+  content: "";
   transform: translateY(-50%);
 }
 
@@ -765,7 +880,11 @@
     #025163 100%
   );
   /* Decorative: outside the face, never beneath the label. */
-  --login-shine-halo: radial-gradient(126% 93% at 64% 14%, #0dd2fd 0%, #f7bdf8 82%);
+  --login-shine-halo: radial-gradient(
+    126% 93% at 64% 14%,
+    #0dd2fd 0%,
+    #f7bdf8 82%
+  );
   --login-shine-tint: linear-gradient(104deg, #5be1ff -38%, #fec5fb 79%);
   --login-shine-sweep: radial-gradient(
     closest-side at 50% 50%,
@@ -793,11 +912,25 @@
     #07485a 50%,
     #052b35 100%
   );
-  --login-pill-dark: linear-gradient(95deg, #f0fcff 0%, #9bedff 30%, #5be1ff 62%, #00bae2 100%);
+  --login-pill-dark: linear-gradient(
+    95deg,
+    #f0fcff 0%,
+    #9bedff 30%,
+    #5be1ff 62%,
+    #00bae2 100%
+  );
   --login-pill-ink-light: #ffffff;
   --login-pill-ink-dark: #063d49;
-  --login-pill-orb-light: radial-gradient(closest-side, #9bedff 0%, rgb(155 237 255 / 0%) 100%);
-  --login-pill-orb-dark: radial-gradient(closest-side, #0ba3c5 0%, rgb(11 163 197 / 0%) 100%);
+  --login-pill-orb-light: radial-gradient(
+    closest-side,
+    #9bedff 0%,
+    rgb(155 237 255 / 0%) 100%
+  );
+  --login-pill-orb-dark: radial-gradient(
+    closest-side,
+    #0ba3c5 0%,
+    rgb(11 163 197 / 0%) 100%
+  );
 }
 
 /* --- Shine CTA ----------------------------------------------------------- */
@@ -805,7 +938,7 @@
 /* The button paints nothing itself: the halo is its ::before at z-index 0 and
    the opaque face is a child at z-index 1, so the halo reads around the face
    instead of washing over it. */
-.login-shine-button {
+.login-auth-canvas .login-shine-button {
   position: relative;
   display: inline-flex;
   isolation: isolate;
@@ -815,8 +948,8 @@
   border-radius: var(--login-shine-radius);
 }
 
-.login-shine-button::before {
-  content: '';
+.login-auth-canvas .login-shine-button::before {
+  content: "";
   position: absolute;
   z-index: 0;
   inset: -0.5rem;
@@ -831,8 +964,8 @@
   pointer-events: none;
 }
 
-.login-shine-button:hover::before,
-.login-shine-button:focus-visible::before {
+.login-auth-canvas .login-shine-button:hover::before,
+.login-auth-canvas .login-shine-button:focus-visible::before {
   opacity: 0.85;
   transform: rotate(0deg);
   transition:
@@ -840,14 +973,14 @@
     transform 300ms cubic-bezier(0.05, 0.87, 0.32, 1.07);
 }
 
-.login-shine-button:disabled::before,
-.login-shine-button[aria-disabled='true']::before {
+.login-auth-canvas .login-shine-button:disabled::before,
+.login-auth-canvas .login-shine-button[aria-disabled="true"]::before {
   opacity: 0;
 }
 
 /* `z-index: 1` on a positioned element also isolates the overlay blend below,
    so the tint can only ever blend with this face — never with the halo. */
-.login-shine-button__face {
+.login-auth-canvas .login-shine-button__face {
   position: relative;
   z-index: 1;
   display: inline-flex;
@@ -869,8 +1002,8 @@
 
 /* The sheen. Overlay blending is what gives the face its cyan-to-orchid shift.
    The alpha is capped because the contrast budget above assumes it. */
-.login-shine-button__face::after {
-  content: '';
+.login-auth-canvas .login-shine-button__face::after {
+  content: "";
   position: absolute;
   inset: 0;
   background: var(--login-shine-tint);
@@ -879,17 +1012,17 @@
   pointer-events: none;
 }
 
-.dark .login-shine-button__face::after {
+.dark .login-auth-canvas .login-shine-button__face::after {
   opacity: 0.12;
 }
 
-.login-shine-button:active .login-shine-button__face {
+.login-auth-canvas .login-shine-button:active .login-shine-button__face {
   transform: translateY(1px);
 }
 
 /* The sweep. Parked far off the left edge and clipped away by the face at rest;
    only the keyframe below ever moves it. */
-.login-shine-button__sweep {
+.login-auth-canvas .login-shine-button__sweep {
   position: absolute;
   z-index: 0;
   right: -14%;
@@ -903,7 +1036,7 @@
   pointer-events: none;
 }
 
-.login-shine-button__label {
+.login-auth-canvas .login-shine-button__label {
   position: relative;
   z-index: 2;
   background: var(--login-shine-label);
@@ -916,24 +1049,45 @@
   white-space: nowrap;
 }
 
+/* The focus indicator lives on the FACE, not the button. An element's outer
+   box-shadow paints before its descendants, so a ring on the button sits UNDER
+   the halo — on exactly the state that shows the ring. Moving it to the opaque
+   child (z-index 1) puts it above the glow, and the 2px opaque offset means its
+   contrast is measured against the slab rather than against whatever the halo
+   happens to be painting behind it. */
+.login-auth-canvas .login-shine-button:focus-visible {
+  box-shadow: none;
+}
+
+.login-auth-canvas .login-shine-button:focus-visible .login-shine-button__face {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 32%),
+    inset 0 0 0 1px rgb(255 255 255 / 14%),
+    inset 0 -16px 26px -20px rgb(0 0 0 / 60%),
+    0 0 0 2px var(--login-slab),
+    0 0 0 4px hsl(var(--ring));
+}
+
 /* Hover flattens the label to a single white — the reference does this, and it
    only widens the measured margin. */
-.login-shine-button:hover .login-shine-button__label,
-.login-shine-button:focus-visible .login-shine-button__label {
+.login-auth-canvas .login-shine-button:hover .login-shine-button__label,
+.login-auth-canvas
+  .login-shine-button:focus-visible
+  .login-shine-button__label {
   background: none;
   color: #ffffff;
   -webkit-text-fill-color: #ffffff;
 }
 
 /* The busy spinner is an icon, not clipped text — it keeps a real colour. */
-.login-shine-button__face > svg {
+.login-auth-canvas .login-shine-button__face > svg {
   position: relative;
   z-index: 2;
   color: #f2fbff;
 }
 
-.login-shine-button:disabled,
-.login-shine-button[aria-disabled='true'] {
+.login-auth-canvas .login-shine-button:disabled,
+.login-auth-canvas .login-shine-button[aria-disabled="true"] {
   cursor: not-allowed;
 }
 
@@ -941,27 +1095,50 @@
    a face this deep still reads as a live dark button, which is worse than no
    treatment at all — the operator cannot tell the control is inert. Flattening to
    the canvas's own muted surface makes "type a password" unmistakable, and makes
-   the gradient's arrival on the first keystroke the affordance. */
-.login-shine-button:disabled .login-shine-button__face,
-.login-shine-button[aria-disabled='true'] .login-shine-button__face {
+   the gradient's arrival on the first keystroke the affordance.
+
+   `[data-busy]` is excluded throughout. The CTA is `disabled` both while nothing
+   is typed AND while the request is in flight, but those are not the same state:
+   flattening the button the instant it is clicked reads as the form going dead.
+   Busy keeps the identity and shows the spinner. */
+.login-auth-canvas
+  .login-shine-button:disabled:not([data-busy="true"])
+  .login-shine-button__face,
+.login-auth-canvas
+  .login-shine-button[aria-disabled="true"]:not([data-busy="true"])
+  .login-shine-button__face {
   background: var(--login-soft);
   box-shadow: inset 0 0 0 1px var(--login-input-border);
 }
 
-.login-shine-button:disabled .login-shine-button__face::after,
-.login-shine-button[aria-disabled='true'] .login-shine-button__face::after {
+.login-auth-canvas
+  .login-shine-button:disabled:not([data-busy="true"])
+  .login-shine-button__face::after,
+.login-auth-canvas
+  .login-shine-button[aria-disabled="true"]:not([data-busy="true"])
+  .login-shine-button__face::after {
   display: none;
 }
 
-.login-shine-button:disabled .login-shine-button__label,
-.login-shine-button[aria-disabled='true'] .login-shine-button__label {
+.login-auth-canvas
+  .login-shine-button:disabled:not([data-busy="true"])
+  .login-shine-button__label,
+.login-auth-canvas
+  .login-shine-button[aria-disabled="true"]:not([data-busy="true"])
+  .login-shine-button__label {
   background: none;
   color: var(--login-text-muted);
   -webkit-text-fill-color: var(--login-text-muted);
 }
 
-.login-shine-button:disabled .login-shine-button__face > svg,
-.login-shine-button[aria-disabled='true'] .login-shine-button__face > svg {
+.login-auth-canvas
+  .login-shine-button:disabled:not([data-busy="true"])
+  .login-shine-button__face
+  > svg,
+.login-auth-canvas
+  .login-shine-button[aria-disabled="true"]:not([data-busy="true"])
+  .login-shine-button__face
+  > svg {
   color: var(--login-text-muted);
 }
 
@@ -985,8 +1162,12 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .login-shine-button:hover:not(:disabled) .login-shine-button__sweep,
-  .login-shine-button:focus-visible:not(:disabled) .login-shine-button__sweep {
+  .login-auth-canvas
+    .login-shine-button:hover:not(:disabled):not([aria-disabled="true"])
+    .login-shine-button__sweep,
+  .login-auth-canvas
+    .login-shine-button:focus-visible:not(:disabled):not([aria-disabled="true"])
+    .login-shine-button__sweep {
     animation: login-shine-sweep 1s linear 1 both;
     will-change: transform, opacity;
   }
@@ -1004,7 +1185,7 @@
    each ink with the wrong ramp for that half — white on bright cyan, then dark on
    near-navy. Both states are measured; the crossfade between them is not, so
    there is no crossfade. The motion lives in the orbs, glyphs and label slide. */
-.login-theme-pill {
+.login-auth-canvas .login-theme-pill {
   position: relative;
   display: grid;
   grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
@@ -1026,11 +1207,11 @@
   line-height: 1;
 }
 
-.login-theme-pill[data-appearance='dark'] {
+.login-auth-canvas .login-theme-pill[data-appearance="dark"] {
   color: var(--login-pill-ink-dark);
 }
 
-.login-theme-pill__track {
+.login-auth-canvas .login-theme-pill__track {
   position: absolute;
   z-index: 1;
   inset: 0;
@@ -1040,13 +1221,28 @@
   pointer-events: none;
 }
 
-.login-theme-pill[data-appearance='dark'] .login-theme-pill__track {
+.login-auth-canvas
+  .login-theme-pill[data-appearance="dark"]
+  .login-theme-pill__track {
   background: var(--login-pill-dark);
+}
+
+/* Same reason as the CTA: the ring goes on the opaque track, above the flair.
+   The offset is the CANVAS here — the pill sits on it, not on the slab. */
+.login-auth-canvas .login-theme-pill:focus-visible {
+  box-shadow: none;
+}
+
+.login-auth-canvas .login-theme-pill:focus-visible .login-theme-pill__track {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 22%),
+    0 0 0 2px var(--login-canvas),
+    0 0 0 4px hsl(var(--ring));
 }
 
 /* Two blurred orbs that trade sides on every toggle — the reference's paired
    glows, without its full-bleed demo canvas. */
-.login-theme-pill__flair {
+.login-auth-canvas .login-theme-pill__flair {
   position: absolute;
   z-index: 0;
   inset: -45% -22%;
@@ -1056,12 +1252,12 @@
   pointer-events: none;
 }
 
-.login-theme-pill:hover .login-theme-pill__flair,
-.login-theme-pill:focus-visible .login-theme-pill__flair {
+.login-auth-canvas .login-theme-pill:hover .login-theme-pill__flair,
+.login-auth-canvas .login-theme-pill:focus-visible .login-theme-pill__flair {
   opacity: 0.75;
 }
 
-.login-theme-pill__orb {
+.login-auth-canvas .login-theme-pill__orb {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -1073,27 +1269,31 @@
   transition: transform 400ms cubic-bezier(0.68, -0.4, 0.27, 1.4);
 }
 
-.login-theme-pill__orb--light {
+.login-auth-canvas .login-theme-pill__orb--light {
   background: var(--login-pill-orb-light);
   transform: translate3d(-64%, 0, 0) rotate(0deg);
 }
 
-.login-theme-pill__orb--dark {
+.login-auth-canvas .login-theme-pill__orb--dark {
   background: var(--login-pill-orb-dark);
   transform: translate3d(64%, 0, 0) rotate(0deg);
 }
 
-.login-theme-pill[data-appearance='dark'] .login-theme-pill__orb--light {
+.login-auth-canvas
+  .login-theme-pill[data-appearance="dark"]
+  .login-theme-pill__orb--light {
   transform: translate3d(64%, 0, 0) rotate(180deg);
 }
 
-.login-theme-pill[data-appearance='dark'] .login-theme-pill__orb--dark {
+.login-auth-canvas
+  .login-theme-pill[data-appearance="dark"]
+  .login-theme-pill__orb--dark {
   transform: translate3d(-64%, 0, 0) rotate(-180deg);
 }
 
 /* Moon and sun own fixed side cells, so neither can slide under the label —
    that is what keeps the measured label-zone contrast true. */
-.login-theme-pill__icon {
+.login-auth-canvas .login-theme-pill__icon {
   position: relative;
   z-index: 2;
   display: flex;
@@ -1103,33 +1303,37 @@
   pointer-events: none;
 }
 
-.login-theme-pill__icon svg {
+.login-auth-canvas .login-theme-pill__icon svg {
   width: 1.25rem;
   height: 1.25rem;
 }
 
-.login-theme-pill__icon--moon {
+.login-auth-canvas .login-theme-pill__icon--moon {
   transform: scale(0) rotate(-40deg);
   transform-origin: 20% 60%;
   transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
   color: var(--login-pill-ink-dark);
 }
 
-.login-theme-pill__icon--sun {
+.login-auth-canvas .login-theme-pill__icon--sun {
   transform: scale(1);
   transition: transform 200ms var(--motion-ease-standard);
   color: #e1faff;
 }
 
-.login-theme-pill[data-appearance='dark'] .login-theme-pill__icon--moon {
+.login-auth-canvas
+  .login-theme-pill[data-appearance="dark"]
+  .login-theme-pill__icon--moon {
   transform: scale(1) rotate(0deg);
 }
 
-.login-theme-pill[data-appearance='dark'] .login-theme-pill__icon--sun {
+.login-auth-canvas
+  .login-theme-pill[data-appearance="dark"]
+  .login-theme-pill__icon--sun {
   transform: scale(0);
 }
 
-.login-theme-pill__label {
+.login-auth-canvas .login-theme-pill__label {
   position: relative;
   z-index: 2;
   display: block;
@@ -1138,57 +1342,94 @@
   white-space: nowrap;
 }
 
-.login-theme-pill[data-appearance='dark'] .login-theme-pill__label {
+.login-auth-canvas
+  .login-theme-pill[data-appearance="dark"]
+  .login-theme-pill__label {
   transform: translate3d(0.375rem, 0, 0);
 }
 
 /* --- Accessibility fallbacks for both accents ---------------------------- */
 
-/* Solid surfaces requested: drop every blurred decoration. */
+/* Solid surfaces requested: drop every translucent or blurred decoration —
+   including the overlay-blended tint, which is translucent even though it is not
+   blurred. `!important` throughout: these fallbacks have to outrank the state
+   selectors above them (`[data-appearance]`, `:disabled`, `:hover`), which are
+   more specific than a plain class. */
 @media (prefers-reduced-transparency: reduce) {
-  .login-shine-button::before,
-  .login-shine-button__sweep,
-  .login-theme-pill__flair {
-    display: none;
+  .login-auth-canvas .login-shine-button::before,
+  .login-auth-canvas .login-shine-button__sweep,
+  .login-auth-canvas .login-shine-button__face::after,
+  .login-auth-canvas .login-theme-pill__flair {
+    display: none !important;
   }
 }
 
 /* Forced colours strip our gradients. Hand both controls back to the system
-   palette — critically, un-clip the label, which would otherwise stay
-   transparent over a system-painted face and vanish entirely. */
+   palette — critically, un-clip the label, which would otherwise stay transparent
+   over a system-painted face and vanish entirely.
+
+   `!important` is load-bearing here, not defensive. `forced-color-adjust: none`
+   opts these elements OUT of the UA's own correction, so anything that survives
+   on specificity keeps a hard-coded colour the system theme never sees: the
+   pill's `[data-appearance='dark']` navy ink, and the disabled CTA's
+   `--login-soft` face and `--login-text-muted` label. The disabled CTA is the
+   RESTING state of the password step, so that one is not an edge case. */
 @media (forced-colors: active) {
-  .login-shine-button::before,
-  .login-shine-button__sweep,
-  .login-shine-button__face::after,
-  .login-theme-pill__flair,
-  .login-theme-pill__track {
-    display: none;
+  .login-auth-canvas .login-shine-button::before,
+  .login-auth-canvas .login-shine-button__sweep,
+  .login-auth-canvas .login-shine-button__face::after,
+  .login-auth-canvas .login-theme-pill__flair,
+  .login-auth-canvas .login-theme-pill__track {
+    display: none !important;
   }
 
-  .login-shine-button__face,
-  .login-theme-pill {
+  .login-auth-canvas .login-shine-button__face,
+  .login-auth-canvas .login-theme-pill {
     forced-color-adjust: none;
-    border: 1px solid ButtonText;
-    background: ButtonFace;
-    color: ButtonText;
+    border: 1px solid ButtonText !important;
+    background: ButtonFace !important;
+    color: ButtonText !important;
+    filter: none !important;
   }
 
-  .login-theme-pill {
+  .login-auth-canvas .login-theme-pill {
     border-radius: 999px;
   }
 
-  .login-shine-button__label,
-  .login-shine-button:hover .login-shine-button__label,
-  .login-shine-button:focus-visible .login-shine-button__label {
-    background: none;
-    color: ButtonText;
-    -webkit-text-fill-color: ButtonText;
+  .login-auth-canvas .login-shine-button:disabled .login-shine-button__face,
+  .login-auth-canvas
+    .login-shine-button[aria-disabled="true"]
+    .login-shine-button__face {
+    background: ButtonFace !important;
+    box-shadow: none !important;
   }
 
-  .login-shine-button__face > svg,
-  .login-theme-pill__icon--moon,
-  .login-theme-pill__icon--sun {
-    color: ButtonText;
+  .login-auth-canvas
+    .login-shine-button:focus-visible
+    .login-shine-button__face,
+  .login-auth-canvas .login-theme-pill:focus-visible .login-theme-pill__track {
+    box-shadow: none !important;
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .login-auth-canvas .login-shine-button__label,
+  .login-auth-canvas .login-shine-button__face > svg,
+  .login-auth-canvas .login-theme-pill__label,
+  .login-auth-canvas .login-theme-pill__icon--moon,
+  .login-auth-canvas .login-theme-pill__icon--sun {
+    background: none !important;
+    color: ButtonText !important;
+    -webkit-text-fill-color: ButtonText !important;
+  }
+
+  .login-auth-canvas .login-shine-button:disabled .login-shine-button__label,
+  .login-auth-canvas
+    .login-shine-button:disabled
+    .login-shine-button__face
+    > svg {
+    color: GrayText !important;
+    -webkit-text-fill-color: GrayText !important;
   }
 }
 

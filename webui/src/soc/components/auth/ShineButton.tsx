@@ -15,13 +15,17 @@
  * ships `motion` lazily, and the login deliberately stays off that path so the
  * first authenticated paint pulls nothing extra.
  *
- * Structure matters for two separate reasons, so do not flatten it:
+ * Structure matters for three separate reasons, so do not flatten it:
  *
  *   - CONTRAST. The face is an opaque child at `z-index: 1`, which isolates the
  *     overlay-blended sheen to the face and keeps the halo from washing over the
- *     surface the label is measured against. The face ramp is deepened from the
- *     reference until the worst stop holds >= 4.75:1 against both label stops in
- *     every state, including mid-sweep. Re-measure before touching the palette.
+ *     surface the label is measured against. The ramp is deepened from the
+ *     reference until every stop clears 4.5:1 against both label stops in every
+ *     state, including mid-sweep; `scripts/gate-login-accents.mjs` is the
+ *     authority and re-measures it on every build.
+ *   - FOCUS. The keyboard ring is drawn on the FACE, not on this button. An
+ *     element's outer box-shadow paints before its descendants, so a ring here
+ *     would sit underneath the halo — on precisely the state that shows the ring.
  *   - ACCESSIBLE NAME. `children` is the label and the only text in the button,
  *     so `getByRole('button', { name: 'Sign in' })` keeps working. The sweep is
  *     `aria-hidden` and the halo is a pseudo-element, so neither contributes a
@@ -37,16 +41,24 @@ export interface ShineButtonProps extends React.ButtonHTMLAttributes<HTMLButtonE
    * Icons are deliberately NOT gradient-clipped, so they keep a real colour.
    */
   icon?: React.ReactNode;
+  /**
+   * True while the action is in flight. The CTA is `disabled` both while nothing
+   * is typed AND while submitting, but those states must not LOOK the same —
+   * flattening the button the instant it is clicked reads as the form going
+   * dead. This keeps the identity and lets the spinner carry the state.
+   */
+  busy?: boolean;
   /** The button's visible label, and its accessible name. */
   children: React.ReactNode;
 }
 
 export const ShineButton = React.forwardRef<HTMLButtonElement, ShineButtonProps>(
-  function ShineButton({ className, icon, children, type = 'button', ...rest }, ref) {
+  function ShineButton({ className, icon, busy, children, type = 'button', ...rest }, ref) {
     return (
       <button
         ref={ref}
         type={type}
+        data-busy={busy ? 'true' : undefined}
         className={cn('login-shine-button', focusRing, className)}
         {...rest}
       >

@@ -628,7 +628,10 @@ The identity canvas — and only the identity canvas — carries two expressive 
 `ShineButton`, the primary CTA, and `ThemeModePill`, the corner appearance switch. Both
 live in `webui/src/soc/components/auth/`, both are styled entirely by
 `.login-auth-canvas`-scoped CSS in `theme.css`, and both animate with CSS transitions
-and one keyframe — no animation library, and neither sits on a lazy chunk. They are a
+and one keyframe — no animation library, and neither sits on a lazy chunk. Every rule
+is scoped under the canvas class, so the restriction is structural rather than
+advisory: used off the identity canvas these degrade to a plain, legible button rather
+than an invisible one. They are a
 deliberate exception to the surface grammar above, not a licence to reintroduce
 decoration elsewhere: no Console page may adopt either, and the ambient backdrop stays
 neutral.
@@ -650,11 +653,25 @@ The exception holds only while these rules do:
   end of either ramp, which is what makes the measured label zone true. Ink and track
   swap instantly between states — the two ramps are not interpolable, so a crossfade
   would pair each ink with the wrong ramp mid-transition.
+- **The focus ring is drawn on the opaque child, never on the button.** An element's
+  outer box-shadow paints before its descendants, so a ring on the button itself sits
+  underneath the halo and the flair — on precisely the state that shows the ring. It
+  goes on the face and the track instead, with a 2px opaque offset so its contrast is
+  measured against the slab or the canvas rather than against whatever the glow is
+  painting behind it.
+- **Disabled and busy are different states.** The CTA is disabled both while nothing is
+  typed and while the request is in flight. Flattening it the instant it is clicked
+  reads as the form going dead, so the inert treatment excludes `[data-busy]`; busy
+  keeps the identity and lets the spinner carry the state.
 - **Every fallback is explicit.** The sweep is gated behind
-  `prefers-reduced-motion: no-preference`; blurred layers are dropped under
-  `prefers-reduced-transparency: reduce`; and under `forced-colors: active` both
-  controls return to the system palette AND the gradient-clipped label is un-clipped,
-  without which it would stay transparent over a system-painted face and vanish.
+  `prefers-reduced-motion: no-preference`; translucent and blurred layers — the tint
+  included — are dropped under `prefers-reduced-transparency: reduce`; and under
+  `forced-colors: active` both controls return to the system palette AND the
+  gradient-clipped label is un-clipped, without which it would stay transparent over a
+  system-painted face and vanish. Those fallbacks carry `!important` deliberately:
+  `forced-color-adjust: none` opts the elements out of the UA's own correction, so any
+  state selector that survives on specificity — the pill's `[data-appearance]` ink, the
+  disabled CTA's muted face — keeps a hard-coded colour the system theme never sees.
 - **The CTA's accessible name is its label alone.** The sweep is `aria-hidden`, the halo
   is a pseudo-element, and any icon renders outside the clipped label span (text-fill
   transparency is inherited, so an icon nested inside it would disappear).

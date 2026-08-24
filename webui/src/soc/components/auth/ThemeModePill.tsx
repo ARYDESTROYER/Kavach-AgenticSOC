@@ -19,7 +19,9 @@
  * Accessibility: the pill is a plain button, not a `switch` — "Light mode,
  * switch, off" is a worse announcement than a button that says what it does.
  * The accessible name opens with the visible label, so WCAG 2.5.3 (Label in
- * Name) holds for voice control, then states the action.
+ * Name) holds for voice control, then states the action. There is no `title`:
+ * it would duplicate the accessible name and some screen readers would announce
+ * the string twice.
  */
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
@@ -40,10 +42,7 @@ export interface ThemeModePillProps {
 function MoonGlyph() {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
-      <path
-        d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"
-        fill="currentColor"
-      />
+      <path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z" fill="currentColor" />
     </svg>
   );
 }
@@ -68,7 +67,6 @@ export function ThemeModePill({ dark, onToggle, className }: ThemeModePillProps)
       // Opens with the visible label so voice control can target it (WCAG 2.5.3),
       // then names the action, because the label alone reads as a statement.
       aria-label={`${label} — ${action}`}
-      title={`${label} — ${action}`}
       onClick={() => onToggle(dark ? 'light' : 'dark')}
       className={cn('login-theme-pill', focusRing, className)}
     >

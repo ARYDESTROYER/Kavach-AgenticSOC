@@ -132,8 +132,11 @@ function LoginThemeControl({
           // leftover square chip next to it.
           'inline-flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-canvas',
+          // `bg-muted` alone is ~1.1:1 against this canvas, so the pressed state
+          // would be conveyed by a difference nobody can see (WCAG 1.4.11).
+          // Inverting the chip makes it unmistakable.
           value === 'system'
-            ? 'bg-muted text-foreground'
+            ? 'border-foreground bg-foreground text-background'
             : 'hover:bg-muted/70 hover:text-foreground',
         )}
       >
@@ -852,7 +855,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                       />
                     </div>
                     {username.trim().length > 0 ? (
-                      <ShineButton type="submit" className="flex h-12 w-full" disabled={busy}>
+                      <ShineButton type="submit" className="h-12 w-full" disabled={busy} busy={busy}>
                         Continue
                       </ShineButton>
                     ) : null}
@@ -897,8 +900,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     </div>
                     <ShineButton
                       type="submit"
-                      className="flex h-12 w-full"
+                      className="h-12 w-full"
                       disabled={busy || password.length === 0}
+                      busy={busy}
                       icon={
                         busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null
                       }

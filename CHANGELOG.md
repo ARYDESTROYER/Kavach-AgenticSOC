@@ -528,7 +528,21 @@ and, just as importantly, makes each of these conditions a state an operator can
 - **The login focus ring is visible again.** The identity canvas overrode `--ring` to a
   grey measuring 1.84:1 on the white slab, well under the 3:1 WCAG 2.4.11 bar for a
   focus indicator. Light is now 4.74:1 and dark 5.65:1, which every control on the
-  canvas inherits.
+  canvas inherits. The indicator is also drawn on each accent's opaque child rather
+  than on the button, because an element's outer box-shadow paints before its
+  descendants — a ring on the button sat underneath the halo, on exactly the state that
+  shows the ring.
+- **The login accents survive forced-colors mode.** `forced-color-adjust: none` opts an
+  element out of the UA's own correction, so any state selector that outranked the
+  fallback on specificity kept a hard-coded colour the system theme never sees: the
+  appearance pill's dark-state navy ink, and the disabled CTA's muted face and label.
+  The disabled CTA is the resting state of the password step, so that was the default
+  rendering, not an edge case. Both now hand back to `ButtonFace`/`ButtonText`, with
+  `GrayText` for the genuinely inert state.
+- **A submitting sign-in button no longer looks like a dead one.** The CTA is disabled
+  both while nothing is typed and while the request is in flight; the inert treatment
+  now excludes the busy state, so clicking Sign in keeps the gradient and shows the
+  spinner instead of flattening to grey.
 - **The top KPI is Critical alone**, not Critical/High, and deep-links to that
   severity.
 - **Demo mode moved into the top bar.** The banner took a full-width strip above

@@ -175,6 +175,34 @@ describe('design gate: login identity accents (raw-gradient surfaces)', () => {
     expect(minSwept).toBeGreaterThanOrEqual(TEXT_BAR);
   });
 
+  it('fails loudly rather than silently measuring fewer layers', () => {
+    // The gate lost the dark-theme tint once, when the CSS selectors were scoped
+    // and its lookups went stale — and it kept passing, with HIGHER ratios,
+    // because a missing opacity defaulted to 0. It now refuses to report at all
+    // if a layer the label sits on cannot be read, so assert that self-check is
+    // wired: a healthy run has real composites and no unreadable-layer result.
+    const { results } = checkLoginAccents();
+    expect(results.some((r) => /unreadable/.test(r.name))).toBe(false);
+    // Dark composites must exist AND be tighter than their light counterparts —
+    // the dark tint is heavier, so if it ever stops being applied this flips.
+    const dark = results.filter((r) => /shine face .*\[dark\/sweep\+tint\]/.test(r.name));
+    const light = results.filter((r) => /shine face .*\[light\/sweep\+tint\]/.test(r.name));
+    expect(dark.length).toBeGreaterThan(0);
+    expect(light.length).toBe(dark.length);
+    expect(Math.min(...dark.map((r) => r.ratio ?? Infinity))).toBeLessThan(
+      Math.min(...light.map((r) => r.ratio ?? Infinity)),
+    );
+  });
+
+  it('derives the pill label zone from the CSS, not from a hardcoded copy', () => {
+    // A mirrored geometry constant is how a gate goes quietly wrong: widen the
+    // pill and the measured zone silently stays put. The zone must be reported.
+    const { results } = checkLoginAccents();
+    const zones = results.filter((r) => /pill .* label zone \(\d+%-\d+%\)/.test(r.name));
+    expect(zones.length).toBe(2);
+    expect(results.some((r) => /geometry unreadable/.test(r.name))).toBe(false);
+  });
+
   it('covers both pill states across the label cell only', () => {
     const { results } = checkLoginAccents();
     const zones = results.filter((r) => /pill (light|dark) label zone/.test(r.name));

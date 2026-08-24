@@ -10057,3 +10057,43 @@
   proxy injects them and `Secrets` picks them up.
 - Status: done
 - Next: nothing outstanding. The `login accents` gate is the guard if anyone revisits the ramps.
+
+### 2026-08-24 15:40Z — orchestrator — Adversarial review of the shine/pill diff: 3 confirmed defects fixed
+- Context: second adversarial pass over `3a6e5d2` (5 review dimensions, every finding
+  independently refuted-or-confirmed against the real files). 3 confirmed, the rest refuted
+  as already-handled or as readings of the pre-diff blob.
+- Did:
+  - **forced-colors, pill (high).** `forced-color-adjust: none` opts an element out of the
+    UA's correction, so `[data-appearance='dark']` (0,2,0) outranked the fallback's bare
+    `.login-theme-pill` (0,1,0) and the dark-state label kept its navy ink. Measured live:
+    `rgb(6,61,73)` where `ButtonText` was required — invisible on a dark high-contrast theme.
+  - **forced-colors, disabled CTA (high).** Same mechanism: `:disabled .face` (0,3,0) kept
+    `--login-soft` and `--login-text-muted`. That is the RESTING state of the password step,
+    so it was the default rendering. Both fallbacks are now scoped and `!important`, with
+    `GrayText` for the genuinely inert state.
+  - **Focus ring paint order (high).** An element's outer box-shadow paints before its
+    descendants, so the Tailwind `focusRing` on the button sat *under* the halo — on exactly
+    the state that shows the ring. Verified live: ring present but washed to a faint lavender
+    line. Moved to the opaque child (face / track) with a 2px opaque offset, so the indicator
+    contrast is measured against the slab or canvas rather than the glow.
+  - Also, from the same pass: busy is no longer styled as inert (the CTA is `disabled` both
+    while empty and while submitting — clicking it used to flatten it to grey); the sweep
+    guard honours `[aria-disabled]` like its four siblings; reduced-transparency now drops
+    the translucent tint too; the pill's duplicate `title` is gone; and the system-reset chip
+    inverts when pressed instead of relying on a ~1.1:1 `bg-muted` (WCAG 1.4.11).
+  - **Every accent rule is now scoped under `.login-auth-canvas`.** Off-canvas the controls
+    degrade to a plain legible button instead of an invisible one, and the "no Console page
+    may adopt either" rule is structural rather than advisory.
+  - **Gate hardening, and a real bug it caught in itself.** Scoping the selectors silently
+    broke the gate's `.dark …__face::after` lookup, so the dark tint stopped being modelled
+    and the gate reported HIGHER ratios while still passing — the vacuous-pass failure mode.
+    Fixed, plus: `customProperty` now honours the cascade (last declaration wins) and strips
+    comments; the pill geometry is parsed OUT of the CSS instead of mirrored in a constant;
+    and unreadable layer opacities now fail loudly instead of defaulting to 0. Two new
+    regression tests pin both behaviours.
+- Tests: webui **310 files / 2154 passed**, zero stderr; eslint 0/0; tsc clean; `npm run gates`
+  6/6 (362 composites, worst 4.61:1); full docs+app build clean. Re-verified all three fixes in
+  real Chromium: FC dark pill label now `ButtonText`, FC disabled CTA now `ButtonFace`/`GrayText`,
+  focus ring now a crisp ring above the halo, busy keeps the gradient.
+- Status: done
+- Next: nothing outstanding.
