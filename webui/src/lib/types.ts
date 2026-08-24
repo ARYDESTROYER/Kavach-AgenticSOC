@@ -3070,6 +3070,19 @@ export interface MetricsTrendBucket {
    *  needs-human / escalated. */
   closed: number;
   auto_closed: number;
+  /**
+   * The three-way LAST-WRITER `decision_by` partition of `closed`, over the same
+   * policy-excluded graded cohort: `auto_closed` (agent) + `human_closed` (analyst) +
+   * `system_closed` (the honest residual — deterministic SYSTEM routing plus legacy
+   * records carrying no provenance) === `closed`, exactly, in every bucket. Never fold
+   * `system_closed` into either side. Optional: older backends omit both, so a consumer
+   * must treat their absence as "close attribution not reported", never as zero.
+   *
+   * HONESTY: `decision_by` records the LAST decider, not proof of who did the work — an
+   * agent-closed case a human later merely acknowledges migrates into `human_closed`.
+   */
+  human_closed?: number;
+  system_closed?: number;
   false_positives: number;
   needs_human: number;
   escalated: number;

@@ -6,9 +6,10 @@
  *   ┌ MASTHEAD ─── a PLAIN, dense <PageHeader> (no card / no glow — the big title sits
  *   │             flush on the page background, like the Sources page) carrying the
  *   │             <TimeRangePicker> + auto-refresh + a manual refresh pulse in its actions.
- *   ├ KPI STRIP ── five borderless alert/case telemetry cells separated by hairlines.
- *   ├ INSTRUMENT ── one integrated 12-column band: Active Risk Index (#1 — the ONE risk
- *   │             instrument), resolved/open donut snapshots, and the latest-case queue.
+ *   ├ KPI STRIP ── five borderless alert/case telemetry cells separated by hairlines,
+ *   │             every one carrying its count AND that count's honest share.
+ *   ├ INSTRUMENT ── one integrated 12-column band: the Human-vs-AI close-attribution
+ *   │             instrument, resolved/open donut snapshots, and the latest-case queue.
  *   ├ OPERATIONS ── the Noise-Reduction flow plus a compact burndown/timing rail.
  *   └ DEEPER ───── a COLLAPSED "Deeper analytics" group folding the secondary bands
  *                  (spend tripwire, full response timing, autonomy split, connectors,
@@ -30,8 +31,15 @@
  * Hover trendlines: every landing metric with an HONEST server series reveals it on
  * hover/focus via `MetricHoverTrend` (metrics/trends buckets, `timing_trend`, or the
  * usage `cost_over_time` ledger series). A metric with no genuine series (e.g. the
- * combined Critical/High tile, the Active Risk Index) deliberately shows the quiet
- * no-data line or no affordance rather than an invented decorative trend.
+ * Critical tile — there is no per-severity bucket series) deliberately shows the quiet
+ * no-data line or no affordance rather than an invented decorative trend, and carries
+ * no decorative in-tile sparkline either.
+ *
+ * Scale context: every KPI numeral is paired with the denominator it is a share of,
+ * and each pair comes from ONE payload so numerator and denominator always describe
+ * the same population. A share whose evidence is bounded (the 200-case sample cap or a
+ * truncated posture scan) or whose denominator is missing renders an em dash — never a
+ * synthetic 0%.
  *
  * Security (#9): every label/value here is a humanized enum, a formatted number, or
  * backend-derived text rendered as PLAIN text. No untrusted string is injected as markup.
@@ -95,8 +103,8 @@ import {
   type MetricTrendPoint,
   type MetricTrendSeries,
 } from '@/soc/components/MetricHoverTrend';
-import { ActiveRiskIndex } from '@/soc/components/ActiveRiskIndex';
 import { CaseHoverCard } from '@/soc/components/CaseHoverCard';
+import { HumanVsAiCard, type HumanVsAiPoint, type HumanVsAiTotals } from '@/soc/components/HumanVsAiCard';
 import { NoiseFunnel } from '@/soc/components/NoiseFunnel';
 import { Reveal } from '@/soc/components/Reveal';
 import { CountUp } from '@/soc/components/CountUp';
@@ -118,7 +126,6 @@ import { Button } from '@/ui/button';
 
 import {
   humanizeMinutes as humanizeMins,
-  ratioPct,
   LIFECYCLE_METRICS,
   type LifecycleMetricKey,
 } from './posture.format';
@@ -307,11 +314,51 @@ function trendWindowLabel(t: MetricsTrends): string {
     : `last ${trendSpanLabel(t.window_hours)}`;
 }
 
+/**
+ * A short, deterministic UTC axis label for one trend bucket. Day-sized buckets read
+ * as `MM-DD`, anything finer as `HH:mm`; an unparseable instant falls back to the raw
+ * value so the axis never silently renames a bucket. UTC on purpose — the buckets are
+ * UTC-aligned server-side, so a local-time label would misplace them.
+ */
+function bucketAxisLabel(t: unknown, bucketMinutes: number | null | undefined): string {
+  const raw = String(t ?? '');
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return raw;
+  const iso = new Date(ms).toISOString();
+  const daily = typeof bucketMinutes === 'number' && bucketMinutes >= 1440;
+  return daily ? iso.slice(5, 10) : iso.slice(11, 16);
+}
+
+/**
+ * A whole-percent share rendered as scale context for a KPI numeral, or `undefined`
+ * when there is no honest denominator. The caller renders an em dash for `undefined`
+ * — never a synthetic 0%.
+ */
+function shareContext(value: number | undefined, denominator: number | undefined | null): string | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  if (typeof denominator !== 'number' || !Number.isFinite(denominator) || denominator <= 0) {
+    return undefined;
+  }
+  return `${Math.round((value / denominator) * 100)}% of ${fmtNumber(denominator)}`;
+}
+
 /** One KPI-strip tile descriptor (built in a memo, rendered as a <KpiTile>). */
 interface KpiItem {
   label: string;
+  /**
+   * Explicit, STABLE `data-testid` anchor. Pinned per tile so re-wording a label can
+   * never silently rename the tile's testid (KpiTile derives it from the label when
+   * this is omitted).
+   */
+  testId: string;
   value: React.ReactNode;
   sub?: string;
+  /**
+   * Scale context beside the numeral ("N (P%)"-style): the denominator this count is
+   * a share of, or `DASH` when that denominator is missing/bounded. Never a `delta`
+   * — see `KpiTileProps.secondary`.
+   */
+  secondary?: React.ReactNode;
   icon: LucideIcon;
   accent: KpiAccent;
   goodDirection: 'up' | 'down' | 'none';
@@ -1035,9 +1082,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const derived = React.useMemo(() => {
     let open = 0;
     let resolved = 0;
-    let criticalHighAlerts = 0;
-    let openCriticalHigh = 0;
-    let resolvedCriticalHigh = 0;
+    let criticalAlerts = 0;
+    let openCritical = 0;
+    let resolvedCritical = 0;
     const sevCounts = emptySev();
     const openSev = emptySev();
     const resolvedSev = emptySev();
@@ -1053,16 +1100,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
       sevCounts[band] += 1;
       if (isOpen) openSev[band] += 1;
       if (isClosed) resolvedSev[band] += 1;
-      if (band === 'critical' || band === 'high') {
-        // Critical / High is intentionally ALL lifecycle work in the selected
-        // dashboard window: still-open pressure + terminal cases. Unknown legacy
-        // statuses are excluded rather than silently inflating a reconciliable KPI.
+      if (band === 'critical') {
+        // CRITICAL ONLY (was the Critical-OR-High union). One band means the tile can
+        // honestly drill through to the Cases severity filter, which applies exactly
+        // one band at a time. Still intentionally ALL lifecycle work in the selected
+        // window: still-open pressure + terminal cases. Unknown legacy statuses are
+        // excluded rather than silently inflating a reconciliable KPI.
         if (isOpen) {
-          criticalHighAlerts += 1;
-          openCriticalHigh += 1;
+          criticalAlerts += 1;
+          openCritical += 1;
         } else if (isClosed) {
-          criticalHighAlerts += 1;
-          resolvedCriticalHigh += 1;
+          criticalAlerts += 1;
+          resolvedCritical += 1;
         }
       }
     }
@@ -1070,9 +1119,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
     return {
       open,
       resolved,
-      criticalHighAlerts,
-      openCriticalHigh,
-      resolvedCriticalHigh,
+      criticalAlerts,
+      openCritical,
+      resolvedCritical,
       sevCounts,
       openSev,
       resolvedSev,
@@ -1093,29 +1142,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
     return { open, resolved };
   }, [prevCases]);
 
-  // ----- Autonomous-vs-human split (#3 trust surface) --------------------- //
-  const autonomy = React.useMemo(() => {
-    const q = posture?.quality;
-    if (q && q.terminal_cases >= 0) {
-      const autoClosed = q.auto_closed_cases ?? 0;
-      const escalated = (q.escalated_cases ?? 0) + (q.needs_human_cases ?? 0);
-      const total = autoClosed + escalated;
-      return {
-        autoClosed,
-        escalated,
-        automationPct: q.automation_rate ?? (total ? autoClosed / total : 0),
-      };
-    }
-    let autoClosed = 0;
+  /**
+   * Last-resort count for the "Escalated to human" tile when `GET /api/metrics` is
+   * unavailable: the still-live needs-human / escalated rows of the bounded case
+   * sample. A tile falling back to this carries NO share — the sample is not the
+   * window population, so a percentage off it would be an invented denominator.
+   *
+   * (The former "Autonomous vs human" fold-out card was removed here: the landing
+   * page now states close attribution ONCE, in the Human-vs-AI instrument, over the
+   * server's reconciling agent/human/system partition. The card told a third,
+   * differently-denominated version of the same story.)
+   */
+  const escalatedFallback = React.useMemo(() => {
     let escalated = 0;
     for (const k of cases) {
       const st = (k.status || '').toLowerCase();
       if (st === 'needs_human' || st === 'escalated') escalated += 1;
-      else if (isAutoClosedByAI(k.status, k.decision_by)) autoClosed += 1;
     }
-    const total = autoClosed + escalated;
-    return { autoClosed, escalated, automationPct: total ? autoClosed / total : 0 };
-  }, [posture, cases]);
+    return escalated;
+  }, [cases]);
 
   // ----- Full response-timing trio (server posture) — Deeper analytics ---- //
   const timing = React.useMemo(() => {
@@ -1160,28 +1205,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
     [metrics],
   );
 
-  // ----- Active Risk Index (#1) ------------------------------------------- //
-  const activeRisk = React.useMemo<{ score: number | null; count: number }>(() => {
-    if (
-      typeof metrics?.active_risk_index === 'number' &&
-      Number.isFinite(metrics.active_risk_index)
-    ) {
-      return {
-        score: Math.round(metrics.active_risk_index),
-        count: metrics.active_risk_case_count ?? derived.open,
-      };
-    }
-    const openCases = cases.filter((k) => OPEN_STATUSES.has((k.status || '').toLowerCase()));
-    if (openCases.length) {
-      const mean = openCases.reduce((a, k) => a + (k.risk_score ?? 0), 0) / openCases.length;
-      return { score: Math.round(mean), count: openCases.length };
-    }
-    const avg = metrics?.avg_risk_score;
-    return {
-      score: typeof avg === 'number' && Number.isFinite(avg) ? Math.round(avg) : null,
-      count: 0,
-    };
-  }, [metrics, cases, derived.open]);
 
   // ----- Exactly four most-recent cases — compact live instrument queue ----- //
   const latestCases = React.useMemo(
@@ -1305,6 +1328,101 @@ export default function Overview({ onNavigate }: OverviewProps) {
   /** Window disclosure when no bucket payload is available (quiet no-data card). */
   const trendFallbackLabel = `last ${trendSpanLabel(hours)}`;
 
+  // ----- Human vs AI — close attribution (the instrument band's first cell) ---- //
+  /**
+   * The server's three-way LAST-WRITER partition of the window's CLOSED cases:
+   * agent / analyst / system-or-unattributed residual. Operator "declared benign"
+   * policy closes are excluded upstream (no model ran on them).
+   *
+   * Totals prefer the authoritative posture rollup; when posture is unavailable the
+   * SAME partition is summed from the (non-truncated) trend buckets, which the
+   * backend guarantees reconciles with it bucket-for-bucket. Either way the three
+   * counts must add up to the closed total — a partition that does not reconcile is
+   * reported as unavailable (em dashes) rather than shown as three plausible numbers.
+   */
+  const humanVsAi = React.useMemo<{
+    totals: HumanVsAiTotals | null;
+    reason: string;
+    series: HumanVsAiPoint[] | null;
+    truncated: boolean;
+    alerts: number | null;
+  }>(() => {
+    const partition = (
+      ai: unknown,
+      human: unknown,
+      system: unknown,
+      closed: unknown,
+    ): HumanVsAiTotals | null => {
+      const nums = [ai, human, system, closed];
+      if (nums.some((n) => typeof n !== 'number' || !Number.isFinite(n) || (n as number) < 0)) {
+        return null;
+      }
+      const [a, h, y, c] = nums as number[];
+      // The invariant the backend documents. If it does not hold here, the payload is
+      // not a partition and must not be rendered as one.
+      if (a + h + y !== c) return null;
+      return { ai: a, human: h, system: y, closed: c };
+    };
+
+    const buckets = trendsForWindow?.buckets ?? [];
+    const truncated = trendsForWindow?.truncated === true || posture?.truncated === true;
+
+    // The bucket series: charted only when EVERY bucket carries the partition, so an
+    // older backend can never render a lone agent line that reads as "humans closed
+    // nothing". Buckets are server zero-filled, so a 0 here is a measured zero.
+    const supported =
+      buckets.length > 0 &&
+      buckets.every(
+        (b) =>
+          typeof b.human_closed === 'number' &&
+          Number.isFinite(b.human_closed) &&
+          typeof b.system_closed === 'number' &&
+          Number.isFinite(b.system_closed),
+      );
+    const series: HumanVsAiPoint[] | null = supported
+      ? buckets.map((b) => ({
+          x: bucketAxisLabel(b.t, trendsForWindow?.bucket_minutes),
+          ai: finiteOrNull(b.auto_closed),
+          human: finiteOrNull(b.human_closed),
+          system: finiteOrNull(b.system_closed),
+        }))
+      : null;
+
+    const q = posture?.quality;
+    let totals = partition(
+      q?.auto_closed_cases,
+      q?.human_closed_cases,
+      q?.system_closed_cases,
+      q?.terminal_cases,
+    );
+    let reason = q
+      ? 'This backend does not report how closed cases were attributed.'
+      : 'Close attribution is unavailable for this window.';
+    if (!totals && supported && !truncated) {
+      const sum = (pick: (b: MetricsTrendBucket) => number | null | undefined): number =>
+        buckets.reduce((a, b) => a + (finiteOrNull(pick(b)) ?? 0), 0);
+      totals = partition(
+        sum((b) => b.auto_closed),
+        sum((b) => b.human_closed),
+        sum((b) => b.system_closed),
+        sum((b) => b.closed),
+      );
+      if (!totals) reason = 'Close attribution did not reconcile for this window.';
+    }
+
+    // Raw ingest volume is a DIFFERENT population (ingest-hour tally vs case cohort),
+    // so it is only ever shown as labelled context — and only when every bucket
+    // actually reported it. One null bucket means the counters were warming up.
+    const alertsMeasured =
+      buckets.length > 0 &&
+      buckets.every((b) => typeof b.alerts === 'number' && Number.isFinite(b.alerts));
+    const alerts = alertsMeasured
+      ? buckets.reduce((a, b) => a + (b.alerts as number), 0)
+      : null;
+
+    return { totals, reason, series, truncated, alerts };
+  }, [posture, trendsForWindow]);
+
   // Per-UTC-day lifecycle timing series (GET /api/metrics `timing_trend`) — genuinely
   // MTTD/respond/resolve, so the timing stats reuse it instead of the case sample.
   const timingTrends = React.useMemo(() => {
@@ -1329,21 +1447,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   // ----- KPI micro-strip — 5 alert/case signal tiles --------------------- //
   const kpis: KpiItem[] = React.useMemo(() => {
-    const compare = posture?.compare;
-    const fpRate = posture?.quality?.false_positive_rate;
+    const quality = posture?.quality;
+    const fpRate = quality?.false_positive_rate;
     const fpPercent = typeof fpRate === 'number' ? Math.round(fpRate * 100) : undefined;
-    const autoResolved = posture?.quality?.auto_closed_cases;
-    const escalated = metrics?.needs_human_cases ?? autonomy.escalated;
+    const autoResolved = quality?.auto_closed_cases;
+    // Prefer the server aggregate so the numerator and its denominator
+    // (`metrics.total_cases`) come from ONE payload; the bounded-sample fallback is
+    // deliberately share-less (see `escalatedFallback`).
+    const escalatedFromMetrics = metrics?.needs_human_cases;
+    const escalated = escalatedFromMetrics ?? escalatedFallback;
+
+    /**
+     * The case sample is a bounded 200-row, created-desc fetch: at the cap it is NOT
+     * the window population, so any share computed from it would silently become
+     * "of 200". Below the cap (and with the posture scan itself untruncated) the
+     * sample IS the complete window, so a client-derived numerator and
+     * `cases.length` describe the same population and reconcile exactly. Bounded →
+     * no denominator at all, and the tile renders an em dash.
+     */
+    const sampleTruncated = cases.length >= 200 || posture?.truncated === true;
+    const sampleTotal = sampleTruncated ? undefined : cases.length;
+
     const { fromMs, toMs } = resolveRange(range);
     const openTrend = caseArrivalTrend(cases, fromMs, toMs, (row) =>
       OPEN_STATUSES.has((row.status || '').toLowerCase()),
     );
-    const criticalTrend = caseArrivalTrend(cases, fromMs, toMs, (row) => {
-      const band = bandOfCase(row);
-      const status = (row.status || '').toLowerCase();
-      const isKnownLifecycle = OPEN_STATUSES.has(status) || CLOSED_STATUSES.has(status);
-      return isKnownLifecycle && (band === 'critical' || band === 'high');
-    });
     const escalatedTrend = caseArrivalTrend(cases, fromMs, toMs, (row) => {
       const status = (row.status || '').toLowerCase();
       return status === 'needs_human' || status === 'escalated';
@@ -1351,13 +1479,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
     const resolvedTrend = caseArrivalTrend(cases, fromMs, toMs, (row) =>
       isAutoClosedByAI(row.status, row.decision_by),
     );
-    const previousFpRate = compare?.false_positive_rate?.prev;
-    // Both spark points come from the same authoritative server comparison as the
-    // numeral and delta. Never mix the bounded case sample into this tile.
-    const falsePositiveTrend =
-      typeof fpRate === 'number' && typeof previousFpRate === 'number'
-        ? [previousFpRate * 100, fpRate * 100]
-        : undefined;
     const postureSub = postureLoading
       ? `Loading ${windowLabel(hours)}`
       : postureError
@@ -1367,10 +1488,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
     return [
       {
         label: 'Open Cases',
+        testId: 'open-cases',
         value: fmtNumber(derived.open),
         countTo: derived.open,
         format: fmtInt,
-        sub: `${fmtNumber(cases.length)} cases tracked`,
+        // Same-sample numerator and denominator; suppressed outright when the sample
+        // is bounded rather than quoting a share "of 200".
+        secondary: shareContext(derived.open, sampleTotal) ?? DASH,
+        sub: sampleTruncated
+          ? 'Bounded sample · share unavailable'
+          : 'Every active lifecycle state',
         icon: Inbox,
         accent: 'primary',
         spark: openTrend,
@@ -1390,27 +1517,41 @@ export default function Overview({ onNavigate }: OverviewProps) {
           : undefined,
       },
       {
-        label: 'Critical / High',
-        value: fmtNumber(derived.criticalHighAlerts),
-        countTo: derived.criticalHighAlerts,
+        label: 'Critical',
+        // Pinned: the label narrowed from "Critical / High", which would otherwise
+        // have silently renamed this anchor from `kpi-critical-high`.
+        testId: 'critical',
+        value: fmtNumber(derived.criticalAlerts),
+        countTo: derived.criticalAlerts,
         format: fmtInt,
+        // Same bounded-sample rule as Open Cases: there is NO server-side
+        // per-severity count in any loaded payload, so the only honest denominator
+        // is the sample itself — and only while the sample is the whole window.
+        secondary: shareContext(derived.criticalAlerts, sampleTotal) ?? DASH,
         // Visible arithmetic explains why this all-lifecycle number can be larger
         // than the terminal-only resolved snapshot immediately below it.
-        sub: `${fmtNumber(derived.openCriticalHigh)} open + ${fmtNumber(derived.resolvedCriticalHigh)} resolved`,
+        sub: `${fmtNumber(derived.openCritical)} open + ${fmtNumber(derived.resolvedCritical)} resolved`,
         icon: ShieldAlert,
         accent: 'critical',
-        spark: criticalTrend,
+        // No decorative spark: the Cases severity filter applies ONE band, and no
+        // per-severity bucket series exists — so this tile shows no trend at all
+        // rather than a sample-derived line the hover card cannot corroborate.
         goodDirection: 'down',
-        // Cases currently supports one severity at a time. Applying only Critical
-        // (or only High) would falsely claim to drill into this combined total, so
-        // preserve only the honest selected-window scope.
-        onClick: navigate ? () => navigate('cases', { window: navWindow }) : undefined,
+        // Now that the tile is a SINGLE band, the drill-through can carry it.
+        onClick: navigate
+          ? () => navigate('cases', { severity: 'critical', window: navWindow })
+          : undefined,
       },
       {
         label: 'Escalated To Human',
+        testId: 'escalated-to-human',
         value: fmtNumber(escalated),
         countTo: escalated,
         format: fmtInt,
+        // Numerator and denominator both from `GET /api/metrics`. NOT paired with
+        // posture's `escalation_rate`, whose numerator is a different population
+        // (ever-escalated), which would make the two disagree on screen.
+        secondary: shareContext(escalatedFromMetrics, metrics?.total_cases) ?? DASH,
         sub: 'Awaiting review',
         icon: Workflow,
         accent: 'low',
@@ -1430,14 +1571,24 @@ export default function Overview({ onNavigate }: OverviewProps) {
       },
       {
         label: 'False Positive Rate',
+        testId: 'false-positive-rate',
         value: typeof fpPercent === 'number' ? `${fpPercent}%` : DASH,
         countTo: fpPercent,
         format: formatWholePercent,
-        sub: postureSub ?? 'Closed as false pos.',
+        // This numeral is ALREADY a percentage, so the missing half is its sample
+        // size: the server's exact fp / verdicted counts behind the rate.
+        secondary:
+          typeof quality?.false_positive_cases === 'number' &&
+          typeof quality?.verdicted_cases === 'number' &&
+          quality.verdicted_cases > 0
+            ? `${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`
+            : DASH,
+        sub: postureSub ?? 'Closed as false positive',
         icon: Percent,
         accent: 'medium',
-        spark: falsePositiveTrend,
-        sparkMinPoints: 2,
+        // The former two-point prev→cur spark drew a straight line that read as a
+        // trend but was a single comparison, and the chip that explained it was
+        // removed in Round 11. The honest per-bucket series is the hover card's.
         goodDirection: 'down',
         trend: {
           metric: 'False positive rate',
@@ -1451,9 +1602,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
       },
       {
         label: 'Auto-Resolved',
+        testId: 'auto-resolved',
         value: fmtNumber(autoResolved),
         countTo: typeof autoResolved === 'number' ? autoResolved : undefined,
         format: fmtInt,
+        // The server's own `automation_rate` denominator: terminal (closed) cases.
+        secondary: shareContext(autoResolved, quality?.terminal_cases) ?? DASH,
         sub: postureSub ?? 'Closed by agent',
         icon: ShieldCheck,
         accent: 'success',
@@ -1478,7 +1632,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     cases,
     range,
     navWindow,
-    autonomy.escalated,
+    escalatedFallback,
     posture,
     postureLoading,
     postureError,
@@ -1627,13 +1781,32 @@ export default function Overview({ onNavigate }: OverviewProps) {
             <Stagger
               data-testid="kpi-strip"
               className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5"
-              itemClassName="h-full min-w-0 border-b border-border/70 sm:border-r xl:border-b-0 xl:last:border-r-0"
+              /*
+               * Exact divider math for FIVE tiles at 1 / 2 / 3 / 5 columns. A cell may
+               * never draw a hairline into empty space or lose the rule that separates
+               * it from the next row (ui-standard, operational metric surfaces):
+               *   - column rule: on for every cell that HAS a right-hand neighbour, so
+               *     it is off at 1 column, off for cells 2·4 at 2 columns, off for
+               *     cell 3 at 3 columns, and always off for the last cell;
+               *   - row rule: off for the cells in the final row — cell 5 at 1/2
+               *     columns, cells 4·5 at 3 columns, all of them at 5 columns.
+               * `:last-child` / `:nth-child()` outrank the plain utilities, so the
+               * per-breakpoint overrides resolve deterministically.
+               */
+              itemClassName={cn(
+                'h-full min-w-0 border-b border-r-0 border-border/70 last:border-b-0 last:border-r-0',
+                'sm:border-r sm:[&:nth-child(2n)]:border-r-0',
+                'md:[&:nth-child(2n)]:border-r md:[&:nth-child(3n)]:border-r-0 md:[&:nth-child(n+4)]:border-b-0',
+                'xl:border-b-0 xl:[&:nth-child(2n)]:border-r xl:[&:nth-child(3n)]:border-r',
+              )}
             >
               {kpis.map((kpi) => {
                 const tile = (
                   <KpiTile
                     label={kpi.label}
+                    testId={kpi.testId}
                     value={kpi.value}
+                    secondary={kpi.secondary}
                     sub={kpi.sub}
                     icon={kpi.icon}
                     accent={kpi.accent}
@@ -1678,19 +1851,24 @@ export default function Overview({ onNavigate }: OverviewProps) {
             ) : null}
           </div>
 
-          {/* ---- INSTRUMENT BAND: integrated risk · case state · live queue ---- */}
+          {/* ---- INSTRUMENT BAND: close attribution · case state · live queue ---- */}
           <Reveal
             variant="rise"
             delay={40}
             data-testid="hero-row"
             className="grid min-w-0 items-stretch border-y border-border lg:grid-cols-12"
           >
+            {/* Close attribution — the band's lead instrument (it replaced the Active
+                Risk Index, whose gauge duplicated risk the page already states in the
+                severity donuts, the risk-ordered queue, and every case row). */}
             <div className="min-w-0 border-b border-border/70 lg:col-span-4 lg:border-b-0 lg:border-r">
-              <ActiveRiskIndex
-                score={activeRisk.score}
-                count={activeRisk.count}
-                variant="flat"
-                size={280}
+              <HumanVsAiCard
+                totals={humanVsAi.totals}
+                unavailableReason={humanVsAi.reason}
+                series={humanVsAi.series}
+                windowLabel={bucketTrends?.label ?? trendFallbackLabel}
+                truncated={humanVsAi.truncated}
+                alertsIngested={humanVsAi.alerts}
                 className="h-full w-full"
               />
             </div>
@@ -1994,56 +2172,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
               </MetricHoverTrend>
             </div>
 
-            {/* Autonomy split (#3) · connector health */}
-            <Reveal variant="rise" className="grid gap-4 xl:grid-cols-2">
-              <DashboardGroup title="Autonomous vs human" description="how cases were resolved">
-                <Card>
-                  <CardContent className="space-y-4 py-4">
-                    <div className="flex items-center justify-center gap-2 text-4xl font-semibold tabular-nums">
-                      <ShieldCheck className="h-7 w-7 text-success" aria-hidden />
-                      <span className="text-foreground">{ratioPct(autonomy.automationPct)}</span>
-                    </div>
-                    <p className="text-center text-xs text-muted-foreground">
-                      resolved autonomously by the agent
-                    </p>
-                    <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full bg-success"
-                        style={{
-                          width: `${Math.round(
-                            (autonomy.autoClosed / (autonomy.autoClosed + autonomy.escalated || 1)) * 100,
-                          )}%`,
-                        }}
-                        aria-hidden
-                      />
-                      <div className="h-full flex-1 bg-high" aria-hidden />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2">
-                        <div className="font-mono text-lg font-semibold tabular-nums text-success-text">
-                          {fmtNumber(autonomy.autoClosed)}
-                        </div>
-                        <div className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-                          Auto-resolved
-                        </div>
-                      </div>
-                      <div className="rounded-md border border-high/30 bg-high/5 px-3 py-2">
-                        <div className="font-mono text-lg font-semibold tabular-nums text-high-text">
-                          {fmtNumber(autonomy.escalated)}
-                        </div>
-                        <div className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-                          Sent to human
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-2xs text-muted-foreground">
-                      Advisory only — the agent recommends; the deterministic case manager
-                      decides. This dashboard never influences that.
-                    </p>
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
-
+            {/* Connector health. The former "Autonomous vs human" card that sat beside
+                it was REMOVED: it re-stated the Human-vs-AI instrument's story with a
+                third denominator (auto / (auto + escalated)) that matched neither the
+                server's `automation_rate` nor the closed-case partition. Its #3
+                advisory now lives on that one instrument. */}
+            <Reveal variant="rise" className="grid gap-4">
               <DashboardGroup title="Ingest coverage" description="am I seeing everything?">
                 <Card>
                   <CardContent className="py-4">

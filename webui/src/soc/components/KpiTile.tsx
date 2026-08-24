@@ -68,6 +68,17 @@ export interface KpiTileProps {
   /** Optional trend delta shown next to the value. */
   delta?: KpiDelta;
   /**
+   * Optional SCALE CONTEXT rendered beside the value — the "out of what" half of a
+   * bare count (e.g. `13% of 154`, `1 of 2 verdicted`, or an em dash when the honest
+   * denominator is missing or the sample is truncated).
+   *
+   * Deliberately NOT the `delta` slot: a delta carries `role="img"` plus a
+   * judgement colour, and this is neither a comparison nor a judgement — it is the
+   * denominator the numeral is a share of. Plain, muted, non-interactive text (#9),
+   * so it adds no accessible-name surface and no colour-only signalling.
+   */
+  secondary?: React.ReactNode;
+  /**
    * Which direction of change counts as an improvement. COLOR encodes the
    * judgement (improved → success, regressed → critical); the ARROW always shows
    * the true direction of change and is never flipped. Defaults to `'up'` so no
@@ -225,6 +236,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       icon: Icon,
       accent = 'primary',
       delta,
+      secondary,
       goodDirection = 'up',
       variant = 'default',
       density = 'default',
@@ -291,6 +303,21 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         />
       ) : null;
 
+    // Scale context ("N of M" / "P% of N" / an em dash). Muted, tabular, plain text —
+    // no role, no accessible name, no judgement colour: it explains the numeral's
+    // denominator, it does not compare periods.
+    const secondaryNode =
+      secondary === undefined || secondary === null || secondary === '' ? null : (
+        <span
+          className={cn(
+            'mb-0.5 whitespace-nowrap font-mono font-medium tabular-nums text-muted-foreground',
+            strip && !compact ? 'text-xs' : 'text-2xs',
+          )}
+        >
+          {secondary}
+        </span>
+      );
+
     const deltaNode = deltaFacts ? (
       <span
         // `role="img"` makes `aria-label` a valid accessible name on this element (a
@@ -350,6 +377,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           >
             {valueNode}
           </span>
+          {secondaryNode}
           {deltaNode}
         </div>
         {sparkNode}
