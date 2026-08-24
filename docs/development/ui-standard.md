@@ -421,6 +421,18 @@ are authoritative:
   every same-unit ribbon. Detailed intentionally retains Testing's direct Cases-to-outcome
   fan, including the overlapping human-closure view; its aligned evidence rail is the
   authoritative arithmetic.
+- Every Simple stage label carries its exact count **and** a percentage; the count stays
+  primary and the share is rendered quietly beside it. Simple uses exactly one share rule:
+  each stage's share of the stage it came from—clusters of alerts ingested, cases of
+  clusters, the conserved case split of cases opened, and human closure of escalated
+  cases. That denominator must be named wherever the share is announced (the accessible
+  label and the hover card name it in words; a disclosure beside the graph states the rule
+  for sighted readers), because two shares with different bases must never invite
+  comparison. The first stage is the baseline and shows an em dash rather than a
+  self-referential 100%. A zero, absent, or unmeasured denominator also renders an em
+  dash and says why—never a fabricated 0%, and never a share carried over from another
+  base. Detailed keeps its own published funnel-top ("of ingested") arithmetic in the
+  evidence rail; do not restate Simple's rule there or Detailed's rule in Simple.
 - **Open cases** is current lifecycle state from the selected-window posture count. It is
   not equal to Escalated minus human closure, so keep it outside the conserved graph as a
   labelled, keyboard-operable queue action. If the bounded scan is truncated, display the

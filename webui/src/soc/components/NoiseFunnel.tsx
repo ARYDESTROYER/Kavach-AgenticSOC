@@ -163,7 +163,9 @@ const LEGACY_NOISE_FUNNEL_HELP_TEXT =
 export const NOISE_FUNNEL_HELP_TEXT =
   'Simple view draws the complete alert-to-cluster-to-case flow with filled, tapered ' +
   'ribbons and exact stage labels. Ribbon thickness uses a compressed display scale so ' +
-  'small stages stay visible; alerts, clusters, and cases remain different units. From ' +
+  'small stages stay visible; alerts, clusters, and cases remain different units. Every ' +
+  'label carries its exact count plus that stage’s share of the stage it came from, ' +
+  'so no two printed percentages share a hidden denominator. From ' +
   'Cases opened onward, Auto-cleared, optional analyst-policy closes, and Escalated form ' +
   'the conserved case split.';
 
@@ -287,6 +289,100 @@ export function deriveFunnel(data: NoiseReduction): DerivedFunnel {
 function formatShare(value: number): string {
   const rounded = Math.round(value);
   return value > 0 && rounded === 0 ? '<1%' : `${rounded}%`;
+}
+
+/** The em dash used everywhere a share has no denominator to be measured against. */
+export const SHARE_DASH = '—';
+
+/**
+ * The flow parent whose total is the ONLY honest denominator for a Simple-view stage.
+ *
+ * Simple prints one share per stage and every one of them is "share of the stage it
+ * came from" — the same relationship the hover card's second line already states, and
+ * the same relationship the ribbons draw. `ingested` is the flow baseline and therefore
+ * has no parent; in the counters-warming case-only mode `cases` becomes the baseline
+ * because `clustered` is not in the payload at all. Exported for tests.
+ */
+export function parentStageKey(key: string): string | null {
+  switch (key) {
+    case 'clustered':
+      return 'ingested';
+    case 'candidate':
+    case 'awaiting':
+    case 'cases':
+      return 'clustered';
+    case 'auto_cleared':
+    case 'policy_closed':
+    case 'escalated':
+      return 'cases';
+    case 'closed':
+    case 'escalated_remaining':
+      return 'escalated';
+    default:
+      // `ingested` (and anything unknown) is the baseline — nothing to divide by.
+      return null;
+  }
+}
+
+/** How each denominator is NAMED to the reader, so a printed share can never be read
+ *  against the wrong base. Units are deliberately explicit (alerts vs clusters vs cases). */
+const SHARE_DENOMINATOR_NOUN: Record<string, string> = {
+  ingested: 'alerts ingested',
+  clustered: 'clusters',
+  cases: 'cases opened',
+  escalated: 'escalated cases',
+};
+
+/** One stage's parent-relative share: `null` whenever there is no usable denominator. */
+export interface StageShare {
+  /** 0..100, or `null` when the denominator is absent, zero, or non-finite. */
+  pct: number | null;
+  /** Compact glyph for the graph label: `63%`, `<1%`, or the em dash. */
+  text: string;
+  /** Full spoken phrase that NAMES the denominator (screen readers + hover parity). */
+  sentence: string;
+}
+
+/**
+ * Derive one stage's share of its flow parent.
+ *
+ * A 0 / absent / non-finite denominator never fabricates `0%` — it renders the em dash
+ * and says why, because "0% of nothing" and "0% of 40 cases" are different facts.
+ * Exported for tests.
+ */
+export function stageShare(
+  key: string,
+  total: number,
+  denominator: number | null | undefined,
+): StageShare {
+  const parentKey = parentStageKey(key);
+  const noun = parentKey ? SHARE_DENOMINATOR_NOUN[parentKey] ?? 'the previous stage' : null;
+  if (parentKey == null) {
+    return {
+      pct: null,
+      text: SHARE_DASH,
+      sentence: 'the flow baseline every later share is measured against',
+    };
+  }
+  if (
+    denominator == null ||
+    !Number.isFinite(denominator) ||
+    denominator <= 0 ||
+    !Number.isFinite(total)
+  ) {
+    return {
+      pct: null,
+      text: SHARE_DASH,
+      sentence: `share unavailable, no ${noun} counted in this window`,
+    };
+  }
+  const pct = (total / denominator) * 100;
+  const text = formatShare(pct);
+  return {
+    pct,
+    text,
+    sentence: `${text === '<1%' ? 'less than 1%' : text} of ${noun}`,
+  };
 }
 
 /**
@@ -1963,6 +2059,12 @@ export function NoiseFunnel({
                       : node.row.total === 1
                         ? 'cluster'
                         : 'clusters';
+                  // Share of the stage this one came from; `ingested` is the baseline.
+                  const share = stageShare(
+                    node.key,
+                    node.row.total,
+                    rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                  );
                   const labelClassName = cn(
                     'absolute rounded-[3px] bg-card/95 px-1.5 py-1 text-left',
                     node.labelSide === 'above' && '-translate-y-full',
@@ -1970,6 +2072,10 @@ export function NoiseFunnel({
                   const labelStyle: React.CSSProperties = {
                     left: `${((node.x + 8) / simpleLayout.width) * 100}%`,
                     top: `${(node.labelY / simpleLayout.height) * 100}%`,
+                    maxWidth: `${Math.max(
+                      12,
+                      100 - ((node.x + 8) / simpleLayout.width) * 100,
+                    )}%`,
                   };
                   const labelContent = (
                     <>
@@ -1978,6 +2084,15 @@ export function NoiseFunnel({
                       </span>
                       <span className="mt-0.5 block font-mono text-xs font-semibold tabular-nums text-foreground">
                         {fmtNumber(node.row.total)} {unit}
+                        <span
+                          data-stage-share={node.key}
+                          className={cn(
+                            'ml-1 font-sans font-normal tabular-nums text-muted-foreground',
+                            wideInspection ? 'text-xs' : 'text-2xs',
+                          )}
+                        >
+                          · {share.text}
+                        </span>
                       </span>
                     </>
                   );
@@ -2001,7 +2116,7 @@ export function NoiseFunnel({
                       onPointerLeave={() => setHoveredStage(null)}
                       onFocus={() => setFocusedStage(node.key)}
                       onBlur={() => setFocusedStage(null)}
-                      aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}. Filled conversion ribbon; the unit changes at this step.`}
+                      aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}, ${share.sentence}. Filled conversion ribbon; the unit changes at this step.`}
                       className={cn(
                         'pointer-events-auto transition-colors duration-fast ease-standard',
                         'hover:bg-popover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -2037,21 +2152,45 @@ export function NoiseFunnel({
                     node.key === 'escalated_remaining'
                       ? ', equal to Escalated minus Closed by human; this is not the Open cases count'
                       : '';
+                  // Every flow label states its share of the stage it came from — the
+                  // conserved case split against Cases opened, human closure against
+                  // Escalated — so two printed shares can never be read against each other.
+                  const share = stageShare(
+                    node.key,
+                    node.total,
+                    rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                  );
+                  const leftPct = (labelX / simpleLayout.width) * 100;
                   const labelClassName = cn(
-                    'absolute -translate-y-1/2 whitespace-nowrap rounded-[3px] bg-card/95 px-1.5 py-1 text-left font-medium text-foreground',
+                    'absolute -translate-y-1/2 flex flex-wrap items-baseline gap-x-1 rounded-[3px] bg-card/95 px-1.5 py-1 font-medium text-foreground',
+                    node.labelSide === 'after' ? 'text-left' : 'justify-end text-right',
                     node.total === 0 && 'text-muted-foreground',
                     wideInspection ? 'text-sm' : 'text-xs',
                     translateX,
                   );
                   const labelStyle: React.CSSProperties = {
-                    left: `${(labelX / simpleLayout.width) * 100}%`,
+                    left: `${leftPct}%`,
                     top: `${(node.labelY / simpleLayout.height) * 100}%`,
+                    // Never let a label (now count + share) run past the plot edge: the
+                    // share wraps under the count instead of forcing horizontal scroll.
+                    maxWidth: `${Math.max(12, node.labelSide === 'after' ? 100 - leftPct : leftPct)}%`,
                   };
                   const labelContent = (
                     <>
-                      <span>{node.label}</span>
-                      <span className="ml-1 font-mono font-semibold tabular-nums">
-                        · {fmtNumber(node.total)}
+                      <span className="whitespace-nowrap">
+                        {node.label}
+                        <span className="ml-1 font-mono font-semibold tabular-nums">
+                          · {fmtNumber(node.total)}
+                        </span>
+                      </span>
+                      <span
+                        data-stage-share={node.key}
+                        className={cn(
+                          'whitespace-nowrap font-normal tabular-nums text-muted-foreground',
+                          wideInspection ? 'text-xs' : 'text-2xs',
+                        )}
+                      >
+                        · {share.text}
                       </span>
                     </>
                   );
@@ -2072,7 +2211,7 @@ export function NoiseFunnel({
                     <button
                       type="button"
                       data-flow-label={node.key}
-                      aria-label={`${node.label}: ${fmtNumber(node.total)} case${node.total === 1 ? '' : 's'}${relationship}.`}
+                      aria-label={`${node.label}: ${fmtNumber(node.total)} case${node.total === 1 ? '' : 's'}, ${share.sentence}${relationship}.`}
                       onClick={() => {
                         setFocusedStage(stageKey);
                         if (node.rowKey) onStageClick?.(node.rowKey);
@@ -2180,7 +2319,10 @@ export function NoiseFunnel({
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
           <p className="text-2xs leading-relaxed text-muted-foreground">
             Filled ribbons show the alert → cluster → case reduction. Thickness uses a
-            compressed display scale; labels are the exact counts and units.
+            compressed display scale; labels are the exact counts and units. Each label&apos;s
+            percentage is that stage&apos;s share of the stage it came from — clusters of alerts
+            ingested, cases of clusters, the case split of cases opened, and human closure of
+            escalated cases. Alerts ingested is the baseline, so it shows an em dash.
           </p>
           {validOpenCases ? (
             <button
@@ -2272,7 +2414,7 @@ export function NoiseFunnel({
         <p id={topologyDescriptionId} className="sr-only">
           {view === 'detailed'
             ? 'Alerts move through clustering into opened cases. Auto-cleared and Escalated partition opened cases. Closed by human is a subset of Escalated. The graph is directional context; the labelled counts and percentages are authoritative.'
-            : 'Alerts move through clustering into opened cases as filled, tapered ribbons. Alerts, clusters, and cases are different units, and ribbon thickness uses a compressed display scale; labels are the exact values. Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases. Closed by human is a subset of Escalated. Not analyst-closed is the remaining conserved complement, while Open cases is a separate current lifecycle count.'}
+            : 'Alerts move through clustering into opened cases as filled, tapered ribbons. Alerts, clusters, and cases are different units, and ribbon thickness uses a compressed display scale; labels are the exact values. Every stage label also states its share of the stage it came from, and each spoken share names that denominator; the first stage is the baseline and shows an em dash. Auto-cleared, optional analyst-policy closes, and Escalated partition opened cases. Closed by human is a subset of Escalated. Not analyst-closed is the remaining conserved complement, while Open cases is a separate current lifecycle count.'}
         </p>
         <Header
           hidden={hidden}

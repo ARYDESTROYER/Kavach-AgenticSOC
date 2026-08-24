@@ -13,7 +13,13 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
-import { NoiseFunnel, deriveFunnel, ribbonPath } from '../NoiseFunnel';
+import {
+  NoiseFunnel,
+  deriveFunnel,
+  parentStageKey,
+  ribbonPath,
+  stageShare,
+} from '../NoiseFunnel';
 import { NoiseLineageView } from '../NoiseLineage';
 import type { NoiseLineage, NoiseReduction } from '@/lib/types';
 
@@ -757,6 +763,142 @@ describe('NoiseFunnel', () => {
     expect(await axe(view.container)).toHaveNoViolations();
     await user.click(screen.getByRole('radio', { name: 'Detailed' }));
     expect(await axe(view.container)).toHaveNoViolations();
+  });
+});
+
+describe('NoiseFunnel Simple-mode stage shares', () => {
+  /** The compact share glyph rendered beside one Simple stage's count. */
+  function shareText(container: HTMLElement, key: string): string {
+    const node = container.querySelector(`[data-stage-share="${key}"]`);
+    expect(node, `missing share for ${key}`).not.toBeNull();
+    return node!.textContent!.trim();
+  }
+
+  it('prints every Simple stage as count plus its share of the stage it came from', () => {
+    const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+
+    // Conversion chips (mixed units) — clusters of alerts; the top stage is the baseline.
+    expect(shareText(view.container, 'ingested')).toBe('· —');
+    expect(shareText(view.container, 'clustered')).toBe('· 22%');
+    // Flow labels — cases of clusters, then the conserved case split of Cases opened,
+    // then human closure of Escalated. NEVER share-of-ingested, which would print 2-4%
+    // for every outcome and hide the whole disposition story.
+    expect(shareText(view.container, 'cases')).toBe('· 18%');
+    expect(shareText(view.container, 'auto_cleared')).toBe('· 63%');
+    expect(shareText(view.container, 'escalated')).toBe('· 38%');
+    expect(shareText(view.container, 'closed')).toBe('· 47%');
+    expect(shareText(view.container, 'escalated_remaining')).toBe('· 53%');
+
+    // The conserved split still reads as a whole: 63 + 38 ≈ 100% of cases,
+    // 47 + 53 = 100% of escalated (counts, not the rounded shares, are authoritative).
+    expect(directLabel(view.container, 'auto_cleared')).toHaveTextContent('Auto-cleared by AI· 25· 63%');
+
+    // Adding the share must NOT add a sixth flow label node.
+    expect(view.container.querySelectorAll('[data-flow-label]')).toHaveLength(5);
+  });
+
+  it('names the denominator for screen readers on every Simple stage', () => {
+    render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+    const label = (name: RegExp) => screen.getByRole('button', { name });
+
+    expect(label(/^Alerts ingested: 1,000 alerts, the flow baseline/i)).toBeInTheDocument();
+    expect(label(/^After clustering: 220 clusters, 22% of alerts ingested\./i)).toBeInTheDocument();
+    expect(label(/^Cases opened: 40 cases, 18% of clusters\./i)).toBeInTheDocument();
+    expect(label(/^Auto-cleared by AI: 25 cases, 63% of cases opened\./i)).toBeInTheDocument();
+    expect(label(/^Escalated: 15 cases, 38% of cases opened\./i)).toBeInTheDocument();
+    expect(label(/^Closed by human: 7 cases, 47% of escalated cases\./i)).toBeInTheDocument();
+    expect(
+      label(/^Not analyst-closed: 8 cases, 53% of escalated cases, equal to Escalated minus/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders an em dash instead of a fabricated 0% when a denominator is missing', () => {
+    const data = fixture({
+      counters: { available: false, since: null, incomplete: true },
+      reduction: { overall_pct: '—', human_reduction_pct: '—' },
+    });
+    const view = render(<NoiseFunnel data={data} animate={false} variant="flat" />);
+
+    // Counters warming up: there is no clustered volume at all, so Cases opened has no
+    // honest denominator. It must not read 0% and must not read 100%.
+    expect(shareText(view.container, 'cases')).toBe('· —');
+    expect(directLabel(view.container, 'cases')).toHaveAttribute(
+      'aria-label',
+      'Cases opened: 40 cases, share unavailable, no clusters counted in this window.',
+    );
+    // The conserved case split below it is still fully measurable.
+    expect(shareText(view.container, 'auto_cleared')).toBe('· 63%');
+    expect(shareText(view.container, 'closed')).toBe('· 47%');
+  });
+
+  it('derives parent-relative shares without ever inventing a percentage', () => {
+    expect(parentStageKey('clustered')).toBe('ingested');
+    expect(parentStageKey('cases')).toBe('clustered');
+    expect(parentStageKey('auto_cleared')).toBe('cases');
+    expect(parentStageKey('policy_closed')).toBe('cases');
+    expect(parentStageKey('escalated')).toBe('cases');
+    expect(parentStageKey('closed')).toBe('escalated');
+    expect(parentStageKey('escalated_remaining')).toBe('escalated');
+    expect(parentStageKey('ingested')).toBeNull();
+
+    // A real measured zero keeps its 0%; a zero/absent/non-finite denominator does not.
+    expect(stageShare('auto_cleared', 0, 40)).toMatchObject({ pct: 0, text: '0%' });
+    expect(stageShare('closed', 3, 0)).toMatchObject({ pct: null, text: '—' });
+    expect(stageShare('closed', 3, 0).sentence).toBe(
+      'share unavailable, no escalated cases counted in this window',
+    );
+    expect(stageShare('cases', 4, null)).toMatchObject({ pct: null, text: '—' });
+    expect(stageShare('cases', 4, Number.NaN)).toMatchObject({ pct: null, text: '—' });
+    expect(stageShare('ingested', 1000, 1000)).toMatchObject({ pct: null, text: '—' });
+    expect(stageShare('ingested', 1000, 1000).sentence).toMatch(/flow baseline/i);
+
+    // Sub-half-percent cohorts stay visible instead of rounding away to 0%.
+    const tiny = stageShare('auto_cleared', 1, 400);
+    expect(tiny.text).toBe('<1%');
+    expect(tiny.sentence).toBe('less than 1% of cases opened');
+  });
+
+  it('leaves the Detailed presentation and its share-of-ingested rail untouched', async () => {
+    const user = userEvent.setup();
+    const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+    await user.click(screen.getByRole('radio', { name: 'Detailed' }));
+
+    // Detailed draws its own geometry: no Simple flow labels, no Simple share spans.
+    expect(view.container.querySelectorAll('[data-flow-label]')).toHaveLength(0);
+    expect(view.container.querySelectorAll('[data-stage-share]')).toHaveLength(0);
+    // Its evidence rail keeps the funnel-top denominator it has always published.
+    expect(
+      screen.getByRole('button', { name: /^Auto-cleared: 25 cases, 3% of ingested/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /^Clustered: 220 clusters, 22% of ingested/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the analyst-policy share against opened cases when the branch exists', () => {
+    const data = fixture();
+    data.stages = [
+      ...data.stages.map((stage) => (stage.key === 'escalated' ? { ...stage, total: 9 } : stage)),
+      {
+        key: 'policy_closed',
+        label: 'Closed by analyst policy',
+        source: 'cases',
+        deterministic: true,
+        total: 6,
+        by_severity: { medium: 4, low: 2 },
+      },
+    ];
+    const view = render(<NoiseFunnel data={data} animate={false} variant="flat" />);
+
+    // 25 auto-cleared + 6 policy-closed + 9 escalated = 40 opened cases.
+    expect(shareText(view.container, 'auto_cleared')).toBe('· 63%');
+    expect(shareText(view.container, 'policy_closed')).toBe('· 15%');
+    expect(shareText(view.container, 'escalated')).toBe('· 23%');
+    // Human closure is measured against Escalated, never against opened cases.
+    expect(shareText(view.container, 'closed')).toBe('· 78%');
+    expect(
+      screen.getByRole('button', { name: /^Closed by analyst policy: 6 cases, 15% of cases opened/i }),
+    ).toBeInTheDocument();
   });
 });
 
