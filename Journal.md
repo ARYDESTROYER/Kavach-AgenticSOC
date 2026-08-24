@@ -10128,3 +10128,22 @@
   (364 checks — 362 contrast composites + 2 layering premises); full docs+app build clean.
 - Status: done
 - Next: nothing outstanding. Branch is 3 commits ahead of `Testing`, clean fast-forward.
+
+### 2026-08-24 17:36Z — orchestrator — Revert an accidental whole-file reformat of theme.css
+- Context: PR #100 was opened for this branch. Reviewing its diff, `webui/src/styles/theme.css`
+  showed 801 insertions / 112 deletions — far more than the accent block accounts for.
+- Did: traced it to my own `npx prettier --write src/styles/theme.css` earlier in the session.
+  There is no prettier config in `webui/`, so it ran on defaults and reformatted the WHOLE file,
+  flattening the hand-aligned token tables (the `--slate-*` / `--blue-*` column layout and its
+  aligned measured-contrast comments) to one property per line. ~500 lines of unrelated churn
+  in a feature PR, and the generated PR body had written it up as a deliberate readability
+  improvement. Rebuilt the file from the pristine `origin/Testing` blob and re-applied only the
+  three intended edits: the two `--ring` values, the removal of the dead `bg-foreground` rules
+  and `--login-button*` tokens, and the accent block. theme.css is now **597 insertions /
+  23 deletions**, and every deletion is one of those three.
+  The three NEW files prettier also touched are unaffected — no base to churn against.
+- Tests: webui 310 files / **2156 passed**, zero stderr; eslint 0/0; tsc clean; gates 6/6
+  (364 checks); full docs+app build clean. Byte-identical rendering — only whitespace was
+  restored, and the gate re-derives the same 362 composites from the rebuilt file.
+- Status: done
+- Next: PR #100 CI, and correct two inaccuracies in its generated body.
