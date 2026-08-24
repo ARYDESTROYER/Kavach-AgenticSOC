@@ -18,8 +18,15 @@
  * The page deliberately stays minimal: one quiet, vertically-centred identity slab in
  * every stored layout, with no marketing hero or decorative command-center chrome.
  * The authentication state machine remains presentation-independent; the visual
- * layer adds stable credential controls, segmented OTP, original SSO marks, and a
- * compact System / Light / Dark chooser without introducing another theme path.
+ * layer adds stable credential controls, segmented OTP, original SSO marks, and the
+ * appearance control (a Light/Dark pill plus a system reset) without introducing
+ * another theme path.
+ *
+ * Two controls carry a deliberate identity treatment that no Console surface shares:
+ * the primary CTA is a `ShineButton` and the corner appearance control is a
+ * `ThemeModePill`. Both are scoped to `.login-auth-canvas`, both are pure CSS, and
+ * both have measured palettes enforced by the `login accents` design gate — see
+ * `docs/development/ui-standard.md` for the recorded exception.
  *
  * When `seeded_default` is true, a subtle hint surfaces the demo Admin / Admin@123
  * credentials. When auth is disabled this component is never mounted, so the
@@ -45,9 +52,6 @@ import {
   IdCard,
   ArrowLeft,
   Monitor,
-  Sun,
-  Moon,
-  type LucideIcon,
 } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
 import type { LoginResult, SetupStatus, SsoProviderPublic } from '@/lib/types';
@@ -70,6 +74,8 @@ import {
   PasswordStrengthMeter,
   SsoBrandIcon,
 } from '@/soc/components/auth/loginParts';
+import { ShineButton } from '@/soc/components/auth/ShineButton';
+import { ThemeModePill } from '@/soc/components/auth/ThemeModePill';
 import { setupAccount, type LoginBranding } from '@/soc/components/auth/login.api';
 import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
 import { LoginAuthBackdrop } from '@/soc/components/auth/LoginAuthBackdrop';
@@ -88,21 +94,24 @@ type Mode = 'signin' | 'setup' | 'change' | 'mfa' | 'mfa-enroll' | 'mfa-enroll-r
 type LoginThemeMode = 'system' | 'light' | 'dark';
 type SigninStep = 'identity' | 'password';
 
-const LOGIN_THEME_OPTIONS: ReadonlyArray<{
-  id: LoginThemeMode;
-  label: string;
-  icon: LucideIcon;
-}> = [
-  { id: 'system', label: 'Use system theme', icon: Monitor },
-  { id: 'light', label: 'Use light theme', icon: Sun },
-  { id: 'dark', label: 'Use dark theme', icon: Moon },
-];
-
+/**
+ * The appearance control: the Light/Dark pill plus a quiet "follow the system"
+ * reset beside it.
+ *
+ * The pill is a two-state switch, but the console's theme has THREE modes and
+ * `system` is the default — dropping it here would strand anyone who wants the
+ * login to keep following their OS. So `system` keeps its own compact toggle,
+ * pressed while it is the active mode, and the pill always shows (and changes)
+ * the RESOLVED appearance. Choosing light or dark from the pill is an explicit
+ * choice and therefore releases `system`, which the pressed state reflects.
+ */
 function LoginThemeControl({
   value,
+  isDark,
   onChange,
 }: {
   value: LoginThemeMode;
+  isDark: boolean;
   onChange: (mode: LoginThemeMode) => void;
 }) {
   return (
@@ -110,28 +119,27 @@ function LoginThemeControl({
       data-login-theme-control
       role="group"
       aria-label="Appearance"
-      className="inline-flex items-center gap-0.5"
+      className="inline-flex items-center gap-2"
     >
-      {LOGIN_THEME_OPTIONS.map(({ id, label, icon: Icon }) => {
-        const selected = value === id;
-        return (
-          <button
-            key={id}
-            type="button"
-            title={label}
-            aria-label={label}
-            aria-pressed={selected}
-            onClick={() => onChange(id)}
-            className={cn(
-              'inline-flex h-8 w-8 items-center justify-center rounded-sm text-muted-foreground transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-canvas',
-              selected ? 'bg-muted text-foreground' : 'hover:bg-muted/70 hover:text-foreground',
-            )}
-          >
-            <Icon className="h-3.5 w-3.5" aria-hidden />
-          </button>
-        );
-      })}
+      <button
+        type="button"
+        title="Use system theme"
+        aria-label="Use system theme"
+        aria-pressed={value === 'system'}
+        onClick={() => onChange('system')}
+        className={cn(
+          // Round, to rhyme with the pill it sits beside rather than reading as a
+          // leftover square chip next to it.
+          'inline-flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-canvas',
+          value === 'system'
+            ? 'bg-muted text-foreground'
+            : 'hover:bg-muted/70 hover:text-foreground',
+        )}
+      >
+        <Monitor className="h-3.5 w-3.5" aria-hidden />
+      </button>
+      <ThemeModePill dark={isDark} onToggle={onChange} />
     </div>
   );
 }
@@ -175,6 +183,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     branding: brandingBase,
     refreshBranding,
     theme,
+    isDark,
     setTheme,
   } = useTheme();
   // Read the additive Round-4 login white-label fields structurally (they are not in
@@ -843,13 +852,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
                       />
                     </div>
                     {username.trim().length > 0 ? (
-                      <Button
-                        type="submit"
-                        className="ml-auto flex h-10 bg-foreground px-5 text-background hover:bg-foreground/90 active:bg-foreground/85"
-                        disabled={busy}
-                      >
+                      <ShineButton type="submit" className="flex h-12 w-full" disabled={busy}>
                         Continue
-                      </Button>
+                      </ShineButton>
                     ) : null}
                   </form>
                 ) : (
@@ -890,14 +895,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         required
                       />
                     </div>
-                    <Button
+                    <ShineButton
                       type="submit"
-                      className="ml-auto flex h-10 bg-foreground px-5 text-background hover:bg-foreground/90 active:bg-foreground/85"
+                      className="flex h-12 w-full"
                       disabled={busy || password.length === 0}
+                      icon={
+                        busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null
+                      }
                     >
-                      {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
                       {busy ? 'Signing in…' : 'Sign in'}
-                    </Button>
+                    </ShineButton>
                   </form>
                 )
               ) : null}
@@ -1180,7 +1187,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       className="login-auth-canvas relative min-h-[100dvh] overflow-x-hidden"
     >
       <div className="absolute right-4 top-4 z-40 sm:right-6 sm:top-6">
-        <LoginThemeControl value={theme} onChange={changeLoginTheme} />
+        <LoginThemeControl value={theme} isDark={isDark} onChange={changeLoginTheme} />
       </div>
       <section className="relative flex min-h-[100dvh] items-center justify-center px-0 py-0 sm:px-8 sm:py-12">
         {formInner}

@@ -9989,3 +9989,71 @@
 - Tests: backend 2,815 passed / 4 skipped / 0 failed (exit 0, proxy AWS vars unset); webui test:strict 309 files / 2,139 passed, zero console; eslint 0/0; all design gates; full docs+app build clean; docs bundle consistent (app 0.1.13 / docs 0.1); check:types no drift. Two timing tests (netguard fast-fail, SQL lease convergence) flaked once each under concurrent load and pass in isolation — both outside this diff (no files under enrichment/, tools/, stores/ or jobs.py are touched). #3 decide()/risk/signatures untouched, #6 no new LLM path, #9 browsed rows and _raw stay plain text and never reach a model.
 - Status: complete; pushed; PR opened against Testing.
 - Next: PR review + the CI passed aggregate. Deferred follow-ups: log pagination/filters/columns, the noise_counters vs clustering_explain human-closed predicate drift, and a per-severity server-side count so the Critical tile could carry a non-sample share.
+
+### 2026-08-24 12:50Z — orchestrator — Session start: GSAP-style shine sign-in button + light/dark toggle
+- Context: operator request — port the "Buttons That Shine" treatment from gsap.com/ui onto the
+  console sign-in CTA, and the "Light mode / Dark mode" pill toggle, re-implemented in our own
+  code with **zero new dependencies** (GSAP is not and will not be a dependency).
+- Did: reverse-engineered both gsap.com/ui blocks from the live page (inline CSS + the site's
+  own JS bundle) — the shine is a blurred rotated gradient halo that un-rotates on hover plus a
+  gradient blob swept across the face; the toggle is a gradient pill with a moon/sun scale-swap,
+  a nudging label, and two large radial "flair" glows that slide ±124px and rotate ±180°.
+  Recorded the mechanism as a working note (scratchpad, not committed). Started a parallel
+  understand pass over Login.tsx, the token system, and the webui test/lint contract.
+- Tests: not yet run (webui deps installing).
+- Status: in-progress
+- Next: implement both as token-driven CSS/React components, then full gate (pytest / build /
+  test:strict / lint).
+
+### 2026-08-24 13:55Z — orchestrator — GSAP-style shine sign-in CTA + Light/Dark pill (zero new deps)
+- Context: operator request — bring the "Buttons That Shine" treatment from gsap.com/ui to the
+  console sign-in CTA, and the Light mode / Dark mode toggle, re-implemented in our own code.
+  No new dependencies; GSAP is not and will not be one.
+- Did:
+  - Reverse-engineered both gsap.com/ui blocks from the live page's inline CSS and its own JS
+    bundle (the site is not a CodePen — the demos are `ui-button` / `ui-toggle` blocks). The
+    shine is a blurred rotated halo that un-rotates on hover plus a gradient blob swept across
+    the face on `mouseenter`; the toggle is a gradient pill with a moon/sun scale-swap, a
+    nudging label, and paired radial glows that slide ±124px and rotate ±180°.
+  - Re-implemented both as pure CSS in `theme.css`, scoped to `.login-auth-canvas`, plus two
+    components in `webui/src/soc/components/auth/`: `ShineButton.tsx` and `ThemeModePill.tsx`.
+    No animation library; neither component is on a lazy chunk, and the entry chunk moved
+    390.11 → 390.13 kB.
+  - `Login.tsx`: both sign-in-flow CTAs are now `ShineButton` at the page's existing
+    full-width 48px primary geometry; `LoginThemeControl` is the pill plus a round
+    *Use system theme* reset, so all three theme modes stay reachable.
+  - COLOUR IS MEASURED. The reference face renders near-white text at 2.9–4.6:1, which fails
+    AA at control text sizes, so every ramp here was derived by solving for the composite —
+    face + sweep at peak keyframe opacity + overlay tint — against both label stops. New gate
+    `webui/scripts/gate-login-accents.mjs` re-derives that worst case from `theme.css` on every
+    run (362 composites, worst 4.61:1), wired into `npm run gates` and `design-gates.test.ts`.
+  - Fixed defects an adversarial review surfaced, each verified before fixing: the login
+    `--ring` was 1.84:1 (WCAG 2.4.11 fail) → 4.74:1 light / 5.65:1 dark; the pill had no
+    `border-radius` of its own so the focus ring drew a rectangle; the two pill ramps have
+    different stop counts, so `transition: background` was discrete and briefly paired each ink
+    with the wrong ramp — ink and track now swap instantly while the motion stays; the gate's
+    pill zone did not model the ±0.375rem label slide, and once it did it caught a real 4.47:1
+    light-state failure. Named the states "Dark mode" (the operator's wording, and the repo's
+    documented vocabulary) rather than the reference's "Night mode". Removed the
+    `.login-auth-canvas button.bg-foreground` rules and their eight `--login-button*` tokens,
+    dead once both CTAs stopped using that hook.
+  - Verified in a real browser, not just jsdom: light/dark, 390px, `forced-colors: active`
+    (both controls fall back to the system palette and the clipped label is un-clipped — it
+    would otherwise vanish), keyboard focus, disabled, and a live sample of the sweep's
+    computed animation showing `login-shine-sweep` at opacity 0.18 under normal motion and
+    `animation: none` at opacity 0 under `prefers-reduced-motion: reduce`.
+  - Docs: `docs/development/ui-standard.md` gained an *Identity accents* section. The standard
+    previously banned a gradient or glow on this exact surface, so shipping without amending it
+    would have left the repo contradicting itself; the exception is now explicit, scoped, and
+    conditioned on the rules that keep it safe.
+- Tests: webui **310 files / 2151 passed**, zero stderr (was 309 / 2131 + 9 skipped — the skips
+  were bundle guards that only run with a built `dist/`); eslint 0 errors/0 warnings;
+  `npm run gates` 6/6 including the new lane; full docs+app build clean, docs bundle consistent
+  (app 0.1.13 ↔ docs 0.1). Backend untouched (`git diff HEAD -- backend/` empty): 2819 collected,
+  3 failures, all environmental in this sandbox — `test_enrich`/`test_round3_wave1_enrichment`/
+  `test_round3_wave2b_netguard` assume no outbound network, but the keyless providers reach the
+  internet through the agent proxy here and return a real score for 8.8.8.8. Two further
+  failures appear unless `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are unset, because the
+  proxy injects them and `Secrets` picks them up.
+- Status: done
+- Next: nothing outstanding. The `login accents` gate is the guard if anyone revisits the ramps.

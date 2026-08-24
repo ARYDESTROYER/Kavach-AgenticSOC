@@ -24,6 +24,7 @@ import {
   TEXT_WASH_AXES,
 } from '../../../scripts/gate-contrast.mjs';
 import { checkCvd, CHART_TOKENS, SEMANTIC_AXES } from '../../../scripts/gate-cvd.mjs';
+import { checkLoginAccents, TEXT_BAR } from '../../../scripts/gate-login-accents.mjs';
 import { checkGrepGuards, loadBaseline } from '../../../scripts/lib/grep-guard.mjs';
 
 describe('design gate: token existence (theme.css ⇄ ALLOWED_TOKENS ⇄ palette)', () => {
@@ -143,5 +144,41 @@ describe('design gate: grep baseline only ratchets DOWN (M1 anti-grandfather)', 
     // violations (the M1 defect), so the assertion is deliberately a hard `<=`.
     const total = Object.values(textBase).reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(75);
+  });
+});
+
+describe('design gate: login identity accents (raw-gradient surfaces)', () => {
+  // The shine CTA and the appearance pill are the only console surfaces that paint
+  // text on a raw gradient rather than a semantic token pair, so the token-driven
+  // contrast gate above is structurally blind to them. This is their enforcement
+  // point: the palettes were derived by measurement, and this keeps that claim true.
+  it('every shine-CTA and pill composite clears 4.5:1 in both themes', () => {
+    const { ok, results } = checkLoginAccents();
+    const failures = results.filter((r) => !r.pass);
+    expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+    expect(ok).toBe(true);
+  });
+
+  it('measures the sweep and tint layers, not just the bare gradient', () => {
+    // The face alone clears the bar comfortably; the tight cases are the composites
+    // with the sweep blob and the overlay tint on top. If the layering model ever
+    // stops being applied, this gate silently becomes a no-op — so assert the
+    // composite states are actually present and are the binding constraint.
+    const { results } = checkLoginAccents();
+    const swept = results.filter((r) => /sweep\+tint/.test(r.name));
+    expect(swept.length).toBeGreaterThan(0);
+    const bare = results.filter((r) => /\/bare\]/.test(r.name));
+    expect(bare.length).toBeGreaterThan(0);
+    const minSwept = Math.min(...swept.map((r) => r.ratio ?? Infinity));
+    const minBare = Math.min(...bare.map((r) => r.ratio ?? Infinity));
+    expect(minSwept).toBeLessThan(minBare);
+    expect(minSwept).toBeGreaterThanOrEqual(TEXT_BAR);
+  });
+
+  it('covers both pill states across the label cell only', () => {
+    const { results } = checkLoginAccents();
+    const zones = results.filter((r) => /pill (light|dark) label zone/.test(r.name));
+    expect(zones.length).toBe(2);
+    for (const zone of zones) expect(zone.ratio).toBeGreaterThanOrEqual(TEXT_BAR);
   });
 });

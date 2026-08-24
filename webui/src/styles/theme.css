@@ -549,10 +549,6 @@
   --login-input-focus-halo: rgb(0 0 0 / 10%);
   --login-soft: rgb(0 0 0 / 6%);
   --login-soft-hover: rgb(0 0 0 / 8%);
-  --login-button: #1a1a1e;
-  --login-button-hover: #27272b;
-  --login-button-press: #101013;
-  --login-button-text: #fff;
   --login-trail-gold: gold;
   --login-trail-amber: #ffaf00;
   --login-trail-orange: #ff8205;
@@ -572,7 +568,10 @@
   --border: 0 0% 90%;
   --border-strong: 0 0% 75%;
   --input: 0 0% 85%;
-  --ring: 0 0% 75%;
+  /* WCAG 2.4.11: a focus indicator must clear 3:1 against what it sits on. The
+     previous 0 0% 75% measured 1.84:1 on the white slab — effectively invisible.
+     0 0% 45% measures 4.74:1 on the slab and 4.57:1 on the canvas. */
+  --ring: 0 0% 45%;
 
   background-color: var(--login-canvas);
   color: var(--login-text);
@@ -593,10 +592,6 @@
   --login-input-focus-halo: rgb(255 255 255 / 10%);
   --login-soft: rgb(255 255 255 / 8%);
   --login-soft-hover: rgb(255 255 255 / 10%);
-  --login-button: #f9f9fa;
-  --login-button-hover: #f1f1f3;
-  --login-button-press: #e4e4e7;
-  --login-button-text: #101013;
 
   --canvas: 240 7% 11%;
   --background: 240 9% 7%;
@@ -610,7 +605,9 @@
   --border: 0 0% 17%;
   --border-strong: 0 0% 31%;
   --input: 0 0% 25%;
-  --ring: 0 0% 45%;
+  /* 4.01:1 on the dark slab but only 3.66:1 on the canvas; 0 0% 55% clears both
+     comfortably (5.65:1 / 5.16:1) and matches the light side's weight. */
+  --ring: 0 0% 55%;
 }
 
 .login-auth-slab {
@@ -639,19 +636,6 @@
     0 0 0 3px var(--login-input-focus-halo),
     inset 0 0 0 1px var(--login-input-focus);
   --tw-ring-color: transparent;
-}
-
-.login-auth-canvas button.bg-foreground {
-  background-color: var(--login-button);
-  color: var(--login-button-text);
-}
-
-.login-auth-canvas button.bg-foreground:hover {
-  background-color: var(--login-button-hover);
-}
-
-.login-auth-canvas button.bg-foreground:active {
-  background-color: var(--login-button-press);
 }
 
 .login-auth-cell {
@@ -742,6 +726,470 @@
 
 .login-auth-guide--right {
   right: 0;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Identity accents — the shine CTA and the appearance pill.                  *
+ *                                                                           *
+ * Two deliberately expressive controls, scoped to `.login-auth-canvas` so no *
+ * Console surface inherits them (ui-standard.md records the exception).      *
+ * The construction is ours; the idea is the one GSAP demonstrates on         *
+ * gsap.com/ui — a blurred gradient halo that un-rotates into place, a soft   *
+ * gradient blob that sweeps the face, and an appearance pill whose moon and  *
+ * sun swap by scale while the label slides. No animation library is          *
+ * involved: every effect below is a CSS transition or a one-shot keyframe.   *
+ *                                                                           *
+ * Colour here is MEASURED, not eyeballed. The reference face renders its     *
+ * near-white label at 2.9-4.6:1, which fails AA at control text sizes, so    *
+ * this ramp is deepened until the WORST stop still clears 4.5:1 against BOTH *
+ * label stops (#eaf9ff resting, #ffffff hover) in EVERY state: bare, under   *
+ * the overlay tint, and under the sweep at its brightest. The pill is        *
+ * measured the same way, which is why the moon and sun sit in fixed side     *
+ * cells the label can never enter and the flair glows sit behind an opaque   *
+ * track.                                                                     *
+ *                                                                           *
+ * `webui/scripts/gate-login-accents.mjs` is the AUTHORITY on those numbers — *
+ * it re-derives them from this file on every `npm run gates` and every       *
+ * Vitest run, so change a stop and the build tells you. At the time of       *
+ * writing it measures 362 composites: worst CTA 4.61:1, pill 5.33:1 light /  *
+ * 6.40:1 dark. Do not lighten anything here without re-running it.           *
+ * ------------------------------------------------------------------------- */
+.login-auth-canvas {
+  /* Face ramp. Deepened from the reference until the gate passes — see above. */
+  --login-shine-face: radial-gradient(
+    124% 260% at 10% 92%,
+    #15505d 0%,
+    #0c4b5c 26%,
+    #052932 60%,
+    #0a4759 84%,
+    #025163 100%
+  );
+  /* Decorative: outside the face, never beneath the label. */
+  --login-shine-halo: radial-gradient(126% 93% at 64% 14%, #0dd2fd 0%, #f7bdf8 82%);
+  --login-shine-tint: linear-gradient(104deg, #5be1ff -38%, #fec5fb 79%);
+  --login-shine-sweep: radial-gradient(
+    closest-side at 50% 50%,
+    rgb(214 248 255 / 100%) 0%,
+    rgb(155 237 255 / 58%) 46%,
+    rgb(155 237 255 / 0%) 100%
+  );
+  --login-shine-label: radial-gradient(
+    122% 400% at -30% 120%,
+    #ffffff 0%,
+    #f5fdff 41%,
+    #eaf9ff 73%,
+    #f1fbff 84%,
+    #ffffff 97%
+  );
+  --login-shine-radius: 0.625rem;
+
+  /* Appearance pill. Light state: white label over a deep ramp. Dark state:
+     deep-navy label over the bright ramp — the reference's own pairing. */
+  --login-pill-light: linear-gradient(
+    95deg,
+    #7fe2f4 0%,
+    #2ba3bd 12%,
+    #0d6d84 22%,
+    #07485a 50%,
+    #052b35 100%
+  );
+  --login-pill-dark: linear-gradient(95deg, #f0fcff 0%, #9bedff 30%, #5be1ff 62%, #00bae2 100%);
+  --login-pill-ink-light: #ffffff;
+  --login-pill-ink-dark: #063d49;
+  --login-pill-orb-light: radial-gradient(closest-side, #9bedff 0%, rgb(155 237 255 / 0%) 100%);
+  --login-pill-orb-dark: radial-gradient(closest-side, #0ba3c5 0%, rgb(11 163 197 / 0%) 100%);
+}
+
+/* --- Shine CTA ----------------------------------------------------------- */
+
+/* The button paints nothing itself: the halo is its ::before at z-index 0 and
+   the opaque face is a child at z-index 1, so the halo reads around the face
+   instead of washing over it. */
+.login-shine-button {
+  position: relative;
+  display: inline-flex;
+  isolation: isolate;
+  border: 0;
+  background: none;
+  padding: 0;
+  border-radius: var(--login-shine-radius);
+}
+
+.login-shine-button::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: -0.5rem;
+  border-radius: calc(var(--login-shine-radius) + 0.375rem);
+  background: var(--login-shine-halo);
+  opacity: 0;
+  filter: blur(17px);
+  transform: rotate(-17deg);
+  transition:
+    opacity var(--motion-fast) var(--motion-ease-standard),
+    transform var(--motion-fast) var(--motion-ease-standard);
+  pointer-events: none;
+}
+
+.login-shine-button:hover::before,
+.login-shine-button:focus-visible::before {
+  opacity: 0.85;
+  transform: rotate(0deg);
+  transition:
+    opacity 100ms ease-out,
+    transform 300ms cubic-bezier(0.05, 0.87, 0.32, 1.07);
+}
+
+.login-shine-button:disabled::before,
+.login-shine-button[aria-disabled='true']::before {
+  opacity: 0;
+}
+
+/* `z-index: 1` on a positioned element also isolates the overlay blend below,
+   so the tint can only ever blend with this face — never with the halo. */
+.login-shine-button__face {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  overflow: hidden;
+  width: 100%;
+  border-radius: var(--login-shine-radius);
+  background: var(--login-shine-face);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 32%),
+    inset 0 0 0 1px rgb(255 255 255 / 14%),
+    inset 0 -16px 26px -20px rgb(0 0 0 / 60%);
+  padding-inline: 1.25rem;
+  transition: transform var(--motion-fast) var(--motion-ease-standard);
+}
+
+/* The sheen. Overlay blending is what gives the face its cyan-to-orchid shift.
+   The alpha is capped because the contrast budget above assumes it. */
+.login-shine-button__face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--login-shine-tint);
+  opacity: 0.08;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+.dark .login-shine-button__face::after {
+  opacity: 0.12;
+}
+
+.login-shine-button:active .login-shine-button__face {
+  transform: translateY(1px);
+}
+
+/* The sweep. Parked far off the left edge and clipped away by the face at rest;
+   only the keyframe below ever moves it. */
+.login-shine-button__sweep {
+  position: absolute;
+  z-index: 0;
+  right: -14%;
+  bottom: -105%;
+  width: 40%;
+  height: 310%;
+  border-radius: 50%;
+  background: var(--login-shine-sweep);
+  opacity: 0;
+  transform: translate3d(-300%, 0, 0) rotate(-16deg);
+  pointer-events: none;
+}
+
+.login-shine-button__label {
+  position: relative;
+  z-index: 2;
+  background: var(--login-shine-label);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+/* Hover flattens the label to a single white — the reference does this, and it
+   only widens the measured margin. */
+.login-shine-button:hover .login-shine-button__label,
+.login-shine-button:focus-visible .login-shine-button__label {
+  background: none;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
+}
+
+/* The busy spinner is an icon, not clipped text — it keeps a real colour. */
+.login-shine-button__face > svg {
+  position: relative;
+  z-index: 2;
+  color: #f2fbff;
+}
+
+.login-shine-button:disabled,
+.login-shine-button[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+/* A disabled CTA drops the identity entirely rather than dimming it. Desaturating
+   a face this deep still reads as a live dark button, which is worse than no
+   treatment at all — the operator cannot tell the control is inert. Flattening to
+   the canvas's own muted surface makes "type a password" unmistakable, and makes
+   the gradient's arrival on the first keystroke the affordance. */
+.login-shine-button:disabled .login-shine-button__face,
+.login-shine-button[aria-disabled='true'] .login-shine-button__face {
+  background: var(--login-soft);
+  box-shadow: inset 0 0 0 1px var(--login-input-border);
+}
+
+.login-shine-button:disabled .login-shine-button__face::after,
+.login-shine-button[aria-disabled='true'] .login-shine-button__face::after {
+  display: none;
+}
+
+.login-shine-button:disabled .login-shine-button__label,
+.login-shine-button[aria-disabled='true'] .login-shine-button__label {
+  background: none;
+  color: var(--login-text-muted);
+  -webkit-text-fill-color: var(--login-text-muted);
+}
+
+.login-shine-button:disabled .login-shine-button__face > svg,
+.login-shine-button[aria-disabled='true'] .login-shine-button__face > svg {
+  color: var(--login-text-muted);
+}
+
+@keyframes login-shine-sweep {
+  0% {
+    opacity: 0.18;
+    transform: translate3d(-300%, 0, 0) rotate(-16deg);
+    animation-timing-function: cubic-bezier(0.215, 0.61, 0.355, 1);
+  }
+
+  90% {
+    opacity: 0.18;
+    transform: translate3d(0, 0, 0) rotate(0deg);
+    animation-timing-function: linear;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .login-shine-button:hover:not(:disabled) .login-shine-button__sweep,
+  .login-shine-button:focus-visible:not(:disabled) .login-shine-button__sweep {
+    animation: login-shine-sweep 1s linear 1 both;
+    will-change: transform, opacity;
+  }
+}
+
+/* --- Appearance pill ----------------------------------------------------- */
+
+/* Same construction as the CTA: the button paints nothing, the flair sits at
+   z-index 0 and the OPAQUE track at z-index 1, so a glow can never tint the
+   surface the label is measured against.
+
+   Ink and track deliberately swap INSTANTLY while everything else animates. The
+   two ramps have different stop counts, so `transition: background` is discrete
+   and snaps at the halfway mark; an interpolating `color` alongside it would pair
+   each ink with the wrong ramp for that half — white on bright cyan, then dark on
+   near-navy. Both states are measured; the crossfade between them is not, so
+   there is no crossfade. The motion lives in the orbs, glyphs and label slide. */
+.login-theme-pill {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+  align-items: center;
+  isolation: isolate;
+  width: 13.375rem;
+  height: 2.875rem;
+  border: 0;
+  /* The track paints the visible pill, but the BUTTON needs the same radius or the
+     focus ring draws a rectangle around a pill. */
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  padding-inline: 0.4375rem;
+  color: var(--login-pill-ink-light);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+
+.login-theme-pill[data-appearance='dark'] {
+  color: var(--login-pill-ink-dark);
+}
+
+.login-theme-pill__track {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--login-pill-light);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%);
+  pointer-events: none;
+}
+
+.login-theme-pill[data-appearance='dark'] .login-theme-pill__track {
+  background: var(--login-pill-dark);
+}
+
+/* Two blurred orbs that trade sides on every toggle — the reference's paired
+   glows, without its full-bleed demo canvas. */
+.login-theme-pill__flair {
+  position: absolute;
+  z-index: 0;
+  inset: -45% -22%;
+  opacity: 0;
+  filter: blur(15px);
+  transition: opacity var(--motion-base) var(--motion-ease-standard);
+  pointer-events: none;
+}
+
+.login-theme-pill:hover .login-theme-pill__flair,
+.login-theme-pill:focus-visible .login-theme-pill__flair {
+  opacity: 0.75;
+}
+
+.login-theme-pill__orb {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  aspect-ratio: 1;
+  width: 46%;
+  margin-top: -23%;
+  margin-left: -23%;
+  border-radius: 50%;
+  transition: transform 400ms cubic-bezier(0.68, -0.4, 0.27, 1.4);
+}
+
+.login-theme-pill__orb--light {
+  background: var(--login-pill-orb-light);
+  transform: translate3d(-64%, 0, 0) rotate(0deg);
+}
+
+.login-theme-pill__orb--dark {
+  background: var(--login-pill-orb-dark);
+  transform: translate3d(64%, 0, 0) rotate(0deg);
+}
+
+.login-theme-pill[data-appearance='dark'] .login-theme-pill__orb--light {
+  transform: translate3d(64%, 0, 0) rotate(180deg);
+}
+
+.login-theme-pill[data-appearance='dark'] .login-theme-pill__orb--dark {
+  transform: translate3d(-64%, 0, 0) rotate(-180deg);
+}
+
+/* Moon and sun own fixed side cells, so neither can slide under the label —
+   that is what keeps the measured label-zone contrast true. */
+.login-theme-pill__icon {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+
+.login-theme-pill__icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.login-theme-pill__icon--moon {
+  transform: scale(0) rotate(-40deg);
+  transform-origin: 20% 60%;
+  transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  color: var(--login-pill-ink-dark);
+}
+
+.login-theme-pill__icon--sun {
+  transform: scale(1);
+  transition: transform 200ms var(--motion-ease-standard);
+  color: #e1faff;
+}
+
+.login-theme-pill[data-appearance='dark'] .login-theme-pill__icon--moon {
+  transform: scale(1) rotate(0deg);
+}
+
+.login-theme-pill[data-appearance='dark'] .login-theme-pill__icon--sun {
+  transform: scale(0);
+}
+
+.login-theme-pill__label {
+  position: relative;
+  z-index: 2;
+  display: block;
+  transform: translate3d(-0.375rem, 0, 0);
+  transition: transform var(--motion-base) var(--motion-ease-standard);
+  white-space: nowrap;
+}
+
+.login-theme-pill[data-appearance='dark'] .login-theme-pill__label {
+  transform: translate3d(0.375rem, 0, 0);
+}
+
+/* --- Accessibility fallbacks for both accents ---------------------------- */
+
+/* Solid surfaces requested: drop every blurred decoration. */
+@media (prefers-reduced-transparency: reduce) {
+  .login-shine-button::before,
+  .login-shine-button__sweep,
+  .login-theme-pill__flair {
+    display: none;
+  }
+}
+
+/* Forced colours strip our gradients. Hand both controls back to the system
+   palette — critically, un-clip the label, which would otherwise stay
+   transparent over a system-painted face and vanish entirely. */
+@media (forced-colors: active) {
+  .login-shine-button::before,
+  .login-shine-button__sweep,
+  .login-shine-button__face::after,
+  .login-theme-pill__flair,
+  .login-theme-pill__track {
+    display: none;
+  }
+
+  .login-shine-button__face,
+  .login-theme-pill {
+    forced-color-adjust: none;
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .login-theme-pill {
+    border-radius: 999px;
+  }
+
+  .login-shine-button__label,
+  .login-shine-button:hover .login-shine-button__label,
+  .login-shine-button:focus-visible .login-shine-button__label {
+    background: none;
+    color: ButtonText;
+    -webkit-text-fill-color: ButtonText;
+  }
+
+  .login-shine-button__face > svg,
+  .login-theme-pill__icon--moon,
+  .login-theme-pill__icon--sun {
+    color: ButtonText;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
