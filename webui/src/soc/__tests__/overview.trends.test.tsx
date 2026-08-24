@@ -9,8 +9,8 @@
  *   3. the trend card is keyboard-reachable (Radix opens on trigger focus — WCAG 1.4.13);
  *   4. a series with no usable data renders the quiet "No trend data yet." line and
  *      NEVER an invented sparkline; per-bucket nulls are disclosed as measured-of-total;
- *   5. the combined Critical/High tile deliberately has NO hover-trend affordance
- *      (no per-severity bucket series exists — honesty over decoration).
+ *   5. the Critical tile deliberately has NO hover-trend affordance AND no decorative
+ *      in-tile spark (no per-severity bucket series exists — honesty over decoration).
  *
  * Fully offline: api + posture fetch mocked; no #3 behaviour touched.
  */
@@ -213,12 +213,15 @@ describe('Overview — hover trendlines', () => {
     expect(within(card).queryByRole('img')).toBeNull();
   });
 
-  it('gives the combined Critical/High tile NO trend affordance (no honest per-severity series exists)', async () => {
+  it('gives the Critical tile NO trend affordance and NO decorative spark (no honest per-severity series exists)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const tile = await screen.findByTestId('kpi-critical-high');
+    const tile = await screen.findByTestId('kpi-critical');
     // The tile is not wrapped in a hover-trend trigger at all.
     expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
+    // …and it no longer draws a sample-derived sparkline the hover card cannot
+    // corroborate: a tile with no honest series shows no trend of ANY kind.
+    expect(tile.querySelector('svg.recharts-surface')).toBeNull();
     await userEvent.hover(tile);
     // Give any (wrong) hover card a beat to appear, then assert none did.
     await new Promise((r) => setTimeout(r, 350));

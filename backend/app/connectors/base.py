@@ -77,7 +77,9 @@ class ConnectorManifest(BaseModel):
     description: str = ""
     ingest_modes: list[IngestMode] = Field(default_factory=list)
     query_language: str = "kuery"  # native query language for provenance/deep-links
-    capabilities: list[str] = Field(default_factory=list)  # poll|search|fetch_by_ids|subscribe|aggregate|test
+    capabilities: list[str] = Field(default_factory=list)  # poll|search|fetch_by_ids|subscribe|aggregate|test|browse
+    # "browse" advertises operator log browsing (GET /api/sources/{id}/logs and the
+    # /api/logs fan-out); the registry auto-augments push receivers with it.
     auth_fields: list[AuthField] = Field(default_factory=list)
     config_fields: list[AuthField] = Field(default_factory=list)
     docs_url: str | None = None

@@ -99,31 +99,79 @@ function errorMessage(e: unknown): string {
 /* Per-source status strip                                                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * How a source was read. `"buffer"` is a push source's PROCESS-LOCAL, VOLATILE
+ * in-memory live-tail ring — the server IGNORES the time range and search box for it,
+ * so the merged view would otherwise silently imply a filter that never ran.
+ */
+function modeNote(mode: string | undefined): string {
+  if (mode === 'buffer') {
+    return 'Live-tail buffer: the most recent in-memory events. The time range and search do NOT apply to this source, and its buffer does not survive a backend restart.';
+  }
+  if (mode === 'search') return 'Search: the time range and search box applied to this source.';
+  return '';
+}
+
 const SourceStatusStrip: React.FC<{ sources: UnifiedLogSourceStatus[] }> = ({ sources }) => {
   if (sources.length === 0) return null;
+  // The live-tail caveat is operationally load-bearing (the time range and search never
+  // ran against these sources), so it is rendered as VISIBLE text — reachable without a
+  // pointer and announced by a screen reader — instead of a hover-only `title`. Mirrors
+  // the single-source sheet's disclosure so both read paths explain themselves the same way.
+  const bufferSources = sources.filter((s) => s.mode === 'buffer');
   return (
-    <div className="flex flex-wrap items-center gap-2" data-testid="unified-source-status">
-      {sources.map((s) => (
-        <Badge
-          key={s.source_id}
-          variant={s.ok ? 'success' : 'warning'}
-          className="max-w-full gap-1.5"
-          // The error string is source/connector-derived → surfaced as a plain-text
-          // title only, never markup.
-          title={s.ok ? undefined : s.error || 'This source could not be read.'}
+    <div className="space-y-1.5" data-testid="unified-source-status">
+      <div className="flex flex-wrap items-center gap-2">
+        {sources.map((s) => {
+          // The error string is source/connector-derived → surfaced as a plain-text title
+          // only, never markup. The mode note is our own static copy.
+          const note = modeNote(s.mode);
+          const title = s.ok
+            ? note || undefined
+            : [s.error || 'This source could not be read.', note].filter(Boolean).join(' ');
+          return (
+            <Badge
+              key={s.source_id}
+              variant={s.ok ? 'success' : 'warning'}
+              className="max-w-full gap-1.5"
+              title={title}
+            >
+              {s.ok ? (
+                <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden />
+              ) : (
+                <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
+              )}
+              {/* source_name is operator-set text → plain text. */}
+              <span className="truncate">{s.source_name || s.source_id}</span>
+              {/* The badge's own AA-tuned `-text` token carries these; an opacity modifier
+                  would composite them below 4.5:1 on the light-theme wash. */}
+              <span className="tabular-nums text-xs">
+                {s.ok ? s.count : (s.error || 'error')}
+              </span>
+              {s.mode ? (
+                // Server-reported read path — makes "the time range did not apply here"
+                // visible instead of tribal knowledge.
+                <span className="text-xs uppercase tracking-wide">
+                  {s.mode === 'buffer' ? 'live tail' : s.mode}
+                </span>
+              ) : null}
+            </Badge>
+          );
+        })}
+      </div>
+      {bufferSources.length > 0 ? (
+        <p
+          className="text-xs leading-relaxed text-muted-foreground"
+          data-testid="unified-buffer-caveat"
         >
-          {s.ok ? (
-            <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden />
-          ) : (
-            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
-          )}
-          {/* source_name is operator-set text → plain text. */}
-          <span className="truncate">{s.source_name || s.source_id}</span>
-          <span className="tabular-nums text-xs opacity-80">
-            {s.ok ? s.count : (s.error || 'error')}
-          </span>
-        </Badge>
-      ))}
+          {/* source_name is operator-set text → plain text, never markup. */}
+          Live-tail {bufferSources.length === 1 ? 'source' : 'sources'} (
+          {bufferSources.map((s) => s.source_name || s.source_id).join(', ')}) return an
+          in-memory buffer: the time range and search box do not apply to{' '}
+          {bufferSources.length === 1 ? 'it' : 'them'}, and that buffer does not survive a
+          backend restart.
+        </p>
+      ) : null}
     </div>
   );
 };
@@ -145,6 +193,10 @@ export const UnifiedLogsBody: React.FC = () => {
   const [sources, setSources] = React.useState<UnifiedLogSourceStatus[]>([]);
   const [partial, setPartial] = React.useState(false);
   const [count, setCount] = React.useState(0);
+  // The server bound: this view is "the most recent N", never a complete result — the
+  // endpoint caps every read and offers no pagination.
+  const [appliedLimit, setAppliedLimit] = React.useState(ROW_LIMIT);
+  const [truncated, setTruncated] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
@@ -173,6 +225,8 @@ export const UnifiedLogsBody: React.FC = () => {
         setSources(res.sources || []);
         setPartial(Boolean(res.partial));
         setCount(typeof res.count === 'number' ? res.count : logs.length);
+        setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
+        setTruncated(Boolean(res.truncated));
         // Prune expanded ids that scrolled out of the window (ids are per-source
         // unique; a source_id prefix keeps two sources' identical ids distinct).
         setExpanded((prev) => {
@@ -308,9 +362,20 @@ export const UnifiedLogsBody: React.FC = () => {
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-medium text-muted-foreground">
-              <span className="tabular-nums">{count}</span> event{count === 1 ? '' : 's'} across{' '}
+              Most recent <span className="tabular-nums">{count}</span> event
+              {count === 1 ? '' : 's'} across{' '}
               <span className="tabular-nums">{sources.length}</span> source
               {sources.length === 1 ? '' : 's'}
+              {truncated ? (
+                <>
+                  {' '}
+                  <span
+                    title={`Browse returns at most ${appliedLimit} rows and has no paging — narrow the time range or search to see more.`}
+                  >
+                    (more exist)
+                  </span>
+                </>
+              ) : null}
             </span>
             {liveTail ? (
               <Badge variant="success" className="gap-1">

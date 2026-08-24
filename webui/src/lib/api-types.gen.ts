@@ -2467,6 +2467,33 @@ export interface paths {
          *     Resilient by design: each source runs under ``asyncio.wait_for`` and the whole set
          *     under ``gather(return_exceptions=True)``, so one slow or failing source degrades to
          *     a per-source error entry and NEVER blocks the rest (partial success).
+         *
+         *     ``source_id`` (OPTIONAL) scopes the fan-out to exactly one source, mirroring the
+         *     private preview reader in ``routes_rules._read_recent_events``. Omitting it is the
+         *     byte-identical all-sources behaviour. A ``source_id`` that is not visible in the
+         *     CURRENT mode is a 404 — while Demo Mode is active a real tenant id is
+         *     indistinguishable from an unknown one, so demo isolation leaks nothing — and a
+         *     visible id that is not an eligible browse target for this route (disabled, no
+         *     registered connector, or no ``browse`` capability) is a 501, the same status and
+         *     detail the per-source sibling route uses.
+         *
+         *     Each per-source status entry carries ``mode``: ``"search"`` = a real backing search
+         *     (``from``/``to``/``query`` apply) and ``"buffer"`` = a push source's process-local,
+         *     volatile in-memory live-tail ring, where ``from``/``to``/``query`` are IGNORED and
+         *     nothing survives a restart. Without it a caller cannot tell a time-ranged query from
+         *     a ring read in the merged view. ``mode`` describes the FILTERS, not the durability
+         *     of the backing store: a Demo Mode adapter reports ``"search"`` because it really
+         *     does apply ``from``/``to``/``query``.
+         *
+         *     BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and applied per source AND on
+         *     the merge; there is NO pagination, cursor, or offset. The envelope echoes the
+         *     effective ``limit`` and a ``truncated`` flag so a caller can say "most recent N"
+         *     rather than implying it has seen everything. Each per-source status carries its own
+         *     ``truncated``, computed by the SAME ``_browse_truncated`` rule the per-source
+         *     sibling route uses, and the envelope ``truncated`` is the OR of the merge being cut
+         *     with any single source being cut — so scoping to one source, or running a
+         *     single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
+         *     for that same read.
          */
         get: operations["unified_logs_api_logs_get"];
         put?: never;
@@ -4618,6 +4645,20 @@ export interface paths {
          *     data_view_pattern (and its own TLS settings); push sources return the last N
          *     ingested events from the in-memory live-tail buffer. Hard-capped; secrets are
          *     never returned (rows are log data only).
+         *
+         *     BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and there is NO pagination,
+         *     cursor, or offset: the response is always the MOST RECENT ``count`` rows for the
+         *     requested window, never the full match set. The envelope echoes the effective
+         *     ``limit`` and a ``truncated`` flag so a caller can say "most recent N" instead of
+         *     implying completeness. ``mode`` distinguishes the two read paths:
+         *     ``"search"`` = a real backing search (``from``/``to``/``query`` apply, and
+         *     ``total`` reports the match count when the connector supplies one) and
+         *     ``"buffer"`` = a push source's process-local, volatile in-memory live-tail ring,
+         *     where ``from``/``to``/``query`` are IGNORED and nothing survives a restart.
+         *     ``mode`` describes the FILTERS, never the durability of the backing store: a Demo
+         *     Mode adapter reports ``"search"`` because it really does apply
+         *     ``from``/``to``/``query`` and really does report a match ``total``, even though the
+         *     ring it searches is itself in-memory.
          */
         get: operations["source_logs_api_sources__source_id__logs_get"];
         put?: never;
@@ -12396,6 +12437,7 @@ export interface operations {
                 query?: string | null;
                 from?: string | null;
                 to?: string | null;
+                source_id?: string | null;
                 per_source_timeout?: number;
             };
             header?: never;

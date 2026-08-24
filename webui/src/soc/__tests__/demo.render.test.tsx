@@ -3,8 +3,9 @@
  *
  * 1. Experimental Settings control (<DemoModeSection/>): renders the mode toggle +
  *    knobs and calls api.demo.enable when "Enable demo mode" is clicked.
- * 2. <DemoBanner/>: shows when the demo tenant is active (status.mode !== 'off')
- *    and renders nothing when off.
+ * 2. <DemoIndicator/>: the compact top-bar chip that replaced the full-width banner —
+ *    shows when the demo tenant is active (status.mode !== 'off'), renders nothing when
+ *    off, and keeps the isolation copy + both reversible exits inside its popover.
  *
  * Both mount under a real <DemoProvider> with a mocked api so the shared status
  * context drives them exactly as it does in the app.
@@ -50,7 +51,7 @@ vi.mock('@/soc/components/Can', () => ({
 
 import { DemoProvider } from '../demo';
 import { DemoModeSection } from '../components/DemoModeSection';
-import { DemoBanner } from '../components/DemoBanner';
+import { DemoIndicator } from '../components/DemoIndicator';
 import { TooltipProvider } from '@/ui/tooltip';
 
 const OFF = { mode: 'off' as const, active: false, run_id: null };
@@ -161,45 +162,70 @@ describe('Experimental › Demo Mode control', () => {
   });
 });
 
-describe('<DemoBanner/>', () => {
+describe('<DemoIndicator/>', () => {
   it('renders nothing when demo mode is off', async () => {
     statusMock.mockResolvedValue(OFF);
-    const { container } = withProvider(<DemoBanner />);
-    // Allow the status poll to resolve, then assert the banner stayed empty.
+    const { container } = withProvider(<DemoIndicator />);
+    // Allow the status poll to resolve, then assert the chip stayed empty.
     await waitFor(() => expect(statusMock).toHaveBeenCalled());
-    expect(container.textContent).not.toMatch(/demo mode active/i);
+    expect(container.textContent).not.toMatch(/demo mode/i);
+    expect(screen.queryByTestId('demo-indicator')).toBeNull();
   });
 
-  it('shows the banner with Reset + Exit & clear when demo mode is active', async () => {
+  it('shows a compact chip whose popover carries the isolation copy + both exits', async () => {
     statusMock.mockResolvedValue(ACTIVE);
-    withProvider(<DemoBanner />);
-    await waitFor(() =>
-      expect(screen.getByText(/demo mode active \(simulated data\)/i)).toBeInTheDocument(),
-    );
+    withProvider(<DemoIndicator />);
+
+    const chip = await screen.findByTestId('demo-indicator');
+    // The visible label collapses below `lg`, so the accessible name must always be full.
+    expect(chip).toHaveAccessibleName('Demo mode active — synthetic data');
+    // The chip itself is the only demo chrome — no full-width banner copy inline.
+    expect(chip.textContent).not.toMatch(/simulated data/i);
+
+    fireEvent.click(chip);
+    expect(
+      await screen.findByText(/demo mode active \(simulated data\)/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/fully isolated live simulation dataset/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^reset$/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /exit & clear/i })).toBeInTheDocument();
   });
 
-  it('keeps the active demo state and controls compact on mobile', async () => {
+  it('stays inline in the bar at mobile widths (safety state is never folded away)', async () => {
     setMobileViewport(true);
     statusMock.mockResolvedValue(ACTIVE);
-    withProvider(<DemoBanner />);
+    withProvider(<DemoIndicator announce />);
 
-    expect(await screen.findByText('Live demo · synthetic data')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Reset demo data' })).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Exit Demo Mode and clear synthetic data' }),
-    ).toHaveTextContent('Exit');
-    expect(screen.getByText(/fully isolated live simulation dataset/i)).toHaveClass('sr-only');
+    const chip = await screen.findByTestId('demo-indicator');
+    expect(chip).toHaveAttribute('aria-live', 'polite');
+    fireEvent.click(chip);
+    expect(await screen.findByRole('button', { name: /^reset$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /exit & clear/i })).toBeInTheDocument();
   });
 
-  it('keeps the safety banner visible but hides mutations without demo:manage', async () => {
+  it('keeps the safety chip + copy but hides mutations without demo:manage', async () => {
     permissionState.canManage = false;
     statusMock.mockResolvedValue(ACTIVE);
-    withProvider(<DemoBanner />);
+    withProvider(<DemoIndicator />);
 
+    fireEvent.click(await screen.findByTestId('demo-indicator'));
     expect(await screen.findByText(/demo mode active \(simulated data\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/fully isolated live simulation dataset/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^reset$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /exit & clear/i })).toBeNull();
+    expect(screen.getByText(/needs the demo management permission/i)).toBeInTheDocument();
+  });
+
+  it('deep-links into the demo settings section and closes the popover', async () => {
+    statusMock.mockResolvedValue(ACTIVE);
+    const onNavigate = vi.fn();
+    withProvider(<DemoIndicator onNavigate={onNavigate} />);
+
+    fireEvent.click(await screen.findByTestId('demo-indicator'));
+    fireEvent.click(await screen.findByRole('button', { name: /manage demo mode/i }));
+    expect(onNavigate).toHaveBeenCalledWith('settings', { section: 'demo' });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /exit & clear/i })).toBeNull(),
+    );
   });
 });

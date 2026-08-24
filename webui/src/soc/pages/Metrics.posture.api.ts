@@ -49,6 +49,17 @@ export interface PostureQuality {
   escalated_cases: number;
   terminal_cases: number;
   auto_closed_cases: number;
+  /**
+   * The rest of the LAST-WRITER `decision_by` partition of `terminal_cases`:
+   * `auto_closed_cases` (agent) + `human_closed_cases` (analyst) +
+   * `system_closed_cases` (deterministic SYSTEM routing plus legacy records with no
+   * recorded provenance) === `terminal_cases`, exactly. `human_closed_cases` is NOT
+   * `terminal_cases - auto_closed_cases`: that difference over-states human work by
+   * absorbing the residual. Optional — older backends omit both, and their absence
+   * means "close attribution not reported", never zero.
+   */
+  human_closed_cases?: number;
+  system_closed_cases?: number;
   alert_to_incident_ratio: number;
   false_positive_rate: number;
   escalation_rate: number;

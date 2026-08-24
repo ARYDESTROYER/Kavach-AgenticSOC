@@ -104,6 +104,10 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
   const [rows, setRows] = React.useState<SourceLogRow[]>([]);
   const [mode, setMode] = React.useState('');
   const [count, setCount] = React.useState(0);
+  // The server bound: browse is "the most recent N", never a complete result (no
+  // pagination). `truncated` says more demonstrably existed.
+  const [appliedLimit, setAppliedLimit] = React.useState(ROW_LIMIT);
+  const [truncated, setTruncated] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
@@ -126,6 +130,8 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
         setRows(logs);
         setMode(res.mode || '');
         setCount(typeof res.count === 'number' ? res.count : logs.length);
+        setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
+        setTruncated(Boolean(res.truncated));
         setExpanded((prev) => {
           const ids = new Set(logs.map((r) => r.id));
           const next = new Set<string>();
@@ -274,8 +280,18 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-medium text-muted-foreground">
-                <span className="uppercase tracking-wide">{mode || DASH}</span> ·{' '}
-                <span className="tabular-nums">{count}</span> shown
+                <span className="uppercase tracking-wide">{mode || DASH}</span> · most
+                recent <span className="tabular-nums">{count}</span>
+                {truncated ? (
+                  <>
+                    {' '}
+                    <span
+                      title={`Browse returns at most ${appliedLimit} rows and has no paging — narrow the time range or search to see more.`}
+                    >
+                      (more exist)
+                    </span>
+                  </>
+                ) : null}
               </span>
               {liveTail ? (
                 <Badge variant="success" className="gap-1">

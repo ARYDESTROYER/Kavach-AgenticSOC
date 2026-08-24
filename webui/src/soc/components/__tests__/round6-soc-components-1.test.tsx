@@ -3,7 +3,7 @@
  * a11y / glitch fixes:
  *  - DashboardGroup: the group title is a REAL heading, not swallowed inside the
  *    trigger <button> (valid content model + heading-jump navigation).
- *  - DemoBadge / DemoBanner: the amber affordances use the AA-tuned `-text` token
+ *  - DemoBadge / DemoIndicator: the amber affordances use the AA-tuned `-text` token
  *    instead of the failing plain `text-warning` tint.
  *  - HelpTip: the (?) trigger has a ≥24px hit target (WCAG 2.5.8).
  *  - LabeledSlider: the role="slider" thumb is named via `aria-labelledby` even
@@ -121,8 +121,8 @@ describe('TagInput — chip glitches + blur logic', () => {
   });
 });
 
-// DemoBanner needs the demo context; mock it to an active tenant so the amber
-// controls render, then assert they use the AA `-text` token.
+// DemoIndicator needs the demo context; mock it to an active tenant so the amber
+// chip + its popover controls render, then assert they use the AA `-text` token.
 vi.mock('@/soc/demo', () => ({
   useDemo: () => ({
     status: { mode: 'seeded', active: true, run_id: 'r1' },
@@ -132,7 +132,7 @@ vi.mock('@/soc/demo', () => ({
   }),
 }));
 
-describe('DemoBanner — AA warning token', () => {
+describe('DemoIndicator — AA warning token', () => {
   beforeEach(() => {
     try {
       window.localStorage.clear();
@@ -141,18 +141,17 @@ describe('DemoBanner — AA warning token', () => {
     }
   });
 
-  it('collapsed pill uses text-warning-text', async () => {
-    window.localStorage.setItem('tlsoc.demoBanner.collapsed', '1');
-    const { DemoBanner } = await import('../DemoBanner');
-    render(<DemoBanner />);
-    const pill = screen.getByRole('button', { name: /Demo mode active/i });
-    expect(pill.className).toContain('text-warning-text');
+  it('top-bar chip uses text-warning-text', async () => {
+    const { DemoIndicator } = await import('../DemoIndicator');
+    render(<DemoIndicator />);
+    const chip = screen.getByRole('button', { name: /Demo mode active/i });
+    expect(chip.className).toContain('text-warning-text');
   });
 
-  it('expanded Reset / Exit controls use text-warning-text', async () => {
-    window.localStorage.setItem('tlsoc.demoBanner.collapsed', '0');
-    const { DemoBanner } = await import('../DemoBanner');
-    render(<DemoBanner />);
+  it('popover Reset / Exit controls use text-warning-text', async () => {
+    const { DemoIndicator } = await import('../DemoIndicator');
+    render(<DemoIndicator />);
+    fireEvent.click(screen.getByRole('button', { name: /Demo mode active/i }));
     expect(screen.getByRole('button', { name: /^Reset$/i }).className).toContain('text-warning-text');
     expect(screen.getByRole('button', { name: /Exit & clear/i }).className).toContain('text-warning-text');
   });

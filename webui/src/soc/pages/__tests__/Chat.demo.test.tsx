@@ -3,10 +3,10 @@
  *
  * The full-height chat frame is anchored to the dynamic viewport while keeping a
  * single workspace/header/composer hierarchy.
- * When the demo tenant is active the AppShell injects the amber DemoBanner + a 16px
- * `mt-4` spacer ABOVE the page inside the SAME content wrapper, so the frame must
- * subtract that band (~88px) too or the composer is pushed below the fold. These
- * tests assert the offset switches with `useDemo().active`, while the integration
+ * Demo mode is a top-bar chip (R12) — the AppShell no longer injects a full-width
+ * banner + `mt-4` spacer above the page, so the frame subtracts exactly one band in
+ * every tenant state and the composer never moves. These tests pin that the offset no
+ * longer switches with `useDemo().active`, while the integration
  * cases lock the per-user conversation rail, selection restore, thread actions,
  * New-chat draft behavior, case scoping, and populated accessibility.
  *
@@ -226,12 +226,12 @@ describe("Chat page — Demo Mode height", () => {
     await screen.findByTestId("chat-panel");
   });
 
-  it("subtracts the DemoBanner band when demo is active", async () => {
+  it("keeps the same frame height when demo is active (no banner band)", async () => {
     demoActiveRef.current = true;
     const { container } = renderChat();
     const cls = frameClass(container);
-    expect(cls).toContain("h-[calc(100dvh-10rem)]");
-    expect(cls).not.toContain("h-[calc(100dvh-5.5rem)]");
+    expect(cls).toContain("h-[calc(100dvh-5.5rem)]");
+    expect(cls).not.toContain("h-[calc(100dvh-10rem)]");
     await screen.findByTestId("chat-panel");
   });
 

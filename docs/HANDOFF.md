@@ -521,7 +521,7 @@ webui/src/
   soc/hooks/       Round-5 — useAsync · useDirtyDraft · usePosture · useLiveAnnouncer (a11y) ·
                    usePrefersReducedMotion · useMediaQuery
   soc/components/  RiskGauge, QRCode, CommandPalette, SavedViewsBar, DataTable, NotificationsEditor,
-                   SourceEditor (feeds), DemoBanner, badges, charts, HelpTip + Round-3 NavSidebar,
+                   SourceEditor (feeds), DemoIndicator, badges, charts, HelpTip + Round-3 NavSidebar,
                    NotificationBell, GlassSurface, SettingsGrid/Card, theme-tokens resolver,
                    MitreHeatmap/BurnDownChart, CaseThread, EnrichmentProvidersEditor, BrandingEditor +
                    Round-5 ~15 shared primitives (Field, SegmentedControl, ConfirmDialog, NumberField,

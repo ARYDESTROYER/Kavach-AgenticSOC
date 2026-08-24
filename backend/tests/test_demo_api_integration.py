@@ -129,7 +129,13 @@ def test_demo_source_api_is_absent_off_demo(client) -> None:
 
     unified = client.get("/api/logs")
     assert unified.status_code == 200
-    assert unified.json() == {"logs": [], "count": 0, "sources": [], "partial": False}
+    # Off demo with no configured sources: nothing to fan out over. The envelope also
+    # carries the additive honest-bound fields (R12) — the effective cap and a
+    # `truncated` flag — so a caller can say "most recent N" rather than "everything".
+    assert unified.json() == {
+        "logs": [], "count": 0, "sources": [], "partial": False,
+        "limit": 100, "truncated": False,
+    }
     for source_id in SOURCE_CONTRACT:
         assert client.get(f"/api/sources/{source_id}/logs").status_code == 404
     assert client.get("/api/sources/demo/logs").status_code == 404
@@ -197,7 +203,9 @@ def test_demo_per_source_and_unified_logs_are_bounded_and_provenanced(client) ->
         assert response.status_code == 200, (source_id, response.text)
         data = response.json()
         assert data["source_id"] == source_id
-        assert data["mode"] == "buffer"
+        # A demo adapter runs a REAL filtered search over its ring (the query/window
+        # below demonstrably apply), so the honest mode is "search", not "buffer".
+        assert data["mode"] == "search"
         assert 0 < data["count"] <= 5
         assert data["total"] >= data["count"]
         assert all(row["source_id"] == source_id for row in data["logs"])
@@ -229,6 +237,48 @@ def test_demo_per_source_and_unified_logs_are_bounded_and_provenanced(client) ->
     assert all(row["source_name"] for row in data["logs"])
     timestamps = [row["ts"] for row in data["logs"]]
     assert timestamps == sorted(timestamps, reverse=True)
+
+
+def test_demo_browse_reports_the_honest_mode_and_the_filters_it_applies(client) -> None:
+    """Regression: a demo adapter was badged ``mode="buffer"`` on both browse routes,
+    and the contract defines "buffer" as a ring where ``from``/``to``/``query`` are
+    IGNORED. Its read is a real filtered search over that ring — the filters
+    demonstrably apply below — so the honest mode is "search". ``mode`` describes the
+    filters, never the durability of the backing store."""
+    _enable_seeded(client)
+    source_id = next(iter(SOURCE_CONTRACT))
+
+    baseline = client.get(f"/api/sources/{source_id}/logs?limit=100").json()
+    assert baseline["mode"] == "search"
+    assert baseline["count"] > 0
+
+    # The `query` filter really applies...
+    empty = client.get(
+        f"/api/sources/{source_id}/logs",
+        params={"limit": 100, "query": "definitely-not-in-a-demo-record"},
+    ).json()
+    assert empty["mode"] == "search" and empty["count"] == 0 and empty["logs"] == []
+    # ...and so does the time window (a year-old window matches nothing).
+    narrowed = client.get(
+        f"/api/sources/{source_id}/logs",
+        params={"limit": 100, "from": "now-52w", "to": "now-51w"},
+    ).json()
+    assert narrowed["mode"] == "search" and narrowed["count"] == 0
+
+    # The unified fan-out reports the same honest mode for EVERY demo target, and the
+    # very same filters cut the merged result.
+    unified = client.get("/api/logs?limit=100").json()
+    assert {row["mode"] for row in unified["sources"]} == {"search"}
+    assert unified["count"] > 0
+    filtered = client.get(
+        "/api/logs", params={"limit": 100, "query": "definitely-not-in-a-demo-record"},
+    ).json()
+    assert filtered["count"] == 0
+    assert {row["mode"] for row in filtered["sources"]} == {"search"}
+    ranged = client.get(
+        "/api/logs", params={"limit": 100, "from": "now-52w", "to": "now-51w"},
+    ).json()
+    assert ranged["count"] == 0
 
 
 def test_demo_overlay_never_queries_persists_or_discloses_tenant_data(
@@ -273,6 +323,18 @@ def test_demo_overlay_never_queries_persists_or_discloses_tenant_data(
     unified = client.get("/api/logs?limit=100")
     assert unified.status_code == 200, unified.text
     assert {row["source_id"] for row in unified.json()["sources"]} == set(SOURCE_CONTRACT)
+    # The optional `source_id` scope obeys the SAME isolation: a demo adapter is
+    # readable, and a real tenant id is indistinguishable from an unknown one (404) so
+    # the demo session never confirms that a live source exists behind it.
+    demo_id = next(iter(SOURCE_CONTRACT))
+    scoped = client.get("/api/logs", params={"limit": 10, "source_id": demo_id})
+    assert scoped.status_code == 200, scoped.text
+    assert {row["source_id"] for row in scoped.json()["sources"]} == {demo_id}
+    assert scoped.json()["sources"][0]["mode"] == "search"
+    assert client.get(
+        "/api/logs", params={"source_id": "real-webhook"},
+    ).status_code == 404
+    assert client.get("/api/logs", params={"source_id": "nope"}).status_code == 404
 
     disabled = client.post("/api/demo/disable")
     assert disabled.status_code == 200, disabled.text

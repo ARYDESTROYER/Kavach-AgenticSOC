@@ -1252,6 +1252,11 @@ export const api = {
     ),
   // Browse a window of normalised events from one source. `buildQuery` drops any
   // undefined / null / empty params, so blank query/from/to are not sent.
+  // BOUNDED, NOT COMPLETE: the server clamps limit to 1..200 with NO pagination, and
+  // echoes `limit` + `truncated` so the UI can say "most recent N". `mode` reports a
+  // volatile push live-tail ring ("buffer", from/to/query ignored) vs a real search.
+  // Every field on every row is source-controlled and UNTRUSTED (#9): plain text only,
+  // `_raw` inside a code block, never markup and never fed to a model.
   sourceLogs: (sourceId: string, params?: SourceLogsQuery) =>
     request<SourceLogsResponse>('GET', `sources/${encodeURIComponent(sourceId)}/logs`, {
       query: params as Record<string, unknown> | undefined,

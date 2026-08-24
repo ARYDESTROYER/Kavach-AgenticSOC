@@ -250,6 +250,32 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **The landing dashboard answers "how much is the agent actually closing?"** The
+  Active Risk Index — a number no percentage could honestly qualify — gives up its
+  place to a **Human vs AI** card: agent, human, and system close counts with their
+  shares, over a windowed two-series trendline. The backend now partitions closed
+  cases exactly (`human_closed` and `system_closed` join `auto_closed` in both the
+  trend buckets and `quality_metrics`), so the unattributed residual is a visible
+  band rather than something quietly folded into "human", and the shares total
+  exactly one hundred by largest-remainder. Every band falls back to an em dash with
+  a named reason when the partition does not reconcile or the sample is bounded, and
+  the card states plainly that attribution is last-recorded-decider — an agent-closed
+  case a human later merely acknowledges migrates into the human band.
+- **Every landing metric now shows its share beside the number**, through a new
+  plain-text secondary slot, each against a denominator drawn from the same
+  population as its numerator, and each with an explicit condition under which it
+  refuses to state a rate rather than divide by a truncated sample.
+- **The noise funnel's Simple view shows percentages again**, one per stage against
+  its flow parent, so the dispositions of a stage visibly sum to it. The denominator
+  is named in every accessible label, and the same rule now holds in the narrow-width
+  rail — the view states one rule and shows one rule at every size.
+- **Source log browsing became contract-complete**: `GET /api/sources` reports
+  `can_browse` from the same predicate the browse routes gate on, `GET /api/logs`
+  accepts an optional `source_id` scope, every per-source entry reports whether it is
+  a real backing search or a volatile tail, and both routes share one truncation rule
+  so they can no longer disagree about the same rows. Pagination, filters, sort,
+  columns, deep links, and export remain deliberately deferred.
+
 - **Admin-mandated MFA, enforced inside the login phase.** A per-user `mfa_required`
   flag (settable at creation or later; distinct from `mfa_enabled`, which means
   *enrolled* — it never mints a secret and is not caught by the
@@ -475,6 +501,13 @@ and, just as importantly, makes each of these conditions a state an operator can
   fixed bug for a permanent hole in the audit log.
 
 ### Changed
+
+- **The top KPI is Critical alone**, not Critical/High, and deep-links to that
+  severity.
+- **Demo mode moved into the top bar.** The banner took a full-width strip above
+  every route; a compact pill now sits beside the release badge on every viewport,
+  its popover keeping the isolation explanation and the Reset and Exit-and-clear
+  actions.
 
 - **The landing dashboard is now the "Cyber Defence Center"** (renamed from
   "Security Command Center"; the exported constant and boot-guard anchor are

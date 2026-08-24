@@ -3,8 +3,9 @@
  *
  * Pins the four command-center signatures:
  *   1. the page is titled "Cyber Defence Center";
- *   2. the Active Risk Index (#1 — the ONE risk instrument) is its own flat cell in the
- *      integrated instrument band, a sibling of the plain header, never nested inside it;
+ *   2. the Human-vs-AI close-attribution instrument (which replaced the Active Risk
+ *      Index gauge) is its own flat cell in the integrated instrument band, a sibling
+ *      of the plain header, never nested inside it;
  *   3. the Noise-Reduction instrument renders mixed-unit conversion context followed by
  *      a conserved case flow, plus real selected-window Open-case context;
  *   4. the KPI micro-strip is 5 alert/case tiles (LLM spend is not a hero tile).
@@ -150,18 +151,23 @@ describe('Overview — Cyber Defence Center', () => {
     );
   });
 
-  it('mounts the Active Risk Index (#1) as its own flat cell in the instrument band', async () => {
+  it('mounts the Human-vs-AI instrument as its own flat cell in the instrument band', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     const hero = await screen.findByTestId('page-hero');
     const heroRow = await screen.findByTestId('hero-row');
-    const ari = screen.getByTestId('active-risk-index');
-    expect(ari).toBeInTheDocument();
+    const card = screen.getByTestId('human-vs-ai');
+    expect(card).toBeInTheDocument();
     // Its own instrument cell, inside the band but NOT nested inside the plain header.
-    expect(within(heroRow).getByTestId('active-risk-index')).toBeInTheDocument();
-    expect(within(hero).queryByTestId('active-risk-index')).toBeNull();
-    expect(ari).toHaveClass('bg-transparent');
-    // It is the ONLY risk instrument on the page.
-    expect(screen.getAllByTestId('active-risk-index')).toHaveLength(1);
+    expect(within(heroRow).getByTestId('human-vs-ai')).toBeInTheDocument();
+    expect(within(hero).queryByTestId('human-vs-ai')).toBeNull();
+    // It is the ONE close-attribution surface on the page, and the Active Risk Index
+    // gauge it replaced is gone from the landing surface entirely.
+    expect(screen.getAllByTestId('human-vs-ai')).toHaveLength(1);
+    expect(screen.queryByTestId('active-risk-index')).toBeNull();
+    // The three-way partition is always present — the residual band is never hidden.
+    for (const band of ['human-vs-ai-ai', 'human-vs-ai-human', 'human-vs-ai-system']) {
+      expect(within(card).getByTestId(band)).toBeInTheDocument();
+    }
   });
 
   it('mounts the compact Noise-Reduction flow with conversion context and Open cases', async () => {
@@ -277,7 +283,7 @@ describe('Overview — Cyber Defence Center', () => {
     expect(strip.querySelectorAll('[data-testid^="kpi-"]')).toHaveLength(5);
     for (const id of [
       'kpi-open-cases',
-      'kpi-critical-high',
+      'kpi-critical',
       'kpi-escalated-to-human',
       'kpi-false-positive-rate',
       'kpi-auto-resolved',

@@ -809,6 +809,12 @@ export interface SourceInstance {
   /** Source-native transport/format hints returned by compatible backends. */
   protocol?: string;
   format?: string;
+  /**
+   * Server-authoritative browse capability (GET /api/sources). It is the SAME
+   * `_source_can_browse` predicate the browse routes gate on — never re-derive it
+   * client-side from connector manifests or health. Optional only so an older
+   * backend degrades to "unknown".
+   */
   can_browse?: boolean;
   is_primary?: boolean;
   /**
@@ -947,14 +953,24 @@ export interface SourceLogRow {
 /**
  * GET /api/sources/{id}/logs — a window of recent events from a source.
  *
- * `mode:"buffer"` = a push source's in-memory live tail (the server ignores
- * from/to/query); `mode:"search"` = a scoped read against a pull source.
+ * `mode:"buffer"` = a push source's PROCESS-LOCAL, VOLATILE in-memory live tail (the
+ * server ignores from/to/query and nothing survives a restart); `mode:"search"` = a
+ * real backing read against a pull source, where from/to/query apply.
+ *
+ * BOUNDED, NOT COMPLETE: the server clamps `limit` to 1..200 and there is NO
+ * pagination. Rows are always "the most recent `count`" — render them as such.
+ * `truncated` is true when more rows demonstrably existed; false does NOT prove
+ * completeness.
  */
 export interface SourceLogsResponse {
   source_id: string;
   mode: 'buffer' | 'search' | string;
   count: number;
   total?: number;
+  /** Effective server-side row cap for this response (clamped to 1..200). */
+  limit?: number;
+  /** True when more rows existed than the cap returned. */
+  truncated?: boolean;
   query?: string | null;
   logs: SourceLogRow[];
 }
@@ -3054,6 +3070,19 @@ export interface MetricsTrendBucket {
    *  needs-human / escalated. */
   closed: number;
   auto_closed: number;
+  /**
+   * The three-way LAST-WRITER `decision_by` partition of `closed`, over the same
+   * policy-excluded graded cohort: `auto_closed` (agent) + `human_closed` (analyst) +
+   * `system_closed` (the honest residual — deterministic SYSTEM routing plus legacy
+   * records carrying no provenance) === `closed`, exactly, in every bucket. Never fold
+   * `system_closed` into either side. Optional: older backends omit both, so a consumer
+   * must treat their absence as "close attribution not reported", never as zero.
+   *
+   * HONESTY: `decision_by` records the LAST decider, not proof of who did the work — an
+   * agent-closed case a human later merely acknowledges migrates into `human_closed`.
+   */
+  human_closed?: number;
+  system_closed?: number;
   false_positives: number;
   needs_human: number;
   escalated: number;

@@ -53,15 +53,34 @@ export interface UnifiedLogSourceStatus {
   ok: boolean;
   count: number;
   error?: string;
+  /**
+   * How this source was read. `"search"` = a real backing query, so the time range and
+   * search box applied to it. `"buffer"` = a push source's PROCESS-LOCAL, VOLATILE
+   * in-memory live-tail ring: the server IGNORES from/to/query for it and nothing
+   * survives a backend restart. Optional only so an older backend degrades to
+   * "unknown" rather than mislabelling a ring read as a search.
+   */
+  mode?: 'buffer' | 'search' | string;
 }
 
-/** The `GET /api/logs` envelope: merged rows + per-source status + partial flag. */
+/**
+ * The `GET /api/logs` envelope: merged rows + per-source status + partial flag.
+ *
+ * BOUNDED, NOT COMPLETE: the server clamps `limit` to 1..200, applies it per source AND
+ * on the merge, and offers NO pagination/cursor. `logs` is always "the most recent
+ * `count` rows" — say that in the UI. `truncated` is true when the merge was cut; false
+ * does NOT prove completeness, because each source was itself read with the same cap.
+ */
 export interface UnifiedLogsResponse {
   logs: UnifiedLogRow[];
   count: number;
   sources: UnifiedLogSourceStatus[];
   /** True when at least one source failed/timed out (partial result served). */
   partial: boolean;
+  /** Effective server-side row cap for this response (clamped to 1..200). */
+  limit?: number;
+  /** True when the merged set was larger than the cap. */
+  truncated?: boolean;
 }
 
 /** Query params for `GET /api/logs` (all optional; the backend hard-caps limit). */
@@ -70,6 +89,12 @@ export interface UnifiedLogsQuery {
   query?: string;
   from?: string;
   to?: string;
+  /**
+   * OPTIONAL single-source scope. Omitted = every enabled, browse-capable source
+   * (the default fan-out). An id the server cannot browse is rejected the same way
+   * `GET /api/sources/{id}/logs` rejects it: 404 unknown, 501 not browsable.
+   */
+  source_id?: string;
   per_source_timeout?: number;
 }
 

@@ -31,9 +31,17 @@ import type { UnifiedLogsResponse } from '../../UnifiedLogs.api';
 const RESPONSE: UnifiedLogsResponse = {
   count: 2,
   partial: true,
+  limit: 150,
+  truncated: false,
   sources: [
-    { source_id: 'src-elastic', source_name: 'Prod Elasticsearch', ok: true, count: 2 },
-    { source_id: 'src-wazuh', source_name: 'Wazuh EDR', ok: false, count: 0, error: 'timeout' },
+    {
+      source_id: 'src-elastic', source_name: 'Prod Elasticsearch', ok: true, count: 2,
+      mode: 'search',
+    },
+    {
+      source_id: 'src-wazuh', source_name: 'Wazuh EDR', ok: false, count: 0,
+      error: 'timeout', mode: 'buffer',
+    },
   ],
   logs: [
     {
@@ -128,6 +136,70 @@ describe('UnifiedLogsView', () => {
     );
     // ...and NO actual <img> element was injected from the message body.
     expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('reports how each source was read so a buffer is never mistaken for a search', async () => {
+    render(<UnifiedLogsView />);
+
+    const strip = await screen.findByTestId('unified-source-status');
+    // The server-reported mode is visible per source; a push live-tail ring is labelled
+    // as such because the time range + search box never applied to it.
+    expect(within(strip).getByText('search')).toBeInTheDocument();
+    expect(within(strip).getByText('live tail')).toBeInTheDocument();
+  });
+
+  it('exposes the live-tail caveat as visible text instead of a hover-only title', async () => {
+    render(<UnifiedLogsView />);
+
+    const strip = await screen.findByTestId('unified-source-status');
+    // Reachable with no pointer and no focusable element: the operationally load-bearing
+    // caveat is rendered text, so keyboard and screen-reader users receive it too.
+    const caveat = within(strip).getByTestId('unified-buffer-caveat');
+    expect(caveat).toHaveTextContent('Wazuh EDR');
+    expect(caveat).toHaveTextContent(/the time range and search box do not apply/i);
+    expect(caveat).toHaveTextContent(/does not survive a backend restart/i);
+    expect(caveat).not.toHaveAttribute('aria-hidden');
+
+    // The badge's own AA-tuned `-text` token carries the mode marker and the count; an
+    // opacity modifier would composite 12px text below 4.5:1 in the light theme.
+    expect(within(strip).getByText('live tail').className).not.toMatch(/\bopacity-/);
+    expect(within(strip).getByText('search').className).not.toMatch(/\bopacity-/);
+    expect(within(strip).getByText('2').className).not.toMatch(/\bopacity-/);
+  });
+
+  it('omits the live-tail caveat when every source was read by search', async () => {
+    fetchUnifiedLogsMock.mockResolvedValue({
+      ...RESPONSE,
+      sources: RESPONSE.sources.map((s) => ({ ...s, mode: 'search' })),
+    });
+    render(<UnifiedLogsView />);
+
+    const strip = await screen.findByTestId('unified-source-status');
+    expect(within(strip).queryByTestId('unified-buffer-caveat')).toBeNull();
+  });
+
+  it('states the bound honestly ("most recent N", and says when more exist)', async () => {
+    render(<UnifiedLogsView />);
+    // Not truncated → no "more exist" claim, but the count is still framed as a window.
+    await waitFor(() => expect(screen.getByText(/Most recent/i)).toBeInTheDocument());
+    expect(screen.queryByText('(more exist)')).toBeNull();
+
+    fetchUnifiedLogsMock.mockResolvedValue({ ...RESPONSE, truncated: true });
+    render(<UnifiedLogsView />);
+    await waitFor(() => expect(screen.getAllByText('(more exist)').length).toBeGreaterThan(0));
+  });
+
+  it('passes an optional single-source scope straight through to GET /api/logs', async () => {
+    // The query type carries `source_id`; the builder must forward it untouched so the
+    // server (not the client) decides what is browsable.
+    const { fetchUnifiedLogs } = await vi.importActual<
+      typeof import('../../UnifiedLogs.api')
+    >('../../UnifiedLogs.api');
+    const apiMod = await import('@/lib/api');
+    const spy = vi.spyOn(apiMod.api, 'get').mockResolvedValue(RESPONSE);
+    await fetchUnifiedLogs({ limit: 10, source_id: 'src-elastic' });
+    expect(spy).toHaveBeenCalledWith('logs', { limit: 10, source_id: 'src-elastic' });
+    spy.mockRestore();
   });
 
   it('shows an empty state when no browse-capable sources are enabled', async () => {
