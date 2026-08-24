@@ -248,6 +248,105 @@ def test_unified_logs_tolerates_one_source_failing(client, monkeypatch):
     assert err_entry.get("error")
 
 
+def test_unified_logs_optional_source_id_scopes_the_fanout(client):
+    """The OPTIONAL `source_id` scopes the fan-out to one source. Omitting it must stay
+    byte-identical to the pre-existing all-sources behaviour."""
+    assert client.post("/api/sources", json={
+        "id": "elk-a", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX_A}}).status_code == 200
+    assert client.post("/api/sources", json={
+        "id": "elk-b", "source_type": "elasticsearch",
+        "config": {"data_view_pattern": INDEX_B}}).status_code == 200
+
+    before = client.get("/api/logs?limit=50").json()
+    assert {s["source_id"] for s in before["sources"]} == {"elk-a", "elk-b"}
+
+    scoped = client.get("/api/logs", params={"limit": 50, "source_id": "elk-b"})
+    assert scoped.status_code == 200, scoped.text
+    data = scoped.json()
+    # Only the requested source is read, reported, and represented in the rows.
+    assert {s["source_id"] for s in data["sources"]} == {"elk-b"}
+    assert {row["source_id"] for row in data["logs"]} == {"elk-b"}
+    assert data["partial"] is False
+    # Provenance stays MANDATORY even when scoped to one source.
+    assert all(row["source_name"] for row in data["logs"])
+
+    # The unfiltered path is untouched by the scoped call (and an empty value is
+    # treated as absent, matching the client's drop-empty query builder).
+    after = client.get("/api/logs?limit=50").json()
+    assert after == before
+    assert client.get("/api/logs", params={"limit": 50, "source_id": ""}).json() == before
+
+
+def test_unified_logs_rejects_an_unbrowsable_source_id_like_the_sibling(client):
+    """An unknown id is a 404 and a known-but-ineligible id is a 501 — the same statuses
+    `GET /api/sources/{id}/logs` uses, so the two browse routes never disagree."""
+    assert client.post("/api/sources", json={
+        "id": "elk-a", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX_A}}).status_code == 200
+    assert client.post("/api/sources", json={
+        "id": "elk-off", "source_type": "elasticsearch", "enabled": False,
+        "config": {"data_view_pattern": INDEX_B}}).status_code == 200
+
+    unknown = client.get("/api/logs", params={"source_id": "nope"})
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "Source not found"
+    # Disabled → not an eligible browse target for the fan-out (same 501 as a source
+    # whose connector cannot browse at all).
+    off = client.get("/api/logs", params={"source_id": "elk-off"})
+    assert off.status_code == 501
+    assert off.json()["detail"] == "Browsing logs is not supported for this source"
+    # The rejection never runs a read: the good source is unaffected.
+    assert client.get("/api/logs?limit=5").status_code == 200
+
+
+def test_unified_logs_reports_per_source_mode_and_bound(client):
+    """Each per-source status says whether its rows came from a volatile live-tail ring
+    ("buffer", which IGNORES from/to/query) or a real backing search, and the envelope
+    declares the cap so the UI can say "most recent N"."""
+    assert client.post("/api/sources", json={
+        "id": "elk-a", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX_A}}).status_code == 200
+    assert client.post("/api/sources", json={
+        "id": "wh", "source_type": "webhook"}).status_code == 200
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    assert client.post("/api/ingest/wh", json=[
+        {"src_ip": "5.5.5.5", "user": "eve", "severity": "high", "signature": "s",
+         "@timestamp": now, "id": f"evt-{i}"} for i in range(3)]).status_code == 200
+
+    data = client.get("/api/logs?limit=50").json()
+    modes = {s["source_id"]: s["mode"] for s in data["sources"]}
+    assert modes == {"elk-a": "search", "wh": "buffer"}
+    assert data["limit"] == 50
+    assert data["truncated"] is False
+
+    # A cap smaller than the merged set is reported honestly.
+    cut = client.get("/api/logs?limit=2").json()
+    assert cut["limit"] == 2 and cut["count"] == 2 and cut["truncated"] is True
+    # An over-cap request is clamped to the hard 200 bound and says so.
+    assert client.get("/api/logs?limit=9999").json()["limit"] == 200
+
+
+def test_unified_logs_failed_source_still_reports_its_mode(client, monkeypatch):
+    """A failing source keeps an honest `mode` on its status entry, so the UI can still
+    explain why a time range did or did not apply to it."""
+    assert client.post("/api/sources", json={
+        "id": "elk-a", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX_A}}).status_code == 200
+
+    state = client.app.state.tlsoc
+
+    async def _boom(index, body):
+        raise RuntimeError("source elk-a is down")
+
+    monkeypatch.setattr(state.es, "search_logs", _boom)
+    entry = next(s for s in client.get("/api/logs?limit=5").json()["sources"]
+                 if s["source_id"] == "elk-a")
+    assert entry["ok"] is False and entry["error"] and entry["mode"] == "search"
+
+
 def test_unified_logs_includes_push_source(client):
     """A push (webhook) source's live-tail buffer participates in the unified merge
     with the same provenance column."""

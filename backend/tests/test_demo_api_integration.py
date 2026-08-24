@@ -129,7 +129,13 @@ def test_demo_source_api_is_absent_off_demo(client) -> None:
 
     unified = client.get("/api/logs")
     assert unified.status_code == 200
-    assert unified.json() == {"logs": [], "count": 0, "sources": [], "partial": False}
+    # Off demo with no configured sources: nothing to fan out over. The envelope also
+    # carries the additive honest-bound fields (R12) — the effective cap and a
+    # `truncated` flag — so a caller can say "most recent N" rather than "everything".
+    assert unified.json() == {
+        "logs": [], "count": 0, "sources": [], "partial": False,
+        "limit": 100, "truncated": False,
+    }
     for source_id in SOURCE_CONTRACT:
         assert client.get(f"/api/sources/{source_id}/logs").status_code == 404
     assert client.get("/api/sources/demo/logs").status_code == 404
@@ -273,6 +279,18 @@ def test_demo_overlay_never_queries_persists_or_discloses_tenant_data(
     unified = client.get("/api/logs?limit=100")
     assert unified.status_code == 200, unified.text
     assert {row["source_id"] for row in unified.json()["sources"]} == set(SOURCE_CONTRACT)
+    # The optional `source_id` scope obeys the SAME isolation: a demo adapter is
+    # readable, and a real tenant id is indistinguishable from an unknown one (404) so
+    # the demo session never confirms that a live source exists behind it.
+    demo_id = next(iter(SOURCE_CONTRACT))
+    scoped = client.get("/api/logs", params={"limit": 10, "source_id": demo_id})
+    assert scoped.status_code == 200, scoped.text
+    assert {row["source_id"] for row in scoped.json()["sources"]} == {demo_id}
+    assert scoped.json()["sources"][0]["mode"] == "buffer"
+    assert client.get(
+        "/api/logs", params={"source_id": "real-webhook"},
+    ).status_code == 404
+    assert client.get("/api/logs", params={"source_id": "nope"}).status_code == 404
 
     disabled = client.post("/api/demo/disable")
     assert disabled.status_code == 200, disabled.text

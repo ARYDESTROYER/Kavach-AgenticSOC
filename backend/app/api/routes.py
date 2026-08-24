@@ -681,7 +681,15 @@ async def list_sources(
     # preserved untouched and returns immediately on disable.
     if state.demo_active:
         return {"sources": state.demo_sources_overlay()}
-    rows = [s.model_dump(mode="json") for s in state.prefs.sources]
+    # `can_browse` is SERVER-AUTHORITATIVE and additive: it is the SAME
+    # `_source_can_browse` predicate the browse routes gate on, so the inventory, the
+    # health view, the demo overlays, and `GET /api/logs` cannot disagree about which
+    # sources are browsable. Never trust a client-side re-derivation.
+    reg = get_registry()
+    rows = [
+        {**s.model_dump(mode="json"), "can_browse": _source_can_browse(reg, s)}
+        for s in state.prefs.sources
+    ]
     return {"sources": rows}
 
 
@@ -982,6 +990,19 @@ def _log_row(ev) -> dict[str, Any]:
     }
 
 
+def _browse_truncated(returned: int, limit: int, total: int | None) -> bool:
+    """Honest "there is more than this" flag for a bounded browse read.
+
+    Browse has NO pagination: every read is "the most recent ``limit`` rows". When a
+    connector reports a match ``total`` we can answer exactly; otherwise (push live-tail
+    buffers, connectors that omit ``total``) a full page is the only evidence available,
+    so a saturated page is reported as truncated. ``False`` never means "complete" for a
+    caller that wants completeness — it only means nothing was demonstrably cut."""
+    if total is not None and total > returned:
+        return True
+    return returned >= limit
+
+
 @router.get("/sources/{source_id}/logs")
 async def source_logs(
     source_id: str,
@@ -997,7 +1018,17 @@ async def source_logs(
     Pull sources run a scoped read-only search honoring the source's field mapping +
     data_view_pattern (and its own TLS settings); push sources return the last N
     ingested events from the in-memory live-tail buffer. Hard-capped; secrets are
-    never returned (rows are log data only)."""
+    never returned (rows are log data only).
+
+    BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and there is NO pagination,
+    cursor, or offset: the response is always the MOST RECENT ``count`` rows for the
+    requested window, never the full match set. The envelope echoes the effective
+    ``limit`` and a ``truncated`` flag so a caller can say "most recent N" instead of
+    implying completeness. ``mode`` distinguishes the two read paths:
+    ``"search"`` = a real backing search (``from``/``to``/``query`` apply, and
+    ``total`` reports the match count when the connector supplies one) and
+    ``"buffer"`` = a push source's process-local, volatile in-memory live-tail ring,
+    where ``from``/``to``/``query`` are IGNORED and nothing survives a restart."""
     limit = max(1, min(int(limit or 100), 200))  # hard cap
     # The four protocol-faithful demo adapters never enter prefs.sources. Their bounded
     # native-derived rings are exposed through the same browse row contract, with source
@@ -1029,6 +1060,8 @@ async def source_logs(
                 "mode": "buffer",
                 "count": len(rows),
                 "total": result.total,
+                "limit": limit,
+                "truncated": _browse_truncated(len(rows), limit, result.total),
                 "logs": rows,
                 "query": result.rendering.query if result.rendering else (query or "*"),
             }
@@ -1046,7 +1079,9 @@ async def source_logs(
     # PUSH receivers → the live-tail buffer.
     if reg.is_receiver(src.source_type):
         rows = [_log_row(ev) for ev in state.ingest_service.recent_events_for_source(source_id, limit)]
-        return {"source_id": source_id, "mode": "buffer", "count": len(rows), "logs": rows}
+        return {"source_id": source_id, "mode": "buffer", "count": len(rows),
+                "limit": limit, "truncated": _browse_truncated(len(rows), limit, None),
+                "logs": rows}
 
     # PULL connectors → a bounded, read-only scoped search honoring per-source TLS.
     if reg.is_pull(src.source_type):
@@ -1072,7 +1107,10 @@ async def source_logs(
                 raise HTTPException(status_code=502, detail=f"log read failed: {exc}") from exc
             rows = [_log_row(ev) for ev in result.events]
             return {"source_id": source_id, "mode": "search", "count": len(rows),
-                    "total": result.total, "logs": rows,
+                    "total": result.total,
+                    "limit": limit,
+                    "truncated": _browse_truncated(len(rows), limit, result.total),
+                    "logs": rows,
                     "query": result.rendering.query if result.rendering else None}
         finally:
             if owned:
@@ -1108,6 +1146,7 @@ async def unified_logs(
     query: str | None = None,
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
+    source_id: str | None = None,
     per_source_timeout: float = 8.0,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("sources", "read")),
@@ -1123,12 +1162,57 @@ async def unified_logs(
 
     Resilient by design: each source runs under ``asyncio.wait_for`` and the whole set
     under ``gather(return_exceptions=True)``, so one slow or failing source degrades to
-    a per-source error entry and NEVER blocks the rest (partial success)."""
+    a per-source error entry and NEVER blocks the rest (partial success).
+
+    ``source_id`` (OPTIONAL) scopes the fan-out to exactly one source, mirroring the
+    private preview reader in ``routes_rules._read_recent_events``. Omitting it is the
+    byte-identical all-sources behaviour. A ``source_id`` that is not visible in the
+    CURRENT mode is a 404 — while Demo Mode is active a real tenant id is
+    indistinguishable from an unknown one, so demo isolation leaks nothing — and a
+    visible id that is not an eligible browse target for this route (disabled, no
+    registered connector, or no ``browse`` capability) is a 501, the same status and
+    detail the per-source sibling route uses.
+
+    Each per-source status entry carries ``mode``: ``"search"`` = a real backing search
+    (``from``/``to``/``query`` apply) and ``"buffer"`` = a push source's process-local,
+    volatile in-memory live-tail ring, where ``from``/``to``/``query`` are IGNORED and
+    nothing survives a restart. Without it a caller cannot tell a time-ranged query from
+    a ring read in the merged view.
+
+    BOUNDED, NOT COMPLETE. ``limit`` is clamped to 1..200 and applied per source AND on
+    the merge; there is NO pagination, cursor, or offset. The envelope echoes the
+    effective ``limit`` and a ``truncated`` flag so a caller can say "most recent N"
+    rather than implying it has seen everything."""
     import asyncio
 
     limit = max(1, min(int(limit or 100), 200))  # hard cap (per source AND on the merge)
     timeout = max(0.5, min(float(per_source_timeout or 8.0), 30.0))
     reg = get_registry()
+    source_id = (source_id or "").strip() or None
+
+    # Resolve the optional scope BEFORE any read coroutine is constructed (an unawaited
+    # coroutine would leak on the raise path). Statuses mirror the per-source sibling.
+    if source_id is not None:
+        if state.demo_active:
+            if source_id not in {
+                str(row.get("id")) for row in state.demo_sources_overlay()
+            }:
+                # Identical to an unknown id: a demo session never reveals whether a
+                # real tenant source exists behind it.
+                raise HTTPException(status_code=404, detail="Source not found")
+        else:
+            scoped = next((s for s in state.prefs.sources if s.id == source_id), None)
+            if scoped is None:
+                raise HTTPException(status_code=404, detail="Source not found")
+            if (
+                not scoped.enabled
+                or not _source_can_browse(reg, scoped)
+                or reg.get(scoped.source_type) is None
+            ):
+                raise HTTPException(
+                    status_code=501,
+                    detail="Browsing logs is not supported for this source",
+                )
 
     async def _read_pull(src) -> list[dict[str, Any]]:
         es_client, owned = state.es_client_for_source(src)
@@ -1177,7 +1261,9 @@ async def unified_logs(
 
     # Select the enabled + browse-capable sources and pair each read coroutine with its
     # source (for provenance + error attribution). Unsupported sources are skipped.
-    targets: list[tuple[Any, Any]] = []
+    # (src, coroutine, mode) — `mode` is carried alongside so the per-source status can
+    # report a volatile live-tail ring vs a real backing search even when the read fails.
+    targets: list[tuple[Any, Any, str]] = []
     if state.demo_active:
         from types import SimpleNamespace
 
@@ -1185,30 +1271,34 @@ async def unified_logs(
             sid = str(row.get("id"))
             if not sid:
                 continue
+            if source_id is not None and sid != source_id:
+                continue
             src = SimpleNamespace(id=sid, display_name=row.get("display_name") or sid)
-            targets.append((src, _read_demo(src)))
+            targets.append((src, _read_demo(src), "buffer"))
     else:
         for src in state.prefs.sources:
             if not src.enabled or not _source_can_browse(reg, src):
+                continue
+            if source_id is not None and src.id != source_id:
                 continue
             cls = reg.get(src.source_type)
             if cls is None:
                 continue
             if reg.is_receiver(src.source_type):
-                targets.append((src, _read_push(src)))
+                targets.append((src, _read_push(src), "buffer"))
             elif reg.is_pull(src.source_type):
-                targets.append((src, _read_pull(src)))
+                targets.append((src, _read_pull(src), "search"))
 
     async def _guarded(coro):
         return await asyncio.wait_for(coro, timeout=timeout)
 
     results = await asyncio.gather(
-        *[_guarded(coro) for _, coro in targets], return_exceptions=True
+        *[_guarded(coro) for _, coro, _mode in targets], return_exceptions=True
     )
 
     merged: list[dict[str, Any]] = []
     source_status: list[dict[str, Any]] = []
-    for (src, _coro), outcome in zip(targets, results):
+    for (src, _coro, mode), outcome in zip(targets, results):
         if isinstance(outcome, Exception):
             source_status.append({
                 "source_id": src.id, "source_name": src.display_name or src.id,
@@ -1216,6 +1306,7 @@ async def unified_logs(
                 "error": ("timeout" if isinstance(outcome, asyncio.TimeoutError)
                           else str(outcome)),
                 "count": 0,
+                "mode": mode,
             })
             continue
         rows = outcome or []
@@ -1227,17 +1318,27 @@ async def unified_logs(
         source_status.append({
             "source_id": src.id, "source_name": src.display_name or src.id,
             "ok": True, "count": len(rows),
+            # "search" = a real backing query (from/to/query applied); "buffer" = a
+            # volatile process-local live-tail ring that IGNORES from/to/query.
+            "mode": mode,
         })
 
     # Merge newest-first by ts (ISO strings sort lexicographically for UTC; empty ts
     # sorts last). Then hard-cap the merged view.
     merged.sort(key=lambda r: (r.get("ts") or ""), reverse=True)
+    gathered = len(merged)
     merged = merged[:limit]
     return {
         "logs": merged,
         "count": len(merged),
         "sources": source_status,
         "partial": any(not s["ok"] for s in source_status),
+        # The bound is part of the contract: this is the most recent `count` rows, not a
+        # complete result. `truncated` is True when the merge was cut; False still does
+        # NOT mean "complete", because each source was itself read with the same cap and
+        # there is no pagination.
+        "limit": limit,
+        "truncated": gathered > limit,
     }
 
 

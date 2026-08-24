@@ -318,11 +318,14 @@ privileges):
 
 ## 2a. Browse a source's logs
 
-From the Sources table's kebab menu, **"Browse logs"** is shown only for
-connectors that advertise the `browse` capability (`capabilities:["browse"]`: all
-pull connectors, and every push receiver). It opens the **`SourceLogsSheet`**, a
-live window onto that one source's recent events, backed by
-`GET /api/sources/{id}/logs?limit=&query=&from=&to=` (auth-protected).
+From the Sources table's kebab menu, **"Browse logs"** (and the table's
+**Browsable** column) is shown only for sources the **server** reports as
+browsable — `GET /api/sources` returns `can_browse` per source from the same
+predicate the browse routes gate on, which resolves to the connector's `browse`
+capability (`capabilities:["browse"]`: all pull connectors, and every push
+receiver, which the registry augments automatically). It opens the
+**`SourceLogsSheet`**, a live window onto that one source's recent events, backed
+by `GET /api/sources/{id}/logs?limit=&query=&from=&to=` (auth-protected).
 
 | Control | What it does |
 |---|---|
@@ -357,6 +360,36 @@ with a mandatory `source_id`/`source_name` provenance column. One slow or failin
 source degrades to a per-source error entry and never blocks the rest
 (`asyncio.gather(return_exceptions=True)`); still hard-capped at 200 rows and
 read-only.
+
+Pass the optional **`source_id`** to scope the fan-out to exactly one source
+(`GET /api/logs?source_id=prod-es`). Omitting it is the default all-sources
+behaviour. An id that is not visible in the current mode returns `404` — while
+**Demo Mode** is active a real tenant id is deliberately indistinguishable from an
+unknown one, so a demo session can never confirm that a live source exists — and a
+visible id that is not an eligible browse target (disabled, no registered
+connector, or no `browse` capability) returns `501`, the same status and detail the
+per-source route uses.
+
+### The browse contract (what it is, and what it is not)
+
+Browse is a **bounded read-only window**, not a log archive or a search product.
+Read this before building on it:
+
+| Guarantee | Detail |
+|---|---|
+| **Capability is server-authoritative** | `GET /api/sources` returns **`can_browse`** per source, computed by the *same* predicate the browse routes gate on. The Console never re-derives it from connector manifests or health — one definition, so the "Browse logs" affordance can never disagree with what the endpoint will do. |
+| **Bounded, never complete** | `limit` is clamped to **1..200** (applied per source *and* on the merge) and there is **no pagination, cursor, offset, or `search_after`**. Both envelopes echo the effective **`limit`** and a **`truncated`** flag, so a surface says *"most recent N"* rather than implying completeness. `truncated: false` only means nothing was demonstrably cut — it is **not** proof you have seen everything. |
+| **Two read modes** | Each response (and each `sources[]` entry in the unified envelope) carries **`mode`**. `"search"` = a real backing query against a pull source, where `from`/`to`/`query` apply. `"buffer"` = a push source's in-memory live-tail ring, where `from`/`to`/`query` are **ignored**. |
+| **Buffers are volatile** | The push live-tail ring is **process-local and in-memory** (500 events per source), so it is lost on restart and is not shared across replicas. It is a live tail, not storage. |
+| **Rows are NOT OCSF** | Browse deliberately bypasses OCSF normalisation. `_raw` is the **verbatim source-native document** — the strongest untrusted-data case in the product. Every field on every row is attacker-influenceable: render as plain text, `_raw` only inside a code block, never as markup (#9). No browsed row is ever sent to a model (#7). |
+| **Scoped read-only key** | Pull reads run through `state.es_client_for_source()`, which honours the source's own URL/TLS and **explicitly drops the management key** (#1). |
+| **Permission** | Both routes are gated on **`sources:read`** — the same grant that lists source configuration. There is deliberately no separate "read log content" permission today. |
+
+**Deliberately deferred** (do not assume these exist): pagination / PIT / cursors
+and any `total` reconciliation, structured filters (`ip`/`user`/`host`/
+`severity_gte`), sort control, column/field selection, saved views, `deep_link`
+"open in Kibana/Wazuh" plumbing, export or download of browsed rows, durable
+storage for push-source logs, and any LLM summarisation of a browsed window.
 
 ---
 
@@ -2537,12 +2570,25 @@ curl -s localhost:8088/api/sources/coverage   # rollup: silent sources, events/m
 
 # Browse a source's recent logs (pull=bounded scoped search ≤200; push=live-tail buffer)
 curl -s "localhost:8088/api/sources/prod-es/logs?limit=50&query=ssh&from=now-15m&to=now"
-# -> [{ "ts": "...", "source_ip": "...", "user": "...", "host": "...",
-#       "rule": "...", "severity": "...", "message": "...", "_raw": { ... } }]
+# -> { "source_id": "prod-es", "mode": "search", "count": 50, "total": 1234,
+#      "limit": 50, "truncated": true, "query": "...",
+#      "logs": [{ "ts": "...", "source_ip": "...", "user": "...", "host": "...",
+#                 "rule": "...", "severity": "...", "message": "...", "_raw": { ... } }] }
 # 404 unknown source · 501 browse-unsupported connector · 502 read failure
+# `limit`/`truncated` = the bound (most recent N, NO pagination); `mode` = search vs
+# a volatile push live-tail buffer that IGNORES from/to/query.
+
+# Which sources can be browsed at all (server-authoritative, same predicate)
+curl -s localhost:8088/api/sources | jq '.sources[] | {id, can_browse}'
 
 # Browse across EVERY enabled, browse-capable source at once
 curl -s "localhost:8088/api/logs?limit=50&query=ssh&from=now-15m&to=now"
+# -> { "logs": [...], "count": 50, "partial": false, "limit": 50, "truncated": true,
+#      "sources": [{ "source_id": "...", "source_name": "...", "ok": true,
+#                    "count": 25, "mode": "search" }] }
+
+# ...or scope the same fan-out to ONE source (404 unknown · 501 not browsable)
+curl -s "localhost:8088/api/logs?limit=50&source_id=prod-es"
 
 # Delete a source
 curl -s -X DELETE localhost:8088/api/sources/edr-webhook

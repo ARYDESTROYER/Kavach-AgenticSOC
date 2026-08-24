@@ -236,3 +236,96 @@ def test_route_source_logs_push_buffer(client):
     assert data2["mode"] == "buffer"
     assert data2["count"] == 6
     assert data2["logs"][0]["id"]  # rows have the contract id field
+
+
+# --------------------------------------------------------------------------- #
+# 7) route-level: GET /api/sources advertises can_browse from the SAME predicate
+#    the browse routes gate on, and every browse envelope declares its bound.
+# --------------------------------------------------------------------------- #
+def test_route_sources_listing_advertises_can_browse(client):
+    """`GET /api/sources` is server-authoritative for browse capability: every row
+    carries `can_browse`, and it equals `_source_can_browse` exactly (one definition —
+    the client must never re-derive it)."""
+    from app.api.routes import _source_can_browse
+    from app.connectors.registry import get_registry
+
+    assert client.post("/api/sources", json={
+        "id": "elk", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX}}).status_code == 200
+    assert client.post("/api/sources", json={
+        "id": "wh", "source_type": "webhook"}).status_code == 200
+
+    rows = client.get("/api/sources").json()["sources"]
+    assert {r["id"] for r in rows} == {"elk", "wh"}
+    reg = get_registry()
+    state = client.app.state.tlsoc
+    by_id = {s.id: s for s in state.prefs.sources}
+    for row in rows:
+        assert "can_browse" in row
+        assert row["can_browse"] is _source_can_browse(reg, by_id[row["id"]])
+    # Both a pull connector (declares "browse") and a push receiver (the registry
+    # augments it) are browsable today.
+    assert all(r["can_browse"] is True for r in rows)
+
+
+def test_route_sources_can_browse_tracks_the_manifest_capability(client, monkeypatch):
+    """Strip `browse` from one manifest and the listing, the fan-out target set, and the
+    scoped `/api/logs` rejection must ALL agree — proving a single source of truth."""
+    from app.connectors.registry import get_registry
+    from app.constants import SourceType
+
+    assert client.post("/api/sources", json={
+        "id": "elk", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX}}).status_code == 200
+    assert client.post("/api/sources", json={
+        "id": "wh", "source_type": "webhook"}).status_code == 200
+
+    reg = get_registry()
+    real_manifest = reg.manifest
+
+    def _stripped(source_type):
+        # `manifest()` builds a fresh object per call, so mutating it is safe.
+        m = real_manifest(source_type)
+        if m is not None and source_type == SourceType.WEBHOOK:
+            m.capabilities = [c for c in (m.capabilities or []) if c != "browse"]
+        return m
+
+    monkeypatch.setattr(reg, "manifest", _stripped)
+
+    rows = {r["id"]: r for r in client.get("/api/sources").json()["sources"]}
+    assert rows["wh"]["can_browse"] is False
+    assert rows["elk"]["can_browse"] is True
+    # The unified fan-out skips it...
+    data = client.get("/api/logs?limit=10").json()
+    assert {s["source_id"] for s in data["sources"]} == {"elk"}
+    # ...and an explicit scope on it is refused with the per-source route's status.
+    denied = client.get("/api/logs", params={"source_id": "wh"})
+    assert denied.status_code == 501
+    assert denied.json()["detail"] == "Browsing logs is not supported for this source"
+
+
+def test_route_source_logs_envelope_declares_its_bound(client):
+    """Browse is "the most recent N", never a complete result: the envelope echoes the
+    effective cap and an honest `truncated` flag (there is NO pagination)."""
+    assert client.post("/api/sources", json={
+        "id": "elk", "source_type": "elasticsearch", "is_primary": True,
+        "config": {"data_view_pattern": INDEX}}).status_code == 200
+    # The fixture seeds _MAX_SIZE + 50 docs, so a small window is demonstrably cut.
+    data = client.get("/api/sources/elk/logs?limit=5").json()
+    assert data["limit"] == 5
+    assert data["count"] == 5
+    assert data["truncated"] is True
+    # An over-cap request is clamped to the hard 200 bound, and says so.
+    capped = client.get("/api/sources/elk/logs?limit=9999").json()
+    assert capped["limit"] == 200
+
+    # A push buffer with fewer rows than the cap is not truncated.
+    assert client.post("/api/sources", json={"id": "wh", "source_type": "webhook"}).status_code == 200
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    assert client.post("/api/ingest/wh", json=[
+        {"src_ip": "5.5.5.5", "user": "eve", "severity": "high", "signature": "s",
+         "@timestamp": now, "id": f"evt-{i}"} for i in range(3)]).status_code == 200
+    buf = client.get("/api/sources/wh/logs?limit=50").json()
+    assert buf["mode"] == "buffer"
+    assert buf["limit"] == 50 and buf["count"] == 3 and buf["truncated"] is False

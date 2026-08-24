@@ -118,6 +118,7 @@ const SOURCES: SourceInstance[] = [
     enabled: true,
     is_primary: true,
     ingest_mode: 'pull',
+    can_browse: true,
     config: {},
     configured_secrets: ['es_api_key'],
   },
@@ -128,6 +129,7 @@ const SOURCES: SourceInstance[] = [
     enabled: false,
     is_primary: false,
     ingest_mode: 'push_http',
+    can_browse: true,
     config: {},
     configured_secrets: [],
   },
@@ -167,6 +169,7 @@ const DEMO_SPLUNK: SourceInstance = {
   enabled: true,
   is_primary: false,
   ingest_mode: 'push_http',
+  can_browse: true,
   config: { protocol: 'HEC' },
   configured_secrets: [],
   demo: true,
@@ -412,6 +415,23 @@ describe('Log Sources page (WS-C)', () => {
     fireEvent.click(within(kind).getByRole('button', { name: 'Push' }));
     expect(screen.getByText('Webhook Ingest')).toBeInTheDocument();
     expect(screen.queryByText('Prod ES')).toBeNull();
+  });
+
+  it('takes browse capability from the SERVER, not from connector manifests or health', async () => {
+    // The connector fixture advertises capabilities:['browse'] and the health row says
+    // can_browse:true — neither may resurrect the affordance once GET /api/sources says
+    // the source is not browsable. One definition, server-side (R12).
+    listSourcesMock.mockResolvedValue({
+      sources: [{ ...SOURCES[0], can_browse: false }],
+    });
+    sourcesHealthMock.mockResolvedValue({ sources: [HEALTH[0]] });
+
+    renderSources();
+    await screen.findByText('Prod ES');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Actions for Prod ES' }));
+    await screen.findByRole('menu');
+    expect(screen.queryByRole('menuitem', { name: 'Browse logs' })).toBeNull();
   });
 
   it('blocks add-source during demo-status hydration when the source overlay arrives first', async () => {

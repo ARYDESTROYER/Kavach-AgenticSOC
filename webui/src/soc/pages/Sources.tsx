@@ -382,13 +382,12 @@ export default function Sources(_props: SourcesProps) {
     [connectorFor],
   );
 
-  const canBrowse = React.useCallback(
-    (s: SourceInstance) =>
-      !!connectorFor(s)?.capabilities?.includes('browse') ||
-      !!s.can_browse ||
-      !!health[s.id]?.can_browse,
-    [connectorFor, health],
-  );
+  // Browse capability is SERVER-AUTHORITATIVE: `GET /api/sources` returns `can_browse`
+  // from the same `_source_can_browse` predicate the browse routes gate on (and the
+  // Demo-Mode overlay carries it too). Deliberately NOT re-derived from the connector
+  // manifest or the health poll — one definition only, so the menu affordance can never
+  // disagree with what `GET /api/sources/{id}/logs` will actually do.
+  const canBrowse = React.useCallback((s: SourceInstance) => !!s.can_browse, []);
 
   // Distinct source types present (for the Type facet).
   const typeOptions = React.useMemo(() => {
@@ -820,11 +819,12 @@ export default function Sources(_props: SourcesProps) {
     {
       id: 'store_payload',
       // Labelled "Browsable" (not the QRadar term "Store Payload"): this reflects the
-      // health browse-capability honestly — a browse-capable source can be queried for its
-      // recent events; it is NOT a claim that raw payloads are retained. Absent health → —.
+      // server's browse capability honestly — a browse-capable source can be queried for
+      // its recent events; it is NOT a claim that raw payloads are retained. Same single
+      // `can_browse` definition as the row action; absent (older backend) → —.
       header: 'Browsable',
       width: '8rem',
-      cell: (s) => <BoolCell value={health[s.id]?.can_browse} />,
+      cell: (s) => <BoolCell value={s.can_browse} />,
     },
     {
       id: 'internal',
