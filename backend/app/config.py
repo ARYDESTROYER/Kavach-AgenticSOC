@@ -18,12 +18,24 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import CorrelationMode, EntityStrategy, EntityType, IndexRole, IngestMode, SourceType
+from .evidence_fields import (
+    DEFAULT_EVIDENCE_FIELDS,
+    DEFAULT_EVIDENCE_MAX_CHARS_PER_EVENT,
+    EVIDENCE_WILDCARD,
+    MAX_EVIDENCE_MAX_CHARS_PER_EVENT,
+    clamp_evidence_budget,
+    is_wildcard,
+    normalise_evidence_fields,
+)
+# Aliased so the module-level resolver is unambiguous next to the identically
+# named ``Preferences.free_text_search_fields`` method that wraps it.
+from .evidence_fields import free_text_search_fields as _resolve_free_text_search_fields
 from .utils import dotted_get, iso_now, new_id, slug
 
 # The provider names the per-role ModelConfig may carry. Widened in Round 3 Wave 2b to
@@ -2835,6 +2847,27 @@ class Preferences(BaseModel):
     in_scope_rules: list[str] = Field(default_factory=list)   # empty == all rules
     excluded_rules: list[str] = Field(default_factory=list)
 
+    # --- Case evidence projected into prompts + searched by free text ---
+    # The extra raw-record paths the investigator/router see per sample event, the
+    # ``es_query`` tool returns per row, and free-text ``contains`` is matched
+    # against. ONE list drives all three (``app/evidence_fields.py``) so a field can
+    # never again be invisible in the prompt AND unmatchable in the query at the
+    # same time. Defaults to the ECS set that most often carries the verdict; set
+    # ``["*"]`` to ship the whole record bounded only by the size budget below, or
+    # ``[]`` for the pre-0.1.13 identity-only projection. Overridable per source via
+    # ``SourceInstance.config["evidence_fields"]``.
+    evidence_fields: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_EVIDENCE_FIELDS)
+    )
+    # Serialised-character budget for ONE projected event. When it binds, the
+    # projection drops rule-DEFINITION metadata first and names what it withheld
+    # back to the model, rather than cutting blindly mid-record.
+    evidence_max_chars_per_event: int = Field(
+        default=DEFAULT_EVIDENCE_MAX_CHARS_PER_EVENT,
+        ge=0,
+        le=MAX_EVIDENCE_MAX_CHARS_PER_EVENT,
+    )
+
     # --- Polling (Section 6.1) ---
     poll_interval_seconds: int = 30
     poll_batch_size: int = 500
@@ -3036,6 +3069,107 @@ class Preferences(BaseModel):
     def correlation_for(self, rule_value: str) -> CorrelationRule:
         """Return the correlation rule for a given rule value, or the default."""
         return self.correlation_rules.get(rule_value, self.default_correlation)
+
+    def evidence_fields_from_config(
+        self, config: "Mapping[str, Any] | None"
+    ) -> tuple[str, ...]:
+        """One source's effective evidence projection, from its raw connector config.
+
+        The single expression of the source-over-global precedence, so the two
+        callers that resolve it — the prompt path (by source id, through
+        :meth:`evidence_fields_for`) and the ``es_query`` tool (directly, from the
+        connector it is bound to) — cannot disagree. An absent key inherits the
+        global list; an explicit ``[]`` is an operator pinning the narrow
+        identity-only projection.
+        """
+        raw = (config or {}).get("evidence_fields")
+        if raw is None:
+            return normalise_evidence_fields(self.evidence_fields)
+        return normalise_evidence_fields(raw)
+
+    def evidence_budget_from_config(self, config: "Mapping[str, Any] | None") -> int:
+        """One source's effective per-event budget, clamped. See above for precedence."""
+        raw = (config or {}).get("evidence_max_chars_per_event")
+        if raw is None:
+            return self.evidence_budget()
+        return clamp_evidence_budget(raw)
+
+    def evidence_fields_for(
+        self, source_ids: Sequence[str] | None = None
+    ) -> tuple[str, ...]:
+        """The effective evidence projection for a cluster, by contributing source.
+
+        A cluster can span sources (cross-source correlation), so per-source lists
+        are UNIONED in source order rather than one winning. Union, not replace,
+        because dropping a source's decision field just because a co-correlated
+        source pinned a narrower list is precisely the invisible-field failure this
+        projection exists to prevent. A wildcard on any contributing source wins, it
+        being the superset of every other answer.
+
+        With no ``source_ids`` (or none of them configured) this is the global
+        ``evidence_fields``, which is what a single-source deployment always gets.
+        """
+        global_fields = normalise_evidence_fields(self.evidence_fields)
+        if not source_ids:
+            return global_fields
+        by_id = {s.id: s for s in self.sources}
+        out: list[str] = []
+        seen: set[str] = set()
+        matched = False
+        for source_id in source_ids:
+            source = by_id.get(source_id)
+            if source is None:
+                continue
+            matched = True
+            resolved = self.evidence_fields_from_config(source.config)
+            if is_wildcard(resolved):
+                return (EVIDENCE_WILDCARD,)
+            for path in resolved:
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path)
+        if not matched:
+            return global_fields
+        return normalise_evidence_fields(out)
+
+    def evidence_budget(self) -> int:
+        """The global per-event serialised-character budget, clamped to range.
+
+        Clamped at READ time because the same key is overlaid per source through
+        ``model_copy(update=...)``, which does not validate.
+        """
+        return clamp_evidence_budget(self.evidence_max_chars_per_event)
+
+    def evidence_budget_for(self, source_ids: Sequence[str] | None = None) -> int:
+        """The per-event budget for a cluster, by contributing source.
+
+        Resolved alongside :meth:`evidence_fields_for` so the prompt path applies the
+        SAME per-source configuration to both halves of the projection — a per-source
+        field list honoured against a global budget would silently withhold the very
+        fields that source was configured to surface. A cluster spanning sources takes
+        the most generous budget, matching the union semantics of the field list.
+        """
+        if not source_ids:
+            return self.evidence_budget()
+        by_id = {s.id: s for s in self.sources}
+        budgets = [
+            self.evidence_budget_from_config(source.config)
+            for source_id in source_ids
+            if (source := by_id.get(source_id)) is not None
+        ]
+        return max(budgets) if budgets else self.evidence_budget()
+
+    def free_text_search_fields(self) -> list[str]:
+        """The fields a connector matches a free-text ``contains`` against.
+
+        Derived from the SAME ``evidence_fields`` the prompt projection uses, so a
+        field the model can see is a field the model can then search for.
+        """
+        return _resolve_free_text_search_fields(
+            rule_name_field=self.rule_name_field,
+            message_field=self.message_field,
+            evidence_fields=self.evidence_fields,
+        )
 
     def entity_strategy_for(self, source: "SourceInstance | None") -> EntityStrategy:
         """The effective entity-resolution strategy for a source: the source's own

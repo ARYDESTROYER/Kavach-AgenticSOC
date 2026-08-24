@@ -41,7 +41,7 @@ from ..models import Case, Cluster, EnrichmentResult, VerdictResult
 from ..stores.cases import CaseStore
 from ..tools.base import ToolRegistry
 from ..tools.enrich import EnrichTool
-from ..tools.es_query import EsQueryTool
+from ..tools.es_query import DEFAULT_MAX_RESULT_CHARS, EsQueryTool
 from ..tools.rag import RagService, RagTool
 from ..utils import iso_now, new_id, truncate
 from .common import entity_kql, normalize_kql
@@ -243,7 +243,11 @@ class InvestigationPipeline:
         effective_source = self._source if query_source is _DEFAULT_QUERY_SOURCE else query_source
         tools = [enrich, RagTool(self._rag)]
         if effective_source is not None:
-            tools.insert(0, EsQueryTool(effective_source, prefs))
+            # The investigator hands the whole tool result to a model, so its rows
+            # are budgeted; Chat's are not (they are an operator table + facets).
+            tools.insert(0, EsQueryTool(
+                effective_source, prefs, max_result_chars=DEFAULT_MAX_RESULT_CHARS,
+            ))
         registry = ToolRegistry(tools)
         formatter = Formatter(self._gateway, self._audit)
         investigator = Investigator(self._gateway, registry, self._audit, formatter)

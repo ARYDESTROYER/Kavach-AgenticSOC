@@ -134,6 +134,13 @@ class QueryRendering(BaseModel):
     time_from: str | None = None
     time_to: str | None = None
     deep_link: str | None = None       # link into the source's own UI (optional)
+    # The fields a free-text ``contains`` filter was actually matched against.
+    # Empty means "not a field-scoped search" — either no free text was supplied, or
+    # the connector matches the whole record (the demo adapters do). It exists so a
+    # zero-hit free-text query can never be read back as proof the data is absent:
+    # the agent is told WHICH fields could have matched, and therefore which could
+    # not. See ``app/evidence_fields.py`` for how the list is derived.
+    fields_searched: list[str] = Field(default_factory=list)
 
 
 class SearchResult(BaseModel):

@@ -181,6 +181,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
       'severity_field',
       'severity_threshold',
       'investigate_lookback',
+      'evidence_fields',
+      'evidence_max_chars_per_event',
       'polling_enabled',
       'poll_interval_seconds',
       'poll_batch_size',
@@ -521,6 +523,7 @@ export const SETTING_ANCHORS: readonly SettingAnchor[] = [
   // General › Data scope
   { section: 'general', anchor: 'general-sources', label: 'Data sources', keywords: ['sources', 'connectors', 'feeds'] },
   { section: 'general', anchor: 'general-mapping', label: 'Default log scope & field mapping', keywords: ['index pattern', 'data view', 'field mapping', 'fields', 'entity', 'severity'] },
+  { section: 'general', anchor: 'general-evidence', label: 'Case evidence fields', keywords: ['evidence', 'projection', 'url', 'http', 'user agent', 'process', 'prompt fields', 'free text', 'contains', 'searchable'] },
   { section: 'general', anchor: 'general-polling', label: 'Polling', keywords: ['poll', 'interval', 'batch size', 'lookback', 'cold start'] },
   // General › Detection
   { section: 'detection', anchor: 'detection-correlation', label: 'Correlation', keywords: ['clustering', 'group by', 'window', 'trigger after'] },

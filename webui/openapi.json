@@ -16041,7 +16041,7 @@
     },
     "/api/sources/{source_id}/analyze-sample": {
       "post": {
-        "description": "Suggest field mappings from a pasted SAMPLE record (F9; gated by sources:manage).\n\nReturns ``{suggested_mappings, fields}`` — the suggested field-name overrides\n(``source_ip_field``/``user_field``/``host_field``/``message_field``/\n``severity_field``/``rule_field``/...) and the flattened path inventory the UI\nrenders. Pure heuristic (no LLM/network). The sample is SANITIZED (flattened to\npaths only) and is NEVER persisted to the config doc / secret tier (#9).",
+        "description": "Suggest field mappings from a pasted SAMPLE record (F9; gated by sources:manage).\n\nReturns ``{suggested_mappings, suggested_evidence_fields, fields}`` — the\nsuggested field-name overrides (``source_ip_field``/``user_field``/``host_field``/\n``message_field``/``severity_field``/``rule_field``/...), which of the default\ncase-evidence paths this record actually carries (the answer to \"do my alerts\ncarry the fields that decide the case?\"), and the flattened path inventory the UI\nrenders. Pure heuristic (no LLM/network). The sample is SANITIZED (flattened to\npaths only) and is NEVER persisted to the config doc / secret tier (#9);\n``suggested_evidence_fields`` is stricter still — every entry is one of the\nbackend's own constants matched against the sample, never a path echoed back.",
         "operationId": "analyze_source_sample_api_sources__source_id__analyze_sample_post",
         "parameters": [
           {

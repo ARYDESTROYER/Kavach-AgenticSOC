@@ -5,10 +5,11 @@
  * index pattern, entity field mapping, and durable-poller controls. Every value is
  * operator-entered (trusted).
  */
-import { Database, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { Database, RefreshCw, ScanSearch, SlidersHorizontal } from 'lucide-react';
 
 import { Button } from '@/ui/button';
 import { SettingsGrid, SettingsCard, type SettingsTOCItem } from '@/soc/components/SettingsGrid';
+import { TagInput } from '@/soc/components/TagInput';
 
 import {
   SectionShell,
@@ -22,6 +23,7 @@ import {
 const GENERAL_TOC: SettingsTOCItem[] = [
   { anchor: 'general-sources', label: 'Data sources', icon: Database },
   { anchor: 'general-mapping', label: 'Log scope & mapping', icon: SlidersHorizontal },
+  { anchor: 'general-evidence', label: 'Case evidence fields', icon: ScanSearch },
   { anchor: 'general-polling', label: 'Polling', icon: RefreshCw },
 ];
 
@@ -83,6 +85,49 @@ export function GeneralSection({
               help='Starting window for manual entity investigation, e.g. "now-24h".'
               onChange={(v) => update({ investigate_lookback: v })}
             />
+          </div>
+        </SettingsCard>
+
+        <SettingsCard
+          anchor="general-evidence"
+          title="Case evidence fields"
+          icon={ScanSearch}
+          description="The raw-record fields the agent is shown per event, and matched against by free-text search. One list drives both, so a field the agent can see is generally one it can then search for — numeric and IP fields are shown but not text-searched."
+          wide="full"
+        >
+          <div className="space-y-4">
+            <TagInput
+              label="Evidence fields"
+              value={prefs.evidence_fields ?? []}
+              onChange={(v) => update({ evidence_fields: v })}
+              placeholder="url.path"
+              description={
+                'Dotted paths added to each event\u2019s identity fields (id, ip, user, host, rule, severity). ' +
+                'Defaults to the ECS set that most often carries the verdict. Use "*" to send the whole record, ' +
+                'bounded only by the budget below; an empty list pins the narrow identity-only projection. ' +
+                'A source can override this via its own `evidence_fields` config key.'
+              }
+              validate={(tag) =>
+                tag.length > 128 ? 'Field paths are limited to 128 characters.' : null
+              }
+              max={64}
+            />
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <NumPref
+                label="Evidence budget per event (characters)"
+                value={prefs.evidence_max_chars_per_event}
+                min={0}
+                max={16000}
+                step={100}
+                help={
+                  'Applies per event. When it binds the agent is told which fields were withheld; ' +
+                  'in whole-record ("*") mode, bulky rule metadata is dropped before evidence. ' +
+                  '0 sends identity fields only. Raising it multiplies across the 12 sample events ' +
+                  'an investigation reads.'
+                }
+                onChange={(v) => update({ evidence_max_chars_per_event: v })}
+              />
+            </div>
           </div>
         </SettingsCard>
 

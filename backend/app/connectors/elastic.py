@@ -127,6 +127,12 @@ class ElasticConnector(PullConnector):
         # Deep customisability: the message column field + the entity-resolution
         # strategy can be configured per source (default = ECS / global prefs).
         "message_field", "entity_strategy",
+        # The raw-record paths this source's events expose to the agent and to
+        # free-text search, plus the per-event size budget for them. A source whose
+        # alerts carry decision-relevant fields the ECS default does not name can
+        # pin them here. An explicit ``[]`` is an operator choosing the narrow
+        # identity-only projection; omitting the key inherits the global list.
+        "evidence_fields", "evidence_max_chars_per_event",
     )
 
     # Per-source field-mapping override keys (Wave 5 / F9). Operators can pin a
@@ -835,11 +841,17 @@ class ElasticConnector(PullConnector):
 
         Builds the SAME ES body and KQL rendering as ``app/tools/es_query.py``:
         term filters for ip/user/host/rule via the configured field names, a
-        ``severity_field >= severity_gte`` range, a ``contains`` ``multi_match``
-        over ``[rule_name_field, message, event.original, event.action]``, and a
-        time range (``gte``/``lte`` epoch millis), sorted descending on the time
-        field, size capped at 200 (default 50). An ``ids`` query short-circuits
-        to ``fetch_by_ids`` parity. The empty-filter case renders KQL ``"*"``.
+        ``severity_field >= severity_gte`` range, a lenient ``contains``
+        ``multi_match`` over ``prefs.free_text_search_fields()`` (the four original
+        fields — ``[rule_name_field, message, event.original, event.action]`` — plus
+        the configured message field and every searchable case-evidence path, so a
+        field the agent is SHOWN is a field it can then SEARCH for; see
+        ``app/evidence_fields.py``), and a time range (``gte``/``lte`` epoch millis),
+        sorted descending on the time field, size capped at 200 (default 50). An
+        ``ids`` query short-circuits to ``fetch_by_ids`` parity. The empty-filter
+        case renders KQL ``"*"``; the rendering otherwise names every field the
+        ``multi_match`` covered, and that same list is reported on the result as
+        ``QueryRendering.fields_searched``.
         """
         prefs = self._effective_prefs(prefs)
         size = min(int(query.size or _DEFAULT_SIZE), _MAX_SIZE)
@@ -866,10 +878,43 @@ class ElasticConnector(PullConnector):
             kql_parts.append(f"{prefs.severity_field} >= {sev}")
 
         contains = query.contains
+        searched: list[str] = []
         if contains:
-            fields = [prefs.rule_name_field, "message", "event.original", "event.action"]
-            filters.append({"multi_match": {"query": contains, "fields": fields}})
-            kql_parts.append(f'message : "*{contains}*"')
+            # The free-text field list is the SAME shared definition that decides what
+            # the model is shown per event (``app/evidence_fields.py``). It used to be
+            # four hardcoded fields that no evidence field was ever added to, so an
+            # agent that suspected a missing URL ran ``contains:"http"``, got zero hits
+            # from fields that could not have matched, and recorded that zero as
+            # evidence the context did not exist. The four originals stay first and in
+            # order, so an existing deployment's result set only ever grows.
+            searched = prefs.free_text_search_fields()
+            # ``lenient`` is REQUIRED, not a nicety. The evidence field list carries
+            # typed ECS fields — ``http.response.status_code`` is a ``long`` and
+            # ``destination.ip`` is an ``ip`` — and a non-lenient ``multi_match``
+            # asks every listed field to parse the free text. On a real cluster the
+            # shard then raises ``number_format_exception`` and the WHOLE search
+            # fails, so widening the list without this would turn every free-text
+            # query into a hard error. With it, a field that cannot parse the text
+            # simply does not match. (The in-memory fake stringifies every value, so
+            # it cannot reproduce that failure — the flag is asserted structurally in
+            # tests/test_evidence_fields.py instead.)
+            filters.append(
+                {"multi_match": {"query": contains, "fields": searched, "lenient": True}}
+            )
+            # Render every field the multi_match actually covers rather than naming
+            # ``message`` alone: this string is the operator's Discover deep-link and
+            # the audited ``query_text``, and a rendering that describes a different
+            # query from the one that ran is how an agent's result and a human's
+            # verification silently disagree.
+            #
+            # No ``*`` wildcards, deliberately. The old rendering said
+            # ``message : "*carol*"`` while the executed query was an ANALYSED
+            # ``multi_match`` — a term match, never a substring scan. KQL
+            # ``field : "value"`` compiles to exactly that match, so dropping the
+            # wildcards makes the rendering a faithful description of what ran for
+            # the first time, instead of promising a substring search nothing performs.
+            clause = " or ".join(f'{field} : "{contains}"' for field in searched)
+            kql_parts.append(f"({clause})" if len(searched) > 1 else clause)
 
         time_from = query.time_from if query.time_from is not None else "now-24h"
         time_to = query.time_to if query.time_to is not None else "now"
@@ -887,7 +932,7 @@ class ElasticConnector(PullConnector):
         }
         resp = await self._es.search_logs(prefs.data_view_pattern, body)
         kql = " and ".join(kql_parts) if kql_parts else "*"
-        return self._to_result(resp, prefs, kql, time_from, time_to)
+        return self._to_result(resp, prefs, kql, time_from, time_to, fields_searched=searched)
 
     async def fetch_by_ids(
         self, prefs: Preferences, ids: list[str], size: int
@@ -971,8 +1016,16 @@ class ElasticConnector(PullConnector):
         kql: str,
         time_from: str | None,
         time_to: str | None,
+        *,
+        fields_searched: list[str] | None = None,
     ) -> SearchResult:
-        """Wrap a native ES response in a :class:`SearchResult` with provenance."""
+        """Wrap a native ES response in a :class:`SearchResult` with provenance.
+
+        ``fields_searched`` records which fields a free-text ``contains`` was matched
+        against, so a zero-hit result can be reported as "no match in THESE fields"
+        rather than as proof the data is absent. It defaults to empty for every
+        caller that ran no free-text filter.
+        """
         hits = resp.get("hits", {}).get("hits", [])
         total = resp.get("hits", {}).get("total", {})
         total_val = total.get("value", len(hits)) if isinstance(total, dict) else len(hits)
@@ -983,5 +1036,6 @@ class ElasticConnector(PullConnector):
             data_view=prefs.data_view_pattern,
             time_from=time_from,
             time_to=time_to,
+            fields_searched=list(fields_searched or []),
         )
         return SearchResult(events=events, total=total_val, rendering=rendering, raw=resp)

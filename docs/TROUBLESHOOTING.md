@@ -487,6 +487,64 @@ names are valid for that provider.
 
 ---
 
+## M2. A rule never auto-closes and the agent reports "no context" for a field that is there
+
+**Symptom.** One detection rule routes to `needs_human` on essentially every case,
+and the case evidence says something like *"…alert from 10.97.3.201; no HTTP or
+execution context."* — while a direct query against the index shows the record
+plainly carries `url.path`, `http.request.method` and `user_agent.original`. Raising
+`investigator_model.max_tokens` or `caps.timeout_seconds` changes nothing, and
+growing the analyst-confirmed precedent corpus for that rule changes nothing either.
+
+**Likely cause.** The agent is telling the truth about *its inputs*. Each sample
+event reaches the model as a **bounded projection** of the record, not the whole
+record, and the field that decides your rule is not in the projection. Before
+0.1.13 that projection was a fixed seven keys with no way to widen it; since 0.1.13
+it defaults to the ECS set that usually carries the verdict, but a source with a
+non-ECS schema (a vendor prefix like `data.url`, a custom detection field) still
+needs to name its own paths. The tell that it is this and not a model problem: the
+verdict does not improve with more tokens, more time, or more precedent, because
+none of those supply a missing per-case discriminator.
+
+**Fix.** Add the deciding paths to the evidence projection.
+
+1. **Find out what your alerts actually carry.** Open **Sources → your source →
+   Advanced — field mapping**, paste one real alert record and press *Suggest
+   mappings*. `POST /api/sources/{id}/analyze-sample` returns
+   `suggested_evidence_fields` — which of the default evidence paths that record
+   carries — alongside the full `fields` inventory of every path in it.
+2. **Set the projection.** Deployment-wide in **Settings → General → Case evidence
+   fields**; for a single source, through its `evidence_fields` config key on
+   `POST /api/sources` (there is no per-source Console control for this yet). Paths
+   are dotted and are read the same way as the field mapping, so `data.url` and
+   `data.srcip` work. An empty list restores the pre-0.1.13 identity-only
+   projection; `["*"]` sends the whole record, bounded only by the per-event
+   character budget beside it.
+3. **Re-investigate one case** and read the new verdict and evidence.
+
+**How to confirm.** Ask the agent in **Chat** to query the source for the entity
+(e.g. `ip:10.97.3.201`) and look at the result table: each row now carries the fields
+you added. That is the direct check — the rows the agent sees are the rows you see.
+
+> **Two things that will NOT confirm it.** The Investigation trace shows the audited
+> prompt *excerpt*, which is truncated at 1,000 characters and begins with the
+> memory/playbook/precedent blocks, so it usually ends before the sample events —
+> its absence there proves nothing. And a free-text `contains` query is an analysed
+> *term* match, not a substring scan: it matches a word in an analysed field
+> (`message`, `event.original`) but matches an exact-value `keyword` field only
+> against its whole value, so `contains: "editpdf"` will not find
+> `/mod/assign/feedback/editpdf/ajax.php`. The projection is the fix; the search
+> disclosure only stops a zero being misread as an absence.
+
+> **Rules that genuinely have no per-alert context are a different problem.**
+> Aggregation and ES|QL detections (excessive-404 enumeration, session-key reuse
+> across IPs, request-rate credential stuffing) alert on a *count*, so no single URL
+> or user agent exists to attach. Widening the projection correctly does nothing for
+> them — they need analyst precedent (§ Settings → Detection → precedent) or a
+> suppression/analyst policy, not more fields.
+
+---
+
 ## N. Settings won't save / read-only
 
 **Symptom.** The Settings form is disabled, or a PUT returns `403 Settings are in

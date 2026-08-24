@@ -149,9 +149,15 @@ class Investigator:
             # TRUSTED block (only when the operator enabled promotion AND the signal
             # qualified). It is EVIDENCE, not authority: the deterministic policy still
             # decides close/escalate (#3).
+            # The per-event evidence projection is resolved from the operator's
+            # config for the sources that actually contributed to THIS cluster, so a
+            # deployment whose alerts carry decision-relevant fields the ECS default
+            # does not name can surface them without a code change.
             context = render_cluster(
                 cluster, enrichment, rag_chunks, playbook=playbook_text, memory=memory,
                 precedent=precedent,
+                evidence_fields=prefs.evidence_fields_for(cluster.contributing_source_ids()),
+                evidence_max_chars=prefs.evidence_budget_for(cluster.contributing_source_ids()),
             )
             messages = [
                 {"role": "system", "content": system},

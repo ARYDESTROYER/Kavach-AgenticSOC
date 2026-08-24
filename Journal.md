@@ -10147,3 +10147,207 @@
   restored, and the gate re-derives the same 362 composites from the rebuilt file.
 - Status: done
 - Next: PR #100 CI, and correct two inaccuracies in its generated body.
+
+### 2026-08-24 20:40Z — orchestrator — Field report: the investigator never sees the fields that decide the case
+- Context: a field report from a live deployment (Elasticsearch alerts-role source
+  `.alerts-security.alerts-tlsoc`, PostgreSQL state) traced a `Suspicious Web Shell / PHP
+  Execution` rule that had **never** auto-closed across ~600 cases. The case evidence read
+  "no HTTP or execution context" while the alert document plainly carried `url.path`,
+  `http.request.method` and `user_agent.original`. The standing explanation — "these alerts
+  are evidence-poor" — was wrong: the alerts are fine, the pipeline was field-poor.
+- Did: opened on `claude/peaceful-wright-vzcupo` off `fcaa5ac`. Ran an 8-agent understand
+  workflow over the prompt seam, the es_query tool + ReAct loop, the connector layer,
+  Preferences/SourceInstance config, models + OCSF, sample_analysis, the test conventions,
+  and every other event→prompt projection in the backend, to establish the #7 boundary
+  (which surfaces may carry per-event detail at all) before touching anything.
+- Tests: baseline `pytest -q` — 2851 passed, 5 pre-existing failures that are environmental
+  in this sandbox (the autouse network guard is defeated by the loopback HTTPS_PROXY, so
+  three keyless enrichment providers reach the real network; confirmed identical on a
+  stashed tree).
+- Status: in-progress
+- Next: implement the shared definition, then adversarially verify it.
+
+### 2026-08-24 22:05Z — orchestrator — One shared evidence definition across prompt, tool and search
+- Context: the fix for the above. Three independent hardcoded allowlists decided, separately
+  and silently, what the agent could SEE and what it could SEARCH — `prompts.py`'s 7-key
+  sample-event projection (under a heading claiming "raw log data"), `es_query._format`'s
+  9-key row, and `elastic.py`'s 4-field `contains` multi_match. A field in none of them is
+  invisible AND unsearchable at once, and a zero-hit query for it reads back to the model as
+  positive evidence of absence — which is exactly what the reported case recorded.
+- Did:
+  - **New `backend/app/evidence_fields.py`** — the ONE shared definition. `DEFAULT_EVIDENCE_FIELDS`
+    (the 11 ECS paths the field report named, in decision-relevance order), the `"*"`
+    whole-record mode, `BULKY_METADATA_FIELDS` (the Kibana rule-DEFINITION blobs, dropped
+    first when the budget binds), `project_evidence()` (identity keys always kept, absent
+    fields never rendered, per-value and per-event bounds, withheld names reported under
+    `_omitted_fields`), `free_text_search_fields()` and `normalise_evidence_fields()`
+    (TOTAL — coerces, never raises, because a per-source overlay lands via
+    `model_copy(update=)` which does not validate, and `ConfigStore.load` resets the
+    operator's ENTIRE config on a validation error). Dependency-light (`app.utils` only) so
+    connector, tool and prompt seam can all import it without a cycle. It never fences —
+    callers hand the projection to `fence_block` (#9).
+  - **prompts.py** — `render_cluster` gained `evidence_fields`/`evidence_max_chars`, both
+    defaulting to the widened constants (NOT to the old narrow behaviour, so a caller that
+    omits them still gets the evidence). The sample-events block moved from `fence()` (a
+    silent 600-char per-value cut — the audit #20/#21 failure class) to `fence_block`, which
+    scrubs per leaf AND over the serialised form, covering the attacker-controlled record
+    KEYS that whole-record mode introduces. Heading now states the projection instead of
+    claiming to be raw data.
+  - **investigator.py / router.py** — both pass `prefs.evidence_fields_for(cluster.contributing_source_ids())`
+    (new `Cluster` method reconciling `source_ids` + the scalar `source_id`). Co-correlated
+    sources UNION their lists: one source's narrow setting must not blind another.
+  - **es_query.py** — rows now extend the same nine identity keys with the shared projection;
+    the nine original key names are untouched because `agents/chat.py` renders its table off
+    them. When `contains` is used the result reports which fields it was matched against, in
+    `data` AND `summary` — `meta` is not shown to the model, which is why the disclosure
+    could not live there.
+  - **elastic.py / base.py** — `contains` matches `prefs.free_text_search_fields()` (the four
+    originals first and in order, so an existing deployment's result set only grows), the KQL
+    rendering names every field it covered instead of claiming `message` alone (it is the
+    operator's Discover deep-link and the audited `query_text`), and `QueryRendering` gained
+    `fields_searched`. `_OVERLAY_KEYS` gained both new keys, so per-source override is free.
+    OpenSearch and Wazuh inherit `search()` verbatim — one edit, three source types.
+  - **config.py** — `Preferences.evidence_fields` / `evidence_max_chars_per_event` + the
+    `evidence_fields_for` / `evidence_budget` / `free_text_search_fields` resolvers. Additive
+    and defaulted, so a stored pre-0.1.13 document adopts the fix on load with no migration.
+  - **sample_analysis.py** — `suggested_evidence_fields` answers "do MY alerts carry the
+    fields that decide the case?". Strictly #9-safe: every string returned is one of our own
+    constants matched against the sample, never a path echoed back from it.
+  - **Console** — Settings › General › **Case evidence fields** (TagInput + budget), types
+    for `Preferences`/`SourceConfigExtras`/`AnalyzeSampleResult`, section `ownedKeys` +
+    search keywords.
+  - **Docs** — CHANGELOG (Fixed ×3, Added ×1), `docs/USAGE.md` §11 "What the agent actually
+    sees per event" + the Settings reference table, `docs/TROUBLESHOOTING.md` §M2 (the exact
+    symptom, including why more tokens/time/precedent never helped, and the honest note that
+    aggregation/ES|QL rules with no per-alert context are a different problem this does not
+    solve), `AGENTS.md` repo map.
+- Tests: backend **2856 collected, 2851 passed**, the same 5 pre-existing environmental
+  failures and no new ones; 36 new specs in `tests/test_evidence_fields.py` covering all four
+  of the report's test specs plus config coercion, budget clamping, falsy-but-present values
+  and forged markers in a newly-included field AND in a record key. `test_connectors_elastic.py`
+  updated for the honest KQL rendering (the old assertion pinned a rendering narrower than the
+  query that actually ran). Console: **310 files / 2156 passed**, zero stderr; eslint 0/0;
+  tsc clean; gates 6/6; `check:types` no drift; full docs+app build clean; `docs:check`
+  consistent (app 0.1.13 ↔ docs 0.1); ruff E9,F63,F7,F82 clean.
+  **#3 verified: `git diff -- backend/app/engine/case_manager.py` is empty.**
+- Status: in-progress (adversarial verification running)
+- Next: fold in confirmed findings, re-run the gate, then raise the PR against `Testing`.
+
+### 2026-08-24 23:20Z — orchestrator — Adversarial pass found a production-breaking bug I shipped
+- Context: verification of the above, by four independent reviewer lenses (#9/injection,
+  correctness, non-negotiables, fitness-against-the-report), each finding adversarially
+  re-verified.
+- Did: 20 findings raised, all real. Fixed every one. The ones that mattered:
+  - **A non-lenient `multi_match` over typed ECS fields would have hard-failed EVERY free-text
+    query on a real cluster.** `http.response.status_code` is a `long` and `destination.ip` is
+    an `ip`; asking them to parse free text raises `number_format_exception` on the shard and
+    the whole search errors. Two lenses found it independently. My tests could not have caught
+    it — the in-memory fake stringifies every value, so it structurally cannot reproduce a
+    mapping-type failure. Fixed twice over: those two paths are excluded from the SEARCH list
+    upstream (a substring match against a status code or an IP is meaningless anyway, and the
+    exclusion also keeps the rendered KQL deep-link valid), and `lenient: True` stays as the
+    safety net for operator-configured paths whose mapping type this code cannot know. The
+    `lenient` flag is asserted structurally against the emitted query body.
+  - **Widened rows pushed the es_query observation past `fence_block`'s 16 kB net at the
+    DEFAULT size** (50 rows × ~450 chars), where it is a blind byte cut that hands the model
+    invalid JSON with only a server-side warning — while the summary still claimed every row
+    was returned. Rows are now budgeted in the tool (`_MAX_HITS_CHARS`), dropped WHOLE, and
+    the withheld count is stated. The per-row budget is clamped to the row budget so one
+    operator-maximised row cannot breach it either.
+  - **Wildcard mode's bounded, document-order leaf walk could drop `url.path`** — the exact
+    silent-absence bug this module exists to prevent, in a new costume. The default paths are
+    now read directly rather than relied on to fall out of the walk, and a truncated walk is
+    reported as `_record_truncated`, so "not present here" is never read as "not on the record".
+  - **`BULKY_METADATA_FIELDS` matched by equality, not prefix**, so the flattened sub-leaves of
+    `kibana.alert.rule.parameters` ranked as ordinary evidence and could outrank the URL. My own
+    test had passed for the wrong reason.
+  - **A log record could forge `_omitted_fields`** — the pipeline's own withheld-evidence
+    channel — by shipping a field of that name in wildcard mode. `RESERVED_KEYS` now belong to
+    the projection alone.
+  - **es_query resolved evidence config globally while the connector searched per-source**,
+    putting the two surfaces this change exists to keep in lockstep straight back out of step;
+    and the prompt path applied per-source FIELDS against a GLOBAL budget. Both now resolve
+    through one expression of the precedence (`evidence_fields_from_config` /
+    `evidence_budget_from_config` / `evidence_budget_for`).
+  - Smaller: a `"*"` past the field cap was silently dropped; `_cost` under-counted and the
+    omission note was never charged (my own budget test caught this — the projection could
+    exceed its own bound); `clamp_evidence_budget` raised `OverflowError` on `float('inf')`,
+    breaking its documented never-raise contract; stale docstrings on `ElasticConnector.search`
+    and the model-facing `contains` description still described the old 4-field behaviour; and
+    `suggested_evidence_fields` was returned and typed but rendered nowhere while
+    TROUBLESHOOTING §M2 told operators to read it (now rendered in the SourceEditor).
+- Tests: backend **2874 collected, 2869 passed**, same 5 pre-existing environmental failures,
+  none new. 18 further specs added, one per finding. Console 310 files / 2156 passed; eslint
+  0/0; tsc clean; gates 6/6; check:types no drift; full docs+app build clean; ruff clean.
+- Status: in-progress (a second, fresh adversarial pass is running against the settled tree —
+  the first pass's verifiers were racing my fixes and refuting things I had just corrected,
+  which is not a usable signal)
+- Next: fold in anything the fresh pass confirms, then raise the PR against `Testing`.
+
+### 2026-08-25 00:15Z — orchestrator — Second adversarial pass; 17 more findings, all fixed
+- Context: the first pass's verifiers were racing my fixes and refuting things I had just
+  corrected, which is not a usable signal. Stopped it and ran a fresh four-lens pass
+  (regressions-in-the-fix-pass, #9/#1, whole-system integration, fitness-against-the-report)
+  against a settled, green tree.
+- Did: 17 findings, all real, all fixed. The ones that mattered:
+  - **The row budget I added for the investigator was silently truncating Chat's result
+    table AND its top-N facets.** `_MAX_HITS_CHARS` lived in the shared tool, so a 50-row
+    operator table became 13 rows and `top_rules`/`top_users`/`top_hosts`/`top_source_ips`
+    were computed over the remainder and presented as describing the whole result. The budget
+    now belongs to the CALLER that hands rows to a model: the investigator passes
+    `max_result_chars`, Chat does not (its model-visible payload is separately bounded to 5
+    sample rows). A regression I introduced while fixing the previous pass's finding.
+  - **`ids` + `contains`: the connector short-circuits to `fetch_by_ids` and never applies
+    the free text, and my disclosure then told the investigator the source had matched it.**
+    An unfiltered document set presented as a filtered one — the same false inference the
+    disclosure exists to stop, arriving from the other direction. It now says outright that
+    the filter was not applied.
+  - **`contains` is an analysed TERM match, not a substring scan** — it always was, and the
+    old KQL rendering `message : "*carol*"` had been lying about that for as long as it has
+    existed. Widening the field list propagated the lie across a dozen fields and the new
+    summary asserted the fields had been searched without saying how. The rendering now drops
+    the `*…*` it never performed (KQL `field : "value"` compiles to exactly the match that
+    runs, so it is faithful for the first time), and the summary states the semantics. This
+    does NOT undo the fix: the reported case is solved by the DISPLAY half — the agent reads
+    the record's own `url.path` and never has to guess a query that would match it.
+  - **`project_evidence` bounded values but not KEYS**, which in whole-record mode are the
+    record's own field names — attacker-sized as well as attacker-valued, and charged to the
+    budget whether kept as a key or dropped into `_omitted_fields`. My "never trim the notice
+    to nothing" fix from the previous pass had made that worse. Keys and configured paths are
+    now length-bounded too.
+  - **`suggest_evidence_fields` intersected a BOUNDED, alphabetically-cut path inventory**, so
+    on a record with >500 paths it told an operator their alerts carry none of the deciding
+    fields when they carry all of them — the original bug, arriving through the one affordance
+    built to diagnose it. It now does a direct per-path lookup.
+  - **A wildcard discarded an operator's explicitly named sibling paths**, leaving such a path
+    shown (by the wildcard) but never searchable (search resolves a wildcard to the curated
+    default set) — a field visible-but-unsearchable, which is half of the original bug.
+  - **The observation could still exceed `fence_block`'s 16 kB net**: only `hits` was budgeted,
+    while the searched-field list rode along twice more (the summary prose and
+    `data["free_text"]`). The reserve now covers the whole payload.
+  - **The cheap router prompt grew ~3× per cluster with no lever**, and it runs on 100% of
+    clusters under comprehensive ingestion. It keeps the same field list (one definition) on a
+    separate per-event ceiling that an operator's own lower budget still overrides.
+  - Totality holes (`searchable_evidence_fields`/`is_wildcard` raising `TypeError` on a
+    malformed overlay that skipped Pydantic); `applied` conflating "a field list was reported"
+    with "the filter ran"; withheld-rows guidance that told the model to lower `size`, which
+    cannot recover them; a duplicated `action`/`event.action` in every row; and a batch of doc
+    claims that were not true of the code — the trace named as "the reliable check" when
+    `prompt_excerpt` truncates at 1000 chars before the sample events, a per-source override
+    the Console cannot set being described as if it could, and "shown implies searchable"
+    stated with one exception when there are three. All corrected in USAGE, TROUBLESHOOTING,
+    CHANGELOG, the Settings card and the analyze-sample OpenAPI description.
+  - The integration lens independently re-ran every gate and verified end-to-end: chat's table
+    unaffected by the extra row keys, `QueryRendering.fields_searched` breaking no consumer,
+    both browse routes live-exercised, and the Settings card round-tripping through the real
+    API including `[]`, `["*"]`, and correct 422s at the bounds.
+- Tests: backend **2888 collected, 2883 passed**, only the 5 known environmental failures;
+  68 specs in `tests/test_evidence_fields.py`. Console **310 files / 2156 passed**, zero
+  stderr; eslint 0/0; tsc clean; gates 6/6; `check:types` no drift (openapi.json +
+  api-types.gen.ts regenerated for the analyze-sample description and committed); full
+  docs+app build clean; `docs:check` consistent; ruff clean.
+  **#3 re-verified: `git diff` on `case_manager.py`, `risk.py` and `signatures.py` is empty.
+  #7 re-verified: standup, event_detection, shift_report and metrics do not import
+  `evidence_fields`.**
+- Status: done
+- Next: commit and raise the PR against `Testing`.

@@ -795,6 +795,14 @@ export interface SourceConfigExtras {
   auto_correlate?: boolean;
   /** Per-source field-mapping overrides (F9); falls back to global Preferences. */
   field_mappings_extra?: FieldMappingsExtra;
+  /**
+   * Per-source override of the case-evidence projection (the raw-record paths the
+   * agent sees and can search for). Omitted inherits the global
+   * `Preferences.evidence_fields`; `[]` pins the narrow identity-only projection.
+   */
+  evidence_fields?: string[];
+  /** Per-source override of the per-event evidence size budget, in characters. */
+  evidence_max_chars_per_event?: number;
   [key: string]: unknown;
 }
 
@@ -1750,6 +1758,17 @@ export interface Preferences {
   severity_threshold?: number;
   in_scope_rules?: string[];
   excluded_rules?: string[];
+
+  /**
+   * The extra raw-record paths the agent sees per sample event, the `es_query`
+   * tool returns per row, and free-text search is matched against — ONE list
+   * driving all three (`backend/app/evidence_fields.py`). `["*"]` ships the whole
+   * record bounded only by `evidence_max_chars_per_event`; `[]` is the narrow
+   * identity-only projection. Overridable per source via `SourceConfigExtras`.
+   */
+  evidence_fields?: string[];
+  /** Serialised-character budget for ONE projected event (0 disables the extras). */
+  evidence_max_chars_per_event?: number;
 
   poll_interval_seconds?: number;
   poll_batch_size?: number;
