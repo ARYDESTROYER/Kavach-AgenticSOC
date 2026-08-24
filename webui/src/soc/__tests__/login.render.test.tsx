@@ -218,12 +218,32 @@ describe('Login — four-mode render', () => {
       'aria-pressed',
       'true',
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Use dark theme' }));
+    // The appearance pill names the mode you are IN and switches to the other one.
+    // jsdom's matchMedia reports no dark preference, so `system` resolves to light.
+    const pill = screen.getByRole('button', { name: 'Light mode — switch to dark mode' });
+    expect(pill).toHaveAttribute('data-appearance', 'light');
+    fireEvent.click(pill);
     expect(window.localStorage.getItem('soc.theme')).toBe('dark');
-    expect(screen.getByRole('button', { name: 'Use dark theme' })).toHaveAttribute(
+    expect(
+      screen.getByRole('button', { name: 'Dark mode — switch to light mode' }),
+    ).toHaveAttribute('data-appearance', 'dark');
+    // Choosing an explicit appearance releases `system`.
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    // ...and the reset is the ONLY route back to following the OS from this screen,
+    // so exercise it rather than only asserting its pressed state.
+    fireEvent.click(screen.getByRole('button', { name: 'Use system theme' }));
+    expect(window.localStorage.getItem('soc.theme')).toBe('system');
+    expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
+    // `system` resolves back to light under jsdom's matchMedia, so the pill follows.
+    expect(
+      screen.getByRole('button', { name: 'Light mode — switch to dark mode' }),
+    ).toHaveAttribute('data-appearance', 'light');
     expect(document.querySelector('[data-login-shell]')).toHaveAttribute(
       'data-login-theme-palette-settling',
       'true',
@@ -242,7 +262,9 @@ describe('Login — four-mode render', () => {
     // Mistral-style staged disclosure: Continue appears only after identity input.
     fireEvent.change(username, { target: { value: 'alice' } });
     const continueButton = await screen.findByRole('button', { name: 'Continue' });
-    expect(continueButton).toHaveClass('h-10');
+    // The identity CTA carries the shine treatment and matches the credential
+    // fields' full-width h-12 geometry, like every other auth-mode primary here.
+    expect(continueButton).toHaveClass('login-shine-button', 'h-12', 'w-full');
     fireEvent.click(continueButton);
 
     const password = await screen.findByLabelText('Password');

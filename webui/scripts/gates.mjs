@@ -8,6 +8,8 @@
  *   3. grep: text-size — no NEW arbitrary `text-[<number>…]` in .tsx (baselined)
  *   4. grep: raw hex   — no NEW raw `#rrggbb` in .tsx (baselined)
  *   5. CVD             — --chart-* ramp resolves + stays separable under the 3 dichromacies
+ *   6. login accents   — the identity CTA/pill gradients keep AA text contrast in every
+ *                        paint state (they use raw gradients, so gate 2 cannot see them)
  *
  * The contrast + token-existence checkers ALSO run inside Vitest (design-gates.test.ts)
  * so CI enforces them even if `npm run gates` is not wired into a given pipeline. This
@@ -17,6 +19,7 @@ import { checkTokenExistence } from './gate-tokens.mjs';
 import { checkContrast } from './gate-contrast.mjs';
 import { checkGrepGuards } from './lib/grep-guard.mjs';
 import { checkCvd } from './gate-cvd.mjs';
+import { checkLoginAccents } from './gate-login-accents.mjs';
 
 let failed = 0;
 
@@ -74,6 +77,18 @@ function report(name, ok, detail) {
     'CVD: --chart-* ramp separable (3 dichromacies, both themes)',
     ok,
     problems.map((p) => `    [${p.theme}] ${p.sim}: ${p.a} vs ${p.b} (ΔE ${p.de})`).join('\n'),
+  );
+}
+// 6. login identity accents
+{
+  const { ok, results } = checkLoginAccents();
+  const fails = results.filter((r) => !r.pass);
+  report(
+    `login accents (${results.length} composites, both themes)`,
+    ok,
+    fails
+      .map((r) => `    ${r.name}: need ≥${r.bar}:1, got ${r.ratio ?? 'unresolved'}`)
+      .join('\n'),
   );
 }
 

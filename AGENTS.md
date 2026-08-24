@@ -951,7 +951,9 @@ a retelling — do not re-derive round detail from here.
   coverage banner/Overview tile/Noise-Reduction "awaiting" stage. **motion.dev** —
   ONE new lazy runtime dep (`motion` 12.42.2, replacing the Round-5-removed
   `framer-motion`) behind `LazyMotion`/`domAnimation`, landing in an ~83.85 kB lazy
-  chunk (entry stays 281.44 kB), animating route transitions, CaseDetail tabs, Cases
+  chunk (entry was 281.44 kB at the time of Round 10; it is ~390 kB today, against
+  the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
+  line), animating route transitions, CaseDetail tabs, Cases
   bulk-bar/row reflow, the nav rail, and KPI count-ups — reduced-motion honored.
   Built research(vendor+standards) → code (5 batches) → adversarial verify (5 major +
   6 minor found) → fix (all) → re-verify. No research folder (efficiency-first) — see

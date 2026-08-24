@@ -502,6 +502,47 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
+- **The sign-in surface gained two identity accents, rebuilt from first principles.**
+  The primary CTA is now a gradient-faced `ShineButton`: a blurred cyan-to-orchid halo
+  sits rotated and invisible at rest and un-rotates into place on hover or keyboard
+  focus, a soft gradient blob sweeps the face once per interaction, and the label is
+  gradient-clipped until hover flattens it to solid white. The corner appearance
+  control is now a `ThemeModePill` that names the mode you are in — a crescent on the
+  left and a disc on the right scale-swap, the label slides toward whichever glyph is
+  showing, and two blurred orbs behind the pill trade sides on every toggle. Both are
+  pure CSS scoped to `.login-auth-canvas`; no animation library is involved and neither
+  lands on a lazy chunk, so first paint is unchanged. The CTA also moved to the
+  full-width 48px geometry the page's other primary actions already used.
+  All three theme modes remain reachable: the pill reflects and sets the *resolved*
+  appearance, and a round *Use system theme* reset beside it keeps `system` a first-class
+  choice.
+- **Login accent colour is now measured and gated, not chosen by eye.** These are the
+  only surfaces in the console that paint text on a raw gradient rather than a semantic
+  token pair, so the existing token-contrast gate is structurally blind to them. A new
+  `login accents` design gate re-derives the worst case straight from `theme.css` on
+  every `npm run gates` and every Vitest run: it composites each face stop with the
+  sweep at its peak keyframe opacity and the overlay tint at its declared per-theme
+  opacity, measures against both label stops, and samples the pill's label zone across
+  the span the sliding label can actually occupy. All 362 composites clear 4.5:1. The
+  ramps these are modelled on do not — which is exactly why the shipped ones are deeper.
+- **The login focus ring is visible again.** The identity canvas overrode `--ring` to a
+  grey measuring 1.84:1 on the white slab, well under the 3:1 WCAG 2.4.11 bar for a
+  focus indicator. Light is now 4.74:1 and dark 5.65:1, which every control on the
+  canvas inherits. The indicator is also drawn on each accent's opaque child rather
+  than on the button, because an element's outer box-shadow paints before its
+  descendants — a ring on the button sat underneath the halo, on exactly the state that
+  shows the ring.
+- **The login accents survive forced-colors mode.** `forced-color-adjust: none` opts an
+  element out of the UA's own correction, so any state selector that outranked the
+  fallback on specificity kept a hard-coded colour the system theme never sees: the
+  appearance pill's dark-state navy ink, and the disabled CTA's muted face and label.
+  The disabled CTA is the resting state of the password step, so that was the default
+  rendering, not an edge case. Both now hand back to `ButtonFace`/`ButtonText`, with
+  `GrayText` for the genuinely inert state.
+- **A submitting sign-in button no longer looks like a dead one.** The CTA is disabled
+  both while nothing is typed and while the request is in flight; the inert treatment
+  now excludes the busy state, so clicking Sign in keeps the gradient and shows the
+  spinner instead of flattening to grey.
 - **The top KPI is Critical alone**, not Critical/High, and deep-links to that
   severity.
 - **Demo mode moved into the top bar.** The banner took a full-width strip above

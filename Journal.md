@@ -9989,3 +9989,161 @@
 - Tests: backend 2,815 passed / 4 skipped / 0 failed (exit 0, proxy AWS vars unset); webui test:strict 309 files / 2,139 passed, zero console; eslint 0/0; all design gates; full docs+app build clean; docs bundle consistent (app 0.1.13 / docs 0.1); check:types no drift. Two timing tests (netguard fast-fail, SQL lease convergence) flaked once each under concurrent load and pass in isolation — both outside this diff (no files under enrichment/, tools/, stores/ or jobs.py are touched). #3 decide()/risk/signatures untouched, #6 no new LLM path, #9 browsed rows and _raw stay plain text and never reach a model.
 - Status: complete; pushed; PR opened against Testing.
 - Next: PR review + the CI passed aggregate. Deferred follow-ups: log pagination/filters/columns, the noise_counters vs clustering_explain human-closed predicate drift, and a per-severity server-side count so the Critical tile could carry a non-sample share.
+
+### 2026-08-24 12:50Z — orchestrator — Session start: GSAP-style shine sign-in button + light/dark toggle
+- Context: operator request — port the "Buttons That Shine" treatment from gsap.com/ui onto the
+  console sign-in CTA, and the "Light mode / Dark mode" pill toggle, re-implemented in our own
+  code with **zero new dependencies** (GSAP is not and will not be a dependency).
+- Did: reverse-engineered both gsap.com/ui blocks from the live page (inline CSS + the site's
+  own JS bundle) — the shine is a blurred rotated gradient halo that un-rotates on hover plus a
+  gradient blob swept across the face; the toggle is a gradient pill with a moon/sun scale-swap,
+  a nudging label, and two large radial "flair" glows that slide ±124px and rotate ±180°.
+  Recorded the mechanism as a working note (scratchpad, not committed). Started a parallel
+  understand pass over Login.tsx, the token system, and the webui test/lint contract.
+- Tests: not yet run (webui deps installing).
+- Status: in-progress
+- Next: implement both as token-driven CSS/React components, then full gate (pytest / build /
+  test:strict / lint).
+
+### 2026-08-24 13:55Z — orchestrator — GSAP-style shine sign-in CTA + Light/Dark pill (zero new deps)
+- Context: operator request — bring the "Buttons That Shine" treatment from gsap.com/ui to the
+  console sign-in CTA, and the Light mode / Dark mode toggle, re-implemented in our own code.
+  No new dependencies; GSAP is not and will not be one.
+- Did:
+  - Reverse-engineered both gsap.com/ui blocks from the live page's inline CSS and its own JS
+    bundle (the site is not a CodePen — the demos are `ui-button` / `ui-toggle` blocks). The
+    shine is a blurred rotated halo that un-rotates on hover plus a gradient blob swept across
+    the face on `mouseenter`; the toggle is a gradient pill with a moon/sun scale-swap, a
+    nudging label, and paired radial glows that slide ±124px and rotate ±180°.
+  - Re-implemented both as pure CSS in `theme.css`, scoped to `.login-auth-canvas`, plus two
+    components in `webui/src/soc/components/auth/`: `ShineButton.tsx` and `ThemeModePill.tsx`.
+    No animation library; neither component is on a lazy chunk, and the entry chunk moved
+    390.11 → 390.13 kB.
+  - `Login.tsx`: both sign-in-flow CTAs are now `ShineButton` at the page's existing
+    full-width 48px primary geometry; `LoginThemeControl` is the pill plus a round
+    *Use system theme* reset, so all three theme modes stay reachable.
+  - COLOUR IS MEASURED. The reference face renders near-white text at 2.9–4.6:1, which fails
+    AA at control text sizes, so every ramp here was derived by solving for the composite —
+    face + sweep at peak keyframe opacity + overlay tint — against both label stops. New gate
+    `webui/scripts/gate-login-accents.mjs` re-derives that worst case from `theme.css` on every
+    run (362 composites, worst 4.61:1), wired into `npm run gates` and `design-gates.test.ts`.
+  - Fixed defects an adversarial review surfaced, each verified before fixing: the login
+    `--ring` was 1.84:1 (WCAG 2.4.11 fail) → 4.74:1 light / 5.65:1 dark; the pill had no
+    `border-radius` of its own so the focus ring drew a rectangle; the two pill ramps have
+    different stop counts, so `transition: background` was discrete and briefly paired each ink
+    with the wrong ramp — ink and track now swap instantly while the motion stays; the gate's
+    pill zone did not model the ±0.375rem label slide, and once it did it caught a real 4.47:1
+    light-state failure. Named the states "Dark mode" (the operator's wording, and the repo's
+    documented vocabulary) rather than the reference's "Night mode". Removed the
+    `.login-auth-canvas button.bg-foreground` rules and their eight `--login-button*` tokens,
+    dead once both CTAs stopped using that hook.
+  - Verified in a real browser, not just jsdom: light/dark, 390px, `forced-colors: active`
+    (both controls fall back to the system palette and the clipped label is un-clipped — it
+    would otherwise vanish), keyboard focus, disabled, and a live sample of the sweep's
+    computed animation showing `login-shine-sweep` at opacity 0.18 under normal motion and
+    `animation: none` at opacity 0 under `prefers-reduced-motion: reduce`.
+  - Docs: `docs/development/ui-standard.md` gained an *Identity accents* section. The standard
+    previously banned a gradient or glow on this exact surface, so shipping without amending it
+    would have left the repo contradicting itself; the exception is now explicit, scoped, and
+    conditioned on the rules that keep it safe.
+- Tests: webui **310 files / 2151 passed**, zero stderr (was 309 / 2131 + 9 skipped — the skips
+  were bundle guards that only run with a built `dist/`); eslint 0 errors/0 warnings;
+  `npm run gates` 6/6 including the new lane; full docs+app build clean, docs bundle consistent
+  (app 0.1.13 ↔ docs 0.1). Backend untouched (`git diff HEAD -- backend/` empty): 2819 collected,
+  3 failures, all environmental in this sandbox — `test_enrich`/`test_round3_wave1_enrichment`/
+  `test_round3_wave2b_netguard` assume no outbound network, but the keyless providers reach the
+  internet through the agent proxy here and return a real score for 8.8.8.8. Two further
+  failures appear unless `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are unset, because the
+  proxy injects them and `Secrets` picks them up.
+- Status: done
+- Next: nothing outstanding. The `login accents` gate is the guard if anyone revisits the ramps.
+
+### 2026-08-24 15:40Z — orchestrator — Adversarial review of the shine/pill diff: 3 confirmed defects fixed
+- Context: second adversarial pass over `3a6e5d2` (5 review dimensions, every finding
+  independently refuted-or-confirmed against the real files). 3 confirmed, the rest refuted
+  as already-handled or as readings of the pre-diff blob.
+- Did:
+  - **forced-colors, pill (high).** `forced-color-adjust: none` opts an element out of the
+    UA's correction, so `[data-appearance='dark']` (0,2,0) outranked the fallback's bare
+    `.login-theme-pill` (0,1,0) and the dark-state label kept its navy ink. Measured live:
+    `rgb(6,61,73)` where `ButtonText` was required — invisible on a dark high-contrast theme.
+  - **forced-colors, disabled CTA (high).** Same mechanism: `:disabled .face` (0,3,0) kept
+    `--login-soft` and `--login-text-muted`. That is the RESTING state of the password step,
+    so it was the default rendering. Both fallbacks are now scoped and `!important`, with
+    `GrayText` for the genuinely inert state.
+  - **Focus ring paint order (high).** An element's outer box-shadow paints before its
+    descendants, so the Tailwind `focusRing` on the button sat *under* the halo — on exactly
+    the state that shows the ring. Verified live: ring present but washed to a faint lavender
+    line. Moved to the opaque child (face / track) with a 2px opaque offset, so the indicator
+    contrast is measured against the slab or canvas rather than the glow.
+  - Also, from the same pass: busy is no longer styled as inert (the CTA is `disabled` both
+    while empty and while submitting — clicking it used to flatten it to grey); the sweep
+    guard honours `[aria-disabled]` like its four siblings; reduced-transparency now drops
+    the translucent tint too; the pill's duplicate `title` is gone; and the system-reset chip
+    inverts when pressed instead of relying on a ~1.1:1 `bg-muted` (WCAG 1.4.11).
+  - **Every accent rule is now scoped under `.login-auth-canvas`.** Off-canvas the controls
+    degrade to a plain legible button instead of an invisible one, and the "no Console page
+    may adopt either" rule is structural rather than advisory.
+  - **Gate hardening, and a real bug it caught in itself.** Scoping the selectors silently
+    broke the gate's `.dark …__face::after` lookup, so the dark tint stopped being modelled
+    and the gate reported HIGHER ratios while still passing — the vacuous-pass failure mode.
+    Fixed, plus: `customProperty` now honours the cascade (last declaration wins) and strips
+    comments; the pill geometry is parsed OUT of the CSS instead of mirrored in a constant;
+    and unreadable layer opacities now fail loudly instead of defaulting to 0. Two new
+    regression tests pin both behaviours.
+- Tests: webui **310 files / 2154 passed**, zero stderr; eslint 0/0; tsc clean; `npm run gates`
+  6/6 (362 composites, worst 4.61:1); full docs+app build clean. Re-verified all three fixes in
+  real Chromium: FC dark pill label now `ButtonText`, FC disabled CTA now `ButtonFace`/`GrayText`,
+  focus ring now a crisp ring above the halo, busy keeps the gradient.
+- Status: done
+- Next: nothing outstanding.
+
+### 2026-08-24 16:12Z — orchestrator — Review round 2 closeout: test-quality findings
+- Context: the review workflow settled (38 agents, 3 confirmed defects — all fixed in `8ebc5c1`).
+  One verify agent died on an API error, so I evaluated its dimension's findings myself rather
+  than treating silence as a pass. Five were about MY OWN tests being weaker than they read.
+- Did:
+  - **The layer-model test could not detect a dropped layer.** `min(sweep+tint) < min(bare)`
+    holds even if either layer is zeroed. The reviewer demonstrated it with two live mutations
+    (renaming the sweep keyframe; moving the tint opacity behind a var). Both are already caught
+    by the fail-loudly guard added in `8ebc5c1` — verified by re-running both mutations — but the
+    test itself is now non-vacuous: it compares `sweep+tint` against sweep-only AND bare+tint
+    separately, so each layer must be contributing, and asserts the extracted opacities directly
+    via a new `layers` field rather than inferring them from a ratio.
+  - **The gate now verifies the premise its own exclusions rest on.** It excludes the halo and
+    the flair because each paints behind an opaque child — an assumption about z-index that
+    nothing read. A DOM-order test cannot cover it (an explicit z-index beats document order
+    both ways), so the gate reads both declarations and fails if the order inverts. The
+    structural test is renamed to say it pins DOM structure, not paint order.
+  - **The system reset had no test that clicked it** — the sole route back to OS-following, and
+    the thing ui-standard and the CHANGELOG both rest on. Added, and mutation-tested: changing
+    `onChange('system')` to `onChange('light')` fails it.
+  - The auth-accents test named for the sweep now actually asserts the sweep stays hidden in
+    that arrangement, instead of duplicating the bare name check.
+  - **Stale bundle figures corrected.** `bundle-first-paint.test.ts` claimed "~264 kB" against a
+    400 kB ceiling; the real entry chunk is ~390 kB, so headroom is ~10 kB, not ~136 kB.
+    `AGENTS.md` carried the same drift ("entry stays 281.44 kB"). Both now say what is true and
+    point at the artifact.
+- Tests: webui **310 files / 2156 passed**, zero stderr; eslint 0/0; tsc clean; gates 6/6
+  (364 checks — 362 contrast composites + 2 layering premises); full docs+app build clean.
+- Status: done
+- Next: nothing outstanding. Branch is 3 commits ahead of `Testing`, clean fast-forward.
+
+### 2026-08-24 17:36Z — orchestrator — Revert an accidental whole-file reformat of theme.css
+- Context: PR #100 was opened for this branch. Reviewing its diff, `webui/src/styles/theme.css`
+  showed 801 insertions / 112 deletions — far more than the accent block accounts for.
+- Did: traced it to my own `npx prettier --write src/styles/theme.css` earlier in the session.
+  There is no prettier config in `webui/`, so it ran on defaults and reformatted the WHOLE file,
+  flattening the hand-aligned token tables (the `--slate-*` / `--blue-*` column layout and its
+  aligned measured-contrast comments) to one property per line. ~500 lines of unrelated churn
+  in a feature PR, and the generated PR body had written it up as a deliberate readability
+  improvement. Rebuilt the file from the pristine `origin/Testing` blob and re-applied only the
+  three intended edits: the two `--ring` values, the removal of the dead `bg-foreground` rules
+  and `--login-button*` tokens, and the accent block. theme.css is now **597 insertions /
+  23 deletions**, and every deletion is one of those three.
+  The three NEW files prettier also touched are unaffected — no base to churn against.
+- Tests: webui 310 files / **2156 passed**, zero stderr; eslint 0/0; tsc clean; gates 6/6
+  (364 checks); full docs+app build clean. Byte-identical rendering — only whitespace was
+  restored, and the gate re-derives the same 362 composites from the rebuilt file.
+- Status: done
+- Next: PR #100 CI, and correct two inaccuracies in its generated body.

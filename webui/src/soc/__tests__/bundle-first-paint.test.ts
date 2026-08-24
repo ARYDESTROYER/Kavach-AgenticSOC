@@ -97,7 +97,10 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
     if (!m) throw new Error('could not find the entry chunk in dist/index.html');
     const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
-    // Hard ceiling FAR below the 537 777-byte regression; today it is ~264 kB.
+    // Hard ceiling below the 537 777-byte regression. Today the entry chunk is
+    // ~390 kB, so the remaining headroom is ~10 kB, NOT the ~136 kB an older
+    // "~264 kB" note in this comment implied — the next eager import of any
+    // moderate module will trip this. Keep the figure current when it moves.
     expect(bytes).toBeLessThan(400_000);
   });
 
@@ -158,6 +161,10 @@ describe('eager login chain does not pull framer-motion (source guard)', () => {
       ['soc', 'pages', 'Login.tsx'],
       ['soc', 'pages', 'Wizard.tsx'],
       ['soc', 'components', 'auth', 'loginParts.tsx'],
+      // The identity accents are statically imported by Login.tsx, so they are on
+      // the eager chain too. They animate with CSS only — this keeps it that way.
+      ['soc', 'components', 'auth', 'ShineButton.tsx'],
+      ['soc', 'components', 'auth', 'ThemeModePill.tsx'],
     ];
     // The `motion` PACKAGE specifier only — local `@/soc/components/motion` /
     // `./components/motion/*` imports start with `@`/`.` and never match.

@@ -24,6 +24,7 @@ import {
   TEXT_WASH_AXES,
 } from '../../../scripts/gate-contrast.mjs';
 import { checkCvd, CHART_TOKENS, SEMANTIC_AXES } from '../../../scripts/gate-cvd.mjs';
+import { checkLoginAccents, TEXT_BAR } from '../../../scripts/gate-login-accents.mjs';
 import { checkGrepGuards, loadBaseline } from '../../../scripts/lib/grep-guard.mjs';
 
 describe('design gate: token existence (theme.css ⇄ ALLOWED_TOKENS ⇄ palette)', () => {
@@ -143,5 +144,106 @@ describe('design gate: grep baseline only ratchets DOWN (M1 anti-grandfather)', 
     // violations (the M1 defect), so the assertion is deliberately a hard `<=`.
     const total = Object.values(textBase).reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(75);
+  });
+});
+
+describe('design gate: login identity accents (raw-gradient surfaces)', () => {
+  // The shine CTA and the appearance pill are the only console surfaces that paint
+  // text on a raw gradient rather than a semantic token pair, so the token-driven
+  // contrast gate above is structurally blind to them. This is their enforcement
+  // point: the palettes were derived by measurement, and this keeps that claim true.
+  it('every shine-CTA and pill composite clears 4.5:1 in both themes', () => {
+    const { ok, results } = checkLoginAccents();
+    const failures = results.filter((r) => !r.pass);
+    expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+    expect(ok).toBe(true);
+  });
+
+  it('measures the sweep and tint layers, not just the bare gradient', () => {
+    // The face alone clears the bar comfortably; the tight cases are the composites
+    // with the sweep blob and the overlay tint on top.
+    //
+    // Comparing `sweep+tint` against `bare` alone would NOT prove both layers are
+    // applied — dropping either one still leaves the combined figure lower than
+    // bare. So compare it against each single-layer minimum separately: it must be
+    // tighter than sweep-only (proving the tint contributes) AND tighter than
+    // bare+tint (proving the sweep does).
+    const { results } = checkLoginAccents();
+    const minOf = (re: RegExp) => {
+      const hits = results.filter((r) => re.test(r.name));
+      expect(hits.length, `no composites matched ${re}`).toBeGreaterThan(0);
+      return Math.min(...hits.map((r) => r.ratio ?? Infinity));
+    };
+    const bare = minOf(/\/bare\]/);
+    const bareTint = minOf(/\/bare\+tint\]/);
+    const sweep = minOf(/\/sweep\]/);
+    const sweepTint = minOf(/\/sweep\+tint\]/);
+
+    expect(sweepTint).toBeLessThan(bare);
+    expect(sweepTint).toBeLessThan(sweep); // the tint is contributing
+    expect(sweepTint).toBeLessThan(bareTint); // the sweep is contributing
+    expect(sweepTint).toBeGreaterThanOrEqual(TEXT_BAR);
+  });
+
+  it('populates every layer of the compositing model with a non-zero value', () => {
+    // The ratios cannot reveal a zeroed layer on their own — a dropped layer just
+    // makes the numbers look better. These are the two extraction points that can
+    // silently fail (the keyframe lookup and the declared tint opacity), so assert
+    // the extracted values directly.
+    const { layers } = checkLoginAccents();
+    expect(layers).toBeDefined();
+    expect(layers!.sweepPeak).toBeGreaterThan(0);
+    expect(layers!.sweepCoreAlpha).toBeGreaterThan(0);
+    expect(layers!.tintLight).toBeGreaterThan(0);
+    expect(layers!.tintDark).toBeGreaterThan(0);
+    // The dark tint is the heavier of the two; if that inverts, the per-theme
+    // lookup has gone stale.
+    expect(layers!.tintDark).toBeGreaterThan(layers!.tintLight);
+  });
+
+  it('verifies the layering premise its own exclusions rest on', () => {
+    // The gate excludes the halo and the flair because each paints behind an
+    // opaque child. That is an assumption about z-index, and an explicit z-index
+    // beats DOM order in both directions — so a structural DOM-order test cannot
+    // cover it. The gate reads the declarations and fails if the order inverts.
+    const { results } = checkLoginAccents();
+    const layering = results.filter((r) => /paints below the opaque/.test(r.name));
+    expect(layering.length).toBe(2);
+    for (const r of layering) expect(r.pass, r.name).toBe(true);
+  });
+
+  it('fails loudly rather than silently measuring fewer layers', () => {
+    // The gate lost the dark-theme tint once, when the CSS selectors were scoped
+    // and its lookups went stale — and it kept passing, with HIGHER ratios,
+    // because a missing opacity defaulted to 0. It now refuses to report at all
+    // if a layer the label sits on cannot be read, so assert that self-check is
+    // wired: a healthy run has real composites and no unreadable-layer result.
+    const { results } = checkLoginAccents();
+    expect(results.some((r) => /unreadable/.test(r.name))).toBe(false);
+    // Dark composites must exist AND be tighter than their light counterparts —
+    // the dark tint is heavier, so if it ever stops being applied this flips.
+    const dark = results.filter((r) => /shine face .*\[dark\/sweep\+tint\]/.test(r.name));
+    const light = results.filter((r) => /shine face .*\[light\/sweep\+tint\]/.test(r.name));
+    expect(dark.length).toBeGreaterThan(0);
+    expect(light.length).toBe(dark.length);
+    expect(Math.min(...dark.map((r) => r.ratio ?? Infinity))).toBeLessThan(
+      Math.min(...light.map((r) => r.ratio ?? Infinity)),
+    );
+  });
+
+  it('derives the pill label zone from the CSS, not from a hardcoded copy', () => {
+    // A mirrored geometry constant is how a gate goes quietly wrong: widen the
+    // pill and the measured zone silently stays put. The zone must be reported.
+    const { results } = checkLoginAccents();
+    const zones = results.filter((r) => /pill .* label zone \(\d+%-\d+%\)/.test(r.name));
+    expect(zones.length).toBe(2);
+    expect(results.some((r) => /geometry unreadable/.test(r.name))).toBe(false);
+  });
+
+  it('covers both pill states across the label cell only', () => {
+    const { results } = checkLoginAccents();
+    const zones = results.filter((r) => /pill (light|dark) label zone/.test(r.name));
+    expect(zones.length).toBe(2);
+    for (const zone of zones) expect(zone.ratio).toBeGreaterThanOrEqual(TEXT_BAR);
   });
 });
