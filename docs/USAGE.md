@@ -1026,6 +1026,92 @@ to audit *how* a verdict was reached and confirm the close/escalate was a
 deterministic policy outcome; use Timeline to see the sequence of events at a
 glance.
 
+### What the agent actually sees per event (case evidence fields)
+
+Every sample event reaches the model as a **bounded projection** of the raw record,
+never the whole record — a set of identity fields (id, timestamp, ip, user, host,
+rule, severity) plus the paths configured as **case evidence fields**. The default
+set is the ECS group that most often decides a verdict:
+
+```
+event.action  event.outcome  url.path  url.original  http.request.method
+http.response.status_code  user_agent.original  process.name
+process.command_line  file.path  destination.ip
+```
+
+Fields the record does not carry are simply not rendered, so a source with no HTTP
+context sees no empty-key noise.
+
+**One list drives three things**, deliberately: what the investigator and router are
+shown per event, what the `es_query` tool returns per row, and which fields a
+free-text `contains` search is matched against. A field the agent can see is
+therefore a field it can then search for, with three deliberate exceptions:
+
+- `http.response.status_code` is a `long` and `destination.ip` is an `ip`, so they
+  are shown but not free-text searched — a substring match against either is
+  meaningless, and asking a real cluster for one fails the whole query.
+- Free-text search fans out over at most 24 fields (a `multi_match` runs once per
+  field, so this is a real cost on a large index), while the projection carries up
+  to 64. Past roughly the 20th configured path, a field is shown but not searched.
+- A cluster spanning sources *unions* their evidence lists for display, while a
+  search runs against one source and uses that source's list alone.
+
+This is the fix for a real failure mode —
+a field present on the alert but absent from all three lists is invisible *and*
+unsearchable, and a zero-hit query for it reads back as evidence the data does not
+exist. `es_query` now also reports which fields its free text was matched against,
+so "0 hits" cannot be mistaken for "not in the record".
+
+**`contains` is a term match, not a substring scan** — it always was, and the result
+now says so. The free text is analysed and matched per field, so it finds a word in
+an analysed field (`message`, `event.original`) but matches an exact-value field
+(most ECS `keyword` paths, including `url.path`) only against its whole value.
+Searching `contains: "editpdf"` will not find `/mod/assign/feedback/editpdf/ajax.php`.
+That is precisely why the field belongs in the *projection*: the agent reads the
+record's own value directly rather than having to guess a query that would match it.
+The result summary states the semantics, so a zero is never read as an absence, and
+an `ids` lookup — which returns the requested documents verbatim and never applies
+`contains` — now says that outright instead of presenting an unfiltered result as a
+filtered one.
+
+Set the deployment-wide list in **Settings → General → Case evidence fields**. A
+single source can override it through its own `evidence_fields` config key —
+`POST /api/sources` (there is no per-source control in the Console for this yet) —
+and sources correlated into one cluster *union* their lists, so a narrow setting on
+one cannot blind another. Two special values:
+`[]` restores the identity-only projection, and `["*"]` sends the whole record
+bounded only by the per-event character budget beside it. Whenever that budget
+binds, the model is told which fields were withheld rather than being handed a
+silently shortened record; in whole-record mode it additionally offers rule
+*definition* metadata (`kibana.alert.rule.parameters`, `.note`, `.description` and
+siblings — identical on every alert the rule ever fires) last, so those are what get
+dropped rather than the URL that decides the case. In the default allowlist mode
+that ordering never arises: the list holds only what an operator asked for.
+
+The default is an allowlist rather than whole-record because a realistic alert
+serialises to roughly 10 KB, and twelve of those would be ~128 KB — several times the
+per-case token budget (`caps.max_tokens`), which would route every case to
+`needs_human` on cost alone. `["*"]` is there for deployments that want it and have
+raised the budget to match.
+
+Whole-record mode widens what the model is *shown*; it does not widen what
+Elasticsearch *matches on*, because an unbounded `multi_match` across every field of
+a large alert index is a real query cost on the shared read-only credential.
+
+The budget is *per event*, and the investigator reads up to 12 sample events, so a
+raised budget multiplies. Setting it near its 16,000 ceiling can exhaust the
+per-case token budget (`caps.max_tokens`) before the investigation finishes; that
+fails safe to `needs_human` rather than closing anything (#3), but it is a real cost.
+The default of 1,200 leaves comfortable headroom.
+
+Not sure whether your alerts carry these fields? **Sources → your source → Advanced
+— field mapping** → paste one record → *Suggest mappings*: the response's
+`suggested_evidence_fields` lists exactly which default evidence paths that record
+has. See `docs/TROUBLESHOOTING.md` §M2 for the symptom this diagnoses.
+
+Everything in this projection is log-derived and stays **UNTRUSTED-fenced** (#9),
+including — in whole-record mode — the record's own field *names*.
+
 ---
 
 ## 12. Run a playbook on a case + threat context
@@ -2045,6 +2131,17 @@ and **Organization → Advanced** (the rest, incl. the Round-10 autopilot knobs,
 | Auto-forward risk floor | `auto_investigate_risk_floor` | **70** (Round 10) | the deterministic risk gate for `events`-role clusters — §33 |
 | Autopilot profile | `autopilot_profile` | `"balanced"` (Round 10) | `conservative` \| `balanced` \| `aggressive` — moves the risk floor + daily budget + per-tick cap together, §33 |
 | Auto-forward allowlist | `auto_forward_allowlist` | `[]` | comma-separated rule values; `*` = all; forwards regardless of risk |
+
+### Case evidence fields
+
+**General → Case evidence fields.** What the agent is shown per event, what
+`es_query` returns per row, and what free-text search matches against — one list,
+three surfaces (§11).
+
+| Field | Pref | Default | Notes |
+|---|---|---|---|
+| Evidence fields | `evidence_fields` | the 11-path ECS set (§11) | dotted paths added to each event's identity keys; `[]` = identity only, `["*"]` = the whole record; per-source override via that source's `evidence_fields` config key (co-correlated sources union) |
+| Evidence budget per event | `evidence_max_chars_per_event` | 1200 | serialised characters per event (0–16000). When it binds, the withheld field names are reported to the model; in whole-record (`["*"]`) mode, rule *definition* metadata is offered last and so is dropped first. Multiplies across the 12 sample events an investigation reads |
 
 ### Caps & kill switch
 

@@ -1375,6 +1375,11 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
   const [analyzing, setAnalyzing] = React.useState(false);
   const [analyzeError, setAnalyzeError] = React.useState<string | null>(null);
   const [analyzedFields, setAnalyzedFields] = React.useState<string[]>([]);
+  // Which of the default case-evidence paths the pasted record carries — the answer
+  // to "do MY alerts carry the fields that decide the case?". Every entry is one of
+  // the backend's own constants matched against the sample, never a path echoed back
+  // from the untrusted record.
+  const [evidencePresent, setEvidencePresent] = React.useState<string[]>([]);
 
   const [testing, setTesting] = React.useState(false);
   // Test-connection runs a REAL connector against a live source — block it in demo.
@@ -1446,6 +1451,9 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
     try {
       const res = await api.sources.analyzeSample(existing.id, parsed);
       setAnalyzedFields(Array.isArray(res.fields) ? res.fields : []);
+      setEvidencePresent(
+        Array.isArray(res.suggested_evidence_fields) ? res.suggested_evidence_fields : [],
+      );
       const sugg = res.suggested_mappings || {};
       setFieldMappings((prev) => {
         const next: FieldMappingsExtra = { ...prev };
@@ -1803,6 +1811,25 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
                   Detected {analyzedFields.length} field
                   {analyzedFields.length === 1 ? '' : 's'}; suggestions pre-filled below where
                   empty.
+                </p>
+              ) : null}
+              {analyzedFields.length ? (
+                <p className="text-xs text-muted-foreground">
+                  {evidencePresent.length ? (
+                    <>
+                      Carries {evidencePresent.length} case-evidence field
+                      {evidencePresent.length === 1 ? '' : 's'} the agent reads:{' '}
+                      {/* These are the backend's own constants, not sample-derived. */}
+                      <span className="font-mono">{evidencePresent.join(', ')}</span>.
+                    </>
+                  ) : (
+                    <>
+                      This record carries none of the default case-evidence fields. If the
+                      field that decides your rule is here under another name, add its path
+                      under Settings &rsaquo; General &rsaquo; Case evidence fields, or set{' '}
+                      <span className="font-mono">evidence_fields</span> on this source.
+                    </>
+                  )}
                 </p>
               ) : null}
             </div>

@@ -333,6 +333,21 @@ class Cluster(BaseModel):
             return max(0.0, (self.last_seen_millis - self.first_seen_millis) / 1000.0)
         return 0.0
 
+    def contributing_source_ids(self) -> list[str]:
+        """The distinct sources whose events are in this cluster, order-stable.
+
+        ``source_ids`` is populated by the cross-source pass and is usually empty on
+        a single-source cluster, which still carries a scalar ``source_id``; this
+        reconciles both into one list so a caller resolving per-source configuration
+        (e.g. ``Preferences.evidence_fields_for``) does not have to know which of the
+        two provenance fields a given ingest path happened to fill in.
+        """
+        out: list[str] = []
+        for value in [*self.source_ids, self.source_id]:
+            if value and value not in out:
+                out.append(value)
+        return out
+
     def primary_rule(self) -> str | None:
         """The rule that best identifies this cluster, for per-rule model selection
         (C3-6b). Prefers the deterministic ``trigger_reason.rule_value`` (the

@@ -16,6 +16,7 @@ from ..constants import ActionType, Role, TriageBucket
 from ..llm.gateway import GatewayError, LLMGateway
 from ..models import Cluster, EnrichmentResult
 from ..utils import extract_json, truncate
+from ..evidence_fields import ROUTER_EVIDENCE_MAX_CHARS
 from .prompts import ROUTER_SYSTEM, render_cluster
 
 logger = logging.getLogger("tlsoc.agents.router")
@@ -46,7 +47,19 @@ class Router:
         # Per-rule model selection (C3-6b): resolve via the cluster's primary rule;
         # identical to ``prefs.router_model`` when no per-rule override exists.
         model_cfg = prefs.model_for_rule(Role.ROUTER, cluster.primary_rule())
-        user = render_cluster(cluster, enrichment, None, max_events=6)
+        # Same shared evidence projection as the investigator (one definition, so
+        # triage and investigation cannot disagree about what the alert contains),
+        # resolved from the operator's config for this cluster's own sources.
+        user = render_cluster(
+            cluster, enrichment, None, max_events=6,
+            evidence_fields=prefs.evidence_fields_for(cluster.contributing_source_ids()),
+            # Same evidence FIELDS as the investigator; a tighter per-event ceiling,
+            # because cheap triage runs on every cluster.
+            evidence_max_chars=min(
+                prefs.evidence_budget_for(cluster.contributing_source_ids()),
+                ROUTER_EVIDENCE_MAX_CHARS,
+            ),
+        )
         messages = [
             {"role": "system", "content": ROUTER_SYSTEM},
             {"role": "user", "content": user},

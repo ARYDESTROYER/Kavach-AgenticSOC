@@ -10,10 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Sequence
 
 from ..constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from ..engine.precedent import PrecedentSignal
+from ..evidence_fields import (
+    DEFAULT_EVIDENCE_FIELDS,
+    DEFAULT_EVIDENCE_MAX_CHARS_PER_EVENT,
+    is_wildcard,
+    project_evidence,
+)
 from ..models import Cluster, EnrichmentResult, MemoryEntry, RagChunk
 from ..playbooks.manifest import MAX_PLAYBOOK_PROMPT_CHARS
 from ..tools.rag import TRUST_MODEL_UNCONFIRMED, is_trusted_knowledge
@@ -272,7 +278,14 @@ def render_cluster(cluster: Cluster, enrichment: EnrichmentResult | None,
                    rag_chunks: list[RagChunk] | None, max_events: int = 12,
                    playbook: str | None = None,
                    memory: list[MemoryEntry] | None = None,
-                   precedent: "PrecedentSignal | None" = None) -> str:
+                   precedent: "PrecedentSignal | None" = None,
+                   evidence_fields: Sequence[str] | None = None,
+                   evidence_max_chars: int | None = None) -> str:
+    # ``evidence_fields``/``evidence_max_chars`` default to the module constants
+    # rather than to the OLD narrow behaviour, so a caller that does not pass them
+    # still gets the widened evidence — an invisible decision field is exactly what
+    # this seam must not reintroduce by omission. Both call sites (router, and the
+    # investigator) pass the operator's per-source resolved values on top.
     lines: list[str] = []
     memory_block = render_memory(memory)
     if memory_block:
@@ -331,18 +344,49 @@ def render_cluster(cluster: Cluster, enrichment: EnrichmentResult | None,
             f"country={country} sources={json.dumps(fenced_sources, default=str)[:600]}"
         )
 
-    lines.append("\n## Sample events (raw log data — UNTRUSTED)")
+    # Sample events. The heading states the projection instead of claiming to be
+    # "raw log data": for years this block shipped a fixed seven-key slice of each
+    # record under that label, so a model told it was looking at the raw log
+    # truthfully reported "no HTTP or execution context" for an alert that carried
+    # ``url.path`` — the one field its detection rule turns on. The field set is now
+    # the shared, operator-configurable definition in ``app/evidence_fields.py``, so
+    # what the model SEES here and what it can then SEARCH for via ``es_query``
+    # cannot drift apart again.
+    #
+    # fence_block, NOT the per-value fence(): fence() hard-cuts at 600 chars, which
+    # a widened projection exceeds — silently, which is the exact failure mode this
+    # block is being fixed for. fence_block scrubs forged markers in every leaf AND
+    # again over the serialised form, so the attacker-controlled KEYS that wildcard
+    # mode can introduce are neutralised too (#9). The real bound is the accounted,
+    # self-reporting per-event budget applied by ``project_evidence``.
+    fields = DEFAULT_EVIDENCE_FIELDS if evidence_fields is None else evidence_fields
+    budget = (
+        DEFAULT_EVIDENCE_MAX_CHARS_PER_EVENT
+        if evidence_max_chars is None
+        else evidence_max_chars
+    )
+    shape = (
+        "each raw record, bounded by a size budget"
+        if is_wildcard(fields)
+        else "a bounded projection of each raw record, not the whole record"
+    )
+    lines.append(f"\n## Sample events (UNTRUSTED — {shape})")
     for ev in cluster.member_events[:max_events]:
-        compact = {
-            "id": ev.id,
-            "ts": ev.source.get("@timestamp"),
-            "ip": ev.ip,
-            "user": ev.user,
-            "host": ev.host,
-            "rule": ev.rule,
-            "severity": ev.severity,
-        }
-        lines.append(f"- {fence(json.dumps(compact, default=str))}")
+        compact = project_evidence(
+            ev.source,
+            fields,
+            base={
+                "id": ev.id,
+                "ts": ev.source.get("@timestamp") if isinstance(ev.source, dict) else None,
+                "ip": ev.ip,
+                "user": ev.user,
+                "host": ev.host,
+                "rule": ev.rule,
+                "severity": ev.severity,
+            },
+            max_chars=budget,
+        )
+        lines.append(f"- {fence_block(compact)}")
 
     if rag_chunks:
         # Split prior analyst decisions (resolved cases) into their own baseline

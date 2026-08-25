@@ -168,6 +168,13 @@ export interface AnalyzeSampleResult {
     rule_field: string;
   }> &
     Record<string, string>;
+  /**
+   * Which of the default case-evidence paths this sample record actually carries —
+   * the answer to "do MY alerts carry the fields that decide the case?". Every entry
+   * is one of the backend's own constants matched against the sample, never a path
+   * echoed back from the untrusted record.
+   */
+  suggested_evidence_fields?: string[];
   fields: string[];
 }
 

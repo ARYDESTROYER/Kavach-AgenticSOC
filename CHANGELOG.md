@@ -25,6 +25,71 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **The investigator now receives the alert fields that decide the case.** A field
+  report from a live deployment traced a detection rule that had never auto-closed
+  across ~600 cases to three independent hardcoded field allowlists, none of which
+  contained the field its verdict turns on. The prompt seam rendered a fixed 7-key
+  projection of every sample event under a heading claiming to be "raw log data";
+  `es_query` returned a fixed 9-key row, so an investigator that *noticed* the gap
+  could not query its way out of it; and the connector matched free-text `contains`
+  against four fields, so the missing evidence was not even searchable. `url.path`,
+  `http.request.method` and `user_agent.original` were present on the alert
+  document, survived OCSF normalisation intact, and sat in memory on
+  `RawEvent.source` at prompt-construction time — and were discarded three separate
+  times. The agent's "no HTTP or execution context" was a truthful report about
+  inputs that had been emptied upstream of it, and its zero-hit `contains:"http"`
+  query was then recorded as positive evidence that no HTTP context existed.
+  A single shared definition (`backend/app/evidence_fields.py`) now drives all
+  three surfaces, defaulting to the ECS set that most often carries the verdict
+  (`event.action`, `event.outcome`, `url.path`, `url.original`,
+  `http.request.method`, `http.response.status_code`, `user_agent.original`,
+  `process.name`, `process.command_line`, `file.path`, `destination.ip`) on top of
+  each surface's existing identity keys, so the previous projection is a strict
+  subset and no deployment loses a field it had. A field the model is shown is now
+  a field it can search for, by construction — bar three documented exceptions (the
+  two typed paths that cannot meaningfully be text-matched and would have failed the
+  whole query, the 24-field search fan-out cap against a 64-field projection, and a
+  multi-source cluster whose display list is a union while a search runs against one
+  source). An import-identity test fails if the three surfaces drift apart again.
+  Existing deployments pick this up on load with no migration.
+- **A free-text log query can no longer be read back as proof the data is absent.**
+  `es_query` now reports which fields its `contains` filter was actually matched
+  against, in `data` and in the result summary the model reads (`meta` is not shown
+  to the model), so a zero-hit result reads as "no match in *these* fields" rather
+  than "the record does not carry this". It also states the match SEMANTICS — the
+  free text is an analysed term match, never a substring scan, so an exact-value
+  field matches only its whole value — and an `ids` lookup, which returns the
+  requested documents verbatim and never applies `contains`, now says so outright
+  instead of presenting an unfiltered result as a filtered one. The connector's KQL
+  rendering — the operator's Discover deep-link and the audited `query_text` — now
+  names every field the query covered instead of claiming `message` alone, and drops
+  the `*…*` wildcards it never performed, so for the first time it is a faithful
+  description of the query that ran and an operator verifying an agent's finding
+  reproduces it exactly.
+- **Evidence is now bounded by an accounted budget instead of a blind cut.** Sample
+  events were fenced with the per-value `fence()`, which hard-truncates at 600
+  characters with no notice. Each projected event is now bounded by a configurable
+  per-event character budget (default 1200) that drops rule *definition* metadata
+  (`kibana.alert.rule.parameters`/`.note`/`.description` and siblings) before
+  anything evidential, names what it withheld back to the model under
+  `_omitted_fields`, and always keeps the identity keys — and the notice itself,
+  which is what a starved projection would otherwise swallow along with the evidence.
+  In whole-record mode it offers rule *definition* metadata last, so those blobs are
+  what a binding budget drops rather than the URL that decides the case, and it
+  reports a record too large to walk as `_record_truncated` so "not present here" is
+  never read as "not on the record". Record-derived keys are length-bounded like
+  values, since in that mode the key is attacker-sized too. The block is fenced with
+  `fence_block`, which scrubs forged markers per leaf *and* over the serialised
+  form — so those attacker-controlled keys are neutralised as well (#9). The
+  `es_query` row budget applies only where a model consumes the rows: Chat renders
+  them as an operator table and computes its facets over them, so it keeps the whole
+  result.
+
+  The shipped default is the curated allowlist rather than whole-record, deliberately:
+  a realistic alert serialises to ~10 KB and twelve of those would be several times
+  the per-case token budget, routing every case to `needs_human` on cost alone.
+  `["*"]` is available for deployments that raise the budget to match.
+
 - **The MFA enrollment QR code is now actually scannable.** The hand-rolled QR encoder
   carried three ISO/IEC 18004 conformance defects: it never placed the two
   version-information blocks required from symbol version 7 upward (every real
@@ -249,6 +314,18 @@ and, just as importantly, makes each of these conditions a state an operator can
   untunable-by-`n` with the structural reason instead of being drafted.
 
 ### Added
+
+- **Case evidence fields are configurable, globally and per source.**
+  `Preferences.evidence_fields` / `evidence_max_chars_per_event` (Settings ›
+  General › Case evidence fields) and the matching per-source
+  `SourceInstance.config` keys let a deployment whose alerts carry decision-relevant
+  fields the ECS default does not name surface them without a code change. `["*"]`
+  ships the whole record bounded only by the budget; `[]` restores the previous
+  narrow projection. Sources co-correlated into one cluster *union* their lists, so
+  one source's narrow setting cannot blind another. `POST /api/sources/{id}/analyze-sample`
+  additionally answers "do my alerts carry the fields that decide the case?" via
+  `suggested_evidence_fields` — matched against the backend's own constants, so no
+  path from the untrusted sample is ever echoed back.
 
 - **The landing dashboard answers "how much is the agent actually closing?"** The
   Active Risk Index — a number no percentage could honestly qualify — gives up its

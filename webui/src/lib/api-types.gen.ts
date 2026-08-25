@@ -4590,11 +4590,15 @@ export interface paths {
          * Analyze Source Sample
          * @description Suggest field mappings from a pasted SAMPLE record (F9; gated by sources:manage).
          *
-         *     Returns ``{suggested_mappings, fields}`` — the suggested field-name overrides
-         *     (``source_ip_field``/``user_field``/``host_field``/``message_field``/
-         *     ``severity_field``/``rule_field``/...) and the flattened path inventory the UI
+         *     Returns ``{suggested_mappings, suggested_evidence_fields, fields}`` — the
+         *     suggested field-name overrides (``source_ip_field``/``user_field``/``host_field``/
+         *     ``message_field``/``severity_field``/``rule_field``/...), which of the default
+         *     case-evidence paths this record actually carries (the answer to "do my alerts
+         *     carry the fields that decide the case?"), and the flattened path inventory the UI
          *     renders. Pure heuristic (no LLM/network). The sample is SANITIZED (flattened to
-         *     paths only) and is NEVER persisted to the config doc / secret tier (#9).
+         *     paths only) and is NEVER persisted to the config doc / secret tier (#9);
+         *     ``suggested_evidence_fields`` is stricter still — every entry is one of the
+         *     backend's own constants matched against the sample, never a path echoed back.
          */
         post: operations["analyze_source_sample_api_sources__source_id__analyze_sample_post"];
         delete?: never;

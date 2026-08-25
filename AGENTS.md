@@ -169,6 +169,15 @@ backend/app/
                      `retrieval_observation_status` proves a completed measurement,
                      and `knowledge_used` retains its backward-compatible array shape
   utils.py           dotted_get, time helpers, extract_json, coerce_float, ...
+  evidence_fields.py The ONE definition of which raw-record paths count as case
+                     evidence: the ECS default projection, the wildcard/whole-record
+                     mode, the bulky rule-METADATA drop order, the per-event size
+                     budget, and the free-text search-field derivation. Imported by
+                     the prompt seam (agents/prompts.render_cluster), the es_query
+                     tool and the connector's `contains` filter so the three cannot
+                     drift; overridable globally (Preferences) and per source. It
+                     never fences — callers pass the projection to `fence_block` (#9)
+                     — and is per-cluster evidence only, never an #7 aggregate surface
   ocsf/              OCSF canonical schema: model (OCSFEvent + unmapped/raw_data) ·
                      ecs (ECS→OCSF mapping) · generic_to_ocsf
   connectors/        base (Connector/PullConnector/PushReceiver SPI) · registry
