@@ -16,6 +16,7 @@ from typing import Any
 
 from ..config import Preferences
 from ..constants import (
+    DEFAULT_SEVERITY_SCALE_MAX,
     OCSF_CAT_FINDINGS,
     OCSF_CAT_IAM,
     OCSF_CAT_NETWORK,
@@ -80,17 +81,23 @@ def _classify(src: dict[str, Any]) -> tuple[int, int]:
     return OCSF_CAT_FINDINGS, OCSF_CLASS_DETECTION_FINDING
 
 
-def _severity_scale(prefs: Any, connector_id: str | None) -> str:
-    """Resolve the source's declared severity scale so score_to_severity_id does not
-    magnitude-inflate a genuine LOW 0..100 severity (audit #36). Falls back to the legacy
-    heuristic ('unknown') when the source can't be resolved. Lazy import keeps ocsf/ from
-    depending on engine/ at import time; never raises."""
+def _severity_scale(prefs: Any, connector_id: str | None) -> float:
+    """Resolve the source's DECLARED severity-ladder ceiling so score_to_severity_id does
+    not magnitude-inflate a genuine LOW 0..100 severity (audit #36).
+
+    An unresolvable source — no connector id, no matching ``SourceInstance``, or a lookup
+    that raised — resolves to ``DEFAULT_SEVERITY_SCALE_MAX``, the identity projection. It
+    deliberately does NOT fall back to the retired ``raw <= 10 ? raw*10`` guess: an
+    already-canonical OCSF score of 8 would be inflated to 80 (High) by it, and the
+    success arm of this very function no longer does that, so the two arms would disagree
+    on the same record. Lazy import keeps ocsf/ from depending on engine/ at import time;
+    never raises."""
     try:
         from ..engine.priority import severity_scale_for_source
 
         return severity_scale_for_source(prefs.source_by_id(connector_id) if connector_id else None)
     except Exception:  # noqa: BLE001 — normalisation must never break on a scale lookup
-        return "auto"
+        return DEFAULT_SEVERITY_SCALE_MAX
 
 
 def _observables(ip: str | None, user: str | None, host: str | None) -> list[Observable]:

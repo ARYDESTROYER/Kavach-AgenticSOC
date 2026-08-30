@@ -2979,19 +2979,26 @@ class AppState:
         # preserves deterministic case ids while guaranteeing the presenter sees the
         # truthful invariant ``events >= clusters >= cases`` from the first paint.
         try:
-            from .constants import SEVERITY_BANDS
             from .engine import noise_counters as nc
+            from .engine.priority import band_of_case
             from .utils import parse_es_timestamp
 
             ingested = nc.count_events_by_band(preseed_raws, "ocsf_0_100")
             clustered = nc.zero_bands()
             case_events = nc.zero_bands()
             cutoff_ms = now_ms - 24 * 60 * 60 * 1000
+            try:
+                band_prefs = demo_stack._demo_prefs()  # noqa: SLF001 — same module owner
+            except Exception:  # noqa: BLE001 — banding degrades, never blocks demo enable
+                band_prefs = None
             for case in seeded_counter_cases:
                 created = parse_es_timestamp(case.created_at)
                 if created is None or to_millis(created) < cutoff_ms:
                     continue
-                band = case.severity_band if case.severity_band in SEVERITY_BANDS else "info"
+                # Resolve the band (persisted-then-derive-then-info) instead of reading
+                # the read-time-only attribute, which is unset on most seeded cases and
+                # dumped their whole clustered/case-event volume into "info".
+                band = band_of_case(case, band_prefs)
                 clustered[band] += 1
                 members = case.member_event_keys or case.member_event_ids
                 case_events[band] += max(1, len(members))

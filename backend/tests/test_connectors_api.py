@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -175,6 +176,83 @@ def test_upsert_preserves_configured_secrets_and_created_at(client):
     assert src["configured_secrets"] == ["es_api_key"]  # secret-name metadata survives (F1)
     assert src["created_at"] == created0  # creation date unchanged (F2)
     assert src["enabled"] is False
+
+
+def test_upsert_carries_forward_declared_severity_scale_max(client):
+    """Regression: a bare re-upsert must NOT wipe the DECLARED severity-ladder ceiling.
+
+    `severity_scale_max` is set from the source editor, but the Enabled toggle / bulk
+    enable-disable / make-primary paths post a body WITHOUT it — exactly the shape that
+    silently emptied `configured_secrets` before Round 9. Wiping the ceiling would
+    re-band every one of that source's cases against the 100 identity, so omission must
+    carry the stored value forward while an explicit `null` still clears it on purpose.
+    """
+    body = {
+        "id": "sev-x",
+        "source_type": "elasticsearch",
+        "display_name": "ELK",
+        "enabled": True,
+        "config": {},
+    }
+    # declare a native 0-10 ladder
+    r = client.post("/api/sources", json={**body, "severity_scale_max": 10})
+    assert r.status_code == 200
+    src = next(s for s in r.json()["sources"] if s["id"] == "sev-x")
+    assert src["severity_scale_max"] == 10.0
+
+    # a bare re-upsert (enable/disable toggle) OMITS the key -> the declaration survives
+    r2 = client.post("/api/sources", json={**body, "enabled": False})
+    assert r2.status_code == 200
+    src2 = next(s for s in r2.json()["sources"] if s["id"] == "sev-x")
+    assert src2["severity_scale_max"] == 10.0
+    assert src2["enabled"] is False
+
+    # an EXPLICIT null is a deliberate clear -> undeclared (identity projection)
+    r3 = client.post("/api/sources", json={**body, "severity_scale_max": None})
+    assert r3.status_code == 200
+    src3 = next(s for s in r3.json()["sources"] if s["id"] == "sev-x")
+    assert src3["severity_scale_max"] is None
+
+    # a non-positive ceiling can never divide -> rejected at the API boundary
+    assert client.post(
+        "/api/sources", json={**body, "severity_scale_max": 0}
+    ).status_code == 422
+    assert client.post(
+        "/api/sources", json={**body, "severity_scale_max": -5}
+    ).status_code == 422
+    # ...and so is a NON-FINITE one. `1e309` is a legal JSON number that parses to `inf`,
+    # which passes every `> 0` test, divides without raising, would read every severity
+    # from this source as Informational while still calling the band source-asserted, and
+    # would re-serialize into the stored config as the non-standard token `Infinity`.
+    # (the literal is spliced in as TEXT: Python's own json encoder refuses to emit it)
+    overflowing = json.dumps(body)[:-1] + ', "severity_scale_max": 1e309}'
+    assert client.post(
+        "/api/sources", content=overflowing,
+        headers={"Content-Type": "application/json"},
+    ).status_code == 422
+    # the earlier explicit clear is still what is stored — nothing leaked through
+    after = client.get("/api/sources").json()["sources"]
+    assert next(s for s in after if s["id"] == "sev-x")["severity_scale_max"] is None
+
+
+def test_upsert_seeds_then_respects_declared_ceiling(client):
+    """A connector we ship knowledge of is SEEDED with a ceiling the operator may edit.
+
+    The seed is written into the source's own editable field at creation (never consulted
+    as a runtime per-vendor branch), and a declaration always wins over it."""
+    r = client.post("/api/sources", json={
+        "id": "wz-1", "source_type": "wazuh", "config": {},
+    })
+    assert r.status_code == 200
+    seeded = next(s for s in r.json()["sources"] if s["id"] == "wz-1")
+    assert seeded["severity_scale_max"] == 16.0
+
+    r2 = client.post("/api/sources", json={
+        "id": "wz-2", "source_type": "wazuh", "config": {}, "severity_scale_max": 15,
+    })
+    assert r2.status_code == 200
+    declared = next(s for s in r2.json()["sources"] if s["id"] == "wz-2")
+    assert declared["severity_scale_max"] == 15.0
 
 
 def test_pull_secret_rotation_rebuilds_live_clients(client, monkeypatch):

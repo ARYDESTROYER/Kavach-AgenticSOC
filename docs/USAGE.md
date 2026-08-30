@@ -175,6 +175,20 @@ editor renders a validated form from that connector's `auth_fields` +
   / RabbitMQ / NATS / MQTT / Redis Streams / S3 / GCS / Azure Blob / file): supply
   the transport's auth + config (e.g. a webhook `auth_mode` + `token`, or a
   syslog `bind_host` / `port` / `protocol`).
+- **The severity ladder** (any source, *Advanced → Severity ladder maximum*):
+  `severity_scale_max` is the highest value this source can put in its `severity_field`.
+  Every severity is then projected onto the canonical 0–100 scale as
+  `min(100, max(0, raw / severity_scale_max × 100))` before it is banded — one number
+  describes any native ladder, so no read path ever asks what product a source is.
+  **Declare it whenever the source does not rate severity on 0–100** (e.g. `10` for a
+  0–10 ladder, `16` for a 0–16 rule level). Leave it blank and the number is read as-is
+  on 0–100; a narrow ladder left undeclared reads roughly ten times too low on the case
+  severity chip, in the Noise-Reduction funnel and against a feed's `severity_floor`.
+  One connector ships a seeded default, applied only where you have declared nothing —
+  your own declaration always wins. A raw severity **above** the declared ceiling is
+  proof the declaration is wrong: the band clamps at 100, the case's `severity_source`
+  becomes `source_out_of_range` instead of `source_asserted`, and one log line names the
+  source, its ceiling and the offending value.
 
 For encrypted Syslog, choose `protocol: tls`, mount the server certificate and key
 inside the backend container, and enter those container paths as `tls_cert_file` and
@@ -2453,7 +2467,7 @@ sub-index out of a broad `events` pattern; longest-pattern-wins precedence).
 | `enabled` | turn a feed off without deleting it |
 | `query` | a connector-native filter applied to just this feed (operator-**TRUSTED**) |
 | `field_mapping` / `message_field` | per-feed overrides (fall back to the source-level mapping) |
-| `severity_floor` | OCSF `severity_id` 1–6; below it an event is **not auto-forwarded** but is **still correlated + live-tailed** (never dropped, #4) |
+| `severity_floor` | OCSF `severity_id` 1–6; below it an event is **not auto-forwarded** but is **still correlated + live-tailed** (never dropped, #4). The raw severity is mapped to that 1–6 id through the SOURCE's declared `severity_scale_max` (§Stage 2), so declare that ceiling or a narrow ladder is under-read against this floor |
 | `correlate` | the per-feed "Auto-Correlate" toggle (legacy `auto_correlate` maps onto this); `false` → candidate-only (manual triage), still correlated |
 | `auto_investigate` | `null` → derived from role/legacy (`alerts` or legacy `auto_correlate`); set `true`/`false` to pin it |
 

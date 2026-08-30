@@ -16,6 +16,7 @@ This module defines the schema and the loader for the secret tier. The preferenc
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Literal, Mapping, Sequence
@@ -2242,6 +2243,25 @@ def upgrade_feed(raw: Any) -> dict[str, Any]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# SEEDED severity-ladder ceiling — the suite's ONE piece of built-in vendor severity
+# knowledge, and the ONLY place it appears.
+#
+# It is a SEED, not behaviour: it is written once into a source's editable
+# ``severity_scale_max`` when that source is created (or adopted on its next load, if
+# it has no declaration yet), and from that moment every severity surface reads the
+# declared NUMBER. No read path anywhere branches on ``source_type``, and this is not a
+# lookup table — there is exactly one seeded connector, and an operator who disagrees
+# simply declares a different ceiling, which the seed then leaves alone.
+#
+# Wazuh asserts severity as ``rule.level`` on a 0..16 ladder (level 12 is CRITICAL there,
+# which a 0..100 reading would mislabel LOW). Sourced from the Wazuh rules
+# classification documentation; operators running a customised rule set should declare
+# their own ceiling.
+SEEDED_SCALE_SOURCE_TYPE = SourceType.WAZUH
+SEEDED_SEVERITY_SCALE_MAX = 16.0
+
+
 class SourceInstance(BaseModel):
     """One configured log source (a connector instance).
 
@@ -2271,8 +2291,71 @@ class SourceInstance(BaseModel):
     is_primary: bool = False
     config: dict[str, Any] = Field(default_factory=dict)        # non-secret connector config
     configured_secrets: list[str] = Field(default_factory=list)  # secret field names set (not values)
+    # The operator-DECLARED ceiling of this source's NATIVE severity ladder — the single
+    # number that describes any ladder (0..10, 0..16, 0..1000). Every severity surface
+    # projects a raw source severity through ONE formula,
+    # ``min(100, max(0, raw / severity_scale_max * 100))``
+    # (:func:`app.ocsf.model.project_severity_magnitude`).
+    #
+    # ``None`` means UNDECLARED: the projection then uses
+    # ``constants.DEFAULT_SEVERITY_SCALE_MAX`` (100), i.e. the IDENTITY on the canonical
+    # OCSF ``severity_score`` every normaliser already emits. That is the honest default —
+    # with no declaration there is no evidence the number means anything other than what
+    # it says, and guessing a ladder from a value's magnitude is the bug this field
+    # retires. Optional + defaulted, so EVERY already-stored source config still
+    # validates unchanged (no migration, no backfill).
+    #
+    # Strictly positive AND FINITE: a zero/negative ceiling can never divide, and an
+    # infinite one would silently read every severity as 0 while still claiming the
+    # source asserted it (see the coercing validator below, and the fail-open guard
+    # inside the projection itself).
+    severity_scale_max: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     created_at: str = Field(default_factory=iso_now)
     updated_at: str = Field(default_factory=iso_now)
+
+    @field_validator("severity_scale_max", mode="before")
+    @classmethod
+    def _coerce_severity_scale_max(cls, value: Any) -> Any:
+        """Fail-open coercion of a stored ceiling: anything unusable reads UNDECLARED.
+
+        A hand-edited / legacy config carrying ``0``, a negative, ``""``, a non-numeric
+        or a NON-FINITE (``inf``/``nan``) ceiling must not make the whole Preferences
+        document unloadable — it degrades to ``None`` (undeclared → the default 100
+        identity projection), exactly as if the operator had never declared one. The
+        strict ``gt=0``/``allow_inf_nan=False`` bounds above still reject an explicit bad
+        value on the typed API boundary (``SourceUpsert``).
+
+        ``inf`` matters as much as ``0`` here: it passes every ``> 0`` test, divides
+        without raising, and would read EVERY severity from that source as ``0.0``
+        (Informational) while the API echoed the ceiling back as JSON ``Infinity``."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(num) or num <= 0:
+            return None
+        return num
+
+    @model_validator(mode="after")
+    def _seed_severity_scale_max(self) -> "SourceInstance":
+        """SEED (never override) the declared ceiling for a connector we ship knowledge of.
+
+        This is where the suite's only piece of vendor severity knowledge lives, and it
+        lives here DELIBERATELY: at source construction/validation time, as a seeded
+        DEFAULT the operator may edit, NOT as a runtime lookup table consulted on every
+        read. Nothing downstream branches on ``source_type`` any more — the projection
+        reads one number.
+
+        Idempotent + no-op-safe: it fires only when the ceiling is still UNDECLARED, so
+        it seeds a newly created source AND adopts an already-stored one on its next
+        load, and it can never overwrite an operator's own declaration. It is not a
+        migration: no stored document is rewritten until the operator next saves that
+        source. To choose a different ceiling, declare one; the seed then stands aside."""
+        if self.severity_scale_max is None and self.source_type == SEEDED_SCALE_SOURCE_TYPE:
+            object.__setattr__(self, "severity_scale_max", SEEDED_SEVERITY_SCALE_MAX)
+        return self
 
     def index_patterns(self) -> list[IndexPattern]:
         """The configured FEEDS for this source (canonical parser).
@@ -2844,6 +2927,13 @@ class Preferences(BaseModel):
     rule_name_field: str = "rule.name"
     severity_field: str = "event.severity"
     severity_threshold: float = 0.0         # min numeric severity in scope
+    # NOTE — there is deliberately NO Preferences-level severity ceiling. A source's
+    # native severity ladder is declared per SOURCE (``SourceInstance
+    # .severity_scale_max``), because that is the only tier EVERY severity surface can
+    # read: the ingest paths (OCSF normalisation, the Noise-Reduction counters, the
+    # per-feed severity floor) resolve the ceiling from the event's own source, and a
+    # global fallback they could not see would make the case chip disagree with the
+    # funnel for the same raw number. Undeclared means the identity projection (100).
     in_scope_rules: list[str] = Field(default_factory=list)   # empty == all rules
     excluded_rules: list[str] = Field(default_factory=list)
 

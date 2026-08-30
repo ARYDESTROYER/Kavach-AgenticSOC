@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -12,7 +13,7 @@ from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
 from ..build_identity import build_stamp
@@ -561,6 +562,34 @@ class SourceUpsert(BaseModel):
     ingest_mode: str | None = None       # defaults to the connector's first mode
     is_primary: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
+    # The operator-DECLARED ceiling of this source's native severity ladder (see
+    # ``config.SourceInstance.severity_scale_max``). Three-state on the wire, which is why
+    # it is declared here as well as on the stored model:
+    #   * OMITTED       → keep whatever the stored source already declares (carry-forward).
+    #   * a number > 0  → declare that ceiling.
+    #   * explicit null → CLEAR the declaration (undeclared → the 100 identity projection,
+    #                     or the connector's seeded default where one exists).
+    # ``upsert_source`` distinguishes the first two cases via ``model_fields_set``.
+    #
+    # Strict at the boundary: ``0``/negative 422, and so does a NON-FINITE literal. An
+    # overflowing JSON number such as ``1e309`` parses to ``inf``, which passes ``> 0``,
+    # divides without raising, would read every severity from that source as
+    # Informational, and would re-serialize as the non-standard token ``Infinity``.
+    severity_scale_max: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("severity_scale_max", mode="before")
+    @classmethod
+    def _non_finite_ceiling_is_not_a_number(cls, value: Any) -> Any:
+        """Render a non-finite ceiling as TEXT so the boundary can 422 it.
+
+        ``allow_inf_nan=False`` already rejects it, but FastAPI's validation-error
+        response ECHOES the offending input, and a non-finite float cannot be written into
+        that JSON body at all — the rejection would itself fail to serialize. Handing the
+        parser the value's text instead keeps the 422 renderable and still names exactly
+        what was sent."""
+        if isinstance(value, float) and not math.isfinite(value):
+            return repr(value)
+        return value
 
 
 class ConnectorTestRequest(BaseModel):
@@ -742,6 +771,17 @@ async def upsert_source(
             is_primary=(body.is_primary and mode == IngestMode.PULL and not reg.is_receiver(st)),
             config=body.config,
             configured_secrets=(list(existing.configured_secrets) if existing else []),
+            # Same carry-forward hazard as `configured_secrets` above: the severity-ladder
+            # ceiling is set from the source editor, but EVERY enable/disable/make-primary
+            # posts a body without it, and a bare rebuild would silently wipe the operator's
+            # declaration (re-banding every one of that source's cases). `model_fields_set`
+            # is what tells an OMITTED key from an explicit `null`, so omission preserves
+            # the stored ceiling while an explicit null still CLEARS it on purpose.
+            severity_scale_max=(
+                body.severity_scale_max
+                if "severity_scale_max" in body.model_fields_set
+                else (existing.severity_scale_max if existing else None)
+            ),
             **({"created_at": existing.created_at} if existing else {}),
         )
         # Wave 6: keep ``config['data_view_pattern']`` synced to the comma-join of the
@@ -5164,7 +5204,10 @@ async def get_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     # ADDITIVE (Round-7 W0.7): read-time advisory bands, fail-open (never 500) (#3).
-    return _with_advisory_bands(case, state.prefs)
+    # ``execution_prefs`` (NOT ``prefs``) — the SAME authority the list surface above
+    # uses. The two diverged, so under an active demo sandbox one case could band
+    # differently in the list and in its own detail view.
+    return _with_advisory_bands(case, state.execution_prefs)
 
 
 class CaseAction(BaseModel):

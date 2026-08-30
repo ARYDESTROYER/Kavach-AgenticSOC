@@ -4,11 +4,15 @@ Two ADVISORY, read-time surfaces that mislabelled real-world inputs:
 
 1. **Severity chip mislabels real source scales.** ``severity_band_from_events``
    guessed the scale from the magnitude (``raw<=10 ? raw*10 : raw``), so an OCSF
-   "Informational" score of 10 rendered HIGH and a Wazuh ``rule.level`` of 12
-   (CRITICAL on a 0-15 ladder) rendered LOW. The fix carries the source's DECLARED
-   scale (resolved from the case's ``source_id`` against ``prefs.sources``) and
-   projects each native ladder deterministically. These tests pin both real scales
-   through ``severity_band_from_events`` + a monotonicity guard so no future heuristic
+   "Informational" score of 10 rendered HIGH and a rule level of 12 on a 0-16 ladder
+   (CRITICAL there) rendered LOW. The fix describes each source's native ladder with ONE
+   operator-DECLARED number — ``SourceInstance.severity_scale_max``, resolved from the
+   case's ``source_id`` against ``prefs.sources`` — and projects every raw severity
+   through ONE formula, ``min(100, max(0, raw / scale_max * 100))``. No read path
+   branches on the connector type and there is no magnitude guess left: an UNDECLARED
+   ceiling is the identity (100), which is the honest reading of a number carrying no
+   ladder provenance. These tests pin a declared 0-16 ladder and the identity ladder
+   through ``severity_band_from_events`` + a monotonicity guard, so no future heuristic
    can re-introduce the 10→100 / 12→12 inversion. The severity chip stays ADVISORY and
    never feeds ``decide()`` (#3).
 
@@ -74,7 +78,14 @@ def _case(
 
 
 def _wazuh_prefs() -> Preferences:
-    """Preferences with a configured Wazuh source whose severity ladder is 0-16."""
+    """Preferences with a source whose native 0-16 severity ladder is DECLARED.
+
+    ``SourceInstance`` SEEDS ``severity_scale_max`` for the one connector the suite ships
+    ladder knowledge of, so this source carries a declared ceiling of 16 without the
+    operator typing it. The seed is written into the source's own editable field at
+    construction time — it is NOT a runtime per-vendor branch, and an operator who
+    declares a different ceiling keeps it (see
+    ``test_declared_ceiling_beats_the_seed_whatever_the_connector_is``)."""
     return Preferences(
         sources=[
             SourceInstance(
@@ -88,7 +99,11 @@ def _wazuh_prefs() -> Preferences:
 
 
 def _ocsf_push_prefs() -> Preferences:
-    """Preferences with a PUSH (webhook) source — records normalise to OCSF (0-100)."""
+    """Preferences with a source that declares NO ceiling — the identity projection.
+
+    Its records already normalise to the canonical OCSF 0-100 severity_score, so the
+    honest ladder is the identity, which is exactly what an UNDECLARED ceiling means
+    (``DEFAULT_SEVERITY_SCALE_MAX`` = 100). Nothing here depends on the connector type."""
     return Preferences(
         sources=[
             SourceInstance(
@@ -115,7 +130,9 @@ def test_ocsf_informational_is_not_high() -> None:
     prefs = _ocsf_push_prefs()
     case = _case(case_id="ocsf-info", severity_max=10.0, source_id="wh1")
     sev = severity_band_from_events(case, prefs)
-    assert sev["scale"] == "ocsf_0_100"
+    # The resolved ladder is now ONE number (the ceiling), not a scale vocabulary token.
+    assert sev["scale_max"] == 100.0
+    assert sev["source"] == "source_asserted"
     assert sev["value"] == 10.0          # NOT 100.0 — no double-scale
     assert sev["band"] == "low"          # 8 <= 10 < 22 medium cut -> low (was 'high' pre-fix)
     assert sev["band"] != "high"
@@ -140,7 +157,8 @@ def test_wazuh_high_levels_render_high() -> None:
     prefs = _wazuh_prefs()
     for lvl in (11, 12, 15):
         sev = severity_band_from_events(_wazuh_case(rule_level=lvl), prefs)
-        assert sev["scale"] == "wazuh_0_16"
+        assert sev["scale_max"] == 16.0      # the DECLARED (seeded) ceiling, a number
+        assert sev["source"] == "source_asserted"
         assert sev["band"] in ("high", "critical"), (
             f"wazuh level {lvl} should be >= HIGH, got {sev}"
         )
@@ -196,22 +214,72 @@ def test_severity_value_monotonic_across_ocsf_scores() -> None:
     assert vals == [0.0, 10.0, 30.0, 50.0, 75.0, 90.0, 100.0]   # identity-clamped
 
 
-def test_unknown_scale_preserves_legacy_heuristic() -> None:
-    """No prefs / unconfigured source -> the legacy heuristic still applies, keeping old
-    stored cases + the no-prefs callers byte-identical (back-compat)."""
-    # severity_max=8.0, no prefs -> <=10 -> *10 -> 80 (critical on the 5-band ladder),
-    # scale 'unknown'.
-    sev = severity_band_from_events(_case(severity_max=8.0))
-    assert sev["scale"] == "unknown"
-    assert sev["value"] == 80.0 and sev["band"] == "critical"
-    # An already-0-100 value with no provenance is not doubled.
+def test_undeclared_ceiling_projects_through_the_identity() -> None:
+    """An UNRESOLVABLE ladder is the IDENTITY projection, not a magnitude guess.
+
+    The retired ``raw <= 10 ? raw*10 : raw`` heuristic tried to infer a ladder from a
+    value's size, which is not information the value carries: it inflated a genuinely-low
+    0-100 score exactly as confidently as it read a high 0-10 rating. With no declaration
+    the honest reading is that the number means what it says, so every unresolvable path
+    — no prefs at all, and a ``source_id`` that matches no configured source — lands on
+    the SAME ceiling (100) and the SAME magnitude. Provenance stays ``source_asserted``:
+    the source really did assert this number; only the ladder is undeclared."""
+    no_prefs = severity_band_from_events(_case(severity_max=8.0))
+    assert no_prefs["scale_max"] == 100.0
+    assert no_prefs["value"] == 8.0 and no_prefs["band"] == "low"
+    assert no_prefs["source"] == "source_asserted"
+
+    # An unmatched source_id resolves to the same identity ceiling — the two
+    # unresolvable paths can never disagree.
+    unmatched = severity_band_from_events(
+        _case(severity_max=8.0, source_id="no-such-source"), Preferences()
+    )
+    assert unmatched["scale_max"] == no_prefs["scale_max"]
+    assert unmatched["value"] == no_prefs["value"]
+    assert unmatched["band"] == no_prefs["band"]
+
+    # An already-0-100 value is still not doubled (this half never depended on the guess).
     sev2 = severity_band_from_events(_case(severity_max=90.0))
     assert sev2["value"] == 90.0 and sev2["band"] == "critical"
-    # An unconfigured source_id (not in prefs.sources) also falls back to legacy.
-    sev3 = severity_band_from_events(
-        _case(severity_max=8.0, source_id="ghost"), Preferences()
-    )
-    assert sev3["scale"] == "unknown" and sev3["value"] == 80.0
+
+
+def test_declared_ceiling_beats_the_seed_whatever_the_connector_is() -> None:
+    """A DECLARED ceiling always wins over the shipped seed, and the type never decides.
+
+    The seed exists so the one connector we ship ladder knowledge of works out of the
+    box; it is written into the source's own editable field and is never consulted as a
+    runtime branch. An operator running a customised rule set declares their own ceiling
+    and the seed stands aside — including a ceiling far outside anything the suite
+    ships."""
+    declared = Preferences(sources=[SourceInstance(
+        id="wz1",
+        source_type=SourceType.WAZUH,          # the SEEDED connector type
+        ingest_mode=IngestMode.PULL,
+        display_name="Wazuh with a customised rule set",
+        severity_scale_max=1000.0,             # ...but the operator declared 0-1000
+    )])
+    assert declared.sources[0].severity_scale_max == 1000.0   # the seed did NOT override
+
+    sev = severity_band_from_events(_wazuh_case(rule_level=500), declared)
+    assert sev["scale_max"] == 1000.0
+    assert sev["value"] == 50.0 and sev["band"] == "high"
+
+    # The SAME raw value under the seeded 16 ceiling saturates instead — proof the band
+    # is a function of the declared number and of nothing else.
+    seeded = severity_band_from_events(_wazuh_case(rule_level=500), _wazuh_prefs())
+    assert seeded["scale_max"] == 16.0
+    assert seeded["value"] == 100.0
+
+    # And a source of a completely different type declaring the SAME ceiling reads
+    # identically — the connector type is not an input.
+    other_type = Preferences(sources=[SourceInstance(
+        id="wz1",
+        source_type=SourceType.GENERIC,
+        ingest_mode=IngestMode.PUSH_HTTP,
+        display_name="Some other product on a 0-1000 ladder",
+        severity_scale_max=1000.0,
+    )])
+    assert severity_band_from_events(_wazuh_case(rule_level=500), other_type) == sev
 
 
 def test_severity_is_distinct_from_risk() -> None:
@@ -224,14 +292,28 @@ def test_severity_is_distinct_from_risk() -> None:
     assert sev["value"] != case.risk_score
 
 
-def test_demo_source_uses_0_100_scale() -> None:
-    """The seeded demo source emits a 0-100 severity regardless of connector type."""
-    prefs = Preferences()  # demo resolves by id, no SourceInstance needed
-    case = _case(severity_max=10.0, source_id="demo-splunk")
-    case.tags = ["demo"]
-    sev = severity_band_from_events(case, prefs)
-    assert sev["scale"] == "ocsf_0_100"
-    assert sev["value"] == 10.0 and sev["band"] == "low"
+def test_no_source_id_allowlist_survives_anywhere_in_the_ladder() -> None:
+    """The hardcoded demo-source-id allowlist is GONE, and nothing replaced it.
+
+    That frozenset existed only to force a known set of ids onto the identity
+    projection. Undeclared now MEANS the identity projection, so the special case became
+    the default and the allowlist could be deleted — which also fixed the id the stale
+    frozenset had omitted, and removed a hardcoded id list from a vendor-agnostic engine.
+
+    Pinned as an EQUIVALENCE rather than as a value, so no future allowlist can pass
+    this test: an id that used to be on the list, an id that was missing from it, and an
+    arbitrary id must all resolve identically, and a ``demo`` tag must change nothing."""
+    prefs = Preferences()      # no configured sources -> nothing to resolve, for any id
+    baseline = severity_band_from_events(_case(severity_max=10.0, source_id="ordinary"), prefs)
+    assert baseline["scale_max"] == 100.0
+    assert baseline["value"] == 10.0 and baseline["band"] == "low"
+
+    for source_id in ("demo-splunk", "demo-wazuh", "demo-entra-id", "demo-qradar"):
+        case = _case(severity_max=10.0, source_id=source_id)
+        assert severity_band_from_events(case, prefs) == baseline, source_id
+        # an analyst-authored tag is not an isolation invariant and must not steer a ladder
+        case.tags = ["demo"]
+        assert severity_band_from_events(case, prefs) == baseline, source_id
 
 
 # --------------------------------------------------------------------------- #

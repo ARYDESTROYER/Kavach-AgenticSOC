@@ -82,6 +82,9 @@ def test_qradar_leef_normals_and_offense_alerts_are_distinct_contracts() -> None
     assert "^devTime=2026-07-11T16:00:00.000Z^" in leef
     assert normal.ip and normal.user and normal.host and normal.rule == "LP-QR-0001"
     assert "_parse_error" not in normal.source
+    # Native LEEF `sev` is a 1-10 magnitude and stays on the wire; the parallel
+    # `demoSeverity` carries the same rating on the canonical 0-100 scale.
+    assert "^sev=3^" in leef and "^demoSeverity=26.4^" in leef
 
     alert = source.storyline_raw(_story(), random.Random(7), TS + 10_000, prefs)[0]
     offense = json.loads(alert.source["_demo_native"]["payload"])
@@ -97,6 +100,20 @@ def test_qradar_leef_normals_and_offense_alerts_are_distinct_contracts() -> None
     assert "username" not in offense and "destination_host" not in offense
     assert alert.rule == "LP QRadar: account takeover and data access"
     assert alert.index_role == "alerts" and alert.severity >= 75
+    # The headline storyline incident must never read the same as this source's own
+    # benign noise — the regression that made both 10.0 (Informational).
+    assert alert.severity > normal.severity
+
+    # The native 1-10 magnitude stays on the wire exactly as an appliance sends it...
+    assert offense["severity"] == 9 and offense["magnitude"] == 9
+    # ...and a PARALLEL 0-100 field carries the same rating on the canonical scale, which
+    # is what the receiver normalises through. The demo overlay is a read-time fixture
+    # that never registers a SourceInstance (by design — see
+    # ``state.demo_sources_overlay``), so it has nowhere to DECLARE a 0-10 ceiling; a
+    # parallel honest field is how it normalises without one, the same way the Wazuh and
+    # syslog demo fixtures already do. Without it the storyline offense would normalise
+    # to 10.0 — byte-identical to this source's own benign noise.
+    assert offense["_demo"]["severity"] == 91.0
 
 
 def test_wazuh_archive_and_alert_json_preserve_native_rule_level() -> None:

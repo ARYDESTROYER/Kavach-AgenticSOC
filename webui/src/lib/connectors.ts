@@ -117,6 +117,13 @@ export async function saveSource(
     enabled: boolean;
     isPrimary: boolean;
     ingestMode?: string | null;
+    /**
+     * The source's DECLARED native severity-ladder ceiling. THREE-state, and the
+     * distinction matters: `undefined` OMITS the key (the backend then carries the
+     * stored declaration forward), while `null` explicitly CLEARS it. Only the source
+     * editor passes this; a toggle/bulk/make-primary path must leave it undefined.
+     */
+    severityScaleMax?: number | null;
   },
 ): Promise<void> {
   const { globalSecrets, sourceSecrets, config } = splitFormValue(manifest, value, {
@@ -133,6 +140,10 @@ export async function saveSource(
     is_primary: opts.isPrimary,
     ingest_mode: opts.ingestMode ?? null,
     config,
+    // Spread, never assign: an assigned `undefined` still serializes as an ABSENT key
+    // today, but spreading makes the omit-vs-null contract explicit at the call site
+    // instead of relying on that.
+    ...('severityScaleMax' in opts ? { severity_scale_max: opts.severityScaleMax } : {}),
   };
   await api.upsertSource(upsert);
   const secretEntries = Object.entries(sourceSecrets).filter(([, v]) => v);

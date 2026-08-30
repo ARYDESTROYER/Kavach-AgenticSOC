@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import IndexPattern, Preferences
-from ..constants import IndexRole, IngestMode, SourceType
+from ..constants import DEFAULT_SEVERITY_SCALE_MAX, IndexRole, IngestMode, SourceType
 from ..es.base import BaseESClient
 from ..es.querybuilder import ids_query, late_arrival_query, poll_query
 from ..models import Cursor, RawEvent, make_cursor_event_key
@@ -270,8 +270,32 @@ class ElasticConnector(PullConnector):
                 best, best_len = f, len(f.pattern)
         return best
 
+    def _severity_scale_max(self, prefs: Preferences | None) -> float:
+        """This source's DECLARED severity-ladder ceiling, for the floor comparison.
+
+        Resolves THIS connector's :class:`app.config.SourceInstance` out of ``prefs`` and
+        returns its declared ceiling — the same one-number resolution
+        :func:`app.ocsf.ecs._severity_scale` uses when it normalises the very same hit,
+        so the floor gate below and the event's own OCSF ``severity_id`` are computed on
+        one ladder instead of two. An unresolvable/unconfigured source resolves to the
+        default ceiling (the identity projection on the canonical OCSF score), never to
+        the retired ``raw <= 10 ? raw*10`` magnitude guess.
+
+        Lazy import (``engine`` is a higher layer than ``connectors``); fail-open — a
+        lookup problem degrades to the default ceiling and never breaks a poll."""
+        try:
+            from ..engine.priority import severity_scale_max_for_source
+
+            source = prefs.source_by_id(self.connector_id) if prefs is not None else None
+            return severity_scale_max_for_source(source)
+        except Exception:  # noqa: BLE001 — a scale lookup must never break ingest
+            return DEFAULT_SEVERITY_SCALE_MAX
+
     def _tag_events(
-        self, events: list[RawEvent], feed: IndexPattern | None = None
+        self,
+        events: list[RawEvent],
+        feed: IndexPattern | None = None,
+        prefs: Preferences | None = None,
     ) -> list[RawEvent]:
         """Stamp source/feed provenance + per-feed role + severity_floor onto events.
 
@@ -284,8 +308,13 @@ class ElasticConnector(PullConnector):
         ``auto_investigate_eligible`` is FALSE when the event is below the feed's
         ``severity_floor`` — such an event is STILL returned (so it registers a
         candidate + live-tail) but its cluster will not auto-forward (#4, never
-        dropped). All no-ops when nothing is configured."""
+        dropped). All no-ops when nothing is configured.
+
+        ``prefs`` is OPTIONAL (default ``None``) and is used only to resolve this
+        source's DECLARED severity ceiling for that floor comparison — see
+        :meth:`_severity_scale_max`."""
         name = self.config.get("display_name") or self.connector_id
+        scale_max = self._severity_scale_max(prefs)
         out: list[RawEvent] = []
         for ev in events:
             ev.source_id = self.connector_id
@@ -301,9 +330,14 @@ class ElasticConnector(PullConnector):
                 # ``severity_floor`` is advertised as OCSF severity_id (1-6), so map the
                 # RAW source severity to its OCSF severity_id before comparing (a 0..100
                 # or 0..10 native severity must not be compared against a 1-6 floor).
+                # The mapping goes through the source's DECLARED ceiling: without it this
+                # call fell back to the retired magnitude guess, so a genuinely LOW 0..100
+                # severity was x10'd over the floor (and a high native rating on a
+                # declared narrow ladder was under-read) — the last unscaled
+                # ``score_to_severity_id`` caller in the backend.
                 # #4 preserved: below-floor only marks the event auto_investigate
                 # INELIGIBLE — it is NEVER dropped (still correlated + live-tailed).
-                if floor is not None and score_to_severity_id(ev.severity) < int(floor):
+                if floor is not None and score_to_severity_id(ev.severity, scale_max) < int(floor):
                     ev.auto_investigate_eligible = False
             else:
                 ev.index_role = self._role_for_index(ev.index)
@@ -671,7 +705,7 @@ class ElasticConnector(PullConnector):
         )
         observed = self._stable_hits(frontier + late, fp.time_field)
         emitted = frontier + (late if cursor.overlap_initialized else [])
-        events = self._tag_events([RawEvent.from_hit(h, fp) for h in emitted])
+        events = self._tag_events([RawEvent.from_hit(h, fp) for h in emitted], prefs=fp)
         events.sort(key=lambda event: (event.timestamp_millis, event.index, event.id))
         scan_max_ts, scan_boundary = self._scan_watermark(observed, fp)
         return FeedScan(
@@ -758,7 +792,7 @@ class ElasticConnector(PullConnector):
         scan_max_ts, scan_boundary = self._scan_watermark(hits, fp)
         emitted = frontier + (late if cursor.overlap_initialized else [])
         kept = [h for h in emitted if self._owns_index(feed, str(h.get("_index", "")))]
-        events = self._tag_events([RawEvent.from_hit(h, fp) for h in kept], feed=feed)
+        events = self._tag_events([RawEvent.from_hit(h, fp) for h in kept], feed=feed, prefs=fp)
         events.sort(key=lambda event: (event.timestamp_millis, event.index, event.id))
         return FeedScan(
             events=events,
@@ -1029,7 +1063,7 @@ class ElasticConnector(PullConnector):
         hits = resp.get("hits", {}).get("hits", [])
         total = resp.get("hits", {}).get("total", {})
         total_val = total.get("value", len(hits)) if isinstance(total, dict) else len(hits)
-        events = self._tag_events([RawEvent.from_hit(h, prefs) for h in hits])
+        events = self._tag_events([RawEvent.from_hit(h, prefs) for h in hits], prefs=prefs)
         rendering = QueryRendering(
             query=kql,
             language="kuery",

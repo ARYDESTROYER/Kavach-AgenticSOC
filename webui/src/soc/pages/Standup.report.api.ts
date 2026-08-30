@@ -23,6 +23,14 @@ export interface AttentionRow {
   verdict: string;
   risk_score: number;
   severity_band: string;
+  /**
+   * Provenance of `severity_band`: `"source_asserted"` (the SIEM's own rating),
+   * `"derived"` (no source rating — the band came from the deterministic risk total) or
+   * `"source_out_of_range"` (the rating exceeded the source's declared ceiling, so the
+   * projection saturated and the band is our arithmetic, not the source's claim).
+   * Optional so an older backend degrades to no provenance tag.
+   */
+  severity_source?: string;
   priority_level: string;
   assignee: string;
   entity: string;

@@ -832,6 +832,17 @@ export interface SourceInstance {
    */
   config?: Record<string, unknown> & Partial<SourceConfigExtras>;
   configured_secrets?: string[];
+  /**
+   * The operator-DECLARED ceiling of this source's NATIVE severity ladder — one number
+   * that describes any ladder (0-10, 0-16, 0-1000). Every severity surface projects a raw
+   * source severity through `min(100, max(0, raw / severity_scale_max * 100))`.
+   *
+   * `null`/absent means UNDECLARED, which projects through the IDENTITY (ceiling 100, the
+   * canonical OCSF `severity_score` scale). Declare it for any source that does NOT rate
+   * severity on 0-100, or its ratings read ~10x too low on the severity chip, in the
+   * Noise-Reduction funnel and against a feed's `severity_floor`.
+   */
+  severity_scale_max?: number | null;
   created_at?: string;
   updated_at?: string;
   /** Read-only synthetic overlay row surfaced only while Demo Mode is active. */
@@ -1000,6 +1011,17 @@ export interface SourceUpsert {
   ingest_mode?: string | null;
   is_primary?: boolean;
   config?: Record<string, unknown>;
+  /**
+   * Three-state on the wire (see `SourceInstance.severity_scale_max`):
+   *   - OMITTED       -> keep whatever the stored source already declares.
+   *   - a number > 0  -> declare that ceiling.
+   *   - explicit null -> CLEAR the declaration (back to the 100 identity projection, or
+   *                      the connector's seeded default where one exists).
+   * A body that is not editing the ceiling (an Enabled toggle, a bulk action, a
+   * make-primary) MUST omit the key entirely; sending `undefined` in a JSON body is the
+   * same as omitting it, but never send `null` unless the operator is clearing it.
+   */
+  severity_scale_max?: number | null;
 }
 
 // --------------------------------------------------------------------------- //
@@ -3372,6 +3394,15 @@ export interface AgentAlertVolumeOutcome {
   ingested_direction: AgentOutcomeDirection;
   after_clustering_direction: AgentOutcomeDirection;
   definition: AgentOutcomeDefinition;
+  /**
+   * Whether the two compared windows' per-SEVERITY-BAND splits may be compared at all.
+   * The volume totals above are band-independent and stay comparable either way; the
+   * per-band comparison is withheld (with a measured reason) when the two windows
+   * cannot be shown to have banded on the same declared severity ceiling — the durable
+   * counters store bands, not raw severities, so a historical split can never be
+   * re-projected onto a changed ladder. Optional: an older backend omits it.
+   */
+  severity_band_comparison?: { available: boolean; reason: string };
 }
 
 export interface AgentTuningContextPeriod {

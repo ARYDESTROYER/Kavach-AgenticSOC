@@ -778,6 +778,11 @@ class IngestService:
                 # baseline/silent-source clock (state._observe_tick_volume) attributes the
                 # volume — symmetric with the pull poller. Additive/None-safe.
                 "source_id": getattr(src, "id", None),
+                # The severity CEILING these bands were projected against — stamped on the
+                # per-source sub-block only, so a later reader can tell whether two
+                # windows' band splits describe one ladder (band tallies are bucketed at
+                # write time and can never be re-projected). Symmetric with the poller.
+                "severity_scale_max": scale,
             })
         except Exception as exc:  # noqa: BLE001 — counters never break ingest
             logger.debug("ingest noise-counter assembly failed: %s", exc)

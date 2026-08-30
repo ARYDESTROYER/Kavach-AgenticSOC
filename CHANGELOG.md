@@ -620,6 +620,31 @@ and, just as importantly, makes each of these conditions a state an operator can
   both while nothing is typed and while the request is in flight; the inert treatment
   now excludes the busy state, so clicking Sign in keeps the gradient and shows the
   spinner instead of flattening to grey.
+- **A log source now DECLARES its severity ladder instead of the suite guessing it.**
+  Every severity surface (the case severity chip, the Noise-Reduction band split, the
+  OCSF `severity_id` a normaliser stamps, a feed's `severity_floor` gate) used to
+  reconstruct a source's native range from a mix of connector type and the magnitude of
+  the value itself — `raw <= 10 ? raw * 10 : raw`. That guess cannot tell a genuinely low
+  0-100 score from a high 0-10 rating, and it inverted both: an OCSF Informational score
+  of 8 read as High, while a rule level of 12 from a source the type branch could not
+  classify read as Low. A source now
+  carries ONE number, `severity_scale_max` (**Log Sources → the source → Advanced →
+  Severity ladder maximum**), and every surface projects through the same formula,
+  `min(100, max(0, raw / severity_scale_max × 100))`.
+
+  **What an operator must do:** *declare `severity_scale_max` for any source that does
+  not rate severity on 0-100* — for example `10` for a 0-10 ladder, or `16` for a 0-16
+  rule level. A source that leaves it blank is read AS-IS on 0-100 (the identity
+  projection, which is what every OCSF normaliser already emits). One connector ships a
+  seeded default (a 0-16 rule level), applied only where the operator has declared
+  nothing; declaring your own value always wins, and the seed then stands aside.
+
+  No migration, no backfill, and no new required config: the field is optional
+  everywhere, already-stored source configs validate unchanged, and nothing is persisted
+  onto a case. Note that the durable Noise-Reduction counters are bucketed by band at
+  WRITE time, so a band split recorded under a different ceiling cannot be re-projected —
+  the posture comparison reports itself unavailable across such a boundary rather than
+  crediting the change as a measurement.
 - **The top KPI is Critical alone**, not Critical/High, and deep-links to that
   severity.
 - **Demo mode moved into the top bar.** The banner took a full-width strip above

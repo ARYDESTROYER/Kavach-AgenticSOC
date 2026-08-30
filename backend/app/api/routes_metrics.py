@@ -25,6 +25,7 @@ also assert the narrow ``metrics:view`` grant. No non-GET routes.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime, time, timezone
 from typing import Any
 
@@ -85,7 +86,12 @@ async def _load_cases(state: AppState) -> tuple[list, int]:
 def _subtract_counter_bands(
     combined: dict[str, Any] | None, current: dict[str, Any] | None
 ) -> dict[str, int]:
-    """Return the non-negative preceding-window remainder of two band tallies."""
+    """Return the non-negative preceding-window remainder of two band tallies.
+
+    Only sound when both windows banded on the SAME severity ladder — see
+    :func:`_severity_band_comparison`, which gates every call. The per-band
+    ``max(0, ...)`` clamp silently discards a negative remainder, so across a ladder
+    change it would both invent a vanished band and inflate the surviving ones."""
     combined = combined if isinstance(combined, dict) else {}
     current = current if isinstance(current, dict) else {}
     out: dict[str, int] = {}
@@ -97,6 +103,111 @@ def _subtract_counter_bands(
             continue
         out[str(key)] = max(0, total - recent)
     return out
+
+
+def _counter_band_total(counts: Any) -> int:
+    """Band-INDEPENDENT sum of one ``{band: int}`` tally (unusable entries count 0).
+
+    A total does not depend on which severity ladder produced the split, so it stays
+    comparable across a ladder change while the per-band breakdown does not."""
+    if not isinstance(counts, dict):
+        return 0
+    total = 0
+    for value in counts.values():
+        try:
+            total += max(0, int(value or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _window_band_evidence(window: Any) -> tuple[dict[str, float | None], int, int]:
+    """What one counter window can PROVE about the ladder behind its band split.
+
+    Returns ``(recorded ceiling per source, volume attributed to those sources, pooled
+    volume)``. The durable counters are bucketed by band AT WRITE TIME, so a stored split
+    can never be re-projected; the per-source ``severity_scale_max`` the store records is
+    the only evidence of which ladder produced it. ``None`` for a source means the ceiling
+    was never recorded, or the window sums hours that recorded different ones."""
+    window = window if isinstance(window, dict) else {}
+    pooled = _counter_band_total(window.get("ingested")) + _counter_band_total(
+        window.get("clustered")
+    )
+    ceilings: dict[str, float | None] = {}
+    attributed = 0
+    by_source = window.get("by_source")
+    if isinstance(by_source, dict):
+        for sid, sub in by_source.items():
+            if not isinstance(sub, dict):
+                continue
+            raw = sub.get("severity_scale_max")
+            try:
+                ceiling = float(raw) if raw is not None and not isinstance(raw, bool) else None
+            except (TypeError, ValueError):
+                ceiling = None
+            # A non-positive or NON-FINITE recorded ceiling is not evidence of a ladder
+            # (``inf`` passes ``> 0`` yet could only have banded everything informational).
+            if ceiling is not None and (not math.isfinite(ceiling) or ceiling <= 0):
+                ceiling = None
+            ceilings[str(sid)] = ceiling
+            attributed += _counter_band_total(sub.get("ingested")) + _counter_band_total(
+                sub.get("clustered")
+            )
+    return ceilings, attributed, pooled
+
+
+def _severity_band_comparison(current: Any, combined: Any) -> dict[str, Any]:
+    """Whether two counter windows' SEVERITY-BAND splits may be compared to each other.
+
+    Comparing per-band tallies only means something when both windows projected raw source
+    severities onto the SAME declared ladder. When a source's declared severity ceiling
+    changes — including the one-off change that gave every undeclared source an honest
+    identity projection — the historical split cannot be recomputed, because the counters
+    store bands, not raw severities, and retain them for months. A band-level delta across
+    that boundary would report a band collapsing to zero and the tool would be crediting
+    itself with a measurement change.
+
+    Returns ``{"available": bool, "reason": str}``. Available ONLY when every source that
+    contributed volume to both windows recorded one and the same ceiling, and no counted
+    volume is unattributed. Band-INDEPENDENT totals stay comparable either way and are
+    reported separately. Never raises."""
+    cur_ceilings, cur_attributed, cur_pooled = _window_band_evidence(current)
+    comb_ceilings, comb_attributed, comb_pooled = _window_band_evidence(combined)
+    if comb_pooled <= 0 and cur_pooled <= 0:
+        # Nothing was counted in either window: there is no band split to mis-compare.
+        return {"available": True, "reason": ""}
+    if cur_attributed < cur_pooled or comb_attributed < comb_pooled:
+        return {
+            "available": False,
+            "reason": (
+                "part of the counted alert volume is not attributed to a source that "
+                "recorded the severity ceiling used to band it, so the two windows' band "
+                "splits cannot be shown to describe one ladder"
+            ),
+        }
+    if any(v is None for v in cur_ceilings.values()) or any(
+        v is None for v in comb_ceilings.values()
+    ):
+        return {
+            "available": False,
+            "reason": (
+                "a counted source did not record one single severity ceiling for the whole "
+                "window, so its stored per-band split cannot be shown to describe one "
+                "ladder; band totals recorded before the ceiling was captured cannot be "
+                "re-projected"
+            ),
+        }
+    for sid, ceiling in cur_ceilings.items():
+        other = comb_ceilings.get(sid)
+        if other is not None and other != ceiling:
+            return {
+                "available": False,
+                "reason": (
+                    "a counted source recorded a different severity ceiling in each "
+                    "window, so their per-band splits describe different ladders"
+                ),
+            }
+    return {"available": True, "reason": ""}
 
 
 async def _load_agent_outcome_inputs(
@@ -154,6 +265,10 @@ async def _load_agent_outcome_inputs(
             "available": False,
             "reason": "durable alert counters could not be read",
             "window_basis": "complete_utc_days",
+            "severity_band_comparison": {
+                "available": False,
+                "reason": "durable alert counters could not be read",
+            },
         }
         period_noise_comparisons = {
             "week_over_week": dict(noise_comparison),
@@ -166,6 +281,19 @@ async def _load_agent_outcome_inputs(
             available = bool(current_noise.get("available")) and bool(
                 combined_noise.get("available")
             )
+            # Band-INDEPENDENT totals. These stay valid across a severity-ladder change
+            # (a total does not depend on how the volume was split), and they are also
+            # the only correct preceding-window total: subtracting BAND BY BAND clamps
+            # each band at zero, so a band that moved would leave its whole count in the
+            # remainder and inflate the baseline total.
+            band_comparison = _severity_band_comparison(current_noise, combined_noise)
+            comparable = bool(band_comparison["available"])
+            totals: dict[str, dict[str, int]] = {"current": {}, "baseline": {}}
+            for key in ("ingested", "clustered"):
+                recent_total = _counter_band_total(current_noise.get(key))
+                combined_total = _counter_band_total(combined_noise.get(key))
+                totals["current"][f"{key}_total"] = recent_total
+                totals["baseline"][f"{key}_total"] = max(0, combined_total - recent_total)
             return {
                 "available": available,
                 "reason": "" if available else "durable alert counters are still warming up",
@@ -173,17 +301,31 @@ async def _load_agent_outcome_inputs(
                 or bool(combined_noise.get("incomplete")),
                 "window_basis": "complete_utc_days",
                 "end_exclusive": end.date().isoformat(),
+                # Whether the two windows' per-band splits may be compared at all, and
+                # (when not) the measured reason. Band-independent totals above remain
+                # reported either way, so volume reporting never degrades because of this.
+                "severity_band_comparison": band_comparison,
                 "current": {
-                    "ingested": current_noise.get("ingested"),
-                    "clustered": current_noise.get("clustered"),
+                    "ingested": current_noise.get("ingested") if comparable else None,
+                    "clustered": current_noise.get("clustered") if comparable else None,
+                    **totals["current"],
                 },
                 "baseline": {
-                    "ingested": _subtract_counter_bands(
-                        combined_noise.get("ingested"), current_noise.get("ingested")
+                    "ingested": (
+                        _subtract_counter_bands(
+                            combined_noise.get("ingested"), current_noise.get("ingested")
+                        )
+                        if comparable
+                        else None
                     ),
-                    "clustered": _subtract_counter_bands(
-                        combined_noise.get("clustered"), current_noise.get("clustered")
+                    "clustered": (
+                        _subtract_counter_bands(
+                            combined_noise.get("clustered"), current_noise.get("clustered")
+                        )
+                        if comparable
+                        else None
                     ),
+                    **totals["baseline"],
                 },
             }
 
@@ -361,6 +503,9 @@ async def metrics_agent_improvement(
         now=request_now,
         store_total=store_total,
         synthetic=state.demo_active,
+        # Resolve each case's advisory severity band for the mix strata (the persisted
+        # attribute is never written by a production path). Advisory only (#3).
+        prefs=state.execution_prefs,
         **outcome_inputs,
     )
 
@@ -398,7 +543,10 @@ async def metrics_noise_reduction(
         window_hours=wh,
         store_total=store_total,
         fetched_count=len(cases),
-        prefs=getattr(state, "prefs", None),
+        # ``execution_prefs`` so the funnel bands the SAME cases the same way as its own
+        # ``/lineage`` rows and the case surfaces (under an active demo sandbox the cases
+        # come from the demo stack, so the real tenant prefs are the wrong authority).
+        prefs=getattr(state, "execution_prefs", None),
         generated_at=iso_now(),
     )
 
@@ -425,7 +573,8 @@ async def metrics_noise_reduction_lineage(
     cases, store_total = await _load_cases(state)
     wh = max(0, int(window_hours))
     window_cases = _window_filter(cases, window_hours=wh)
-    rows = [build_case_lineage(case) for case in window_cases[:limit]]
+    prefs = state.execution_prefs
+    rows = [build_case_lineage(case, prefs) for case in window_cases[:limit]]
     store_truncated = store_total > len(cases)
     return {
         "window_hours": wh,
