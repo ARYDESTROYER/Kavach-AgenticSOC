@@ -54,9 +54,31 @@ store on the next projection; the re-tag reuses the existing document and does n
 re-embed, so it costs nothing. Records whose case can no longer be read stay retrievable
 and are reported as unattributed rather than treated as absent.
 
-The projection window is bounded. It is filled round-robin across rule identities, so a
-bulk confirmation on one rule cannot evict every other rule's precedent from the corpus.
-Set `precedent.window.stratify_by_rule` to `false` to restore a flat newest-first window.
+The projection window is bounded, and two settings decide which precedents fill it.
+
+`precedent.window.stratify_by` is an ordered list of projection keys the window is
+filled round-robin across. It defaults to detection rule identity and then the
+analyst-confirmed outcome, so neither a bulk confirmation on one rule nor a run of
+identical outcomes can evict every other rule's precedent — or leave the corpus
+unanimous about a rule the analysts have in fact resolved two ways. The second key is
+the analyst's confirmed outcome and not the agent's own verdict: the two differ exactly
+when an analyst overturned the agent, and those corrections are the precedent worth
+keeping. A key whose values are all identical carries no information and is skipped.
+
+`precedent.window.max_transaction_fraction` (default `0.5`) is the largest share of the
+window one operator transaction — a bulk analyst action, or the coarse time bucket that
+stands in for one on cases labelled before bulk actions were marked — may occupy. It is
+a fraction rather than a count, so it does not encode one deployment's volume, and it is
+soft: over-cap cases move to the back of the queue rather than being dropped, so the
+window still fills completely whenever enough qualifying cases exist. Set it to `0` or
+`1.0` to disable the cap.
+
+Set `precedent.window.stratify_by_rule` to `false` to switch window fairness off
+entirely — both the keys above and the admission cap. Note that an empty
+`stratify_by` list disables only the keys; the admission cap is governed separately.
+
+The window's ordering is always globally newest-first across the terminal case statuses,
+independently of these settings.
 
 Retrieval surfaces resolved cases as fenced context. Enable optional precedent promotion
 under **Settings → Knowledge & threat context → Analyst-confirmed precedent promotion**;

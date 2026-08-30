@@ -5355,7 +5355,7 @@ async def case_action(
 
 
 async def _perform_case_action(
-    case_id: str, body: CaseAction, actor: str, state: AppState
+    case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = ""
 ) -> dict[str, Any]:
     """Apply ONE human lifecycle action to ONE case — the SINGLE source of truth for
     the analyst-action path (used by the single-case endpoint AND the bulk endpoint).
@@ -5363,7 +5363,13 @@ async def _perform_case_action(
     #3-safe: this is the HUMAN analyst layer ONLY. It NEVER calls
     ``case_manager.decide()`` and never runs the deterministic auto-close path; the
     close-axis truth table is untouched. Caller has already done the RBAC check +
-    resolved ``actor``. Each call audits the transition individually (#2)."""
+    resolved ``actor``. Each call audits the transition individually (#2).
+
+    ``batch_id`` marks the cases that one bulk action touched as ONE operator
+    transaction. A bulk action is a single human decision applied to hundreds of cases,
+    and the bounded precedent window has to be able to tell that apart from hundreds of
+    independent decisions — otherwise one bulk action buys the whole window. Stamped
+    only when supplied, so a single-case action's history entry is unchanged."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -5450,6 +5456,8 @@ async def _perform_case_action(
         "ts": case.updated_at, "event": "analyst_action", "action": body.action,
         "analyst": actor, "note": body.note,
     }
+    if batch_id:
+        entry["batch"] = batch_id
     if body.resolution is not None:
         entry["resolution"] = str(body.resolution)
     if body.priority is not None:
@@ -5574,6 +5582,12 @@ async def cases_bulk_action(
     # applied identically to each target.
     single = CaseAction(**{k: v for k, v in body.model_dump().items() if k != "ids"})
 
+    # ONE transaction id for the whole bulk move, stamped onto every history entry it
+    # writes. This is what lets the bounded precedent window treat a bulk action as the
+    # single operator decision it is instead of N independent ones; see
+    # ``PrecedentWindowConfig.max_transaction_fraction``.
+    batch_id = new_id("bulk-")
+
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
     for cid in ids:
@@ -5581,7 +5595,7 @@ async def cases_bulk_action(
             continue  # de-dupe so a repeated id isn't applied (and audited) twice
         seen.add(cid)
         try:
-            await _perform_case_action(cid, single, actor, state)
+            await _perform_case_action(cid, single, actor, state, batch_id=batch_id)
             results.append({"id": cid, "ok": True})
         except HTTPException as exc:
             results.append({"id": cid, "ok": False, "error": str(exc.detail)})

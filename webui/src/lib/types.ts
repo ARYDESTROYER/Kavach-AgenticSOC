@@ -4838,7 +4838,12 @@ export interface PrecedentPromotionConfig {
 /** `Preferences.precedent.window` — how the bounded projection window is filled. */
 export interface PrecedentWindowConfig {
   size?: number;
+  /** DEPRECATED alias, now the master switch for window fairness (axes + cap). */
   stratify_by_rule?: boolean;
+  /** Ordered projection METADATA KEYS to round-robin over, e.g. rule identity then outcome. */
+  stratify_by?: string[];
+  /** Largest share of the window one operator transaction may occupy. Soft + deferred. */
+  max_transaction_fraction?: number;
   [key: string]: unknown;
 }
 

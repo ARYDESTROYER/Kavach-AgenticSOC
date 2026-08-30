@@ -1959,10 +1959,65 @@ class PrecedentWindowConfig(BaseModel):
     rule's precedent — precedent starvation again, this time triggered by an operator
     doing exactly what the product asked of them. Stratifying round-robin across rule
     identities gives every active rule an equal floor within the same bounded window.
+
+    Rule identity alone is not enough: INSIDE one rule's bucket the newest-first
+    tiebreak has the same shape one level down, so the slots fill with whatever outcome
+    the deployment currently produces most of. ``stratify_by`` is therefore an ORDERED
+    list of METADATA KEYS rather than a second boolean — a boolean would bake the axis
+    names into the type, while a key list keeps this block ignorant of what a rule or an
+    outcome is.
     """
 
     size: int = Field(default=200, ge=1, le=5000)
+    #: DEPRECATED alias, kept so a stored pre-``stratify_by`` preference keeps working.
+    #: It is now the master switch: ``False`` turns window fairness off entirely — the
+    #: axes AND the admission cap — and restores the projection scan's early exit.
+    #: It does NOT restore the pre-stratification ORDERING: the globally newest-first
+    #: merge across the terminal statuses, and the fair per-status scan budget, are
+    #: UNCONDITIONAL. Both fix an input-ordering contract the selector always
+    #: documented and the concatenated per-status pages never actually met.
     stratify_by_rule: bool = True
+    #: The ordered projection METADATA KEYS to round-robin over.
+    #:
+    #: BOTH ground-truth axes are carried, ground truth OUTERMOST:
+    #:
+    #: ``outcome`` — the ANALYST-CONFIRMED label — outranks ``verdict`` because they are
+    #: different facts: an analyst who overturns the agent changes the outcome and
+    #: leaves the verdict alone, so ranking the model's own judgement above the human's
+    #: would starve the window of exactly the corrections that are worth the most.
+    #: ``outcome`` is also the only one of the two the precedent authority counts
+    #: (``engine/precedent.py`` tallies outcomes, never verdicts).
+    #:
+    #: ``verdict`` — the model's own judgement — is nevertheless REQUIRED as the inner
+    #: axis, and dropping it makes this whole block a no-op. Measured on a window of
+    #: 200 drawn from a pool where a recent bulk analyst action put a run of
+    #: ``outcome=false_positive / verdict=NEEDS_HUMAN`` at the head of every rule
+    #: bucket: rule-only selects 0 FALSE_POSITIVE / 200 NEEDS_HUMAN, ``rule+outcome``
+    #: selects 2 / 198 — indistinguishable from the defect — while ``rule+verdict``
+    #: selects 92 / 108 and ``rule+outcome+verdict`` selects 94 / 106. The reason is
+    #: structural: a deployment's analyst outcomes are near-uniform by construction
+    #: (an analyst confirms what the detection was FOR), so ``outcome`` has almost no
+    #: distinct values to round-robin over, while the compounding failure this window
+    #: exists to break lives ENTIRELY in the verdict dimension.
+    #:
+    #: An axis with a single distinct value is skipped, so neither costs anything on a
+    #: deployment where it happens to be uniform.
+    #:
+    #: Empty disables the AXES only. The admission cap is governed separately by
+    #: ``max_transaction_fraction`` (and by the master switch above), so an empty list
+    #: is NOT the same thing as plain newest-N. An axis whose values are all identical
+    #: is skipped, so a single-rule or single-outcome deployment falls back to the
+    #: remaining axes, and then to newest-first, by itself.
+    stratify_by: list[str] = Field(
+        default_factory=lambda: ["rule_identity", "outcome", "verdict"], max_length=4
+    )
+    #: The largest SHARE of the window one operator transaction (a bulk analyst action,
+    #: or the coarse time bucket that stands in for one on cases labelled before the
+    #: batch marker existed) may occupy. A FRACTION, never an absolute count, so it does
+    #: not encode one deployment's volume. It is SOFT and DEFERRED: over-cap items move
+    #: to the back of the ranking instead of being dropped, so the window still fills to
+    #: ``size`` whenever ``size`` qualifying items exist. ``0`` or ``1.0`` = no cap.
+    max_transaction_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class PrecedentFutilityConfig(BaseModel):

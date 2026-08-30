@@ -43,6 +43,7 @@ from app.config import (
     AnalystRulePolicy,
     PrecedentFutilityConfig,
     PrecedentPromotionConfig,
+    PrecedentWindowConfig,
     Preferences,
 )
 from app.constants import (
@@ -697,6 +698,192 @@ def test_stratified_selection_is_fair_bounded_and_deterministic() -> None:
     assert P.stratified_selection(items, lambda it: it[0], 0) == []
     # Within a group, input order is preserved.
     assert [v for k, v in P.stratified_selection(items, lambda it: it[0], 99) if k == "a"] == [1, 2, 3]
+
+
+# --------------------------------------------------------------------------- #
+# 8b — N-axis stratification: the axes generalise WITHOUT moving the cold-start
+#      contract, and the admission cap defers instead of dropping.
+# --------------------------------------------------------------------------- #
+def _shipped_single_axis_selection(items, key, limit):
+    """The EXACT pre-generalisation algorithm, kept here as the reference oracle.
+
+    The generalised selector has to reproduce this byte-for-byte for a single axis, or
+    every cold-start deployment silently gets a different precedent window out of a
+    change that was supposed to add an axis nobody had configured yet.
+    """
+    if limit <= 0:
+        return []
+    groups: dict[str, list] = {}
+    for item in items:
+        groups.setdefault(str(key(item)), []).append(item)
+    if len(groups) <= 1:
+        return list(items)[:limit]
+    out: list = []
+    depth = 0
+    deepest = max(len(bucket) for bucket in groups.values())
+    while depth < deepest and len(out) < limit:
+        for bucket in groups.values():
+            if depth >= len(bucket):
+                continue
+            out.append(bucket[depth])
+            if len(out) >= limit:
+                break
+        depth += 1
+    return out
+
+
+def test_single_axis_selection_is_byte_identical_to_the_shipped_algorithm() -> None:
+    """The cold-start guard: one axis in, exactly the old ordering out."""
+    shapes = [
+        [],
+        [("g1", 0)],
+        [("g1", i) for i in range(7)],                      # one group
+        [("g1", 1), ("g2", 1), ("g1", 2), ("g3", 1)],       # ragged
+        [("g%d" % (i % 3), i) for i in range(17)],          # even-ish
+        [("g1", i) for i in range(20)] + [("g2", 1), ("g3", 1)],  # one dominant group
+        [("g%d" % i, i) for i in range(9)],                 # one bucket per item
+    ]
+    axis = lambda it: it[0]  # noqa: E731 — a one-expression test axis
+    for items in shapes:
+        for limit in (-1, 0, 1, 2, 3, 5, 8, 99):
+            assert P.stratified_selection(items, axis, limit) == (
+                _shipped_single_axis_selection(items, axis, limit)
+            ), f"single-axis drift at limit={limit} for {items}"
+
+
+def test_a_second_axis_interleaves_inside_each_first_axis_group() -> None:
+    """Rule fairness alone leaves the newest-first tiebreak flooding each bucket."""
+    # Group "g1" is one operator's bulk action: same first axis, one dominant second
+    # axis value, with a single minority second-axis item at the very END of its bucket.
+    items = [
+        ("g1", "x", 1), ("g1", "x", 2), ("g1", "x", 3), ("g1", "y", 4),
+        ("g2", "x", 5),
+    ]
+    first = lambda it: it[0]   # noqa: E731
+    second = lambda it: it[1]  # noqa: E731
+
+    one_axis = P.stratified_selection(items, first, 3)
+    assert one_axis == [("g1", "x", 1), ("g2", "x", 5), ("g1", "x", 2)]
+    assert ("g1", "y", 4) not in one_axis, "the minority value never reaches the window"
+
+    two_axis = P.stratified_selection(items, [first, second], 3)
+    assert two_axis == [("g1", "x", 1), ("g2", "x", 5), ("g1", "y", 4)]
+
+
+def test_an_axis_whose_values_are_all_identical_is_skipped() -> None:
+    """A single-valued axis must SKIP to the next one, not consume a level.
+
+    Both axes identical → the plain input order, which is what a single-rule,
+    single-outcome deployment must degrade to.
+    """
+    constant = lambda it: "same"  # noqa: E731
+    second = lambda it: it[1]     # noqa: E731
+    items = [("g", "x", 1), ("g", "y", 2), ("g", "x", 3), ("g", "y", 4)]
+
+    # A leading dead axis must not change what the LIVE axis does.
+    assert P.stratified_selection(items, [constant, second], 4) == (
+        P.stratified_selection(items, second, 4)
+    )
+    # Every axis dead → plain newest-N passthrough, byte-identical to no axes at all.
+    assert P.stratified_selection(items, [constant, constant], 3) == list(items)[:3]
+    assert P.stratified_selection(items, [], 3) == list(items)[:3]
+
+
+def test_a_high_cardinality_axis_preserves_the_input_order() -> None:
+    """One bucket per item → nothing to share out, so nothing may be permuted."""
+    items = [("g%d" % i, i) for i in range(12)]
+    axis = lambda it: it[0]  # noqa: E731
+    assert P.stratified_selection(items, axis, 12) == items
+    assert P.stratified_selection(items, [axis, axis], 12) == items
+    assert P.stratified_selection(items, axis, 5) == items[:5]
+
+
+def test_the_admission_cap_defers_instead_of_dropping_and_still_fills_the_window() -> None:
+    """One transaction may not BUY the window, and may not SHRINK it either."""
+    flood = [("t1", i) for i in range(30)]     # one bulk action
+    others = [("t2", 100), ("t3", 101)]        # two independent decisions
+    items = flood + others
+    axis = lambda it: "same"          # noqa: E731 — no axis discriminates here
+    transaction = lambda it: it[0]    # noqa: E731
+
+    picked = P.stratified_selection(
+        items, axis, 10, transaction_key=transaction, max_per_transaction=4
+    )
+    assert len(picked) == 10, "a soft cap must never shrink the window"
+    assert picked[:4] == flood[:4], "the cap admits the newest of the flood first"
+    assert picked[4:6] == others, "then every other transaction gets in"
+    assert picked[6:] == flood[4:8], "the rest of the flood BACKFILLS, it is not dropped"
+
+    # With a single transaction group the deferral is provably a no-op: the admitted
+    # prefix and the deferred tail concatenate back to the same order.
+    assert P.stratified_selection(
+        flood, axis, 10, transaction_key=transaction, max_per_transaction=4
+    ) == flood[:10]
+    # An unset or non-positive cap is not a cap.
+    for cap in (None, 0, -1):
+        assert P.stratified_selection(
+            items, axis, 10, transaction_key=transaction, max_per_transaction=cap
+        ) == items[:10]
+
+
+def test_the_selector_learns_only_how_many_axes_it_was_given() -> None:
+    """Vendor agnosticism: no rule, verdict or field vocabulary in the selector."""
+    source = inspect.getsource(P.stratified_selection) + inspect.getsource(
+        P._round_robin_rank
+    )
+    tree = ast.parse(textwrap.dedent(source))
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    # Only docstrings may be string constants; nothing may compare against a name.
+    assert not [text for text in literals if "\n" not in text and len(text) < 60]
+
+
+def test_precedent_window_defaults_and_promotion_stay_where_they_shipped() -> None:
+    """The new axes are additive: promotion is still OFF and still needs 25."""
+    window = Preferences().precedent.window
+    assert window.size == 200
+    assert window.stratify_by_rule is True, "the deprecated alias keeps its default"
+    # BOTH ground-truth axes ship, analyst OUTCOME outranking the model's VERDICT.
+    # Ordering matters (outcome is the human's label; verdict is the agent's own), but
+    # so does carrying the verdict AT ALL: measured on a window of 200 drawn from a pool
+    # where a bulk analyst action put ``false_positive``/``NEEDS_HUMAN`` at the head of
+    # every rule bucket, rule-only selects 0/200 FALSE_POSITIVE, ``rule+outcome`` selects
+    # 2/198 -- indistinguishable from the defect this window exists to break -- while
+    # carrying the verdict selects 94/106. Analyst outcomes are near-uniform by
+    # construction, so the compounding failure lives entirely in the verdict dimension.
+    assert window.stratify_by == ["rule_identity", "outcome", "verdict"]
+    assert window.stratify_by.index("outcome") < window.stratify_by.index("verdict")
+    assert window.max_transaction_fraction == 0.5
+    promotion = Preferences().precedent.promotion
+    assert promotion.enabled is False, "stratification must not enable promotion"
+    assert promotion.min_confirmed == 25
+    assert PrecedentPromotionConfig().enabled is False
+    assert PrecedentPromotionConfig().min_confirmed == 25
+
+
+def test_the_window_source_signature_is_byte_identical_at_defaults() -> None:
+    """Growing the window schema must not re-embed every deployment's corpus.
+
+    ``_source_signature`` dumps the window config EXCLUDING the later-added fields and
+    appends only the non-default ones, so a default-constructed config still produces
+    the exact pre-change bytes and ``ensure_seeded`` still short-circuits on upgrade.
+    """
+    from app.tools.rag import _WINDOW_SIGNATURE_APPENDED_FIELDS, _window_signature_extras
+
+    default = PrecedentWindowConfig()
+    # The literal the pre-change ``model_dump_json()`` produced, pinned.
+    assert default.model_dump_json(
+        exclude=set(_WINDOW_SIGNATURE_APPENDED_FIELDS)
+    ) == '{"size":200,"stratify_by_rule":true}'
+    assert _window_signature_extras(default) == ()
+    # A non-default new value MUST still reproject — it changes what is projected.
+    assert _window_signature_extras(
+        PrecedentWindowConfig(max_transaction_fraction=0.25)
+    ) != ()
+    assert _window_signature_extras(PrecedentWindowConfig(stratify_by=[])) != ()
 
 
 # =========================================================================== #
@@ -1545,3 +1732,47 @@ def test_the_precedent_block_claims_only_what_the_code_verifies() -> None:
     assert "known to arrive without" not in block
     # What IS verified stays.
     assert "classified by a human analyst" in block
+
+
+def test_the_shipped_axes_actually_rebalance_a_bulk_flooded_window() -> None:
+    """The shipped default must BREAK the compounding failure, not merely name an axis.
+
+    Ordering the axes correctly is not enough: the window has to be measured against the
+    shape that produced the outage. A bulk analyst action puts a run of one
+    ``(outcome, verdict)`` pair at the head of every rule bucket, and the newest-first
+    tiebreak INSIDE each bucket then fills the whole window with it -- rule stratification
+    alone is blind to that, because the flood is spread evenly across the rules.
+
+    This pins the BEHAVIOUR of the default, so dropping an axis fails here rather than
+    silently reducing the window to the defect it was built to fix.
+    """
+    from app.config import PrecedentWindowConfig
+    from app.engine.precedent import stratified_selection
+
+    rules = [f"rule_{i}" for i in range(23)]
+    # Newest-first, as the store returns it: the bulk transaction, then the healthy tail.
+    pool: list[dict[str, str]] = [
+        {"rule_identity": rules[i % 23], "outcome": "false_positive", "verdict": "NEEDS_HUMAN"}
+        for i in range(250)
+    ] + [
+        {"rule_identity": rules[i % 23], "outcome": "false_positive", "verdict": "FALSE_POSITIVE"}
+        for i in range(250)
+    ]
+
+    def select(axes: list[str]) -> int:
+        keys = [(lambda a: (lambda it: str(it[a])))(axis) for axis in axes]
+        chosen = stratified_selection(pool, keys if len(keys) > 1 else keys[0], 200)
+        return sum(1 for item in chosen if item["verdict"] == "FALSE_POSITIVE")
+
+    # The defect, and the near-no-op that looks like a fix but is not.
+    assert select(["rule_identity"]) == 0
+    assert select(["rule_identity", "outcome"]) == 0, (
+        "analyst outcomes are near-uniform by construction, so an outcome-only second "
+        "axis cannot break a verdict-dimension flood"
+    )
+    # The shipped default has to recover a materially balanced window.
+    shipped = PrecedentWindowConfig().stratify_by
+    assert select(shipped) > 60, (
+        f"the shipped axes {shipped} left only {select(shipped)} of 200 slots for the "
+        "non-flooding verdict; the window is still the defect"
+    )

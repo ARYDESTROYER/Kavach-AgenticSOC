@@ -62,6 +62,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import Case, Entity, EvidenceItem, RagChunk, TriggerReason
 from app.state import AppState
+from app.tools import rag as rag_module
 from app.tools.rag import (
     PRECEDENT_RATIFICATION_ACKNOWLEDGEMENT,
     PRECEDENT_RATIFICATION_EVENT,
@@ -297,7 +298,7 @@ async def test_confirmed_projection_is_unchanged_by_the_new_tier(
         "ground_truth_source", "trust_class", "document_id",
         "rule_identity", "rule_ids",
     }
-    assert "analyst-confirmed outcome false_positive" in items[0]["text"]
+    assert "Analyst-confirmed outcome false_positive" in items[0]["text"]
 
 
 # =========================================================================== #
@@ -374,7 +375,7 @@ async def test_an_analyst_label_upgrades_the_case_in_place(app_state: AppState) 
     chunks = await _precedent_chunks(app_state)
     assert list(chunks) == ["upgrade-me"], "one case is still exactly one document"
     assert chunks["upgrade-me"]["metadata"]["trust_class"] == TRUST_ANALYST_CONFIRMED
-    assert "analyst-confirmed outcome" in chunks["upgrade-me"]["text"]
+    assert "Analyst-confirmed outcome" in chunks["upgrade-me"]["text"]
 
 
 async def test_vector_space_migration_preserves_both_tiers(app_state: AppState) -> None:
@@ -1014,3 +1015,116 @@ def test_bootstrap_dry_run_changes_nothing() -> None:
             and "dry_run=True" in str(row.get("result_summary") or "")
             for row in rows
         )
+
+
+async def test_the_unconfirmed_tier_reuses_the_confirmed_windows_axes(
+    app_state: AppState,
+) -> None:
+    """The lower-trust tier runs AFTER the window, with its own scan cap and its own
+    ``max_items`` bound. Leaving it flat simply reintroduces single-group flooding one
+    trust class down, so it stratifies on the SAME ``precedent.window.stratify_by``
+    axes — and on that block deliberately, because adding an axis field to the
+    unconfirmed block would change ``_unconfirmed_cfg().model_dump_json()``, which is a
+    corpus source-signature member, and force a reprojection nobody asked for.
+    """
+    _rag_prefs(app_state, unconfirmed=True, guards={"min_recurrence": 1, "max_items": 4})
+    for i in range(12):  # the deployment's dominant outcome, and it is the newest
+        await app_state.cases.save(
+            _agent_case(f"maj-{i:02d}", hours_ago=1 + i * 0.01)
+        )
+    for i in range(3):  # an older minority outcome on the SAME rule
+        await app_state.cases.save(
+            _agent_case(
+                f"min-{i:02d}", verdict=Verdict.TRUE_POSITIVE, hours_ago=5 + i * 0.01
+            )
+        )
+
+    picked = {
+        item["metadata"]["verdict"]
+        for _case, item in await app_state.rag._scan_unconfirmed_candidates()
+    }
+
+    assert picked == {Verdict.FALSE_POSITIVE.value, Verdict.TRUE_POSITIVE.value}
+    assert app_state.rag._unconfirmed_cfg().model_dump_json() == (
+        UnconfirmedPrecedentConfig(min_recurrence=1, max_items=4).model_dump_json()
+    ), "the unconfirmed block itself must be unchanged — no new axis field"
+
+
+class _StatusCountingCases:
+    """A CaseStore stand-in that records how much of the scan budget each terminal
+    status consumed.
+
+    ``CLOSED`` is an effectively unbounded backlog of agent auto-closes — the only
+    population this tier can ever draw from. ``RESOLVED`` is analyst-resolved and is
+    served in whatever quantity the test asks for.
+    """
+
+    def __init__(self, resolved: int) -> None:
+        self.resolved_population = resolved
+        self.served: dict[str, int] = {}
+
+    async def list(
+        self, *, status: str | None = None, limit: int = 50, offset: int = 0, **_: Any
+    ) -> tuple[list[Case], int]:
+        if status == CaseStatus.CLOSED.value:
+            page = [_agent_case(f"closed-{offset + i:06d}") for i in range(limit)]
+            self.served[status] = self.served.get(status, 0) + len(page)
+            return page, 10_000_000
+        if status == CaseStatus.RESOLVED.value:
+            remaining = max(0, self.resolved_population - offset)
+            page = [
+                _analyst_case(f"resolved-{offset + i:06d}")
+                for i in range(min(limit, remaining))
+            ]
+            self.served[status] = self.served.get(status, 0) + len(page)
+            return page, self.resolved_population
+        return [], 0
+
+
+@pytest.mark.parametrize("resolved_population", [0, 5000])
+async def test_the_unconfirmed_scan_never_spends_its_budget_on_resolved_cases(
+    app_state: AppState, monkeypatch: pytest.MonkeyPatch, resolved_population: int
+) -> None:
+    """RESOLVED can NEVER yield an unconfirmed candidate, so it must cost nothing.
+
+    ``RESOLVED`` is reachable only through the analyst case-action path, which stamps
+    ``DecisionBy.ANALYST``, and ``_unconfirmed_candidate`` rejects anything a human
+    decided — so ``RESOLVED ∩ (decision_by == AGENT)`` is empty by construction. While
+    this tier shared the CONFIRMED tier's status list, the fair per-status share spent
+    half its budget there, halving its effective CLOSED coverage (and its recurrence
+    tallies, which are counted over whatever the scan actually saw) on any deployment
+    that had resolved a case at all.
+    """
+    _rag_prefs(
+        app_state,
+        unconfirmed=True,
+        guards={"min_recurrence": 1, "max_items": 10, "min_confidence": 0.5},
+    )
+    stub = _StatusCountingCases(resolved_population)
+    monkeypatch.setattr(app_state.rag, "_cases", stub)
+
+    await app_state.rag._scan_unconfirmed_candidates()
+
+    assert stub.served == {CaseStatus.CLOSED.value: rag_module._UNCONFIRMED_SCAN_CAP}, (
+        "the whole unconfirmed scan budget belongs to CLOSED, whatever the RESOLVED "
+        "population happens to be"
+    )
+
+
+async def test_the_confirmed_scan_still_shares_its_budget_across_both_statuses(
+    app_state: AppState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The counterpart: making the status set a parameter must not change the
+    CONFIRMED tier, where RESOLVED carries real analyst precedent and the fair share
+    is what stops CLOSED starving it."""
+    _rag_prefs(app_state, unconfirmed=False)
+    stub = _StatusCountingCases(5000)
+    monkeypatch.setattr(app_state.rag, "_cases", stub)
+
+    await app_state.rag._resolved_case_items(limit=10)
+
+    assert stub.served[CaseStatus.RESOLVED.value] > 0, (
+        "the confirmed tier must still read RESOLVED — that is where analyst-resolved "
+        "precedent lives"
+    )
+    assert sum(stub.served.values()) == rag_module._RESOLVED_CASE_SCAN_CAP
