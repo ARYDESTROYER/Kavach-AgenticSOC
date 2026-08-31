@@ -11,7 +11,9 @@
  * orchestrator's `runAction` POSTs the EXISTING backend verb (`pending.wireAction ??
  * pending.key`) — so `close_disposition` maps to `close` and the server still runs the
  * real `decide()`/`apply()`. The unified Close-with-disposition submit is disabled
- * until a disposition is chosen (mandatory).
+ * until a disposition is chosen (mandatory) — and the picker opens EMPTY, never
+ * pre-seeded from `case.disposition`, so that guard is a real analyst choice rather
+ * than a value `case_manager.apply()` derived from the model's own verdict (G1).
  *
  * SECURITY (#9): resolution/priority/disposition options are static enums; the free
  * text (assignee / reason / note / tags) is stored, never rendered as markup here.
@@ -38,6 +40,8 @@ import {
   SelectContent,
   SelectItem,
 } from '@/ui/select';
+
+import { humanizeToken } from '@/lib/format';
 
 import {
   type ActionDef,
@@ -74,6 +78,18 @@ export interface ConfirmActionDialogProps {
   onTagDraftChange: (v: string) => void;
   disposition: string;
   onDispositionChange: (v: string) => void;
+  /**
+   * The disposition already recorded on the case, shown as READ-ONLY context beneath
+   * the picker.
+   *
+   * It is context, never a default. `case_manager.apply()` derives this value from the
+   * LLM verdict, so pre-filling it into the picker (as this dialog once did) both
+   * satisfied the mandatory-choice guard on the analyst's behalf and posted the model's
+   * own answer back as if a human had given it. Showing it keeps the information the
+   * pre-seed was carrying; keeping it out of `disposition` keeps the choice the
+   * analyst's.
+   */
+  currentDisposition?: string | null;
   reason: string;
   onReasonChange: (v: string) => void;
 
@@ -106,6 +122,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   onTagDraftChange,
   disposition,
   onDispositionChange,
+  currentDisposition,
   reason,
   onReasonChange,
   verdict,
@@ -119,6 +136,13 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   const notePersists = pending
     ? pending.key === 'confirm_fp' || (pending.wireAction ?? pending.key) === 'close'
     : false;
+
+  // The already-recorded disposition, humanised for display only. `none` is the
+  // backend's "unset" spelling and is not worth telling the analyst about.
+  const currentRaw = String(currentDisposition ?? '').trim();
+  const currentText =
+    currentRaw && currentRaw.toLowerCase() !== 'none' ? humanizeToken(currentRaw) : '';
+  const currentHelpId = currentText ? 'confirm-action-disposition-current' : undefined;
 
   return (
   <Dialog
@@ -145,7 +169,11 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
             <div className="space-y-1.5">
               <Label className="text-xs">Disposition (required)</Label>
               <Select value={disposition} onValueChange={onDispositionChange}>
-                <SelectTrigger className="h-9" aria-label="Disposition (required)">
+                <SelectTrigger
+                  className="h-9"
+                  aria-label="Disposition (required)"
+                  aria-describedby={currentHelpId}
+                >
                   <SelectValue placeholder="Select an outcome…" />
                 </SelectTrigger>
                 <SelectContent>
@@ -156,6 +184,13 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
                   ))}
                 </SelectContent>
               </Select>
+              {/* Read-only context, deliberately NOT a default (see currentDisposition). */}
+              {currentText ? (
+                <p id={currentHelpId} className="text-xs leading-relaxed text-muted-foreground">
+                  Currently recorded: {currentText}. Pick the outcome you are confirming —
+                  your choice is what is stored as the analyst&rsquo;s.
+                </p>
+              ) : null}
             </div>
           ) : null}
 

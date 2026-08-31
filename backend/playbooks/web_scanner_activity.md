@@ -5,7 +5,7 @@ version: 1
 description: Exact procedure for vulnerability scanning and web-shell or PHP execution alert families.
 priority: 75
 match:
-  rule_ids: [Automated Vulnerability Scanning, Suspicious Web Shell / PHP Execution]
+  rule_ids: [automated_vulnerability_scanning, suspicious_web_shell_execution]
   entity_types: [ip, host, rule]
 suggested_tools: [es_query, enrich, rag_retrieve]
 rag_queries: [web scanner triage, web shell response, approved vulnerability assessment]

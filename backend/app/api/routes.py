@@ -35,6 +35,7 @@ from ..constants import (
     SourceType,
     UserRole,
 )
+from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY
 from ..engine.correlation import cluster_from_events
 from ..engine.metrics import compute_metrics, feedback_stats
 from ..engine.priority import advisory_bands
@@ -5219,6 +5220,27 @@ class CaseAction(BaseModel):
     # F8 fields (additive, optional):
     disposition: str | None = None         # set_disposition target (a Disposition value)
     status: str | None = None              # set_status target (a CaseStatus value)
+    # GROUND-TRUTH INTENT (additive, defaults False — absent flag = today's behaviour,
+    # no migration and no backfill).
+    #
+    # ``disposition`` alone cannot express intent. ``case_manager.apply()`` derives a
+    # disposition from the LLM verdict, so a client that reads a case and posts its
+    # stored disposition straight back is echoing the MODEL, not labelling anything. A
+    # value on the wire is therefore evidence of nothing: only an affirmative
+    # declaration is. Set this true ONLY when a human actually chose the disposition in
+    # this very interaction; when it is false the disposition is still applied to the
+    # case, but the action records no analyst classification and
+    # ``engine.analyst_outcomes`` will not read the case as ground truth.
+    disposition_declared: bool = Field(
+        default=False,
+        title="The analyst chose this disposition in this action",
+        description=(
+            "True only when a human affirmatively selected `disposition` as part of this "
+            "action. The disposition is applied either way; this flag is what makes it "
+            "independent analyst evidence rather than a value echoed back from the "
+            "model-derived disposition already stored on the case."
+        ),
+    )
     # Deprecated compatibility input retained for older API clients. The Console
     # intentionally exposes only Escalate/Escalated, never a numbered tier.
     level: int | None = Field(
@@ -5257,6 +5279,38 @@ _ACTION_STATUS: dict[str, CaseStatus | None] = {
 # RBAC grant required per action (resource "cases"). Terminal/close-class moves
 # need cases:close; everything else needs cases:write.
 _CLOSE_ACTIONS = {"close", "confirm_fp", "resolve", "reopen"}
+
+# Actions that may carry an EXPLICIT analyst disposition in ``body.disposition``.
+#
+# ``set_disposition`` is the dedicated verb. ``close`` is here because the Console's
+# PRIMARY close — "Close with a disposition" — posts ``action="close"`` with the
+# disposition the analyst picked. That value used to be parsed off the wire and then
+# silently discarded: only ``set_disposition``/``confirm_fp`` ever assigned
+# ``case.disposition``, so the main close path could never produce analyst-confirmed
+# ground truth (``engine/analyst_outcomes``) and the precedent corpus it feeds could
+# never be refreshed. Assigning it here is what the dialog has always claimed to do.
+#
+# This is the analyst layer only: it never calls ``decide()`` and never changes the
+# deterministic close-axis (#3). An action NOT listed here still ignores the field, so
+# no lifecycle verb silently acquires classification power.
+#
+# APPLYING the disposition and CLASSIFYING the case are two different things. Every
+# action here applies it; only :data:`_SELF_DECLARING_ACTIONS` — or an explicit
+# ``disposition_declared`` — classifies. See ``_perform_case_action``.
+_DISPOSITION_ACTIONS = {"set_disposition", "close"}
+
+# Actions whose VERB is itself the analyst's declaration, so they need no separate
+# intent flag. ``set_disposition`` exists for no other purpose than classifying a case
+# and the wire rejects it without a disposition, so performing it IS the declaration —
+# and it is already in ``analyst_outcomes.CLASSIFICATION_ACTIONS``, so this only keeps
+# the history entry self-describing.
+#
+# ``close`` is deliberately ABSENT: closing is a lifecycle move that most analysts
+# perform without classifying anything, and the disposition it carries may simply be
+# the one ``case_manager.apply()`` derived from the model's own verdict, read off the
+# case and posted straight back. For ``close`` the classification is recorded only on
+# an affirmative ``disposition_declared``.
+_SELF_DECLARING_ACTIONS = {"set_disposition"}
 
 # Terminal lifecycle statuses (a case here is DONE). A backward move out of a
 # terminal status is only allowed via an explicit reopen.
@@ -5393,14 +5447,28 @@ async def _perform_case_action(
 
     _guard_transition(body.action, prev_status, target)
 
-    # set_disposition: validate + set the investigative outcome (no status move).
-    if body.action == "set_disposition":
-        if not body.disposition:
-            raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
+    # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
+    # accepts one (the Console's unified Close-with-disposition flow sends it).
+    #
+    # APPLY and CLASSIFY are separated on purpose. Applying is unconditional: the case
+    # carries the disposition the caller sent, which is what the dialog has always
+    # claimed to do. Classifying is what makes ``engine.analyst_outcomes`` treat that
+    # disposition as INDEPENDENT ground truth, and the presence of the field cannot
+    # establish it — ``case_manager.apply()`` derives a disposition from the LLM verdict,
+    # so a client echoing the stored value back is quoting the model to itself. Only the
+    # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
+    # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
+    # path existed.
+    classified_disposition = ""
+    if body.action == "set_disposition" and not body.disposition:
+        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
+    if body.action in _DISPOSITION_ACTIONS and body.disposition:
         try:
             case.disposition = Disposition(body.disposition)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+        if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
+            classified_disposition = case.disposition.value
 
     # confirm_fp records the FALSE_POSITIVE disposition (an analyst confirming an FP),
     # overriding only an unset / UNDETERMINED auto-mapping — never a deliberate
@@ -5449,6 +5517,15 @@ async def _perform_case_action(
     }
     if batch_id:
         entry["batch"] = batch_id
+    if classified_disposition:
+        # The DECLARED classification made by THIS action (see the apply/classify split
+        # above — set only for a self-declaring verb or an affirmative
+        # ``disposition_declared``). The action token alone cannot carry it, because the
+        # primary close posts ``action="close"``, which is not a classification verb, so
+        # ``engine.analyst_outcomes.is_classification_entry`` reads this key instead.
+        # Append-only (#2): a new key on a NEW entry; no existing history row is
+        # rewritten and no past case is relabelled.
+        entry[CLASSIFIED_DISPOSITION_KEY] = classified_disposition
     if body.resolution is not None:
         entry["resolution"] = str(body.resolution)
     if body.priority is not None:
@@ -5463,6 +5540,11 @@ async def _perform_case_action(
                 f"action={body.action} status {prev_status.value if prev_status else '?'}"
                 f"→{case.status.value} disposition={case.disposition.value if case.disposition else 'none'}"
                 + (f" reason={reason}" if reason else "")
+                # APPENDED at the end (never reordered — this summary is read
+                # positionally elsewhere): whether the analyst classified the case in
+                # this very action, which is what makes the disposition above
+                # independent evidence rather than an inherited value.
+                + (f" classified={classified_disposition}" if classified_disposition else "")
             ),
         )
     except Exception as exc:  # noqa: BLE001 — audit is best-effort, never blocks the action

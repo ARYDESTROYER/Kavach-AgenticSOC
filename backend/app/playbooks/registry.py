@@ -38,7 +38,7 @@ DEFAULT_BUNDLED_PLAYBOOK_FILES = frozenset(
         "brute_force_login.md",
         "phishing_reported_email.md",
         "suspicious_outbound_connection.md",
-        "moodle_application_abuse.md",
+        "web_application_abuse.md",
         "privileged_web_access.md",
         "web_scanner_activity.md",
         "cloud_identity_compromise.md",

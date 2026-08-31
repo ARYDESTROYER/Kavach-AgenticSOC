@@ -6,8 +6,11 @@
  *   2. the rendered agree/override badge text (GradingFields, from props).
  *   3. gradingToFeedbackInput shape-parity with the existing CaseFeedbackInput.
  */
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { CaseFeedbackInput } from '@/lib/api';
 import {
@@ -19,6 +22,9 @@ import {
   starsToScore,
   GradingFields,
   GradingHistory,
+  OUTCOME_OPTIONS,
+  OUTCOME_UNSET,
+  OutcomeField,
   type GradingDraft,
 } from '../grading';
 
@@ -239,5 +245,88 @@ describe('grading helpers', () => {
   it('GradingHistory renders nothing without prior feedback', () => {
     const { container } = render(<GradingHistory feedback={[]} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+
+/* ----------------------------------------------- 4. ground-truth intake (G1) --- */
+
+const OPENAPI = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../openapi.json',
+);
+
+describe('the confirmed-outcome control (G1 — Channel A)', () => {
+  it('offers EXACTLY the vocabulary the backend enum declares', () => {
+    // The compile-time guard (`FeedbackOutcomeCoverage`) proves coverage against the
+    // GENERATED type. This proves the option list matches the committed SPEC, so a
+    // hand-written list can never quietly drift from `constants.FeedbackOutcome`.
+    const spec = JSON.parse(readFileSync(OPENAPI, 'utf8'));
+    const declared: string[] = spec.components.schemas.FeedbackOutcome.enum;
+    expect(OUTCOME_OPTIONS.map((o) => o.value).slice().sort()).toEqual(
+      [...declared].sort(),
+    );
+    expect(declared).toContain(OUTCOME_UNSET);
+  });
+
+  it('is rendered by GradingFields — the field is settable, not just typed', () => {
+    // The whole G1 defect: `actual_outcome` was typed, read for a dirty check and
+    // forwarded on send, but NOTHING in the UI could ever set it.
+    render(
+      <GradingFields
+        verdict="TRUE_POSITIVE"
+        disposition="true_positive"
+        draft={emptyGradingDraft()}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText(/what actually happened/i)).toBeInTheDocument();
+  });
+
+  it('is offered on an AGREED close too, not only on an override', () => {
+    render(
+      <GradingFields
+        verdict="TRUE_POSITIVE"
+        disposition="true_positive"
+        draft={emptyGradingDraft()}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByText('Matches AI verdict')).toBeInTheDocument();
+    // The "what did the AI miss" line stays override-only; ground truth does not.
+    expect(screen.queryByLabelText(/what did the ai miss/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/what actually happened/i)).toBeInTheDocument();
+  });
+
+  it('writes the chosen member into the draft', () => {
+    const onChange = vi.fn();
+    render(<OutcomeField onChange={onChange} />);
+    fireEvent.click(screen.getByLabelText(/what actually happened/i));
+    fireEvent.click(screen.getByRole('option', { name: /false positive/i }));
+    expect(onChange).toHaveBeenCalledWith('false_positive');
+  });
+
+  it('clears the draft on "Not stated" rather than persisting the unknown member', () => {
+    const onChange = vi.fn();
+    render(<OutcomeField value="false_positive" onChange={onChange} />);
+    fireEvent.click(screen.getByLabelText(/what actually happened/i));
+    fireEvent.click(screen.getByRole('option', { name: /not stated/i }));
+    expect(onChange).toHaveBeenCalledWith(undefined);
+  });
+
+  it('reaches the wire body once chosen', () => {
+    expect(gradingToFeedbackInput({ actual_outcome: 'false_negative' })).toEqual({
+      assessment: 'agree',
+      actual_outcome: 'false_negative',
+    });
+    // …and an unstated outcome still posts nothing, so the backend default applies.
+    expect(gradingToFeedbackInput({})).toEqual({ assessment: 'agree' });
+  });
+
+  it('says out loud that the grade itself is not a label', () => {
+    render(<OutcomeField onChange={() => {}} />);
+    expect(
+      screen.getByText(/only part of a grade that becomes\s+analyst-confirmed ground truth/i),
+    ).toBeInTheDocument();
   });
 });

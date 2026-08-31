@@ -26,6 +26,7 @@ from app.playbooks.registry import (
     DEFAULT_BUNDLED_PLAYBOOK_FILES,
     PlaybookConflictError,
     PlaybookManagementError,
+    PlaybookProtectedError,
 )
 from app.stores.playbooks import PlaybookStore
 from app.stores.runbooks import RunbookStore
@@ -144,11 +145,90 @@ async def test_authoring_rejects_procedure_beyond_real_prompt_budget(app_state) 
         )
 
 
-async def test_bundled_live_rule_exact_match_and_no_match_diagnostics(app_state) -> None:
+async def test_a_bundled_id_that_shadows_an_operator_playbook_stays_bundled_everywhere(
+    app_state,
+) -> None:
+    """A release that RENAMES a bundled playbook can land on an id an operator holds.
+
+    ``create_durable`` refuses a colliding id, so this state is reachable only from the
+    bundled side — exactly what the vendor-agnostic rename of the web-application
+    playbook does to any deployment that had already authored ``web_application_abuse``.
+    ``_merge_snapshot`` drops the operator row from the live set, so the procedure that
+    RUNS under that id is the bundled one; every ownership answer has to agree with
+    that, or the Console shows an editable, operator-owned playbook that silently is
+    neither.
+    """
+    shadowed_id = sorted(DEFAULT_BUNDLED_PLAYBOOK_FILES)[0].removesuffix(".md")
+
+    def _registry() -> DurablePlaybookRegistry:
+        return DurablePlaybookRegistry(
+            app_state._playbooks_dir(),
+            PlaybookStore(app_state._kv),
+            protected_filenames=DEFAULT_BUNDLED_PLAYBOOK_FILES,
+        )
+
+    # 0. BASELINE, before any collision exists: the key is always present and empty,
+    #    so a consumer can read it unconditionally rather than probing for it.
+    assert (await _registry().refresh())["shadowed_by_bundled"] == []
+
+    # Write the operator row STRAIGHT to the store: this is the pre-upgrade state,
+    # authored before the id was reserved. (Going through create_durable would be
+    # rejected today, which is the point.)
+    await PlaybookStore(app_state._kv).create(
+        shadowed_id, _document(shadowed_id, body="OUR site procedure."), actor="alice"
+    )
+
+    registry = _registry()
+    summary = await registry.refresh()
+
+    # 1. The displacement is REPORTED, not only logged — the Console can tell the
+    #    operator their procedure is inert instead of leaving them to read a log.
+    assert summary["shadowed_by_bundled"] == [shadowed_id]
+    # …and the operator row is still counted as stored: it was not deleted, only
+    #    displaced, so nothing about this is a silent data loss either.
+    assert summary["operator_count"] == 1
+
+    live = registry.get(shadowed_id)
+    assert live is not None
+
+    # 2. Ownership: bundled, protected, read-only — plus the additive marker that says
+    #    an operator document exists underneath.
+    meta = registry.metadata(live)
+    assert meta["source_type"] == "bundled"
+    assert meta["protected"] is True
+    assert meta["editable"] is False
+    assert meta["shadowed_operator_document"] is True
+
+    # 3. The editor is shown what RUNS, not the shadowed document.
+    opened, content = registry.read_document(shadowed_id)
+    assert opened.id == shadowed_id
+    assert "OUR site procedure." not in content
+    assert opened.name == live.name
+
+    # 4. An update FAILS LOUDLY instead of returning the unchanged bundled playbook
+    #    with a success, consuming a CAS revision and auditing a write that never was.
+    with pytest.raises(PlaybookProtectedError, match="bundled and read-only"):
+        await registry.update_durable(
+            shadowed_id,
+            _document(shadowed_id, version=2, body="Try to edit the bundled id."),
+            actor="alice",
+            expected_revision=1,
+        )
+    after = registry.get(shadowed_id)
+    assert after is not None and after.version == live.version
+
+    # 5. And the store was not written either — the rejected update must not consume
+    #    the operator row's CAS revision on its way out.
+    assert (await PlaybookStore(app_state._kv).list())[shadowed_id]["revision"] == 1
+
+
+async def test_bundled_portable_rule_exact_match_and_no_match_diagnostics(app_state) -> None:
     await app_state.refresh_playbooks()
-    # Source edge whitespace is normalized, while matching otherwise remains exact.
+    # Bundled playbooks declare PORTABLE Layer-3 rule ids; an operator maps their
+    # own SIEM rule title onto one with a RuleDefinition. Source edge whitespace is
+    # normalized, while matching otherwise remains exact.
     diagnostics = app_state.playbooks.diagnose(
-        _cluster(" External Admin Panel Successful Access ES|QL ")
+        _cluster("  external_admin_panel_access  ")
     )
     assert diagnostics["selected_playbook_id"] == "privileged_web_access"
     exact = next(

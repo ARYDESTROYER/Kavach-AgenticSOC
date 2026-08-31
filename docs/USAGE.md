@@ -474,8 +474,11 @@ cohort; use job counts, case history, and Audit for exact accountability.
 - **disposition** (what the case turned out to be): `true_positive`,
   `false_positive`, `benign`, `suspicious`, `duplicate`, `undetermined` (the default
   for cases that predate the taxonomy). Set it explicitly with the `set_disposition`
-  action; `confirm_fp` also stamps `false_positive` when the disposition is still
-  undetermined.
+  action or by supplying `disposition` on a `close`; `confirm_fp` also stamps
+  `false_positive` when the disposition is still undetermined. Note that
+  `case_manager.apply()` may already have derived a disposition from the model's
+  verdict, so a stored disposition is not by itself an analyst statement — see
+  `disposition_declared` below.
 
 ### Case detail + lifecycle
 
@@ -516,9 +519,32 @@ noted below):
 | `acknowledge` | `investigating` | mark the case as being worked (the first-response clock stops here) |
 
 The body may carry `status` (for `set_status`), `disposition` (for
-`set_disposition`), `reason` (recorded as `status_reason`
+`set_disposition` and `close`), `disposition_declared`, `reason` (recorded as
+`status_reason`
 on `hold` / `resolve` / `set_status`), and the existing `resolution` / `assignee` /
-`priority` / `tags`. A **transition guard** rejects illegal moves — e.g. leaving a
+`priority` / `tags`.
+
+**`disposition_declared` (boolean, default `false`) — ground-truth intent.** A
+disposition on the wire says *what* to record, never *who decided it*.
+`case_manager.apply()` derives a disposition from the LLM verdict, so a client that
+reads a case and posts its stored disposition straight back is quoting the model to
+itself. Both `set_disposition` and `close` therefore **apply** the value
+unconditionally, but only a declaration makes it **independent analyst evidence**
+(`engine/analyst_outcomes` → the precedent corpus's confirmed tier and the threshold
+tuner's independent-outcome population):
+
+- `set_disposition` is self-declaring — the verb exists for nothing else and the wire
+  rejects it without a disposition, so no flag is needed.
+- `close` records the classification only when `disposition_declared` is `true`.
+  Omit it and the close still honours the disposition; it simply records no label.
+
+The Console sets it from the close dialog's picker `onChange` only, and that picker
+opens **empty** rather than pre-filled from the case, so the "a disposition is
+required" guard is a real analyst choice. The case's existing disposition is shown
+beneath the picker as read-only context. The gate is on intent, not on the value
+differing: an analyst who reviews a case and affirmatively re-states the model's own
+conclusion has confirmed it, and labelling only disagreements would bias every
+downstream false-positive rate. A **transition guard** rejects illegal moves — e.g. leaving a
 terminal status (`closed` / `resolved`) is only legal via `reopen` (a `400`
 otherwise). Every action sets `decision_by=analyst`, stamps `updated_at`, appends
 an entry to the case **history** + `status_history`, and is audited. A `close` /
@@ -1189,6 +1215,11 @@ are best-effort chunked as `source="resolved_case"`; indexing never blocks the a
 and remains gated by `rag.enabled` + `threat_context.reuse_resolved_cases` /
 `rag.use_resolved_cases`. Resolved-case text is still UNTRUSTED-fenced when retrieved
 (§9); analyst confirmation makes it eligible evidence, not trusted instructions.
+"Independently analyst-confirmed" means a binary `actual_outcome` on case feedback,
+`set_disposition` / `confirm_fp`, or a close whose disposition the analyst DECLARED
+(`disposition_declared`, §3) — never a stored disposition the model's own verdict
+produced, and never an `assessment` of `disagree`, which says nothing about what
+actually happened.
 
 ---
 

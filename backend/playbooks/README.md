@@ -103,12 +103,48 @@ Among all matching playbooks the engine picks **one**, deterministically:
 
 When nothing matches, selection returns `(None, "no_playbook_matched")`.
 
-## Real rule ids in this repo's catalog
+## Rule ids: keep them portable
 
-Use these when authoring `match.rule_ids`. This is the full, live set generated
-from the default rule catalog (`backend/app/config.py`,
-`_REAL_EVENT_MODULES` + `_MODSEC_SUBRULES`) — 13 `event.module` rules plus 5
-ModSecurity sub-rules, 18 real ids total:
+`match.rule_ids` is matched EXACTLY against the cluster's rule set
+(`rule_values` ∪ `primary_rule()`), and that rule set is whatever the operator's
+own rule catalog produced. A bundled playbook therefore declares **portable,
+Layer-3 identifiers** — a lowercase slug (`_` or `-` between words), no spaces, no
+capitals, no vendor product names, no query-language markers — and an operator
+**maps their own SIEM rule titles onto those ids** with a `RuleDefinition` in the
+rule catalog (Settings → Detection & Rules):
+
+```
+name:  external_admin_panel_access                    # the portable id a playbook declares
+match: field=rule.name  op=equals  value=<your SIEM's exact rule title>
+```
+
+Pasting a SIEM rule title straight into `match.rule_ids` works only in the one
+deployment that title came from; every other deployer of this open-source suite
+gets a playbook that can never match. Operator-authored playbooks in an override
+directory are free to declare whatever ids that site actually emits — the rule is
+about what **ships in this repository**. `backend/tests/test_portability_contract.py`
+enforces the shape on the bundled set.
+
+The same applies to `match.any_tags` and `match.mitre`: selection tests **all three**
+against the same cluster rule set, and a playbook whose only declared criteria are
+those two soft signals is selectable *solely* when a rule name hits one of them. So a
+SIEM title parked in `any_tags` is deployment-locked exactly like one in `rule_ids`.
+Keep `any_tags` portable slugs and `mitre` real ATT&CK technique ids (`T1110`,
+`T1550.001`) — the lint holds all three to those shapes.
+
+**A bundled id is reserved.** The merged catalog gives a bundled playbook precedence
+over an operator document of the same id: the operator row is retained but inert, the
+entry stays read-only, and the reload summary lists it under `shadowed_by_bundled`.
+Author site-specific procedures under a deployment-specific id so a future release
+cannot displace them.
+
+## Sample rule ids seeded on a fresh install
+
+The default rule catalog (`backend/app/config.py`, `_SAMPLE_EVENT_MODULES` +
+`_MODSEC_SUBRULES`) seeds 13 `event.module` rules plus 5 ModSecurity sub-rules,
+18 sample ids in total. They are **illustrative starter content from one reference
+environment**, not a contract: they seed only when the stored catalog is EMPTY, and
+operators are expected to edit, disable, or replace them with their own detections.
 
 **`event.module` rules** (priority 100):
 `mail_apache_access`, `mail_auth`, `mail_fim`, `ml_stats`, `modsec_audit_log`,
@@ -120,9 +156,6 @@ classify before the generic `modsec_audit_log` rule above):
 `modsec_xss` (941xxx), `modsec_sqli` (942xxx), `modsec_lfi` (930xxx),
 `modsec_rce` (932xxx), `modsec_scanner` (913xxx).
 
-Operators can edit, disable, or extend this catalog freely — nothing here is
-hardcoded beyond seeding these real detections.
-
 ## Shipped playbooks in this directory
 
 | File / `id` | Name | Priority | Scope (`rule_ids` / `entity_types`) |
@@ -130,11 +163,11 @@ hardcoded beyond seeding these real detections.
 | `brute_force_login.md` | Brute-force / password-spray login | 50 | `mail_auth, waf_auth, web_auth, roundcube_login, postfix` / `ip, user, host` |
 | `cloud_identity_compromise.md` | Cloud identity compromise | 82 | cloud IAM, role, token, service-principal, and impossible-travel rule families / `user, host, ip, rule` |
 | `data_exfiltration_response.md` | Data exfiltration response | 88 | staging, bulk-download, covert-channel, insider, and data-access rule families / `user, host, ip, rule` |
-| `moodle_application_abuse.md` | Moodle application abuse | 80 | exact Moodle application-abuse families / `ip, user, host, rule` |
 | `phishing_reported_email.md` | Reported phishing email | 45 | `postfix, roundcube_login, mail_auth, mail_apache_access, suricata_mail` / `user, ip` |
 | `privileged_web_access.md` | Privileged web access | 85 | successful external administrative-access family / `ip, user, host, rule` |
 | `ransomware_response.md` | Ransomware impact response | 92 | mass-encryption and ransomware-impact rule families / `host, user, ip, rule` |
 | `suspicious_outbound_connection.md` | Suspicious outbound / beacon-like connection | 40 | `suricata_mail, ml_stats` / `ip, host` |
+| `web_application_abuse.md` | Web application abuse | 80 | application session/administration/upload/enumeration families / `ip, user, host, rule` |
 | `web_scanner_activity.md` | Web scanner and exploit activity | 75 | vulnerability-scanner and web-shell families / `ip, host, rule` |
 
 Each carries ATT&CK and tag hints where useful. See the file's front matter for

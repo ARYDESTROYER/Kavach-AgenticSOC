@@ -384,6 +384,36 @@ and, just as importantly, makes each of these conditions a state an operator can
   `mode=EVERY`, an inline rule correlation of any mode, or unanimous case evidence that
   every observed firing used the effective override — and such a rule is surfaced as
   untunable-by-`n` with the structural reason instead of being drafted.
+- **The primary close can now supply ground truth — but only when a human actually
+  says so.** The Console's main "Close with a disposition" posted the chosen
+  disposition and the backend parsed it and threw it away: only `set_disposition` /
+  `confirm_fp` ever wrote `case.disposition`, and the history row recorded
+  `action: "close"`, which is not a classification verb. So the highest-volume analyst
+  action in the product could never produce an analyst-confirmed outcome, and the
+  precedent corpus and threshold tuner starved. `close` now assigns the disposition —
+  and records it as INDEPENDENT evidence only on an explicit
+  `CaseAction.disposition_declared` (additive, default `false`). The gate is
+  load-bearing rather than ceremonial: `case_manager.apply()` derives a disposition
+  from the LLM verdict, so a client that reads a case and posts its stored disposition
+  straight back is quoting the model to itself, and recording that as
+  `explicit_analyst_disposition` would let the tuner "confirm" the very verdicts it
+  audits. The close dialog's picker therefore opens EMPTY instead of pre-seeded from
+  `case.disposition`, which also makes its long-claimed "a disposition is mandatory"
+  guard real. Applying and classifying are now separate: an undeclared close still
+  honours the disposition and simply records no label. Nothing is relabelled, no
+  history row is rewritten, and `decide()` is untouched (#3).
+- **A bundled playbook id no longer silently swallows an operator's own procedure.**
+  Renaming a bundled playbook can land on an id a deployment already authored —
+  `create_durable` refuses a colliding id, so this is reachable only from the bundled
+  side. `_merge_snapshot` dropped the operator row from the live set (correct) while
+  every ownership answer still keyed off the stored rows (not): the bundled procedure
+  was reported `source_type: operator, protected: false, editable: true`,
+  `read_document` served the shadowed Markdown next to the bundled parsed object, and
+  `PUT` wrote the store, consumed the CAS revision, audited an update that never
+  happened and returned HTTP 200 with the unchanged bundled playbook. Ownership is now
+  keyed off the bundled set, a shadowed id fails closed with the read-only error, and
+  the displacement is reported in the reload summary (`shadowed_by_bundled`) and on the
+  entry itself (`shadowed_operator_document`) instead of only in a log line.
 
 ### Added
 
@@ -651,6 +681,23 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
+- **`web_application_abuse` is now a RESERVED bundled playbook id.** The bundled
+  web-application procedure was renamed off one deployer's LMS product name as part of
+  the vendor-agnostic pass. A deployment that had already authored an operator playbook
+  under that id keeps the stored document, but the bundled procedure becomes
+  authoritative and the operator row is inert — surfaced as `shadowed_by_bundled` in
+  the playbook reload summary. Re-author the displaced procedure under a
+  deployment-specific id.
+- **The bundled-playbook portability lint covers every rule-name criterion, under one
+  grammar.** `registry.select_playbook` matches `match.rule_ids`, `match.any_tags` and
+  `match.mitre` against the same cluster rule set — and a playbook declaring only the
+  soft criteria is selectable *solely* on such a hit — so linting `rule_ids` alone let a
+  copied SIEM title in `any_tags` deployment-lock a playbook while the contract reported
+  clean. All three are now linted (`mitre` against the ATT&CK technique grammar), and
+  `rule_ids` shares the one `PORTABLE_ID` grammar used for seeded `RuleDefinition.name`
+  values, since `RawEvent.from_hit` makes them the same namespace. The two previously
+  disagreed on the shipped `waf-nginx-access`, certifying it at one end and rejecting it
+  at the other.
 - **The sign-in surface gained two identity accents, rebuilt from first principles.**
   The primary CTA is now a gradient-faced `ShineButton`: a blurred cyan-to-orchid halo
   sits rotated and invisible at rest and un-rotates into place on hover or keyboard

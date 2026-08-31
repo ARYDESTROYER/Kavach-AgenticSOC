@@ -3425,7 +3425,12 @@ class Preferences(BaseModel):
         Seeds ONLY when the stored catalog is empty OR its
         ``rule_catalog_seed_version`` is older than ``RULE_CATALOG_SEED_VERSION``.
         A non-empty, operator-edited catalog at the current seed version is NEVER
-        overwritten. Returns True if the catalog was (re)seeded."""
+        overwritten, and a non-empty catalog at an older seed version is only
+        HEALED in place. Full seeding therefore happens on a FRESH INSTALL only,
+        and what it writes is the illustrative sample catalog documented on
+        ``default_rule_catalog`` — starter content every deployer is expected to
+        replace with their own detections. Returns True if the catalog was
+        (re)seeded."""
         if self.rule_catalog and self.rule_catalog_seed_version >= RULE_CATALOG_SEED_VERSION:
             return False
         if self.rule_catalog:
@@ -3468,10 +3473,21 @@ class Preferences(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Built-in rule catalog (C3-1) — seeded on first run only.
+# Built-in rule catalog (C3-1) — SAMPLE starter content, seeded on first run only.
 # --------------------------------------------------------------------------- #
-# The 13 real upstream detection rules, each identified by ``event.module``.
-_REAL_EVENT_MODULES: tuple[str, ...] = (
+# ILLUSTRATIVE, NOT A CONTRACT.  These 13 ``event.module`` values are the log
+# vocabulary of ONE reference environment.  They ship so that a cold install has a
+# working, inspectable catalog instead of an empty screen — they are NOT a claim
+# about what any other deployment emits, and every deployer is expected to edit,
+# disable, or replace them with their own detections (Settings → Detection &
+# Rules).  ``maybe_seed_rule_catalog`` only writes them into an EMPTY catalog, so
+# this list affects FRESH INSTALLS ONLY and can never overwrite operator content.
+#
+# Nothing downstream may hardcode a value from this list: bundled playbooks match
+# on portable Layer-3 ids and the operator's own catalog maps their rule titles
+# onto those ids (see ``backend/playbooks/README.md`` and
+# ``backend/tests/test_portability_contract.py``).
+_SAMPLE_EVENT_MODULES: tuple[str, ...] = (
     "mail_apache_access",
     "mail_auth",
     "mail_fim",
@@ -3490,6 +3506,7 @@ _REAL_EVENT_MODULES: tuple[str, ...] = (
 # ModSecurity sub-detections, keyed by the OWASP CRS ``rule.id`` prefix. These
 # get a LOWER ``priority`` than the generic ``modsec_audit_log`` rule so a ModSec
 # event classifies as its specific sub-rule first, falling back to the generic.
+# Same status as the list above: sample starter content for a fresh install.
 _MODSEC_SUBRULES: tuple[tuple[str, str, str], ...] = (
     ("modsec_xss", "941", "ModSecurity OWASP CRS XSS (rule.id 941xxx)"),
     ("modsec_sqli", "942", "ModSecurity OWASP CRS SQL injection (rule.id 942xxx)"),
@@ -3500,18 +3517,23 @@ _MODSEC_SUBRULES: tuple[tuple[str, str, str], ...] = (
 
 
 def default_rule_catalog() -> list[RuleDefinition]:
-    """Build the pre-baked rule catalog: the 13 ``event.module`` rules plus the 5
+    """Build the SAMPLE starter catalog: 13 ``event.module`` rules plus the 5
     ModSec sub-rules. ModSec sub-rules carry a lower ``priority`` (50) than the
-    generic rules (100) so they classify first; nothing here is hardcoded beyond
-    seeding these real detections — operators can edit/disable/extend freely."""
+    generic rules (100) so they classify first.
+
+    Every entry here is illustrative starter content taken from one reference
+    environment, and this function only ever seeds an EMPTY catalog (see
+    ``Preferences.maybe_seed_rule_catalog``) — so it shapes FRESH INSTALLS ONLY and
+    never overwrites operator edits. Operators are expected to edit, disable, or
+    replace these with the detections their own SIEM actually emits."""
     rules: list[RuleDefinition] = [
         RuleDefinition(
             name=name,
-            description=f"Upstream detection '{name}' (event.module).",
+            description=f"Sample detection '{name}' (event.module) — replace with your own.",
             match=RuleMatch(field="event.module", op="equals", value=name),
             priority=100,
         )
-        for name in _REAL_EVENT_MODULES
+        for name in _SAMPLE_EVENT_MODULES
     ]
     rules.extend(
         RuleDefinition(
