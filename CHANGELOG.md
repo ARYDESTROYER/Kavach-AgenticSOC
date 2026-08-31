@@ -89,6 +89,78 @@ and, just as importantly, makes each of these conditions a state an operator can
   a realistic alert serialises to ~10 KB and twelve of those would be several times
   the per-case token budget, routing every case to `needs_human` on cost alone.
   `["*"]` is available for deployments that raise the budget to match.
+- **One bulk analyst action can no longer flood the precedent window, and the window is
+  now genuinely newest-first.** Stratifying the bounded precedent projection by rule
+  identity fixed only the outer half of the starvation: inside every rule's bucket the
+  newest-first tiebreak still filled the slots with whatever outcome the deployment
+  currently produces most of, so a corpus could end up unanimous about a rule it has
+  never actually seen resolved two ways. The window is now round-robined over an
+  ORDERED LIST of projection metadata keys (`precedent.window.stratify_by`, defaulting
+  to rule identity then confirmed outcome) rather than a single hard-coded axis; a list
+  of keys was chosen over a second boolean so the selector — and the config type —
+  learn nothing about what a rule or an outcome is. An axis whose values are all
+  identical is skipped, so a single-rule or single-outcome deployment still degrades to
+  a plain newest-first window, and the shipped single-axis behaviour is unchanged
+  byte-for-byte. The second key is the analyst's CONFIRMED OUTCOME rather than the
+  agent's own verdict: the two differ exactly when an analyst overturned the agent, and
+  on a rule the agent calls the same way every time a verdict axis is all-identical,
+  gets skipped, and lets the newest-first tiebreak evict precisely those corrections —
+  the most valuable precedent in the corpus, and the only outcome key the precedent
+  authority actually counts. `stratify_by_rule` is kept as a deprecated alias and is now
+  the master switch for window fairness (the keys and the admission cap, plus the scan's
+  early exit), so a stored preference keeps switching fairness off; the two ordering
+  fixes below are unconditional and apply on that path too.
+  Alongside it, a SOFT per-transaction admission cap (a fraction of the window, never an
+  absolute count) stops one bulk confirmation buying more than half the slots; over-cap
+  cases are DEFERRED to the back of the ranking rather than dropped, so the window still
+  fills to its full size. Bulk case actions now stamp a transaction id on the history
+  entries they write; cases labelled before that marker existed fall back to a coarse
+  hour bucket of the confirming timestamp, which is approximate and documented as such.
+  Two ordering defects are fixed in the same pass: the two terminal statuses were paged
+  and sorted SEPARATELY and then concatenated, so the window was never actually
+  globally newest-first (they are now merge-sorted, with an unusable `created_at`
+  ranking last rather than silently first); and one shared scan budget let the larger
+  CLOSED population exhaust the bounded scan before any RESOLVED case — the strongest
+  analyst ground truth — was read at all (the budget is now shared per status, in whole
+  pages, with the leftover spent afterwards so a single-status deployment still scans
+  the full cap). The lower-trust `model_unconfirmed` tier reuses the same axes and cap,
+  but scans CLOSED cases only: a RESOLVED case is analyst-decided by construction and
+  can never be an unconfirmed candidate, so sharing the confirmed tier's status list
+  spent half that tier's budget — and half its recurrence evidence — on a status that
+  yields nothing.
+  **No migration, no backfill, and no forced re-embed:** the corpus source signature
+  excludes the new fields and appends them only when they are non-default, so a default
+  deployment's cached signature is byte-identical and upgrading does not re-embed a
+  corpus at the operator's expense.
+
+- **The agent no longer reads its own verdict back as analyst ground truth.** Every
+  analyst-confirmed precedent chunk opened `Resolved case X: analyst-confirmed outcome
+  {outcome}; model verdict {verdict}; …` and was rendered under the heading
+  "Prior analyst decisions (baseline)" — so the second clause of a sentence claiming
+  human provenance was the model's OWN prior output. Retrieved during a later
+  investigation of the same pattern, that made the agent's earlier escalations look
+  like confirmations of themselves, and a bad streak could ratify itself. A second,
+  compounding defect made it worse: prompt rendering truncates each chunk at 600
+  characters, and the analyst's note sat LAST while the model verdict sat at offset
+  ~67 — a realistic 365-character note started at offset 523, so the analyst's actual
+  reasoning was reliably amputated and the model's verdict reliably survived. The
+  verdict clause is removed from the chunk TEXT (it remains in chunk metadata, which
+  is what precedent promotion and threat-context already read, and which the keyword
+  tokeniser still indexes, so retrieval on the term is unchanged), and the outcome
+  plus the analyst note now lead the chunk so truncation can only ever cut
+  machine-derived context. The case id moved out of that leading clause with it: as a
+  prefix it made "a maximum-length analyst note always fits the budget" depend on how
+  long the id happened to be, and at the 37-character ids the product actually mints
+  the block ran to 611 characters and cut the tail off a long note anyway. It now
+  renders as a reference AFTER the analyst's words, on the machine-derived side of the
+  boundary, so the guarantee holds for every case. Both tiers are now built from an explicit per-tier
+  ALLOWLIST of field names — a value whose name is not on the list renders as nothing
+  — because the read side handles chunk text opaquely and could never have caught the
+  regression. The lower-trust `model_unconfirmed` tier keeps its model verdict (that
+  is its purpose) but now leads with its "NOT reviewed or confirmed by an analyst"
+  disclaimer, and keeps its trust class and shared document identity so a later
+  analyst confirmation still upgrades it in place. **No migration and no backfill:**
+  stored chunks re-render with the new shape on their next natural projection.
 
 - **The MFA enrollment QR code is now actually scannable.** The hand-rolled QR encoder
   carried three ISO/IEC 18004 conformance defects: it never placed the two
@@ -620,6 +692,31 @@ and, just as importantly, makes each of these conditions a state an operator can
   both while nothing is typed and while the request is in flight; the inert treatment
   now excludes the busy state, so clicking Sign in keeps the gradient and shows the
   spinner instead of flattening to grey.
+- **A log source now DECLARES its severity ladder instead of the suite guessing it.**
+  Every severity surface (the case severity chip, the Noise-Reduction band split, the
+  OCSF `severity_id` a normaliser stamps, a feed's `severity_floor` gate) used to
+  reconstruct a source's native range from a mix of connector type and the magnitude of
+  the value itself — `raw <= 10 ? raw * 10 : raw`. That guess cannot tell a genuinely low
+  0-100 score from a high 0-10 rating, and it inverted both: an OCSF Informational score
+  of 8 read as High, while a rule level of 12 from a source the type branch could not
+  classify read as Low. A source now
+  carries ONE number, `severity_scale_max` (**Log Sources → the source → Advanced →
+  Severity ladder maximum**), and every surface projects through the same formula,
+  `min(100, max(0, raw / severity_scale_max × 100))`.
+
+  **What an operator must do:** *declare `severity_scale_max` for any source that does
+  not rate severity on 0-100* — for example `10` for a 0-10 ladder, or `16` for a 0-16
+  rule level. A source that leaves it blank is read AS-IS on 0-100 (the identity
+  projection, which is what every OCSF normaliser already emits). One connector ships a
+  seeded default (a 0-16 rule level), applied only where the operator has declared
+  nothing; declaring your own value always wins, and the seed then stands aside.
+
+  No migration, no backfill, and no new required config: the field is optional
+  everywhere, already-stored source configs validate unchanged, and nothing is persisted
+  onto a case. Note that the durable Noise-Reduction counters are bucketed by band at
+  WRITE time, so a band split recorded under a different ceiling cannot be re-projected —
+  the posture comparison reports itself unavailable across such a boundary rather than
+  crediting the change as a measurement.
 - **The top KPI is Critical alone**, not Critical/High, and deep-links to that
   severity.
 - **Demo mode moved into the top bar.** The banner took a full-width strip above

@@ -770,3 +770,14 @@ OCSF_SEVERITY_TO_SCORE = {0: 0.0, 1: 10.0, 2: 30.0, 3: 50.0, 4: 75.0, 5: 90.0, 6
 # here, so there is exactly one place to tune them. Used as the shared band vocabulary
 # for the advisory severity axis + the Noise-Reduction funnel's per-band buckets.
 SEVERITY_BANDS = ("critical", "high", "medium", "low", "info")
+
+# The DEFAULT ceiling of a source's native severity ladder, used whenever the
+# operator has DECLARED none (``config.SourceInstance.severity_scale_max`` is ``None``,
+# or the event's source cannot be resolved at all).
+#
+# 100 is the canonical OCSF ``severity_score`` ceiling every normaliser in
+# ``app/ocsf/`` already produces, so an undeclared source projects through the
+# IDENTITY. That is the honest default: with no declaration we have no evidence
+# that the number means anything other than what it says, and guessing a ladder
+# from a value's magnitude is exactly the bug this constant retires.
+DEFAULT_SEVERITY_SCALE_MAX = 100.0

@@ -10351,3 +10351,71 @@
   `evidence_fields`.**
 - Status: done
 - Next: commit and raise the PR against `Testing`.
+
+### 2026-08-30 20:30Z — orchestrator + sub-agent fleet — P1 severity ladder + Items F/G (precedent self-consumption)
+- Context: two briefs. (1) P1 "ship first": every case rendered Critical while its Risk column
+  read 7-47, because the severity ladder was inferred from SIEM vendor plus ingest mode and fell
+  through to a 0-10 assumption for every pull Elastic/OpenSearch/generic source. (2) Auto-close
+  remediation Items F and G: the agent was reading its own prior verdicts back as analyst ground
+  truth, and one bulk analyst action could own the whole bounded precedent window.
+- Did:
+  - **Recon first.** Both briefs were written against `0972ac0a`, which was not in the local
+    tree at session start (HEAD was `a799c76`). 12 parallel readers re-located every anchor by
+    symbol. Found real brief errors: `backend/app/evidence_fields.py` did not exist at `a799c76`
+    (it arrives WITH `#101`); `_band_of_case` is in `engine/`, not `stores/`; `SourceUpsert` is in
+    `routes.py`, not `config.py`; `mix.tsx` is under `soc/dashboard/`; the fifth KPI label is
+    `Auto-Resolved`, hyphenated. Also found two live bugs the briefs did not know about: the
+    never-drop-on-error window contract is already dead code (`relative_to_millis` never raises and
+    returns NOW for an unparseable value), and G1's root cause is bigger than described (the PRIMARY
+    close path parses a disposition and never assigns it, so it can never produce ground truth).
+    Resolved all 17 open questions into a binding decisions file before any code was written.
+  - **P1.** A source now DECLARES `severity_scale_max` (typed on `SourceInstance` AND `SourceUpsert`,
+    carried forward on omission via `model_fields_set` — without that it is wiped on every
+    enable/disable, the exact Round-9 `configured_secrets` bug). One projection,
+    `min(100, max(0, raw / ceiling * 100))`, shared with `ocsf/model.score_to_severity_id`; all 370
+    legacy string-alias combinations proven byte-identical. Vendor knowledge demoted to a config-time
+    seed; `_DEMO_SOURCE_IDS` retired. Saturation emits a third provenance token
+    `source_out_of_range` rather than claiming source provenance for a band our own arithmetic
+    invented. `band_of_case()` promoted public and the seven direct readers routed through it — five
+    of them were reading `None` in production, so the severity term of attention-queue ranking was
+    contributing exactly zero.
+  - **F.** Deleted the `model verdict {verdict}` clause from the rendered precedent text; kept
+    `metadata['verdict']`. Measured the compounding defect first: with a 365-char analyst note the
+    chunk was 903 chars, `model verdict` at offset 67 and `Analyst note:` at 523, against a 600-char
+    fence — so 77 of 365 analyst characters reached the model and the model's own verdict reached it
+    every time. Reordered so human provenance leads; the note now survives whole and total length
+    went DOWN (903 -> 882). Both tiers now build from an explicit field allowlist, proven by mutation.
+  - **G.** `stratified_selection` generalised to N ordered axes via nested round-robin, single-axis
+    contract byte-identical. `_source_signature` byte-identical at defaults, so no deployer pays a
+    full-corpus re-embed for a schema change. Fixed the global ordering bug: the projection scan
+    walked terminal statuses in sequence and concatenated, so its input was never globally
+    newest-first, and one shared scan budget let CLOSED starve RESOLVED.
+- Decisions: the adversarial review (5 lenses, every finding independently refuted before action)
+  produced 17 confirmed findings on P1 and 12 on F/G. Two are worth recording because they overturned
+  a decision:
+  1. **My DECISIONS Q4 was wrong in part.** Retiring `_DEMO_SOURCE_IDS` is behaviour-preserving on
+     the case-band READ path but NOT on the demo INGEST path: `demo-qradar` rates on a native 1-10
+     ladder and demo sources are read-time overlays that never enter `Preferences.sources`, so they
+     cannot declare a ceiling. Uncaught, that storyline's alert would have collapsed 90.0 -> 10.0,
+     byte-identical to its own benign noise. Fixed in the fixture module.
+  2. **The reviewers overrode the brief on G's axis and would have made the item a no-op.** They
+     changed the default to `["rule_identity","outcome"]` on the correct principle that analyst
+     ground truth outranks the model's judgement. Measured against the corpus shape that produced
+     the outage (bulk action putting false_positive/NEEDS_HUMAN at the head of every rule bucket):
+     rule-only selects 0/200 FALSE_POSITIVE, rule+outcome selects 2/198 — indistinguishable from the
+     defect — rule+verdict 92/108, rule+outcome+verdict 94/106. Analyst outcomes are near-uniform by
+     construction, so the compounding failure lives entirely in the verdict dimension. Shipped all
+     three axes, ground truth outermost, with a regression test pinning the BEHAVIOUR not the names.
+- Tests: backend **2934 collected, 0 failures** with `-p no:randomly` (the 3 network/AWS-env
+  deselects are environmental and proven so: this sandbox injects `AWS_ACCESS_KEY_ID` and has
+  outbound HTTPS, so `dshield` really answers). One ordering-dependent failure,
+  `test_state_store_sql.py::test_batch_submission_lease_converges_across_independent_sql_stores`,
+  was **proven pre-existing** by reproducing it 3/3 on a clean worktree of `0972ac0` with none of
+  this work applied. Console **311 files / 2153 passed**, zero stderr; eslint 0/0 at
+  `--max-warnings=0`; design gates 6/6; `check:types` no drift; ruff E9/F63/F7/F82 clean.
+  **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged, and
+  `git diff` on `risk.py`/`signatures.py` empty.** Promotion still disabled by default, pinned.
+- Status: done for P1 + F + G; the remaining brief items (P3, P4, C, D, E, A, B, I, G1, H,
+  agnosticism lint) are NOT started and are tracked in the PR description.
+- Next: PR into `Testing` (the branch is protected by the required `CI passed` aggregate, so a
+  direct push is declined by design). Then P4's store-level windowing, which blocks P3 and P4 UI.

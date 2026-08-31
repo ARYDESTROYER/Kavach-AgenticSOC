@@ -23,6 +23,7 @@ from ..constants import (
 )
 from ..models import Case
 from ..utils import stable_signature
+from .priority import band_of_case
 
 _MAX_INPUT_REFS = 12
 _MAX_RELATED = 12
@@ -147,7 +148,7 @@ def _was_escalated(case: Case) -> bool:
     )
 
 
-def build_case_lineage(case: Case) -> dict[str, Any]:
+def build_case_lineage(case: Case, prefs: Any = None) -> dict[str, Any]:
     """Project one persisted case into an inspectable funnel-lineage row.
 
     The clustering portion is the exact same bounded/redacted contract used by
@@ -156,6 +157,12 @@ def build_case_lineage(case: Case) -> dict[str, Any]:
     ``funnel_stage`` explains which aggregate terminal branch currently accounts
     for the row (all non-auto-cleared cases are routed to the analyst/escalated
     branch in the aggregate Noise Reduction view).
+
+    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks) and is used
+    only to RESOLVE the advisory severity band through
+    :func:`app.engine.priority.band_of_case` — ``Case.severity_band`` is a read-time
+    presentation field that no production write path persists, so reading the attribute
+    directly reported an empty severity on every real row.
     """
     clustering = build_clustering_explanation(case)
     status = _enum_value(case.status)
@@ -197,7 +204,7 @@ def build_case_lineage(case: Case) -> dict[str, Any]:
         "case_id": case.case_id,
         "display_id": case.case_number or case.case_id,
         "created_at": case.created_at,
-        "severity": str(case.severity_band or ""),
+        "severity": str(band_of_case(case, prefs) or ""),
         "clustering": clustering,
         "outcome": {
             "key": outcome_key,

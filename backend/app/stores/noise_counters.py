@@ -19,8 +19,20 @@ The KV value is::
                                   "suppressed": int, "ignored": int,
                                   "by_source": {"<source_id>": {"ingested": {band: int},
                                                 "clustered": {band: int}, "suppressed": int,
-                                                "ignored": int}, ...}}, ...},
+                                                "ignored": int,
+                                                "severity_scale_max": float|None}, ...}}, ...},
      "since": "<iso of first record>"}
+
+``severity_scale_max`` records the severity-ladder CEILING the writer used to BAND that
+source's counts in that hour. It lives ONLY on the per-source sub-block, never on the
+pooled per-hour totals: one bucket pools every source that ticked that hour, so a single
+number there would describe none of them. It is the only durable evidence of which ladder
+a historical band split came from — the tallies are bucketed by band AT WRITE TIME and
+retained for :data:`_RETENTION_HOURS`, so once written a band split can never be
+re-projected onto a different ceiling. ``None`` (or an absent key) means "not provable":
+either the counts predate this stamp, or two writes into the same hour+source declared
+DIFFERENT ceilings, so that hour's split is a mixture. Readers must treat a ``None`` as
+"this window's band split cannot be shown to share one ladder", never as a default.
 
 The pooled per-hour totals are UNCHANGED (byte-identical) — the ``by_source`` nested map
 (A5.4 coverage observability) is a purely additive dimension: an old doc that predates it
@@ -69,11 +81,18 @@ def _zero_bands() -> dict[str, int]:
     return {b: 0 for b in SEVERITY_BANDS}
 
 
-def _zero_counts() -> dict[str, Any]:
+def _zero_counts(*, with_scale: bool = False) -> dict[str, Any]:
     """A fresh zero ``{ingested, clustered, suppressed, ignored}`` count block (the shape of
-    both a per-hour total and one per-source sub-bucket)."""
-    return {"ingested": _zero_bands(), "clustered": _zero_bands(),
-            "suppressed": 0, "ignored": 0}
+    both a per-hour total and one per-source sub-bucket).
+
+    ``with_scale`` adds the per-source ``severity_scale_max`` stamp (``None`` = not yet
+    recorded). It is OFF by default so the pooled per-hour total keeps exactly its
+    previous key set."""
+    out: dict[str, Any] = {"ingested": _zero_bands(), "clustered": _zero_bands(),
+                           "suppressed": 0, "ignored": 0}
+    if with_scale:
+        out["severity_scale_max"] = None
+    return out
 
 
 def _safe_int(value: Any) -> int | None:
@@ -84,14 +103,40 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _norm_counts(raw: Any) -> dict[str, Any]:
+def _safe_scale_max(value: Any) -> float | None:
+    """Coerce a recorded severity ceiling to a POSITIVE FINITE float, else ``None``.
+
+    A bool, a non-number, ``nan``, ``±inf`` and a non-positive value are all "not a
+    ceiling" and read as ``None`` — the same fail-closed reading the projection itself
+    uses. ``inf`` is rejected as deliberately as ``0``: it survives every ``> 0`` test but
+    can only ever have produced an all-informational band split."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        ceiling = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(ceiling) or ceiling <= 0:
+        return None
+    return ceiling
+
+
+def _norm_counts(raw: Any, *, with_scale: bool = False) -> dict[str, Any]:
     """Parse a ``{ingested, clustered, suppressed, ignored}`` count block (NO nested
     ``by_source``) — the shape of both a whole-bucket total and one per-source sub-bucket.
-    Coerces every band to a non-negative int, drops unknown bands, never raises."""
+    Coerces every band to a non-negative int, drops unknown bands, never raises.
+
+    ``with_scale`` additionally preserves the per-source ``severity_scale_max`` stamp.
+    It is OFF by default, so the POOLED per-hour total is byte-identical to before (the
+    stamp is meaningless there — one bucket pools every source that ticked that hour) AND
+    so a caller that only wants counts cannot accidentally carry a ceiling forward. It
+    MUST be on wherever a stored sub-block is re-normalised, or the stamp is silently
+    stripped on the next tick."""
     ingested = _zero_bands()
     clustered = _zero_bands()
     suppressed = 0
     ignored = 0
+    scale_max: float | None = None
     if isinstance(raw, dict):
         for band, n in (raw.get("ingested") or {}).items():
             if band in ingested:
@@ -101,16 +146,22 @@ def _norm_counts(raw: Any) -> dict[str, Any]:
                 clustered[band] = max(0, _safe_int(n) or 0)
         suppressed = max(0, _safe_int(raw.get("suppressed")) or 0)
         ignored = max(0, _safe_int(raw.get("ignored")) or 0)
-    return {"ingested": ingested, "clustered": clustered,
-            "suppressed": suppressed, "ignored": ignored}
+        scale_max = _safe_scale_max(raw.get("severity_scale_max"))
+    out: dict[str, Any] = {"ingested": ingested, "clustered": clustered,
+                           "suppressed": suppressed, "ignored": ignored}
+    if with_scale:
+        out["severity_scale_max"] = scale_max
+    return out
 
 
 def _norm_bucket(raw: Any) -> dict[str, Any]:
     """Parse one stored bucket into a well-formed ``{ingested, clustered, suppressed,
     ignored, by_source}`` dict, coercing every band count to a non-negative int and
     dropping any unknown band. The ``by_source`` map (A5.4) is additive — a pre-migration
-    bucket with no ``by_source`` key reads as ``{}``. Never raises — a corrupt bucket
-    reads as all-zero with no per-source rows."""
+    bucket with no ``by_source`` key reads as ``{}``. Each sub-block additionally keeps
+    its ``severity_scale_max`` stamp (``None`` when it predates the stamp or the hour is a
+    mixture); the POOLED total deliberately has no such key. Never raises — a corrupt
+    bucket reads as all-zero with no per-source rows."""
     out = _norm_counts(raw)
     by_source: dict[str, Any] = {}
     if isinstance(raw, dict):
@@ -119,7 +170,7 @@ def _norm_bucket(raw: Any) -> dict[str, Any]:
             for sid, sub in raw_by_source.items():
                 if sid is None:
                     continue
-                by_source[str(sid)] = _norm_counts(sub)
+                by_source[str(sid)] = _norm_counts(sub, with_scale=True)
     out["by_source"] = by_source
     return out
 
@@ -151,19 +202,51 @@ def _fold_counts(out: dict[str, Any], delta: dict[str, Any]) -> None:
     out["ignored"] += max(0, _safe_int(delta.get("ignored")) or 0)
 
 
+def _merge_scale_max(
+    stored: Any, incoming: float | None, *, had_counts: bool
+) -> float | None:
+    """Reconcile the severity ceiling recorded on ONE (hour, source) sub-block.
+
+    The counts in a sub-block are already bucketed BY BAND, so once two writes into the
+    same hour+source used different ceilings that hour's split is an unreconstructable
+    mixture. The rules are therefore fail-closed:
+
+    * nothing stored yet, and the sub-block carried no counts → adopt ``incoming``
+      (including ``None``, which honestly means "the writer did not record one");
+    * stored == incoming → unchanged;
+    * anything else (a missing incoming over existing counts, or a genuine disagreement)
+      → ``None``, i.e. "this hour's split cannot be shown to come from one ladder".
+
+    Never raises. Pure."""
+    stored_ceiling = _safe_scale_max(stored)
+    if not had_counts and stored_ceiling is None:
+        return incoming
+    if stored_ceiling is not None and incoming is not None and stored_ceiling == incoming:
+        return stored_ceiling
+    return None
+
+
 def _merge_delta(bucket: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
     """Fold ``delta`` into a normalised ``bucket`` (returns a fresh dict). Unknown bands
     are ignored; counts are clamped non-negative. The pooled totals are folded exactly as
     before (byte-identical); when ``delta`` carries a ``source_id`` the SAME counts are
     ALSO folded into ``by_source[source_id]`` (A5.4) so the per-source breakdown always
-    sums to the pooled total."""
+    sums to the pooled total. An optional ``delta["severity_scale_max"]`` records the
+    ceiling that banded those counts onto that SUB-BLOCK only (see
+    :func:`_merge_scale_max`); the pooled totals never carry it."""
     out = _norm_bucket(bucket)
     _fold_counts(out, delta)
     sid = delta.get("source_id")
     if sid is not None and str(sid):
         key = str(sid)
-        sub = out["by_source"].get(key) or _zero_counts()
+        sub = out["by_source"].get(key) or _zero_counts(with_scale=True)
+        had_counts = not _delta_is_empty(sub)
         _fold_counts(sub, delta)
+        sub["severity_scale_max"] = _merge_scale_max(
+            sub.get("severity_scale_max"),
+            _safe_scale_max(delta.get("severity_scale_max")),
+            had_counts=had_counts,
+        )
         out["by_source"][key] = sub
     return out
 
@@ -349,8 +432,19 @@ class NoiseCounterStore:
             for sid, sub in (nb.get("by_source") or {}).items():
                 agg = by_source.get(sid)
                 if agg is None:
-                    agg = _zero_counts()
+                    agg = _zero_counts(with_scale=True)
                     by_source[sid] = agg
+                    agg["severity_scale_max"] = sub.get("severity_scale_max")
+                else:
+                    # Summing hours only preserves a band split when EVERY contributing
+                    # hour banded on the same recorded ceiling. A missing or differing
+                    # stamp makes the summed split a mixture — record that as None rather
+                    # than picking a winner.
+                    agg["severity_scale_max"] = _merge_scale_max(
+                        agg.get("severity_scale_max"),
+                        _safe_scale_max(sub.get("severity_scale_max")),
+                        had_counts=True,
+                    )
                 for band in SEVERITY_BANDS:
                     agg["ingested"][band] += sub["ingested"][band]
                     agg["clustered"][band] += sub["clustered"][band]
@@ -395,6 +489,10 @@ class NoiseCounterStore:
             # A5.4 coverage observability — durable per-source ingest/clustered/drop
             # breakdown over the window (empty ``{}`` for pre-migration docs). Additive:
             # existing consumers (build_noise_reduction) read only the pooled keys above.
+            # Each row also carries ``severity_scale_max``: the ONE severity ceiling every
+            # contributing hour recorded for that source, or ``None`` when the summed band
+            # split mixes ladders (or predates the stamp). It is the only evidence a
+            # reader has that two windows' band splits are comparable at all.
             "by_source": by_source,
         }
 

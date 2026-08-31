@@ -16,6 +16,7 @@ This module defines the schema and the loader for the secret tier. The preferenc
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Literal, Mapping, Sequence
@@ -1958,10 +1959,65 @@ class PrecedentWindowConfig(BaseModel):
     rule's precedent — precedent starvation again, this time triggered by an operator
     doing exactly what the product asked of them. Stratifying round-robin across rule
     identities gives every active rule an equal floor within the same bounded window.
+
+    Rule identity alone is not enough: INSIDE one rule's bucket the newest-first
+    tiebreak has the same shape one level down, so the slots fill with whatever outcome
+    the deployment currently produces most of. ``stratify_by`` is therefore an ORDERED
+    list of METADATA KEYS rather than a second boolean — a boolean would bake the axis
+    names into the type, while a key list keeps this block ignorant of what a rule or an
+    outcome is.
     """
 
     size: int = Field(default=200, ge=1, le=5000)
+    #: DEPRECATED alias, kept so a stored pre-``stratify_by`` preference keeps working.
+    #: It is now the master switch: ``False`` turns window fairness off entirely — the
+    #: axes AND the admission cap — and restores the projection scan's early exit.
+    #: It does NOT restore the pre-stratification ORDERING: the globally newest-first
+    #: merge across the terminal statuses, and the fair per-status scan budget, are
+    #: UNCONDITIONAL. Both fix an input-ordering contract the selector always
+    #: documented and the concatenated per-status pages never actually met.
     stratify_by_rule: bool = True
+    #: The ordered projection METADATA KEYS to round-robin over.
+    #:
+    #: BOTH ground-truth axes are carried, ground truth OUTERMOST:
+    #:
+    #: ``outcome`` — the ANALYST-CONFIRMED label — outranks ``verdict`` because they are
+    #: different facts: an analyst who overturns the agent changes the outcome and
+    #: leaves the verdict alone, so ranking the model's own judgement above the human's
+    #: would starve the window of exactly the corrections that are worth the most.
+    #: ``outcome`` is also the only one of the two the precedent authority counts
+    #: (``engine/precedent.py`` tallies outcomes, never verdicts).
+    #:
+    #: ``verdict`` — the model's own judgement — is nevertheless REQUIRED as the inner
+    #: axis, and dropping it makes this whole block a no-op. Measured on a window of
+    #: 200 drawn from a pool where a recent bulk analyst action put a run of
+    #: ``outcome=false_positive / verdict=NEEDS_HUMAN`` at the head of every rule
+    #: bucket: rule-only selects 0 FALSE_POSITIVE / 200 NEEDS_HUMAN, ``rule+outcome``
+    #: selects 2 / 198 — indistinguishable from the defect — while ``rule+verdict``
+    #: selects 92 / 108 and ``rule+outcome+verdict`` selects 94 / 106. The reason is
+    #: structural: a deployment's analyst outcomes are near-uniform by construction
+    #: (an analyst confirms what the detection was FOR), so ``outcome`` has almost no
+    #: distinct values to round-robin over, while the compounding failure this window
+    #: exists to break lives ENTIRELY in the verdict dimension.
+    #:
+    #: An axis with a single distinct value is skipped, so neither costs anything on a
+    #: deployment where it happens to be uniform.
+    #:
+    #: Empty disables the AXES only. The admission cap is governed separately by
+    #: ``max_transaction_fraction`` (and by the master switch above), so an empty list
+    #: is NOT the same thing as plain newest-N. An axis whose values are all identical
+    #: is skipped, so a single-rule or single-outcome deployment falls back to the
+    #: remaining axes, and then to newest-first, by itself.
+    stratify_by: list[str] = Field(
+        default_factory=lambda: ["rule_identity", "outcome", "verdict"], max_length=4
+    )
+    #: The largest SHARE of the window one operator transaction (a bulk analyst action,
+    #: or the coarse time bucket that stands in for one on cases labelled before the
+    #: batch marker existed) may occupy. A FRACTION, never an absolute count, so it does
+    #: not encode one deployment's volume. It is SOFT and DEFERRED: over-cap items move
+    #: to the back of the ranking instead of being dropped, so the window still fills to
+    #: ``size`` whenever ``size`` qualifying items exist. ``0`` or ``1.0`` = no cap.
+    max_transaction_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class PrecedentFutilityConfig(BaseModel):
@@ -2242,6 +2298,25 @@ def upgrade_feed(raw: Any) -> dict[str, Any]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# SEEDED severity-ladder ceiling — the suite's ONE piece of built-in vendor severity
+# knowledge, and the ONLY place it appears.
+#
+# It is a SEED, not behaviour: it is written once into a source's editable
+# ``severity_scale_max`` when that source is created (or adopted on its next load, if
+# it has no declaration yet), and from that moment every severity surface reads the
+# declared NUMBER. No read path anywhere branches on ``source_type``, and this is not a
+# lookup table — there is exactly one seeded connector, and an operator who disagrees
+# simply declares a different ceiling, which the seed then leaves alone.
+#
+# Wazuh asserts severity as ``rule.level`` on a 0..16 ladder (level 12 is CRITICAL there,
+# which a 0..100 reading would mislabel LOW). Sourced from the Wazuh rules
+# classification documentation; operators running a customised rule set should declare
+# their own ceiling.
+SEEDED_SCALE_SOURCE_TYPE = SourceType.WAZUH
+SEEDED_SEVERITY_SCALE_MAX = 16.0
+
+
 class SourceInstance(BaseModel):
     """One configured log source (a connector instance).
 
@@ -2271,8 +2346,71 @@ class SourceInstance(BaseModel):
     is_primary: bool = False
     config: dict[str, Any] = Field(default_factory=dict)        # non-secret connector config
     configured_secrets: list[str] = Field(default_factory=list)  # secret field names set (not values)
+    # The operator-DECLARED ceiling of this source's NATIVE severity ladder — the single
+    # number that describes any ladder (0..10, 0..16, 0..1000). Every severity surface
+    # projects a raw source severity through ONE formula,
+    # ``min(100, max(0, raw / severity_scale_max * 100))``
+    # (:func:`app.ocsf.model.project_severity_magnitude`).
+    #
+    # ``None`` means UNDECLARED: the projection then uses
+    # ``constants.DEFAULT_SEVERITY_SCALE_MAX`` (100), i.e. the IDENTITY on the canonical
+    # OCSF ``severity_score`` every normaliser already emits. That is the honest default —
+    # with no declaration there is no evidence the number means anything other than what
+    # it says, and guessing a ladder from a value's magnitude is the bug this field
+    # retires. Optional + defaulted, so EVERY already-stored source config still
+    # validates unchanged (no migration, no backfill).
+    #
+    # Strictly positive AND FINITE: a zero/negative ceiling can never divide, and an
+    # infinite one would silently read every severity as 0 while still claiming the
+    # source asserted it (see the coercing validator below, and the fail-open guard
+    # inside the projection itself).
+    severity_scale_max: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     created_at: str = Field(default_factory=iso_now)
     updated_at: str = Field(default_factory=iso_now)
+
+    @field_validator("severity_scale_max", mode="before")
+    @classmethod
+    def _coerce_severity_scale_max(cls, value: Any) -> Any:
+        """Fail-open coercion of a stored ceiling: anything unusable reads UNDECLARED.
+
+        A hand-edited / legacy config carrying ``0``, a negative, ``""``, a non-numeric
+        or a NON-FINITE (``inf``/``nan``) ceiling must not make the whole Preferences
+        document unloadable — it degrades to ``None`` (undeclared → the default 100
+        identity projection), exactly as if the operator had never declared one. The
+        strict ``gt=0``/``allow_inf_nan=False`` bounds above still reject an explicit bad
+        value on the typed API boundary (``SourceUpsert``).
+
+        ``inf`` matters as much as ``0`` here: it passes every ``> 0`` test, divides
+        without raising, and would read EVERY severity from that source as ``0.0``
+        (Informational) while the API echoed the ceiling back as JSON ``Infinity``."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(num) or num <= 0:
+            return None
+        return num
+
+    @model_validator(mode="after")
+    def _seed_severity_scale_max(self) -> "SourceInstance":
+        """SEED (never override) the declared ceiling for a connector we ship knowledge of.
+
+        This is where the suite's only piece of vendor severity knowledge lives, and it
+        lives here DELIBERATELY: at source construction/validation time, as a seeded
+        DEFAULT the operator may edit, NOT as a runtime lookup table consulted on every
+        read. Nothing downstream branches on ``source_type`` any more — the projection
+        reads one number.
+
+        Idempotent + no-op-safe: it fires only when the ceiling is still UNDECLARED, so
+        it seeds a newly created source AND adopts an already-stored one on its next
+        load, and it can never overwrite an operator's own declaration. It is not a
+        migration: no stored document is rewritten until the operator next saves that
+        source. To choose a different ceiling, declare one; the seed then stands aside."""
+        if self.severity_scale_max is None and self.source_type == SEEDED_SCALE_SOURCE_TYPE:
+            object.__setattr__(self, "severity_scale_max", SEEDED_SEVERITY_SCALE_MAX)
+        return self
 
     def index_patterns(self) -> list[IndexPattern]:
         """The configured FEEDS for this source (canonical parser).
@@ -2844,6 +2982,13 @@ class Preferences(BaseModel):
     rule_name_field: str = "rule.name"
     severity_field: str = "event.severity"
     severity_threshold: float = 0.0         # min numeric severity in scope
+    # NOTE — there is deliberately NO Preferences-level severity ceiling. A source's
+    # native severity ladder is declared per SOURCE (``SourceInstance
+    # .severity_scale_max``), because that is the only tier EVERY severity surface can
+    # read: the ingest paths (OCSF normalisation, the Noise-Reduction counters, the
+    # per-feed severity floor) resolve the ceiling from the event's own source, and a
+    # global fallback they could not see would make the case chip disagree with the
+    # funnel for the same raw number. Undeclared means the identity projection (100).
     in_scope_rules: list[str] = Field(default_factory=list)   # empty == all rules
     excluded_rules: list[str] = Field(default_factory=list)
 

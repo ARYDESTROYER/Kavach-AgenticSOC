@@ -20,6 +20,7 @@ from typing import Any
 from ..constants import DecisionBy, TERMINAL_CASE_STATUSES
 from ..models import Case, FeedbackEntry
 from .metrics import percentile, truncation_marker
+from .priority import band_of_case
 
 _VALID_ASSESSMENTS = frozenset({"agree", "partial", "disagree"})
 _EVALUABLE_OUTCOMES = frozenset(
@@ -281,24 +282,34 @@ def _comparison_measurement(
     return measurement
 
 
-def _stratum(case: Case) -> tuple[str, str]:
+def _stratum(case: Case, prefs: Any = None) -> tuple[str, str]:
+    """The (source, severity-band) mix stratum one feedback sample belongs to.
+
+    The severity half is RESOLVED via :func:`app.engine.priority.band_of_case` rather
+    than read off ``Case.severity_band``: that field is a read-time presentation value no
+    production write path persists, so the direct read collapsed every real case into a
+    single ``"unknown"`` severity stratum and the mix adjustment lost its severity axis
+    entirely. ``prefs`` is optional — it only resolves the source's declared severity
+    ceiling."""
     source = (case.source_id or case.source_name or "unknown").strip().lower() or "unknown"
-    severity = (case.severity_band or "unknown").strip().lower() or "unknown"
+    severity = (band_of_case(case, prefs) or "unknown").strip().lower() or "unknown"
     return source, severity
 
 
 def _mix_adjusted(
-    current: list[_FeedbackSample], baseline: list[_FeedbackSample]
+    current: list[_FeedbackSample],
+    baseline: list[_FeedbackSample],
+    prefs: Any = None,
 ) -> dict[str, Any]:
-    baseline_counts = Counter(_stratum(sample.case) for sample in baseline)
-    current_counts = Counter(_stratum(sample.case) for sample in current)
+    baseline_counts = Counter(_stratum(sample.case, prefs) for sample in baseline)
+    current_counts = Counter(_stratum(sample.case, prefs) for sample in current)
 
     base_groups: dict[tuple[str, str], list[_FeedbackSample]] = defaultdict(list)
     current_groups: dict[tuple[str, str], list[_FeedbackSample]] = defaultdict(list)
     for sample in baseline:
-        base_groups[_stratum(sample.case)].append(sample)
+        base_groups[_stratum(sample.case, prefs)].append(sample)
     for sample in current:
-        current_groups[_stratum(sample.case)].append(sample)
+        current_groups[_stratum(sample.case, prefs)].append(sample)
 
     baseline_total = len(baseline)
     current_total = len(current)
@@ -1013,10 +1024,27 @@ def _counter_total(value: Any) -> int | None:
     return total
 
 
+def _period_counter_total(block: dict[str, Any], key: str) -> int | None:
+    """The band-INDEPENDENT total for one counter key in a comparison window block.
+
+    Prefers the explicit ``<key>_total`` the caller computed from the pooled window
+    counters, and only falls back to summing a per-band map. That matters twice over: a
+    total does not depend on which severity ladder produced the split, so it survives a
+    ladder change that makes the band split itself incomparable; and the per-band
+    preceding-window remainder is clamped at zero per band, so summing it would inflate
+    the baseline whenever volume moved between bands."""
+    total = block.get(f"{key}_total")
+    if isinstance(total, bool):
+        total = None
+    if isinstance(total, (int, float)):
+        return max(0, int(total))
+    return _counter_total(block.get(key))
+
+
 def _noise_period(raw: dict[str, Any] | None, *, days: int) -> dict[str, Any]:
     block = raw or {}
-    ingested = _counter_total(block.get("ingested"))
-    clustered = _counter_total(block.get("clustered"))
+    ingested = _period_counter_total(block, "ingested")
+    clustered = _period_counter_total(block, "clustered")
     reduction = (
         max(0, ingested - clustered)
         if ingested is not None and clustered is not None
@@ -1068,12 +1096,23 @@ def _alert_volume(
         if status == "enough_data"
         else "insufficient_evidence"
     )
+    band_comparison = source.get("severity_band_comparison")
+    if not isinstance(band_comparison, dict):
+        band_comparison = {"available": False, "reason": "not reported"}
     return {
         "label": "Observed alert volume",
         "unit": "alerts",
         "status": status,
         "reason": reason,
         "window_basis": str(source.get("window_basis") or "rolling_hours"),
+        # Volume totals above are band-independent and stay comparable. A per-SEVERITY-BAND
+        # comparison is only meaningful when both windows banded on the same declared
+        # severity ceiling; when they did not, the split is withheld with the measured
+        # reason instead of being differenced into a fabricated per-band change.
+        "severity_band_comparison": {
+            "available": bool(band_comparison.get("available")),
+            "reason": str(band_comparison.get("reason") or ""),
+        },
         "current": current,
         "baseline": baseline,
         "delta": {
@@ -1098,7 +1137,9 @@ def _alert_volume(
                 "volume. Source changes and threat activity also move these counts, so up/down "
                 "is descriptive rather than automatically better/worse or causal. Counter "
                 "retention does not prove uninterrupted source or connector availability; "
-                "an outage can lower both totals."
+                "an outage can lower both totals. These totals are band-independent; a "
+                "per-severity-band comparison is reported only when both windows recorded "
+                "the same declared severity ceiling for every counted source."
             ),
         },
     }
@@ -1339,6 +1380,7 @@ def _period_comparison(
     tuning_records: list[dict[str, Any]] | None,
     tuning_available: bool,
     tuning_records_truncated: bool,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     current_start = end - timedelta(days=days)
     baseline_start = current_start - timedelta(days=days)
@@ -1358,7 +1400,7 @@ def _period_comparison(
     baseline_turnaround = _turnaround_summary(
         [sample for sample in turnaround if _in_window(sample.at, baseline_start, current_start)]
     )
-    mix = _mix_adjusted(current_feedback, baseline_feedback)
+    mix = _mix_adjusted(current_feedback, baseline_feedback, prefs)
     quality_truncated = truncated or (
         mix["comparable_mix_coverage"] is None
         or mix["comparable_mix_coverage"] < _MIX_MIN_COVERAGE
@@ -1469,12 +1511,17 @@ def agent_improvement_metrics(
     tuning_records: list[dict[str, Any]] | None = None,
     tuning_available: bool = False,
     tuning_records_truncated: bool = False,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     """Aggregate evidence for daily agent-effectiveness reporting.
 
     ``as_of`` is the exclusive UTC date boundary.  For example, ``2026-07-27``
     includes complete days through July 26 and never mixes a partial current day into
     a complete historical baseline.
+
+    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks) and is used
+    only to RESOLVE each case's advisory severity band for the mix strata — the
+    persisted attribute is always ``None`` on a real case.
     """
     current_days = max(1, int(current_days))
     baseline_days = max(1, int(baseline_days))
@@ -1498,7 +1545,7 @@ def agent_improvement_metrics(
     baseline_quality = _quality_summary(baseline_feedback)
     current_handling = _turnaround_summary(current_turnaround)
     baseline_handling = _turnaround_summary(baseline_turnaround)
-    mix = _mix_adjusted(current_feedback, baseline_feedback)
+    mix = _mix_adjusted(current_feedback, baseline_feedback, prefs)
 
     adjusted_current_agreement = mix["adjusted_current_agreement"]
     adjusted_baseline_agreement = mix["adjusted_baseline_agreement"]
@@ -1838,6 +1885,7 @@ def agent_improvement_metrics(
                 tuning_records=tuning_records,
                 tuning_available=tuning_available,
                 tuning_records_truncated=tuning_records_truncated,
+                prefs=prefs,
             ),
             "month_over_month": _period_comparison(
                 cases,
@@ -1853,6 +1901,7 @@ def agent_improvement_metrics(
                 tuning_records=tuning_records,
                 tuning_available=tuning_available,
                 tuning_records_truncated=tuning_records_truncated,
+                prefs=prefs,
             ),
         },
         "guardrails": {

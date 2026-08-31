@@ -222,7 +222,12 @@ class StandupService:
         # this window (created before it) approximate the prior equal window's open
         # snapshot — aggregated by the SAME headline_counts, deterministically.
         prior = _prior_window_cases(current, ref=ref, window_hours=window)
-        report = shift_report.build_shift_report(current, prior, sla=sla, now=ref)
+        # Thread the operator prefs so the attention queue can RESOLVE each case's
+        # severity band (it is a read-time field no production path persists) instead
+        # of reading an always-None attribute and scoring every case's severity at 0.
+        report = shift_report.build_shift_report(
+            current, prior, sla=sla, now=ref, prefs=prefs
+        )
         report["action_items"] = await self._action_items()
         return report
 

@@ -17,7 +17,11 @@ _FP_FEEDBACK_OUTCOMES = frozenset({"false_positive", "true_negative"})
 _TP_FEEDBACK_OUTCOMES = frozenset({"true_positive", "false_negative"})
 _FP_ANALYST_DISPOSITIONS = frozenset({"false_positive", "benign"})
 _TP_ANALYST_DISPOSITIONS = frozenset({"true_positive"})
-_CLASSIFICATION_ACTIONS = frozenset({"set_disposition", "confirm_fp"})
+#: The analyst actions that turn a model-derived disposition into ground truth. Public
+#: because the precedent projection needs the SAME vocabulary to find the entry that
+#: did the confirming; a second private copy would drift.
+CLASSIFICATION_ACTIONS = frozenset({"set_disposition", "confirm_fp"})
+_CLASSIFICATION_ACTIONS = CLASSIFICATION_ACTIONS  # historical private spelling
 
 
 def _value(item: Any, key: str) -> Any:

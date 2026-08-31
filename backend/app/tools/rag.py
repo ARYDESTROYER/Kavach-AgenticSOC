@@ -22,11 +22,11 @@ from collections import Counter
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
 from time import monotonic
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..config import Preferences
 from ..constants import CaseStatus, DecisionBy, Verdict
-from ..engine.analyst_outcomes import analyst_confirmed_outcome
+from ..engine.analyst_outcomes import CLASSIFICATION_ACTIONS, analyst_confirmed_outcome
 from ..engine.chunking import chunk_text
 from ..engine.precedent import (
     RULE_IDENTITY_KEY,
@@ -119,6 +119,36 @@ MANAGED_PROJECTION_SOURCES = FULLY_RECONCILED_SEED_SOURCES
 _RESOLVED_CASE_PAGE_SIZE = 200
 _RESOLVED_CASE_SCAN_CAP = 5000
 
+# The terminal statuses the CONFIRMED precedent scan walks, in a FIXED order. The scan
+# budget is shared out per status rather than consumed first-come: CLOSED is by far the
+# larger population in a self-running deployment, so one shared counter let it exhaust
+# the cap before RESOLVED — the analyst-RESOLVED cases — was read at all.
+_PRECEDENT_SCAN_STATUSES = (CaseStatus.CLOSED.value, CaseStatus.RESOLVED.value)
+
+# The ``model_unconfirmed`` tier scans CLOSED ONLY, and that is not an optimisation.
+# RESOLVED is reachable exclusively through the analyst case-action path, which stamps
+# ``DecisionBy.ANALYST`` on the way, and ``_unconfirmed_candidate`` rejects anything a
+# human decided — so ``RESOLVED ∩ (decision_by == AGENT)`` is empty BY CONSTRUCTION.
+# Sharing the confirmed tier's status list spent half this tier's budget on a status
+# that cannot yield a single candidate, halving its effective CLOSED coverage (and its
+# recurrence tallies, which are counted over whatever the scan saw) the moment a
+# deployment had any resolved cases at all.
+_UNCONFIRMED_SCAN_STATUSES = (CaseStatus.CLOSED.value,)
+
+# ``PrecedentWindowConfig`` fields that are DELIBERATELY excluded from the corpus
+# source signature's window dump, and appended separately only when they are not at
+# their default. Naively widening the dump would change the signature for every
+# deployment on upgrade and force a full, BILLABLE re-embed of the corpus purely
+# because the schema grew. A default-constructed config must therefore serialise to the
+# exact pre-change bytes; ``tests/test_precedent_authority.py`` pins that literal.
+_WINDOW_SIGNATURE_APPENDED_FIELDS = ("stratify_by", "max_transaction_fraction")
+
+# How coarsely the admission cap buckets time when a case carries no explicit batch
+# marker. Approximate ON PURPOSE, in both directions: it merges independent labels made
+# within the same hour, and splits one bulk action that straddles an hour boundary. The
+# alternative is no cap at all on exactly the historical backlog the cap exists for.
+_ADMISSION_TIME_BUCKET_SECONDS = 3600
+
 # --------------------------------------------------------------------------- #
 # The TWO precedent trust tiers.
 # --------------------------------------------------------------------------- #
@@ -175,6 +205,148 @@ PRECEDENT_RATIFICATION_ACKNOWLEDGEMENT = (
 # The analyst note is the one operator-authored free-text field that becomes durable
 # model-facing corpus text. Bound it hard.
 _ANALYST_NOTE_MAX_CHARS = 500
+
+# --------------------------------------------------------------------------- #
+# Precedent chunk TEXT — the field ALLOWLISTS.
+# --------------------------------------------------------------------------- #
+# ``_render_precedent_text`` emits ONLY the field names listed below, in exactly the
+# listed order, so neither of the two load-bearing properties can be lost by an
+# ordinary edit to a builder:
+#
+# 1. NO MODEL JUDGEMENT IN THE ANALYST-CONFIRMED TIER. That chunk is rendered under
+#    "## Prior analyst decisions (baseline)" and opens by claiming analyst
+#    provenance. Rendering the model's OWN verdict as the next clause of that same
+#    sentence is an autophagous loop: the agent reads its own earlier escalations
+#    back as if a human had confirmed them, and a bad streak ratifies itself. The
+#    verdict and confidence stay in METADATA, which is where every consumer already
+#    reads them (``engine/precedent.py`` reads metadata only; ``engine/threat_context.py``
+#    reads ``metadata['verdict']``).
+# 2. HUMAN-PROVENANCE CONTENT FIRST. ``agents.prompts.fence`` truncates every rendered
+#    chunk at 600 characters, so the tail of a long chunk never reaches the model at
+#    all. Under the old ordering a realistic 365-character analyst note began at
+#    offset 523 and only its first 77 characters survived, while the model verdict at
+#    offset 67 always did. The human fields now lead, and the block is deliberately
+#    CASE-ID-INDEPENDENT: the outcome clause plus a MAXIMUM-length note
+#    (``_ANALYST_NOTE_MAX_CHARS`` = 500) measures at most 557 characters — the longer
+#    of the two outcome tokens — for EVERY case, whatever its id, so it fits the
+#    600-char budget whole and only machine-derived context can be cut. The
+#    id used to prefix the outcome clause, which made the guarantee depend on the id's
+#    length — and the ids this product actually mints (``new_id("case-")`` = 37 chars)
+#    pushed the block to 611 and amputated the tail of a long note. The id is
+#    machine-derived context, so it now renders as ``case_ref`` on the machine side of
+#    the boundary, where truncation is allowed to reach it. The measurement is pinned
+#    by ``tests/test_precedent_corpus.py`` AGAINST A PRODUCT-MINTED ID; keep the human
+#    block short and id-free if you extend it.
+#
+# Adding a field to a tier means EDITING THE TUPLE, which is exactly what
+# ``tests/test_precedent_corpus.py`` asserts against.
+_PRECEDENT_HUMAN_TEXT_FIELDS: tuple[str, ...] = ("outcome", "analyst_note")
+
+# The case reference. Machine-derived (a minted uuid), so it sits on the machine side
+# of the human/machine boundary — but FIRST there, because it is what lets the
+# investigator name the precedent it is citing, and the fields after it are the ones
+# truncation should eat first. The ``model_unconfirmed`` tier does not use it: its
+# leading provenance disclaimer already carries the id.
+_PRECEDENT_CASE_REF_TEXT_FIELDS: tuple[str, ...] = ("case_ref",)
+
+# Case-derived context, shared by both tiers. Machine-produced, so it renders after
+# the human fields and is what truncation eats first. ``recommended_action`` is
+# model-authored ADVICE and is kept deliberately (it is part of the superset text
+# contract both indexing paths must agree on); it is not a claim about ground truth.
+_PRECEDENT_CONTEXT_TEXT_FIELDS: tuple[str, ...] = (
+    "entity",
+    "rules",
+    "risk",
+    "trigger",
+    "evidence",
+    "recommended_action",
+)
+
+_PRECEDENT_CONFIRMED_TEXT_FIELDS: tuple[str, ...] = (
+    _PRECEDENT_HUMAN_TEXT_FIELDS
+    + _PRECEDENT_CASE_REF_TEXT_FIELDS
+    + _PRECEDENT_CONTEXT_TEXT_FIELDS
+)
+
+# The ``model_unconfirmed`` tier is the ONE deliberate exception: carrying the
+# model's own unreviewed judgement is its entire purpose. It leads with the
+# disclaimer field so truncation can never drop "nobody confirmed this" while
+# keeping the judgement, and it has no analyst field because it has no analyst.
+_PRECEDENT_UNCONFIRMED_TEXT_FIELDS: tuple[str, ...] = (
+    ("unconfirmed_provenance", "model_judgement") + _PRECEDENT_CONTEXT_TEXT_FIELDS
+)
+
+# Field names that carry the MODEL's own outcome judgement about a case. None of
+# these may ever appear in ``_PRECEDENT_CONFIRMED_TEXT_FIELDS``.
+PRECEDENT_MODEL_JUDGEMENT_FIELDS: frozenset[str] = frozenset(
+    {
+        "model_judgement",
+        "verdict",
+        "model_verdict",
+        "model_outcome",
+        "confidence",
+        "model_confidence",
+        "decision_by",
+        "auto_close",
+    }
+)
+
+
+def _render_precedent_text(fields: tuple[str, ...], values: dict[str, str]) -> str:
+    """Render a precedent chunk from an ALLOWLIST of field names, in allowlist order.
+
+    The allowlist is the authority: a value whose key is not in ``fields`` is DROPPED
+    (and logged), never appended. That inversion is the whole point. The read side
+    renders ``chunk.text`` opaquely — ``agents/prompts.py`` fences the string without
+    inspecting it — so a model-derived field smuggled into a tier's text cannot be
+    caught downstream by anything. Here it produces nothing at all until a
+    contributor also edits the module-level tuple above, where a test can see it.
+    """
+    dropped = sorted(set(values) - set(fields))
+    if dropped:
+        logger.warning(
+            "Precedent chunk text dropped non-allowlisted field(s): %s",
+            ", ".join(dropped),
+        )
+    return " ".join(
+        segment
+        for name in fields
+        if (segment := str(values.get(name) or "").strip())
+    )
+
+
+def _case_entity_key(case: "Case") -> str:
+    """``type:value`` for the case entity (log-derived; stays UNTRUSTED-fenced)."""
+    return f"{case.entity.type.value}:{case.entity.value}"
+
+
+def _case_rule_list(case: "Case") -> str:
+    return ", ".join(case.rule_ids) or "n/a"
+
+
+def _case_trigger_sentence(case: "Case") -> str:
+    if case.trigger_reason and case.trigger_reason.sentence:
+        return case.trigger_reason.sentence
+    return "n/a"
+
+
+def _case_evidence_summary(case: "Case") -> str:
+    """The top-3 evidence summaries, exactly as both tiers have always bounded them."""
+    return "; ".join(e.summary for e in case.evidence[:3]) or "n/a"
+
+
+def _case_context_text_values(case: "Case") -> dict[str, str]:
+    """The shared machine-derived context segments for BOTH precedent tiers."""
+    return {
+        "entity": f"Observed entity {_case_entity_key(case)}.",
+        "rules": f"Rules: {_case_rule_list(case)}.",
+        "risk": f"Risk: {round(case.risk_score, 1)}.",
+        "trigger": f"Trigger: {_case_trigger_sentence(case)}.",
+        "evidence": f"Evidence: {_case_evidence_summary(case)}.",
+        "recommended_action": (
+            f"Recommended action: {case.recommended_action or 'n/a'}."
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -284,6 +456,63 @@ def _parse_iso(value: Any) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _metadata_axis(key: str) -> Callable[[dict[str, Any]], str]:
+    """A stratification axis that reads ONE metadata KEY off a projected item.
+
+    The indirection is the point: the window can be stratified on anything the
+    projection writes without the selector — or this factory — ever learning what a
+    rule or an outcome is. An absent key yields ``""``, which is a group like any
+    other, so a partially-stamped corpus degrades instead of raising.
+    """
+
+    def _read(item: dict[str, Any]) -> str:
+        return str((item.get("metadata") or {}).get(key) or "")
+
+    return _read
+
+
+def _admission_time_bucket(value: Any) -> str:
+    """Coarse, deterministic time bucket used when no explicit batch marker exists."""
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return ""
+    epoch = int(parsed.timestamp())
+    return f"t:{epoch - (epoch % _ADMISSION_TIME_BUCKET_SECONDS)}"
+
+
+def _window_signature_extras(window: "PrecedentWindowConfig") -> tuple[Any, ...]:
+    """The non-default later-added window fields, as stable signature members.
+
+    Empty for a default-constructed config — that is the whole contract: adding a field
+    to the window policy must not change the corpus source signature, because a changed
+    signature reseeds and re-embeds the entire corpus at the operator's expense.
+    """
+    from ..config import PrecedentWindowConfig as _Window
+
+    defaults = _Window()
+    out: list[Any] = []
+    for name in _WINDOW_SIGNATURE_APPENDED_FIELDS:
+        value = getattr(window, name, None)
+        if value != getattr(defaults, name, None):
+            out.append(f"precedent.window.{name}={value!r}")
+    return tuple(out)
+
+
+def _created_at_rank(case: "Case") -> tuple[int, float]:
+    """Sort key for a globally newest-first merge of separately-paged statuses.
+
+    A missing, blank or unparseable ``created_at`` cannot be shown to be newer than
+    anything, so it ranks LAST under the descending sort (``0`` in the first member)
+    rather than being silently treated as epoch-zero-old or as now-new. Python's sort is
+    stable and ``reverse=True`` does not reverse equal runs, so cases sharing a rank keep
+    the scan order they arrived in and the result stays deterministic.
+    """
+    parsed = _parse_iso(getattr(case, "created_at", "") or "")
+    if parsed is None:
+        return (0, 0.0)
+    return (1, parsed.timestamp())
 
 
 def is_bulk_ratified(case: "Case") -> bool:
@@ -557,7 +786,15 @@ class RagService:
             # The precedent WINDOW policy changes WHICH qualifying cases are projected
             # (size + per-rule stratification), so a settings change must reseed.
             # Appended, never inserted.
-            self._window_config().model_dump_json(),
+            #
+            # The dump EXCLUDES the later-added window fields, which are appended at the
+            # very end of this tuple and only when they differ from their defaults. A
+            # default-constructed window config therefore still serialises to the exact
+            # pre-change bytes, so growing this schema cannot by itself invalidate every
+            # deployment's cached signature and force a full, BILLABLE re-embed.
+            self._window_config().model_dump_json(
+                exclude=set(_WINDOW_SIGNATURE_APPENDED_FIELDS)
+            ),
             # The EMBEDDING SPACE the corpus is projected into.
             #
             # Scope note, so this is not mis-cited later: this term tracks the
@@ -575,6 +812,10 @@ class RagService:
             # existing ``EmbeddingSpaceMismatch``/``_reseed`` path already does on read.
             # Appended, never inserted.
             self._embedding_space()[0],
+            # The later-added window fields, appended ONLY when non-default so the
+            # tuple a default deployment produces is byte-identical to the pre-change
+            # one. See ``_WINDOW_SIGNATURE_APPENDED_FIELDS``.
+            *_window_signature_extras(self._window_config()),
         )
 
     def _unconfirmed_cfg(self) -> "UnconfirmedPrecedentConfig":
@@ -1465,28 +1706,37 @@ class RagService:
         Two identical deployments therefore accumulated materially different
         precedent, which is the control input for auto-close comparisons.
 
-        This builder is the SUPERSET of both: outcome, model verdict, entity, rules,
-        risk, trigger sentence, top-3 evidence summaries, recommended action and the
-        bounded/flattened analyst note. ``note`` is expected to have already passed
-        through :func:`_flatten_analyst_note`.
+        This builder is the SUPERSET of both: the analyst-confirmed outcome, the
+        bounded/flattened analyst note, the case reference, entity, rules, risk, the
+        trigger sentence, the top-3 evidence summaries and the recommended action.
+        ``note`` is expected to have already passed through
+        :func:`_flatten_analyst_note`.
+
+        The MODEL'S OWN VERDICT IS DELIBERATELY ABSENT from this text. It used to be
+        the second clause of a sentence whose first clause claims analyst provenance,
+        rendered under a heading that claims it again — so the agent read its own
+        earlier escalations back as if an analyst had confirmed them. It remains in
+        ``metadata['verdict']``, which is where every legitimate consumer already
+        reads it, and (because the BM25 tokeniser indexes the metadata alongside the
+        text) it stays lexically matchable for retrieval.
+
+        Field order and membership are owned by
+        ``_PRECEDENT_CONFIRMED_TEXT_FIELDS``: human-provenance fields lead, so
+        ``agents.prompts.fence``'s 600-character truncation can only ever eat
+        machine-derived context. The case id is machine-derived and VARIABLE-LENGTH,
+        so it renders as ``case_ref`` AFTER the human block rather than prefixing it:
+        prefixing made the "a maximum-length note always fits" guarantee depend on the
+        id's length, and at the 37-character ids ``new_id("case-")`` actually mints the
+        block ran to 611 characters and the analyst's own words were cut again.
         """
-        entity = f"{case.entity.type.value}:{case.entity.value}"
-        rules = ", ".join(case.rule_ids) or "n/a"
-        verdict = case.verdict.value if case.verdict else "n/a"
-        evidence = "; ".join(e.summary for e in case.evidence[:3]) or "n/a"
-        reason = (
-            case.trigger_reason.sentence
-            if case.trigger_reason and case.trigger_reason.sentence
-            else ""
-        )
-        return (
-            f"Resolved case {case.case_id}: analyst-confirmed outcome {outcome}; "
-            f"model verdict {verdict}; entity {entity}. "
-            f"Rules: {rules}. Risk: {round(case.risk_score, 1)}. "
-            f"Trigger: {reason or 'n/a'}. "
-            f"Evidence: {evidence}. "
-            f"Recommended action: {case.recommended_action or 'n/a'}. "
-            f"Analyst note: {note or 'n/a'}."
+        return _render_precedent_text(
+            _PRECEDENT_CONFIRMED_TEXT_FIELDS,
+            {
+                "outcome": f"Analyst-confirmed outcome {outcome}.",
+                "analyst_note": f"Analyst note: {note or 'n/a'}.",
+                "case_ref": f"Resolved case {case.case_id}.",
+                **_case_context_text_values(case),
+            },
         )
 
     def _resolved_case_item(
@@ -1585,25 +1835,30 @@ class RagService:
         text states, in the corpus itself, that no human reviewed it — so the claim
         survives even if a future renderer loses the heading. There is no "Analyst
         note" field because there is no analyst.
+
+        This is the ONE tier permitted to render the model's own verdict, because
+        surfacing an explicitly UNREVIEWED prior judgement is the tier's entire
+        purpose. The discipline that makes that safe is ORDERING, enforced by
+        ``_PRECEDENT_UNCONFIRMED_TEXT_FIELDS``: the provenance disclaimer is the
+        FIRST field, so ``agents.prompts.fence``'s 600-character truncation can never
+        drop "nobody confirmed this" while leaving the judgement behind. ``trust_class``
+        and the shared ``resolved_case:{case_id}`` document identity are unchanged, so
+        a later analyst confirmation still upserts the confirmed projection in place.
         """
-        entity = f"{case.entity.type.value}:{case.entity.value}"
-        rules = ", ".join(case.rule_ids) or "n/a"
         verdict = case.verdict.value if case.verdict else "n/a"
-        evidence = "; ".join(e.summary for e in case.evidence[:3]) or "n/a"
-        reason = (
-            case.trigger_reason.sentence
-            if case.trigger_reason and case.trigger_reason.sentence
-            else ""
-        )
-        return (
-            f"Prior case {case.case_id}: UNCONFIRMED model outcome {outcome} — closed "
-            f"by the agent, NOT reviewed or confirmed by an analyst; "
-            f"model verdict {verdict} at confidence {round(float(case.confidence or 0.0), 2)}; "
-            f"entity {entity}. "
-            f"Rules: {rules}. Risk: {round(case.risk_score, 1)}. "
-            f"Trigger: {reason or 'n/a'}. "
-            f"Evidence: {evidence}. "
-            f"Recommended action: {case.recommended_action or 'n/a'}."
+        confidence = round(float(case.confidence or 0.0), 2)
+        return _render_precedent_text(
+            _PRECEDENT_UNCONFIRMED_TEXT_FIELDS,
+            {
+                "unconfirmed_provenance": (
+                    f"Prior case {case.case_id}: UNCONFIRMED model outcome {outcome} "
+                    "— closed by the agent, NOT reviewed or confirmed by an analyst."
+                ),
+                "model_judgement": (
+                    f"Model verdict {verdict} at confidence {confidence}."
+                ),
+                **_case_context_text_values(case),
+            },
         )
 
     def _unconfirmed_case_item(
@@ -1681,6 +1936,11 @@ class RagService:
         Returns ``(case, item)`` pairs so the bulk bootstrap can stamp provenance onto
         the same cases it indexes. Inert (returns ``[]`` immediately) unless the tier
         is explicitly enabled, so the default deployment pays nothing at all.
+
+        The scan walks ``_UNCONFIRMED_SCAN_STATUSES`` — CLOSED only. A RESOLVED case is
+        analyst-decided by construction and ``_unconfirmed_candidate`` rejects it, so
+        including it would spend half the budget on a status that cannot produce a
+        single candidate.
         """
         if self._cases is None or not self._unconfirmed_enabled():
             return []
@@ -1694,47 +1954,45 @@ class RagService:
         # time, which is exactly why the incremental close path never writes this tier.
         candidates: list[tuple["Case", str]] = []
         counts: Counter[str] = Counter()
-        seen: set[str] = set()
-        scanned = 0
-        for status in (CaseStatus.CLOSED.value, CaseStatus.RESOLVED.value):
-            offset = 0
-            while scanned < _UNCONFIRMED_SCAN_CAP:
-                page_size = min(
-                    _RESOLVED_CASE_PAGE_SIZE, _UNCONFIRMED_SCAN_CAP - scanned
-                )
-                page, total = await self._cases.list(
-                    status=status, limit=page_size, offset=offset
-                )
-                if not page:
-                    break
-                for case in page:
-                    if case.case_id in seen:
-                        continue
-                    seen.add(case.case_id)
-                    scanned += 1
-                    outcome = self._unconfirmed_candidate(case, now=now)
-                    if outcome is not None:
-                        candidates.append((case, outcome))
-                        counts[self._recurrence_key(case, outcome)] += 1
-                offset += len(page)
-                if offset >= total:
-                    break
-            if scanned >= _UNCONFIRMED_SCAN_CAP:
-                break
+
+        def _visit(case: "Case") -> bool:
+            outcome = self._unconfirmed_candidate(case, now=now)
+            if outcome is not None:
+                candidates.append((case, outcome))
+                counts[self._recurrence_key(case, outcome)] += 1
+            return True
+
+        await self._scan_terminal_cases(
+            scan_cap=_UNCONFIRMED_SCAN_CAP,
+            visit=_visit,
+            statuses=_UNCONFIRMED_SCAN_STATUSES,
+        )
         # Pass 2 — keep only patterns that RECUR. One auto-close is an anecdote; a
         # single hallucinated close must never become quotable precedent.
         minimum = max(1, int(guards.min_recurrence))
-        out: list[tuple["Case", dict[str, Any]]] = []
+        survivors: list[tuple["Case", dict[str, Any]]] = []
         for case, outcome in candidates:
             recurrence = counts[self._recurrence_key(case, outcome)]
             if recurrence < minimum:
                 continue
-            out.append(
+            survivors.append(
                 (case, self._unconfirmed_case_item(case, outcome=outcome, recurrence=recurrence))
             )
-            if len(out) >= cap:
-                break
-        return out
+        # Pass 3 — the SAME window fairness as the confirmed tier (globally newest-first,
+        # then the operator's axes and admission cap). This tier runs after the window
+        # with its own scan cap, so leaving it flat would simply reintroduce single-group
+        # flooding one trust class down. It reuses ``precedent.window.stratify_by`` on
+        # purpose: adding an axis field to the unconfirmed block would change
+        # ``_unconfirmed_cfg().model_dump_json()``, which is a source-signature member,
+        # and force a reprojection nobody asked for.
+        window = self._window_config()
+        survivors.sort(key=lambda pair: _created_at_rank(pair[0]), reverse=True)
+        return self._stratify(
+            survivors,
+            axes=self._window_axes(window),
+            limit=cap,
+            admission_cap=self._admission_cap(window, cap),
+        )
 
     async def _unconfirmed_case_items(self, limit: int | None = None) -> list[dict[str, Any]]:
         """The bounded ``model_unconfirmed`` slice of the precedent projection."""
@@ -1805,6 +2063,186 @@ class RagService:
 
         return _Window()
 
+    def _window_axes(self, window: "PrecedentWindowConfig") -> list[str]:
+        """The ordered projection METADATA KEYS the window stratifies on.
+
+        ``stratify_by_rule`` is the DEPRECATED alias and is now the master switch:
+        ``False`` means a stored pre-``stratify_by`` preference still switches window
+        fairness off — axes and admission cap both — and restores the scan's early exit.
+        It does not restore the pre-stratification ORDERING; see
+        :meth:`_resolved_case_items` for what stays unconditional and why.
+        """
+        if not bool(getattr(window, "stratify_by_rule", True)):
+            return []
+        axes = getattr(window, "stratify_by", None)
+        if axes is None:  # pragma: no cover — a stored pre-``stratify_by`` config object
+            return [RULE_IDENTITY_KEY]
+        return [str(axis).strip() for axis in axes if str(axis).strip()]
+
+    def _admission_cap(self, window: "PrecedentWindowConfig", size: int) -> int | None:
+        """The largest number of window slots ONE operator transaction may occupy.
+
+        ``None`` when uncapped. Derived from a FRACTION of the window so it carries no
+        deployment-specific volume; ``1.0`` (or the master switch off) means a single
+        transaction may legitimately fill the window.
+        """
+        if not bool(getattr(window, "stratify_by_rule", True)):
+            return None
+        fraction = float(getattr(window, "max_transaction_fraction", 0.0) or 0.0)
+        if fraction <= 0.0 or fraction >= 1.0:
+            return None
+        return max(1, math.ceil(size * fraction))
+
+    @staticmethod
+    def _admission_group(case: "Case") -> str:
+        """The APPROXIMATE operator transaction a case's confirmation belongs to.
+
+        A bulk analyst action is ONE human decision applied to hundreds of cases, and a
+        bounded window that cannot tell it apart from hundreds of independent decisions
+        lets it buy every slot. There was no batch/job marker on the analyst path, so
+        ``POST /api/cases/bulk`` now stamps one (``history[].batch``) and this reads it.
+
+        For every case labelled BEFORE that stamp existed — and for the grading path,
+        which has no batch concept at all — it falls back to a coarse TIME BUCKET of the
+        confirming timestamp. That fallback is APPROXIMATE in both directions (it merges
+        independent labels made in the same hour and splits a bulk action that straddles
+        an hour boundary) and is documented as such; the alternative is no cap at all on
+        exactly the historical backlog the cap exists for. An undatable case falls back
+        to one shared ``""`` group, which is deterministic and, being a group like any
+        other, is itself capped rather than exempted.
+        """
+        for entry in reversed(list(getattr(case, "history", None) or [])):
+            if not isinstance(entry, dict) or entry.get("event") != "analyst_action":
+                continue
+            if str(entry.get("action") or "") not in CLASSIFICATION_ACTIONS:
+                continue
+            batch = str(entry.get("batch") or "").strip()
+            if batch:
+                return f"batch:{batch}"
+            bucket = _admission_time_bucket(entry.get("ts"))
+            if bucket:
+                return bucket
+            break
+        for item in reversed(list(getattr(case, "feedback", None) or [])):
+            bucket = _admission_time_bucket(
+                item.get("ts") if isinstance(item, dict) else getattr(item, "ts", "")
+            )
+            if bucket:
+                return bucket
+        return _admission_time_bucket(RagService._terminal_at(case))
+
+    def _stratify(
+        self,
+        pairs: list[tuple["Case", dict[str, Any]]],
+        *,
+        axes: list[str],
+        limit: int,
+        admission_cap: int | None,
+    ) -> list[tuple["Case", dict[str, Any]]]:
+        """Rank ``(case, item)`` pairs by the configured axes + admission cap.
+
+        The axes read projection METADATA KEYS off the item; the admission cap reads the
+        operator transaction off the case. Neither this method nor
+        ``stratified_selection`` knows what any of those keys mean.
+        """
+        readers = [_metadata_axis(key) for key in axes]
+        return stratified_selection(
+            pairs,
+            [(lambda pair, read=read: read(pair[1])) for read in readers],
+            limit,
+            transaction_key=(lambda pair: self._admission_group(pair[0])),
+            max_per_transaction=admission_cap,
+        )
+
+    async def _scan_terminal_cases(
+        self,
+        *,
+        scan_cap: int,
+        visit: Callable[["Case"], bool],
+        statuses: tuple[str, ...] = _PRECEDENT_SCAN_STATUSES,
+    ) -> None:
+        """Walk terminal cases within ONE bounded scan, fairly shared across statuses.
+
+        ``visit`` is called once per distinct case and returns ``False`` to stop the
+        whole scan early (the plain newest-N path, which only ever needs its first
+        ``limit`` qualifying items).
+
+        The budget is shared out per status in two phases: an EQUAL share first, then
+        whatever that left over, spent in status order. One shared counter meant CLOSED —
+        by far the larger population in a self-running deployment — could exhaust the cap
+        before RESOLVED was read at all, and RESOLVED is where the analyst-resolved cases
+        live. The two-phase shape keeps a single-status deployment spending the FULL cap,
+        so nothing is lost by being fair.
+
+        ``statuses`` is a PARAMETER rather than a module constant because the two tiers
+        genuinely disagree about which statuses can yield a candidate: the confirmed
+        tier draws real precedent from both, while for ``model_unconfirmed`` a RESOLVED
+        case is analyst-decided by construction and can never qualify. Sharing one list
+        would spend half that tier's budget on a guaranteed-empty status.
+        """
+        if self._cases is None:  # pragma: no cover — callers guard this
+            return
+        if not statuses:  # pragma: no cover — callers pass a non-empty tuple
+            return
+        seen: set[str] = set()
+        scanned = 0
+        offsets: dict[str, int] = {status: 0 for status in statuses}
+        exhausted: dict[str, bool] = {status: False for status in statuses}
+        keep_going = True
+
+        async def _spend(status: str, budget: int) -> None:
+            nonlocal scanned, keep_going
+            spent = 0
+            while spent < budget and scanned < scan_cap and keep_going:
+                if exhausted[status]:
+                    return
+                page_size = min(
+                    _RESOLVED_CASE_PAGE_SIZE, budget - spent, scan_cap - scanned
+                )
+                if page_size <= 0:
+                    return
+                page, total = await self._cases.list(
+                    status=status, limit=page_size, offset=offsets[status]
+                )
+                if not page:
+                    exhausted[status] = True
+                    return
+                for case in page:
+                    if case.case_id in seen:
+                        continue
+                    seen.add(case.case_id)
+                    scanned += 1
+                    spent += 1
+                    if not visit(case):
+                        keep_going = False
+                        break
+                offsets[status] += len(page)
+                if offsets[status] >= total:
+                    exhausted[status] = True
+                    return
+
+        # The fair share is rounded DOWN to a whole number of pages (never below one),
+        # so being fair costs no extra round trips: the cap is still reached in whole
+        # pages rather than one fragmented page per status boundary.
+        share = max(
+            _RESOLVED_CASE_PAGE_SIZE,
+            (scan_cap // len(statuses))
+            // _RESOLVED_CASE_PAGE_SIZE
+            * _RESOLVED_CASE_PAGE_SIZE,
+        )
+        for status in statuses:
+            if not keep_going:
+                return
+            await _spend(status, share)
+        for status in statuses:
+            if not keep_going:
+                return
+            leftover = scan_cap - scanned
+            if leftover <= 0:
+                return
+            if not exhausted[status]:
+                await _spend(status, leftover)
+
     async def _resolved_case_items(self, limit: int | None = None) -> list[dict[str, Any]]:
         """The ``limit`` QUALIFYING precedents to project (bounded scan).
 
@@ -1816,66 +2254,68 @@ class RagService:
         examined, so a large unlabelled backlog costs a bounded scan rather than the
         whole corpus.
 
-        **Per-rule stratification** (``prefs.precedent.window.stratify_by_rule``, ON by
-        default). A flat newest-N window has the same starvation shape one level up: a
-        bulk analyst action on ONE rule produces hundreds of qualifying cases that are
-        all newer than every other rule's, so the next projection fills every slot with
-        that rule and drops every other rule's precedent to zero — including a rule
-        carrying most of the deployment's auto-close volume. That is the precedent
-        outage again, this time triggered by an operator doing exactly what the product
-        asked of them. Round-robin allocation across rule identities gives every active
-        rule an equal floor inside the same bounded window.
+        **N-axis stratification** (``prefs.precedent.window.stratify_by``, rule identity
+        then the ANALYST-CONFIRMED OUTCOME by default). A flat newest-N window has the
+        same starvation shape one level up: a bulk analyst action on ONE rule produces
+        hundreds of qualifying cases that are all newer than every other rule's, so the
+        next projection fills every slot with that rule. Rule identity alone does not
+        finish the job either — inside each rule's bucket the newest-first tiebreak fills
+        the slots with whatever outcome the deployment currently produces most of, so the
+        corpus can end up unanimous about a rule it has never actually resolved two ways.
+        The second axis is the analyst's ``outcome`` and NOT the model's ``verdict`` on
+        purpose: on a rule the agent calls one way every time, the verdict axis is
+        all-identical and skipped, and the cases the analysts OVERTURNED — the oldest,
+        and the most valuable precedent in the tier — are exactly what the newest-first
+        tiebreak then evicts. Round-robin over the ordered axes gives every active group
+        an equal floor inside the same bounded window; an axis whose values are all
+        identical is skipped, so a single-rule or single-outcome deployment falls back to
+        the remaining axes, and then to newest-first, by itself.
+
+        The axes are METADATA KEYS. This method reads the operator's list, hands the
+        selector one reader per key, and never learns what any of them mean.
+
+        **Globally newest-first.** The two terminal statuses are paged separately, so the
+        concatenation of two separately-sorted runs is NOT newest-first — the ordering
+        contract ``stratified_selection`` documents about its input, and the tiebreak
+        every axis falls back on. The collected cases are merge-sorted on ``created_at``
+        descending before selection; see ``_created_at_rank`` for how an unusable
+        timestamp is ordered.
 
         Stratifying means the scan can no longer stop at the first ``limit`` qualifying
-        items (that would only ever see the dominant rule), so it runs to the scan cap.
-        That is a bounded, paged case-store read that happens on projection only. With
-        stratification off, the early exit and the exact previous ordering are restored.
+        items (that would only ever see the dominant group), so it runs to the scan cap.
+        That is a bounded, paged case-store read that happens on projection only.
+
+        **What the master switch does and does not restore.** With window fairness off
+        (``stratify_by_rule=False``) the axes, the admission cap and the full scan are
+        all disabled, so the early exit is restored. The global newest-first merge and
+        the fair per-status scan budget are UNCONDITIONAL and apply on that path too, so
+        it is not a byte-for-byte replay of the pre-stratification code: that code
+        appended each status's page in scan order (all CLOSED, then all RESOLVED) and
+        let CLOSED consume the whole cap. Both are deliberate fixes to the input
+        ordering ``stratified_selection`` has always documented, and gating them on the
+        switch would simply hand the defect back to anyone who set it.
         """
         if self._cases is None:
             return []
         window = self._window_config()
         cap_items = max(1, int(limit if limit is not None else window.size))
-        stratify = bool(window.stratify_by_rule)
-        collected: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        scanned = 0
-        for status in (CaseStatus.CLOSED.value, CaseStatus.RESOLVED.value):
-            offset = 0
-            while scanned < _RESOLVED_CASE_SCAN_CAP and (
-                stratify or len(collected) < cap_items
-            ):
-                page_size = min(
-                    _RESOLVED_CASE_PAGE_SIZE, _RESOLVED_CASE_SCAN_CAP - scanned
-                )
-                page, total = await self._cases.list(
-                    status=status, limit=page_size, offset=offset
-                )
-                if not page:
-                    break
-                for case in page:
-                    if case.case_id in seen:
-                        continue
-                    seen.add(case.case_id)
-                    scanned += 1
-                    item = self._resolved_case_item(case)
-                    if item is not None:
-                        collected.append(item)
-                        if not stratify and len(collected) >= cap_items:
-                            break
-                offset += len(page)
-                if offset >= total:
-                    break
-            if scanned >= _RESOLVED_CASE_SCAN_CAP:
-                break
-            if not stratify and len(collected) >= cap_items:
-                break
-        if not stratify:
-            return collected[:cap_items]
-        return stratified_selection(
-            collected,
-            lambda item: str((item.get("metadata") or {}).get(RULE_IDENTITY_KEY) or ""),
-            cap_items,
+        axes = self._window_axes(window)
+        admission_cap = self._admission_cap(window, cap_items)
+        full_scan = bool(axes) or admission_cap is not None
+        collected: list[tuple["Case", dict[str, Any]]] = []
+
+        def _visit(case: "Case") -> bool:
+            item = self._resolved_case_item(case)
+            if item is not None:
+                collected.append((case, item))
+            return full_scan or len(collected) < cap_items
+
+        await self._scan_terminal_cases(scan_cap=_RESOLVED_CASE_SCAN_CAP, visit=_visit)
+        collected.sort(key=lambda pair: _created_at_rank(pair[0]), reverse=True)
+        picked = self._stratify(
+            collected, axes=axes, limit=cap_items, admission_cap=admission_cap
         )
+        return [item for _case, item in picked]
 
     # ----------------------------------------------------------------- #
     # Per-rule precedent distribution (the deterministic half of promotion)
@@ -2039,9 +2479,11 @@ class RagService:
 
         Only analyst-confirmed cases qualify, and the window counts QUALIFYING cases
         rather than raw terminal ones. The chunk text comes from the shared
-        :meth:`_resolved_case_text` builder (identical to the incremental path);
-        source="resolved_case"; metadata carries case_id / verdict / entity so the
-        UI/agent can cite the source case.
+        :meth:`_resolved_case_text` builder (identical to the incremental path), which
+        renders an ALLOWLIST of fields — human-provenance first, and never the model's
+        own verdict; source="resolved_case"; metadata carries case_id / verdict /
+        entity so the UI/agent can cite the source case and so the verdict stays
+        available to its legitimate consumers without being replayed as prose.
         Returns the number of chunks added. Never raises (logs + returns 0)."""
         if self._cases is None:
             return 0

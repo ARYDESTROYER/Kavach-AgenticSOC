@@ -31,12 +31,16 @@ prompt boundary; this module returns plain values the UI render-escapes).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..config import Preferences, PriorityMatrix
-from ..constants import SourceType
+from ..constants import DEFAULT_SEVERITY_SCALE_MAX, SEVERITY_BANDS
 from ..models import Case
+from ..ocsf.model import project_severity_magnitude, resolve_severity_scale_max
 from .risk import _asset_criticality
+
+logger = logging.getLogger(__name__)
 
 # Advisory band vocabulary. The SEVERITY axis uses the full 5-band ladder
 # (critical/high/medium/low/info); the impact/urgency/risk axes project onto the
@@ -53,6 +57,14 @@ _INFO = "info"
 # (``constants.SEVERITY_BANDS`` references these 74/48/22/8 cuts). They mirror the webui
 # ``badges.tsx::severityBandFromNumber`` (palette ``scoreBand`` 74/48/22 + an <8 info
 # floor) EXACTLY so the backend severity chip and the front-end badge never drift.
+#
+# NOTE — these cuts are DELIBERATELY not the 90/70/40/15 cuts in
+# ``app/ocsf/model.py::score_to_severity_id``. That ladder maps onto the OCSF
+# ``severity_id`` vocabulary (1=Informational .. 5=Critical), a PUBLIC STANDARD we do not
+# get to re-cut; this ladder is our own 5-band presentation chip, matched to the front-end
+# badge. Only the PROJECTION onto the 0-100 magnitude is shared between them
+# (:func:`app.ocsf.model.project_severity_magnitude`) — unifying the cuts as well would
+# corrupt a standard mapping.
 _BAND_CRIT_CUT = 74.0    # >=74 -> critical
 _BAND_HIGH_CUT = 48.0    # >=48 -> high
 _BAND_MED_CUT = 22.0     # >=22 -> medium
@@ -90,146 +102,215 @@ def _band_from_magnitude(magnitude: float) -> str:
     return _LOW
 
 
-# Severity scales a connector can assert. Recorded as a string so it is contract-
-# stable + render-safe. ``unknown`` keeps the legacy magnitude heuristic (back-compat
-# for cases whose source scale cannot be resolved at read time).
-_SCALE_OCSF_0_100 = "ocsf_0_100"   # OCSF severity_score (already 0-100; identity-clamp)
-_SCALE_WAZUH_0_16 = "wazuh_0_16"   # Wazuh rule.level 0..16 -> level/16*100
-_SCALE_0_10 = "0_10"               # the suite's own 0-10 rating (critical_severity=7.0)
-_SCALE_UNKNOWN = "unknown"         # no resolvable scale -> legacy <=10?*10:raw heuristic
+# --------------------------------------------------------------------------- #
+# The severity CEILING — one declared number per source, no vendor branch.
+#
+# A source's native severity ladder is described by exactly ONE number: its ceiling
+# (``config.SourceInstance.severity_scale_max``). The projection onto the canonical
+# 0-100 magnitude is then a single formula shared with the OCSF layer
+# (:func:`app.ocsf.model.project_severity_magnitude`):
+#
+#     magnitude = min(100, max(0, raw / scale_max * 100))
+#
+# What this REPLACED, and why:
+#   * a per-``source_type`` runtime branch (Wazuh → 0-16, push → 0-100, pull → 0-10).
+#     Vendor knowledge now lives ONLY as a SEED written into the source's editable
+#     ceiling at construction time (``config.SEEDED_SEVERITY_SCALE_MAX``); no read path
+#     asks what product a source is.
+#   * a hardcoded demo-source-id allowlist that forced those sources onto the identity
+#     projection. Undeclared now MEANS the identity projection, so the special case
+#     became the default and the allowlist is gone (it was also stale — it omitted a
+#     demo source, which therefore got the wrong ladder).
+#   * the ``raw <= 10 ? raw*10 : raw`` magnitude guess for an unresolvable scale. A guess
+#     cannot tell a genuinely-low 0-100 score from a high 0-10 rating; it inverted both.
+#     Undeclared now projects through the IDENTITY and says so honestly.
+#
+# Precedence: DECLARED ceiling > seeded default > ``DEFAULT_SEVERITY_SCALE_MAX`` (100).
+# --------------------------------------------------------------------------- #
 
-_DEMO_SOURCE_IDS = frozenset({
-    "demo-splunk", "demo-qradar", "demo-wazuh", "demo-syslog",
-})
+# Provenance tokens for the severity band (the honest "who graded this" chip).
+_SRC_ASSERTED = "source_asserted"      # the source's own number, projected as declared
+_SRC_DERIVED = "derived"               # no source severity at all → our risk total
+_SRC_OUT_OF_RANGE = "source_out_of_range"   # raw exceeded the declared ceiling — see below
+
+# Bounded set of (source_id, ceiling) pairs already reported as out-of-range, so ONE
+# misdeclared source logs ONE line instead of one per case on every ``GET /api/cases``.
+# Process-local + advisory: losing it on restart only re-emits the notice once.
+_SATURATION_LOG_CAP = 256
+_saturation_logged: set[tuple[str, float]] = set()
 
 
-def severity_scale_for_source(inst: Any) -> str:
-    """Resolve the SEVERITY SCALE a configured source *instance* asserts severity on.
+def severity_scale_max_for_source(inst: Any) -> float:
+    """THE resolver: the severity-ladder CEILING a configured source asserts severity on.
 
     Given a resolved :class:`app.config.SourceInstance` (or ``None`` when the source is
-    unknown / unconfigured), returns the native scale id used to project a raw source
-    severity onto 0-100 (see :func:`_normalise_severity`):
+    unknown / unconfigured), returns the POSITIVE ceiling used to project a raw source
+    severity onto 0-100. There is no ``source_type`` branch and no scale vocabulary any
+    more — the source carries one declared number:
 
-    * ``None`` → ``unknown`` (the legacy magnitude heuristic — back-compat).
-    * Wazuh (``source_type == WAZUH``) → ``wazuh_0_16`` (``rule.level`` 0..16).
-    * PUSH-mode (non-``pull`` ``ingest_mode``) → ``ocsf_0_100`` (OCSF ``severity_score``).
-    * PULL Elastic/OpenSearch/generic → ``0_10`` (the suite's own 0-10 rating).
+    * a declared (or seeded) ``severity_scale_max`` → that number.
+    * ``None`` / unconfigured / undeclared / unusable → ``DEFAULT_SEVERITY_SCALE_MAX``
+      (100), i.e. the IDENTITY projection on the canonical OCSF ``severity_score``.
 
-    Extracted verbatim from :func:`_scale_for_case`'s classifier (below) so the SAME
-    resolution is reused by the Round-7 Noise-Reduction counters — which band raw ingest
-    events by the source's declared scale (:mod:`app.engine.noise_counters`). Advisory
-    display / accounting only — it never feeds ``case_manager.decide()`` (#3)."""
+    Total + fail-open: a duck-typed object, a missing attribute or a garbage value all
+    degrade to the default rather than raising. Advisory display / accounting only — it
+    never feeds ``case_manager.decide()`` (#3).
+
+    ``severity_scale_for_source`` is a deprecated alias of this function, kept so the
+    existing call sites (poller / ingest / event detection / OCSF normalisation /
+    Noise-Reduction counters) keep importing the SAME one resolver."""
     if inst is None:
-        return _SCALE_UNKNOWN
-    stype = getattr(inst, "source_type", None)
-    if stype == SourceType.WAZUH:
-        return _SCALE_WAZUH_0_16
-    # PUSH-mode sources flow through the OCSF normaliser (receivers/*) → 0-100.
-    ingest = getattr(inst, "ingest_mode", None)
-    mode_val = getattr(ingest, "value", ingest)
-    if isinstance(mode_val, str) and mode_val != "pull":
-        return _SCALE_OCSF_0_100
-    # PULL Elastic/OpenSearch/generic: the suite default rating is 0-10.
-    return _SCALE_0_10
+        return DEFAULT_SEVERITY_SCALE_MAX
+    ceiling = resolve_severity_scale_max(getattr(inst, "severity_scale_max", None))
+    return ceiling if ceiling is not None else DEFAULT_SEVERITY_SCALE_MAX
 
 
-def _scale_for_case(case: Case, prefs: Preferences | None) -> str:
-    """Resolve the SEVERITY SCALE the case's source asserts ``severity_max`` on.
+# Deprecated NAME for the one resolver above (it returns a numeric ceiling now, not a
+# scale id). Kept as an alias so every existing importer resolves the same function.
+severity_scale_for_source = severity_scale_max_for_source
 
-    The scale is unambiguous only with provenance: a bare magnitude can't tell a
-    Wazuh ``rule.level`` of 12 (CRITICAL on a 0-16 ladder) from an OCSF score of 12
-    (low on a 0-100 ladder). We look the case's ``source_id`` up against the operator's
-    configured ``Preferences.sources`` to read the connector's declared scale:
 
-    * Wazuh (``source_type == WAZUH``) asserts ``rule.level`` on a **0-16** ladder.
-    * PUSH connectors (HTTP/syslog/socket/queue/object-store/stream receivers) normalise
-      every record to OCSF, so ``severity_max`` is the OCSF ``severity_score`` — **0-100**.
-    * Isolated **demo** sources emit a canonical **0-100 OCSF** severity.
+def _scale_max_for_case(case: Case, prefs: Preferences | None) -> float:
+    """The severity-ladder CEILING the case's source asserts ``severity_max`` on.
 
-    When ``prefs`` is None, or the case has no ``source_id``, or the source isn't
-    configured, we return ``unknown`` so the legacy magnitude heuristic applies —
-    keeping every pre-existing case + the no-prefs callers byte-identical."""
+    A bare magnitude is ambiguous without provenance — a rule level of 12 on a 0-16
+    ladder is CRITICAL, while a score of 12 on a 0-100 ladder is LOW — so we look the
+    case's ``source_id`` up against the operator's configured ``Preferences.sources`` and
+    read that source's DECLARED ceiling.
+
+    Fallbacks, in order:
+
+    * no ``prefs`` → ``DEFAULT_SEVERITY_SCALE_MAX`` (identity).
+    * a configured source that does not declare a ceiling → its seeded default, else the
+      identity.
+    * no ``source_id``, or an unmatched one (including the zero-config profile, where the
+      implicit single source has no ``SourceInstance`` at all) → the identity.
+
+    There is deliberately NO Preferences-level fallback. This is a READ-time surface, and
+    the ingest-time surfaces that must agree with it — OCSF normalisation, the durable
+    Noise-Reduction band counters, the per-feed severity floor — resolve the ceiling from
+    the EVENT's own source instance. A global fallback only this function could see would
+    make the case chip read ``critical`` for the very same raw number the funnel had
+    already tallied as ``low``, and the counters are bucketed by band at write time, so
+    that split could never be re-projected. One declaration tier, read identically
+    everywhere.
+
+    Never raises."""
     if prefs is None:
-        return _SCALE_UNKNOWN
+        return DEFAULT_SEVERITY_SCALE_MAX
     source_id = getattr(case, "source_id", None)
     if not source_id:
-        return _SCALE_UNKNOWN
-    # Every isolated demo adapter enters through the production OCSF receiver path,
-    # so its persisted RawEvent severity is already the canonical 0-100 score.  The
-    # adapters are intentionally read-time overlays (not Preferences.sources), hence
-    # this namespace check must happen before the configured-source lookup.
-    if (
-        source_id in _DEMO_SOURCE_IDS
-        and "demo" in (getattr(case, "tags", None) or [])
-    ):
-        return _SCALE_OCSF_0_100
-    inst = None
-    for s in (getattr(prefs, "sources", None) or []):
+        return DEFAULT_SEVERITY_SCALE_MAX
+    for s in getattr(prefs, "sources", None) or []:
         if getattr(s, "id", None) == source_id:
-            inst = s
-            break
-    return severity_scale_for_source(inst)
+            return severity_scale_max_for_source(s)
+    return DEFAULT_SEVERITY_SCALE_MAX
 
 
-def _normalise_severity(raw: float, scale: str = _SCALE_UNKNOWN) -> float:
-    """Project a source-asserted severity onto a 0-100 scale, scale-aware.
+def _normalise_severity(
+    raw: float, scale_max: Any = DEFAULT_SEVERITY_SCALE_MAX
+) -> float:
+    """Project a source-asserted severity onto 0-100 against the source's DECLARED ceiling.
 
-    The ``scale`` (resolved from the case's source provenance by :func:`_scale_for_case`)
-    removes the old magnitude guess that mislabelled overlapping ranges — an OCSF
-    ``Informational`` score of 10 was scaled to 100 (HIGH) and a Wazuh ``rule.level`` of
-    12 (CRITICAL) was left at 12 (LOW). Each known scale projects deterministically:
+    Thin, stable wrapper over the ONE shared projection
+    (:func:`app.ocsf.model.project_severity_magnitude`)::
 
-    * ``ocsf_0_100`` — already 0-100, identity-clamp (10 stays 10 → LOW/INFO).
-    * ``wazuh_0_16`` — ``level/16*100`` (12 → 75 → CRITICAL).
-    * ``0_10`` — ``raw*10`` (the suite's own 0-10 rating).
-    * ``unknown`` — the legacy heuristic (``raw<=10 ? raw*10 : raw``) for cases whose
-      scale can't be resolved (no prefs / unconfigured source) — back-compat only.
+        magnitude = min(100, max(0, raw / scale_max * 100))
+
+    ``scale_max`` is the number :func:`severity_scale_max_for_source` returns. For
+    back-compat it also accepts the deprecated string scale ids (``"0_10"`` → ceiling 10,
+    and so on); anything unresolvable — including the old ``"unknown"`` token — falls back
+    to ``DEFAULT_SEVERITY_SCALE_MAX`` (100, the identity), because the retired
+    ``raw <= 10 ? raw*10 : raw`` guess is exactly what this change deletes.
 
     Clamped to 0..100. Never raises."""
-    if raw <= 0:
-        return 0.0
-    if scale == _SCALE_OCSF_0_100:
-        mag = raw
-    elif scale == _SCALE_WAZUH_0_16:
-        mag = raw / 16.0 * 100.0
-    elif scale == _SCALE_0_10:
-        mag = raw * 10.0
-    else:  # _SCALE_UNKNOWN — legacy conservative heuristic.
-        mag = raw * 10.0 if raw <= 10.0 else raw
-    return max(0.0, min(100.0, mag))
+    ceiling = resolve_severity_scale_max(scale_max)
+    return project_severity_magnitude(
+        raw, ceiling if ceiling is not None else DEFAULT_SEVERITY_SCALE_MAX
+    )
+
+
+def _note_severity_saturation(case: Case, raw: float, ceiling: float) -> None:
+    """Log ONE structured line the first time a source oversteps its declared ceiling.
+
+    A raw severity ABOVE the declared ceiling is proof the declaration is wrong (or that
+    the source changed its ladder). Advisory + fail-open: a logging problem is swallowed,
+    and the bounded dedupe set keeps a misdeclared source from flooding the log on a
+    case-list render.
+
+    The emit is gated on RECORDING the key, never merely on the cap: a set that logged
+    while refusing to remember would stop deduplicating at exactly the moment it filled
+    up, which is the flood this exists to prevent. Once the cap is reached the notice is
+    simply dropped — the bound is the point, and this is advisory log hygiene, not
+    evidence."""
+    try:
+        source_id = str(getattr(case, "source_id", None) or "")
+        key = (source_id, float(ceiling))
+        if key in _saturation_logged:
+            return
+        if len(_saturation_logged) >= _SATURATION_LOG_CAP:
+            return
+        _saturation_logged.add(key)
+        logger.warning(
+            "severity above declared ceiling: source_id=%s severity_scale_max=%s raw=%s "
+            "(band clamped to 100; declare the source's real ceiling to fix)",
+            source_id or "<unset>",
+            ceiling,
+            raw,
+        )
+    except Exception:  # noqa: BLE001 — an advisory notice must never break a read
+        pass
 
 
 def severity_band_from_events(case: Case, prefs: Preferences | None = None) -> dict[str, Any]:
     """SOURCE-asserted severity band for a case (NOT risk).
 
     Reads the maximum member-event severity the SOURCE asserted (recorded on
-    ``trigger_reason.severity_max`` by correlation) and projects it onto 0-100 using the
-    source's DECLARED severity scale (resolved from the case's ``source_id`` against
-    ``prefs.sources`` — see :func:`_scale_for_case`). This makes the chip correct across
-    overlapping native ladders: an OCSF ``Informational`` (score 10) reads LOW, and a
-    Wazuh ``rule.level`` of 12 (CRITICAL) reads HIGH, instead of the old magnitude guess
-    that inverted both. When ``prefs`` is None the legacy heuristic applies (back-compat).
+    ``trigger_reason.severity_max`` by correlation) and projects it onto 0-100 against the
+    source's DECLARED severity-ladder ceiling (resolved from the case's ``source_id``
+    against ``prefs.sources`` — see :func:`_scale_max_for_case`). One declared number
+    describes any native ladder, so a rule level of 12 on a declared 0-16 ladder reads
+    HIGH while a score of 12 on an undeclared (100) ladder reads LOW — no magnitude guess,
+    no per-vendor branch.
 
     When no source severity was ever asserted (``severity_max`` is None) we DERIVE a band
     from the deterministic risk total as a last resort, and flag ``source`` accordingly so
     the UI can badge "(derived)" honestly.
 
-    Returns ``{band, value (0-100), raw, source, scale}`` where ``source`` is
-    ``"source_asserted"`` or ``"derived"`` and ``scale`` is the resolved native scale id
-    (``"unknown"`` when no source provenance was available)."""
+    PROVENANCE — ``source`` is one of THREE tokens:
+
+    * ``"source_asserted"`` — the source's own number, projected as declared.
+    * ``"derived"`` — no source severity existed; the band comes from our risk total.
+    * ``"source_out_of_range"`` — the raw value EXCEEDED the declared ceiling, so the
+      projection saturated at 100. A raw above the ceiling PROVES the ceiling wrong, which
+      means the band is no longer the source's claim but an artefact of our own clamped
+      arithmetic. The UI must therefore NOT show a "source" provenance chip for it, and
+      one structured log line names the source, its ceiling and the raw value so the
+      operator can correct the declaration.
+
+    Returns ``{band, value (0-100), raw, source, scale_max, scale}`` where ``scale_max``
+    is the resolved numeric ceiling used for the projection (``scale`` is the deprecated
+    alias of the same number)."""
     tr = case.trigger_reason
     raw = None
     if tr is not None and tr.severity_max is not None:
         raw = float(tr.severity_max)
     if raw is not None:
-        scale = _scale_for_case(case, prefs)
-        mag = _normalise_severity(raw, scale)
+        scale_max = _scale_max_for_case(case, prefs)
+        mag = _normalise_severity(raw, scale_max)
+        provenance = _SRC_ASSERTED
+        if raw > scale_max:
+            provenance = _SRC_OUT_OF_RANGE
+            _note_severity_saturation(case, raw, scale_max)
         return {
             "band": _severity_band_from_magnitude(mag),
             "value": round(mag, 2),
             "raw": raw,
-            "source": "source_asserted",
-            "scale": scale,
+            "source": provenance,
+            "scale_max": scale_max,
+            # Deprecated key: the resolved ceiling under its former name, so an older
+            # reader still finds a value here instead of a KeyError.
+            "scale": scale_max,
         }
     # No source severity — fall back to the deterministic risk total (clearly flagged
     # as DERIVED, never claimed to be source-asserted).
@@ -238,9 +319,48 @@ def severity_band_from_events(case: Case, prefs: Preferences | None = None) -> d
         "band": _severity_band_from_magnitude(mag),
         "value": round(mag, 2),
         "raw": None,
-        "source": "derived",
-        "scale": _SCALE_UNKNOWN,
+        "source": _SRC_DERIVED,
+        "scale_max": DEFAULT_SEVERITY_SCALE_MAX,
+        "scale": DEFAULT_SEVERITY_SCALE_MAX,
     }
+
+
+def band_of_case(case: Case, prefs: Preferences | None = None) -> str:
+    """THE advisory severity band for a case — the ONE helper every consumer calls.
+
+    ``Case.severity_band`` is a READ-TIME presentation field: no production write path
+    ever persists it (only the seeded demo corpus does), so a consumer that reads the
+    attribute directly sees ``None`` on every real case and silently degrades — e.g. an
+    attention-queue ranking whose severity term is then zero for the whole queue. This
+    helper is the fix, and it is deliberately PUBLIC so no consumer has to re-derive the
+    fallback chain:
+
+    1. a band already PERSISTED on the case (the demo corpus, or a case already passed
+       through the read-time projection) wins — it is what the operator is looking at;
+    2. otherwise DERIVE it from the source-asserted severity against the source's
+       declared ceiling (:func:`severity_band_from_events`, which needs ``prefs`` to
+       resolve that ceiling and falls back to the deterministic risk total when the
+       source never asserted a severity);
+    3. otherwise ``"info"`` — the honest floor for "nothing said anything".
+
+    ``prefs`` is OPTIONAL so every existing caller keeps working: with ``None`` the
+    derivation still runs, on the identity ceiling. Total + FAIL-OPEN (bare except): a
+    malformed case degrades to ``"info"`` and NEVER raises, because this feeds read-only
+    presentation surfaces that must not 500. Advisory only — never read by
+    ``case_manager.decide()`` (#3), and NOTHING here is persisted onto the case."""
+    try:
+        band = getattr(case, "severity_band", None)
+        if band in SEVERITY_BANDS:
+            return band
+    except Exception:  # noqa: BLE001 — advisory only; never raise on a bad case
+        pass
+    try:
+        derived = severity_band_from_events(case, prefs).get("band")
+        if derived in SEVERITY_BANDS:
+            return derived
+    except Exception:  # noqa: BLE001 — advisory only; never raise on a bad case
+        pass
+    return _INFO
 
 
 def impact_band(case: Case, prefs: Preferences) -> dict[str, Any]:
@@ -400,7 +520,10 @@ def advisory_bands(case: Case, prefs: Preferences | None = None) -> dict[str, An
     :class:`app.models.Case`:
 
     * ``severity_band`` — 5-band {critical/high/medium/low/info} SOURCE-asserted severity.
-    * ``severity_source`` — ``"source_asserted"`` or ``"derived"`` (honest provenance).
+    * ``severity_source`` — honest provenance: ``"source_asserted"``, ``"derived"`` (no
+      source severity existed), or ``"source_out_of_range"`` (the raw value exceeded the
+      source's declared ceiling, so the band is our clamped arithmetic, not the source's
+      claim — the UI must not badge it as source-asserted).
     * ``impact_band`` — 3-band {high/medium/low} asset-criticality impact.
     * ``urgency_band`` — 3-band {high/medium/low} risk-blended urgency.
     * ``priority_level`` — the ITIL ``"P1".."P4"`` (or ``None`` when the matrix is off).

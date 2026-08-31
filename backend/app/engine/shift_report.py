@@ -15,8 +15,11 @@ payload the standup brief leads with:
 ⚠ NON-NEGOTIABLE #3: every value here is ADVISORY — read-time presentation /
 ranking ONLY. NONE of it feeds ``engine.case_manager.decide()``; the close/escalate
 truth table stays a pure fn of ``(verdict, confidence, risk_score, policy)``. The
-``severity_band``/``priority_level``/``urgency`` we read off a case are themselves
-advisory display fields. We NEVER mutate a case here.
+``severity_band``/``priority_level``/``urgency`` behind a row are themselves advisory
+display fields — and ``severity_band`` is RESOLVED read-time through
+:func:`app.engine.priority.band_of_case` (the persisted attribute is a presentation
+field no production write path ever fills in), never read off the case. We NEVER mutate
+a case here.
 
 ⚠ NON-NEGOTIABLE #9: case-derived strings (entity values, titles, assignees, rule
 ids) are log/source-influenced. This module returns them as PLAIN data inside the
@@ -36,6 +39,7 @@ from ..config import PriorityMatrix, SlaPolicy
 from ..constants import CaseStatus, Verdict
 from ..models import Case
 from ..utils import now_utc, parse_es_timestamp
+from .priority import band_of_case, severity_band_from_events
 from .priority import derive_priority as _derive_priority_authority
 
 # Lifecycle statuses that belong in the "needs you now" attention queue: any
@@ -101,7 +105,13 @@ def _response_target_minutes(case: Case, sla: SlaPolicy | None) -> int:
     return _DEFAULT_RESPONSE_MINUTES
 
 
-def urgency_score(case: Case, *, sla: SlaPolicy | None = None, now: Any = None) -> float:
+def urgency_score(
+    case: Case,
+    *,
+    sla: SlaPolicy | None = None,
+    now: Any = None,
+    prefs: Any = None,
+) -> float:
     """A deterministic 0..1-ish urgency score for ranking the attention queue.
 
     Blend (all advisory, none gates #3):
@@ -111,6 +121,13 @@ def urgency_score(case: Case, *, sla: SlaPolicy | None = None, now: Any = None) 
         response target (clamped) — older + closer-to-breach ranks higher.
       * a small escalation / NEEDS_HUMAN bump so a flagged case floats up.
 
+    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks) and is used
+    ONLY to resolve the severity band through :func:`app.engine.priority.band_of_case`.
+    It matters: ``Case.severity_band`` is a read-time presentation field that no
+    production path persists, so reading the attribute directly scored the severity term
+    at 0.0 for EVERY case — the whole queue ranked on risk + age alone. With ``None``
+    the band is still derived, on the identity severity ceiling.
+
     Higher == more urgent. Never raises; missing fields contribute 0."""
     risk = float(getattr(case, "risk_score", 0.0) or 0.0) / 100.0
     if risk < 0:
@@ -118,7 +135,7 @@ def urgency_score(case: Case, *, sla: SlaPolicy | None = None, now: Any = None) 
     if risk > 1:
         risk = 1.0
 
-    band = str(getattr(case, "severity_band", "") or "").strip().lower()
+    band = str(band_of_case(case, prefs) or "").strip().lower()
     sev = _SEVERITY_WEIGHT.get(band, 0.0)
 
     target = _response_target_minutes(case, sla)
@@ -148,16 +165,44 @@ def _display_id(case: Case) -> str:
     return getattr(case, "case_number", "") or getattr(case, "case_id", "") or ""
 
 
+def _band_provenance(case: Case, prefs: Any) -> str:
+    """The severity band's provenance token for one attention row.
+
+    Mirrors :func:`app.engine.priority.severity_band_from_events`'s ``source`` field —
+    ``"source_asserted"``, ``"derived"`` or ``"source_out_of_range"`` — so the Standup
+    queue badges a code-derived band exactly as honestly as the Cases list does. A case
+    whose band came from a PERSISTED ``severity_band`` (only the seeded demo corpus writes
+    one) still reports the provenance of the underlying derivation, which is the honest
+    reading: nothing about a stored presentation value makes it the source's claim.
+
+    Fail-open: a malformed case reads ``"derived"`` (the weaker claim), never raises."""
+    try:
+        token = severity_band_from_events(case, prefs).get("source")
+        return str(token) if token else "derived"
+    except Exception:  # noqa: BLE001 — advisory provenance must never break the queue
+        return "derived"
+
+
 def attention_queue(
     cases: Iterable[Case],
     *,
     sla: SlaPolicy | None = None,
     now: Any = None,
     limit: int = 25,
+    prefs: Any = None,
 ) -> list[dict[str, Any]]:
     """Rank the open attention-worthy cases by :func:`urgency_score`, newest-pressure
     first. Returns a COMPACT row per case (ids + the ranking inputs + a deep-link
     ``case_id``) — never the full case body. Plain data (#9); the UI renders escaped.
+
+    Every row now carries a ``severity_band``, so it must also carry the band's
+    PROVENANCE (``severity_source``). ``Case.severity_band`` is never persisted by a
+    production write path, so before this the field was empty on every real case and the
+    badge simply did not render; now the band falls back to a derivation from the
+    deterministic risk total, and a queue that showed that number as the SOURCE's severity
+    right beside the risk badge it was computed from would be claiming a second opinion it
+    does not have. The token is the same three-way vocabulary the Cases list badges
+    (``source_asserted`` / ``derived`` / ``source_out_of_range``).
 
     Ties break by ``risk_score`` then age (older first) for determinism."""
     ref = now or now_utc()
@@ -165,8 +210,9 @@ def attention_queue(
     for case in cases:
         if not _is_attention(case):
             continue
-        score = urgency_score(case, sla=sla, now=ref)
+        score = urgency_score(case, sla=sla, now=ref, prefs=prefs)
         age = case_age_minutes(case, now=ref)
+        band = band_of_case(case, prefs)
         rows.append(
             {
                 "case_id": getattr(case, "case_id", "") or "",
@@ -176,7 +222,8 @@ def attention_queue(
                 "status": _status_value(case),
                 "verdict": getattr(getattr(case, "verdict", None), "value", "") or "",
                 "risk_score": round(float(getattr(case, "risk_score", 0.0) or 0.0), 2),
-                "severity_band": getattr(case, "severity_band", None) or "",
+                "severity_band": band,
+                "severity_source": _band_provenance(case, prefs),
                 "priority_level": getattr(case, "priority_level", None) or "",
                 "assignee": getattr(case, "assignee", "") or "",
                 "entity": _entity_value(case),
@@ -362,19 +409,27 @@ def build_shift_report(
     sla: SlaPolicy | None = None,
     now: Any = None,
     attention_limit: int = 25,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     """Assemble the full forward-looking shift snapshot from a case list.
 
     Pure + deterministic — the SINGLE place the attention_queue / sla_aging / workload /
     deltas are composed (so both the engine standup-fold AND the /report route agree).
     ``prior_cases`` is the equal prior window's snapshot (for the deltas); when None the
-    deltas compare against an empty prior window (all-current). Never raises."""
+    deltas compare against an empty prior window (all-current).
+
+    ``prefs`` is OPTIONAL (default ``None``, so no existing caller breaks); it is only
+    threaded to the attention queue so the severity band can be RESOLVED (the field is
+    never persisted on a real case) instead of read as an always-``None`` attribute.
+    Never raises."""
     ref = now or now_utc()
     snapshot = list(cases)
     current_counts = headline_counts(snapshot, now=ref, sla=sla)
     prior_counts = headline_counts(list(prior_cases or []), now=ref, sla=sla)
     return {
-        "attention_queue": attention_queue(snapshot, sla=sla, now=ref, limit=attention_limit),
+        "attention_queue": attention_queue(
+            snapshot, sla=sla, now=ref, limit=attention_limit, prefs=prefs
+        ),
         "sla_aging": sla_aging(snapshot, sla, now=ref),
         "workload": analyst_workload(snapshot),
         "headline_counts": current_counts,

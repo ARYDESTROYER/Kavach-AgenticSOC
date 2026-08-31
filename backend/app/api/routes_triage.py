@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from ..config import AutoClosePolicy
 from ..constants import ActionType, CaseStatus, DecisionBy, Verdict
 from ..engine.case_manager import decide
-from ..engine.priority import derive_triage
+from ..engine.priority import advisory_bands, band_of_case, derive_triage
 from ..models import (
     StageRiskCalculation,
     StageRiskFactor,
@@ -595,6 +595,16 @@ def _build_stages(case_id: str, case: Any, rows: Any, state: Any) -> list[Timeli
     plural = "s" if n != 1 else ""
     src = case.source_name or "the configured source"
 
+    # The severity chip on the "Alert received" stage. ``Case.severity_band`` /
+    # ``severity_source`` are READ-TIME presentation fields no production write path
+    # persists, so reading them directly rendered an empty chip on every real case.
+    # Resolve them from the same authority ``GET /api/cases`` uses, against the ACTIVE
+    # execution prefs (so a demo sandbox bands identically here and in the case detail).
+    # Advisory only — nothing here feeds ``decide()`` (#3); fail-open by construction.
+    stage_prefs = getattr(state, "execution_prefs", None)
+    sev_band = band_of_case(case, stage_prefs)
+    sev_source = case.severity_source or advisory_bands(case, stage_prefs).get("severity_source")
+
     # 1 — input (the raw alert as the SIEM sent it)
     input_steps: list[StageStep] = []
     if case.evidence and getattr(case.evidence[0], "summary", ""):
@@ -604,7 +614,7 @@ def _build_stages(case_id: str, case: Any, rows: Any, state: Any) -> list[Timeli
         id="input", kind="input", label="Alert received", status="done", deterministic=False,
         ts=case.created_at or None,
         headline=(f"{n} alert{plural} from {src}" if n else f"Alert from {src}"),
-        state=StageState(severity_band=case.severity_band, severity_source=case.severity_source),
+        state=StageState(severity_band=sev_band, severity_source=sev_source),
         steps=input_steps,
     )
 

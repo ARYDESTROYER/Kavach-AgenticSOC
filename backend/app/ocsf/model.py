@@ -17,11 +17,13 @@ Design rules:
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from ..constants import (
+    DEFAULT_SEVERITY_SCALE_MAX,
     OCSF_CAT_FINDINGS,
     OCSF_CLASS_BASE_EVENT,
     OCSF_SEVERITY_TO_SCORE,
@@ -96,32 +98,153 @@ def severity_id_to_score(severity_id: int | None) -> float:
     return OCSF_SEVERITY_TO_SCORE.get(int(severity_id), 0.0)
 
 
-def score_to_severity_id(score: float | None, scale: str = "auto") -> int:
+def project_severity_magnitude(
+    raw: Any, scale_max: Any = DEFAULT_SEVERITY_SCALE_MAX
+) -> float:
+    """THE projection: a raw NATIVE severity → the canonical 0-100 magnitude.
+
+    One formula, one place, shared by every severity surface in the suite (the
+    advisory band ladder in ``engine/priority.py``, the Noise-Reduction bucketing,
+    and :func:`score_to_severity_id` below)::
+
+        magnitude = min(100, max(0, raw / scale_max * 100))
+
+    ``scale_max`` is the operator-DECLARED ceiling of the source's native severity
+    ladder (``config.SourceInstance.severity_scale_max``). One declared number
+    describes any ladder — 0..10, 0..16, 0..1000 — which is why this function has no
+    per-vendor branch and no magnitude guess: the old ``raw <= 10 ? raw*10 : raw``
+    heuristic could not tell a genuinely-low 0..100 score from a high 0..10 rating and
+    inverted both. An undeclared ceiling is ``DEFAULT_SEVERITY_SCALE_MAX`` (100), which
+    makes the projection the IDENTITY on the OCSF score every normaliser already emits.
+
+    Fail-open and total: a non-numeric or non-finite ``raw`` reads 0.0, and a missing /
+    non-numeric / non-positive / NON-FINITE ``scale_max`` falls back to the default rather
+    than dividing by zero or by infinity. ``inf`` is rejected as deliberately as ``0``:
+    it passes every ``> 0`` test yet would silently read EVERY severity as 0.0. NEVER
+    raises."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):        # NaN / ±inf — no honest magnitude
+        return 0.0
+    try:
+        ceiling = float(scale_max)
+    except (TypeError, ValueError):
+        ceiling = DEFAULT_SEVERITY_SCALE_MAX
+    if not math.isfinite(ceiling) or ceiling <= 0:   # 0 / negative / NaN / inf
+        ceiling = DEFAULT_SEVERITY_SCALE_MAX
+    return min(100.0, max(0.0, value / ceiling * 100.0))
+
+
+# DEPRECATED string scale ids, kept ONLY so a legacy caller that still passes the old
+# token keeps its exact behaviour. These are alias NAMES a caller may hand us, not a
+# runtime vendor lookup: nothing in the suite resolves a source to one of these any
+# more (a source declares its ceiling as a number — see ``SourceInstance``). Any string
+# NOT listed here (``"auto"``, ``"unknown"``, anything else) resolves to ``None``, which
+# each caller maps to its own documented fallback.
+_LEGACY_SCALE_CEILINGS: dict[str, float] = {
+    "ocsf_0_100": 100.0,
+    "0-100": 100.0,
+    "0_100": 100.0,
+    "0_10": 10.0,
+    "0-10": 10.0,
+    "wazuh_0_16": 16.0,
+}
+
+
+def resolve_severity_scale_max(scale: Any) -> float | None:
+    """Coerce a caller-supplied ``scale`` into a POSITIVE numeric ceiling, or ``None``.
+
+    Accepts the modern numeric ceiling directly and, for back-compat, the deprecated
+    string scale ids in :data:`_LEGACY_SCALE_CEILINGS`. Returns ``None`` for ``"auto"``,
+    for any unrecognised string, and for a non-positive / non-numeric / NON-FINITE number
+    (``nan`` and ``±inf`` alike) — the caller then applies ITS OWN documented fallback
+    (the legacy magnitude heuristic in :func:`score_to_severity_id`; the default 100
+    ceiling everywhere else). Never raises."""
+    if scale is None or isinstance(scale, bool):
+        return None                     # a bool is never a ceiling
+    if isinstance(scale, (int, float)):
+        ceiling = float(scale)
+        if not math.isfinite(ceiling) or ceiling <= 0:
+            return None
+        return ceiling
+    if isinstance(scale, str):
+        return _LEGACY_SCALE_CEILINGS.get(scale)
+    return None
+
+
+def _legacy_alias_magnitude(value: float, scale: str) -> float:
+    """The DEPRECATED string-alias arms of :func:`score_to_severity_id`, byte-identical.
+
+    These are alias NAMES a legacy caller may still hand us; nothing in the suite
+    resolves a source to one of them any more (a source declares its ceiling as a
+    number). Each arm reproduces its ORIGINAL expression exactly — re-associating
+    ``value * 10.0`` into ``value / 10.0 * 100.0`` moves a handful of doubles across an
+    OCSF cut by one ULP, which a back-compat arm may not do. Anything unrecognised
+    (``"auto"``, ``"unknown"``, …) falls through to the legacy magnitude heuristic.
+
+    Derived from the ONE alias table (:data:`_LEGACY_SCALE_CEILINGS`) so a token can
+    never be recognised in one place and not the other; only the ARITHMETIC is per-arm,
+    reproducing each original expression exactly.
+
+    Positive ``value`` only (the caller has already returned for ``<= 0``). Total."""
+    ceiling = _LEGACY_SCALE_CEILINGS.get(scale)
+    if ceiling is None:                 # "auto"/"unknown"/unrecognised
+        return value * 10.0 if value <= 10 else value
+    if ceiling == 100.0:
+        return value                    # original arm: `pass` — already 0..100
+    if ceiling == 10.0:
+        return value * 10.0             # original arm: `s * 10.0`, NOT `s / 10 * 100`
+    return value / ceiling * 100.0      # original arm: `s / 16.0 * 100.0`
+
+
+def score_to_severity_id(score: float | None, scale: str | float = "auto") -> int:
     """A severity score → the nearest OCSF severity_id (0..6), scale-aware.
 
     ``scale`` disambiguates the source's native range so a genuine LOW 0..100 severity
     is not inflated (audit #36 — the old magnitude guess x10'd any value <= 10, so an
-    OCSF severity of 8 became 80 → High):
+    OCSF severity of 8 became 80 → High). It accepts:
 
-    * ``"ocsf_0_100"`` / ``"0-100"`` — already 0..100; NO rescale (8 stays 8 → Info/Low).
-    * ``"0_10"`` / ``"0-10"`` — the 0..10 SIEM scale; x10.
-    * ``"wazuh_0_16"`` — Wazuh rule.level 0..16; level/16*100.
+    * a NUMBER — the source's declared severity-ladder ceiling
+      (``config.SourceInstance.severity_scale_max``). This is what the resolver
+      ``engine.priority.severity_scale_max_for_source`` now returns, and it is projected
+      through the ONE shared :func:`project_severity_magnitude` formula.
+    * the DEPRECATED string ids ``"ocsf_0_100"`` / ``"0-100"`` / ``"0_100"`` (ceiling
+      100), ``"0_10"`` / ``"0-10"`` (ceiling 10) and ``"wazuh_0_16"`` (ceiling 16) —
+      byte-identical to their previous behaviour.
     * ``"auto"`` (default) — the legacy magnitude heuristic (``<=10 ? x10 : as-is``),
-      kept for callers that cannot resolve the source scale (back-compat, byte-identical).
+      kept UNCHANGED for callers that cannot resolve the source ceiling. This arm is
+      deliberate back-compat and is pinned by ``tests/test_receivers.py``; it is the one
+      place in the suite where the retired guess survives.
+
+    BYTE-IDENTICAL back-compat: the deprecated string arms keep their ORIGINAL
+    arithmetic, not the re-associated shared projection. IEEE-754 multiplication is not
+    associative, so ``s / 10.0 * 100.0`` is not ``s * 10.0`` for every double (e.g.
+    ``3.9999999999999996`` lands exactly ON the 40 cut one way and just below it the
+    other, moving the returned id). A legacy caller must not observe a 1-ULP boundary
+    shift; the shared projection applies to the NUMERIC ceilings, which are new here and
+    have no prior behaviour to preserve.
     """
     if score is None:
         return 0
     s = float(score)
     if s <= 0:
         return 1                        # Informational
-    if scale in ("ocsf_0_100", "0-100", "0_100"):
-        pass                            # already 0..100 — never rescale
-    elif scale in ("0_10", "0-10"):
-        s = s * 10.0
-    elif scale == "wazuh_0_16":
-        s = s / 16.0 * 100.0
-    elif s <= 10:                       # "auto"/unknown — legacy magnitude heuristic
-        s = s * 10.0
+    if isinstance(scale, str):
+        s = _legacy_alias_magnitude(s, scale)
+    else:
+        ceiling = resolve_severity_scale_max(scale)
+        if ceiling is not None:
+            s = project_severity_magnitude(s, ceiling)
+        elif s <= 10:                   # unusable number — legacy magnitude heuristic
+            s = s * 10.0
+    # NOTE — these 90/70/40/15 cuts are the OCSF ``severity_id`` vocabulary
+    # (1=Informational .. 5=Critical), a PUBLIC STANDARD. They are deliberately NOT the
+    # 74/48/22/8 cuts of the advisory display ladder in ``engine/priority.py``: that
+    # ladder is our own 5-band presentation chip and is free to differ. Only the
+    # PROJECTION onto 0-100 is shared (:func:`project_severity_magnitude`); collapsing
+    # the two cut ladders would corrupt a standard mapping.
     if s >= 90:
         return 5                        # Critical
     if s >= 70:

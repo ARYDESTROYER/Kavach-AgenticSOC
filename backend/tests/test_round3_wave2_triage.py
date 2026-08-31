@@ -12,12 +12,13 @@ BYTE-IDENTICAL regardless of any advisory severity/impact/urgency/priority band.
 from __future__ import annotations
 
 from app.api.routes_triage import case_timeline, case_triage
-from app.config import AssetNetwork, Preferences, PriorityMatrix
+from app.config import AssetNetwork, Preferences, PriorityMatrix, SourceInstance
 from app.constants import (
     ActionType,
     CaseStatus,
     EntityType,
     SourceSurface,
+    SourceType,
     Verdict,
 )
 from app.engine.case_manager import decide
@@ -43,12 +44,14 @@ def _case(
     confidence: float = 0.8,
     severity_max: float | None = 8.0,
     escalation_level: int = 0,
+    source_id: str | None = None,
 ) -> Case:
     return Case(
         case_id=case_id,
         cluster_signature=f"sig:{case_id}",
         source_surface=SourceSurface.AUTOMATED_SCAN,
         entity=Entity(type=EntityType.IP, value=ip),
+        source_id=source_id,
         risk_score=risk,
         verdict=verdict,
         confidence=confidence,
@@ -66,17 +69,51 @@ def _case(
 # --------------------------------------------------------------------------- #
 # PURE derivation — severity / impact / urgency / priority
 # --------------------------------------------------------------------------- #
+def _declared_prefs(*, source_id: str = "src-0-10", ceiling: float = 10.0) -> Preferences:
+    """Preferences carrying ONE source that DECLARES its native severity ceiling.
+
+    The connector type is deliberately incidental — the ladder is described by the
+    declared NUMBER alone (``SourceInstance.severity_scale_max``), which is what every
+    severity surface projects through."""
+    return Preferences(
+        sources=[
+            SourceInstance(
+                id=source_id,
+                source_type=SourceType.ELASTICSEARCH,
+                display_name="declared 0-10 ladder",
+                severity_scale_max=ceiling,
+            )
+        ]
+    )
+
+
 def test_severity_band_is_source_asserted_not_risk():
-    # severity_max=8.0 (0-10 scale) -> 80 magnitude -> critical (5-band ladder), flagged
-    # source_asserted.
+    # The band is a function of the source's DECLARED severity ladder, never of risk.
+    #
+    # UNDECLARED (no prefs -> no ladder to resolve) is the IDENTITY projection: a raw 8
+    # is read as 8/100, because with no declaration there is no evidence the number means
+    # anything other than what it says. The retired ``raw <= 10 ? raw*10`` guess is what
+    # used to call this CRITICAL, and it inverted genuinely-low 0-100 scores just as
+    # badly as it inverted high 0-10 ratings.
     case = _case(severity_max=8.0, risk=10.0)
     sev = severity_band_from_events(case)
     assert sev["source"] == "source_asserted"
-    assert sev["band"] == "critical"
-    assert sev["value"] == 80.0
     assert sev["raw"] == 8.0
+    assert sev["scale_max"] == 100.0
+    assert sev["value"] == 8.0
+    assert sev["band"] == "low"
     # It must NOT track the (low) risk score — proving severity != risk.
     assert sev["value"] != case.risk_score
+
+    # DECLARE the source's real 0-10 ladder and the SAME raw 8 reads CRITICAL again —
+    # one declared number, one projection, no magnitude guess and no vendor branch.
+    declared_case = _case(severity_max=8.0, risk=10.0, source_id="src-0-10")
+    declared = severity_band_from_events(declared_case, _declared_prefs())
+    assert declared["source"] == "source_asserted"
+    assert declared["scale_max"] == 10.0
+    assert declared["value"] == 80.0
+    assert declared["band"] == "critical"
+    assert declared["value"] != declared_case.risk_score
 
 
 def test_severity_band_already_0_100_scale_not_doubled():
@@ -157,7 +194,10 @@ def test_derive_triage_four_distinct_chips():
         asset_criticality={"203.0.113.50": 95.0},
         priority_matrix=PriorityMatrix(enabled=True),
     )
-    case = _case(risk=72.0, severity_max=8.0)
+    # The source DECLARES a 0-10 ladder, so the raw 8 projects to a source-asserted 80 —
+    # a number that is honestly distinct from risk (72) and impact (95).
+    prefs.sources = _declared_prefs().sources
+    case = _case(risk=72.0, severity_max=8.0, source_id="src-0-10")
     chips = derive_triage(case, prefs)
     assert set(chips) == {"risk", "severity", "impact", "priority"}
     # The four chips are honestly distinct numbers, not the same value relabelled.

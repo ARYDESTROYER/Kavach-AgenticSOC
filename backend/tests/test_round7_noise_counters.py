@@ -26,7 +26,9 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from app.config import SourceInstance
 from app.constants import (
+    DEFAULT_SEVERITY_SCALE_MAX,
     CaseStatus,
     DecisionBy,
     EntityType,
@@ -48,21 +50,51 @@ NOW = datetime(2026, 7, 5, 12, 0, 0, tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------- #
-# severity_scale_for_source — the classifier extracted from priority._scale_for_case
+# severity_scale_for_source — THE one resolver: a source's DECLARED ladder ceiling
 # --------------------------------------------------------------------------- #
-def test_severity_scale_for_source_none_is_unknown() -> None:
-    # Both the priority home + the engine re-export resolve None → the legacy heuristic.
-    assert severity_scale_for_source(None) == "unknown"
-    assert EN.severity_scale_for_source(None) == "unknown"
+def test_severity_scale_for_source_none_is_the_identity_ceiling() -> None:
+    """An unresolvable source resolves to the IDENTITY ceiling, not to a guess token.
+
+    Both the ``priority`` home and the ``noise_counters`` re-export must be the SAME
+    function object, so the funnel can never band on a different ladder from the case
+    surfaces."""
+    assert severity_scale_for_source(None) == DEFAULT_SEVERITY_SCALE_MAX
+    assert EN.severity_scale_for_source(None) == DEFAULT_SEVERITY_SCALE_MAX
+    # ONE function object under two names — not two implementations that agree today.
+    assert EN.severity_scale_for_source is severity_scale_for_source
 
 
-def test_severity_scale_for_source_classifies_by_type_and_mode() -> None:
-    wazuh = SimpleNamespace(source_type=SourceType.WAZUH, ingest_mode=IngestMode.PULL)
-    push = SimpleNamespace(source_type=SourceType.WEBHOOK, ingest_mode=IngestMode.PUSH_HTTP)
-    pull = SimpleNamespace(source_type=SourceType.ELASTICSEARCH, ingest_mode=IngestMode.PULL)
-    assert severity_scale_for_source(wazuh) == "wazuh_0_16"
-    assert severity_scale_for_source(push) == "ocsf_0_100"
-    assert severity_scale_for_source(pull) == "0_10"
+def test_severity_scale_for_source_reads_the_declaration_not_the_connector_type() -> None:
+    """The ladder is ONE declared number; no read path branches on the connector type.
+
+    Pinned as two independent equivalences, which a per-type lookup table cannot satisfy:
+    the same type with different declarations must differ, and different types with the
+    same declaration must agree."""
+    kwargs = {"ingest_mode": IngestMode.PULL, "display_name": "x"}
+    same_type_a = SourceInstance(id="a", source_type=SourceType.ELASTICSEARCH,
+                                 severity_scale_max=10.0, **kwargs)
+    same_type_b = SourceInstance(id="b", source_type=SourceType.ELASTICSEARCH,
+                                 severity_scale_max=1000.0, **kwargs)
+    other_type = SourceInstance(id="c", source_type=SourceType.WEBHOOK,
+                                ingest_mode=IngestMode.PUSH_HTTP, display_name="x",
+                                severity_scale_max=10.0)
+    assert severity_scale_for_source(same_type_a) == 10.0
+    assert severity_scale_for_source(same_type_b) == 1000.0        # same type, differs
+    assert severity_scale_for_source(other_type) == 10.0           # other type, agrees
+
+    # UNDECLARED -> the identity ceiling, whatever the type/mode.
+    undeclared = SourceInstance(id="d", source_type=SourceType.ELASTICSEARCH, **kwargs)
+    assert severity_scale_for_source(undeclared) == DEFAULT_SEVERITY_SCALE_MAX
+
+    # Total + fail-open: a duck-typed object with no ceiling attribute, and a garbage
+    # declaration, both degrade to the identity rather than raising.
+    assert severity_scale_for_source(SimpleNamespace()) == DEFAULT_SEVERITY_SCALE_MAX
+    assert severity_scale_for_source(
+        SimpleNamespace(severity_scale_max="not a number")
+    ) == DEFAULT_SEVERITY_SCALE_MAX
+    assert severity_scale_for_source(
+        SimpleNamespace(severity_scale_max=0)
+    ) == DEFAULT_SEVERITY_SCALE_MAX
 
 
 # --------------------------------------------------------------------------- #
@@ -78,13 +110,22 @@ def test_band_for_severity_ocsf_identity_scale() -> None:
     assert EN.band_for_severity(None, "ocsf_0_100") == "info"
 
 
-def test_count_events_by_band_uses_source_scale() -> None:
+def test_count_events_by_band_uses_the_declared_ceiling() -> None:
     evs = [RawEvent(id=f"e{i}", index="ix", severity=s)
            for i, s in enumerate([8.0, 5.0, 2.0, 0.0])]
-    # Under the suite 0-10 scale: 80→critical, 50→high, 20→low, 0→info.
-    counts = EN.count_events_by_band(evs, "0_10")
+    # Against a DECLARED 0-10 ceiling: 80→critical, 50→high, 20→low, 0→info.
+    counts = EN.count_events_by_band(evs, 10.0)
     assert counts == {"critical": 1, "high": 1, "medium": 0, "low": 1, "info": 1}
-    assert EN.count_events_by_band([], "0_10") == EN.zero_bands()
+    assert EN.count_events_by_band([], 10.0) == EN.zero_bands()
+    # The SAME raw events against the identity ceiling band completely differently —
+    # the funnel's buckets are a function of the declared number, so a window that
+    # cannot prove one ceiling throughout cannot be differenced (see the by_source
+    # ``severity_scale_max`` stamp).
+    assert EN.count_events_by_band(evs, DEFAULT_SEVERITY_SCALE_MAX) == {
+        "critical": 0, "high": 0, "medium": 0, "low": 1, "info": 3,
+    }
+    # The deprecated string alias is still accepted and resolves to the same ceiling.
+    assert EN.count_events_by_band(evs, "0_10") == counts
 
 
 def test_count_clusters_by_band_prefers_trigger_reason() -> None:

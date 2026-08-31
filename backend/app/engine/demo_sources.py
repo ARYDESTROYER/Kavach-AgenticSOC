@@ -287,7 +287,14 @@ def render_qradar_leef(signal: NativeSignal) -> str:
         ("dst", "10.80.0.12"),
         ("usrName", signal.user),
         ("devName", signal.host),
+        # QRadar's native LEEF `sev` is a 1..10 magnitude. It stays on the wire exactly as
+        # a real appliance would send it, and `demoSeverity` carries the SAME rating on
+        # the canonical 0..100 scale beside it — the pattern the Wazuh and syslog demo
+        # receivers already use. The demo overlay is a read-time fixture and never
+        # registers a SourceInstance, so it has nowhere to DECLARE a 0..10 ceiling; a
+        # parallel honest field is how it normalises without one.
         ("sev", str(max(1, min(10, int(round(signal.severity / 10.0)))))),
+        ("demoSeverity", str(signal.severity)),
         ("cat", "Authentication" if "auth" in signal.action.lower() else "Application"),
         ("proto", "TCP"),
         ("action", signal.action),
@@ -334,8 +341,12 @@ def render_qradar_offense(signal: NativeSignal) -> str:
         "closing_reason_id": None,
         "credibility": 8,
         "relevance": 9,
+        # Native QRadar `severity`/`magnitude` are 1..10 and stay on the wire verbatim;
+        # `_demo.severity` carries the same rating on the canonical 0..100 scale, which is
+        # what the receiver normalises through (see `render_qradar_leef`).
         "severity": max(1, min(10, int(round(signal.severity / 10.0)))),
         "magnitude": max(1, min(10, int(round(signal.severity / 10.0)))),
+        "_demo": {"severity": signal.severity},
         "destination_networks": ["LumenPay DMZ", "LumenPay Corporate"],
         "source_network": "other-remote",
         "device_count": 2,
@@ -596,7 +607,10 @@ class NativeDemoSource:
                 "user_field": "username",
                 "host_field": "devName",
                 "message_field": "message",
-                "severity_field": "severity",
+                # Preserve QRadar's native 1..10 `sev` in raw_data, but normalize through
+                # the parallel 0..100 value so OCSF severity is honest (a demo source
+                # cannot declare a ceiling — it never enters `Preferences.sources`).
+                "severity_field": "demoSeverity",
                 "rule_field": "event_id",
                 "rule_name_field": "name",
                 "time_field": "timestamp",
@@ -610,7 +624,9 @@ class NativeDemoSource:
                 "user_field": "assigned_to",
                 "host_field": "log_sources.0.name",
                 "message_field": "description",
-                "severity_field": "severity",
+                # As above: native 1..10 `severity`/`magnitude` stay in raw_data, the
+                # parallel 0..100 `_demo.severity` is what OCSF normalisation reads.
+                "severity_field": "_demo.severity",
                 "rule_field": "description",
                 "rule_name_field": "description",
                 "time_field": "last_updated_time",

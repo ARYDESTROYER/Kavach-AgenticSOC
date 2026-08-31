@@ -83,6 +83,25 @@ describe('CaseTriageHeader (#12 four honest chips)', () => {
     expect(severity.textContent?.toLowerCase()).toContain('derived');
   });
 
+  it('does not call an OUT-OF-RANGE source rating "no source rating"', () => {
+    // `severity.source` is a THREE-token vocabulary. `source_out_of_range` means the
+    // source DID assert a rating and it exceeded the declared ceiling, so the band is our
+    // clamped arithmetic — but saying "derived (no source rating)" while printing that
+    // very rating beside it is simply false.
+    const saturatedChips: TriageChips = {
+      ...CHIPS,
+      severity: {
+        band: 'critical', value: 100, raw: 20, source: 'source_out_of_range', inputs: {},
+      },
+    };
+    render(<CaseTriageHeader chips={saturatedChips} />);
+    const severity = screen.getByTestId('triage-chip-severity');
+    const text = (severity.textContent || '').toLowerCase();
+    expect(text).toContain('above declared ceiling');
+    expect(text).not.toContain('no source rating');
+    expect(text).toContain('raw 20');
+  });
+
   it('shows the asset-criticality on the impact chip', () => {
     render(<CaseTriageHeader chips={CHIPS} />);
     const impact = screen.getByTestId('triage-chip-impact');

@@ -38,7 +38,7 @@ from .metrics import DASH, _window_filter, truncation_marker
 from .priority import (
     _normalise_severity,
     _severity_band_from_magnitude,
-    severity_band_from_events,
+    band_of_case,
     severity_scale_for_source,  # re-exported: callers band by the source's scale
 )
 
@@ -240,17 +240,14 @@ def _is_human_closed(case: Case) -> bool:
 
 
 def _band_of_case(case: Case, prefs: Any) -> str:
-    """The advisory severity band for a case (prefer a persisted band; else derive)."""
-    band = getattr(case, "severity_band", None)
-    if band in SEVERITY_BANDS:
-        return band
-    try:
-        derived = severity_band_from_events(case, prefs).get("band")
-        if derived in SEVERITY_BANDS:
-            return derived
-    except Exception:  # noqa: BLE001 — advisory only; never raise on a bad case
-        pass
-    return _INFO
+    """The advisory severity band for a case — a thin alias of the ONE public helper.
+
+    The prefer-persisted-then-derive-then-``info`` logic moved to
+    :func:`app.engine.priority.band_of_case` so the six other consumers that read
+    ``Case.severity_band`` directly (and therefore saw ``None`` on every real case) share
+    exactly this resolution. Kept as a module-local name so this file's call site is
+    unchanged."""
+    return band_of_case(case, prefs)
 
 
 def _stage(key: str, label: str, *, source: str, deterministic: bool,

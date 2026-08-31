@@ -123,11 +123,27 @@ def test_urgency_score_ranks_risk_severity_age():
 
 
 def test_urgency_unknown_band_does_not_inflate():
+    """An unrecognised (possibly attacker-influenced) band contributes NOTHING.
+
+    Pinned as an EQUIVALENCE against a case that carries no band at all, which is the
+    honest statement of the property: the junk string is rejected by the
+    ``in SEVERITY_BANDS`` membership test and cannot move the score in either direction.
+
+    It is pinned this way rather than against a literal because the severity term is no
+    longer always zero. ``Case.severity_band`` is a READ-TIME field that no production
+    path persists, so reading the attribute directly used to score EVERY real case at
+    0.0 and rank the queue on risk + age alone; the band is now resolved through
+    ``priority.band_of_case``. A case with no source-asserted severity still falls back
+    to the deterministic risk total, so the two cases below agree exactly."""
     now = now_utc()
     junk = _case(cid="j", status=CaseStatus.OPEN, risk=10.0, severity_band="; DROP TABLE", age_minutes=0)
-    # An unrecognised (possibly attacker-influenced) band must contribute 0, so the
-    # score is purely 0.5*risk here.
-    assert shift_report.urgency_score(junk, now=now) == pytest.approx(0.5 * 0.1, abs=1e-6)
+    no_band = _case(cid="n", status=CaseStatus.OPEN, risk=10.0, severity_band=None, age_minutes=0)
+    assert shift_report.urgency_score(junk, now=now) == pytest.approx(
+        shift_report.urgency_score(no_band, now=now), abs=1e-9
+    )
+    # ...and it cannot buy the rank a genuinely CRITICAL case earns.
+    critical = _case(cid="c", status=CaseStatus.OPEN, risk=10.0, severity_band="critical", age_minutes=0)
+    assert shift_report.urgency_score(junk, now=now) < shift_report.urgency_score(critical, now=now)
 
 
 def test_attention_queue_only_open_and_ranked():

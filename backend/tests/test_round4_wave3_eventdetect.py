@@ -67,6 +67,7 @@ from app.engine.correlation import cluster_from_events, correlate
 from app.engine.event_detection import (
     CandidateAlert,
     build_batch,
+    event_is_batch_eligible,
     funnel,
     model_for_funnel,
     pre_aggregate,
@@ -165,13 +166,52 @@ def test_batch_target_rejects_provider_model_mismatch_and_allowlist_gap() -> Non
 
 
 def test_batch_severity_floor_partitions_without_dropping_events() -> None:
+    """The floor splits the lanes on the source's DECLARED ladder, and drops nothing.
+
+    The severities here are stated on the ceiling that is actually in force. These events
+    name no configured source, so the ceiling is the DEFAULT identity (100) — the same
+    reading every other severity surface gives an unresolvable source. That is the whole
+    point of the ladder change: 50 and 75 on a 0..100 ladder are Medium and High, and the
+    retired ``raw <= 10 ? raw*10`` guess (which read 5.0 as Medium and 7.0 as High only by
+    accident, and read a genuinely-low 0..100 score as Critical) is gone."""
     prefs = _prefs(batch=BatchConfig(enabled=True, severity_floor=3))
-    medium = _ev(id="medium", severity=5.0)  # default pull scale: 5/10 -> OCSF medium
-    high = _ev(id="high", severity=7.0)      # default pull scale: 7/10 -> OCSF high
+    medium = _ev(id="medium", severity=50.0)  # identity ceiling: 50/100 -> OCSF medium (3)
+    high = _ev(id="high", severity=75.0)      # identity ceiling: 75/100 -> OCSF high (4)
     batch, synchronous = split_batch_eligible_events([medium, high], prefs)
     assert [event.id for event in batch] == ["medium"]
     assert [event.id for event in synchronous] == ["high"]
     assert {event.id for event in batch + synchronous} == {"medium", "high"}
+
+
+def test_batch_eligibility_agrees_for_a_configured_and_an_unresolvable_source() -> None:
+    """Two byte-identical events must not route to opposite lanes over REGISTRATION.
+
+    ``event_is_batch_eligible`` used to keep the ``"auto"`` sentinel whenever the event's
+    source could not be resolved, which re-applied the retired magnitude guess: the same
+    OCSF-canonical severity then read Informational for a configured (undeclared) source
+    and Critical for an unregistered one. Resolution failure now means the identity
+    ceiling — the same undeclared reading — everywhere."""
+    configured = _prefs(batch=BatchConfig(enabled=True, severity_floor=3))
+    configured.sources = [
+        SourceInstance(id="src-a", source_type=SourceType.ELASTICSEARCH,
+                       ingest_mode=IngestMode.PULL)          # declares NO ceiling
+    ]
+    unregistered = _prefs(batch=BatchConfig(enabled=True, severity_floor=3))
+    unregistered.sources = []
+
+    # 10.0 is the canonical OCSF score for Informational — exactly the value the retired
+    # guess inflated to 100 (Critical).
+    event = _ev(id="informational", severity=10.0, source_id="src-a")
+    assert event_is_batch_eligible(event, configured) is True
+    assert event_is_batch_eligible(event, unregistered) is True
+
+    # An explicitly DECLARED narrow ladder is still honoured over the default.
+    declared = _prefs(batch=BatchConfig(enabled=True, severity_floor=3))
+    declared.sources = [
+        SourceInstance(id="src-a", source_type=SourceType.ELASTICSEARCH,
+                       ingest_mode=IngestMode.PULL, severity_scale_max=10.0)
+    ]
+    assert event_is_batch_eligible(event, declared) is False   # 10/10 -> Critical
 
 
 # --------------------------------------------------------------------------- #

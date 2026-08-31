@@ -5067,6 +5067,18 @@
             "title": "Is Primary",
             "type": "boolean"
           },
+          "severity_scale_max": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity Scale Max"
+          },
           "source_type": {
             "title": "Source Type",
             "type": "string"

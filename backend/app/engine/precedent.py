@@ -26,9 +26,10 @@ This module supplies the missing deterministic layer, in three pure pieces:
   both ``agent`` and ``analyst`` so the close can never be mistaken for agent
   performance nor laundered back into independent analyst ground truth.
 
-Plus two supporting tallies: :func:`stratified_selection` (so one rule's bulk analyst
-action cannot evict every other rule from the bounded precedent window) and
-:func:`evaluate_futility` (so a rule with abundant precedent that still routes to human
+Plus two supporting tallies: :func:`stratified_selection` (so one bulk analyst action
+cannot evict every other rule — or every other OUTCOME — from the bounded precedent
+window; it round-robins over N caller-supplied axes and knows what none of them mean)
+and :func:`evaluate_futility` (so a rule with abundant precedent that still routes to human
 says so instead of silently absorbing more operator effort).
 
 Everything here is pure, deterministic and side-effect free.
@@ -549,10 +550,52 @@ def match_analyst_rule_policy(
 # --------------------------------------------------------------------------- #
 # Precedent-window stratification
 # --------------------------------------------------------------------------- #
-def stratified_selection(
-    items: Sequence[T], key: Callable[[T], str], limit: int
+def _round_robin_rank(
+    items: list[T], axes: Sequence[Callable[[T], str]]
 ) -> list[T]:
-    """Round-robin ``limit`` items across the distinct ``key`` groups.
+    """Rank ``items`` by NESTED round-robin over ``axes`` (a full reordering).
+
+    Every input item appears in the output exactly once — this ranks, it never drops.
+    The first axis partitions the whole input and its groups are interleaved one item
+    per pass; each group is then ranked by the REMAINING axes before the interleave, so
+    axis 2 shares out the slots axis 1 already gave to one of its groups.
+
+    An axis whose values are ALL IDENTICAL over the items it is handed carries no
+    information, so it is SKIPPED and the next axis decides. That is what makes a
+    single-group deployment degrade to the caller's plain input order rather than to a
+    single-bucket no-op that still walks the interleave.
+
+    Groups are visited in first-appearance order and input order is preserved inside a
+    group, so a deterministic input gives a deterministic output.
+    """
+    if not axes:
+        return items
+    groups: dict[str, list[T]] = {}
+    for item in items:
+        groups.setdefault(str(axes[0](item)), []).append(item)
+    if len(groups) <= 1:
+        return _round_robin_rank(items, axes[1:])
+    ranked = [_round_robin_rank(bucket, axes[1:]) for bucket in groups.values()]
+    out: list[T] = []
+    depth = 0
+    deepest = max(len(bucket) for bucket in ranked)
+    while depth < deepest:
+        for bucket in ranked:
+            if depth < len(bucket):
+                out.append(bucket[depth])
+        depth += 1
+    return out
+
+
+def stratified_selection(
+    items: Sequence[T],
+    key: Callable[[T], str] | Sequence[Callable[[T], str]],
+    limit: int,
+    *,
+    transaction_key: Callable[[T], str] | None = None,
+    max_per_transaction: int | None = None,
+) -> list[T]:
+    """Round-robin ``limit`` items across the distinct groups of one or MORE axes.
 
     A flat newest-N window means any BULK analyst action on one rule can evict every
     other rule from the precedent corpus — the precedent-starvation outage in a new
@@ -560,29 +603,52 @@ def stratified_selection(
     one item per group per pass gives every active group an equal floor and degrades to
     the plain newest-N order when there is only one group.
 
-    Within a group the input order is preserved (the caller's ordering — newest-first as
-    the store returns it), and groups are visited in first-appearance order, so the
-    result is deterministic for a deterministic input.
+    Stratifying on rule identity alone is not enough, because the newest-first tiebreak
+    INSIDE each rule's bucket has the same shape one level down: the slots fill with
+    whatever outcome the deployment currently produces most of. ``key`` therefore
+    accepts either ONE callable (the shipped contract, unchanged) or an ORDERED
+    SEQUENCE of them, applied as a nested round-robin — outermost axis first.
+
+    This function never learns what an axis MEANS. It is handed callables, counts their
+    distinct values, and knows only how many it was given; the vocabulary lives with the
+    caller (§ vendor agnosticism).
+
+    ``max_per_transaction`` is a SOFT, DEFERRED admission cap, not a pre-filter. An item
+    whose transaction group is already at the cap is moved to the BACK of the ranking
+    rather than dropped, so the caller still receives ``limit`` items whenever ``limit``
+    items exist — one bulk action can no longer buy the whole window, and a deployment
+    whose ONLY material is that one bulk action loses nothing (with a single transaction
+    group the deferral is provably a no-op: the admitted prefix and the deferred tail
+    concatenate back to the same order). ``None`` or a non-positive cap means no cap.
+
+    Contract preserved byte-for-byte for the shipped single-axis call: with one callable
+    and no keyword arguments, an input whose axis has at most one distinct value returns
+    ``list(items)[:limit]``, so cold start is provably unchanged.
     """
     if limit <= 0:
         return []
-    groups: dict[str, list[T]] = {}
-    for item in items:
-        groups.setdefault(str(key(item)), []).append(item)
-    if len(groups) <= 1:
-        return list(items)[:limit]
-    out: list[T] = []
-    depth = 0
-    deepest = max(len(bucket) for bucket in groups.values())
-    while depth < deepest and len(out) < limit:
-        for bucket in groups.values():
-            if depth >= len(bucket):
-                continue
-            out.append(bucket[depth])
-            if len(out) >= limit:
-                break
-        depth += 1
-    return out
+    axes: tuple[Callable[[T], str], ...] = (
+        (key,) if callable(key) else tuple(key)  # type: ignore[arg-type]
+    )
+    ranked = _round_robin_rank(list(items), axes)
+    if (
+        transaction_key is not None
+        and max_per_transaction is not None
+        and max_per_transaction > 0
+    ):
+        taken: dict[str, int] = {}
+        admitted: list[T] = []
+        deferred: list[T] = []
+        for item in ranked:
+            group = str(transaction_key(item))
+            count = taken.get(group, 0)
+            if count < max_per_transaction:
+                taken[group] = count + 1
+                admitted.append(item)
+            else:
+                deferred.append(item)
+        ranked = admitted + deferred
+    return ranked[:limit]
 
 
 # --------------------------------------------------------------------------- #

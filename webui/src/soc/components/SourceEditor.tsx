@@ -1364,6 +1364,12 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
   const [autoCorrelate, setAutoCorrelate] = React.useState<boolean>(
     (existing?.config as Partial<SourceConfigExtras>)?.auto_correlate !== false,
   );
+  // The DECLARED ceiling of this source's native severity ladder. Held as TEXT so the
+  // field has an honest empty state: blank means UNDECLARED (the 100 identity
+  // projection), which is a different instruction to the backend than any number.
+  const [severityScaleMax, setSeverityScaleMax] = React.useState<string>(
+    existing?.severity_scale_max != null ? String(existing.severity_scale_max) : '',
+  );
   // Per-source field-mapping overrides (F9).
   const [fieldMappings, setFieldMappings] = React.useState<FieldMappingsExtra>(
     () =>
@@ -1556,6 +1562,19 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
       setError(new Error(`Please complete required fields: ${missing.map((m) => m.label).join(', ')}`));
       return;
     }
+    // Blank CLEARS the declaration (explicit null); a number DECLARES it. The backend
+    // rejects <= 0 and non-finite with a 422, so catch it here for a readable message.
+    const rawCeiling = severityScaleMax.trim();
+    let ceiling: number | null = null;
+    if (rawCeiling) {
+      const parsed = Number(rawCeiling);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setShowValidation(true);
+        setError(new Error('Severity ladder maximum must be a number greater than 0.'));
+        return;
+      }
+      ceiling = parsed;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -1568,6 +1587,7 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
         enabled,
         isPrimary: canBePrimary && isPrimary,
         ingestMode: existing?.ingest_mode ?? null,
+        severityScaleMax: ceiling,
       });
       onSaved();
     } catch (e) {
@@ -1755,7 +1775,7 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
           <AccordionTrigger className="py-3">
             <span className="flex items-center gap-2">
               <SlidersHorizontal className="h-4 w-4 text-muted-foreground" aria-hidden />
-              Advanced — field mapping
+              Advanced — field mapping &amp; severity scale
             </span>
           </AccordionTrigger>
           <AccordionContent className="space-y-4">
@@ -1852,6 +1872,38 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
                   </div>
                 );
               })}
+            </div>
+
+            <div className="space-y-1.5 border-t border-border pt-4">
+              <Label htmlFor="se-sev-scale" className="flex items-center gap-1.5">
+                Severity ladder maximum
+                <HelpTip
+                  label="About the severity ladder maximum"
+                  text="The highest value this source can put in its severity field. Every severity is projected onto 0-100 as min(100, max(0, raw / maximum * 100)) before it is banded."
+                />
+              </Label>
+              <Input
+                id="se-sev-scale"
+                type="number"
+                // No `min` attribute: the valid range is strictly ABOVE zero, which the
+                // attribute cannot express, and `min={0}` would advertise 0 as allowed.
+                // Validation on save is the single authority (and matches the backend's
+                // `gt=0` boundary).
+                step="any"
+                inputMode="decimal"
+                placeholder="100 (leave blank if this source rates severity 0-100)"
+                value={severityScaleMax}
+                onChange={(e) => setSeverityScaleMax(e.target.value)}
+              />
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Declare this if the source does <strong>not</strong> rate severity on 0-100 —
+                e.g. enter <code>10</code> for a 0-10 ladder or <code>16</code> for a 0-16 rule
+                level. Severities are projected as{' '}
+                <code>min(100, max(0, raw / maximum &times; 100))</code>. Leave blank to read
+                the number as-is on 0-100; a narrow ladder left blank reads roughly ten times
+                too low on the severity chip, in the Noise-Reduction funnel and against a
+                feed&apos;s severity floor.
+              </p>
             </div>
           </AccordionContent>
         </AccordionItem>

@@ -133,6 +133,35 @@ describe('saveSource orchestration', () => {
     expect(setSourceSecrets).toHaveBeenCalledWith('kafka-1', { sasl_password: 'PW' });
   });
 
+  it('OMITS severity_scale_max unless the caller passes it (carry-forward contract)', async () => {
+    // A toggle / bulk / make-primary path must never send the key: the backend reads
+    // `model_fields_set` and an omitted key preserves the stored declaration, while an
+    // explicit null CLEARS it.
+    await saveSource(
+      esManifest,
+      { config: {}, secrets: {} },
+      { id: 'es-1', displayName: 'ES', enabled: false, isPrimary: false },
+    );
+    expect('severity_scale_max' in upsertSource.mock.calls[0][0]).toBe(false);
+
+    // The editor DECLARES a ceiling...
+    await saveSource(
+      esManifest,
+      { config: {}, secrets: {} },
+      { id: 'es-1', displayName: 'ES', enabled: true, isPrimary: false, severityScaleMax: 10 },
+    );
+    expect(upsertSource.mock.calls[1][0].severity_scale_max).toBe(10);
+
+    // ...and CLEARS it with an explicit null, which must still be sent as a present key.
+    await saveSource(
+      esManifest,
+      { config: {}, secrets: {} },
+      { id: 'es-1', displayName: 'ES', enabled: true, isPrimary: false, severityScaleMax: null },
+    );
+    expect('severity_scale_max' in upsertSource.mock.calls[2][0]).toBe(true);
+    expect(upsertSource.mock.calls[2][0].severity_scale_max).toBeNull();
+  });
+
   it('no secrets typed: upserts only (no secret calls of either tier)', async () => {
     await saveSource(
       esManifest,

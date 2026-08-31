@@ -54,6 +54,7 @@ import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { Stagger } from '@/soc/components/Stagger';
 import { RiskBadge, SeverityBadge, StatusBadge } from '@/soc/components/badges';
+import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
 import { Can } from '@/soc/components/Can';
 import {
   Card,
@@ -592,7 +593,16 @@ function AttentionRowItem({
         ) : null}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-        {row.severity_band ? <SeverityBadge severity={row.severity_band} /> : null}
+        {row.severity_band ? (
+          <span className="inline-flex items-center gap-1">
+            <SeverityBadge severity={row.severity_band} />
+            {/* Severity provenance FLIPS per row, so the tag lives beside the badge —
+                the same per-cell contract the Cases list uses. Without it the queue
+                would show a band derived from the risk score as if it were the
+                source's own severity, right next to that very risk badge. */}
+            <ProvenanceTag kind={severityProvenance(row.severity_source)} variant="icon" />
+          </span>
+        ) : null}
         <StatusBadge status={row.status} />
         <RiskBadge score={row.risk_score} />
         <span

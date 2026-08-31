@@ -7845,6 +7845,8 @@ export interface components {
              * @default false
              */
             is_primary: boolean;
+            /** Severity Scale Max */
+            severity_scale_max?: number | null;
             /** Source Type */
             source_type: string;
         };

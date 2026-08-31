@@ -132,8 +132,8 @@ function PrecedentPromotionControls({ prefs, update }: SecProps) {
         onChange={(v) => setPromotion({ max_conflicting: v })}
       />
       <SwitchPref
-        label="Share the precedent window across rules"
-        help="On: the bounded projection window is filled round-robin per detection rule, so one rule's bulk confirmation cannot evict every other rule's precedent. Off restores a flat newest-first window."
+        label="Share the precedent window fairly"
+        help="On: the bounded projection window is filled round-robin across detection rule and then confirmed outcome, and no single bulk confirmation may occupy more than half of it — over-cap cases move to the back of the queue rather than being dropped, so the window still fills. Off restores a flat newest-first window."
         checked={window.stratify_by_rule ?? true}
         onChange={(v) => setWindow({ stratify_by_rule: v })}
       />

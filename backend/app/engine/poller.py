@@ -716,11 +716,13 @@ class Poller:
         # fail-open, using ONLY the pre-computed dict (never the if-block locals).
         if self._noise_sink is not None:
             noise_ingested = zero_bands()
+            noise_scale_max = None
             try:
                 _ns_source = prefs.source_by_id(getattr(self._source, "connector_id", None))
+                noise_scale_max = severity_scale_for_source(_ns_source)
                 noise_ingested = count_events_by_band(
                     new_events + accepted_funnel_events,
-                    severity_scale_for_source(_ns_source),
+                    noise_scale_max,
                 )
             except Exception:  # noqa: BLE001 — counters are advisory, never break a poll
                 pass
@@ -737,6 +739,12 @@ class Poller:
                     # (state._observe_tick_volume) can attribute the volume. Additive — a
                     # None source_id folds into the pooled totals only (byte-identical).
                     "source_id": getattr(self._source, "connector_id", None),
+                    # The severity CEILING these bands were projected against. Stamped on
+                    # the per-source sub-block ONLY, so a later reader can tell whether two
+                    # windows' band splits describe one ladder — the tallies are bucketed
+                    # by band at write time and can never be re-projected. None when it
+                    # could not be resolved (the store then records "not provable").
+                    "severity_scale_max": noise_scale_max,
                 })
             except Exception as exc:  # noqa: BLE001 — the sink must never break a poll cycle
                 logger.debug("noise-counter sink failed: %s", exc)

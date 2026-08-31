@@ -249,9 +249,21 @@ const RiskCard: React.FC<{ risk: RiskChip }> = ({ risk }) => {
   );
 };
 
+/**
+ * The severity band's provenance sub-label. `severity.source` is a THREE-token
+ * vocabulary, not a boolean: `source_out_of_range` means the source DID assert a rating
+ * and it exceeded the declared ceiling, so the band is our clamped arithmetic rather than
+ * the source's claim. Reading it as "derived (no source rating)" while printing that very
+ * rating next to it would be a plain falsehood.
+ */
+function severitySubLabel(source?: string): string {
+  if (source === 'source_asserted') return 'source-asserted';
+  if (source === 'source_out_of_range') return 'source rating above declared ceiling';
+  return 'derived (no source rating)';
+}
+
 const SeverityCard: React.FC<{ severity: SeverityChip }> = ({ severity }) => {
   const tone = toneForBand(severity?.band);
-  const derived = severity?.source !== 'source_asserted';
   const help =
     severity.inputs?.definition ||
     "The maximum severity the SOURCE asserted on the member events — the SIEM/EDR's own rating, not our computed risk.";
@@ -267,7 +279,7 @@ const SeverityCard: React.FC<{ severity: SeverityChip }> = ({ severity }) => {
       helpCode={code}
       sub={
         <span>
-          {derived ? 'derived (no source rating)' : 'source-asserted'}
+          {severitySubLabel(severity?.source)}
           {typeof severity?.raw === 'number' ? ` · raw ${severity.raw}` : ''}
         </span>
       }

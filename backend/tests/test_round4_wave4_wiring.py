@@ -78,11 +78,23 @@ async def _set_threshold(state: AppState, n: int = 3) -> None:
     await state.update_prefs(p)
 
 
-def _fed_source(sid: str, feeds: list[dict], *, primary: bool = False) -> SourceInstance:
-    """A PULL Elasticsearch source with explicit per-feed ``index_patterns`` (roles)."""
+def _fed_source(
+    sid: str,
+    feeds: list[dict],
+    *,
+    primary: bool = False,
+    severity_scale_max: float | None = None,
+) -> SourceInstance:
+    """A PULL Elasticsearch source with explicit per-feed ``index_patterns`` (roles).
+
+    ``severity_scale_max`` DECLARES this source's native severity-ladder ceiling. It
+    matters for any test that exercises a ``severity_floor``: the floor compares an OCSF
+    ``severity_id``, which is derived by projecting the raw severity through the declared
+    ceiling. Left ``None`` (undeclared) the projection is the identity on 0-100."""
     return SourceInstance(
         id=sid, source_type=SourceType.ELASTICSEARCH, display_name=sid,
         enabled=True, is_primary=primary,
+        severity_scale_max=severity_scale_max,
         config={"index_patterns": feeds},
     )
 
@@ -312,12 +324,21 @@ async def test_outbox_save_failure_replays_against_unconsumed_baseline(
 
 @asyncio_mark
 async def test_high_event_feed_stays_synchronous_above_batch_floor(app_state: AppState):
-    """``severity_floor`` governs eligibility; high EVENT records remain realtime."""
+    """``severity_floor`` governs eligibility; high EVENT records remain realtime.
+
+    The source DECLARES a 0-10 native ladder, which is what makes a raw 7 genuinely high
+    (7/10 -> 70 -> severity_id 4, above the floor of 3). Before the ladder was declarable
+    this leaned on the ``raw <= 10 ? raw*10`` magnitude guess; an operator whose feed
+    really is 0-10 now says so, and a feed that never declares one is read on 0-100 —
+    see ``test_undeclared_event_feed_reads_a_raw_severity_on_the_identity_ladder``."""
     await _set_threshold(app_state, 3)
     _seed(app_state, "high-events", "10.8.0.9", n=4, severity=7.0)
     await _configure(
         app_state,
-        [_fed_source("s1", [{"pattern": "high-events*", "role": "events"}], primary=True)],
+        [_fed_source(
+            "s1", [{"pattern": "high-events*", "role": "events"}],
+            primary=True, severity_scale_max=10.0,
+        )],
         batch=BatchConfig(enabled=True, severity_floor=3),
         baseline=BaselineConfig(enabled=True, seasonality="none", warmup_multiplier=1),
     )
@@ -331,6 +352,41 @@ async def test_high_event_feed_stays_synchronous_above_batch_floor(app_state: Ap
     assert routed == []
     assert stats["funnel_routed"] == 0
     assert stats["clusters"] == 1
+
+
+@asyncio_mark
+async def test_undeclared_event_feed_reads_a_raw_severity_on_the_identity_ladder(
+    app_state: AppState,
+):
+    """The SAME feed with NO declared ceiling reads the raw 7 on 0-100 — and is NEVER dropped.
+
+    This is the behaviour change the declared ladder replaces: without a declaration
+    there is no evidence a raw 7 means "7 out of 10", so it projects through the identity
+    (severity_id 1) and falls BELOW the batch severity floor. Non-negotiable #4 still
+    holds — a below-floor event is batch-eligible, i.e. it goes to the async funnel, not
+    to the bin. An operator whose feed really is 0-10 declares
+    ``severity_scale_max: 10`` and gets the synchronous path back (the sibling test).
+    """
+    await _set_threshold(app_state, 3)
+    _seed(app_state, "undeclared-events", "10.8.0.11", n=4, severity=7.0)
+    await _configure(
+        app_state,
+        [_fed_source(
+            "s1", [{"pattern": "undeclared-events*", "role": "events"}], primary=True,
+        )],
+        batch=BatchConfig(enabled=True, severity_floor=3),
+        baseline=BaselineConfig(enabled=True, seasonality="none", warmup_multiplier=1),
+    )
+    routed: list[int] = []
+
+    async def _spy(events, prefs):
+        routed.append(len(events))
+
+    app_state.poller._primary._event_funnel = _spy
+    stats = await app_state.poller.poll_once(app_state.prefs)
+    # Routed to the async funnel rather than investigated synchronously — nothing lost.
+    assert sum(routed) == 4
+    assert stats["funnel_routed"] == 4
 
 
 @asyncio_mark
