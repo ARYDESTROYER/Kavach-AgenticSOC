@@ -51,7 +51,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from ..constants import CaseStatus
-from ..engine.analyst_outcomes import analyst_confirmed_outcome
+from ..engine.analyst_outcomes import analyst_confirmed_outcome, ground_truth_supply
 from ..engine.metrics import (
     analyst_confirmed_case_ids,
     auto_close_health,
@@ -1005,6 +1005,13 @@ async def diagnostics_health(
         "demo_active": bool(getattr(state, "demo_active", False)),
         "state_backend": str(getattr(getattr(state, "secrets", None), "state_backend", "") or ""),
         "precedent_corpus": precedent,
+        # Corpus SUPPLY, beside the corpus-health block above. Rendering and selecting
+        # precedent better cannot refresh a corpus nothing new is being labelled into,
+        # so this reports how long since the last qualifying precedent and how much
+        # recorded feedback arrives with no ground truth at all. MEASURED VALUES ONLY —
+        # no threshold, no status, no verdict, and an unmeasurable number stays null
+        # rather than becoming a zero. Nothing here feeds `alerts`/`unknowns`.
+        "ground_truth_supply": ground_truth_supply(cases, store_total=store_total),
         # Per-rule precedent distribution + the "more confirmations will not help"
         # finding. Advisory; never read by decide() (#3).
         "precedent_effectiveness": effectiveness,

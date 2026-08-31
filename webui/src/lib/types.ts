@@ -2708,8 +2708,16 @@ export interface CaseActionInput {
   priority?: string;
   /** Optional follow-up tags to attach as part of the action. */
   tags?: string[];
-  /** set_disposition: the investigative outcome to record. */
+  /** set_disposition / close: the investigative outcome to record. */
   disposition?: Disposition;
+  /**
+   * GROUND-TRUTH INTENT: true only when a human affirmatively chose `disposition` in
+   * this very action. The backend applies the disposition either way but records it as
+   * independent analyst evidence only when this is set, so a client echoing a stored
+   * (model-derived) disposition back cannot manufacture ground truth. Omit it — the
+   * default — unless the operator really made the choice.
+   */
+  disposition_declared?: boolean;
   /** set_status: the lifecycle status to move to. */
   status?: CaseStatus;
   /** Deprecated compatibility input; the Console does not expose escalation tiers. */

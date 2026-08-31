@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from ..config import Preferences
 from ..constants import CaseStatus, DecisionBy, Verdict
-from ..engine.analyst_outcomes import CLASSIFICATION_ACTIONS, analyst_confirmed_outcome
+from ..engine.analyst_outcomes import analyst_confirmed_outcome, is_classification_entry
 from ..engine.chunking import chunk_text
 from ..engine.precedent import (
     RULE_IDENTITY_KEY,
@@ -2112,9 +2112,13 @@ class RagService:
         other, is itself capped rather than exempted.
         """
         for entry in reversed(list(getattr(case, "history", None) or [])):
-            if not isinstance(entry, dict) or entry.get("event") != "analyst_action":
-                continue
-            if str(entry.get("action") or "") not in CLASSIFICATION_ACTIONS:
+            # The SHARED classification predicate (engine.analyst_outcomes) — the same
+            # one that decided this case is confirmed at all. It also matches the
+            # Console's primary Close-with-disposition, which stamps the explicit
+            # classification on an ``action="close"`` entry; matching only the
+            # classification VERBS here would miss the batch marker on exactly the bulk
+            # closes this cap exists to bound.
+            if not is_classification_entry(entry):
                 continue
             batch = str(entry.get("batch") or "").strip()
             if batch:

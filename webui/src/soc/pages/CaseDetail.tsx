@@ -61,7 +61,7 @@ import {
 
 import { toast } from 'sonner';
 
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { copyText } from '@/lib/clipboard';
 import type {
   Case,
@@ -71,6 +71,7 @@ import type {
   Playbook,
   ThreatContextPanel as ThreatContextPanelData,
 } from '@/lib/types';
+import { errorMessage } from '@/lib/errorMessage';
 import { fmtMoney, humanizeAge } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -354,6 +355,17 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [actionTags, setActionTags] = React.useState<string[]>([]);
   const [actionTagDraft, setActionTagDraft] = React.useState('');
   const [actionDisposition, setActionDisposition] = React.useState('');
+  // GROUND-TRUTH INTENT (G1). True only once the ANALYST has operated the disposition
+  // picker in this dialog. `actionDisposition` alone cannot carry that fact: the value
+  // stored on a case is routinely the one `case_manager.apply()` derived from the LLM
+  // verdict, so posting it back would quote the model to itself and the backend would
+  // record the model's guess as analyst-confirmed evidence. This flag is what the wire
+  // sends as `disposition_declared`; the picker's onChange is its ONLY writer.
+  const [dispositionDeclared, setDispositionDeclared] = React.useState(false);
+  const declareDisposition = React.useCallback((v: string) => {
+    setActionDisposition(v);
+    setDispositionDeclared(Boolean(v));
+  }, []);
   const [actionReason, setActionReason] = React.useState('');
   // Round-7 #10 (feedback-into-close): the in-dialog AI-decision grading draft. Grading
   // actions (close / confirm-FP / resolve / set-disposition) POST it as a SEPARATE
@@ -914,6 +926,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setActionTags([]);
     setActionTagDraft('');
     setActionDisposition('');
+    setDispositionDeclared(false);
     setActionReason('');
     setGrading(emptyGradingDraft());
   }, []);
@@ -922,13 +935,21 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     (a: ActionDef) => {
       setTakeActionOpen(false);
       resetActionFields();
-      // Pre-seed the disposition picker with the case's current value, if any.
-      if (a.fields.includes('disposition') && typeof c?.disposition === 'string') {
-        setActionDisposition(c.disposition);
-      }
+      // The disposition picker opens EMPTY, deliberately (G1).
+      //
+      // It used to be pre-seeded from `c.disposition`. But that value is normally the
+      // one `case_manager.apply()` mapped from the LLM verdict, so the pre-seed both
+      // satisfied the dialog's "a disposition is mandatory" guard on the analyst's
+      // behalf and posted the model's own answer back as if a human had given it. An
+      // empty picker makes that guard real: the primary Close stays disabled until
+      // someone actually chooses an outcome, and only then does the wire assert
+      // `disposition_declared`. The value is not hidden: the dialog shows it as
+      // read-only "Currently recorded" context under the picker (and the case page
+      // keeps its disposition badge) — it is just no longer pre-filled into the
+      // analyst's answer.
       setPending(a);
     },
-    [resetActionFields, c],
+    [resetActionFields],
   );
 
   const closeAction = React.useCallback(() => {
@@ -956,6 +977,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       }
       if (pending.fields.includes('disposition') && actionDisposition) {
         input.disposition = actionDisposition;
+        // Assert the INTENT separately from the value (G1). The backend applies the
+        // disposition either way, but records it as independent analyst evidence only
+        // on this flag — so a client that echoes a stored, model-derived disposition
+        // cannot manufacture ground truth. Sent only when the analyst operated the
+        // picker in this dialog.
+        if (dispositionDeclared) input.disposition_declared = true;
       }
       if (pending.fields.includes('reason') && actionReason.trim()) {
         input.reason = actionReason.trim();
@@ -981,10 +1008,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       // never surfaces as a close failure.
       const gradedVerdictRaw = next.verdict ?? c?.verdict ?? '';
       const gradedVerdict = String(gradedVerdictRaw).trim().toLowerCase();
+      // The analyst explicitly stated what actually happened. That is GROUND TRUTH and
+      // it stands on its own: a case with no AI verdict has nothing to grade but its
+      // confirmed outcome is exactly as real, and dropping it here would silently throw
+      // away the one field `analyst_confirmed_outcome` can read (G1).
+      const statedOutcome = Boolean(grading.actual_outcome);
       if (
         pending.fields.includes('grading') &&
-        gradedVerdict &&
-        gradedVerdict !== 'none' &&
+        (statedOutcome || (gradedVerdict && gradedVerdict !== 'none')) &&
         typeof api.caseFeedback === 'function'
       ) {
         // Derive the agree/override assessment AT SUBMIT TIME from the disposition being
@@ -1008,8 +1039,20 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             // if this CaseDetail is still showing the same case.
             if (updated && activeIdRef.current === id) commitCase(updated);
           })
-          .catch(() => {
-            /* grading is best-effort; never surface as a close failure (#3). */
+          .catch((err: unknown) => {
+            // Grading stays best-effort — the close already SUCCEEDED in a separate
+            // call, so this must never be reported as a close failure (#3) and the
+            // catch stays in place for genuine transport faults. But it must not be
+            // SILENT either: this handler used to discard the result outright, so a
+            // 422 rejecting the grading was invisible and the analyst walked away
+            // believing their ground truth had been recorded.
+            const rejected = err instanceof ApiError && err.status >= 400 && err.status < 500;
+            const detail = errorMessage(err, 'the grading was not recorded');
+            if (rejected) {
+              toast.error(`Case updated, but the grading was rejected: ${detail}`);
+            } else {
+              toast.warning(`Case updated, but the grading was not recorded: ${detail}`);
+            }
           });
       }
     } catch (e) {
@@ -1028,6 +1071,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actionAssignee,
     actionTags,
     actionDisposition,
+    dispositionDeclared,
     actionReason,
     id,
     c,
@@ -2264,7 +2308,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         tagDraft={actionTagDraft}
         onTagDraftChange={setActionTagDraft}
         disposition={actionDisposition}
-        onDispositionChange={setActionDisposition}
+        onDispositionChange={declareDisposition}
+        currentDisposition={c?.disposition ?? null}
         reason={actionReason}
         onReasonChange={setActionReason}
         verdict={c?.verdict ?? null}

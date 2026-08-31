@@ -26,6 +26,7 @@ import {
   X,
 } from 'lucide-react';
 
+import type { components } from '@/lib/api-types.gen';
 import type { Case } from '@/lib/types';
 import { DASH, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -34,6 +35,9 @@ import { Input } from '@/ui/input';
 import { Badge } from '@/ui/badge';
 import { Card } from '@/ui/card';
 import { isAutoClosedByAI } from '@/soc/components/badges';
+
+/** The disposition vocabulary, straight off the generated OpenAPI schema. */
+type WireDisposition = components['schemas']['Disposition'];
 
 /* --------------------------------------------------------------- contracts -- */
 
@@ -116,15 +120,34 @@ export const ACTION_PERMISSION: Record<ActionKind, { resource: 'cases'; action: 
   set_disposition: { resource: 'cases', action: 'write' },
 };
 
-/** Disposition options for the set_disposition picker (mirrors the backend enum). */
-export const DISPOSITION_OPTIONS: Array<{ value: string; text: string }> = [
+/**
+ * Disposition options for the disposition picker.
+ *
+ * This list is LOAD-BEARING for ground truth: the Console's primary close posts the
+ * chosen disposition alongside `disposition_declared`, and the backend records a
+ * DECLARED binary disposition as analyst-confirmed evidence (`engine/analyst_outcomes`).
+ * A value the analyst never picked is not offered here and never declared. So it is
+ * pinned to the GENERATED OpenAPI schema rather than "mirroring the backend enum" by
+ * hand — `as const satisfies` rejects a value that is not in the union, and
+ * {@link DispositionCoverage} fails `tsc --noEmit` if the union gains a member this
+ * list does not offer. Type-only import: zero runtime bytes from the generated module.
+ */
+export const DISPOSITION_OPTIONS = [
   { value: 'true_positive', text: 'True positive' },
   { value: 'false_positive', text: 'False positive' },
   { value: 'benign', text: 'Benign' },
   { value: 'suspicious', text: 'Suspicious' },
   { value: 'duplicate', text: 'Duplicate' },
   { value: 'undetermined', text: 'Undetermined' },
-];
+] as const satisfies ReadonlyArray<{ value: WireDisposition; text: string }>;
+
+/** Fails to typecheck unless `T` is `never`. */
+type MustBeNever<T extends never> = T;
+
+/** Compile-time drift guard for {@link DISPOSITION_OPTIONS}. */
+export type DispositionCoverage = MustBeNever<
+  Exclude<WireDisposition, (typeof DISPOSITION_OPTIONS)[number]['value']>
+>;
 
 export interface ActionDef {
   key: ActionKind;
