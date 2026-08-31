@@ -15,6 +15,7 @@ import asyncio
 import copy
 import hashlib
 import logging
+from datetime import timezone
 from typing import Any
 
 from sqlalchemy import (
@@ -46,7 +47,13 @@ from ...constants import (
     SourceSurface,
 )
 from ...models import AuditDoc, Case, Cursor, UsageDoc
-from ...utils import now_utc, parse_es_timestamp, to_millis, truncate
+from ...utils import (
+    now_utc,
+    parse_es_timestamp,
+    relative_to_iso_utc_strict,
+    to_millis,
+    truncate,
+)
 from ..base import (
     AuditRepository,
     CaseRepository,
@@ -54,6 +61,7 @@ from ..base import (
     CursorRepository,
     KVStore,
     UsageRepository,
+    window_bounds_proven,
 )
 from ..usage import (
     _empty_summary,
@@ -87,6 +95,84 @@ def _entity_value(case: Case) -> str:
         return case.entity.value or ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+# The ONE spelling the materialised ``created_at`` COLUMN is allowed to hold:
+# ``YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00``, i.e. what ``iso_now()`` emits. Written by
+# :func:`_canonical_created_at` on every save, and tested with two LIKE patterns (``_``
+# is the single-character wildcard in both SQLite and PostgreSQL) as the never-drop
+# escape hatch in :meth:`SqlCaseRepository.list_window`.
+#
+# BOTH halves matter. The shape alone would admit ``2026-03-02T00:00:00Z`` and
+# ``2026-03-01T04:00:00+05:30``, which are perfectly readable timestamps that
+# lexicographic order places WRONG — ``'Z'`` (0x5A) sorts after ``'+'`` (0x2B), so a
+# row sitting exactly on the inclusive upper bound is dropped, and a non-UTC offset is
+# compared as local wall-clock, up to a 14-hour error with inclusion inverted in both
+# directions. Requiring the ``+00:00`` tail routes any such legacy row into the
+# never-drop branch instead of mis-placing it.
+#
+# LIKE is character-wise and therefore collation-independent, unlike a
+# ``< '0' OR >= ':'`` bracket, which an ICU collation that ignores punctuation would
+# evaluate differently per deployment.
+_ISO_CREATED_AT_SHAPE = "____-__-__T__:__:__%"
+_ISO_CREATED_AT_UTC_TAIL = "%+00:00"
+
+
+def _canonical_created_at(value: Any) -> str:
+    """The materialised ``created_at`` COLUMN value for one case.
+
+    The column is an INDEX, not the record: the authoritative ``created_at`` always
+    stays byte-identical inside the JSON ``doc``, which is what :meth:`get`/:meth:`list`
+    read back. Its job is to be LEXICOGRAPHICALLY comparable, and it can only do that
+    job if every non-empty value shares one spelling — so this normalises a readable
+    timestamp to UTC ``+00:00`` (fixing ``...Z`` and non-UTC offsets, which string
+    order places wrong) and collapses an UNREADABLE one to ``""``.
+
+    Collapsing to ``""`` is what makes the never-drop contract (#4) EXACT here rather
+    than a shape heuristic. A LIKE pattern cannot tell ``2026-13-45T99:99:99+00:00``
+    from a real timestamp — both are ISO-shaped — so such a row used to fall through
+    to the lexicographic comparison, sort as a far-future date, and vanish from every
+    historical window while the store still reported an exact count. Marking it
+    "cannot be placed in time" at write time makes it agree with
+    :func:`~app.stores.base.case_in_created_window`, the single definition of the
+    contract, on every value.
+
+    Microseconds are preserved (``datetime.isoformat()`` omits the fraction only when
+    it is zero, on both sides of every comparison), so sort stability between two
+    cases created in the same millisecond is unchanged.
+
+    One visible side effect, and it is a convergence rather than a regression: a row
+    whose ``created_at`` cannot be read now sorts at the ``""`` end of the default
+    created_at-DESC listing (last) instead of wherever its raw bytes happened to fall.
+    That is already what the Elasticsearch path does — ``es/fake._sort_key`` maps an
+    incomparable value to ``-inf`` — so the two backends now order such a row the same
+    way rather than each inventing its own answer.
+
+    NO MIGRATION, NO BACKFILL (#12): this is a write-path change only. A pre-existing
+    row keeps whatever it holds and self-heals on its next save; until then the two
+    LIKE patterns above still route a non-canonical legacy value into never-drop. The
+    one residual is a legacy row that is ISO-shaped, ``+00:00``-tailed AND unreadable,
+    which no in-tree writer has ever produced (every ``Case.created_at`` comes from
+    ``iso_now()``)."""
+    dt = parse_es_timestamp(value)
+    return dt.astimezone(timezone.utc).isoformat() if dt is not None else ""
+
+
+def _case_sort_column(sort_field: str) -> Any:
+    """The ORDER BY expression for a case listing.
+
+    The timestamp columns are materialised; ``risk_score`` is NOT a column (it lives
+    inside the JSON ``doc``), so it is sorted via a numeric JSON extraction — a plain
+    ``getattr(CaseRow, 'risk_score')`` returns None and SILENTLY no-ops the sort
+    (BUG #13). Any other/unknown field falls back to created_at so the query never
+    errors (matching ES tolerance of a missing sort field)."""
+    if sort_field == "risk_score":
+        # cast to Float so ordering is NUMERIC (2 < 10), not lexicographic, on both
+        # SQLite (json_extract) and Postgres (->>) via the JSON accessor.
+        return cast(CaseRow.doc["risk_score"].as_float(), Float)
+    if sort_field in {"created_at", "updated_at"}:
+        return getattr(CaseRow, sort_field)
+    return CaseRow.created_at
 
 
 class SqlCaseRepository(CaseRepository):
@@ -123,7 +209,8 @@ class SqlCaseRepository(CaseRepository):
                     persisted.source_surface.value if persisted.source_surface else ""
                 ),
                 entity_value=_entity_value(persisted),
-                created_at=persisted.created_at or "",
+                # The COLUMN is a normalised index; ``doc`` keeps the raw value.
+                created_at=_canonical_created_at(persisted.created_at),
                 updated_at=persisted.updated_at or "",
                 doc=doc,
             )
@@ -174,20 +261,7 @@ class SqlCaseRepository(CaseRepository):
             stmt = stmt.where(CaseRow.entity_value == entity_value)
             count_stmt = count_stmt.where(CaseRow.entity_value == entity_value)
 
-        # Sortable fields. The timestamp columns are materialised; ``risk_score`` is
-        # NOT a column (it lives inside the JSON ``doc``), so it is sorted via a numeric
-        # JSON extraction — a plain ``getattr(CaseRow, 'risk_score')`` returns None and
-        # SILENTLY no-ops the sort (BUG #13). Any other/unknown field falls back to
-        # created_at so the query never errors (matching ES tolerance of a missing
-        # sort field).
-        if sort_field == "risk_score":
-            # cast to Float so ordering is NUMERIC (2 < 10), not lexicographic, on both
-            # SQLite (json_extract) and Postgres (->>) via the JSON accessor.
-            col = cast(CaseRow.doc["risk_score"].as_float(), Float)
-        elif sort_field in {"created_at", "updated_at"}:
-            col = getattr(CaseRow, sort_field)
-        else:
-            col = CaseRow.created_at
+        col = _case_sort_column(sort_field)
         stmt = stmt.order_by(col.desc() if sort_order == "desc" else col.asc())
         stmt = stmt.limit(limit).offset(offset)
 
@@ -196,6 +270,100 @@ class SqlCaseRepository(CaseRepository):
             total = int((await session.execute(count_stmt)).scalar() or 0)
         cases = [Case.model_validate(r.doc) for r in rows]
         return cases, total
+
+    async def list_window(
+        self,
+        *,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        status: str | None = None,
+        source_surface: str | None = None,
+        entity_value: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_field: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list[Case], int, bool]:
+        """Native ``created_at`` window push-down → (cases, total, exact).
+
+        WHERE + COUNT on the materialised, indexed ``created_at`` column, so the page
+        is drawn from the WHOLE matching set (page 2 of a 30d window is the middle of
+        that window, not the tail of the newest N rows) and ``total`` is a true count
+        over the whole corpus rather than the length of one fetched page.
+
+        The comparison is LEXICOGRAPHIC, the same idiom as :meth:`count_new_scans` /
+        :meth:`count_created_since`. That is only sound while BOTH sides share one
+        spelling, so both sides are normalised to it: the bounds by
+        ``relative_to_iso_utc_strict``, and the COLUMN by :func:`_canonical_created_at`
+        on every save (the raw value stays untouched in the JSON ``doc``). Without the
+        write-side half the assumption was merely asserted — ``save`` stored whatever
+        string it was handed — and a ``...Z`` or non-UTC-offset value was silently
+        mis-placed by up to fourteen hours.
+
+        NEVER-DROP (#4): a row whose ``created_at`` is NULL, empty, or not in that one
+        canonical spelling is KEPT. Lexicographic comparison always yields an answer,
+        so a value we cannot place in time would otherwise be silently dropped from
+        every historical window; the two LIKE tests are what make "I cannot place this"
+        visible instead. Because ``save`` writes ``""`` for an unreadable timestamp,
+        this now agrees value-for-value with
+        :func:`~app.stores.base.case_in_created_window` rather than approximating it
+        with a shape heuristic. It costs the index on the OR branch; correctness over
+        the plan.
+
+        The residual, stated rather than glossed: a row written BEFORE the write-side
+        normalisation and never re-saved may hold a readable but non-canonical spelling
+        (``...Z``, a non-UTC offset). Such a row falls into the never-drop branch, so it
+        is over-KEPT — it may appear in a window it does not belong to. That is the
+        deliberate direction of the error (never-drop, never never-filter), it is
+        strictly better than the silent mis-placement it replaces, and it disappears the
+        first time the case is saved.
+
+        An unresolvable BOUND is treated as absent rather than as "right now", and
+        ``exact`` then reports ``False``: the applied window is wider than the one that
+        was requested (see :func:`~app.stores.base.window_bounds_proven`)."""
+        lo = relative_to_iso_utc_strict(created_from) if created_from else None
+        hi = relative_to_iso_utc_strict(created_to) if created_to else None
+        proven = window_bounds_proven(created_from, created_to, lo, hi)
+        if lo is None and hi is None:
+            cases, total = await self.list(
+                status=status, source_surface=source_surface, entity_value=entity_value,
+                limit=limit, offset=offset, sort_field=sort_field, sort_order=sort_order,
+            )
+            return cases, total, proven
+
+        stmt = select(CaseRow)
+        count_stmt = select(func.count()).select_from(CaseRow)
+        for clause in (
+            CaseRow.status == status if status else None,
+            CaseRow.source_surface == source_surface if source_surface else None,
+            CaseRow.entity_value == entity_value if entity_value else None,
+        ):
+            if clause is not None:
+                stmt = stmt.where(clause)
+                count_stmt = count_stmt.where(clause)
+
+        inside = [c for c in (
+            CaseRow.created_at >= lo if lo is not None else None,
+            CaseRow.created_at <= hi if hi is not None else None,
+        ) if c is not None]
+        keep = or_(
+            CaseRow.created_at.is_(None),
+            CaseRow.created_at == "",
+            ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
+            ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
+            and_(*inside),
+        )
+        stmt = stmt.where(keep)
+        count_stmt = count_stmt.where(keep)
+
+        col = _case_sort_column(sort_field)
+        stmt = stmt.order_by(col.desc() if sort_order == "desc" else col.asc())
+        stmt = stmt.limit(limit).offset(offset)
+
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+            total = int((await session.execute(count_stmt)).scalar() or 0)
+        return [Case.model_validate(r.doc) for r in rows], total, proven
 
     async def list_scans(self, limit: int = 50) -> tuple[list[Case], int]:
         return await self.list(

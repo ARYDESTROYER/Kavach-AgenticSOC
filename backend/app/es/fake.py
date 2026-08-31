@@ -19,9 +19,30 @@ from ..utils import coerce_float, dotted_get, new_id, parse_es_timestamp
 from .base import BaseESClient
 
 
+# A string is a NUMBER only when the whole string is one. ``coerce_float`` deliberately
+# regex-MINES the first digit run out of anything ("sev 7" -> 7.0), which is right for
+# heterogeneous severity fields and wrong for a comparison axis — see _to_comparable.
+_WHOLLY_NUMERIC = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+
+
 def _to_comparable(value: Any) -> float | None:
     """Best-effort conversion of a field value to a sortable/range-comparable
-    number (timestamps become epoch millis)."""
+    number (timestamps become epoch millis), or ``None`` for "cannot be placed on
+    the axis at all".
+
+    ``None`` is a load-bearing answer, not a fallback. :func:`_range_match` turns it
+    into "this clause does not match", which is how a ``must_not`` complement KEEPS a
+    document whose field is unreadable — the shape ``CaseStore.list_window`` relies on
+    to satisfy the never-drop contract (#4).
+
+    Which is why a string that is neither a readable timestamp nor a number must NOT
+    be run through ``coerce_float``: that helper mines the first digit run out of any
+    string, so ``'garbage-2026'`` became ``-2026.0`` and ``'2026-13-45Tnonsense'``
+    became ``2026.0``. Those are definite points far below any epoch-millis bound, so
+    a range clause matched them, and the complement then silently DROPPED the record
+    from every historical window — the exact failure never-drop exists to prevent.
+    A bare severity WORD ("high") is still comparable and is preserved.
+    """
     if value is None:
         return None
     if isinstance(value, bool):
@@ -32,7 +53,10 @@ def _to_comparable(value: Any) -> float | None:
         dt = parse_es_timestamp(value)
         if dt is not None and any(c in value for c in (":", "-", "T")):
             return dt.timestamp() * 1000.0
-        return coerce_float(value, None)  # type: ignore[arg-type]
+        s = value.strip()
+        if _WHOLLY_NUMERIC.fullmatch(s) or s.isalpha():
+            return coerce_float(s, None)  # type: ignore[arg-type]
+        return None
     return None
 
 

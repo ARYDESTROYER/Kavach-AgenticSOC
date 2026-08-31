@@ -10419,3 +10419,56 @@
   agnosticism lint) are NOT started and are tracked in the PR description.
 - Next: PR into `Testing` (the branch is protected by the required `CI passed` aggregate, so a
   direct push is declined by design). Then P4's store-level windowing, which blocks P3 and P4 UI.
+
+### 2026-08-31 04:10Z — orchestrator + sub-agent fleet — P4 store windowing + P3 posture populations
+- Context: PR #102 (P1 severity ladder, F, G) merged as `f4b7d45`. Next blocker from Brief A: the
+  case list windows AFTER a 200-row fetch, so both the rows and the reported total are wrong past
+  the first page — which blocks the P3 tile re-spec and the P4 drill-down panel.
+- Did:
+  - `CaseRepository.list_window(created_from, created_to) -> (cases, total, exact)` following the
+    repo's OWN `count_created_since` precedent: NON-abstract with a bounded-scan default, so a
+    third-party repository cannot break with a TypeError. Native ES and SQL overrides return exact
+    totals. `window_total_exact` surfaced additively; the windowless response is unchanged.
+  - **Fixed the never-drop-on-error contract, which was DEAD CODE.** `relative_to_millis` never
+    raises (it ends `return to_millis(dt) if dt else to_millis(now)`), so the
+    `except Exception  # never-drop` branch was unreachable and an unparseable `created_at`
+    silently became NOW and was dropped from every historical window. Reproduced against the
+    verbatim pre-change helper before touching anything. Now expressed in each backend's own terms,
+    with a strict parser on the Python path. `relative_to_millis` itself untouched (other callers
+    depend on the now-default; pinned by a test).
+  - Found a third defect the brief did not know about: `coerce_float(value, None)` raised
+    `TypeError` on any non-numeric string, and `es/fake.py` calls it exactly that way behind an
+    `# type: ignore[arg-type]` and a None guard — so an unreadable timestamp blew up range
+    evaluation in the in-memory client. Narrowed so only the crashing path changes.
+  - P3 backend: a server-side per-band tally over the same windowed population as `case_count`
+    (there was none — the Critical tile derived it from a bounded 200-row sample), a window-EXEMPT
+    open-now count over the non-terminal status set, and `window_covered` emitted alongside the
+    existing marker so a deployment past the 5000-row fetch bound stops withholding every tile
+    permanently when the window IS fully covered. `truncation_marker` untouched (four rollups share
+    it; its shape is pinned).
+- Decisions:
+  - **Deliberate deviation from the brief:** the ES never-drop clause is a `must_not` complement,
+    not the specified `should` union. `created_at` is mapped as a `date`, so a `term ''` probe makes
+    real Elasticsearch reject the whole request. The complement is equivalent for readable dates and
+    keeps unreadable ones, in one clause. SQL cannot use the same trick (lexicographic comparison
+    always yields a definite answer) so it gets an explicit shape gate, chosen over an
+    index-friendlier bracket because LIKE is collation-independent. Cost: the OR branch defeats the
+    btree index; correctness over the plan, documented at the call site.
+  - The default `list_window` returns `exact=False` unconditionally even when the scan demonstrably
+    saw the whole corpus — an out-of-tree `list()` that ignores `limit` would otherwise be reported
+    as proven. Conservative is right for an unknown implementation.
+  - Adversarial review confirmed 8 of 15 findings. Two are worth recording because the code was
+    ASSERTING a guarantee it had not achieved: the never-drop contract was still not held by either
+    bundled backend despite all three docstrings claiming it, and the test LABELLED a never-drop
+    regression test did not exercise the unreadable-timestamp case. Also: posture published its new
+    completeness assertions affirmatively when the case store errored, because `_load_cases`
+    soft-fails to `([], 0)` — a store outage would have reported "window fully covered" over zero rows.
+- Tests: backend **3119 passed, 4 skipped, 3 deselected, 0 failures** (independently re-run by the
+  orchestrator, not taken from the agent's report). Console **311 files / 2161 passed**. eslint 0/0
+  at `--max-warnings=0`; design gates 6/6; `check:types` no drift (openapi.json + api-types.gen.ts
+  regenerated and committed); ruff E9/F63/F7/F82 clean.
+  **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
+- Status: done for the P4 store contract and the P3 BACKEND. The P3 tile renames and the P4 panel
+  are UI work and are NOT started.
+- Next: P3/P4 UI on top of this (the two disagreeing `>= 200` heuristics at `Overview.tsx:1520` and
+  `:2028` can now be deleted in favour of `window_total_exact`), then G1, C, E, H, agnosticism, D, A.
