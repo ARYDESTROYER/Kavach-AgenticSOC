@@ -13,6 +13,15 @@ context to tell "auto-close collapsed" from "nobody sent us any work") and
 :func:`precedent_ground_truth` (how much analyst-confirmed ground truth the case
 history actually holds). Both are read-time derivations and are NEVER read by
 ``case_manager.decide()`` (#3).
+
+POPULATIONS — the headline tiles are computed over three DIFFERENT populations and
+mixing them up is the easiest way to publish a confident wrong number, so each has one
+named producer here: :func:`severity_band_counts` (a partition of the windowed arrival
+cohort), :func:`open_case_count` (the window-EXEMPT open stock measured now), and
+``quality_metrics``' three-way close partition. :func:`_window_coverage` is the honest
+counterpart — whether the selected window is fully answerable from the rows a bounded
+fetch actually read, which is what lets a tile publish instead of withholding forever
+on a store larger than the fetch bound.
 """
 
 from __future__ import annotations
@@ -21,10 +30,17 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..constants import CaseStatus, DecisionBy, TERMINAL_CASE_STATUSES, Verdict
+from ..constants import (
+    SEVERITY_BANDS,
+    CaseStatus,
+    DecisionBy,
+    TERMINAL_CASE_STATUSES,
+    Verdict,
+)
 from ..models import Case
 from .analyst_outcomes import analyst_confirmed_outcome
 from .precedent import is_policy_closed
+from .priority import band_of_case
 
 # A labelled placeholder for a metric that could not be computed because the
 # underlying transition / event never occurred (rather than a misleading 0). The UI
@@ -888,6 +904,149 @@ def truncation_marker(
     return {"truncated": total > fetched, "store_total": total, "fetched": fetched}
 
 
+# What a rollup says when the case fetch FAILED. An empty result set then means "we
+# could not read the store", not "the store is empty", and every completeness claim
+# built on it (``open_now.complete``, ``window_covered``) has to say so — otherwise a
+# transient outage publishes "0 open cases" as a proven-complete measurement.
+_LOAD_FAILED_REASON = (
+    "the case store could not be read, so this population was not measured; the "
+    "figures shown are not a count of anything"
+)
+
+
+def severity_band_counts(
+    cases: list[Case], *, prefs: Any = None
+) -> dict[str, int]:
+    """Per-band tally of ``cases`` over the advisory severity ladder.
+
+    The ONE server-side answer to "how many CRITICAL cases are in this population".
+    Without it a client can only count the band over whatever bounded page it happens
+    to hold, which silently reports a sample as a total.
+
+    Bands come from the public :func:`engine.priority.band_of_case`, which is the
+    single fallback chain (persisted band → source-asserted severity projected onto
+    the source's DECLARED ceiling → the deterministic risk total → ``info``). That
+    projection is READ-TIME and is never persisted, so ``prefs`` must be threaded in
+    for the declared ceiling to be resolvable; with ``prefs=None`` the derivation
+    still runs, on the identity ceiling (see ``band_of_case``).
+
+    Every band in ``constants.SEVERITY_BANDS`` is always present (zero-filled) and in
+    that order, so a consumer never has to distinguish "band absent" from "band zero",
+    and the values sum EXACTLY to ``len(cases)`` — the tally is a partition of the
+    population it was given, never a filtered subset. Advisory only (#3): nothing here
+    is read by ``case_manager.decide()``, and nothing is written back onto a case."""
+    counts: dict[str, int] = {band: 0 for band in SEVERITY_BANDS}
+    for case in cases:
+        band = band_of_case(case, prefs)
+        # band_of_case is total and only ever returns a SEVERITY_BANDS member, but the
+        # tally must remain a partition even if that ever changed: an unknown label is
+        # folded into the honest floor rather than dropped (which would break the sum).
+        counts[band if band in counts else SEVERITY_BANDS[-1]] += 1
+    return counts
+
+
+def open_case_count(cases: list[Case]) -> int:
+    """How many of ``cases`` are STILL OPEN — i.e. whose status is not one of
+    ``constants.TERMINAL_CASE_STATUSES`` (the single source of truth both case stores
+    use for #4 dedupe, so "open" here means exactly what "open" means to the store).
+
+    Deliberately a STOCK, not a cohort: it answers "what is on the queue right now",
+    which is why every caller measures it over the WHOLE fetched set rather than a
+    time-bounded arrival window. ``aging()['queue_depth']`` is the cohort-scoped
+    counterpart (open cases that ARRIVED in the window) and is a different number;
+    neither substitutes for the other."""
+    return sum(1 for c in cases if (c.status.value if c.status else "") not in _TERMINAL)
+
+
+def _window_coverage(
+    cases: list[Case],
+    *,
+    window_hours: int,
+    now: datetime,
+    truncated: bool,
+    load_ok: bool = True,
+    _timings: dict[int, _CaseTimings] | None = None,
+) -> tuple[bool, str, str | None]:
+    """Can the SELECTED WINDOW be answered completely from the rows actually fetched?
+
+    ``truncated`` (from :func:`truncation_marker`) says the store held more rows than
+    were read — a permanent condition for any deployment with more cases than the
+    route's fetch bound. On its own it forces every posture-fed number to be presented
+    as a lower bound forever, even when the operator asked for the last 24 hours and
+    the fetched rows reach back a month. That is technically true and practically
+    useless, so this derives the narrower, more informative claim.
+
+    Cases are fetched NEWEST-FIRST by ``created_at``, so a truncated fetch can only
+    have dropped rows OLDER than the oldest row we did read. Let
+    ``floor = min(created_at)`` over the fetched set; then::
+
+        window_covered = (not truncated) or (window_hours > 0 and cutoff >= floor)
+
+    i.e. if the window's cutoff is at or after the oldest fetched case, every case
+    that could satisfy the window was read, and the window's numbers are COMPLETE even
+    though the overall fetch was not.
+
+    Returns ``(covered, reason, oldest_fetched_at)``. ``reason`` is empty when covered
+    and otherwise names the specific obstacle; ``oldest_fetched_at`` is the ISO floor
+    (None when no fetched case carries a parseable ``created_at``).
+
+    Deliberately conservative in three places: the unbounded (``window_hours <= 0``)
+    window can never be proven covered by a partial fetch; an unparseable
+    ``created_at`` contributes no floor evidence; and the floor is measured on
+    ``created_at`` — the field the store ORDERS by, and therefore the field that
+    decides what got cut — not on the detection-instant clock the window filter
+    prefers, which for a dropped row can only be earlier.
+
+    ``load_ok=False`` says the caller's fetch FAILED rather than returned nothing, and
+    short-circuits every branch below to "not covered". Without it an outage is
+    indistinguishable from an empty store: the soft-failed fetch hands back zero rows
+    AND ``store_total=0``, so ``truncated`` is False and this function would certify a
+    window it never read a single row for.
+
+    This is emitted ALONGSIDE the truncation marker and never modifies it: four
+    rollups share ``truncation_marker`` and its exact three-key shape is pinned."""
+    floor: datetime | None = None
+    for case in cases:
+        created = (
+            _timings_for(case, _timings).created_iso
+            if _timings is not None
+            else _parse_iso(case.created_at)
+        )
+        if created is None:
+            continue
+        if floor is None or created < floor:
+            floor = created
+    floor_iso = floor.isoformat() if floor is not None else None
+
+    if not load_ok:
+        return False, _LOAD_FAILED_REASON, floor_iso
+    if not truncated:
+        return True, "", floor_iso
+    if window_hours <= 0:
+        return (
+            False,
+            "the fetch was truncated and the selected window is unbounded (all time), "
+            "so the unread older rows can never be excluded",
+            floor_iso,
+        )
+    if floor is None:
+        return (
+            False,
+            "the fetch was truncated and no fetched case carries a parseable creation "
+            "time, so there is no evidence of how far back the fetched rows reach",
+            floor_iso,
+        )
+    cutoff = now.timestamp() - window_hours * 3600.0
+    if cutoff >= floor.timestamp():
+        return True, "", floor_iso
+    return (
+        False,
+        "the fetch was truncated and the selected window starts before the oldest "
+        "fetched case, so cases inside the window were not read",
+        floor_iso,
+    )
+
+
 def posture_metrics(
     cases: list[Case],
     *,
@@ -896,6 +1055,8 @@ def posture_metrics(
     compare: str = "",
     now: datetime | None = None,
     store_total: int | None = None,
+    prefs: Any = None,
+    load_ok: bool = True,
 ) -> dict[str, Any]:
     """The rich security-posture rollup: lifecycle + quality + aging + SLA + a few
     period-over-period headline comparisons. Pure + deterministic; advisory only (#3).
@@ -905,7 +1066,39 @@ def posture_metrics(
     it also computes the immediately-preceding equal-length window for delta% on the
     headline numbers. ``store_total`` is the store's reported total (when the fetch was
     capped) so the response can flag a truncated/partial rollup honestly rather than
-    silently returning a wrong number computed over only the newest N cases."""
+    silently returning a wrong number computed over only the newest N cases.
+
+    ``prefs`` (optional, ``Preferences``) is threaded ONLY into the read-time severity
+    projection behind ``severity_counts``; omitting it leaves every other number
+    byte-identical and bands on the identity ceiling (see :func:`severity_band_counts`).
+
+    ``load_ok=False`` says the caller's case fetch FAILED (the route soft-fails to an
+    empty list so a dashboard never 500s). Every count below is then computed over zero
+    rows, which is a number but not a measurement — so the two completeness assertions,
+    ``open_now.complete`` and ``window_covered``, are forced False with a reason naming
+    the failure. They are the flags that license a tile to publish, and an outage is
+    exactly when they must not.
+
+    Populations, and which of them the window bounds — the distinction the headline
+    tiles are built on and the one that is easiest to get silently wrong:
+
+    * ``case_count`` + ``severity_counts`` — the ARRIVAL COHORT: cases created inside
+      ``window_hours``, policy-closed included. ``severity_counts`` partitions exactly
+      that population, so its values sum to ``case_count``.
+    * ``open_now`` — a STOCK measured at ``generated_at`` over the WHOLE fetched set.
+      Deliberately window-EXEMPT (a case that arrived last month and is still open is
+      on the queue today), which is why it is a nested block carrying
+      ``window_exempt: true``: it must never be presented as summing or reconciling
+      with the cohort tiles. ``aging.queue_depth`` is the cohort-scoped counterpart
+      and is a DIFFERENT number.
+    * ``quality.terminal_cases`` and its three-way ``auto_closed_cases`` /
+      ``human_closed_cases`` / ``system_closed_cases`` partition — cohort-scoped, and
+      the residual stays visible even at zero (see :func:`quality_metrics`).
+    * ``window_covered`` / ``window_coverage_reason`` / ``oldest_fetched_at`` — whether
+      the numbers above are COMPLETE for the selected window despite a truncated fetch
+      (see :func:`_window_coverage`). Emitted alongside, never inside, the truncation
+      marker. ``window_covered`` does NOT rescue ``open_now``, whose population is the
+      whole fetch: that block carries its own ``complete`` flag."""
     now = now or datetime.now(timezone.utc)
     window_hours = max(0, int(window_hours))
 
@@ -920,17 +1113,59 @@ def posture_metrics(
     age = aging(current, now=now, _timings=timings)
     sla = sla_metrics(current, sla_policy, now=now, _timings=timings)
 
+    # ``cases`` is the full fetched set here (window filtering is internal), so its
+    # length IS the fetched count for the truncation comparison.
+    marker = truncation_marker(len(cases), store_total)
+    covered, coverage_reason, oldest_fetched_at = _window_coverage(
+        cases,
+        window_hours=window_hours,
+        now=now,
+        truncated=bool(marker["truncated"]),
+        load_ok=load_ok,
+        _timings=timings,
+    )
+    # A failed fetch is NOT a truncated one — ``truncation_marker`` is a pure function
+    # of (fetched, store_total) shared by four rollups and stays untouched (#pinned).
+    # The completeness flags carry the outage instead.
+    if not load_ok:
+        open_now_complete, open_now_reason = False, _LOAD_FAILED_REASON
+    elif marker["truncated"]:
+        open_now_complete, open_now_reason = False, (
+            "the store held more cases than were fetched, so open cases older than "
+            "the fetched rows are not counted; this is a lower bound"
+        )
+    else:
+        open_now_complete, open_now_reason = True, ""
+
     rollup: dict[str, Any] = {
         "window_hours": window_hours,
         "generated_at": now.isoformat(),
         "case_count": len(current),
+        # Partition of ``case_count`` by advisory severity band (sums to it exactly).
+        "severity_counts": severity_band_counts(current, prefs=prefs),
+        # A STOCK, not a cohort: measured over the whole fetched set at
+        # ``generated_at``. ``window_exempt`` is on the wire so a consumer cannot
+        # render it as a fifth summand of the windowed tiles.
+        "open_now": {
+            "count": open_case_count(cases),
+            "window_exempt": True,
+            "as_of": now.isoformat(),
+            # A truncated fetch makes this a LOWER BOUND, and ``window_covered``
+            # cannot rescue it: its population is the fetch, not the window. A FAILED
+            # fetch makes it not a measurement at all.
+            "complete": open_now_complete,
+            "reason": open_now_reason,
+        },
         "lifecycle": lifecycle,
         "quality": quality,
         "aging": age,
         "sla": sla,
-        # ``cases`` is the full fetched set here (window filtering is internal), so its
-        # length IS the fetched count for the truncation comparison.
-        **truncation_marker(len(cases), store_total),
+        **marker,
+        # Alongside the marker, never inside it: whether the SELECTED WINDOW is fully
+        # answerable from the fetched rows even when the overall fetch was truncated.
+        "window_covered": covered,
+        "window_coverage_reason": coverage_reason,
+        "oldest_fetched_at": oldest_fetched_at,
     }
 
     if compare == "prev" and window_hours > 0:

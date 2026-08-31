@@ -5115,37 +5115,18 @@ class CaseListResponse(BaseModel):
 
     cases: list[Case]
     total: int
-
-
-def _window_cases_by_created(
-    cases: list[Case], from_expr: str | None, to_expr: str | None
-) -> list[Case]:
-    """Keep only cases whose ``created_at`` is within [from, to] (each bound optional).
-
-    Bounds accept an ISO timestamp OR a relative ``now-24h`` expression (whatever the
-    TimeRangePicker emits). Best-effort + never-drop-on-error (#4): a case with a
-    missing/unparseable ``created_at`` is KEPT rather than silently excluded."""
-    lo = relative_to_millis(from_expr) if from_expr else None
-    hi = relative_to_millis(to_expr) if to_expr else None
-    if lo is None and hi is None:
-        return cases
-    out: list[Case] = []
-    for c in cases:
-        ts = getattr(c, "created_at", "") or ""
-        if not ts:
-            out.append(c)
-            continue
-        try:
-            ms = relative_to_millis(ts)
-        except Exception:  # noqa: BLE001 — unparseable ts → keep (never silently drop)
-            out.append(c)
-            continue
-        if lo is not None and ms < lo:
-            continue
-        if hi is not None and ms > hi:
-            continue
-        out.append(c)
-    return out
+    # ADDITIVE: whether ``total`` is the PROVEN count of rows matching the requested
+    # ``from``/``to`` window across the whole corpus. ``True`` on the bundled
+    # Elasticsearch/SQL stores, which push the window down as a real backend clause.
+    # ``False`` means ``total`` answers a DIFFERENT question than the one asked and must
+    # not be presented as the window's count — either a third-party case repository fell
+    # back to the bounded-scan compatibility path (``total`` is a lower bound), or a
+    # supplied ``from``/``to`` bound could not be parsed and was dropped, so the applied
+    # window is wider than the requested one (an unreadable bound is never silently
+    # resolved to ``now()``, which would empty the window instead). ``null`` when NO
+    # window was requested — the windowless response is otherwise unchanged, so a client
+    # can distinguish "not applicable" from "not proven".
+    window_total_exact: bool | None = None
 
 
 def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
@@ -5174,24 +5155,34 @@ async def list_cases(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> CaseListResponse:
-    cases, total = await state.cases.list(
-        status=status, source_surface=surface, entity_value=entity,
-        limit=min(limit, 200), offset=offset,
-    )
     # ADDITIVE (Round-6 #37): an OPTIONAL created_at time window so Overview widgets can
-    # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour.
-    # Cases sort created_at-desc, so a recent [from..to] window captures the front of the
-    # returned page; when a window is active, ``total`` reflects the windowed count (what
-    # the KPI widgets want). Full store-level windowing (accurate paged totals across the
-    # whole corpus) is a follow-up handoff on the case store (foreign file).
+    # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour:
+    # the windowless call below is untouched.
+    #
+    # The window is pushed into the STORE (``list_window``), not applied in Python to the
+    # page we happened to fetch. That was the defect: filtering one bounded page and then
+    # overwriting ``total = len(cases)`` meant a windowed total could never exceed the page
+    # cap, the window only ever saw the newest rows, and every page past the first was
+    # wrong — so a previous-window comparison fetch at 7d/30d could report ZERO while the
+    # true count was in the hundreds, and every delta at those ranges was measured against
+    # an empty set. ``window_total_exact`` reports whether the store could PROVE the total.
+    window_total_exact: bool | None = None
     if from_ or to:
-        cases = _window_cases_by_created(cases, from_, to)
-        total = len(cases)
+        cases, total, window_total_exact = await state.cases.list_window(
+            created_from=from_, created_to=to,
+            status=status, source_surface=surface, entity_value=entity,
+            limit=min(limit, 200), offset=offset,
+        )
+    else:
+        cases, total = await state.cases.list(
+            status=status, source_surface=surface, entity_value=entity,
+            limit=min(limit, 200), offset=offset,
+        )
     # ADDITIVE (Round-7 W0.7): populate the read-time advisory bands (severity/impact/
     # urgency/priority) for the list surface. Fail-open per case — never 500 (#3).
     prefs = state.execution_prefs
     cases = [_with_advisory_bands(c, prefs) for c in cases]
-    return CaseListResponse(cases=cases, total=total)
+    return CaseListResponse(cases=cases, total=total, window_total_exact=window_total_exact)
 
 
 @router.get("/cases/{case_id}", response_model=Case)

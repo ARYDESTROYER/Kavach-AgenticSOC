@@ -1339,6 +1339,17 @@
           "total": {
             "title": "Total",
             "type": "integer"
+          },
+          "window_total_exact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Total Exact"
           }
         },
         "required": [
@@ -12561,7 +12572,7 @@
     },
     "/api/metrics/posture": {
       "get": {
-        "description": "The rich security-posture rollup over the last ``window_hours``, computed over\nup to the most-recent 5000 cases (the response's ``truncated`` flag is True when\nthe store held more).\n\n``compare=prev`` adds period-over-period deltas vs the immediately-preceding\nequal-length window. SLA targets come from ``Preferences.sla`` (advisory; #3).",
+        "description": "The rich security-posture rollup over the last ``window_hours``, computed over\nup to the most-recent 5000 cases (the response's ``truncated`` flag is True when\nthe store held more).\n\n``compare=prev`` adds period-over-period deltas vs the immediately-preceding\nequal-length window. SLA targets come from ``Preferences.sla`` (advisory; #3).\n\nThe headline populations, and which of them ``window_hours`` bounds — the five\nConsole tiles are built on exactly these and they are NOT interchangeable::\n\n    {\"case_count\": int,                     # arrival cohort in-window, policy-closed INCLUDED\n     \"severity_counts\": {\"critical\": int, \"high\": int, \"medium\": int,\n                         \"low\": int, \"info\": int},   # partitions case_count exactly\n     \"open_now\": {\"count\": int, \"window_exempt\": true, \"as_of\": iso8601,\n                  \"complete\": bool, \"reason\": str},  # STOCK, measured now, NOT windowed\n     \"quality\": {\"terminal_cases\": int, \"auto_closed_cases\": int,\n                 \"human_closed_cases\": int, \"system_closed_cases\": int,\n                 \"false_positive_rate\": float, ...},\n     \"truncated\": bool, \"store_total\": int, \"fetched\": int,\n     \"window_covered\": bool, \"window_coverage_reason\": str,\n     \"oldest_fetched_at\": iso8601 | null}\n\n* ``severity_counts`` is server-side and covers the FULL windowed population; it\n  exists so no client has to infer a band total from whatever bounded page of\n  cases it happens to hold. Bands are the read-time advisory ladder\n  (``engine.priority.band_of_case``), resolved against each source's DECLARED\n  severity ceiling — hence ``Preferences`` is threaded in. Nothing is persisted.\n* ``open_now`` is deliberately window-EXEMPT and carries ``window_exempt: true``\n  so it can never be rendered as summing with the windowed tiles.\n  ``aging.queue_depth`` is the cohort-scoped \"arrived in-window and still open\"\n  number and is a different figure.\n* ``auto_closed_cases`` + ``human_closed_cases`` + ``system_closed_cases`` sum\n  EXACTLY to ``terminal_cases``. Render all three or none: the residual (SYSTEM\n  routing + legacy records with no recorded decider) must stay visible even at 0,\n  and human work is NEVER ``terminal_cases - auto_closed_cases``. These report the\n  LAST recorded decider — see ``engine.metrics.quality_metrics`` for the caveat a\n  \"human vs AI\" surface must disclose.\n* ``window_covered`` is the honest-coverage flag. ``truncated`` alone is permanent\n  for any deployment above the 5000-case fetch bound; ``window_covered`` says\n  whether the SELECTED window is nonetheless fully answerable from the rows that\n  were read (cutoff at or after ``oldest_fetched_at``), which is what lets a tile\n  publish a real number instead of withholding forever. It does not apply to\n  ``open_now``, which carries its own ``complete`` flag.\n* A case-store OUTAGE soft-fails to an empty fetch so the dashboard never 500s.\n  Both completeness flags then go False with a reason naming the failure: the\n  counts are still zeros, but zero-because-unreadable is not a measurement and must\n  never be published as one. ``truncated`` is unchanged (it compares fetched with\n  store-reported total, and both are 0).",
         "operationId": "metrics_posture_api_metrics_posture_get",
         "parameters": [
           {

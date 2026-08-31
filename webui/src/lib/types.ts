@@ -2523,6 +2523,24 @@ export interface AutomationActionRecord {
 export interface CasesResponse {
   cases: Case[];
   total: number;
+  /**
+   * Whether `total` is the PROVEN count of rows matching the requested `from`/`to`
+   * window across the whole corpus. `true` on the bundled Elasticsearch/SQL stores,
+   * which push the window down as a real backend clause.
+   *
+   * `false` means `total` answers a DIFFERENT question than the one asked and must not
+   * be labelled with the requested range — either a third-party case repository fell
+   * back to the bounded-scan compatibility path (so `total` is a lower bound), or a
+   * supplied `from`/`to` bound could not be parsed and was dropped, so the window that
+   * was applied is wider than the one requested (an unreadable bound is never silently
+   * resolved to `now()`, which would empty the window instead).
+   *
+   * `null`/absent when NO window was requested and the flag does not apply.
+   *
+   * A windowed `total` is no longer capped at the page size, so a client must NOT
+   * infer truncation from `cases.length >= 200` when it asked for a window.
+   */
+  window_total_exact?: boolean | null;
 }
 
 // --------------------------------------------------------------------------- //

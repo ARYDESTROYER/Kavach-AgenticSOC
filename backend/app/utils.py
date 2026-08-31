@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -139,7 +139,16 @@ def coerce_float(value: Any, default: float = 0.0) -> float:
             "warning": 5, "high": 7, "error": 7, "critical": 9, "severe": 9,
             "emergency": 10, "alert": 9,
         }
-        return float(words.get(s.lower(), default))
+        mapped = words.get(s.lower(), default)
+        # ``default`` is typed as a float, but callers legitimately pass ``None`` to mean
+        # "report that this value is not numeric" — ``es/fake.py::_to_comparable`` does,
+        # with an explicit type-ignore, and then guards its result against None. This
+        # line used to be ``float(words.get(...))``, so that documented call raised a
+        # TypeError instead: an unparseable string blew up range/sort evaluation rather
+        # than comparing as "unknown". Hand a non-numeric default straight back.
+        if mapped is None:
+            return mapped  # type: ignore[return-value]
+        return float(mapped)
     return default
 
 
@@ -237,3 +246,76 @@ def relative_to_millis(expr: Any, now: datetime | None = None) -> int:
     # now(), corrupting an absolute time-range window (audit #17).
     dt = parse_es_timestamp(raw)
     return to_millis(dt) if dt else to_millis(now)
+
+
+def parse_millis_strict(value: Any) -> int | None:
+    """Epoch millis for an ABSOLUTE timestamp, or ``None`` when it cannot be parsed.
+
+    The strict counterpart of the ``parse_es_timestamp`` → :func:`to_millis` pair.
+    Unlike :func:`relative_to_millis` it NEVER substitutes ``now()`` for a value it
+    could not understand: an unparseable timestamp reports failure so the caller can
+    decide (the case-window push-down keeps such a record rather than silently
+    dropping it from every historical window — Non-negotiable #4)."""
+    dt = parse_es_timestamp(value)
+    return to_millis(dt) if dt is not None else None
+
+
+def relative_to_millis_strict(expr: Any, now: datetime | None = None) -> int | None:
+    """Strict :func:`relative_to_millis`: ``None`` instead of a silent ``now()``.
+
+    :func:`relative_to_millis` resolves anything it cannot parse to ``now()``. That
+    is the right default for a *query* window that must always produce a bound, but
+    it is wrong for a *filter* bound, where "I could not read this" and "the caller
+    asked for right now" are different answers. This variant keeps the accepted
+    grammar byte-identical (``now``/``now±Nunit``/ISO/epoch) and returns ``None`` for
+    everything else. :func:`relative_to_millis` itself is unchanged — existing callers
+    depend on its now-default."""
+    if expr is None:
+        return None
+    if isinstance(expr, bool):
+        return None
+    if isinstance(expr, (int, float)):
+        v = float(expr)
+        return int(v if v > 1e12 else v * 1000)
+    raw = str(expr).strip()
+    if not raw:
+        return None
+    s = raw.lower()  # lower-cased ONLY for the "now[±Nunit]" keyword matching
+    if s == "now":
+        return to_millis(now or now_utc())
+    if s.startswith("now"):
+        rest = s[3:]
+        if not rest or rest[0] not in "+-":
+            return None
+        # Prefix match, exactly like ``relative_to_millis`` — the ONLY intended
+        # difference between the two is what happens when nothing parses.
+        m = re.match(r"(\d+)([smhdw])", rest[1:])
+        if not m:
+            return None
+        sign = 1 if rest[0] == "+" else -1
+        amount = int(m.group(1)) * _REL_UNITS[m.group(2)]
+        return to_millis(now or now_utc()) + sign * amount * 1000
+    # Parse the ORIGINAL-case string (see relative_to_millis: lower-casing an
+    # absolute ISO turns "...Z" into "...z").
+    return parse_millis_strict(raw)
+
+
+def millis_to_iso_utc(millis: int) -> str:
+    """Epoch millis → the SAME ISO-8601 UTC spelling the stores persist.
+
+    ``Case.created_at`` is produced by :func:`iso_now`, i.e.
+    ``datetime.now(timezone.utc).isoformat()`` → ``YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00``.
+    Store-level windowing compares that column LEXICOGRAPHICALLY (the existing
+    ``count_new_scans`` / ``count_created_since`` idiom), which is only correct when
+    both bounds are normalised to this exact spelling first — hence this helper.
+    Built by exact integer arithmetic rather than ``fromtimestamp(ms / 1000.0)`` so a
+    float rounding error can never shift the bound by a microsecond."""
+    return (
+        datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=int(millis))
+    ).isoformat()
+
+
+def relative_to_iso_utc_strict(expr: Any, now: datetime | None = None) -> str | None:
+    """:func:`relative_to_millis_strict` rendered as :func:`millis_to_iso_utc`."""
+    millis = relative_to_millis_strict(expr, now=now)
+    return None if millis is None else millis_to_iso_utc(millis)

@@ -74,13 +74,30 @@ async def _load_cases(state: AppState) -> tuple[list, int]:
     ``_STORE_FETCH_LIMIT`` or a Demo Mode store swap always bypasses stale pages.
 
     Defensive: a store error degrades to an empty list (total 0) rather than failing
-    the request (a dashboard query must never 500 on a transient store hiccup)."""
+    the request (a dashboard query must never 500 on a transient store hiccup).
+
+    That degradation is INDISTINGUISHABLE from an empty store on its own — same rows,
+    same total — so any rollup that publishes a completeness assertion must take the
+    three-value :func:`_load_cases_ok` instead and thread ``load_ok`` through. This
+    two-value form is kept for the rollups that only report counts."""
+    cases, total, _ok = await _load_cases_ok(state)
+    return cases, total
+
+
+async def _load_cases_ok(state: AppState) -> tuple[list, int, bool]:
+    """:func:`_load_cases`, plus whether the fetch actually SUCCEEDED.
+
+    A soft-failed fetch returns ``([], 0, False)``. Both of the first two values are
+    also what a genuinely empty store returns, which is why the third exists: with only
+    the pair, ``truncation_marker(0, 0)`` reads "not truncated", and the posture rollup
+    went on to publish ``open_now.complete=true`` / ``window_covered=true`` with empty
+    reasons — a store outage rendered as a proven-complete "0 open cases"."""
     try:
         cases, total = await fetch_case_page(state.cases, _STORE_FETCH_LIMIT)
-        return cases, int(total)
+        return cases, int(total), True
     except Exception as exc:  # noqa: BLE001 — dashboards degrade, never fail hard
         logger.warning("posture/coverage case load soft-failed: %s", exc)
-        return [], 0
+        return [], 0, False
 
 
 def _subtract_counter_bands(
@@ -360,8 +377,50 @@ async def metrics_posture(
     the store held more).
 
     ``compare=prev`` adds period-over-period deltas vs the immediately-preceding
-    equal-length window. SLA targets come from ``Preferences.sla`` (advisory; #3)."""
-    cases, store_total = await _load_cases(state)
+    equal-length window. SLA targets come from ``Preferences.sla`` (advisory; #3).
+
+    The headline populations, and which of them ``window_hours`` bounds — the five
+    Console tiles are built on exactly these and they are NOT interchangeable::
+
+        {"case_count": int,                     # arrival cohort in-window, policy-closed INCLUDED
+         "severity_counts": {"critical": int, "high": int, "medium": int,
+                             "low": int, "info": int},   # partitions case_count exactly
+         "open_now": {"count": int, "window_exempt": true, "as_of": iso8601,
+                      "complete": bool, "reason": str},  # STOCK, measured now, NOT windowed
+         "quality": {"terminal_cases": int, "auto_closed_cases": int,
+                     "human_closed_cases": int, "system_closed_cases": int,
+                     "false_positive_rate": float, ...},
+         "truncated": bool, "store_total": int, "fetched": int,
+         "window_covered": bool, "window_coverage_reason": str,
+         "oldest_fetched_at": iso8601 | null}
+
+    * ``severity_counts`` is server-side and covers the FULL windowed population; it
+      exists so no client has to infer a band total from whatever bounded page of
+      cases it happens to hold. Bands are the read-time advisory ladder
+      (``engine.priority.band_of_case``), resolved against each source's DECLARED
+      severity ceiling — hence ``Preferences`` is threaded in. Nothing is persisted.
+    * ``open_now`` is deliberately window-EXEMPT and carries ``window_exempt: true``
+      so it can never be rendered as summing with the windowed tiles.
+      ``aging.queue_depth`` is the cohort-scoped "arrived in-window and still open"
+      number and is a different figure.
+    * ``auto_closed_cases`` + ``human_closed_cases`` + ``system_closed_cases`` sum
+      EXACTLY to ``terminal_cases``. Render all three or none: the residual (SYSTEM
+      routing + legacy records with no recorded decider) must stay visible even at 0,
+      and human work is NEVER ``terminal_cases - auto_closed_cases``. These report the
+      LAST recorded decider — see ``engine.metrics.quality_metrics`` for the caveat a
+      "human vs AI" surface must disclose.
+    * ``window_covered`` is the honest-coverage flag. ``truncated`` alone is permanent
+      for any deployment above the 5000-case fetch bound; ``window_covered`` says
+      whether the SELECTED window is nonetheless fully answerable from the rows that
+      were read (cutoff at or after ``oldest_fetched_at``), which is what lets a tile
+      publish a real number instead of withholding forever. It does not apply to
+      ``open_now``, which carries its own ``complete`` flag.
+    * A case-store OUTAGE soft-fails to an empty fetch so the dashboard never 500s.
+      Both completeness flags then go False with a reason naming the failure: the
+      counts are still zeros, but zero-because-unreadable is not a measurement and must
+      never be published as one. ``truncated`` is unchanged (it compares fetched with
+      store-reported total, and both are 0)."""
+    cases, store_total, load_ok = await _load_cases_ok(state)
     sla_policy = getattr(state.prefs, "sla", None)
     return posture_metrics(
         cases,
@@ -369,6 +428,8 @@ async def metrics_posture(
         window_hours=max(0, int(window_hours)),
         compare=(compare or "").strip().lower(),
         store_total=store_total,
+        prefs=state.prefs,
+        load_ok=load_ok,
     )
 
 

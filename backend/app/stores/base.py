@@ -28,7 +28,7 @@ from ..build_identity import stamp_new_record
 from ..config import Preferences
 from ..constants import ActionType
 from ..models import AuditDoc, Case, Cursor, UsageDoc
-from ..utils import truncate
+from ..utils import parse_millis_strict, relative_to_millis_strict, truncate
 
 logger = logging.getLogger("tlsoc.stores.base")
 
@@ -217,6 +217,56 @@ def _parse_iso_utc(ts: Any) -> datetime | None:
     except (ValueError, TypeError):
         return None
 
+
+# How many rows the compatibility :meth:`CaseRepository.list_window` fallback scans
+# before filtering in Python. Same bound (and same honesty) as the
+# :meth:`CaseRepository.count_created_since` fallback: exact while the store holds
+# fewer rows than this, a lower bound beyond it — which is precisely why that path
+# reports ``exact=False``.
+WINDOW_FALLBACK_SCAN = 10000
+
+
+def case_in_created_window(case: Any, lo: int | None, hi: int | None) -> bool:
+    """Is this case inside the inclusive ``[lo, hi]`` epoch-millis window?
+
+    NEVER-DROP (#4): an empty, missing or UNPARSEABLE ``created_at`` returns ``True``.
+    A record we cannot place in time is surfaced, never silently deleted from the
+    operator's view of a window. "Unparseable" means exactly what
+    :func:`~app.utils.parse_millis_strict` says it means — this function is the ONE
+    definition of the contract, and both native push-downs are built to agree with it
+    (``tests/test_case_window_store.py`` pins that agreement over a grid of unreadable
+    spellings rather than one lucky literal)."""
+    ts = getattr(case, "created_at", "") or ""
+    if not ts:
+        return True
+    millis = parse_millis_strict(ts)
+    if millis is None:
+        return True
+    if lo is not None and millis < lo:
+        return False
+    if hi is not None and millis > hi:
+        return False
+    return True
+
+
+def window_bounds_proven(
+    created_from: Any, created_to: Any, lo: Any, hi: Any
+) -> bool:
+    """Did EVERY bound the caller actually asked for resolve to a usable value?
+
+    The ``exact`` flag of :meth:`CaseRepository.list_window` claims that ``total`` is
+    the PROVEN count for the REQUESTED window, so it may only be ``True`` when the
+    window the store applied IS the window that was requested. A bound that was
+    supplied but could not be read is dropped (never silently resolved to ``now()``,
+    which would empty the window) — the resulting answer is still useful, but it
+    answers a WIDER question than the caller asked, so it is not proof.
+
+    Without this the requested-but-unreadable case is indistinguishable from the
+    windowless one: both leave ``lo``/``hi`` at ``None``, and stamping that shared
+    branch ``True`` reported the WHOLE-CORPUS total as a proven windowed count."""
+    return (not created_from or lo is not None) and (not created_to or hi is not None)
+
+
 class CaseRepository(ABC):
     """Persists :class:`Case` documents (Section 7.1).
 
@@ -279,6 +329,55 @@ class CaseRepository(ABC):
             if created is not None and created >= floor:
                 count += 1
         return count
+
+    async def list_window(
+        self,
+        *,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        **kw: Any,
+    ) -> tuple[list[Case], int, bool]:
+        """:meth:`list`, additionally windowed on ``created_at`` → (cases, total, exact).
+
+        ``created_from``/``created_to`` are OPTIONAL inclusive bounds accepting either an
+        absolute ISO timestamp or a relative ``now-24h`` expression (whatever the console
+        time-range picker emits). ``**kw`` is forwarded to :meth:`list` verbatim, so every
+        existing filter/sort/page argument keeps working.
+
+        ``total`` is the count of rows matching the filters AND the window across the WHOLE
+        corpus, and ``exact`` says whether the repository could prove that number FOR THE
+        REQUESTED WINDOW. The bundled Elasticsearch/SQL repositories push the window into
+        the backend and report ``exact=True`` whenever every supplied bound resolved; this
+        NON-abstract default keeps third-party repositories
+        source-compatible (adding a keyword to the abstract :meth:`list` would break them
+        with a ``TypeError``) by scanning one bounded :meth:`list` page and filtering in
+        Python, which is a correct lower bound — exact only when the store holds fewer rows
+        than the scan — so it honestly reports ``exact=False``. Modeled on
+        :meth:`count_created_since`.
+
+        NEVER-DROP (#4): a case whose ``created_at`` is empty, missing or UNPARSEABLE is
+        KEPT rather than silently excluded from every historical window. The parse uses
+        :func:`~app.utils.parse_millis_strict`, which REPORTS failure — the lenient
+        :func:`~app.utils.relative_to_millis` resolves an unreadable timestamp to ``now()``,
+        which looks like a successful parse and drops the row.
+
+        With no window requested this is exactly :meth:`list`, and ONLY that case reports
+        ``exact=True`` here. A bound that was requested but could not be read also leaves
+        both bounds ``None`` and falls into the same plain-:meth:`list` branch — but the
+        answer is then the whole corpus, not the requested window, so it reports
+        ``exact=False`` (see :func:`window_bounds_proven`)."""
+        lo = relative_to_millis_strict(created_from) if created_from else None
+        hi = relative_to_millis_strict(created_to) if created_to else None
+        proven = window_bounds_proven(created_from, created_to, lo, hi)
+        if lo is None and hi is None:
+            cases, total = await self.list(**kw)
+            return cases, total, proven
+        limit = max(0, int(kw.pop("limit", 50) or 0))
+        offset = max(0, int(kw.pop("offset", 0) or 0))
+        scanned, _total = await self.list(limit=WINDOW_FALLBACK_SCAN, offset=0, **kw)
+        kept = [c for c in scanned if case_in_created_window(c, lo, hi)]
+        page = kept[offset: offset + limit] if limit else []
+        return page, len(kept), False
 
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,

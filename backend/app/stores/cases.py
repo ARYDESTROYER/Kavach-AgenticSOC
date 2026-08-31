@@ -20,7 +20,8 @@ from ..constants import (
 )
 from ..es.base import BaseESClient
 from ..models import Case
-from .base import CaseRepository
+from ..utils import relative_to_iso_utc_strict
+from .base import CaseRepository, window_bounds_proven
 
 logger = logging.getLogger("tlsoc.cases")
 
@@ -109,6 +110,90 @@ class CaseStore(CaseRepository):
         cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]
         total = int(resp.get("hits", {}).get("total", {}).get("value", len(cases)))
         return cases, total
+
+    async def list_window(
+        self,
+        *,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        status: str | None = None,
+        source_surface: str | None = None,
+        entity_value: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_field: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list[Case], int, bool]:
+        """Native ``created_at`` window push-down → (cases, total, exact).
+
+        The window is a real Elasticsearch clause, so the returned page is drawn from
+        the WHOLE matching set (page 2 of a 30d window is the middle of that window,
+        not the tail of the newest N rows) and ``total`` is a true ``_count`` over the
+        whole corpus rather than the length of one fetched page.
+
+        NEVER-DROP (#4) is expressed as the COMPLEMENT of the window —
+        ``must_not: [created_at < lo, created_at > hi]`` — rather than a
+        ``should`` union of "in range OR empty". A range clause cannot match a document
+        whose ``created_at`` cannot be placed on the time axis, so the complement keeps
+        exactly those documents while dropping only the ones provably outside the
+        window. The union form cannot do this: ``created_at`` is mapped as a ``date``
+        (``es/indices.py``), and a ``term``/``range`` probe for the empty string against
+        a date field is rejected outright by real Elasticsearch, which would 400 the
+        whole listing. ``NOT(x < lo) AND NOT(x > hi)`` is exactly ``lo <= x <= hi`` for
+        every document that HAS a readable date, so nothing else changes.
+
+        The complement only satisfies never-drop while "cannot be placed" really does
+        yield no match. On a real cluster that is structural: ``created_at`` is a
+        ``date`` field with no ``ignore_malformed``, so an unreadable value is rejected
+        at index time and cannot exist. On :class:`~app.es.fake.InMemoryESClient` —
+        which is a SHIPPED backend, not only a test double (``state._build_es_client``
+        falls back to it whenever no ES key is configured, and Demo Mode runs on it) —
+        it holds because ``es/fake._to_comparable`` reports an unreadable string as
+        ``None`` instead of mining a number out of it. That is a contract between the
+        two files, so it is pinned from both ends.
+
+        Bounds are normalised to one ISO-8601 UTC spelling first (the strict parser: an
+        unreadable bound is reported, not silently resolved to ``now()``); an
+        unresolvable bound is treated as absent rather than as "right now", and
+        ``exact`` then reports ``False`` because the applied window is WIDER than the
+        one the caller asked for (see :func:`~app.stores.base.window_bounds_proven`)."""
+        lo = relative_to_iso_utc_strict(created_from) if created_from else None
+        hi = relative_to_iso_utc_strict(created_to) if created_to else None
+        proven = window_bounds_proven(created_from, created_to, lo, hi)
+        if lo is None and hi is None:
+            cases, total = await self.list(
+                status=status, source_surface=source_surface, entity_value=entity_value,
+                limit=limit, offset=offset, sort_field=sort_field, sort_order=sort_order,
+            )
+            return cases, total, proven
+
+        filters: list[dict[str, Any]] = []
+        if status:
+            filters.append({"term": {"status": status}})
+        if source_surface:
+            filters.append({"term": {"source_surface": source_surface}})
+        if entity_value:
+            filters.append({"term": {"entity.value": entity_value}})
+        outside: list[dict[str, Any]] = []
+        if lo is not None:
+            outside.append({"range": {"created_at": {"lt": lo}}})
+        if hi is not None:
+            outside.append({"range": {"created_at": {"gt": hi}}})
+        filters.append({"bool": {"must_not": outside}})
+        query = {"bool": {"filter": filters}}
+
+        body = {
+            "size": limit,
+            "from": offset,
+            "query": query,
+            "sort": [{sort_field: {"order": sort_order}}],
+        }
+        resp = await self._es.search(CASES_READ_PATTERN, body)
+        cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]
+        # ``hits.total`` is capped at 10 000 by default, so the authoritative windowed
+        # count comes from a dedicated _count (the same idiom as count_created_since).
+        total = await self._es.count(CASES_READ_PATTERN, {"query": query})
+        return cases, int(total), proven
 
     async def list_scans(self, limit: int = 50) -> tuple[list[Case], int]:
         """Surface 3: the automated-scans queue."""
