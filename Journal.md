@@ -10568,3 +10568,17 @@
   **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
 - Status: done for P3 + P4. Brief A is now complete end to end.
 - Next: C, E+G3, H, D, A, B, I from Brief B.
+
+### 2026-09-01 17:40Z — copilot — merge-conflict resolution start
+- Context: Requested to resolve PR merge conflicts on `claude/kpi-tiles-and-drilldown` against `Testing`.
+- Did: Assessed shallow/single-branch clone state and prepared a safe fetch+deepen merge workflow for `origin/Testing`.
+- Tests: Not run yet.
+- Status: in-progress
+- Next: Merge `origin/Testing`, resolve conflicts, finalize merge commit, and publish.
+
+### 2026-09-01 17:48Z — copilot — merge-conflict resolution complete
+- Context: Finish merge requested in PR comment.
+- Did: Fetched `origin/Testing` with explicit refspec, deepened history until merge-base existed, merged `origin/Testing`, resolved the sole conflict in `Journal.md` by preserving both branch entries, and finalized merge commit `00d1f2b`.
+- Tests: Not run (merge conflict touched `Journal.md` only; no code-path changes).
+- Status: done
+- Next: Publish the merge commit and reply on the PR thread.
