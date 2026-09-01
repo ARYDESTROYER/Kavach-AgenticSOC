@@ -2,10 +2,16 @@
  * Overview (Cyber Defence Center) — render test for the Stitch-inspired command center.
  *
  * Pins the load-bearing dashboard contract:
- *   1. the PLAIN header (page-hero, no hero card chrome, exactly one h1, PAGE_TITLE);
- *   2. the un-nested KPI micro-strip of 5 alert/case tiles (Open / Critical /
- *      Escalated / False-Positive-Rate / Auto-Resolved); LLM spend is NOT a hero tile;
- *      every tile pairs its numeral with the honest denominator it is a share of;
+ *   1. the PLAIN header (page-hero, no hero card chrome, exactly one h1, PAGE_TITLE,
+ *      and NO subtitle line);
+ *   2. the un-nested KPI micro-strip of 5 SERVER-FED tiles (Total Cases / Total
+ *      Critical / Open Cases / False-Positive-Rate / Resolved-Closed); LLM spend is
+ *      NOT a hero tile; every tile pairs its numeral with the honest denominator it is
+ *      a share of, and the two that HAVE no denominator (the cohort total itself, and
+ *      the window-exempt open stock) say so instead of inventing one;
+ *  2b. the tile ANCHORS were re-keyed with the labels — `kpi-open-cases` names the
+ *      open stock, not the cohort total, and the retired anchors are gone;
+ *  2c. the posture-fed tiles gate on `window_covered`, not on `truncated`;
  *   3. the integrated instrument band = Human vs AI + resolved/open snapshots + latest cases;
  *   4. the operations band = Noise-Reduction flow + compact burndown/timing rail;
  *   5. timing reads the SERVER posture (honest DASH / "not measured" for missing samples);
@@ -105,16 +111,45 @@ const METRICS: Metrics = {
 } as unknown as Metrics;
 
 const QUALITY = {
+  // `total_cases` here is deliberately DIFFERENT from the posture `case_count` below:
+  // `quality_metrics` strips policy-closed rows first, so the Total Cases tile must
+  // read `case_count` (4) and never this narrower field (3).
   total_cases: 3, verdicted_cases: 2, true_positive_cases: 1, false_positive_cases: 1,
   needs_human_cases: 1, escalated_cases: 0, terminal_cases: 1, auto_closed_cases: 1,
   alert_to_incident_ratio: 0.33, false_positive_rate: 0.5, escalation_rate: 0.33,
   containment_rate: 0.5, automation_rate: 0.5,
 };
 
+/** QUALITY plus the complete three-way close partition (agent + analyst + residual). */
+const QUALITY_ATTRIBUTED = {
+  ...QUALITY,
+  terminal_cases: 9,
+  auto_closed_cases: 5,
+  human_closed_cases: 3,
+  system_closed_cases: 1,
+};
+
 const POSTURE: PostureResponse = {
   window_hours: 24,
   generated_at: '2026-07-01T08:00:00Z',
-  case_count: 3,
+  // The window's ARRIVAL COHORT, policy-closed included — 4, one more than the
+  // policy-stripped `quality.total_cases`, and one more than the 3 rows the bounded
+  // case page happens to hold. Both differences are deliberate.
+  case_count: 4,
+  // The server-side band partition of `case_count` (sums to it exactly).
+  severity_counts: { critical: 1, high: 1, medium: 1, low: 1, info: 0 },
+  // The window-EXEMPT open STOCK: 5 cases are open right now, MORE than the window
+  // cohort holds, because older still-open cases count toward a stock.
+  open_now: {
+    count: 5,
+    window_exempt: true,
+    as_of: '2026-07-01T08:00:00Z',
+    complete: true,
+    reason: '',
+  },
+  window_covered: true,
+  window_coverage_reason: '',
+  oldest_fetched_at: '2026-06-30T08:00:00Z',
   lifecycle: {
     mtta_minutes: { p50: 45, p90: 120, mean: 60, max: 200, count: 2, available: true, reason: '' },
     mttr_minutes: { p50: 180, p90: 600, mean: 240, max: 900, count: 1, available: true, reason: '' },
@@ -171,6 +206,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // Exactly one page-level h1 (the title) lives in the header.
     expect(hero.querySelectorAll('h1')).toHaveLength(1);
     expect(hero).toHaveTextContent(PAGE_TITLE);
+    // The masthead carries the title and the controls — nothing else. The former
+    // "Live operational posture across triage, risk, and response." subtitle described
+    // the page rather than telling the operator anything, and is gone.
+    expect(within(hero).queryByText(/Live operational posture/i)).toBeNull();
     const controls = within(hero).getByRole('group', { name: 'Dashboard controls' });
     expect(screen.queryByText('Operational window')).toBeNull();
     expect(screen.queryByText(/^Last polled /)).toBeNull();
@@ -190,124 +229,216 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(manualRefresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
   });
 
-  it('renders the KPI micro-strip: 5 alert/case tiles (LLM spend NOT a hero tile)', async () => {
+  it('renders the KPI micro-strip: 5 server-fed tiles (LLM spend NOT a hero tile)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
     const strip = screen.getByTestId('kpi-strip');
     for (const id of [
+      'kpi-total-cases',
+      'kpi-total-critical',
       'kpi-open-cases',
-      'kpi-critical',
-      'kpi-escalated-to-human',
       'kpi-false-positive-rate',
-      'kpi-auto-resolved',
+      'kpi-resolved-closed',
     ]) {
       expect(within(strip).getByTestId(id)).toBeInTheDocument();
     }
-    // The narrowed tile never keeps the retired combined anchor.
-    expect(within(strip).queryByTestId('kpi-critical-high')).toBeNull();
+    // The rename was a SWAP, not five string edits: `kpi-open-cases` survives but now
+    // names the open STOCK, and every anchor whose metric moved away is gone. A
+    // label-only edit would have left these three in place, carrying the wrong number.
+    for (const retired of [
+      'kpi-critical',
+      'kpi-critical-high',
+      'kpi-escalated-to-human',
+      'kpi-auto-resolved',
+    ]) {
+      expect(within(strip).queryByTestId(retired)).toBeNull();
+    }
     // EXACTLY 5 hero tiles.
     expect(strip.querySelectorAll('[data-testid^="kpi-"]')).toHaveLength(5);
     // Spend is not on the strip.
     expect(within(strip).queryByTestId('kpi-llm-spend')).toBeNull();
-    // Open cases includes both the ordinary OPEN case and the retained NEEDS_HUMAN
-    // non-terminal alias (the backend lifecycle taxonomy counts both as still live).
-    expect(within(screen.getByTestId('kpi-open-cases')).getByText('2')).toBeInTheDocument();
+
+    // Total Cases = the posture window's ARRIVAL COHORT (4), NOT the policy-stripped
+    // `quality.total_cases` (3) and NOT the bounded case page (3 rows).
+    const totalCases = within(screen.getByTestId('kpi-total-cases'));
+    expect(totalCases.getByText('4')).toBeInTheDocument();
+    expect(totalCases.getByText('Arrivals in this window · policy-closed included')).toBeInTheDocument();
+    // Total Critical = the SERVER band tally, not a band counted over the page.
+    expect(within(screen.getByTestId('kpi-total-critical')).getByText('1')).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('kpi-total-critical')).getByText('Critical band · counted server-side'),
+    ).toBeInTheDocument();
+    // Open Cases = the window-EXEMPT stock (5), which is deliberately LARGER than the
+    // 4-case window cohort — proof it is not being window-filtered — and its sub says
+    // so, so it can never be read as summing with the four cohort tiles.
+    const openCases = within(screen.getByTestId('kpi-open-cases'));
+    expect(openCases.getByText('5')).toBeInTheDocument();
+    expect(openCases.getByText('Open now · not window-filtered')).toBeInTheDocument();
     // False-positive rate reads the server quality rate (0.5 → "50%").
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('50%')).toBeInTheDocument();
-    // Auto-resolved reads the server quality count (auto_closed_cases = 1).
-    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('1')).toBeInTheDocument();
-    expect(screen.getByTestId('kpi-open-cases')).toHaveClass('min-h-28', 'px-4', 'py-5');
-    // Critical ONLY: c1 (risk 88) is the single critical case; c2 (65) is High and no
-    // longer counted here.
-    expect(within(screen.getByTestId('kpi-critical')).getByText('1')).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId('kpi-critical')).getByText('1 open + 0 resolved'),
-    ).toBeInTheDocument();
-    // The sub NAMES why this tile carries no share: its count is an all-time,
-    // cap-2,000 `GET /api/metrics` aggregate, not a window population.
-    expect(
-      within(screen.getByTestId('kpi-escalated-to-human')).getByText(
-        'Awaiting review · all cases, no window share',
-      ),
-    ).toBeInTheDocument();
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('Closed as false positive'),
     ).toBeInTheDocument();
-    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('Closed by agent')).toBeInTheDocument();
+    // Resolved / Closed = TERMINAL cases (1), not the agent-only auto-closed subset.
+    const resolved = within(screen.getByTestId('kpi-resolved-closed'));
+    expect(resolved.getByText('1')).toBeInTheDocument();
+    expect(resolved.getByText('Reached a terminal state')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-total-cases')).toHaveClass('min-h-28', 'px-4', 'py-5');
   });
 
   it('pairs every KPI numeral with the honest denominator it is a share of', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
-    // Open + Critical: numerator AND denominator are the same untruncated case sample
-    // (3 rows), so the shares reconcile exactly against what the page itself counted.
-    expect(within(screen.getByTestId('kpi-open-cases')).getByText('67% of 3')).toBeInTheDocument();
-    expect(within(screen.getByTestId('kpi-critical')).getByText('33% of 3')).toBeInTheDocument();
-    // Escalated: `GET /api/metrics` is NOT window-filtered and is hard-capped at the
-    // newest 2,000 cases, so `total_cases` is a fetch bound rather than this window's
-    // population — and posture's `needs_human_cases` counts a DIFFERENT population
-    // (verdict, not status). With no reconciling denominator the tile shows an em
-    // dash, never a whole-store share dressed as a window share.
-    const escalated = within(screen.getByTestId('kpi-escalated-to-human'));
-    await waitFor(() => expect(escalated.getByText('1')).toBeInTheDocument());
-    expect(escalated.getByText('—')).toBeInTheDocument();
-    expect(escalated.queryByText(/% of/)).toBeNull();
+    // Total Critical + Resolved / Closed are both shares of the SAME `case_count` (4),
+    // and both come off the one posture payload, so numerator and denominator always
+    // describe the same population.
+    expect(
+      within(screen.getByTestId('kpi-total-critical')).getByText('25% of 4'),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('kpi-resolved-closed')).getByText('25% of 4'),
+    ).toBeInTheDocument();
+    // Total Cases IS that denominator, so it carries no share of its own — and no em
+    // dash either, which would read as "a denominator we could not measure".
+    const totalCases = within(screen.getByTestId('kpi-total-cases'));
+    expect(totalCases.queryByText(/% of/)).toBeNull();
+    expect(totalCases.queryByText('—')).toBeNull();
+    // Open Cases is a window-EXEMPT stock: no window population reconciles with it, so
+    // it shows an em dash and NAMES why in its sub rather than inventing a share.
+    const openCases = within(screen.getByTestId('kpi-open-cases'));
+    await waitFor(() => expect(openCases.getByText('5')).toBeInTheDocument());
+    expect(openCases.getByText('—')).toBeInTheDocument();
+    expect(openCases.queryByText(/% of/)).toBeNull();
+    expect(openCases.getByText('Open now · not window-filtered')).toBeInTheDocument();
     // FP rate is ALREADY a percent, so its context is the sample size behind it.
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('1 of 2 verdicted'),
     ).toBeInTheDocument();
-    // Auto-resolved uses the server's own automation_rate denominator: terminal cases.
-    expect(
-      within(screen.getByTestId('kpi-auto-resolved')).getByText('100% of 1'),
-    ).toBeInTheDocument();
   });
 
-  it('renders an em dash — never 0% — when a KPI denominator is bounded or missing', async () => {
-    // A capped 200-row sample is NOT the window population: any share off it would
-    // silently become "of 200", so both sample-derived tiles must suppress theirs.
+  const STRIP_IDS = [
+    'kpi-total-cases',
+    'kpi-total-critical',
+    'kpi-open-cases',
+    'kpi-false-positive-rate',
+    'kpi-resolved-closed',
+  ] as const;
+
+  it('renders an em dash — never 0% — on every tile when the posture rollup is missing', async () => {
+    // Every tile on the strip is posture-fed now, so a failed rollup means NOTHING on
+    // it was measured. Each must say so, and none may substitute a client count off
+    // the bounded case page — a 200-row cap is not the window population.
     const capped: Case[] = Array.from({ length: 200 }, (_, i) => ({
       case_id: `cap-${i}`,
       status: i % 2 === 0 ? 'open' : 'closed',
       risk_score: 90,
     })) as unknown as Case[];
-    listCasesMock.mockResolvedValue({ cases: capped, total: 4000 });
-    // Posture unavailable → the two posture-fed tiles lose their denominators too.
+    listCasesMock.mockResolvedValue({ cases: capped, total: 4000, window_total_exact: true });
     fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
     getMetricsMock.mockResolvedValue({ ...METRICS, total_cases: 0, needs_human_cases: undefined });
 
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
-    for (const id of [
-      'kpi-open-cases',
-      'kpi-critical',
-      'kpi-escalated-to-human',
-      'kpi-false-positive-rate',
-      'kpi-auto-resolved',
-    ]) {
+    for (const id of STRIP_IDS) {
       const tile = within(screen.getByTestId(id));
       // (The FP-rate tile shows an em dash TWICE — its unmeasurable rate and its
       // unmeasurable sample size — hence the All-variant.)
-      expect(tile.getAllByText('—').length).toBeGreaterThan(0);
+      await waitFor(() => expect(tile.getAllByText('—').length).toBeGreaterThan(0));
       expect(tile.queryByText(/0% of/)).toBeNull();
       expect(tile.queryByText(/0 of /)).toBeNull();
+      // The absence is NAMED, so it reads as evidence rather than an omission — and
+      // the 100 open rows in the page below are never quoted as the open count.
+      expect(tile.getByText('Posture unavailable')).toBeInTheDocument();
+      expect(tile.queryByText('100')).toBeNull();
     }
-    // The bounded evidence is NAMED on the sample-derived tile, not just dropped.
+  });
+
+  it('keeps the COUNTS but withholds every share when the window was not fully covered', async () => {
+    // `window_covered: false` says rows that could satisfy the selected window were
+    // never read, so every band is a floor. A floor is still a number an operator can
+    // act on, so the counts stay and only the shares go dark — with the bound named.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      truncated: true,
+      store_total: 40_000,
+      fetched: 5_000,
+      window_covered: false,
+      window_coverage_reason:
+        'the fetch was truncated and the selected window starts before the oldest fetched case',
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+
+    const totalCases = within(await screen.findByTestId('kpi-total-cases'));
+    await waitFor(() => expect(totalCases.getByText('4')).toBeInTheDocument());
+    expect(totalCases.getByText('Partial window · lower bound')).toBeInTheDocument();
+
+    const critical = within(screen.getByTestId('kpi-total-critical'));
+    expect(critical.getByText('1')).toBeInTheDocument();
+    expect(critical.getByText('—')).toBeInTheDocument();
+    expect(critical.queryByText(/% of/)).toBeNull();
+    expect(critical.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
+
+    // The FP RATE is itself a share of a bounded denominator, so the rate AND the
+    // sample size behind it are both withheld.
+    const fp = within(screen.getByTestId('kpi-false-positive-rate'));
+    expect(fp.queryByText('50%')).toBeNull();
+    expect(fp.queryByText('1 of 2 verdicted')).toBeNull();
+    expect(fp.getAllByText('—').length).toBeGreaterThan(0);
+
+    const resolved = within(screen.getByTestId('kpi-resolved-closed'));
+    expect(resolved.getByText('1')).toBeInTheDocument();
+    expect(resolved.queryByText(/% of/)).toBeNull();
+  });
+
+  it('publishes the shares when window_covered rescues a truncated fetch', async () => {
+    // The regression this replaces: gating on `truncated` alone. Any store above the
+    // route's fetch bound is truncated permanently, so the strip went dark forever
+    // even when the operator asked for a window that WAS read end to end.
+    // `window_covered` is the narrower, checkable claim, and it must win.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      truncated: true,
+      store_total: 40_000,
+      fetched: 5_000,
+      window_covered: true,
+      window_coverage_reason: '',
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const critical = within(await screen.findByTestId('kpi-total-critical'));
+    await waitFor(() => expect(critical.getByText('25% of 4')).toBeInTheDocument());
+    expect(critical.queryByText('Bounded sample · share unavailable')).toBeNull();
     expect(
-      within(screen.getByTestId('kpi-open-cases')).getByText('Bounded sample · share unavailable'),
+      within(screen.getByTestId('kpi-false-positive-rate')).getByText('50%'),
     ).toBeInTheDocument();
   });
 
-  it('never presents the /api/metrics fetch cap as this window\u2019s case population', async () => {
+  it('falls back to the truncation flag when the server predates window_covered', async () => {
+    // An older backend emits `truncated` and no coverage flag. The absence of the
+    // narrower claim is not permission to publish: the old rule still applies.
+    const { window_covered: _covered, ...legacy } = POSTURE;
+    fetchPostureMock.mockResolvedValue({ ...legacy, truncated: true, store_total: 999 });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const critical = within(await screen.findByTestId('kpi-total-critical'));
+    await waitFor(() =>
+      expect(critical.getByText('Bounded sample · share unavailable')).toBeInTheDocument(),
+    );
+    expect(critical.queryByText(/% of/)).toBeNull();
+  });
+
+  it('never borrows the all-time /api/metrics fetch cap as a strip denominator', async () => {
     // Regression: `GET /api/metrics` is NOT window-filtered and is hard-capped at the
     // newest 2,000 cases with NO truncation marker, so `total_cases` is a fetch bound.
-    // The tile used to divide `needs_human_cases` by it and print "7% of 2,000" beside
-    // a TimeRangePicker set to (say) the last hour — a cap dressed as a population,
-    // scoped to a window it never honoured.
+    // The strip used to divide `needs_human_cases` by it and print "7% of 2,000"
+    // beside a TimeRangePicker set to (say) the last hour — a cap dressed as a
+    // population. No tile reads that payload at all now; this pins that it stays so.
     getMetricsMock.mockResolvedValue({
       ...METRICS,
       total_cases: 2000,
@@ -315,31 +446,223 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const tile = within(await screen.findByTestId('kpi-escalated-to-human'));
-    await waitFor(() => expect(tile.getByText('137')).toBeInTheDocument());
-    expect(tile.queryByText('7% of 2,000')).toBeNull();
-    expect(tile.queryByText(/of 2,000/)).toBeNull();
-    expect(tile.queryByText(/% of/)).toBeNull();
-    // The em dash carries a NAMED reason, so the absence is evidence, not an omission.
-    expect(tile.getByText('—')).toBeInTheDocument();
-    expect(tile.getByText('Awaiting review · all cases, no window share')).toBeInTheDocument();
+    const strip = within(await screen.findByTestId('kpi-strip'));
+    await waitFor(() =>
+      expect(within(screen.getByTestId('kpi-total-cases')).getByText('4')).toBeInTheDocument(),
+    );
+    expect(strip.queryByText(/of 2,000/)).toBeNull();
+    expect(strip.queryByText('137')).toBeNull();
   });
 
   it('renders "<1%" — never a rounded-down 0% — for a real but tiny band', async () => {
     // Regression: `shareContext` rounded 1/5,000 to "0% of 5,000" beside a non-zero
-    // numeral, which reads as "nothing was auto-resolved" when one case was. The
-    // Noise-Reduction funnel already floors at "<1%"; the strip now shares that rule.
+    // numeral, which reads as "nothing is critical" when one case is. The
+    // Noise-Reduction funnel already floors at "<1%"; the strip shares that rule.
     fetchPostureMock.mockResolvedValue({
       ...POSTURE,
-      quality: { ...QUALITY, auto_closed_cases: 1, terminal_cases: 5000 },
+      case_count: 5000,
+      severity_counts: { critical: 1, high: 0, medium: 0, low: 4999, info: 0 },
     });
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const tile = within(await screen.findByTestId('kpi-auto-resolved'));
+    const tile = within(await screen.findByTestId('kpi-total-critical'));
     await waitFor(() => expect(tile.getByText('<1% of 5,000')).toBeInTheDocument());
     expect(tile.queryByText('0% of 5,000')).toBeNull();
     // A genuine zero still reads "0%" — the floor applies only to a non-zero count.
     expect(tile.queryByText(/^0%/)).toBeNull();
+  });
+
+  it('states the close partition INSIDE the Resolved / Closed tile as three rows, never two', async () => {
+    // `engine/metrics.py` forbids `human = terminal - auto_closed`: that difference
+    // absorbs the SYSTEM/legacy residual into the analyst band. The tile therefore
+    // renders all three server keys, and the residual stays visible.
+    fetchPostureMock.mockResolvedValue({ ...POSTURE, quality: QUALITY_ATTRIBUTED });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = await screen.findByTestId('kpi-resolved-closed');
+    await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
+
+    // The list is a SIBLING of the trigger, not a child of it: `role=button` is
+    // children-presentational, so a <dl> inside the tile button would be flattened
+    // into the disclosure's accessible name and lose every dt/dd relationship.
+    expect(tile.querySelector('dl')).toBeNull();
+    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
+    const rows = partition.querySelectorAll('dl > dt');
+    expect(Array.from(rows).map((r) => r.textContent)).toEqual(['AI agent', 'Human', 'System']);
+    const values = partition.querySelectorAll('dl > dd');
+    expect(Array.from(values).map((v) => v.textContent)).toEqual(['5', '3', '1']);
+    // The three bands reconcile with the numeral above them — 5 + 3 + 1 === 9 — so the
+    // "Human" row can never be the 4 that `terminal − auto` would have printed.
+    expect(within(tile).queryByText('4')).toBeNull();
+    // …and the SAME partition is stated once more by the instrument card below, from
+    // the same memo, so the two surfaces cannot disagree.
+    const card = within(screen.getByTestId('human-vs-ai'));
+    expect(within(card.getByTestId('human-vs-ai-human')).getByText('3')).toBeInTheDocument();
+    expect(within(card.getByTestId('human-vs-ai-system')).getByText('1')).toBeInTheDocument();
+  });
+
+  it('counts a POLICY-CLOSED case in Resolved / Closed, and names it in the partition', async () => {
+    // `quality_metrics` strips operator "declared benign" closes before it counts
+    // anything, so `terminal_cases` is a policy-EXCLUSIVE number while `case_count`,
+    // this tile's drill-down `match` (CLOSED_STATUSES) and its `__terminal__` deep link
+    // are all policy-INCLUSIVE. Dividing one by the other put the numeral and its own
+    // denominator on two different populations, and the panel listed rows the numeral
+    // did not count. The tile therefore reports terminal + policy-closed.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      case_count: 10,
+      quality: {
+        ...QUALITY_ATTRIBUTED,
+        total_cases: 5,
+        terminal_cases: 5,
+        auto_closed_cases: 3,
+        human_closed_cases: 1,
+        system_closed_cases: 1,
+        policy_closed_cases: 5,
+      },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = await screen.findByTestId('kpi-resolved-closed');
+    // 5 agent-worked terminal + 5 declared benign === 10 of 10 arrivals.
+    await waitFor(() => expect(within(tile).getByText('10')).toBeInTheDocument());
+    expect(within(tile).getByText('100% of 10')).toBeInTheDocument();
+    expect(within(tile).queryByText('50% of 10')).toBeNull();
+
+    // The partition still sums to the numeral above it — now with a fourth band.
+    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
+    expect(Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent)).toEqual([
+      'AI agent',
+      'Human',
+      'System',
+      'Declared benign',
+    ]);
+    expect(Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent)).toEqual([
+      '3',
+      '1',
+      '1',
+      '5',
+    ]);
+  });
+
+  it('omits the declared-benign band when the backend does not report it', async () => {
+    // A backend that omits `policy_closed_cases` is one that never stripped them (the
+    // exclusion and the field shipped together), so its `terminal_cases` already counts
+    // them and there is no fourth band to state.
+    fetchPostureMock.mockResolvedValue({ ...POSTURE, quality: QUALITY_ATTRIBUTED });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = await screen.findByTestId('kpi-resolved-closed');
+    await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
+    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
+    expect(Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent)).toEqual([
+      'AI agent',
+      'Human',
+      'System',
+    ]);
+  });
+
+  it('renders an unreadable case store as NOT MEASURED, never as four zeros', async () => {
+    // `routes_metrics` soft-fails an unreadable case store and STILL answers HTTP 200,
+    // so neither the loading nor the error arm fires. `posture_metrics(load_ok=False)`
+    // then returns structural zeros: case_count 0, every band 0, terminal 0, open_now 0.
+    // Published unqualified they read as a quiet, healthy, empty SOC — and the
+    // "partial window · lower bound" caption would call those zeros a floor of a real
+    // population. The discriminator is exact: `truncated !== true && !window_covered`
+    // is reachable only through the outage arm.
+    const REASON =
+      'the case store could not be read, so this population was not measured; ' +
+      'the figures shown are not a count of anything';
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      case_count: 0,
+      severity_counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      open_now: {
+        count: 0,
+        window_exempt: true,
+        as_of: '2026-07-01T08:00:00Z',
+        complete: false,
+        reason: REASON,
+      },
+      truncated: false,
+      window_covered: false,
+      window_coverage_reason: REASON,
+      quality: { ...QUALITY, total_cases: 0, verdicted_cases: 0, terminal_cases: 0 },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const strip = await screen.findByTestId('kpi-strip');
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
+
+    for (const id of [
+      'kpi-total-cases',
+      'kpi-total-critical',
+      'kpi-open-cases',
+      'kpi-false-positive-rate',
+      'kpi-resolved-closed',
+    ]) {
+      const tile = within(screen.getByTestId(id));
+      await waitFor(() => expect(tile.getAllByText('—').length).toBeGreaterThan(0));
+      expect(tile.queryByText('0'), `${id} published a zero it never measured`).toBeNull();
+      expect(tile.queryByText('0%')).toBeNull();
+    }
+    // No tile may caption its blank as a lower bound of anything.
+    expect(within(strip).queryByText(/lower bound/)).toBeNull();
+    // Every posture-fed tile states the server's OWN account of the gap.
+    expect(within(strip).getAllByText(REASON).length).toBe(5);
+    // …and the close partition is withheld with them, on BOTH surfaces that read it:
+    // 0 + 0 + 0 === 0 passes the reconciliation guard, so an outage would otherwise
+    // publish a three-band partition of a window nothing was read from.
+    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
+    const card = within(screen.getByTestId('human-vs-ai'));
+    expect(within(card.getByTestId('human-vs-ai-ai')).queryByText('0')).toBeNull();
+    expect(within(card.getByTestId('human-vs-ai-human')).queryByText('0')).toBeNull();
+    expect(within(card.getByTestId('human-vs-ai-system')).queryByText('0')).toBeNull();
+    expect(screen.getByTestId('human-vs-ai')).toHaveTextContent(REASON);
+  });
+
+  it('renders NO close breakdown when the server reports only part of the partition', async () => {
+    // Two of three keys is not a partition. Rendering the two it has would fold the
+    // residual into whichever band the reader assumes — the exact over-statement.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      quality: { ...QUALITY_ATTRIBUTED, system_closed_cases: undefined },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = await screen.findByTestId('kpi-resolved-closed');
+    await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
+    expect(tile.querySelector('dl')).toBeNull();
+    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
+    // Scoped to the strip: the instrument card below legitimately names the same band.
+    expect(within(screen.getByTestId('kpi-strip')).queryByText('AI agent')).toBeNull();
+  });
+
+  it('keeps a ZERO residual visible in the close breakdown', async () => {
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      quality: {
+        ...QUALITY,
+        terminal_cases: 8,
+        auto_closed_cases: 6,
+        human_closed_cases: 2,
+        system_closed_cases: 0,
+      },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const tile = await screen.findByTestId('kpi-resolved-closed');
+    await waitFor(() => expect(within(tile).getByText('8')).toBeInTheDocument());
+    // Folding a zero band away would leave a two-row split that reads as the whole
+    // story; the row stays, showing 0.
+    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
+    const rows = Array.from(partition.querySelectorAll('dl > dt')).map((r) => r.textContent);
+    expect(rows).toEqual(['AI agent', 'Human', 'System']);
+    expect(Array.from(partition.querySelectorAll('dl > dd')).map((v) => v.textContent)).toEqual([
+      '6',
+      '2',
+      '0',
+    ]);
   });
 
   it('keeps the last posture snapshot visible (labelled stale) across a window change, then swaps atomically', async () => {
@@ -359,12 +682,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
 
     requests[0].resolve({
       ...POSTURE_CMP,
-      quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.48, auto_closed_cases: 25 },
+      quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.48, terminal_cases: 25 },
     });
     await waitFor(() =>
       expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument(),
     );
-    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('25')).toBeInTheDocument();
+    expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument();
 
     // Manual refresh and LIVE ticks share `refreshAll`; leave this 24h pulse in
     // flight to reproduce the production interleave at the range boundary.
@@ -385,12 +708,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // the explicit stale/refresh indicator on the posture tiles.
     expect(screen.getByRole('button', { name: /Time range: Last 7 days/i })).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument();
-    expect(within(screen.getByTestId('kpi-auto-resolved')).getByText('25')).toBeInTheDocument();
+    expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument();
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('Loading 7 days'),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByTestId('kpi-auto-resolved')).getByText('Loading 7 days'),
+      within(screen.getByTestId('kpi-resolved-closed')).getByText('Loading 7 days'),
     ).toBeInTheDocument();
 
     await waitFor(() => expect(requests).toHaveLength(3));
@@ -411,7 +734,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
         total_cases: 1412,
         false_positive_cases: 1173,
         false_positive_rate: 0.8307,
-        auto_closed_cases: 1355,
+        terminal_cases: 1355,
       },
       compare: {
         ...POSTURE_CMP.compare!,
@@ -429,7 +752,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('Closed as false positive'),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByTestId('kpi-auto-resolved')).getByText('Closed by agent'),
+      within(screen.getByTestId('kpi-resolved-closed')).getByText('Reached a terminal state'),
     ).toBeInTheDocument();
 
     // Even if the aborted transport settles late, its 24h data remains discarded.
@@ -439,7 +762,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
         ...POSTURE_CMP.lifecycle,
         mtta_minutes: { p50: 45, p90: 120, mean: 60, max: 200, count: 2, available: true, reason: '' },
       },
-      quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.49, auto_closed_cases: 25 },
+      quality: { ...POSTURE_CMP.quality, false_positive_rate: 0.49, terminal_cases: 25 },
     });
     await Promise.resolve();
     expect(within(timingRegion).getByText('4h')).toBeInTheDocument();
@@ -610,15 +933,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // The FP-rate tile shows the rate ONLY — the "-16.7%" compare chip is gone (its
     // baseline was not explainable at a glance) and no other tile borrows a delta
     // (a KpiTile delta was the only role="img" in a tile, so its absence proves it).
-    for (const id of [
-      'kpi-open-cases',
-      'kpi-critical',
-      'kpi-escalated-to-human',
-      'kpi-false-positive-rate',
-      'kpi-auto-resolved',
-    ]) {
-      // The scale-context slot beside each numeral is PLAIN text on purpose — it
-      // must never re-introduce the delta chip's role="img" or judgement colour.
+    for (const id of STRIP_IDS) {
+      // The scale-context slot beside each numeral — and the in-tile close-attribution
+      // <dl> — are PLAIN text on purpose: neither may re-introduce the delta chip's
+      // role="img" or judgement colour.
       expect(within(screen.getByTestId(id)).queryByRole('img')).toBeNull();
     }
     const strip = screen.getByTestId('kpi-strip');
@@ -630,16 +948,60 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(screen.queryByText(/Deltas compare the previous/i)).toBeNull();
   });
 
-  it('deep-links the Open KPI to the complete active-case lifecycle in this window', async () => {
+  /** Open a tile's drill-down and hand back its drill-through button. */
+  async function openDrillThrough(testId: string): Promise<HTMLElement> {
+    await userEvent.click(await screen.findByTestId(testId));
+    await screen.findByTestId('kpi-drilldown');
+    return screen.getByTestId('kpi-drilldown-drillthrough');
+  }
+
+  it('drills Open Cases through to every non-terminal status and carries NO window', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
-    const openTile = await screen.findByTestId('kpi-open-cases');
-    await userEvent.click(openTile);
+    // The tile itself now DISCLOSES rather than navigates — the operator keeps the
+    // other four numerals in view while they read the detail.
+    await userEvent.click(await screen.findByTestId('kpi-open-cases'));
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByTestId('kpi-drilldown-drillthrough'));
+    // The tile is a window-EXEMPT stock, so the list it opens must be too: passing the
+    // dashboard window would hand the operator a SHORTER list than the number they
+    // just clicked. Cases defaults to the all-time horizon when no window is given.
+    expect(onNavigate).toHaveBeenCalledWith('cases', { status: '__active__' });
+    expect(onNavigate.mock.calls[0][1]).not.toHaveProperty('window');
+  });
+
+  it('drills Total Cases through to the whole window cohort, with NO status facet', async () => {
+    const onNavigate = vi.fn();
+    render(<Overview onNavigate={onNavigate} />);
+    await screen.findByTestId('page-hero');
+    const cta = await openDrillThrough('kpi-total-cases');
+    expect(onNavigate).not.toHaveBeenCalled();
+    await userEvent.click(cta);
+    // No status facet at all: the list must show the same undivided cohort the tile
+    // counts, so the Cases page's default active filter is deliberately dropped.
+    expect(onNavigate).toHaveBeenCalledWith('cases', { window: expect.any(Number) });
+    expect(onNavigate.mock.calls[0][1]).not.toHaveProperty('status');
+  });
+
+  it('drills Resolved / Closed through to the __terminal__ facet, never one status', async () => {
+    const onNavigate = vi.fn();
+    render(<Overview onNavigate={onNavigate} />);
+    await screen.findByTestId('page-hero');
+    const cta = await openDrillThrough('kpi-resolved-closed');
+    await userEvent.click(cta);
+    // Terminal is TWO statuses (closed + resolved) and the Cases status filter applies
+    // exactly one, so a `status: 'closed'` link would silently drop every resolved
+    // case from a tile that counts both. The virtual facet is the only honest target.
     expect(onNavigate).toHaveBeenCalledWith('cases', {
-      status: '__active__',
+      status: '__terminal__',
       window: expect.any(Number),
     });
+    expect(onNavigate).not.toHaveBeenCalledWith(
+      'cases',
+      expect.objectContaining({ status: 'closed' }),
+    );
   });
 
   it('deep-links the snapshot CTAs to the resolved / open case lists', async () => {
@@ -647,9 +1009,17 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
     await userEvent.click(await screen.findByRole('button', { name: /View resolved cases/i }));
+    // The card's total counts BOTH terminal statuses (`CLOSED_STATUSES`), so its deep
+    // link has to hand the same set to the list. `status: 'closed'` applied exactly one
+    // of the two and silently dropped every RESOLVED case — a card reading 1 landing on
+    // an empty list, the same defect the KPI tile's `__terminal__` facet was added for.
     expect(onNavigate).toHaveBeenLastCalledWith(
       'cases',
-      expect.objectContaining({ status: 'closed', window: expect.any(Number) }),
+      expect.objectContaining({ status: '__terminal__', window: expect.any(Number) }),
+    );
+    expect(onNavigate).not.toHaveBeenCalledWith(
+      'cases',
+      expect.objectContaining({ status: 'closed' }),
     );
     await userEvent.click(screen.getByRole('button', { name: /View open cases/i }));
     expect(onNavigate).toHaveBeenLastCalledWith('cases', {
@@ -669,12 +1039,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(String(arg.from)).toMatch(/^now-\d+h$/);
   });
 
-  it('deep-links the Critical KPI to the severity-filtered case list', async () => {
+  it('drills the Critical KPI through to the severity-filtered case list', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
-    const tile = await screen.findByTestId('kpi-critical');
-    await userEvent.click(tile);
+    const cta = await openDrillThrough('kpi-total-critical');
+    await userEvent.click(cta);
     // The Cases page applies exactly ONE severity band. Now that the tile IS one
     // band, the drill-through can carry it truthfully (the retired Critical-OR-High
     // union deliberately could not).
@@ -684,7 +1054,11 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
   });
 
-  it('counts ONLY Critical across every open state plus resolved cases', async () => {
+  it('takes Total Critical from the SERVER band tally, never from the bounded page', async () => {
+    // The regression this pins: the tile used to count the Critical band over whatever
+    // page `listCases` happened to return, which silently reported a sample as a
+    // total. The page and the server are deliberately made to DISAGREE here — 2 rows
+    // band Critical, the server says 37 — and the tile must show the server's number.
     const currentWindow: Case[] = [
       { case_id: 'open-critical', status: 'open', risk_score: 88 },
       { case_id: 'human-high', status: 'needs_human', risk_score: 65 },
@@ -700,18 +1074,24 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     listCasesMock
       .mockResolvedValueOnce({ cases: currentWindow, total: currentWindow.length })
       .mockResolvedValueOnce({ cases: previousWindow, total: previousWindow.length });
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      case_count: 120,
+      severity_counts: { critical: 37, high: 40, medium: 30, low: 13, info: 0 },
+    });
 
     render(<Overview onNavigate={vi.fn()} />);
-    const tile = await screen.findByTestId('kpi-critical');
+    const tile = await screen.findByTestId('kpi-total-critical');
 
-    // Critical ONLY: open-critical (88) + escalated-critical (90). The two HIGH rows
-    // (65 / 60) and the low one are excluded, and the 55 previous-window rows power
-    // only comparison data and never inflate it.
-    await waitFor(() => expect(within(tile).getByText('2')).toBeInTheDocument());
-    expect(within(tile).getByText('2 open + 0 resolved')).toBeInTheDocument();
-    // 2 of the 5 sampled cases — an untruncated sample, so the share is honest.
-    expect(within(tile).getByText('40% of 5')).toBeInTheDocument();
+    await waitFor(() => expect(within(tile).getByText('37')).toBeInTheDocument());
+    // …and the share is of the server's own `case_count`, the population the tally
+    // partitions — never "of 5", the page it was rendered beside.
+    expect(within(tile).getByText('31% of 120')).toBeInTheDocument();
+    expect(within(tile).queryByText('2')).toBeNull();
+    expect(within(tile).queryByText(/of 5$/)).toBeNull();
 
+    // The severity DONUTS keep describing the page they are drawn from — a per-band
+    // split of the rows this dashboard holds — which is a different, honest job.
     const openRing = screen.getByRole('img', { name: /Open cases by severity/i });
     const resolvedRing = screen.getByRole('img', { name: /Resolved cases by severity/i });
     expect(within(openRing).getByText('3')).toBeInTheDocument();
@@ -730,7 +1110,9 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
 
   // The severity banding folds onto the ONE severity authority (badges.ts
   // severityBandFromNumber, the 74/48/22/8 ladder). A risk_score of 76 must band
-  // CRITICAL (it read HIGH under the old 80-cut). Locked via the Critical/High KPI sub.
+  // CRITICAL (it read HIGH under the old 80-cut). Locked via the severity DONUT: the
+  // KPI tile now reads the server tally, so the donut is where this client-side
+  // projection still shows.
   it('bands a risk_score of 76 as CRITICAL (the unified 74-cut ladder)', async () => {
     listCasesMock.mockResolvedValue({
       cases: [
@@ -743,13 +1125,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    // 88 + 76 BOTH band Critical → the Critical tile shows 2 selected-window open
-    // cases (the 65 High no longer counts), and the Open snapshot's severity row
-    // reports 2 Critical. Under the old 80-cut, that row would report only 1.
-    const tile = await screen.findByTestId('kpi-critical');
-    await waitFor(() => expect(within(tile).getByText('2')).toBeInTheDocument());
-    expect(within(tile).getByText('2 open + 0 resolved')).toBeInTheDocument();
-    const openSnapshot = screen.getByRole('button', { name: 'View open cases' });
+    // 88 + 76 BOTH band Critical → the Open snapshot's severity row reports 2
+    // Critical. Under the old 80-cut, that row would report only 1.
+    const openSnapshot = await screen.findByRole('button', { name: 'View open cases' });
+    await waitFor(() =>
+      expect(within(openSnapshot).getByText('Critical')).toBeInTheDocument(),
+    );
     const criticalRow = within(openSnapshot).getByText('Critical').closest('li');
     expect(criticalRow).not.toBeNull();
     expect(within(criticalRow as HTMLElement).getByText('2')).toBeInTheDocument();
@@ -770,12 +1151,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    // s1 counts Critical (via severity_band, NOT its risk_score 20 which is Low) → the
-    // Critical tile shows exactly that one case; s2 is High and is excluded.
-    const tile = await screen.findByTestId('kpi-critical');
-    await waitFor(() => expect(within(tile).getByText('1')).toBeInTheDocument());
-    expect(within(tile).getByText('1 open + 0 resolved')).toBeInTheDocument();
-    const openSnapshot = screen.getByRole('button', { name: 'View open cases' });
+    // s1 buckets Critical (via severity_band, NOT its risk_score 20 which is Low); s2
+    // is High and is excluded.
+    const openSnapshot = await screen.findByRole('button', { name: 'View open cases' });
+    await waitFor(() =>
+      expect(within(openSnapshot).getByText('Critical')).toBeInTheDocument(),
+    );
     const criticalRow = within(openSnapshot).getByText('Critical').closest('li');
     expect(criticalRow).not.toBeNull();
     expect(within(criticalRow as HTMLElement).getByText('1')).toBeInTheDocument();

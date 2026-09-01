@@ -304,11 +304,16 @@ describe('Overview — Human vs AI card', () => {
   it('withholds the SAME bounded partition from the KPI strip in that same render', async () => {
     // Regression (HIGH): the card suppressed its shares on `posture.truncated` while
     // the strip a few pixels above published the identical numbers off the identical
-    // truncated `posture.quality` — Auto-Resolved's "60% of 10" IS the card's agent
-    // band (auto_closed/terminal), and the FP tile printed a rate + sample size taken
-    // off the same bounded scan. One page cannot declare a share unmeasurable and
-    // print it. Both must go dark, with the bound NAMED, in this one render.
-    fetchPostureMock.mockResolvedValue(posture(QUALITY, { truncated: true }));
+    // truncated `posture.quality` — the resolved tile's share IS the card's agent
+    // band, and the FP tile printed a rate + sample size taken off the same bounded
+    // scan. One page cannot declare a share unmeasurable and print it. Both must go
+    // dark, with the bound NAMED, in this one render.
+    //
+    // Both surfaces now read ONE coverage verdict (`postureCovered`), so they cannot
+    // drift apart again: an uncovered window darkens the card and the strip together.
+    fetchPostureMock.mockResolvedValue(
+      posture(QUALITY, { truncated: true, window_covered: false }),
+    );
     render(<Overview onNavigate={vi.fn()} />);
     const card = await screen.findByTestId('human-vs-ai');
     await waitFor(() =>
@@ -316,13 +321,12 @@ describe('Overview — Human vs AI card', () => {
     );
     expect(within(card).getByText(/bounded sample, shares unavailable/i)).toBeInTheDocument();
 
-    // Auto-Resolved: the COUNT is still a count, but its share is the card's band.
-    const auto = within(screen.getByTestId('kpi-auto-resolved'));
-    await waitFor(() => expect(auto.getByText('6')).toBeInTheDocument());
-    expect(auto.getByText('—')).toBeInTheDocument();
-    expect(auto.queryByText('60% of 10')).toBeNull();
-    expect(auto.queryByText(/% of/)).toBeNull();
-    expect(auto.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
+    // Resolved / Closed: the COUNT is still a count, but its share is withheld.
+    const resolved = within(screen.getByTestId('kpi-resolved-closed'));
+    await waitFor(() => expect(resolved.getByText('10')).toBeInTheDocument());
+    expect(resolved.getByText('—')).toBeInTheDocument();
+    expect(resolved.queryByText(/% of/)).toBeNull();
+    expect(resolved.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
 
     // False Positive Rate: the rate's own denominator (verdicted_cases) is bounded
     // too, so the rate AND the sample size behind it are withheld.
@@ -331,6 +335,39 @@ describe('Overview — Human vs AI card', () => {
     expect(fp.queryByText('4 of 8 verdicted')).toBeNull();
     expect(fp.getAllByText('—').length).toBeGreaterThan(0);
     expect(fp.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
+  });
+
+  it('states the partition ONCE — the tile breakdown and the card read one memo', async () => {
+    // The landing page told this story twice before (a removed "Autonomous vs human"
+    // fold-out). The Resolved / Closed tile now carries the partition in place, but it
+    // reads the SAME reconciled totals the card does, so the two can never disagree.
+    fetchPostureMock.mockResolvedValue(posture(QUALITY));
+    render(<Overview onNavigate={vi.fn()} />);
+    const card = await screen.findByTestId('human-vs-ai');
+    await waitFor(() =>
+      expect(within(within(card).getByTestId('human-vs-ai-ai')).getByText('6')).toBeInTheDocument(),
+    );
+    // The partition renders BESIDE the tile button (a <dl> inside a `role=button` is
+    // children-presentational and would be flattened into the trigger's name).
+    const tile = screen.getByTestId('kpi-resolved-closed');
+    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
+    expect(tile.querySelector('dl')).toBeNull();
+    expect(Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent)).toEqual([
+      'AI agent',
+      'Human',
+      'System',
+    ]);
+    expect(Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent)).toEqual([
+      '6',
+      '3',
+      '1',
+    ]);
+    // 6 + 3 + 1 === 10, the terminal count printed above them — so the analyst band is
+    // never the 4 that a `terminal − auto_closed` shortcut would have produced.
+    expect(within(tile).getByText('10')).toBeInTheDocument();
+    expect(
+      Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent),
+    ).not.toContain('4');
   });
 
   it('withholds the previous window\u2019s partition while the new window is in flight', async () => {

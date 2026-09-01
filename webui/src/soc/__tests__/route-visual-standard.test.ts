@@ -125,15 +125,106 @@ describe("Console route visual standard", () => {
     }
   });
 
-  it("resets row-start dividers when flat telemetry strips wrap", () => {
-    const cases = source("soc/pages/Cases.tsx");
-    const metrics = source("soc/pages/Metrics.tsx");
-    const sources = source("soc/pages/Sources.tsx");
+  /**
+   * Flat telemetry strips: the divider contract, derived from each strip's OWN column
+   * counts rather than pinned to one hand-written token.
+   *
+   * A hairline separates neighbouring cells and must be OFF at the start of every row.
+   * The previous gate only looked at the `xl:` token, still admitted `:first-child`
+   * (which states the contract only while the strip happens to fit exactly one row),
+   * and never checked that N matched the column count — so it stayed green while a
+   * seventh Cases tile hung a hairline off the left edge of the third row at every
+   * width from 640px to 1279px.
+   *
+   * It could not have caught it in that shape either: the tokens were individually
+   * plausible and the defect lived in the CASCADE. `[&>*:nth-child(odd)]:border-l` and
+   * `[&>*:nth-child(3n+1)]:border-l-0` are both specificity (0,2,0), Tailwind emits
+   * `border-l-0` before `border-l`, so for a cell that is BOTH odd and 3n+1 the enable
+   * won — and the un-scoped `sm:` reset leaked upward and stripped a mid-row divider at
+   * the widest breakpoint. Order, not intent, decided the render.
+   *
+   * So the enforced grammar removes the tie instead of describing it: every declared
+   * column count owns a MUTUALLY EXCLUSIVE breakpoint range containing exactly one
+   * ENABLE (`[&>*]:border-l`, specificity (0,1,0)) and one ROW-START RESET
+   * (`[&>*:nth-child(Nn+1)]:border-l-0`, (0,2,0)) whose N is that range's own
+   * `grid-cols-N`. The reset then wins on specificity alone, so the rendered result is
+   * independent of emission order, and a strip that grows a tile changes only its
+   * column count.
+   */
+  const BREAKPOINTS = ["sm", "md", "lg", "xl", "2xl"] as const;
 
-    for (const page of [cases, metrics]) {
-      expect(page).toContain("sm:[&>*:nth-child(3n+1)]:border-l-0");
-      expect(page).toContain("xl:[&>*:first-child]:border-l-0");
+  /**
+   * The class text that declares ONE strip's columns and dividers.
+   *
+   * Comments are stripped first — the strips carry long notes that quote the very
+   * class shapes this gate bans — and the window is cut at the next `grid grid-cols-`
+   * so a neighbouring grid's column count can never be read as this strip's.
+   */
+  function stripChunk(file: string, anchor: string): string {
+    const text = source(file);
+    const at = text.indexOf(anchor);
+    expect(at, `${file} no longer declares the flat telemetry strip "${anchor}"`).toBeGreaterThan(
+      -1,
+    );
+    const raw = text
+      .slice(at, at + 2600)
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(^|\s)\/\/[^\n]*/g, "$1");
+    const nextGrid = raw.indexOf("grid grid-cols-", 1);
+    return nextGrid > 0 ? raw.slice(0, nextGrid) : raw;
+  }
+
+  /** `[{ scope, cols }]` — one entry per declared column count, widest last. */
+  function columnPlan(chunk: string): Array<{ scope: string; cols: number }> {
+    const base = chunk.match(/(?:^|[\s'"`])grid-cols-(\d+)/);
+    const declared: Array<{ bp: string | null; cols: number }> = [];
+    if (base) declared.push({ bp: null, cols: Number(base[1]) });
+    for (const bp of BREAKPOINTS) {
+      const m = chunk.match(new RegExp(`\\b${bp}:grid-cols-(\\d+)`));
+      if (m) declared.push({ bp, cols: Number(m[1]) });
     }
-    expect(sources).toContain("sm:[&>*:first-child]:border-l-0");
+    return declared.map((entry, i) => {
+      const next = declared[i + 1]?.bp;
+      const from = entry.bp ? `${entry.bp}:` : "";
+      // The LAST range is open-ended; every earlier one is capped at the next
+      // breakpoint so two column counts can never both apply to one width.
+      const scope = next ? `${from}max-${next}:` : from;
+      return { scope, cols: entry.cols };
+    });
+  }
+
+  it("resets row-start dividers when flat telemetry strips wrap", () => {
+    const strips = [
+      { file: "soc/pages/Cases.tsx", anchor: "grid grid-cols-2 border-y border-border/70 sm:" },
+      { file: "soc/pages/Metrics.tsx", anchor: "grid grid-cols-2 border-y border-border/70 sm:" },
+      { file: "soc/pages/Sources.tsx", anchor: "grid grid-cols-2 border-y border-border/70 sm:" },
+    ];
+
+    for (const { file, anchor } of strips) {
+      const chunk = stripChunk(file, anchor);
+      const plan = columnPlan(chunk);
+      expect(plan.length, `${file} strip declares no column counts`).toBeGreaterThan(1);
+
+      for (const { scope, cols } of plan) {
+        expect(
+          chunk,
+          `${file} strip must enable the column rule for its ${cols}-column range`,
+        ).toContain(`${scope}[&>*]:border-l`);
+        expect(
+          chunk,
+          `${file} strip must clear the column rule at the start of every ${cols}-column row`,
+        ).toContain(`${scope}[&>*:nth-child(${cols}n+1)]:border-l-0`);
+      }
+
+      // Order-dependent forms, banned outright: `:first-child` states the contract only
+      // for a strip that never wraps, and an `odd`/`Nn+1` pair is a (0,2,0) tie whose
+      // winner is decided by Tailwind's emission order rather than by this grammar.
+      expect(chunk, `${file} strip must not gate a divider on :first-child`).not.toMatch(
+        /\[&>\*:first-child\]:border-l/,
+      );
+      expect(chunk, `${file} strip must not gate a divider on :nth-child(odd)`).not.toMatch(
+        /\[&>\*:nth-child\(odd\)\]:border-l/,
+      );
+    }
   });
 });

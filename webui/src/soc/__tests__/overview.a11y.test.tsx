@@ -14,10 +14,19 @@
  * own a11y (nested-interactive + labels) is covered by `NoiseFunnel.test`. This keeps the
  * main-layout heading order (h1 → h2 groups) under full axe.
  *
+ * It ALSO owns the KPI drill-down disclosure's accessibility contract, because that is
+ * where the landing page's only non-trivial interaction semantics live: the tile is a
+ * WAI disclosure trigger (`aria-expanded` + `aria-controls`, both optional on `KpiTile`
+ * so no other consumer changes), the panel is a labelled `<section>` with NO
+ * `role="dialog"` and NO `aria-modal`, focus lands on the panel HEADING, Tab leaves
+ * freely without closing, and Escape closes and returns focus to the tile. axe runs
+ * with the panel OPEN — a clean run with it closed would prove nothing about it.
+ *
  * Offline: no network, no #3 / runtime behaviour touched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
@@ -70,6 +79,9 @@ const METRICS: Metrics = {
 
 const POSTURE: PostureResponse = {
   window_hours: 24, generated_at: '2026-07-01T08:00:00Z', case_count: 3,
+  severity_counts: { critical: 1, high: 1, medium: 0, low: 1, info: 0 },
+  open_now: { count: 2, window_exempt: true, as_of: '2026-07-01T08:00:00Z', complete: true, reason: '' },
+  window_covered: true, window_coverage_reason: '', oldest_fetched_at: '2026-06-30T08:00:00Z',
   lifecycle: {
     mtta_minutes: { p50: 45, p90: 120, mean: 60, max: 200, count: 2, available: true, reason: '' },
     mttr_minutes: { p50: 180, p90: 600, mean: 240, max: 900, count: 1, available: true, reason: '' },
@@ -77,7 +89,10 @@ const POSTURE: PostureResponse = {
   },
   quality: {
     total_cases: 3, verdicted_cases: 2, true_positive_cases: 1, false_positive_cases: 1,
-    needs_human_cases: 1, escalated_cases: 0, terminal_cases: 1, auto_closed_cases: 1,
+    needs_human_cases: 1, escalated_cases: 0, terminal_cases: 4, auto_closed_cases: 2,
+    // The complete three-way partition, so the Resolved / Closed tile's in-place
+    // breakdown <dl> is part of what axe inspects.
+    human_closed_cases: 1, system_closed_cases: 1,
     alert_to_incident_ratio: 0.33, false_positive_rate: 0.5, escalation_rate: 0.33,
     containment_rate: 0.5, automation_rate: 0.5,
   },
@@ -100,7 +115,7 @@ describe('Overview — a11y smoke (jest-axe)', () => {
   it('has exactly one h1 and no axe violations on the loaded command center', async () => {
     const { container } = render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument(), {
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument(), {
       timeout: 5000,
     });
     // KPI numerals progressively upgrade from CountUp to the lazy motion number.
@@ -115,5 +130,178 @@ describe('Overview — a11y smoke (jest-axe)', () => {
     // Exactly one page-level h1 (the hero title); widget groups are h2.
     expect(container.querySelectorAll('h1')).toHaveLength(1);
     expect(await axe(container)).toHaveNoViolations();
+  });
+
+  describe('KPI drill-down disclosure', () => {
+    /** Render, settle the strip, and hand back the Total Cases tile. */
+    async function mountStrip() {
+      const view = render(<Overview onNavigate={vi.fn()} />);
+      await screen.findByTestId('page-hero');
+      const tile = await screen.findByTestId('kpi-total-cases');
+      await waitFor(
+        () => {
+          expect(within(screen.getByTestId('kpi-strip')).queryAllByTestId('count-up')).toHaveLength(
+            0,
+          );
+        },
+        { timeout: 5000 },
+      );
+      return { ...view, tile };
+    }
+
+    it('has no axe violations with the panel OPEN, and is a disclosure not a dialog', async () => {
+      const { container, tile } = await mountStrip();
+      // Closed: the trigger states its collapsed state and controls NOTHING — a
+      // dangling `aria-controls` id is itself an invalid attribute value.
+      expect(tile).toHaveAttribute('aria-expanded', 'false');
+      expect(tile).not.toHaveAttribute('aria-controls');
+
+      await userEvent.click(tile);
+      const panel = await screen.findByTestId('kpi-drilldown');
+      await waitFor(() => expect(screen.getByTestId('kpi-drilldown-rows')).toBeInTheDocument());
+
+      expect(tile).toHaveAttribute('aria-expanded', 'true');
+      expect(tile.getAttribute('aria-controls')).toBe(panel.id);
+      // The whole point of the primitive: read ALONGSIDE the tiles, so no dialog role,
+      // no modal flag, and nothing inerted behind it.
+      expect(panel.tagName).toBe('SECTION');
+      expect(panel).not.toHaveAttribute('role');
+      expect(panel).not.toHaveAttribute('aria-modal');
+      expect(panel.getAttribute('aria-labelledby')).toBe(
+        screen.getByTestId('kpi-drilldown-heading').id,
+      );
+      expect(container.querySelector('[inert]')).toBeNull();
+
+      // axe with the panel OPEN — the closed-strip pass above proves nothing about it.
+      expect(await axe(container)).toHaveNoViolations();
+      // Still exactly one h1: the panel heading is an h2 under the hero.
+      expect(container.querySelectorAll('h1')).toHaveLength(1);
+      expect(screen.getByTestId('kpi-drilldown-heading').tagName).toBe('H2');
+    });
+
+    it.each([
+      ['{Enter}', 'Enter'],
+      [' ', 'Space'],
+    ])('opens on %s with focus landing on the panel heading', async (key) => {
+      const { tile } = await mountStrip();
+      act(() => tile.focus());
+      await userEvent.keyboard(key);
+
+      await screen.findByTestId('kpi-drilldown');
+      const heading = screen.getByTestId('kpi-drilldown-heading');
+      // The HEADING, never a filter control: a screen-reader user has to hear WHAT
+      // opened before they hear how to narrow it.
+      await waitFor(() => expect(heading).toHaveFocus());
+      expect(heading).toHaveAttribute('tabindex', '-1');
+      expect(heading).not.toHaveAttribute('role', 'dialog');
+    });
+
+    it('lets Tab leave the panel without closing it', async () => {
+      const { tile } = await mountStrip();
+      await userEvent.click(tile);
+      const panel = await screen.findByTestId('kpi-drilldown');
+      await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+      // Walk forward well past the panel's own controls. A focus TRAP would keep
+      // cycling inside it, and a blur-to-close panel would vanish.
+      for (let i = 0; i < 12; i += 1) await userEvent.tab();
+
+      expect(screen.getByTestId('kpi-drilldown')).toBe(panel);
+      expect(tile).toHaveAttribute('aria-expanded', 'true');
+      expect(panel.contains(document.activeElement)).toBe(false);
+    });
+
+    it('closes on Escape and returns focus to the trigger tile', async () => {
+      const { tile } = await mountStrip();
+      await userEvent.click(tile);
+      await screen.findByTestId('kpi-drilldown');
+      await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+      await userEvent.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+      expect(tile).toHaveFocus();
+      expect(tile).toHaveAttribute('aria-expanded', 'false');
+      expect(tile).not.toHaveAttribute('aria-controls');
+    });
+
+    it('lets a filter dropdown swallow its own Escape without tearing down the panel', async () => {
+      const { tile } = await mountStrip();
+      await userEvent.click(tile);
+      await screen.findByTestId('kpi-drilldown');
+
+      // A Radix Select portals its content into the panel's REACT tree, so its own
+      // Escape dismissal bubbles all the way to the panel's key handler. Without the
+      // `defaultPrevented` guard, closing a dropdown would close the whole disclosure.
+      const sortTrigger = screen.getByTestId('kpi-drilldown-sort');
+      await userEvent.click(sortTrigger);
+      await waitFor(() => expect(sortTrigger).toHaveAttribute('aria-expanded', 'true'));
+      await userEvent.keyboard('{Escape}');
+
+      await waitFor(() => expect(sortTrigger).toHaveAttribute('aria-expanded', 'false'));
+      expect(screen.getByTestId('kpi-drilldown')).toBeInTheDocument();
+      expect(tile).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it("closes on Escape while a NEIGHBOUR tile's hover card is open", async () => {
+      const { tile } = await mountStrip();
+      await userEvent.click(tile);
+      await screen.findByTestId('kpi-drilldown');
+      await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+      // Every Radix dismissable layer marks Escape `defaultPrevented` from a DOCUMENT
+      // capture listener, so a guard that simply trusted that flag was disabled by any
+      // layer anywhere on the page — including a neighbouring tile's trend card, which
+      // is not this panel's and which an ordinary pointer drift opens. The panel became
+      // un-closable on the first Escape.
+      await userEvent.hover(screen.getByTestId('kpi-false-positive-rate'));
+      await waitFor(() => expect(screen.getByTestId('metric-trend-card')).toBeInTheDocument(), {
+        timeout: 2000,
+      });
+      // Focus is still in the panel, so this Escape is the PANEL's.
+      expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus();
+
+      await userEvent.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+      expect(tile).toHaveFocus();
+    });
+
+    it('does not let the focus RETURN pop the trend card back open', async () => {
+      const { tile } = await mountStrip();
+      await userEvent.click(tile);
+      await screen.findByTestId('kpi-drilldown');
+      await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+      expect(tile).toHaveFocus();
+
+      // Radix opens on a TIMER, so `forceClosed` read at callback time is already false
+      // by the time the focus return's own open transition resolves. An explicit
+      // dismiss answered by a new overlay ~160ms later needs a second Escape.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 500));
+      });
+      expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+    });
+
+    it('keeps the hover trend card suppressed for as long as the panel is open', async () => {
+      const { tile } = await mountStrip();
+      // Hover FIRST, so an already-latched card has to be torn down rather than merely
+      // prevented — the trigger opens on focus too, and the focus return on close would
+      // otherwise pop it straight back over the strip.
+      await userEvent.hover(tile);
+      await userEvent.click(tile);
+      await screen.findByTestId('kpi-drilldown');
+
+      await waitFor(() => expect(screen.queryByTestId('metric-trend-card')).toBeNull());
+      await userEvent.hover(tile);
+      await new Promise((r) => setTimeout(r, 350));
+      expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+      // The series is not lost — the panel restates it, which is also the only surface
+      // a touch-only device can reach now that every tile is a clickable trigger.
+      expect(screen.getByTestId('kpi-drilldown-trend')).toBeInTheDocument();
+    });
   });
 });

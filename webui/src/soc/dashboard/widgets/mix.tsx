@@ -63,35 +63,144 @@ export function OpenBySeverityWidget(props: WidgetProps) {
 }
 
 // --------------------------------------------------------------------------- //
-// Autonomous-vs-human split — of the RESOLVED (terminal) cases, how many the agent
-// auto-closed vs. a human resolved. Derived from the server posture QUALITY rollup
-// (honest counts, never client-derived) — the same denominator as automation_rate.
+// Close attribution — of the RESOLVED (terminal) cases, who was the LAST decider.
+// Read straight off the server posture QUALITY rollup's three-way partition; never
+// client-derived, and never a two-way split (see `autonomySegments`).
 // --------------------------------------------------------------------------- //
 
 /** The posture-quality fields this split reads (a subset of `PostureQuality`). */
 export interface AutonomyQuality {
   terminal_cases?: number;
   auto_closed_cases?: number;
+  human_closed_cases?: number;
+  system_closed_cases?: number;
 }
 
 /**
- * Build the auto-resolved vs human-handled donut segments from the posture quality
- * rollup. Both buckets are subsets of `terminal_cases`, so they are MUTUALLY EXCLUSIVE
- * (no double-count) and their sum is the resolved total — the same denominator as
- * `automation_rate`. `escalated`/`needs_human` are deliberately NOT used: they overlap
- * each other and include OPEN cases, which would over-count the human arc and mislabel
- * the total as resolved. Distinct token colors keep the two arcs readable apart
- * (`semanticColor()` only resolves SOC labels, so it collapsed both to one color).
+ * Does this posture payload actually REPORT close attribution?
+ *
+ * The three-band partition is optional on the wire: an older backend omits
+ * `human_closed_cases`/`system_closed_cases`, and that absence means "not reported",
+ * never zero. Separated from {@link autonomySegments} so the widget can say which of
+ * "no closed cases" and "this backend does not report attribution" is true, instead of
+ * printing the first when it means the second.
+ *
+ * This answers only "are the four keys present?". Whether they FORM a partition is
+ * {@link closeAttributionState}'s job — the two questions have different answers and
+ * conflating them is what let a non-reconciling payload print "nothing closed".
+ */
+export function hasCloseAttribution(q: AutonomyQuality | null | undefined): boolean {
+  if (!q) return false;
+  return (
+    typeof q.terminal_cases === 'number' &&
+    typeof q.auto_closed_cases === 'number' &&
+    typeof q.human_closed_cases === 'number' &&
+    typeof q.system_closed_cases === 'number'
+  );
+}
+
+/** Which fact about close attribution this payload actually establishes. */
+export type CloseAttributionState =
+  /** No payload at all — the rollup could not be read. */
+  | 'unreadable'
+  /** The payload omits one or more of the four bands: not reported, never zero. */
+  | 'unreported'
+  /** All four present, but they are not a partition (or a band is negative/non-finite). */
+  | 'unreconciled'
+  /** A reconciling partition of ZERO terminal cases: nothing closed in this window. */
+  | 'empty'
+  /** A reconciling partition of one or more terminal cases: renderable. */
+  | 'ok';
+
+/**
+ * The ONE classifier both the donut and its empty line consume.
+ *
+ * {@link autonomySegments} and {@link autonomyEmptyMessage} used to test different
+ * things — presence-of-keys in one, reconciliation in the other — so a REPORTED but
+ * non-reconciling payload rendered no arcs AND claimed "No resolved cases in this
+ * window.", i.e. the widget published a measurement of zero off a payload that said
+ * ten. Routing both through this function makes that disagreement unrepresentable.
+ */
+export function closeAttributionState(
+  q: AutonomyQuality | null | undefined,
+): CloseAttributionState {
+  if (!q) return 'unreadable';
+  if (!hasCloseAttribution(q)) return 'unreported';
+  const terminal = Number(q.terminal_cases);
+  const ai = Number(q.auto_closed_cases);
+  const human = Number(q.human_closed_cases);
+  const system = Number(q.system_closed_cases);
+  if ([terminal, ai, human, system].some((n) => !Number.isFinite(n) || n < 0)) {
+    return 'unreconciled';
+  }
+  if (ai + human + system !== terminal) return 'unreconciled';
+  return terminal === 0 ? 'empty' : 'ok';
+}
+
+/**
+ * Build the close-attribution donut segments from the posture quality rollup.
+ *
+ * THREE arcs, never two. This used to compute `human = terminal − auto`, which
+ * `engine/metrics.py` explicitly forbids: the difference absorbs the SYSTEM/legacy
+ * residual (deterministic routing plus older records that never recorded a decider)
+ * into the analyst band, over-stating human work by exactly that residual — and it
+ * labelled the result "Human-handled", so the over-statement was invisible. The server
+ * publishes `auto_closed_cases` + `human_closed_cases` + `system_closed_cases`, which
+ * sum to `terminal_cases` exactly; this reads all three keys or renders nothing.
+ *
+ * All three are returned even at zero, so the residual stays part of the partition;
+ * `DonutChart` drops empty arcs itself, and the centre total therefore still equals
+ * `terminal_cases`. A payload whose bands do not reconcile is not a partition and is
+ * refused outright rather than massaged. Colours are the `HumanVsAiCard` bands' own
+ * colourblind-safe categorical ramp — an "AI vs human" split must not borrow a
+ * red/green severity reading.
  */
 export function autonomySegments(q: AutonomyQuality | null | undefined): DonutSegment[] {
-  if (!q) return [];
-  const terminal = Math.max(0, q.terminal_cases || 0);
-  const auto = Math.max(0, Math.min(terminal, q.auto_closed_cases || 0));
-  const human = Math.max(0, terminal - auto);
-  const out: DonutSegment[] = [];
-  if (auto > 0) out.push({ label: 'Auto-resolved', value: auto, color: token('success') });
-  if (human > 0) out.push({ label: 'Human-handled', value: human, color: token('warning') });
-  return out;
+  // Not a partition → not renderable as one, and an all-zero terminal cohort is an
+  // empty window rather than a donut of nothing. Both refusals come from the shared
+  // classifier so the empty line below can name WHICH refusal happened.
+  if (closeAttributionState(q) !== 'ok') return [];
+  return [
+    { label: 'AI agent', value: Number(q?.auto_closed_cases), color: token('chart-1') },
+    { label: 'Human', value: Number(q?.human_closed_cases), color: token('chart-2') },
+    { label: 'System', value: Number(q?.system_closed_cases), color: token('chart-8') },
+  ];
+}
+
+/**
+ * The widget's honest empty line. "Not reported", "could not be read", "did not
+ * reconcile" and "nothing closed" are FOUR different facts; printing the last when one
+ * of the first three is true turns a gap in evidence into a measurement.
+ *
+ * Every arm below reads {@link closeAttributionState}, the same classifier
+ * {@link autonomySegments} refuses on, so the message can never disagree with the
+ * reason the donut is blank.
+ */
+export function autonomyEmptyMessage(
+  q: AutonomyQuality | null | undefined,
+  segmentCount: number,
+  opts: { loading: boolean; failed: boolean },
+): string | undefined {
+  if (opts.failed) return 'Posture data unavailable';
+  if (opts.loading || segmentCount > 0) return undefined;
+  switch (closeAttributionState(q)) {
+    case 'unreadable':
+      return 'Posture data unavailable';
+    case 'unreported':
+      return 'This backend does not report how closed cases were attributed.';
+    case 'unreconciled':
+      // The same wording `Overview.tsx` uses for this payload, so the two surfaces
+      // describe one fact identically.
+      return 'Close attribution did not reconcile for this window.';
+    case 'empty':
+      // The ONLY arm that is a measurement: the four bands reconcile, and they are all
+      // zero. Everything above is an evidence gap.
+      return 'No resolved cases in this window.';
+    default:
+      // 'ok' — arcs are renderable, so there is nothing to say. (Reachable only if a
+      // caller passes a `segmentCount` that disagrees with `autonomySegments`.)
+      return undefined;
+  }
 }
 
 export function AutonomousVsHumanWidget(props: WidgetProps) {
@@ -104,12 +213,10 @@ export function AutonomousVsHumanWidget(props: WidgetProps) {
   );
 
   const total = segments.reduce((a, s) => a + s.value, 0);
-  const empty =
-    error && !data
-      ? 'Posture data unavailable'
-      : segments.length === 0 && !loading
-        ? 'No resolved cases in this window.'
-        : undefined;
+  const empty = autonomyEmptyMessage(data?.quality, segments.length, {
+    loading,
+    failed: Boolean(error) && !data,
+  });
 
   return (
     <WidgetShell

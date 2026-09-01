@@ -116,8 +116,13 @@ type MetricsTab = 'operational' | 'performance' | 'posture' | 'effectiveness' | 
 // consistent reflow rhythm instead of ad-hoc per-grid formulas.
 const KPI_GRID =
   'grid grid-cols-2 border-y border-border/70 sm:grid-cols-3 xl:grid-cols-6 ' +
-  '[&>*:nth-child(odd)]:border-l-0 sm:[&>*:nth-child(odd)]:border-l sm:[&>*:nth-child(3n+1)]:border-l-0 ' +
-  'xl:[&>*]:border-l xl:[&>*:first-child]:border-l-0';
+  // One ENABLE + one ROW-START RESET per mutually-exclusive column count, so the
+  // reset wins on specificity instead of on Tailwind's emission order. The previous
+  // overlapping layers were a (0,2,0) tie that re-lit cell 1 at 3 columns and stripped
+  // cell 4's divider at 6; see the long note on the same strip in `Cases.tsx`.
+  'max-sm:[&>*]:border-l max-sm:[&>*:nth-child(2n+1)]:border-l-0 ' +
+  'sm:max-xl:[&>*]:border-l sm:max-xl:[&>*:nth-child(3n+1)]:border-l-0 ' +
+  'xl:[&>*]:border-l xl:[&>*:nth-child(6n+1)]:border-l-0';
 const KPI_ITEM = 'h-full min-w-0 border-l border-border/70';
 const CARD_GRID = 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4';
 

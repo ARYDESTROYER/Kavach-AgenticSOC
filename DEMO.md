@@ -435,9 +435,24 @@ cursors. It is **fully reversible in one click**.
 ### 3r. Overview — the Cyber Defence Center
 - Land on the **Overview** (Dashboard). Walk it top to bottom:
   - **Masthead** — the time-range picker, auto-refresh, and a "last updated" stamp.
-  - **KPI strip** — 5 tiles: **Open Cases**, **Critical / High**, **Escalated To
-    Human**, **False Positive Rate**, **Auto-Resolved** (all populated by Demo
-    Mode; hover or focus a tile to reveal its selected-window trendline).
+  - **KPI strip** — 5 server-fed tiles: **Total Cases**, **Total Critical**,
+    **Open Cases**, **False Positive Rate**, **Resolved / Closed** (all populated
+    by Demo Mode; hover or focus a tile with an honest series to reveal its
+    selected-window trendline). Four are the selected window's arrival cohort;
+    **Open Cases** is deliberately the open-case count *right now* — it is not
+    window-filtered and never sums with the other four, and its sub says so.
+    **Resolved / Closed** carries the three-way close attribution (AI agent /
+    Human / System) inside the tile, reconciling with the Human-vs-AI instrument.
+  - **KPI drill-down** — click (or press Enter/Space on) any tile: a detail panel
+    docks *under* the strip without leaving the page, so the other four numerals
+    stay in view for comparison. It lists that tile's own population with a
+    filter box, a severity and status facet, a sort order and its **own** time
+    range — note that **Open Cases** opens all-time, because the tile is a stock,
+    not a window cohort. The footer states how much of the store it actually
+    read rather than implying the list equals the numeral above it; **Open in
+    Cases** hands the same population to the full list (Resolved / Closed uses
+    the *Terminal* facet, which covers resolved **and** closed). Escape closes it
+    and returns focus to the tile.
   - **Hero row** — the **Active Risk Index** (the one risk instrument on the
     page — the old Active-Risk-Index glitch is fixed), plus a "Cases resolved"
     and an "Open cases" donut snapshot.

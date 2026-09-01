@@ -132,6 +132,19 @@ const BANDS: BandDef[] = [
   },
 ];
 
+/**
+ * The close-attribution partition's BAND IDENTITY, exported so any other surface that
+ * states the same partition (the Resolved / Closed KPI tile's in-place breakdown)
+ * borrows these labels instead of minting its own. Two surfaces naming the same three
+ * server keys differently is how a page ends up telling two stories about one number.
+ * Order is fixed: agent, analyst, then the residual — which is always present.
+ */
+export const CLOSE_ATTRIBUTION_BANDS: ReadonlyArray<{
+  key: 'ai' | 'human' | 'system';
+  label: string;
+  title: string;
+}> = BANDS.map(({ key, label, title }) => ({ key, label, title }));
+
 const CHART_SERIES: MultiSeries[] = BANDS.map((b) => ({
   key: b.key,
   label: b.label,

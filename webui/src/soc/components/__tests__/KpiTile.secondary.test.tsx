@@ -1,5 +1,5 @@
 /**
- * KpiTile — the `secondary` SCALE-CONTEXT slot.
+ * KpiTile — the `secondary` SCALE-CONTEXT slot and the `breakdown` PARTITION slot.
  *
  * A bare count answers "how many" but never "out of what". `secondary` supplies the
  * denominator beside the numeral ("13% of 154", "1 of 2 verdicted", or an em dash when
@@ -10,7 +10,7 @@
  * judgement, and the landing strip pins "no role=img inside any KPI tile"
  * (overview.render). These cases keep the two slots from being conflated.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 
 import { KpiTile } from '../KpiTile';
@@ -40,8 +40,8 @@ describe('KpiTile — secondary scale context', () => {
   });
 
   it('renders an em dash verbatim when the caller has no honest denominator', () => {
-    render(<KpiTile label="Critical" value="7" secondary="—" variant="strip" />);
-    const tile = screen.getByTestId('kpi-critical');
+    render(<KpiTile label="Total Critical" value="7" secondary="—" variant="strip" />);
+    const tile = screen.getByTestId('kpi-total-critical');
     expect(within(tile).getByText('—')).toBeInTheDocument();
     expect(within(tile).queryByText(/0%/)).toBeNull();
   });
@@ -49,7 +49,7 @@ describe('KpiTile — secondary scale context', () => {
   it('omits the slot entirely for undefined / null / empty context', () => {
     for (const secondary of [undefined, null, ''] as const) {
       const { container, unmount } = render(
-        <KpiTile label="Escalated" value="3" secondary={secondary} variant="strip" />,
+        <KpiTile label="Open Cases" value="3" secondary={secondary} variant="strip" />,
       );
       const valueRow = container.querySelector('.items-end') as HTMLElement;
       // Only the numeral — no empty muted span padding the row.
@@ -61,14 +61,14 @@ describe('KpiTile — secondary scale context', () => {
   it('coexists with a delta without either slot absorbing the other', () => {
     render(
       <KpiTile
-        label="Auto-Resolved"
+        label="Resolved / Closed"
         value="42"
         secondary="60% of 70"
         delta={{ value: 12, label: '+12%' }}
         goodDirection="up"
       />,
     );
-    const tile = screen.getByTestId('kpi-auto-resolved');
+    const tile = screen.getByTestId('kpi-resolved-closed');
     expect(within(tile).getByText('60% of 70')).toBeInTheDocument();
     // The delta keeps its own announced role; the context stays silent text.
     expect(within(tile).getByRole('img')).toHaveAccessibleName(/changed up by \+12%, improved/i);
@@ -99,11 +99,98 @@ describe('KpiTile — secondary scale context', () => {
   });
 
   it('keeps the pinned testid when a label is reworded but testId is passed', () => {
-    // The Overview Critical tile relies on this: narrowing "Critical / High" to
-    // "Critical" must not silently rename `kpi-critical-high` -> `kpi-critical`
-    // unless that rename is deliberate.
+    // The landing strip relies on this in BOTH directions: a pinned testId survives a
+    // reworded label (so an anchor is never renamed by accident) — and, because it
+    // does, a deliberate rename MUST re-key the testId in the same edit or the anchor
+    // is left naming the metric that moved away.
     render(<KpiTile label="Critical" testId="critical-high" value="4" secondary="9% of 44" />);
     expect(screen.getByTestId('kpi-critical-high')).toBeInTheDocument();
     expect(screen.queryByTestId('kpi-critical')).toBeNull();
+  });
+});
+
+describe('KpiTile — breakdown partition rows', () => {
+  it('renders the partition as a real <dl>, in order, with no role or judgement colour', () => {
+    render(
+      <KpiTile
+        label="Resolved / Closed"
+        testId="resolved-closed"
+        value="9"
+        secondary="25% of 36"
+        sub="Reached a terminal state"
+        variant="strip"
+        breakdown={[
+          { label: 'AI agent', value: '5', title: 'Closed by the agent' },
+          { label: 'Human', value: '3', title: 'Closed by an analyst' },
+          { label: 'System', value: '0', title: 'System routing or no recorded decider' },
+        ]}
+      />,
+    );
+    const tile = screen.getByTestId('kpi-resolved-closed');
+    const terms = Array.from(tile.querySelectorAll('dl > dt'));
+    const defs = Array.from(tile.querySelectorAll('dl > dd'));
+    expect(terms.map((n) => n.textContent)).toEqual(['AI agent', 'Human', 'System']);
+    // A zero band stays visible: folding it away leaves a partition that reads as
+    // complete while one of its members has silently vanished.
+    expect(defs.map((n) => n.textContent)).toEqual(['5', '3', '0']);
+    expect(terms[0]).toHaveAttribute('title', 'Closed by the agent');
+    // Plain text only — the landing strip pins "no role=img inside any KPI tile".
+    expect(within(tile).queryByRole('img')).toBeNull();
+    expect(tile.querySelector('dl')?.className).not.toMatch(/text-(critical|success)/);
+  });
+
+  it('renders no <dl> at all when the partition is absent or empty', () => {
+    const { rerender } = render(<KpiTile label="Resolved / Closed" testId="rc" value="9" />);
+    expect(screen.getByTestId('kpi-rc').querySelector('dl')).toBeNull();
+    rerender(<KpiTile label="Resolved / Closed" testId="rc" value="9" breakdown={[]} />);
+    expect(screen.getByTestId('kpi-rc').querySelector('dl')).toBeNull();
+  });
+
+  it('keeps the partition OUT of a clickable tile\u2019s accessible name', () => {
+    // The landing strip's tiles are disclosure TRIGGERS. ARIA gives `role=button`
+    // "children presentational", so a <dl> rendered inside one is stripped of its
+    // dt/dd relationships (and of each dt's `title`) and flattened into the trigger's
+    // name — a 13-word run-on that also changes every time a band's count changes.
+    // The partition therefore renders as a SIBLING of the button.
+    render(
+      <KpiTile
+        label="Resolved / Closed"
+        testId="resolved-closed"
+        value="9"
+        secondary="25% of 36"
+        sub="Reached a terminal state"
+        variant="strip"
+        onClick={vi.fn()}
+        ariaExpanded={false}
+        breakdown={[
+          { label: 'AI agent', value: '5', title: 'Closed by the agent' },
+          { label: 'Human', value: '3', title: 'Closed by an analyst' },
+          { label: 'System', value: '1', title: 'System routing or no recorded decider' },
+        ]}
+      />,
+    );
+    const trigger = screen.getByTestId('kpi-resolved-closed');
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger.querySelector('dl')).toBeNull();
+
+    // The button carries no `aria-label`, so its accessible name is computed from
+    // contents — i.e. exactly its flattened text. Asserting on that text needs no
+    // extra dependency and is the same string an AT would announce.
+    expect(trigger).not.toHaveAttribute('aria-label');
+    const name = trigger.textContent ?? '';
+    expect(name).toContain('Resolved / Closed');
+    for (const band of ['AI agent', 'Human', 'System']) {
+      expect(name).not.toContain(band);
+    }
+
+    // …and it is still a real, ordered definition list on the page, reachable by AT.
+    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
+    expect(trigger.contains(partition)).toBe(false);
+    expect(
+      Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent),
+    ).toEqual(['AI agent', 'Human', 'System']);
+    expect(
+      Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent),
+    ).toEqual(['5', '3', '1']);
   });
 });
