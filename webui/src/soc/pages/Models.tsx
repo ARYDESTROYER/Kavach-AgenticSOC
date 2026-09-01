@@ -69,6 +69,7 @@ import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { ProtectedRoute, useCan } from '@/soc/components/Can';
 import { NumberField } from '@/soc/components/NumberField';
+import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SecretField } from '@/soc/components/SecretField';
 import { ModelsCatalog } from '@/soc/components/ModelsCatalog';
 import { BudgetCard } from '@/soc/components/BudgetCard';
@@ -712,6 +713,7 @@ function PriceOverrideDialog({
 // --------------------------------------------------------------------------- //
 function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: () => void }) {
   const [prompt, setPrompt] = React.useState('Reply with the single word: ok');
+  const [mode, setMode] = React.useState<'chat' | 'embedding'>('chat');
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState<ModelTestResult | null>(null);
 
@@ -723,6 +725,7 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
         model: model.id,
         provider: model.provider,
         prompt: prompt.slice(0, 2000),
+        mode,
       });
       setResult(res);
       if (res.ok) toast.success(`${model.id} responded.`);
@@ -740,23 +743,46 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
         <DialogHeader>
           <DialogTitle>Test model</DialogTitle>
           <DialogDescription>
-            Routes a tiny prompt through the one gateway against{' '}
-            <span className="font-mono">{model.id}</span>. This is metered and hits the cost
-            ledger.
+            Routes one tiny call through the one gateway against{' '}
+            <span className="font-mono">{model.id}</span> — a completion, or the embedding
+            probe. Either way it is metered and hits the cost ledger.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-1">
           <div className="space-y-1.5">
-            <Label htmlFor="test-prompt">Prompt</Label>
-            <Textarea
-              id="test-prompt"
-              rows={3}
-              value={prompt}
-              maxLength={2000}
-              onChange={(e) => setPrompt(e.target.value)}
-              disabled={busy}
+            <Label>What to test</Label>
+            <SegmentedControl
+              aria-label="What to test"
+              size="sm"
+              value={mode}
+              onValueChange={(v) => {
+                setMode(v);
+                setResult(null);
+              }}
+              options={[
+                { value: 'chat', label: 'Completion' },
+                { value: 'embedding', label: 'Embedding' },
+              ]}
             />
+            <p className="text-xs text-muted-foreground">
+              {mode === 'chat'
+                ? 'Sends the prompt as a completion.'
+                : 'Embeds three fixed probe strings and reports what the endpoint actually returned — the evidence a self-hosted embedding endpoint is judged on, since the bundled catalog can hold no opinion about it.'}
+            </p>
           </div>
+          {mode === 'chat' ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="test-prompt">Prompt</Label>
+              <Textarea
+                id="test-prompt"
+                rows={3}
+                value={prompt}
+                maxLength={2000}
+                onChange={(e) => setPrompt(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+          ) : null}
 
           {result ? (
             <div className="space-y-2">
@@ -764,7 +790,13 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
                 <Badge variant={result.ok ? 'success' : 'critical'}>
                   {result.ok ? 'OK' : 'Error'}
                 </Badge>
-                {result.ok ? (
+                {result.mode === 'embedding' ? (
+                  <span className="text-xs text-muted-foreground">
+                    {result.observed?.dimensions ?? '—'} dims ·{' '}
+                    {result.observed?.provider || 'unknown provider'}
+                  </span>
+                ) : null}
+                {result.ok && result.mode !== 'embedding' ? (
                   <>
                     <span className="text-xs text-muted-foreground">
                       {result.prompt_tokens ?? 0} in · {result.completion_tokens ?? 0} out ·{' '}
@@ -784,13 +816,52 @@ function TestCallDialog({ model, onClose }: { model: ModelCatalogRow; onClose: (
                   </>
                 ) : null}
               </div>
-              {/* The reply / error is UNTRUSTED model output → fenced CodeBlock (#9). */}
-              <CodeBlock
-                value={result.ok ? result.reply || '(empty reply)' : result.error || 'Unknown error'}
-                caption={result.ok ? 'Model reply' : 'Error'}
-                wrap
-                maxHeightClassName="max-h-56"
-              />
+              {result.mode === 'embedding' ? (
+                <>
+                  {/* Every row is an OBSERVATION, so a refusal is arguable against
+                      evidence rather than against a bundled capability list. */}
+                  <ul className="space-y-1 text-xs">
+                    {(result.checks ?? []).map((check) => (
+                      <li key={check.id} className="flex items-start gap-2">
+                        <Badge
+                          variant={check.passed ? 'success' : 'critical'}
+                          className="text-2xs shrink-0"
+                        >
+                          {check.passed ? 'pass' : 'fail'}
+                        </Badge>
+                        <span className="text-muted-foreground">
+                          <span className="font-mono">{check.id}</span> — {check.detail}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {result.catalog_declaration ? (
+                    <p className="text-xs text-muted-foreground">
+                      Bundled catalog: {result.catalog_declaration.state}
+                      {result.catalog_declaration.state === 'unknown'
+                        ? ' — normal for a self-hosted model; the probe above is the evidence.'
+                        : null}
+                    </p>
+                  ) : null}
+                  {/* Provider-derived text → fenced CodeBlock (#9). */}
+                  <CodeBlock
+                    value={result.message || result.error || '(no detail)'}
+                    caption="What was observed"
+                    wrap
+                    maxHeightClassName="max-h-56"
+                  />
+                </>
+              ) : (
+                /* The reply / error is UNTRUSTED model output → fenced CodeBlock (#9). */
+                <CodeBlock
+                  value={
+                    result.ok ? result.reply || '(empty reply)' : result.error || 'Unknown error'
+                  }
+                  caption={result.ok ? 'Model reply' : 'Error'}
+                  wrap
+                  maxHeightClassName="max-h-56"
+                />
+              )}
             </div>
           ) : null}
         </div>

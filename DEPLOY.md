@@ -197,6 +197,24 @@ From the **repo root**:
 ./scripts/agentic-soc-compose.sh up -d --build
 ```
 
+> **Always redeploy through the wrapper — and if you script your own recipe, pass
+> BOTH `TLSOC_BUILD_SHA` and `TLSOC_BUILD_DATE`.** Compose expands them into the
+> backend/Web/updater build arguments with an `:-unknown` fallback, and the
+> Dockerfiles bake the result into `org.opencontainers.image.revision`, the running
+> process environment, and therefore the `build_sha` of every case, audit, and usage
+> record the deployment writes. `scripts/agentic-soc-compose.sh` derives both from
+> the checkout (`scripts/lib/build-identity.sh`) so a plain source build is stamped
+> honestly; a raw `docker compose build` is not, and a half-stamped pair — one value
+> supplied, the other left to fall through — is worse than neither, because
+> `/api/health/build-info` then reports a build nothing can reproduce. The two cases
+> surface on different channels, so read both: an **unstamped** build is reported by
+> `/api/health/build-info` as `provenance_complete: false`, naming the absent fields
+> in `provenance_missing`; a **half-stamped or otherwise unpinnable** identity is
+> additionally logged as a startup warning and listed in `provenance_advisories`.
+> Before it builds, `scripts/agentic-soc-compose.sh` also prints one stderr line
+> whenever the identity it resolved is degraded — an `unknown` SHA or date, or a
+> `<sha>-dirty` suffix.
+
 This builds the backend, Web, and updater images and starts all five services. Then open:
 
 ```

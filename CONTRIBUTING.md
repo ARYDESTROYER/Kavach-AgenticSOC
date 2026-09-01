@@ -334,6 +334,10 @@ npm --prefix webui run check:types
 npm --prefix webui run typecheck
 npm --prefix webui run lint -- --max-warnings=0
 npm --prefix webui run gates
+# Build provenance is a PAIR: pass both, always the full object id. An abbreviated
+# `git rev-parse --short` is not an exact revision, so the resulting build reports
+# complete provenance that no upgrade can be pinned to. scripts/check_version.py
+# fails the build if a shipped script or document derives the SHA that way.
 (cd webui && TLSOC_RELEASE_CHANNEL=testing \
   TLSOC_BUILD_SHA="$(git rev-parse HEAD)" \
   TLSOC_BUILD_DATE="$(git show -s --format=%cI HEAD)" npm run build)

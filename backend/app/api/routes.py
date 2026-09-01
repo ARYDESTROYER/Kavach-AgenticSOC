@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
-from ..build_identity import build_stamp
+from ..build_identity import build_identity_advisories, build_stamp
 from ..config import (
     Preferences,
     SourceInstance,
@@ -43,7 +43,7 @@ from ..es.querybuilder import entity_query, ids_query, scope_filters, scope_must
 from ..llm.pricing import (
     model_capabilities,
     model_catalog,
-    model_supports_capability,
+    model_may_embed,
     models_by_provider,
 )
 from ..models import (
@@ -182,6 +182,10 @@ class BuildInfoResponse(BaseModel):
     ocsf_version: str
     provenance_complete: bool
     provenance_missing: list[str]
+    #: Additive advisories about a build identity that IS stamped but is not an
+    #: exact source revision (see ``build_identity``). Never narrows the two
+    #: completeness fields above, which keep their original broad semantics.
+    provenance_advisories: list[str] = []
 
 
 async def _state_store_probe(state: AppState) -> tuple[bool, str]:
@@ -369,6 +373,10 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
         ocsf_version=OCSF_VERSION,
         provenance_complete=not provenance_missing,
         provenance_missing=provenance_missing,
+        # A stamped identity that is not an exact source revision is honest
+        # provenance for a tarball/Nix/CI builder, so it stays `complete`; the
+        # advisory is what explains why supervised updates refuse the same build.
+        provenance_advisories=build_identity_advisories(commit_sha, build_time),
     )
 
 
@@ -1794,12 +1802,23 @@ async def put_settings(
     requested_embedding = body.get("embedding_model") if isinstance(body, dict) else None
     if isinstance(requested_embedding, dict) and requested_embedding.get("model"):
         embedding_id = str(requested_embedding.get("model") or "").strip()
-        if not model_supports_capability(embedding_id, "embedding"):
+        # Refuse only on POSITIVE catalog evidence of incapability — a bundled row
+        # that declares other capabilities and not ``embedding``. The old check
+        # refused whatever the catalog had never heard of, which is every self-hosted
+        # / LiteLLM / vLLM / Ollama endpoint and every model newer than this build:
+        # on a vendor-agnostic product that made the operator's own embedding
+        # endpoint unconfigurable while an unknown completion id sailed through.
+        # ``POST /api/llm/models/test {"mode": "embedding"}`` is the empirical probe
+        # that answers the unknown case with evidence instead of with a JSON file.
+        if not model_may_embed(embedding_id):
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"Invalid settings: model {embedding_id!r} is not declared "
-                    "embedding-capable"
+                    f"Invalid settings: the model catalog lists {embedding_id!r} "
+                    "WITHOUT the embedding capability. If this endpoint really does "
+                    "embed, verify it with POST /api/llm/models/test "
+                    '{"model": "...", "mode": "embedding"} and register it as a '
+                    "custom model."
                 ),
             )
     # Build the partial deep-merge from the freshest Preferences document while the

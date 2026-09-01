@@ -16,6 +16,7 @@ from . import __version__
 from . import api as api_pkg
 from .api.deps import require_auth
 from .api.routes import router
+from .build_identity import log_build_identity_advisories
 from .config import Secrets
 from .logging_setup import configure_logging
 from .middleware import (
@@ -70,6 +71,10 @@ async def lifespan(app: FastAPI):
     secrets = Secrets()
     configure_logging(secrets.log_level)
     logger.info("Starting Agentic SOC API")
+    # Observational only: a degraded build identity is inherited by every record this
+    # process writes and makes supervised updates refuse the build, but it must never
+    # keep the suite from accepting traffic.
+    log_build_identity_advisories(logger)
     state = AppState.create(secrets=secrets)
     app.state.tlsoc = state
     await state.startup()

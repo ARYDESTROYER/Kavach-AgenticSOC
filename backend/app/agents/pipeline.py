@@ -32,6 +32,10 @@ from ..constants import (
 )
 from ..engine.case_manager import CaseManager
 from ..engine.cost_gate import CaseBudget
+# Read-time classification of an ALREADY-persisted decision, shared with the metrics
+# reader so the audit trail and the analysis cannot use two different vocabularies.
+# It never decides anything and is never an input to decide() (#3).
+from ..engine.metrics import classify_auto_close_gate
 from ..engine.precedent import match_analyst_rule_policy
 from ..engine.risk import compute_risk
 from ..engine.signatures import find_open_case_for_cluster
@@ -823,13 +827,28 @@ class InvestigationPipeline:
                 case.token_cost = recorded_cost
             CaseManager(prefs).apply(case)
             await self._cases.save(case)
+            # The gate INPUTS, recorded beside the gate OUTPUT. Without them a missed
+            # auto-close could not be explained from the append-only trail at all: the
+            # row said the case routed to a human but not which side of the bar it
+            # fell on, and the case fields that would have said so are overwritten by
+            # the next re-investigation. Classification only — it runs strictly AFTER
+            # apply() has decided and persisted, and nothing branches on it (#3).
+            #
+            # APPEND-ONLY, AT THE END. ``result_summary`` is an audit history string:
+            # existing tokens keep their exact spelling and order forever, and new
+            # facts are only ever appended after them. A row written before these
+            # tokens existed simply lacks them and reads back as ``unrecorded``.
+            gate_outcome = classify_auto_close_gate(
+                prefs.auto_close, case.verdict, case.confidence, case.risk_score,
+            )
             await self._audit.record(
                 action_type=ActionType.DECISION, surface=source_surface.value,
                 actor="case_manager", case_id=case_id,
                 result_summary=(
                     f"verdict={verdict.verdict.value} status={case.status.value} "
                     f"decision_by={case.decision_by.value if case.decision_by else None} "
-                    f"risk={case.risk_score} cost={round(cost, 6)}"
+                    f"risk={case.risk_score} cost={round(cost, 6)} "
+                    f"confidence={case.confidence} auto_close_gate={gate_outcome}"
                 ),
             )
             # Live progress: TERMINAL ``decision`` frame, emitted AFTER apply()+save +

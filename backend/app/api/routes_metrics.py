@@ -11,6 +11,10 @@ untouched. These serve the rich, server-side rollup the posture dashboards consu
   first-class health signal, with enough context (decided volume in both windows +
   the configured policy) to tell "auto-close collapsed" from "no volume" or "the
   operator turned it off". See also ``GET /api/diagnostics/health``.
+* ``GET /api/metrics/auto-close-health/recorded`` — the SAME signal measured from the
+  append-only decision trail (first-decision anchored, immune to later analyst
+  re-tags, with recorded dependency outages excluded). Shipped BESIDE the legacy
+  endpoint above, which is unchanged; the two are expected to differ.
 * ``GET /api/mitre/coverage`` — per-tactic technique coverage vs the bundled corpus.
 * ``GET /api/mitre/coverage/navigator.layer.json`` — an ATT&CK Navigator v4.5 layer
   dict the UI can hand straight to the Navigator.
@@ -26,17 +30,19 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ..constants import ActionType
 from ..engine.agent_improvement import agent_improvement_metrics
 from ..engine.clustering_explain import build_case_lineage
 from ..engine.metrics import (
     _window_filter,
     auto_close_health,
     posture_metrics,
+    recorded_auto_close_health,
     trend_metrics,
 )
 from ..engine.mitre_coverage import compute_mitre_coverage, navigator_layer
@@ -512,6 +518,151 @@ async def metrics_auto_close_health(
         window_hours=int(window_hours),
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
         store_total=store_total,
+    )
+
+
+# How many ``case_manager`` DECISION audit rows the recorded rollup reads. Bounded for
+# the same reason the case fetch is: a busy deployment's append-only audit is unbounded,
+# and one dashboard query must not scan it. Rows only add the GATE EXPLANATION, never
+# the rate itself, so a bound that clips the oldest rows degrades ``gate_coverage``
+# (visibly, per bucket) instead of moving a number. That guarantee is enforced on the
+# other side of the seam: the rollup pairs an audit row with the anchored decision by
+# INSTANT, so a case whose anchoring row fell off this page reads back as
+# ``unrecorded`` rather than borrowing a later run's gate outcome.
+_DECISION_AUDIT_FETCH_LIMIT = 5000
+
+
+def _decision_audit_span_hours(window_hours: int) -> int:
+    """How far back the DECISION audit page is read: the reported window plus its
+    baseline, plus an hour of slack so a decision anchored at the baseline edge still
+    has its own row available. Published in the response beside ``gate_coverage``."""
+    return max(1, int(window_hours)) * 2 + 1
+
+
+async def _load_decision_audit(state: AppState, *, window_hours: int) -> list[dict[str, Any]]:
+    """The append-only ``case_manager`` DECISION rows for the reporting span.
+
+    Read back TWICE the reported window (current + preceding baseline) plus slack, so
+    a decision anchored in the baseline window still has its own audit row available.
+
+    Filtered on ``action_type`` + ``ts_from`` ONLY, both of which the bundled stores push
+    into the query. ``actor`` deliberately is NOT passed: it lives inside the JSON
+    document, so the SQL repository satisfies it by over-scanning twenty pages' worth of
+    rows per requested row — a five-figure scan for one dashboard tile. The rows this
+    widens the read by (the router, chat and analyst-policy DECISION rows) are dropped
+    for free by ``parse_decision_audit_row``, which already returns None for any actor
+    but ``case_manager``.
+
+    Fail-soft: an audit read error yields no rows, which downgrades the gate breakdown
+    to ``unrecorded`` rather than failing a dashboard query. An audit repository that
+    does not implement filtered listing returns [] by contract — same outcome."""
+    since = datetime.now(timezone.utc) - timedelta(
+        hours=_decision_audit_span_hours(window_hours)
+    )
+    try:
+        rows = await state.audit.records(
+            action_type=ActionType.DECISION.value,
+            ts_from=since.isoformat(),
+            limit=_DECISION_AUDIT_FETCH_LIMIT,
+        )
+    except Exception as exc:  # noqa: BLE001 — observability degrades, never 500s
+        logger.warning("decision-audit read soft-failed: %s", exc)
+        return []
+    return list(rows or [])
+
+
+def _provider_health_snapshot(state: AppState) -> dict[str, Any] | None:
+    """The in-process provider-health snapshot, or None when it cannot be read.
+
+    None means "the tracker could not be read". It is NOT the only way this deployment
+    reports "no evidence": ``AppState`` always constructs the tracker and
+    ``snapshot()`` always answers, so a deployment that has never made a model call
+    returns a well-formed snapshot whose ``providers`` map is EMPTY. The rollup keys
+    its ``outage.evidence_available`` off that map — the actual observations — rather
+    than off this object, so an empty tracker can never read as proof of health."""
+    tracker = getattr(state, "_provider_health", None)
+    if tracker is None:
+        return None
+    try:
+        return tracker.snapshot()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("provider-health snapshot soft-failed: %s", exc)
+        return None
+
+
+async def _rag_health_record(state: AppState) -> dict[str, Any] | None:
+    """The durable RAG corpus-health record, or None when it cannot be read."""
+    store = getattr(state, "_rag_health", None)
+    if store is None:
+        return None
+    try:
+        doc = await store.load()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("rag-health read soft-failed: %s", exc)
+        return None
+    return dict(doc or {}) or None
+
+
+@router.get("/metrics/auto-close-health/recorded")
+async def metrics_auto_close_health_recorded(
+    window_hours: int = Query(default=24, ge=1, le=8760),
+    anchor: str = Query(
+        default="first",
+        pattern="^(first|last)$",
+        description=(
+            "Which decision in a case's append-only trail anchors it to a window. "
+            "`first` (default) is stable under reinvestigation; `last` reproduces the "
+            "legacy endpoint's rolling clock."
+        ),
+    ),
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("metrics", "view")),
+) -> dict[str, Any]:
+    """The auto-close rate measured from the APPEND-ONLY decision trail.
+
+    A SEPARATE series from ``GET /api/metrics/auto-close-health``, which is unchanged
+    and still served. The two are expected to differ, and the response carries a
+    ``legacy_series.note`` saying why, because silently redefining a shipped metric
+    moves every historical number an operator has been tracking.
+
+    What this one does differently:
+
+    * anchors each case on its FIRST recorded ``{"event": "decision"}`` entry, so a
+      reopen plus a re-investigation never moves, duplicates or re-labels the count;
+    * reads the ``status``/``decision_by`` RECORDED in that entry rather than today's
+      mutable ``case.decision_by``/``case.status`` — merely acknowledging an agent
+      auto-close can no longer migrate it into "a human closed this";
+    * excludes decisions taken during a dependency outage, derived from the
+      deployment's own provider-health records (never a calendar date, which would be
+      correct in one deployment and wrong in every other) and ONLY for a failing
+      COMPLETION channel — the one that gates verdict production. A degraded embedding
+      channel and a stale knowledge corpus both fail soft, so verdicts (and
+      ``decide()``) still ran; those are published under ``outage.context`` and never
+      remove a decision from the denominator;
+    * reports a bucketed ``gate_series``: how much of the trail can still EXPLAIN why
+      auto-close did or did not fire, and for the explained ones, whether the verdict
+      class was closable at all and what blocked the bar (confidence / risk /
+      class-disabled). That series is an EVIDENCE-QUALITY signal and is explicitly
+      NOT a threshold-tuning target — see its ``disclaimer``.
+
+    Every input beyond the cases is optional and fails soft: a missing audit page
+    downgrades the gate breakdown to ``unrecorded``, and a missing health record is
+    reported as "no evidence", never as proof that there was no outage.
+
+    READ-ONLY. The auto-close policy is read for DISPLAY-ONLY classification of
+    decisions that have already been made — nothing here is ever an input to
+    ``decide()`` (#3)."""
+    cases, store_total = await _load_cases(state)
+    return recorded_auto_close_health(
+        cases,
+        window_hours=int(window_hours),
+        policy=getattr(getattr(state, "prefs", None), "auto_close", None),
+        store_total=store_total,
+        anchor=anchor,
+        decision_audit_rows=await _load_decision_audit(state, window_hours=int(window_hours)),
+        decision_audit_span_hours=_decision_audit_span_hours(int(window_hours)),
+        provider_health=_provider_health_snapshot(state),
+        rag_health=await _rag_health_record(state),
     )
 
 

@@ -68,8 +68,12 @@ def test_health_live_ready_and_build_info(client, monkeypatch):
         "build_time": "2026-07-11T00:00:00Z",
         "state_backend": "elasticsearch",
         "ocsf_version": "1.4.0",
+        # `abc123` is stamped, so completeness is unchanged. The additive advisory
+        # is the separate, narrower answer: it is not an exact source revision, so
+        # supervised updates cannot pin an upgrade to this build.
         "provenance_complete": True,
         "provenance_missing": [],
+        "provenance_advisories": ["commit_sha_not_exact_source_revision"],
     }
 
     # Channel is stamped independently from SemVer so the same version candidate
@@ -130,6 +134,8 @@ def test_build_info_reports_missing_provenance_explicitly(client, monkeypatch):
     assert body["build_time"] == "unknown"
     assert body["provenance_complete"] is False
     assert body["provenance_missing"] == ["commit_sha", "build_time"]
+    # Nothing stamped is incomplete but coherent: no advisory to add.
+    assert body["provenance_advisories"] == []
 
 
 def test_get_and_put_settings(client):

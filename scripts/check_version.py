@@ -44,6 +44,34 @@ def _python_version(path: Path) -> str | None:
     return _python_constant(path, "__version__")
 
 
+def _logical_lines(source: str) -> list[str]:
+    """Shell *logical* lines: backslash-newline continuations folded into one line.
+
+    A source-level ban that reads physical lines is defeated by an ordinary shell
+    line continuation — ``git rev-parse \\`` on one line and ``--short HEAD`` on the
+    next is house style, not an adversarial construction — so the shipped scripts are
+    always probed as logical lines.
+    """
+
+    return source.replace("\\\n", " ").splitlines()
+
+
+def _executable_lines(source: str) -> list[str]:
+    """Executable logical lines: whole-line comments dropped, then continuations folded.
+
+    A file is allowed to document at length the trap it guards against, so only code
+    that would actually run may trip a ban. Comments are removed BEFORE folding: a
+    comment ends at its newline in shell no matter how it ends, so folding first would
+    let a comment that happens to end in a backslash swallow — and hide — the line of
+    code beneath it.
+    """
+
+    code = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    return _logical_lines(code)
+
+
 def main() -> int:
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     release_core = version.split("+", 1)[0].split("-", 1)[0]
@@ -493,6 +521,108 @@ def main() -> int:
     ):
         if marker not in demo_source:
             failures.append(f"scripts/run-demo.sh: missing release marker {marker!r}")
+
+    # ONE build-identity derivation, shared by every shipped entry point. A wrapper
+    # that skips it stamps `revision=unknown` into the image labels, into every
+    # persisted record's `build_sha`, and into the supervised-update refusal.
+    build_identity_lib = ROOT / "scripts/lib/build-identity.sh"
+    if not build_identity_lib.is_file():
+        failures.append(
+            "scripts/lib/build-identity.sh: missing shared build-identity derivation"
+        )
+    else:
+        build_identity_source = build_identity_lib.read_text(encoding="utf-8")
+        for marker in (
+            # A supplied release identity is authoritative and is never rewritten.
+            'if [ -n "${TLSOC_BUILD_SHA:-}" ]; then',
+            # Untracked operator files must not mark a deployment dirty forever.
+            'git -C "${tlsoc_bi_root}" diff --quiet HEAD --',
+            # An operator pin in the Compose --env-file outranks derivation.
+            "tlsoc_build_identity_env_file_pins",
+        ):
+            if marker not in build_identity_source:
+                failures.append(
+                    "scripts/lib/build-identity.sh: missing derivation guard "
+                    f"{marker!r}"
+                )
+
+    # Trap 2 from the library's own header: a build-identity dirty probe must count
+    # only TRACKED modifications, or one untracked operator note marks every later
+    # build dirty forever. The ban is a pattern, not a literal, because the house
+    # style is `git -C "${root}" status ...` — a spelling no substring search for
+    # `git status --porcelain` can ever see. `scripts/bootstrap-updater.sh` is
+    # deliberately NOT in this list: it demands a pristine checkout, so counting
+    # untracked files with `--untracked-files=all` is correct there.
+    porcelain_probe = re.compile(r"git\b[^\n]*\bstatus\b[^\n]*--porcelain")
+    for relative in (
+        "scripts/lib/build-identity.sh",
+        "scripts/run-demo.sh",
+        "scripts/agentic-soc-compose.sh",
+    ):
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        for line in _executable_lines(path.read_text(encoding="utf-8")):
+            if porcelain_probe.search(line):
+                failures.append(
+                    f"{relative}: the dirty probe must count only tracked "
+                    "modifications — derive it from 'git diff --quiet HEAD --', not "
+                    f"from a 'git status --porcelain' probe ({line.strip()!r})"
+                )
+
+    for relative in ("scripts/run-demo.sh", "scripts/agentic-soc-compose.sh"):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        for marker in (
+            'lib/build-identity.sh"',
+            "tlsoc_derive_build_identity",
+            "tlsoc_report_build_identity",
+        ):
+            if marker not in source:
+                failures.append(
+                    f"{relative}: must source the shared build-identity derivation "
+                    f"({marker!r} is missing)"
+                )
+
+    # An abbreviated revision is not an exact git object id, so a build stamped from
+    # one can never satisfy the updater's immutable-identity check. Ban it at source
+    # in everything we ship rather than discovering it on a deployed host.
+    short_revision = re.compile(
+        r"rev-parse\b[^\n]*(--short|--verify\s+--short)", re.MULTILINE
+    )
+    # The identity-derivation scripts have no legitimate use for an abbreviated
+    # revision at all, so any occurrence fails. They are read as LOGICAL lines, with
+    # backslash-newline continuations folded in, because a multi-line assignment must
+    # not be able to slip past a same-line probe. Documents keep the physical-line
+    # probe — prose is not shell, and folding a wrapped line would invent matches —
+    # and are additionally narrowed to provenance assignments so an unrelated
+    # abbreviated-revision snippet is not a false positive.
+    identity_scripts = (
+        "scripts/lib/build-identity.sh",
+        "scripts/run-demo.sh",
+        "scripts/agentic-soc-compose.sh",
+        "scripts/bootstrap-updater.sh",
+    )
+    provenance_documents = (
+        "CONTRIBUTING.md",
+        "DEPLOY.md",
+        "docs/ENVIRONMENT.md",
+        "docs/reference/configuration.md",
+    )
+    for relative in identity_scripts + provenance_documents:
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        narrow = relative in provenance_documents
+        source = path.read_text(encoding="utf-8")
+        lines = source.splitlines() if narrow else _logical_lines(source)
+        for line in lines:
+            if narrow and "TLSOC_BUILD_SHA" not in line and "build_sha" not in line:
+                continue
+            if short_revision.search(line):
+                failures.append(
+                    f"{relative}: build provenance must not be derived from an "
+                    f"abbreviated revision ({line.strip()!r})"
+                )
 
     mkdocs_source = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
     for marker in (

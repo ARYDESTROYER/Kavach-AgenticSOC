@@ -90,12 +90,16 @@ def test_partial_put_preserves_deeply_nested_siblings(client):
 
 
 def test_embedding_role_rejects_a_chat_only_model(client):
+    """Refused on POSITIVE catalog evidence: a bundled row that declares other
+    capabilities and NOT ``embedding``. (The gate no longer refuses a model the catalog
+    has merely never heard of — that is every self-hosted embedding endpoint, and it is
+    answered by the empirical probe the message points at.)"""
     before = _get_prefs(client)["embedding_model"]
     r = client.put("/api/settings", json={
         "embedding_model": {"provider": "openai", "model": "gpt-5.6-luna"},
     })
     assert r.status_code == 422
-    assert "not declared embedding-capable" in str(r.json().get("detail"))
+    assert "WITHOUT the embedding capability" in str(r.json().get("detail"))
     assert _get_prefs(client)["embedding_model"] == before
 
 

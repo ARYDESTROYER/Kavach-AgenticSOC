@@ -26,9 +26,16 @@ Design notes:
   the same read-only operator grant every built-in role already holds and the one an
   operator uses to diagnose configuration — following the ``routes_schedulers.py``
   precedent of picking the grant of the page that consumes the evidence.
-* **Read-only.** No writes, no LLM, no seeding: the corpus is read through the
-  seed-free ``snapshot_documents_strict`` seam so merely *asking* about corpus health
-  can never trigger an embedding spend or mutate the projection.
+* **Read-only over the corpus, with ONE bounded advisory write.** No LLM, no seeding
+  and no projection mutation: the corpus is read through the seed-free
+  ``snapshot_documents_strict`` seam, so merely *asking* about corpus health can never
+  trigger an embedding spend or change what is stored. The single exception is the
+  composition BASELINE: a class-share shift cannot be measured without a prior reading,
+  so each read may append one ``{at, rows, shares}`` entry (no case id, no chunk text,
+  no rule identity, no secret) to the advisory ``rag_health`` KV document. It is capped
+  at eight readings, written only when the reading actually changed and only above the
+  row floor on an untruncated read, CAS-routed, and fail-open — a write failure reports
+  the shift as unmeasured rather than failing the request.
 * **Honest about unknowns.** ``RagService.last_projection`` is in-process only and empty
   until the first projection in that process; that is reported as ``not_yet_projected``,
   never as a zero that looks like a collapse. Every signal that could not be evaluated
@@ -39,13 +46,16 @@ Design notes:
   returned here as plain JSON the UI renders escaped — exactly as ``GET /api/rag/stats``
   already does. Nothing on this surface ever reaches a model prompt, and no secret,
   case id, document text, or chunk content is returned.
-* **Additive + default-safe (#10).** New read-only endpoints only — no new background
-  behaviour, no new configuration, existing deployments are byte-identical.
+* **Additive + default-safe (#10).** New endpoints only — no new configuration, no new
+  scheduled or background work; the one advisory composition write above happens inside
+  the request that reads the endpoint and nowhere else.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -58,6 +68,7 @@ from ..engine.metrics import (
     precedent_ground_truth,
 )
 from ..engine.precedent import (
+    RULE_IDENTITY_KEY,
     evaluate_futility,
     rule_outcome_tally,
     unavailable_distribution,
@@ -600,6 +611,613 @@ async def _precedent_effectiveness_block(state: AppState, cases: list) -> dict[s
     }
 
 
+# --------------------------------------------------------------------------- #
+# CORPUS COMPOSITION — the health signal a size guard cannot give.
+# --------------------------------------------------------------------------- #
+# The existing projection guard is a SIZE guard: it refuses a rebuild that emptied or
+# drastically shrank the corpus. A reprojection that keeps the same chunk count and
+# flips the meaning of every one of them passes it cleanly, and that is not a
+# hypothetical. On the deployment that motivated this work, the obvious dashboard —
+# ANALYST OUTCOME ALONE — read 198 ``false_positive`` / 2 ``true_positive``. That looks
+# exactly like a healthy SOC corpus, and it stayed green for the entire incident, while
+# the corpus was actively poisoning the model: nearly all of those rows carried no
+# independent ground truth at all, so the agent was reading its own prior verdicts back
+# as operator evidence and confirming itself.
+#
+# Outcome alone cannot show that. The CROSS-TAB can:
+#
+#     (analyst outcome  x  model verdict  x  ground-truth source)
+#
+# Split those 198 rows by the source of their label and by what the model itself had
+# said, and the same corpus reads "196 of 200 rows have ground_truth_source=none and
+# agree with the model's own verdict" — a sentence no operator would call healthy.
+#
+# What this alarms on, and what it deliberately does NOT:
+#
+# * ROW COUNT — never. Size is the guard that already exists, and a corpus is allowed
+#   to be small, to grow and to shrink.
+# * DISAGREEMENT LEVEL — never. "The analyst disagreed with the model" is what a
+#   working queue produces all day; alarming on it fires permanently on exactly the
+#   deployments where analysts do the most work, and goes quiet on the ones where
+#   nobody grades anything. It is an inverted signal.
+# * CLASS-SHARE SHIFT — yes. Composition MOVING is the observable a poisoning event
+#   produces and a healthy corpus does not. It needs a baseline, so readings are kept
+#   as a bounded series in the durable health record (``RagHealthStore``); a deployment
+#   with no prior reading reports the shift as UNMEASURED rather than as zero.
+# * SINGLE-TRANSACTION CONCENTRATION — yes. A cell that is overwhelmingly one bulk
+#   action speaks with one voice however many rows it holds, and the bounded precedent
+#   window then evicts everything else. Reported with the evidence NAMED (the share of
+#   the cell held by one rule identity, and the share carrying a bulk-ratification
+#   marker), because those are proxies for "one transaction" rather than a transaction
+#   id the corpus does not store.
+#
+# Advisory only (#3): nothing here is read by ``decide()``, by scoring, or by the
+# projection. Read-only over corpus METADATA — no chunk text, no case id and no analyst
+# identity leaves this block. The dominating RULE IDENTITY is named plainly, exactly as
+# the sibling ``precedent_effectiveness.distribution`` block on this same
+# ``settings:read`` response already does, because the operator cannot act on "one
+# contributor holds this class" without knowing which one. Nothing here is persisted
+# with an identity attached: ``observe_composition`` stores only ``{at, rows, shares}``.
+# Nothing on this surface reaches a prompt (#9); it is plain JSON the Console escapes.
+_COMPOSITION_MIN_ROWS = 25
+#: A cell's share of the corpus must move by at least this much to be called a shift.
+#: Scale-free by construction (a fraction of the corpus, not a row count), so it is not
+#: tuned to any deployment's volume, vendor or rule set.
+_COMPOSITION_SHIFT_ALARM = 0.25
+#: Concentration needs BOTH: the cell must dominate the corpus, and one contributor
+#: must dominate the cell. Either alone is ordinary.
+_COMPOSITION_CELL_DOMINANCE = 0.5
+_COMPOSITION_WITHIN_CELL_DOMINANCE = 0.9
+#: How many cells are published and compared. MUST NOT exceed
+#: ``stores.rag_health._MAX_COMPOSITION_CELLS`` (the baseline the shift is measured
+#: against is truncated at that cap): a cell that fits here but not there would drop
+#: out of the stored baseline and read back as a movement from zero on the next pass.
+_MAX_COMPOSITION_CELLS = 40
+
+#: What a chunk carrying no independent ground-truth source is labelled as. The empty
+#: string is what the lower-trust tier writes; publishing it as ``none`` keeps the axis
+#: readable without inventing a source.
+_NO_GROUND_TRUTH_SOURCE = "none"
+
+
+def _cell_key(source: str, outcome: str, verdict: str) -> str:
+    return f"{source}|{outcome}|{verdict}"
+
+
+def _top_contributor(identity: str) -> str:
+    """The rule identity that dominates a cell, named PLAINLY.
+
+    This was a truncated unsalted digest, documented as "non-reversible". It was
+    neither: the sibling ``precedent_effectiveness.distribution`` block in the SAME
+    response body publishes every analyst-confirmed ``rule_identity`` and its
+    ``rule_ids`` in the clear (and the futility alert prints the rule names), so the
+    digest was reversible by inspection of its own payload — a 12-hex digest of one of
+    a handful of published preimages. Nor did it protect anything on the storage path:
+    ``RagHealthStore.observe_composition`` persists only ``{at, rows, shares}`` keyed by
+    ``source|outcome|verdict``, so no rule identity, hashed or plain, was ever stored.
+
+    It cost the finding its actionability and bought no confidentiality, so the plain
+    identity is published — consistently with the sibling block, behind the same
+    ``settings:read`` grant, as plain JSON the Console renders escaped.
+    """
+    return str(identity or "")
+
+
+async def _precedent_metadata_rows(rag: Any) -> tuple[bool, str, list[dict[str, Any]], bool]:
+    """``(available, reason, rows, truncated)`` — precedent chunk METADATA, seed-free.
+
+    Reads the same management seam the per-rule distribution uses, so the composition
+    and the distribution can never disagree about what is in the corpus. A deployment
+    whose retrieval service does not expose it reports UNAVAILABLE rather than an empty
+    composition, because an empty cross-tab and an unread one are different answers.
+    """
+    reader = getattr(rag, "_precedent_chunk_metadata", None) if rag is not None else None
+    if reader is None:
+        return False, (
+            "this deployment's retrieval service does not expose precedent chunk "
+            "metadata, so corpus composition could not be read"
+        ), [], False
+    try:
+        rows, truncated = await reader()
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("diagnostics corpus composition read soft-failed: %s", exc)
+        return False, f"the precedent corpus could not be read ({type(exc).__name__})", [], False
+    clean = [dict(row) for row in rows if isinstance(row, dict)]
+    return True, "", clean, bool(truncated)
+
+
+# --------------------------------------------------------------------------- #
+# ONE corpus read per short TTL, shared by the composition + embedding-space blocks.
+# --------------------------------------------------------------------------- #
+# Both new blocks read the WHOLE corpus, and the Elasticsearch vector store answers
+# that from one bounded ``match_all`` page whose ``_source`` carries every stored
+# EMBEDDING VECTOR — so a corpus at the ceiling is a very large read. This endpoint is
+# fired by the Overview health strip on every refresh, so performing that read twice
+# per request (once for the cross-tab, once for the space audit) would turn an
+# observability surface into a load source on exactly the large deployments it matters
+# most on.
+#
+# These two single-slot caches memoize each read for a short TTL, following the
+# ``api/metrics_shared`` pattern: a STRONG reference to the service the read came from
+# plus an ``is`` identity guard, so a Demo Mode service swap (or a fresh service in a
+# test) can never be served another service's corpus, and a recycled ``id()`` can never
+# alias two objects. One lock per cache gives single-flight, so the dashboard's parallel
+# fan-out shares one scan instead of racing duplicates. Read-only and advisory (#3);
+# the TTL is the explicit staleness bound and nothing on this path feeds ``decide()``.
+CORPUS_READ_TTL_SECONDS = 15.0
+
+_documents_read_lock = asyncio.Lock()
+_precedent_read_lock = asyncio.Lock()
+#: ``(rag, at, value)`` for each cached read, or None before the first one.
+_documents_read_entry: tuple[Any, float, tuple[bool, str, list[dict[str, Any]]]] | None = None
+_precedent_read_entry: tuple[
+    Any, float, tuple[bool, str, list[dict[str, Any]], bool]
+] | None = None
+
+
+def _fresh(entry: tuple[Any, float, Any] | None, rag: Any, now: float) -> bool:
+    return (
+        entry is not None
+        and entry[0] is rag
+        and (now - entry[1]) < CORPUS_READ_TTL_SECONDS
+    )
+
+
+async def _cached_corpus_documents(rag: Any) -> tuple[bool, str, list[dict[str, Any]]]:
+    """``_corpus_snapshot`` behind the short TTL. Callers get their own outer list."""
+    global _documents_read_entry
+    async with _documents_read_lock:
+        now = monotonic()
+        if not _fresh(_documents_read_entry, rag, now):
+            _documents_read_entry = (rag, now, await _corpus_snapshot(rag))
+        available, reason, docs = _documents_read_entry[2]  # type: ignore[index]
+    return available, reason, list(docs)
+
+
+async def _cached_precedent_rows(
+    rag: Any,
+) -> tuple[bool, str, list[dict[str, Any]], bool]:
+    """``_precedent_metadata_rows`` behind the short TTL."""
+    global _precedent_read_entry
+    async with _precedent_read_lock:
+        now = monotonic()
+        if not _fresh(_precedent_read_entry, rag, now):
+            _precedent_read_entry = (rag, now, await _precedent_metadata_rows(rag))
+        available, reason, rows, truncated = _precedent_read_entry[2]  # type: ignore[index]
+    return available, reason, list(rows), truncated
+
+
+def _composition_cells(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], int]:
+    """The (source x outcome x verdict) cross-tab over precedent chunk metadata."""
+    cells: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        source = str(row.get("ground_truth_source") or "").strip() or _NO_GROUND_TRUTH_SOURCE
+        outcome = str(row.get("outcome") or "").strip() or "unlabelled"
+        verdict = str(row.get("verdict") or "").strip() or "none"
+        key = _cell_key(source, outcome, verdict)
+        cell = cells.get(key)
+        if cell is None:
+            cell = cells[key] = {
+                "cell": key,
+                "ground_truth_source": source,
+                "outcome": outcome,
+                "verdict": verdict,
+                "rows": 0,
+                "bulk_ratified_rows": 0,
+                "_by_identity": {},
+            }
+        cell["rows"] += 1
+        if bool(row.get("bulk_ratified")):
+            cell["bulk_ratified_rows"] += 1
+        identity = str(row.get(RULE_IDENTITY_KEY) or "")
+        by_identity = cell["_by_identity"]
+        by_identity[identity] = by_identity.get(identity, 0) + 1
+    return cells, len(rows)
+
+
+def _shift_block(
+    shares: dict[str, float], previous: dict[str, Any] | None, *, rows: int
+) -> dict[str, Any]:
+    """Class-share movement against the recorded baseline reading.
+
+    The baseline is the OLDEST reading still in the bounded series, not the previous
+    one (see ``RagHealthStore.observe_composition``): observation and alerting share
+    one operator-facing read, so comparing against the previous reading made a
+    poisoning finding visible on exactly ONE request and gone from the next. Its
+    instant travels with the finding as ``baseline_at``.
+
+    ``measured`` is False — never a zero shift — when there is no baseline yet or the
+    corpus is too small for a share to mean anything. A share delta is compared against
+    a SCALE-FREE fraction, so the same rule applies to a 40-row corpus and a 40,000-row
+    one.
+    """
+    block: dict[str, Any] = {
+        "measured": False,
+        "reason": "",
+        "baseline_at": "",
+        "baseline_rows": None,
+        "max_delta": None,
+        "total_variation": None,
+        "shifted": False,
+        "moved_cells": [],
+    }
+    if rows < _COMPOSITION_MIN_ROWS:
+        block["reason"] = (
+            f"the corpus holds {rows} precedent row(s), below the {_COMPOSITION_MIN_ROWS} "
+            "needed for a class share to carry information"
+        )
+        return block
+    if not isinstance(previous, dict) or not previous:
+        block["reason"] = (
+            "no previous composition reading is on file, so there is nothing to compare "
+            "against yet (this reading becomes the baseline)"
+        )
+        return block
+    baseline = {
+        str(key): float(value)
+        for key, value in (previous.get("shares") or {}).items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    if not baseline:
+        block["reason"] = "the previous composition reading carried no class shares"
+        return block
+    moved: list[dict[str, Any]] = []
+    total_variation = 0.0
+    for key in sorted(set(baseline) | set(shares)):
+        before = baseline.get(key, 0.0)
+        after = shares.get(key, 0.0)
+        delta = after - before
+        total_variation += abs(delta)
+        if abs(delta) >= _COMPOSITION_SHIFT_ALARM:
+            moved.append({
+                "cell": key,
+                "from": round(before, 4),
+                "to": round(after, 4),
+                "delta": round(delta, 4),
+            })
+    moved.sort(key=lambda row: -abs(float(row["delta"])))
+    max_delta = max((abs(float(row["delta"])) for row in moved), default=0.0)
+    if not moved:
+        max_delta = max(
+            (abs(shares.get(key, 0.0) - baseline.get(key, 0.0))
+             for key in set(baseline) | set(shares)),
+            default=0.0,
+        )
+    block.update(
+        measured=True,
+        baseline_at=str(previous.get("at") or ""),
+        baseline_rows=int(previous.get("rows") or 0),
+        max_delta=round(max_delta, 4),
+        # Half the summed absolute movement: the fraction of the corpus that changed
+        # class between the two readings.
+        total_variation=round(total_variation / 2.0, 4),
+        shifted=bool(moved),
+        moved_cells=moved[:_MAX_COMPOSITION_CELLS],
+    )
+    return block
+
+
+def _concentration_block(
+    cells: dict[str, dict[str, Any]], *, rows: int
+) -> dict[str, Any]:
+    """Cells a single contributor dominates — "one transaction wrote this class"."""
+    block: dict[str, Any] = {
+        "measured": False,
+        "reason": "",
+        "concentrated": False,
+        "cells": [],
+    }
+    if rows < _COMPOSITION_MIN_ROWS:
+        block["reason"] = (
+            f"the corpus holds {rows} precedent row(s), below the {_COMPOSITION_MIN_ROWS} "
+            "needed for concentration to mean anything"
+        )
+        return block
+    block["measured"] = True
+    findings: list[dict[str, Any]] = []
+    for cell in cells.values():
+        cell_rows = int(cell["rows"])
+        cell_share = cell_rows / rows if rows else 0.0
+        if cell_share < _COMPOSITION_CELL_DOMINANCE:
+            continue
+        by_identity: dict[str, int] = cell["_by_identity"]
+        top_identity, top_rows = "", 0
+        for identity, count in sorted(by_identity.items()):
+            if identity and count > top_rows:
+                top_identity, top_rows = identity, count
+        identity_share = top_rows / cell_rows if cell_rows else 0.0
+        bulk_share = int(cell["bulk_ratified_rows"]) / cell_rows if cell_rows else 0.0
+        if max(identity_share, bulk_share) < _COMPOSITION_WITHIN_CELL_DOMINANCE:
+            continue
+        findings.append({
+            "cell": cell["cell"],
+            "ground_truth_source": cell["ground_truth_source"],
+            "outcome": cell["outcome"],
+            "verdict": cell["verdict"],
+            "rows": cell_rows,
+            "cell_share": round(cell_share, 4),
+            "top_contributor": _top_contributor(top_identity),
+            "top_contributor_share": round(identity_share, 4),
+            "bulk_ratified_share": round(bulk_share, 4),
+        })
+    findings.sort(key=lambda row: (-float(row["cell_share"]), str(row["cell"])))
+    block["cells"] = findings[:_MAX_COMPOSITION_CELLS]
+    block["concentrated"] = bool(findings)
+    return block
+
+
+async def _corpus_composition_block(state: AppState) -> dict[str, Any]:
+    """Corpus COMPOSITION health: the cross-tab, its movement, and its concentration.
+
+    See the module-level note above ``_COMPOSITION_MIN_ROWS`` for why outcome alone is
+    not a health signal and what this block alarms on instead. Everything here is
+    measured, bounded and honest about what it could not measure: an unreadable corpus
+    reports ``available: false``, a truncated read publishes the cross-tab but withholds
+    both alarms (a partial read of a corpus is a biased sample of it, and biased shares
+    are exactly the wrong input to a shift comparison), and a corpus with no prior
+    reading reports the shift as UNMEASURED rather than as no movement.
+    """
+    rag = getattr(state, "rag_service", None)
+    rag_cfg = getattr(getattr(state, "prefs", None), "rag", None)
+    rag_enabled = bool(getattr(rag_cfg, "enabled", False))
+    precedent_enabled = bool(getattr(rag_cfg, "use_resolved_cases", False))
+    block: dict[str, Any] = {
+        "available": False,
+        "disabled": False,
+        "reason": "",
+        "truncated": False,
+        "rows": 0,
+        "cells": [],
+        # The view that read PRISTINE throughout the incident, published beside the
+        # cross-tab on purpose: an operator who has been reading it should be able to
+        # see the same number here and the split that contradicts it.
+        "outcome_only_view": {},
+        "by_ground_truth_source": {},
+        "independent_ground_truth_share": None,
+        "shift": {"measured": False, "reason": "", "shifted": False, "moved_cells": []},
+        "concentration": {"measured": False, "reason": "", "concentrated": False,
+                          "cells": []},
+    }
+    if not rag_enabled or not precedent_enabled:
+        block["disabled"] = True
+        block["reason"] = (
+            "the resolved-case precedent source is turned off, so there is no corpus "
+            "composition to measure"
+        )
+        return block
+
+    available, reason, rows, truncated = await _cached_precedent_rows(rag)
+    block["available"] = available
+    block["reason"] = reason
+    block["truncated"] = truncated
+    if not available:
+        return block
+
+    cells, total = _composition_cells(rows)
+    block["rows"] = total
+    by_outcome: dict[str, int] = {}
+    by_source: dict[str, int] = {}
+    independent = 0
+    for cell in cells.values():
+        by_outcome[cell["outcome"]] = by_outcome.get(cell["outcome"], 0) + cell["rows"]
+        by_source[cell["ground_truth_source"]] = (
+            by_source.get(cell["ground_truth_source"], 0) + cell["rows"]
+        )
+        if cell["ground_truth_source"] != _NO_GROUND_TRUTH_SOURCE:
+            independent += cell["rows"]
+    block["outcome_only_view"] = dict(sorted(by_outcome.items()))
+    block["by_ground_truth_source"] = dict(sorted(by_source.items()))
+    block["independent_ground_truth_share"] = (
+        round(independent / total, 4) if total else None
+    )
+    # Shares are computed over the SAME bounded set of cells the baseline stores, so a
+    # cell that fell off the persisted end can never come back as a movement from zero.
+    # Selection is by row count (largest cells first) and is deterministic.
+    ranked = sorted(
+        cells.values(), key=lambda cell: (-int(cell["rows"]), str(cell["cell"]))
+    )[:_MAX_COMPOSITION_CELLS]
+    shares = {
+        str(cell["cell"]): (int(cell["rows"]) / total if total else 0.0)
+        for cell in ranked
+    }
+    published = sorted(
+        (
+            {
+                "cell": cell["cell"],
+                "ground_truth_source": cell["ground_truth_source"],
+                "outcome": cell["outcome"],
+                "verdict": cell["verdict"],
+                "rows": int(cell["rows"]),
+                "share": round(shares.get(cell["cell"], 0.0), 4),
+                "bulk_ratified_rows": int(cell["bulk_ratified_rows"]),
+                "contributors": len([i for i in cell["_by_identity"] if i]),
+            }
+            for cell in cells.values()
+        ),
+        key=lambda row: (-int(row["rows"]), str(row["cell"])),
+    )
+    block["cells"] = published[:_MAX_COMPOSITION_CELLS]
+
+    if truncated:
+        # A truncated read is a BIASED sample of the corpus. Publishing its cross-tab is
+        # useful; comparing its shares against a baseline taken from a different partial
+        # read would manufacture a shift out of the read itself.
+        partial = (
+            "the corpus read hit its scan ceiling, so these shares are drawn from a "
+            "partial read and cannot be compared against a baseline"
+        )
+        block["shift"]["reason"] = partial
+        block["concentration"]["reason"] = partial
+        return block
+
+    # Record this reading and get the previous one back. The write is conditional (an
+    # unchanged reading appends nothing) and fail-open — if it fails, the shift simply
+    # reports as unmeasured.
+    previous: dict[str, Any] | None = None
+    health = getattr(rag, "_health", None)
+    observer = getattr(health, "observe_composition", None) if health is not None else None
+    if total < _COMPOSITION_MIN_ROWS:
+        # Below the floor a share is noise, and RECORDING it would make that noise the
+        # baseline the next reading is judged against — manufacturing a shift out of a
+        # corpus simply growing past the floor.
+        block["shift"] = _shift_block({}, None, rows=total)
+        block["concentration"] = _concentration_block(cells, rows=total)
+        return block
+    if observer is None:
+        block["shift"]["reason"] = (
+            "this deployment keeps no durable composition history, so a class-share "
+            "shift cannot be measured"
+        )
+    else:
+        try:
+            observation = await observer(shares, rows=total)
+            previous = observation.get("previous") if isinstance(observation, dict) else None
+        except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+            logger.warning("composition observation soft-failed: %s", exc)
+            previous = None
+        block["shift"] = _shift_block(shares, previous, rows=total)
+    block["concentration"] = _concentration_block(cells, rows=total)
+    return block
+
+
+# --------------------------------------------------------------------------- #
+# EMBEDDING SPACE — what a reprojection would strand.
+# --------------------------------------------------------------------------- #
+def _is_local_fallback_space(model: str) -> bool:
+    """Whether a stored space tag is the gateway's OWN local hash fallback.
+
+    Not a vendor or model allowlist: this is our own degraded-mode marker. When no
+    embedding provider answers, ``LLMGateway.embed_with_provenance`` falls back to the
+    deterministic local hasher and stamps the chunk with the ``mock`` embedding
+    identity, which is also the prefix ``llm.provider_health`` already treats as
+    "not a real provider outage". Matching that same prefix here keeps the two
+    conventions in one shape.
+    """
+    return str(model or "").strip().lower().startswith("mock")
+
+
+def _embedding_space_block(
+    state: AppState, available: bool, reason: str, docs: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Documents left behind in a SUPERSEDED vector space, or proof that none are.
+
+    Vectors from two embedding models are not comparable, so a document embedded by the
+    old model is unreachable by a query embedded with the new one: not deleted, not
+    counted as missing, not logged — simply never retrieved again. A rebuild that
+    re-embeds the bounded precedent window leaves everything outside that window exactly
+    there, and every count on this surface (corpus size, per-source chunks, the
+    reconciliation) keeps reporting those documents as present, because they are.
+
+    So the count is stated explicitly: how many documents and chunks carry an embedding
+    space other than the one the configured embedding model produces. ``stranded: 0``
+    with ``available: true`` is the positive statement that none are — the "or prove
+    none is" half — and a document whose stored space tag is blank (projected before the
+    tag existed) is reported as UNATTRIBUTED rather than counted either way.
+
+    THE LOCAL HASH FALLBACK IS NOT A SUPERSEDED SPACE. A deployment with no embedding
+    provider configured is running the supported keyless/offline profile (Gate 2): the
+    gateway degrades to local hash embeddings, and both the corpus AND every query land
+    in that same space, so retrieval is entirely self-consistent and nothing is
+    unreachable. Counting it as stranded raised a permanent ``critical`` on every
+    default install whose remediation ("rebuild the corpus") re-produces the identical
+    space — an alarm no operator could ever clear. Those documents are counted
+    separately as ``fallback_documents`` and reported as an UNKNOWN: from the corpus
+    metadata alone we cannot tell the supported keyless profile (fully reachable) from
+    a deployment that has since acquired a real embedding provider (in which case they
+    do need reprojecting), and inventing a verdict either way would be a guess.
+    """
+    configured = ""
+    prefs = getattr(state, "prefs", None)
+    model_for = getattr(prefs, "model_for", None)
+    if callable(model_for):
+        try:
+            configured = str(getattr(model_for("embedding"), "model", "") or "")
+        except Exception:  # noqa: BLE001 — diagnostics degrade, never 500
+            configured = ""
+    block: dict[str, Any] = {
+        "available": bool(available),
+        "reason": reason,
+        # Stranding only COSTS anything while retrieval is on. The count is still
+        # measured and published with retrieval off (it is what a re-enable would
+        # inherit), but it does not raise an alert — the same distinction the
+        # precedent block makes between a configured state and a defect.
+        "rag_enabled": bool(getattr(getattr(prefs, "rag", None), "enabled", False)),
+        "configured_model": configured,
+        "spaces": {},
+        "stranded_documents": 0,
+        "stranded_chunks": 0,
+        "stranded_sources": [],
+        "unattributed_documents": 0,
+        # Chunks the gateway embedded with its LOCAL HASH fallback because no embedding
+        # provider answered. Reachable on the keyless profile, stale once a real
+        # provider is configured — reported, never alarmed on (see the docstring).
+        "fallback_documents": 0,
+        "fallback_chunks": 0,
+        "fallback_sources": [],
+        "mixed_spaces": False,
+        "measured": False,
+    }
+    if not available:
+        return block
+    if not configured:
+        block["reason"] = (
+            "the configured embedding model could not be read, so a stored space "
+            "cannot be compared against it"
+        )
+        return block
+    spaces: dict[str, dict[str, Any]] = {}
+    stranded_docs = 0
+    stranded_chunks = 0
+    unattributed = 0
+    stranded_sources: set[str] = set()
+    fallback_docs = 0
+    fallback_chunks = 0
+    fallback_sources: set[str] = set()
+    for row in docs:
+        model = str(row.get("embedding_model") or "").strip()
+        try:
+            chunks = max(0, int(row.get("chunk_count") or 0))
+        except (TypeError, ValueError):
+            chunks = 0
+        if not model:
+            unattributed += 1
+            continue
+        entry = spaces.setdefault(model, {"documents": 0, "chunks": 0, "dims": []})
+        entry["documents"] += 1
+        entry["chunks"] += chunks
+        try:
+            dim = int(row.get("dim") or 0)
+        except (TypeError, ValueError):
+            dim = 0
+        if dim and dim not in entry["dims"]:
+            entry["dims"].append(dim)
+        if model == configured:
+            continue
+        if _is_local_fallback_space(model):
+            fallback_docs += 1
+            fallback_chunks += chunks
+            fallback_sources.add(str(row.get("source") or "unknown"))
+            continue
+        stranded_docs += 1
+        stranded_chunks += chunks
+        stranded_sources.add(str(row.get("source") or "unknown"))
+    for entry in spaces.values():
+        entry["dims"] = sorted(entry["dims"])
+    block.update(
+        measured=True,
+        spaces=dict(sorted(spaces.items())),
+        stranded_documents=stranded_docs,
+        stranded_chunks=stranded_chunks,
+        stranded_sources=sorted(stranded_sources),
+        unattributed_documents=unattributed,
+        fallback_documents=fallback_docs,
+        fallback_chunks=fallback_chunks,
+        fallback_sources=sorted(fallback_sources),
+        mixed_spaces=len(spaces) > 1,
+    )
+    return block
+
+
 def _schema_migration_block(state: AppState) -> dict[str, Any]:
     """The in-place SQL schema-migration outcome.
 
@@ -672,6 +1290,8 @@ def _build_alerts(
     auto_close: dict[str, Any],
     effectiveness: dict[str, Any] | None = None,
     provider_health: dict[str, Any] | None = None,
+    composition: dict[str, Any] | None = None,
+    embedding_space: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Turn the three blocks into an operator-readable ``(alerts, unknowns)`` pair.
 
@@ -961,6 +1581,126 @@ def _build_alerts(
                 )
             )
 
+    # ------------------------------------------------------------------ #
+    # EMBEDDING SPACE: documents a reprojection stranded in the old space.
+    # ------------------------------------------------------------------ #
+    # Not a size signal and not visible in any count: the chunks are still there, still
+    # counted, and permanently unreachable by a query embedded with the current model.
+    if embedding_space and embedding_space.get("measured"):
+        stranded_docs = int(embedding_space.get("stranded_documents") or 0)
+        if stranded_docs > 0 and embedding_space.get("rag_enabled"):
+            sources = ", ".join(embedding_space.get("stranded_sources") or []) or "unknown"
+            alerts.append(
+                _alert(
+                    "critical", "rag_embedding_space_stranded",
+                    f"{stranded_docs} document(s) are stranded in a superseded "
+                    "embedding space",
+                    f"{stranded_docs} document(s) / "
+                    f"{int(embedding_space.get('stranded_chunks') or 0)} chunk(s) in "
+                    f"{sources} were embedded by a different model than the configured "
+                    f"{embedding_space.get('configured_model') or 'embedding model'}. "
+                    "Vectors from two models are not comparable, so those chunks are "
+                    "still counted as present but can never be retrieved again.",
+                    "Rebuild the knowledge corpus so every chunk lives in one space. "
+                    "Until then the stranded documents are invisible to retrieval "
+                    "while every corpus count keeps reporting them as present.",
+                )
+            )
+        fallback_docs = int(embedding_space.get("fallback_documents") or 0)
+        if fallback_docs > 0 and embedding_space.get("rag_enabled"):
+            # NOT an alert. On the supported keyless profile these chunks and every
+            # query share the same local hash space, so retrieval is self-consistent
+            # and there is nothing to fix; the corpus metadata cannot distinguish that
+            # from a deployment that has since configured a real embedding provider.
+            # Saying which of the two it is would be a guess, so it is an unknown.
+            unknowns.append(
+                _alert(
+                    "unknown", "rag_embedding_local_fallback",
+                    f"{fallback_docs} document(s) were embedded by the local hash "
+                    "fallback",
+                    f"{fallback_docs} document(s) / "
+                    f"{int(embedding_space.get('fallback_chunks') or 0)} chunk(s) in "
+                    f"{', '.join(embedding_space.get('fallback_sources') or []) or 'unknown'} "
+                    "carry the gateway's local hash-embedding space, which is what it "
+                    "produces when no embedding provider answers. With no embedding "
+                    "provider configured this is the supported keyless profile and "
+                    "queries land in the same space, so they are fully reachable.",
+                    "If an embedding provider IS configured, reproject the knowledge "
+                    "corpus so those chunks live in its space; on the keyless profile "
+                    "no action is needed.",
+                )
+            )
+    elif embedding_space is not None and not embedding_space.get("available"):
+        unknowns.append(
+            _alert(
+                "unknown", "rag_embedding_space_unknown",
+                "Whether any documents are stranded in an old embedding space is unknown",
+                str(embedding_space.get("reason") or "the corpus could not be read"),
+                "",
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # CORPUS COMPOSITION: what a size guard cannot see.
+    # ------------------------------------------------------------------ #
+    if composition and composition.get("available"):
+        shift = composition.get("shift") or {}
+        if shift.get("shifted"):
+            moved = ", ".join(
+                f"{row.get('cell')} {row.get('from')}->{row.get('to')}"
+                for row in (shift.get("moved_cells") or [])[:3]
+            )
+            baseline_at = str(shift.get("baseline_at") or "the previous observation")
+            alerts.append(
+                _alert(
+                    "critical", "rag_composition_shift",
+                    "The precedent corpus changed composition, not just size",
+                    f"Class shares moved by up to {shift.get('max_delta')} against the "
+                    f"reading taken at {baseline_at} ({moved}). The size guard cannot "
+                    "see this: a reprojection that keeps the same chunk count and flips "
+                    "what those chunks say passes it cleanly.",
+                    "Compare the (ground-truth source x outcome x verdict) cross-tab "
+                    "against the previous reading before trusting precedent again, and "
+                    "check what was projected between the two.",
+                )
+            )
+        elif shift.get("reason") and int(composition.get("rows") or 0) >= _COMPOSITION_MIN_ROWS:
+            # Only an unknown once there IS a corpus to have a composition. Below the
+            # floor there is nothing to say, and saying it would put a permanent
+            # "could not be evaluated" entry on every fresh deployment beside the
+            # starvation alert that already describes the same emptiness.
+            unknowns.append(
+                _alert(
+                    "unknown", "rag_composition_shift_unknown",
+                    "Whether the precedent corpus changed composition is unknown",
+                    str(shift.get("reason") or ""), "",
+                )
+            )
+        concentration = composition.get("concentration") or {}
+        for row in concentration.get("cells") or []:
+            alerts.append(
+                _alert(
+                    "warning", f"rag_composition_concentrated:{row.get('cell')}",
+                    "One contributor holds nearly all of a precedent class",
+                    f"{row.get('rows')} row(s) — {row.get('cell_share')} of the corpus "
+                    f"— sit in {row.get('cell')}, and "
+                    f"{row.get('top_contributor_share')} of that cell comes from the "
+                    f"single rule identity {row.get('top_contributor') or 'unknown'} "
+                    f"(bulk-ratified share {row.get('bulk_ratified_share')}). The "
+                    "corpus now speaks with one voice about this class.",
+                    "Confirm outcomes across more detections, or narrow the precedent "
+                    "window, so one bulk action cannot define a class on its own.",
+                )
+            )
+    elif composition is not None and not composition.get("disabled") and composition.get("reason"):
+        unknowns.append(
+            _alert(
+                "unknown", "rag_composition_unknown",
+                "Precedent corpus composition could not be read",
+                str(composition.get("reason") or ""), "",
+            )
+        )
+
     return alerts, unknowns
 
 
@@ -983,8 +1723,11 @@ async def diagnostics_health(
     public ``GET /api/health``: corpus counts and per-source detection posture must not
     be readable by an anonymous caller.
 
-    Read-only and seed-free — asking about corpus health never triggers an embedding
-    spend, a projection, or any write. Advisory only; never read by ``decide()`` (#3)."""
+    Seed-free, and read-only over everything an operator would call state: asking about
+    corpus health never triggers an embedding spend, a projection, a case write or a
+    configuration change. It does perform ONE bounded advisory write — the composition
+    baseline a class-share shift is measured against, described in the module docstring.
+    Advisory only; never read by ``decide()`` (#3)."""
     cases, store_total = await _load_cases(state)
     precedent = await _precedent_corpus_block(state, cases, store_total)
     effectiveness = await _precedent_effectiveness_block(state, cases)
@@ -996,8 +1739,18 @@ async def diagnostics_health(
         store_total=store_total,
     )
     provider_health = _provider_health_block(state)
+    # Corpus COMPOSITION (the cross-tab a size guard cannot see) and the EMBEDDING
+    # SPACE (what a reprojection stranded). Both are read-only and both degrade to an
+    # explicit "could not be measured" rather than to a healthy-looking zero.
+    composition = await _corpus_composition_block(state)
+    rag = getattr(state, "rag_service", None)
+    space_available, space_reason, space_docs = await _cached_corpus_documents(rag)
+    embedding_space = _embedding_space_block(
+        state, space_available, space_reason, space_docs
+    )
     alerts, unknowns = _build_alerts(
-        precedent, migration, auto_close, effectiveness, provider_health
+        precedent, migration, auto_close, effectiveness, provider_health,
+        composition, embedding_space,
     )
     return {
         "generated_at": iso_now(),
@@ -1015,6 +1768,15 @@ async def diagnostics_health(
         # Per-rule precedent distribution + the "more confirmations will not help"
         # finding. Advisory; never read by decide() (#3).
         "precedent_effectiveness": effectiveness,
+        # COMPOSITION, not size: the (ground-truth source x analyst outcome x model
+        # verdict) cross-tab, its movement against the previous reading, and any class
+        # a single contributor holds on its own. ``outcome_only_view`` is published
+        # beside it deliberately — that is the number that read pristine while the
+        # corpus was poisoning the model.
+        "corpus_composition": composition,
+        # What an embedding-model change WOULD strand: documents still counted as
+        # present but unreachable because they live in a superseded vector space.
+        "embedding_space": embedding_space,
         "schema_migration": migration,
         # Aggregate model-provider health (consecutive auth/quota/transport failures).
         "llm_provider": provider_health,

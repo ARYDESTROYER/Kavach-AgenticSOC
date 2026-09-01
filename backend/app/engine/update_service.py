@@ -18,6 +18,7 @@ from urllib.parse import quote, urlsplit
 from pydantic import ValidationError
 
 from .. import __version__
+from ..build_identity import is_exact_source_revision
 from ..config import Secrets
 from ..state import AppState
 from ..stores.update_operations import UpdateOperationConflict, UpdateOperationStore
@@ -131,6 +132,14 @@ def _release_channel() -> str:
 
 
 def _build_sha() -> str:
+    """The running build's stamped revision, normalized for the shared predicate.
+
+    Whether that value is *pinnable* is decided by
+    ``build_identity.is_exact_source_revision`` — the same predicate reported as an
+    advisory by ``/api/health/build-info`` — so an operator can see, from build-info
+    alone, why supervised updates refuse this build.
+    """
+
     value = os.getenv("TLSOC_BUILD_SHA", "unknown").strip().lower()
     return value if value and value != "unknown" else "unknown"
 
@@ -262,8 +271,8 @@ class UpdateService:
         if (
             target is None
             or current is None
-            or not re.fullmatch(r"[0-9a-f]{40}", branch_sha)
-            or not re.fullmatch(r"[0-9a-f]{40}", release_sha)
+            or not is_exact_source_revision(branch_sha)
+            or not is_exact_source_revision(release_sha)
         ):
             return _ReleaseObservation(
                 UpdateReleaseDiscovery(
@@ -352,7 +361,7 @@ class UpdateService:
                     ),
                 )
             )
-        if not re.fullmatch(r"[0-9a-f]{40}", build_sha):
+        if not is_exact_source_revision(build_sha):
             release_identity_blocked = True
             blockers.append(
                 UpdateIssue(

@@ -38,6 +38,7 @@ from ..constants import (
     TERMINAL_CASE_STATUSES,
     Verdict,
 )
+from ..llm.provider_health import CHANNEL_COMPLETION
 from ..models import Case
 from .analyst_outcomes import analyst_confirmed_outcome
 # The closable-verdict-class authority. Imported from ``case_manager`` ON PURPOSE so
@@ -637,6 +638,15 @@ def quality_metrics(
     the append-only ``status_history`` / ``{"event": "decision"}`` entries hold the
     durable record if a non-erasable predicate is ever wanted, but switching the
     predicate would silently move the shipped ``automation_rate`` series.
+
+    .. deprecated:: ``automation_rate`` only — the rest of this rollup is current
+
+       The non-erasable predicate the caveat above points at now EXISTS, in
+       :func:`recorded_auto_close_health`, and reports the same quantity from the
+       append-only decision trail with FIRST-decision anchoring. ``automation_rate``
+       here stays byte-identical (creation-cohort bucketed, mutable ``decision_by``)
+       so the shipped series does not move; the two are expected to differ and the
+       difference is documented at that function. Prefer it for new surfaces.
     """
     # A case closed by an operator's analyst RULE POLICY never reached the agent: no
     # model ran, no verdict exists, and no investigation was attempted. Counting it
@@ -1280,6 +1290,11 @@ def trend_metrics(
     UI must disclose that rather than claiming "the AI closed X%". See
     :func:`quality_metrics` for the full note; the predicate is deliberately left
     as-is so the shipped ``auto_closed`` series does not silently move.
+    ``auto_closed``/``human_closed``/``system_closed`` are therefore DEPRECATED in
+    favour of :func:`recorded_auto_close_health`'s ``gate_series``, which buckets the
+    append-only decision trail on the decision instant (not the creation instant) and
+    reads what each decision RECORDED. Expect the two to differ; the discontinuity is
+    documented at that function. Every other field here is current.
     * ``sent_to_human`` — cohort cases counted ONCE that reached a human either
       way: verdict ``NEEDS_HUMAN`` or the escalated condition. ``needs_human``
       (a verdict tally) and ``escalated`` (a status/history tally) OVERLAP — an
@@ -1564,6 +1579,22 @@ def auto_close_health(
 ) -> dict[str, Any]:
     """The rolling auto-close rate as a diagnosable health signal.
 
+    .. deprecated:: superseded by :func:`recorded_auto_close_health`
+
+       NOT POINT-IN-TIME. This anchors each case on its LAST recorded decision and
+       reads the MUTABLE ``case.decision_by``/``case.status``, which are LAST-WRITER
+       fields: any analyst lifecycle action (including a bare ``acknowledge``) stamps
+       ``decision_by = ANALYST``, so an agent auto-close a human merely touches leaves
+       the ``auto_closed`` tally retroactively, in every past window. It also counts
+       cases that failed to a human BEFORE the case manager ran — ``decide()`` never
+       saw them — in its denominator, and never excludes a recorded dependency outage.
+
+       Kept BYTE-IDENTICAL on purpose: this is a shipped, separately-computed series
+       that operators track, and silently redefining its predicate would move
+       historical numbers with no announcement. :func:`recorded_auto_close_health`
+       measures the same thing honestly from the append-only trail, under a new name
+       and a new endpoint; the two are expected to differ. Prefer it for new surfaces.
+
     Compares the current ``window_hours`` window with the immediately preceding
     equal-length window, and adds an unbounded "lifetime" tally over the supplied
     case set so a collapse that happened days ago (both windows already at zero) is
@@ -1809,9 +1840,12 @@ def precedent_ground_truth(
 #     ever returns ``AGENT`` or ``SYSTEM``. Any ``analyst`` share in the legacy series
 #     is a LATER overwrite of the decision record, never a decision an analyst made at
 #     decision time.
-#   * OUTAGE EXCLUSION. This series can exclude decisions taken while a provider or
-#     the knowledge corpus was demonstrably down (see :func:`derive_outage_windows`).
-#     The legacy series never does.
+#   * OUTAGE EXCLUSION. This series can exclude decisions taken while the provider
+#     COMPLETION channel — the one a verdict is produced on — was demonstrably down
+#     (see :func:`derive_outage_windows`). Nothing that fails SOFT ever excludes a
+#     decision: a degraded embedding channel and a stale knowledge corpus are reported
+#     as context, because verdicts kept being produced through both. The legacy series
+#     never excludes anything.
 #
 # Everything here is a READ-TIME DERIVATION. Nothing below is EVER read by
 # ``case_manager.decide()`` (#3): ``decide()`` takes ``(verdict, confidence,
@@ -2005,11 +2039,15 @@ class OutageWindow:
     up to ``end`` is suspect. ``end`` is the newest observed failure.
 
     NOT A DATE LITERAL, and never derived from one. Both bounds come from state the
-    deployment already persists about ITSELF (``llm/provider_health`` timestamps,
-    ``stores/rag_health`` timestamps). A calendar window compiled into shipped source
-    would be correct in exactly the one deployment it was measured in and would
-    silently mislead every other installation of this suite — which is the failure the
-    portability tripwire over this module exists to prevent."""
+    deployment already persists about ITSELF — the ``llm/provider_health``
+    last-success/last-failure instants, each of which is stamped per CALL, so the
+    bracket really is "the last time this dependency was observed working". A calendar
+    window compiled into shipped source would be correct in exactly the one deployment
+    it was measured in and would silently mislead every other installation of this
+    suite — which is the failure the portability tripwire over this module exists to
+    prevent. A bound read off a record written on some UNRELATED cadence (the last
+    successful knowledge PROJECTION, say) fails the same way for the same reason: the
+    span it excludes is a property of that cadence, not of any outage."""
 
     start: datetime | None
     end: datetime
@@ -2042,20 +2080,33 @@ def derive_outage_windows(
 ) -> list[OutageWindow]:
     """Outage intervals derived from the deployment's OWN persisted health state.
 
-    Two independent sources, both already written by production code:
+    ONE source qualifies, and only under a narrow test: a window may be derived only
+    from a dependency failure that DEMONSTRABLY STOPS VERDICT PRODUCTION. Excluding a
+    decision deletes it from the denominator, so anything short of that turns a healthy
+    measurement into an unmeasurable dash — the exact honesty inversion this block
+    exists to remove.
 
-    * ``provider_health`` — the JSON snapshot from ``ProviderHealth.snapshot()``. Any
-      provider+channel row whose ``state`` is not ``ok`` has CROSSED its consecutive-
-      failure threshold with fresh evidence, which is precisely "every call on this
-      channel is failing right now". The window runs from that row's
-      ``last_success_at`` (the last time it demonstrably worked) to its
-      ``last_failure_at``. During it, no verdict could be produced, so no decision
-      taken in it says anything about whether auto-close works.
-    * ``rag_health`` — the durable record from ``stores/rag_health``. Only a
-      ``collapsed`` refusal counts: that is the corpus-destroying class the auto-close
-      health signal was built for, and an ordinary transient seeding failure is not an
-      outage. The window runs from ``healthy_at`` (the last projection that succeeded)
-      to the refusal instant.
+    * ``provider_health`` — the JSON snapshot from ``ProviderHealth.snapshot()``. A
+      row whose ``state`` is not ``ok`` has CROSSED its consecutive-failure threshold
+      with fresh evidence, which is precisely "every call on this channel is failing
+      right now". Only the COMPLETION channel qualifies: that is the channel a verdict
+      is produced on. The EMBEDDING channel fails soft by design — the gateway records
+      the failure and continues on local hash embeddings, so completions, verdicts and
+      ``decide()`` all still run and every decision taken then is real evidence about
+      auto-close. A row carrying no ``channel`` predates the split and is read as
+      completion, matching ``ProviderHealth``'s own default. The window runs from the
+      row's ``last_success_at`` (the last time it demonstrably worked) to its
+      ``last_failure_at``.
+    * ``rag_health`` — accepted so a caller can hand both health records over
+      symmetrically, and DELIBERATELY IGNORED here: no RAG record, of any shape, can
+      produce a window. Keeping the parameter keeps that a stated contract (and a
+      testable one) rather than an omission someone quietly reverses. A ``collapsed``
+      projection refusal is raised BEFORE anything is written and leaves the previous
+      corpus intact and serving, so it is positive evidence that retrieval kept
+      working, not evidence that it stopped. Its old bracket was also anchored on
+      ``healthy_at`` — the last successful PROJECTION, not the last observed retrieval
+      — which made the excluded span a function of the deployment's projection cadence
+      rather than of any outage. A stale corpus is reported as CONTEXT instead.
 
     Both inputs are optional and both are tolerated in any shape — a missing, empty or
     malformed record yields no windows rather than raising, so a metrics read can never
@@ -2066,40 +2117,130 @@ def derive_outage_windows(
     health, and the caller reports the distinction."""
     windows: list[OutageWindow] = []
 
-    providers = provider_health.get("providers") if isinstance(provider_health, dict) else None
-    if isinstance(providers, dict):
-        for key, row in providers.items():
-            if not isinstance(row, dict):
-                continue
-            state = str(row.get("state") or "")
-            if not state or state == "ok":
-                continue
-            end = _parse_iso(row.get("last_failure_at"))
-            if end is None:
-                # A crossed threshold with no readable failure instant cannot bound a
-                # window. Excluding an unbounded interval on that basis would delete
-                # the metric; report nothing instead.
-                continue
-            windows.append(OutageWindow(
-                start=_parse_iso(row.get("last_success_at")),
-                end=end,
-                subsystem="llm_provider",
-                detail=f"{key or 'provider'} state={state}",
-            ))
-
-    refusal = rag_health.get("last_refusal") if isinstance(rag_health, dict) else None
-    if isinstance(refusal, dict) and bool(refusal.get("collapsed")):
-        end = _parse_iso(refusal.get("at"))
-        if end is not None:
-            windows.append(OutageWindow(
-                start=_parse_iso((rag_health or {}).get("healthy_at")),
-                end=end,
-                subsystem="knowledge_corpus",
-                detail="the knowledge projection collapsed and was refused",
-            ))
+    for key, row, state in _non_ok_provider_rows(provider_health):
+        if _row_channel(row) != CHANNEL_COMPLETION:
+            # Real, reported as context, and NOT an outage of verdict production.
+            continue
+        end = _parse_iso(row.get("last_failure_at"))
+        if end is None:
+            # A crossed threshold with no readable failure instant cannot bound a
+            # window. Excluding an unbounded interval on that basis would delete
+            # the metric; report nothing instead.
+            continue
+        windows.append(OutageWindow(
+            start=_parse_iso(row.get("last_success_at")),
+            end=end,
+            subsystem="llm_provider",
+            detail=f"{key or 'provider'} state={state}",
+        ))
 
     windows.sort(key=lambda w: w.end)
     return windows
+
+
+def _row_channel(row: dict[str, Any]) -> str:
+    """A provider-health row's call channel, defaulting the way the tracker does.
+
+    ``ProviderHealth.record_success``/``record_failure`` both default ``channel`` to
+    :data:`~app.llm.provider_health.CHANNEL_COMPLETION`, so a row written before the
+    channel split reads back as completion rather than as an unknown third thing."""
+    return str(row.get("channel") or CHANNEL_COMPLETION)
+
+
+def _non_ok_provider_rows(provider_health: Any) -> "list[tuple[str, dict[str, Any], str]]":
+    """``(key, row, state)`` for every provider row reporting a non-``ok`` state.
+
+    Shared by the window derivation and the context block so the two can never
+    disagree about which rows are failing. Tolerates any shape."""
+    providers = provider_health.get("providers") if isinstance(provider_health, dict) else None
+    if not isinstance(providers, dict):
+        return []
+    out: list[tuple[str, dict[str, Any], str]] = []
+    for key, row in providers.items():
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("state") or "")
+        if not state or state == "ok":
+            continue
+        out.append((str(key or "provider"), row, state))
+    return out
+
+
+def derive_dependency_context(
+    *,
+    provider_health: Any = None,
+    rag_health: Any = None,
+) -> dict[str, Any]:
+    """Dependency conditions that are REAL but do NOT stop a verdict being produced.
+
+    Published beside the outage windows so an operator sees the whole health picture
+    without any of it deleting decisions from the denominator:
+
+    * ``degraded_channels`` — non-``ok`` provider rows on a channel other than
+      completion (today: embedding). The gateway falls back to local hash embeddings
+      and keeps going, so retrieval quality is degraded while verdict production is
+      not. Worth showing; never worth excluding a decision for.
+    * ``corpus_stale_since`` — the instant a ``collapsed`` projection refusal
+      preserved the existing corpus rather than replacing it. Retrieval keeps serving
+      the last known-good projection from then on, so the corpus is STALE, not down.
+
+    Deterministic, fail-soft and read-only, exactly like :func:`derive_outage_windows`.
+    """
+    degraded: list[dict[str, str]] = []
+    for key, row, state in _non_ok_provider_rows(provider_health):
+        channel = _row_channel(row)
+        if channel == CHANNEL_COMPLETION:
+            continue
+        degraded.append({
+            "key": key,
+            "channel": channel,
+            "state": state,
+            "last_failure_at": str(row.get("last_failure_at") or ""),
+            "last_success_at": str(row.get("last_success_at") or ""),
+            "detail": (
+                f"{key} state={state}; this channel fails soft (the gateway continues "
+                "on local hash embeddings), so verdict production is unaffected and no "
+                "decision is excluded for it"
+            ),
+        })
+    degraded.sort(key=lambda entry: entry["key"])
+
+    stale_since = ""
+    stale_detail = ""
+    refusal = rag_health.get("last_refusal") if isinstance(rag_health, dict) else None
+    if isinstance(refusal, dict) and bool(refusal.get("collapsed")):
+        at = _parse_iso(refusal.get("at"))
+        if at is not None:
+            stale_since = at.isoformat()
+            stale_detail = (
+                "a knowledge projection collapsed and was REFUSED, which preserved the "
+                "existing corpus; retrieval keeps serving that last known-good "
+                "projection, so the corpus is stale from this instant rather than down"
+            )
+    return {
+        "degraded_channels": degraded,
+        "corpus_stale_since": stale_since,
+        "corpus_stale_detail": stale_detail,
+        "note": (
+            "Reported for context only. Nothing here excludes a decision: a dependency "
+            "that fails soft still produced every verdict in the window."
+        ),
+    }
+
+
+def _health_evidence_available(provider_health: Any, rag_health: Any) -> bool:
+    """Whether the deployment holds ANY health OBSERVATION the exclusion could read.
+
+    The unit of evidence is an observation, never a wrapper object.
+    ``ProviderHealth.snapshot()`` always returns a dict and ``AppState`` always builds
+    the tracker, so "a snapshot was handed in" is invariantly true and says nothing;
+    ``providers`` is non-empty only once a real call has been recorded. A deployment
+    that has made no model call and holds no RAG health document has no evidence, and
+    reporting otherwise would turn "we cannot see" into "there was nothing to see"."""
+    providers = provider_health.get("providers") if isinstance(provider_health, dict) else None
+    if isinstance(providers, dict) and providers:
+        return True
+    return bool(rag_health)
 
 
 def _in_outage(at: datetime | None, windows: "list[OutageWindow] | tuple[()]") -> OutageWindow | None:
@@ -2109,3 +2250,669 @@ def _in_outage(at: datetime | None, windows: "list[OutageWindow] | tuple[()]") -
         if window.contains(at):
             return window
     return None
+
+
+# The audit token names the pipeline stamps into the DECISION row's ``result_summary``.
+# APPEND-ONLY: ``result_summary`` is parsed POSITIONALLY by nothing here — it is parsed
+# by NAME — but the row itself is an append-only history record, so new facts are only
+# ever added at the END of the string and an existing token is never renamed, reordered
+# or removed. A row written before a token existed simply lacks it, and that absence is
+# reported as ``unrecorded`` rather than being guessed at.
+_AUDIT_TOKEN_CONFIDENCE = "confidence"
+_AUDIT_TOKEN_GATE = "auto_close_gate"
+
+#: How far apart the history entry and its own audit row may be and still be the SAME
+#: decision. ``case_manager.apply()`` stamps the history entry with ``case.updated_at``
+#: and the pipeline writes the audit row immediately after the case is saved, so the
+#: real gap is the persistence latency of one document — sub-millisecond in process,
+#: and seconds at worst on a loaded store. Two DIFFERENT decisions on one case are a
+#: re-investigation apart (a human reopen, a poll cycle), which is orders of magnitude
+#: larger. Generous enough to keep a genuine pair, far too tight to splice one run's
+#: gate onto another run's verdict.
+_DECISION_AUDIT_PAIR_TOLERANCE_SECONDS = 120.0
+
+
+def parse_decision_audit_row(row: Any) -> dict[str, Any] | None:
+    """Parse ONE ``case_manager`` DECISION audit row into typed decision facts.
+
+    The row's ``result_summary`` is a whitespace-separated ``key=value`` list; none of
+    the values can contain a space (they are enum values, numbers and a closed gate
+    vocabulary), so the parse is unambiguous. Unknown keys are ignored, so a row from a
+    LATER build that appended further tokens still parses here.
+
+    Returns None for anything that is not a readable ``case_manager`` decision row.
+    Never raises: an unreadable audit row is dropped, not escalated into a 500."""
+    if isinstance(row, dict):
+        get = row.get
+    else:
+        def get(key: str, default: Any = None) -> Any:
+            return getattr(row, key, default)
+    if str(get("actor") or "") != "case_manager":
+        return None
+    case_id = str(get("case_id") or "")
+    if not case_id:
+        return None
+    at = _parse_iso(get("ts"))
+    fields: dict[str, str] = {}
+    for token in str(get("result_summary") or "").split():
+        key, sep, value = token.partition("=")
+        if sep:
+            fields[key] = value
+
+    def _float(key: str) -> float | None:
+        try:
+            return float(fields[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    gate = fields.get(_AUDIT_TOKEN_GATE, "")
+    return {
+        "case_id": case_id,
+        "ts": str(get("ts") or ""),
+        "at": at,
+        "verdict": fields.get("verdict", ""),
+        "status": fields.get("status", ""),
+        "decision_by": fields.get("decision_by", ""),
+        "risk": _float("risk"),
+        "confidence": _float(_AUDIT_TOKEN_CONFIDENCE),
+        # An unknown token from a future build is NOT silently adopted as a valid gate
+        # outcome; it is reported as unrecorded, which is what it is from here.
+        "gate": gate if gate in AUTO_CLOSE_GATE_OUTCOMES else GATE_UNRECORDED,
+    }
+
+
+def anchored_decision_audit(
+    rows: Any, *, anchor: str = DECISION_ANCHOR_FIRST
+) -> dict[str, dict[str, Any]]:
+    """The ONE anchoring DECISION audit row per case, keyed by ``case_id``.
+
+    A case can carry MORE THAN ONE decision — a reopen plus a re-investigation appends
+    another — and the VERDICT can differ between them, so every decision fact must stay
+    paired with the decision that produced it. Grouping the rows and picking the
+    anchored one preserves that pairing; a flat aggregate over the rows (``max(
+    confidence) GROUP BY case_id``, say) would silently splice one run's confidence onto
+    another run's verdict and report a gate outcome that never happened.
+
+    Rows may arrive in any order (the store returns them newest-first); they are ordered
+    by parsed timestamp, with unparseable timestamps kept LAST so they can never
+    displace a readable anchor. Ties keep input order, which is stable."""
+    grouped: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for position, row in enumerate(rows or ()):
+        parsed = parse_decision_audit_row(row)
+        if parsed is None:
+            continue
+        grouped.setdefault(parsed["case_id"], []).append((position, parsed))
+    out: dict[str, dict[str, Any]] = {}
+    for case_id, entries in grouped.items():
+        entries.sort(key=lambda item: (
+            item[1]["at"] is None,
+            item[1]["at"] or datetime.min.replace(tzinfo=timezone.utc),
+            item[0],
+        ))
+        chosen = entries[-1][1] if anchor == DECISION_ANCHOR_LAST else entries[0][1]
+        out[case_id] = {**chosen, "decisions_observed": len(entries)}
+    return out
+
+
+@dataclass(frozen=True)
+class _DecisionPoint:
+    """One case reduced to its ANCHORED decision, ready to be windowed or bucketed."""
+
+    at: datetime
+    auto_closed: bool
+    decision_by: str
+    policy_closed: bool
+    outage_subsystem: str
+    gate: str
+
+
+def _recorded_decision_points(
+    cases: list[Case],
+    *,
+    anchor: str,
+    audit_by_case: dict[str, dict[str, Any]] | None = None,
+    outages: "list[OutageWindow] | tuple[()]" = (),
+) -> tuple[list[_DecisionPoint], dict[str, int]]:
+    """Reduce each case to its ONE anchoring decision, plus the honest skip counts.
+
+    Built ONCE and shared by the window tallies and the bucketed series so the two can
+    never disagree about which decision a case is, when it happened, or how it was
+    classified.
+
+    The gate label is joined from the append-only DECISION audit row rather than from
+    ``case.confidence``/``case.risk_score``: those are overwritten by re-investigation,
+    so reading them would explain the FIRST decision with the LAST run's numbers. The
+    join is per case AND PER DECISION INSTANT: the case id alone is not enough, because
+    the two anchors are drawn from different populations. The history anchor walks the
+    case's own unbounded trail while the audit anchor is the first row of a BOUNDED
+    page, so on a case whose anchoring decision predates that page the case id would
+    pair the anchored decision with a LATER, different-verdict run and publish a gate
+    outcome that never happened for it. Pairing on the instant (within
+    :data:`_DECISION_AUDIT_PAIR_TOLERANCE_SECONDS`) makes the unmatched case read back
+    as ``unrecorded``, which is the honest answer and exactly what ``gate_coverage``
+    exists to expose."""
+    audit_by_case = audit_by_case or {}
+    points: list[_DecisionPoint] = []
+    skipped = {
+        "no_decision_record": 0,
+        "unusable_timestamp": 0,
+        "policy_closed_no_record": 0,
+    }
+    for case in cases:
+        policy_closed = is_policy_closed(case)
+        record = decision_record(case, anchor=anchor)
+        if record is None:
+            # Never decided, or decided before this build recorded decisions. Two very
+            # different populations end up here, and pooling them would hide both.
+            if policy_closed:
+                # A DELIBERATE $0 close: an operator declared this rule benign, so the
+                # pipeline closed the case under ANALYST_POLICY without ever calling
+                # ``decide()``. It is excluded from every agent-performance statistic
+                # by design; naming it keeps it out of "decide() failed to run".
+                skipped["policy_closed_no_record"] += 1
+            elif case.verdict is not None or (
+                (case.status.value if case.status else "") in _TERMINAL
+            ):
+                # A case that failed to a human BEFORE the case manager ran carries a
+                # NEEDS_HUMAN verdict and no decision entry: ``decide()`` never saw it,
+                # so it is not evidence about auto-close. Named, not folded in.
+                skipped["no_decision_record"] += 1
+            continue
+        if record.at is None:
+            skipped["unusable_timestamp"] += 1
+            continue
+        outage = _in_outage(record.at, outages)
+        audit = audit_by_case.get(case.case_id) or {}
+        points.append(_DecisionPoint(
+            at=record.at,
+            auto_closed=record.auto_closed,
+            decision_by=record.decision_by,
+            policy_closed=policy_closed,
+            outage_subsystem=(outage.subsystem if outage is not None else ""),
+            gate=_paired_gate(audit, record.at),
+        ))
+    return points, skipped
+
+
+def _paired_gate(audit: dict[str, Any], at: datetime) -> str:
+    """The audit row's gate outcome, but ONLY when the row is that same decision.
+
+    Returns :data:`GATE_UNRECORDED` for a row that cannot be proven to belong to the
+    anchored decision — no readable instant, or an instant further from it than the
+    persistence gap can explain. Reporting a decision as unexplained is honest;
+    labelling it with another run's outcome is not.
+
+    The instant is the predicate, not the row's ``decisions_observed`` count: a
+    truncated page can hold exactly as many rows as the case has decisions and still
+    be holding the WRONG ones, so a count match proves nothing on its own."""
+    if not audit:
+        return GATE_UNRECORDED
+    row_at = audit.get("at")
+    if not isinstance(row_at, datetime):
+        return GATE_UNRECORDED
+    if abs((row_at - at).total_seconds()) > _DECISION_AUDIT_PAIR_TOLERANCE_SECONDS:
+        return GATE_UNRECORDED
+    return str(audit.get("gate") or GATE_UNRECORDED)
+
+
+def _recorded_auto_close_tally(
+    points: list[_DecisionPoint],
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    skipped: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """The auto-close tally over ``[start, end)``, counted from the APPEND-ONLY record.
+
+    Differs from :func:`_auto_close_tally` in three ways, each deliberate:
+
+    * The window instant is the ANCHORED decision entry's ``ts`` (first by default),
+      not the last one, so a re-investigated case stays in its original window.
+    * ``auto_closed`` reads the ``decision_by``/``status`` RECORDED IN that entry, not
+      today's mutable ``case.decision_by``/``case.status``, so no later analyst action
+      can move a historical number.
+    * "decided" means ``decide()`` demonstrably RAN (an entry exists), so a case that
+      failed to a human before the case manager was reached is reported as
+      ``no_decision_record`` instead of padding the denominator.
+
+    ``analyst_decided`` is retained for shape-compatibility with the legacy block and
+    is STRUCTURALLY ZERO under this predicate: ``decide()`` only ever authors ``agent``
+    or ``system``. Any analyst share in the legacy series is a later overwrite of the
+    decision record, not a decision an analyst made at decision time.
+
+    ``policy_closed`` is the deliberate $0 operator-declared-benign population, which
+    is excluded from the rate entirely. Almost all of it arrives WITHOUT a decision
+    record — the analyst-policy close never calls ``decide()`` — and such a case has
+    no decision instant, so that part is SET-WIDE (it repeats across blocks, like
+    ``no_decision_record``) rather than being attributed to a window it cannot be
+    placed in. Only the windowable remainder is counted per window."""
+    decided = auto_closed = routed_to_human = analyst_decided = 0
+    policy_closed = excluded_outage = 0
+    gates: Counter[str] = Counter()
+    outage_subsystems: Counter[str] = Counter()
+
+    for point in points:
+        if start is not None and point.at < start:
+            continue
+        if end is not None and point.at >= end:
+            continue
+        # Mirrors the legacy ordering: counted AFTER the window guards, so a policy
+        # close that DOES carry a decision instant lands in its own window. The
+        # record-less majority is added set-wide below, where it can be named at all.
+        if point.policy_closed:
+            policy_closed += 1
+            continue
+        if point.outage_subsystem:
+            excluded_outage += 1
+            outage_subsystems[point.outage_subsystem] += 1
+            continue
+        decided += 1
+        if point.auto_closed:
+            auto_closed += 1
+        elif point.decision_by == DecisionBy.ANALYST.value:
+            analyst_decided += 1
+        else:
+            routed_to_human += 1
+        gates[point.gate] += 1
+
+    explained = sum(gates[name] for name in AUTO_CLOSE_GATE_OUTCOMES if name != GATE_UNRECORDED)
+    skipped = skipped or {}
+    return {
+        "decided": decided,
+        "auto_closed": auto_closed,
+        "routed_to_human": routed_to_human,
+        "analyst_decided": analyst_decided,
+        # Outside the rate entirely (numerator AND denominator); reported for context.
+        # The record-less part is SET-WIDE — an analyst-policy close never calls
+        # ``decide()`` and so has no decision instant to place in a window — and is
+        # therefore repeated per block rather than dropped into ``no_decision_record``
+        # beside the cases ``decide()`` genuinely never reached.
+        "policy_closed": policy_closed + int(skipped.get("policy_closed_no_record", 0)),
+        "policy_closed_no_decision_record": int(skipped.get("policy_closed_no_record", 0)),
+        # Cases the rate could not be evidence about, each named rather than folded in.
+        # The two ``skipped`` counts are set-wide (a case with no readable decision
+        # instant cannot be attributed to any window), so they repeat across blocks.
+        "no_decision_record": int(skipped.get("no_decision_record", 0)),
+        "unusable_timestamp": int(skipped.get("unusable_timestamp", 0)),
+        "excluded_outage": excluded_outage,
+        "excluded_outage_by_subsystem": dict(outage_subsystems),
+        "gate": {name: gates[name] for name in AUTO_CLOSE_GATE_OUTCOMES},
+        # Of the decisions in this window, how many the append-only trail can EXPLAIN.
+        # This is an EVIDENCE-QUALITY number, not a performance number.
+        "gate_explained": explained,
+        "gate_coverage": _ratio(explained, decided),
+        "closable_class": sum(gates[name] for name in _CLOSABLE_GATE_OUTCOMES),
+    }
+
+
+def _gate_series(
+    points: list[_DecisionPoint],
+    *,
+    starts: list[int],
+    bucket_secs: int,
+) -> list[dict[str, Any]]:
+    """The gate breakdown bucketed over ``starts`` — an EVIDENCE-QUALITY time series.
+
+    WHAT IT IS. Per bucket: how many decisions the append-only trail can explain, and
+    for the ones it can, which side of the auto-close bar they fell on and why. It
+    answers "can we still say WHY auto-close did or did not fire?", which is the
+    question that went unanswerable when the rate collapsed.
+
+    WHAT IT IS NOT. It is NOT a threshold-tuning target. ``blocked_confidence`` rising
+    is not a reason to lower ``min_confidence``: this series is derived from decisions
+    that already happened, it carries no outcome evidence about whether closing those
+    cases would have been CORRECT, and tuning against it would be a closed loop that
+    optimises the metric rather than the triage. Threshold change proposals come from
+    ``engine/threshold_tuner``, which learns only from INDEPENDENT analyst-confirmed
+    outcomes and routes its bounded changes to human review.
+
+    Buckets are zero-filled across the whole window; outage-excluded decisions and the
+    windowable policy closes are counted per bucket but stay out of ``decided``,
+    exactly as in the window blocks. The SET-WIDE skip counts (a policy close with no
+    decision record, a case ``decide()`` never reached, an unreadable instant) belong
+    to no bucket by construction and are reported only on the window blocks."""
+    by_bucket: dict[int, list[_DecisionPoint]] = {start: [] for start in starts}
+    for point in points:
+        bucket = int(point.at.timestamp() // bucket_secs) * bucket_secs
+        members = by_bucket.get(bucket)
+        if members is not None:
+            members.append(point)
+    rows: list[dict[str, Any]] = []
+    for start in starts:
+        tally = _recorded_auto_close_tally(by_bucket[start], start=None, end=None)
+        rows.append({
+            "t": datetime.fromtimestamp(start, tz=timezone.utc).isoformat(),
+            "decided": tally["decided"],
+            "auto_closed": tally["auto_closed"],
+            "policy_closed": tally["policy_closed"],
+            "excluded_outage": tally["excluded_outage"],
+            "closable_class": tally["closable_class"],
+            "gate": tally["gate"],
+            "gate_explained": tally["gate_explained"],
+            "gate_coverage": tally["gate_coverage"],
+        })
+    return rows
+
+
+def _recorded_auto_close_block(
+    tally: dict[str, Any], *, label: str, min_decided: int
+) -> dict[str, Any]:
+    """Wrap a recorded tally in the honest rate block (same contract as the legacy
+    :func:`_auto_close_block`): ``rate`` is the labelled DASH whenever the window
+    cannot support a meaningful rate, never a fabricated 0.0.
+
+    Adds one reason the legacy block cannot have: a window whose decisions were ALL
+    excluded because the completion channel was demonstrably down says so, instead of
+    publishing "auto-close stopped" about an outage of something else."""
+    decided = int(tally.get("decided", 0))
+    excluded = int(tally.get("excluded_outage", 0))
+    if decided == 0 and excluded > 0:
+        return {
+            **tally, "rate": DASH, "available": False,
+            "reason": (
+                f"every decision in the {label} window ({excluded}) was taken while a "
+                "dependency was demonstrably down, so none of them is evidence about "
+                "auto-close"
+            ),
+        }
+    if decided == 0:
+        return {
+            **tally, "rate": DASH, "available": False,
+            "reason": f"no case was decided in the {label} window",
+        }
+    if decided < min_decided:
+        return {
+            **tally, "rate": DASH, "available": False,
+            "reason": (
+                f"only {decided} decided case(s) in the {label} window; at least "
+                f"{min_decided} are required before an auto-close rate is meaningful"
+            ),
+        }
+    return {
+        **tally,
+        "rate": _ratio(int(tally.get("auto_closed", 0)), decided),
+        "available": True,
+        "reason": "",
+    }
+
+
+def recorded_auto_close_health(
+    cases: list[Case],
+    *,
+    window_hours: int = 24,
+    policy: Any = None,
+    now: datetime | None = None,
+    store_total: int | None = None,
+    min_decided: int = AUTO_CLOSE_MIN_DECIDED,
+    anchor: str = DECISION_ANCHOR_FIRST,
+    decision_audit_rows: Any = None,
+    decision_audit_span_hours: int | None = None,
+    provider_health: Any = None,
+    rag_health: Any = None,
+) -> dict[str, Any]:
+    """The auto-close rate measured from the APPEND-ONLY decision trail.
+
+    The corrected counterpart to :func:`auto_close_health`, shipped BESIDE it under
+    this new name. The legacy series is not touched, not redefined and not deprecated
+    out from under anyone; see the section comment above for the full discontinuity
+    note. The short version:
+
+    * a case is anchored to its FIRST recorded decision (``anchor``), so reopening and
+      re-investigating a case never moves, duplicates or re-labels the original count;
+    * "auto-closed" is what the decision entry RECORDED, so an analyst acknowledging,
+      re-tagging or reopening a case can never rewrite a past window's rate;
+    * decisions taken while the provider COMPLETION channel was demonstrably down are
+      excluded, with the exclusion derived from the deployment's OWN health records
+      (never a date). Nothing that fails SOFT excludes anything;
+    * every decision the trail cannot explain is counted as ``unrecorded`` and shown.
+
+    Inputs beyond ``cases`` are all optional and all fail soft:
+
+    ``decision_audit_rows``
+        ``case_manager`` DECISION audit rows (any order). Supplies the gate breakdown —
+        which verdict classes were closable, whether the bar was cleared, and what
+        blocked it. Absent, every decision reports ``unrecorded`` and ``gate_coverage``
+        is 0.0, which is an honest statement about the evidence, not a zero result.
+    ``decision_audit_span_hours``
+        How far back the caller actually READ those rows, published beside
+        ``gate_coverage`` so a low coverage number is legible as "the trail older than
+        this was not read" rather than as "the trail lost the answer". Optional; the
+        rollup never derives a bound of its own from it.
+    ``provider_health`` / ``rag_health``
+        The health records the outage exclusion is derived from
+        (:func:`derive_outage_windows`). Only a failing COMPLETION channel excludes
+        anything, because only that channel gates verdict production; a degraded
+        embedding channel and a stale knowledge corpus are published as context
+        (:func:`derive_dependency_context`) and leave the denominator alone. Absent —
+        or present but holding no observation — nothing is excluded and
+        ``outage.evidence_available`` is false; absence of a health record is never
+        reported as proof that there was no outage.
+
+    ``status`` reuses the legacy vocabulary and adds one value: ``outage_excluded``,
+    for a window whose decisions were all taken during a recorded dependency outage.
+
+    Pure + deterministic given its inputs; advisory only. Nothing here is ever read by
+    ``case_manager.decide()`` (#3)."""
+    now = now or datetime.now(timezone.utc)
+    window_hours = max(1, int(window_hours))
+    anchor = DECISION_ANCHOR_LAST if anchor == DECISION_ANCHOR_LAST else DECISION_ANCHOR_FIRST
+    span = timedelta(hours=window_hours)
+    window_start = now - span
+    baseline_start = window_start - span
+
+    outages = derive_outage_windows(provider_health=provider_health, rag_health=rag_health)
+    # An outage whose START is unknown (nothing on record ever succeeded — the provider
+    # tracker is in-process, so a restart mid-outage produces exactly this) is bounded
+    # BACKWARDS to the earliest instant any reported block covers, and no further.
+    # Applying it unbounded would delete every historical decision on the strength of
+    # evidence about the present, which is the same class of error as excluding a window
+    # by calendar date: confidently wrong everywhere the evidence does not reach.
+    applied_outages = [
+        window if window.start_known else OutageWindow(
+            start=baseline_start,
+            end=window.end,
+            subsystem=window.subsystem,
+            detail=(
+                f"{window.detail}; no success on record, so the exclusion is clamped to "
+                "the reported span rather than extrapolated backwards"
+            ),
+        )
+        for window in outages
+    ]
+    audit_by_case = anchored_decision_audit(decision_audit_rows or (), anchor=anchor)
+    points, skipped = _recorded_decision_points(
+        cases, anchor=anchor, audit_by_case=audit_by_case, outages=applied_outages,
+    )
+
+    current = _recorded_auto_close_block(
+        _recorded_auto_close_tally(points, start=window_start, end=None, skipped=skipped),
+        label="current", min_decided=min_decided,
+    )
+    baseline = _recorded_auto_close_block(
+        _recorded_auto_close_tally(
+            points, start=baseline_start, end=window_start, skipped=skipped
+        ),
+        label="preceding", min_decided=min_decided,
+    )
+    lifetime = _recorded_auto_close_block(
+        _recorded_auto_close_tally(points, start=None, end=None, skipped=skipped),
+        label="fetched", min_decided=min_decided,
+    )
+    policy_block = _auto_close_policy_block(policy)
+
+    baseline_decided = int(baseline["decided"])
+    current_decided = int(current["decided"])
+    volume_steady = bool(
+        baseline_decided > 0
+        and current_decided >= baseline_decided * AUTO_CLOSE_STEADY_VOLUME_FRACTION
+    )
+    comparable = bool(current["available"] and baseline["available"])
+    current_rate = current["rate"] if current["available"] else None
+    baseline_rate = baseline["rate"] if baseline["available"] else None
+
+    collapsed = bool(
+        comparable
+        and volume_steady
+        and baseline_rate is not None
+        and current_rate is not None
+        and baseline_rate >= AUTO_CLOSE_BASELINE_MIN_RATE
+        and current_rate <= AUTO_CLOSE_NEAR_ZERO_RATE
+    )
+    degraded = bool(
+        comparable
+        and volume_steady
+        and not collapsed
+        and baseline_rate is not None
+        and current_rate is not None
+        and baseline_rate >= AUTO_CLOSE_BASELINE_MIN_RATE
+        and current_rate <= baseline_rate * (1.0 - AUTO_CLOSE_DEGRADED_DROP_FRACTION)
+    )
+    never_fired = bool(
+        policy_block["any_enabled"]
+        and lifetime["available"]
+        and int(lifetime["auto_closed"]) == 0
+    )
+    current_excluded = int(current["excluded_outage"])
+
+    if policy_block["available"] and not policy_block["any_enabled"]:
+        status = "disabled"
+        reason = (
+            "auto-close is turned OFF for every verdict class, so a zero auto-close "
+            "rate is the configured behaviour"
+        )
+    elif current_decided == 0 and current_excluded > 0:
+        status = "outage_excluded"
+        reason = (
+            f"all {current_excluded} decision(s) in the last {window_hours}h were taken "
+            "while a recorded dependency outage was in progress; auto-close cannot be "
+            "measured from them"
+        )
+    elif current_decided == 0:
+        status = "no_volume"
+        reason = (
+            f"no case was decided in the last {window_hours}h"
+            + (
+                f" (the preceding {window_hours}h decided {baseline_decided}) — this is an "
+                "investigation-volume gap, not an auto-close outage"
+                if baseline_decided
+                else " and none was in the preceding window either"
+            )
+        )
+    elif collapsed:
+        status = "collapsed"
+        reason = (
+            f"the recorded auto-close rate fell from {baseline_rate} to {current_rate} "
+            f"while decided volume held steady ({baseline_decided} -> {current_decided} "
+            "cases)"
+        )
+    elif never_fired:
+        status = "never_fired"
+        reason = (
+            f"auto-close is enabled but not one of the {lifetime['decided']} decision(s) "
+            "on record has ever auto-closed"
+        )
+    elif not comparable:
+        status = "insufficient_evidence"
+        reason = current["reason"] or baseline["reason"]
+    elif degraded:
+        status = "degraded"
+        reason = (
+            f"the recorded auto-close rate dropped from {baseline_rate} to "
+            f"{current_rate} while decided volume held steady"
+        )
+    else:
+        status = "ok"
+        reason = ""
+
+    bucket_minutes = _trend_bucket_minutes(min(720, window_hours))
+    bucket_secs = bucket_minutes * 60
+    now_ts = now.timestamp()
+    last_start = int(now_ts // bucket_secs) * bucket_secs
+    first_start = int((now_ts - window_hours * 3600.0) // bucket_secs) * bucket_secs
+    starts = list(range(first_start, last_start + 1, bucket_secs))
+
+    return {
+        "window_hours": window_hours,
+        "generated_at": now.isoformat(),
+        "anchor": anchor,
+        "source": "append_only_decision_trail",
+        "current": current,
+        "baseline": baseline,
+        "lifetime": lifetime,
+        "policy": policy_block,
+        "status": status,
+        "reason": reason,
+        "collapsed": collapsed,
+        "volume_steady": volume_steady,
+        "comparable": comparable,
+        "needs_attention": status in ("collapsed", "never_fired", "degraded"),
+        "outage": {
+            # False means "we hold no health record", NEVER "there was no outage".
+            # Keyed off the OBSERVATIONS, not off whether an object was handed in: a
+            # freshly booted deployment always has a tracker and it always snapshots,
+            # but a tracker that has never seen a call holds no evidence about health,
+            # and reporting "evidence_available: true, windows: []" for it would be
+            # exactly the "there was no outage" claim this flag forbids.
+            "evidence_available": _health_evidence_available(provider_health, rag_health),
+            # The DERIVED windows (what the health records say) beside the APPLIED ones
+            # (what was actually excluded, after clamping an unbounded start).
+            "windows": [window.as_dict() for window in outages],
+            "applied_windows": [window.as_dict() for window in applied_outages],
+            "excluded_current": current_excluded,
+            "excluded_lifetime": int(lifetime["excluded_outage"]),
+            # Real dependency conditions that do NOT stop a verdict being produced, so
+            # none of them removes a decision from the denominator.
+            "context": derive_dependency_context(
+                provider_health=provider_health, rag_health=rag_health
+            ),
+        },
+        "gate_series": {
+            "signal": "evidence_quality",
+            "tuning_target": False,
+            "bucket_minutes": bucket_minutes,
+            "outcomes": list(AUTO_CLOSE_GATE_OUTCOMES),
+            "closable_outcomes": [
+                name for name in AUTO_CLOSE_GATE_OUTCOMES if name in _CLOSABLE_GATE_OUTCOMES
+            ],
+            "audit_rows_seen": len(audit_by_case),
+            # How far back the audit page the caller supplied actually reached. None
+            # means "not stated". A decision anchored OUTSIDE this span keeps its
+            # ``unrecorded`` label — the pairing is by instant, so an unread row is
+            # never substituted for by a later run's.
+            "audit_span_hours": (
+                int(decision_audit_span_hours)
+                if isinstance(decision_audit_span_hours, (int, float))
+                and not isinstance(decision_audit_span_hours, bool)
+                else None
+            ),
+            "buckets": _gate_series(points, starts=starts, bucket_secs=bucket_secs),
+            "disclaimer": (
+                "Evidence quality only: how much of the append-only decision trail can "
+                "still explain why auto-close did or did not fire. It carries no "
+                "evidence that a blocked close would have been correct, so it is never "
+                "a threshold-tuning target — threshold proposals come from the tuner's "
+                "independent analyst-confirmed outcomes and go to human review."
+            ),
+        },
+        "legacy_series": {
+            "name": "auto_close_health",
+            "note": (
+                "This series and GET /api/metrics/auto-close-health measure different "
+                "things and are expected to differ. The legacy series anchors on the "
+                "LAST decision and reads the mutable case.decision_by/status, so an "
+                "analyst acknowledging or re-tagging a case moves its historical "
+                "numbers; this one anchors on the FIRST recorded decision and reads "
+                "what that decision entry recorded. The legacy series also counts "
+                "cases that failed to a human before the case manager ran, and never "
+                "excludes recorded dependency outages."
+            ),
+        },
+        "thresholds": {
+            "min_decided": int(min_decided),
+            "near_zero_rate": AUTO_CLOSE_NEAR_ZERO_RATE,
+            "baseline_min_rate": AUTO_CLOSE_BASELINE_MIN_RATE,
+            "steady_volume_fraction": AUTO_CLOSE_STEADY_VOLUME_FRACTION,
+            "degraded_drop_fraction": AUTO_CLOSE_DEGRADED_DROP_FRACTION,
+        },
+        **truncation_marker(len(cases), store_total),
+    }
