@@ -1115,6 +1115,13 @@ export interface BuildInfoResponse {
   ocsf_version: string;
   provenance_complete?: boolean;
   provenance_missing?: string[];
+  /**
+   * Additive: a build identity that IS stamped but is not an exact source revision
+   * (`commit_sha_not_exact_source_revision`) or is half-stamped
+   * (`build_identity_partially_stamped`). Never narrows `provenance_complete`, which
+   * keeps its broad "was it stamped at all" semantics so non-git builders stay honest.
+   */
+  provenance_advisories?: string[];
 }
 
 // --------------------------------------------------------------------------- //
@@ -3959,6 +3966,211 @@ export interface AutoCloseHealth {
   volume_steady: boolean;
   comparable: boolean;
   needs_attention: boolean;
+  thresholds: Record<string, number>;
+  truncated: boolean;
+  store_total: number;
+  fetched: number;
+}
+
+/**
+ * Why the auto-close bar was or was not met, as recorded in the append-only DECISION
+ * audit row. Mirrors `case_manager.decide()`'s predicate; `unrecorded` is first-class
+ * (the row predates the tokens, or no policy was available to classify against) and is
+ * never guessed at.
+ */
+export type AutoCloseGateOutcome =
+  | 'cleared'
+  | 'blocked_confidence'
+  | 'blocked_risk'
+  | 'blocked_confidence_and_risk'
+  | 'class_disabled'
+  | 'not_closable'
+  | 'unrecorded';
+
+/** Gate-outcome counts. Keys are `AutoCloseGateOutcome`; every outcome is always present. */
+export type AutoCloseGateCounts = Record<AutoCloseGateOutcome | string, number>;
+
+/**
+ * One window of the RECORDED auto-close tally. Same rate contract as
+ * `AutoCloseWindow` (`rate` is the DASH string when it cannot be measured) plus the
+ * counts that keep the population honest.
+ *
+ * `analyst_decided` is STRUCTURALLY ZERO here — `decide()` only ever authors `agent`
+ * or `system`, so any analyst share in the legacy series is a later overwrite.
+ */
+export interface RecordedAutoCloseWindow {
+  decided: number;
+  auto_closed: number;
+  routed_to_human: number;
+  /** Always 0 under this predicate; retained for shape-compatibility with the legacy block. */
+  analyst_decided: number;
+  /**
+   * The deliberate $0 operator-declared-benign population, outside the rate entirely.
+   * Almost all of it has NO decision record (the analyst-policy close never calls
+   * `decide()`), and such a case has no decision instant, so that part is SET-WIDE and
+   * repeats across blocks — see `policy_closed_no_decision_record`.
+   */
+  policy_closed: number;
+  /** The set-wide part of `policy_closed`: closed by operator rule, `decide()` never ran. */
+  policy_closed_no_decision_record: number;
+  /**
+   * Terminal/verdicted cases with no decision entry — `decide()` demonstrably never
+   * ran. Analyst-policy closes are NOT pooled here; they are named above.
+   */
+  no_decision_record: number;
+  /** Decisions whose recorded timestamp could not be read (set-wide, so it repeats per block). */
+  unusable_timestamp: number;
+  /** Decisions taken during a recorded dependency outage; out of numerator AND denominator. */
+  excluded_outage: number;
+  excluded_outage_by_subsystem: Record<string, number>;
+  gate: AutoCloseGateCounts;
+  /** Decisions the append-only trail can explain (everything but `unrecorded`). */
+  gate_explained: number;
+  /** 0..1 — `gate_explained / decided`. An EVIDENCE-QUALITY figure, not a performance one. */
+  gate_coverage: number;
+  /** Decisions whose verdict class was a candidate for auto-close at all. */
+  closable_class: number;
+  /** 0..1 — or the backend DASH string when `available` is false. */
+  rate: number | string;
+  available: boolean;
+  reason: string;
+}
+
+/**
+ * An interval the deployment holds POSITIVE EVIDENCE was an outage, derived from its
+ * own provider-health / RAG-health records. `start` is null when no success was ever
+ * observed (open-ended backwards); `start_known` says so explicitly.
+ */
+export interface AutoCloseOutageWindow {
+  start: string | null;
+  end: string;
+  /**
+   * `llm_provider`, and only its COMPLETION channel — the one that gates verdict
+   * production. A degraded embedding channel and a stale knowledge corpus both fail
+   * soft (verdicts still ran), so they appear under `outage.context` instead.
+   */
+  subsystem: string;
+  detail: string;
+  start_known: boolean;
+}
+
+/** A non-completion provider channel reporting a failure. Context, never an exclusion. */
+export interface AutoCloseDegradedChannel {
+  key: string;
+  channel: string;
+  state: string;
+  last_failure_at: string;
+  last_success_at: string;
+  detail: string;
+}
+
+/**
+ * Dependency conditions that are real but do NOT stop a verdict being produced, so
+ * none of them removes a decision from the denominator. Render beside the windows.
+ */
+export interface AutoCloseDependencyContext {
+  degraded_channels: AutoCloseDegradedChannel[];
+  /** ISO-8601 instant a collapsed projection refusal left the corpus stale, or ''. */
+  corpus_stale_since: string;
+  corpus_stale_detail: string;
+  note: string;
+}
+
+/** One bucket of the gate-breakdown time series. */
+export interface RecordedAutoCloseGateBucket {
+  /** Bucket START, ISO-8601 UTC. */
+  t: string;
+  decided: number;
+  auto_closed: number;
+  /** Windowable policy closes only — the set-wide record-less ones belong to no bucket. */
+  policy_closed: number;
+  excluded_outage: number;
+  closable_class: number;
+  gate: AutoCloseGateCounts;
+  gate_explained: number;
+  gate_coverage: number;
+}
+
+/**
+ * The bucketed gate breakdown. An EVIDENCE-QUALITY signal: how much of the trail can
+ * still explain why auto-close did or did not fire. `tuning_target` is always false —
+ * never drive a threshold change from this; the tuner learns from independent
+ * analyst-confirmed outcomes instead. Render the `disclaimer` wherever it is shown.
+ */
+export interface RecordedAutoCloseGateSeries {
+  signal: 'evidence_quality' | string;
+  tuning_target: false;
+  bucket_minutes: number;
+  outcomes: AutoCloseGateOutcome[];
+  closable_outcomes: AutoCloseGateOutcome[];
+  audit_rows_seen: number;
+  /**
+   * How far back the DECISION audit page was read, or null when the caller did not
+   * say. A decision anchored outside this span stays `unrecorded` — the audit row is
+   * paired to the anchored decision by INSTANT, never borrowed from a later run — so
+   * render this beside `gate_coverage` to explain a low number.
+   */
+  audit_span_hours: number | null;
+  buckets: RecordedAutoCloseGateBucket[];
+  disclaimer: string;
+}
+
+/**
+ * The recorded-series status. The legacy `AutoCloseHealthStatus` vocabulary plus
+ * `outage_excluded` — every decision in the window was taken during a recorded
+ * dependency outage, so auto-close cannot be measured from them.
+ */
+export type RecordedAutoCloseHealthStatus = AutoCloseHealthStatus | 'outage_excluded';
+
+/**
+ * GET /api/metrics/auto-close-health/recorded — the auto-close rate measured from the
+ * APPEND-ONLY decision trail.
+ *
+ * A SEPARATE series from `AutoCloseHealth`, not a replacement: the legacy endpoint is
+ * unchanged and still served. Expect the two to differ. This one anchors each case on
+ * its FIRST recorded decision (stable under reinvestigation) and reads what that entry
+ * RECORDED, so a later analyst acknowledge/re-tag/reopen can never move a historical
+ * number; it also excludes recorded dependency outages. `legacy_series.note` carries
+ * the discontinuity in prose — surface it beside any comparison.
+ */
+export interface RecordedAutoCloseHealth {
+  window_hours: number;
+  generated_at: string;
+  /** `first` (default, stable under reinvestigation) or `last` (the legacy clock). */
+  anchor: 'first' | 'last' | string;
+  source: 'append_only_decision_trail' | string;
+  current: RecordedAutoCloseWindow;
+  baseline: RecordedAutoCloseWindow;
+  lifetime: RecordedAutoCloseWindow;
+  policy: AutoClosePolicySnapshot;
+  status: RecordedAutoCloseHealthStatus | string;
+  reason: string;
+  collapsed: boolean;
+  volume_steady: boolean;
+  comparable: boolean;
+  needs_attention: boolean;
+  outage: {
+    /**
+     * false means "we hold no health OBSERVATION" — NEVER "there was no outage". It is
+     * keyed off the recorded provider rows, not off whether a tracker object exists, so
+     * a deployment that has never made a model call reports false.
+     */
+    evidence_available: boolean;
+    /** What the health records SAY. */
+    windows: AutoCloseOutageWindow[];
+    /**
+     * What was actually EXCLUDED. Identical to `windows` except where a window had no
+     * known start (nothing on record ever succeeded): that one is clamped backwards to
+     * the earliest instant the report covers rather than extrapolated over all history.
+     */
+    applied_windows: AutoCloseOutageWindow[];
+    excluded_current: number;
+    excluded_lifetime: number;
+    /** Real but non-gating dependency conditions. Nothing here excludes a decision. */
+    context: AutoCloseDependencyContext;
+  };
+  gate_series: RecordedAutoCloseGateSeries;
+  legacy_series: { name: string; note: string };
   thresholds: Record<string, number>;
   truncated: boolean;
   store_total: number;

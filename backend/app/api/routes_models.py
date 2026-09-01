@@ -9,6 +9,10 @@ mount the monolith uses). It exposes:
 * ``GET  /api/llm/providers``         — the provider registry + configured-booleans.
 * ``POST /api/llm/models/test``       — route a tiny prompt through the ONE gateway
                                         (still hits the ledger #6) to verify a model.
+                                        ``mode="embedding"`` runs the EMPIRICAL
+                                        embedding probe instead, so a self-hosted
+                                        embedding endpoint can be validated BEFORE it
+                                        is saved into the embedding role.
 * ``PUT  /api/llm/models/{id}/pricing`` — set an operator price override
                                         (PriceOverlayStore; layered on the ledger).
 * ``POST /api/cost/estimate``         — a pre-flight USD estimate for a prompt+budget.
@@ -25,6 +29,7 @@ whether an LLM call RUNS — enforced in the gateway, which fails to NEEDS_HUMAN
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -34,7 +39,10 @@ from pydantic import BaseModel, Field
 
 from ..config import BudgetConfig, ModelConfig
 from ..llm.pricing import (
+    EMBEDDING_CAPABILITY,
     base_url_for,
+    capability_coverage,
+    capability_state,
     model_catalog,
     models_by_provider,
     pricing_source,
@@ -198,12 +206,266 @@ async def llm_providers(state: AppState = Depends(get_state)) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# The EMPIRICAL embedding probe.
+# --------------------------------------------------------------------------- #
+# What would have caught a completion model in the embedding slot? Not a capability
+# allowlist: the bundled catalog declares ``embedding`` for a handful of ids, so the
+# allowlist rejects every self-hosted / LiteLLM / vLLM / Ollama endpoint an operator
+# actually runs while saying nothing at all about an id it has never heard of. The
+# portable answer is to ASK THE ENDPOINT and look at what comes back.
+#
+# The probe embeds a short fixed anchor, a short fixed contrast string, and the anchor
+# AGAIN, then states only what any real embedding space must satisfy:
+#
+#   * the CONFIGURED provider actually answered (the gateway degrades to deterministic
+#     local hash vectors on a provider failure — those vectors are numeric, stable and
+#     discriminating, so without this check the probe would certify the fallback rather
+#     than the model);
+#   * the response is a vector of finite numbers, not prose, not a token stream;
+#   * its dimensionality is STABLE across the three inputs and non-trivial;
+#   * no vector is all-zero (cosine against it is undefined — the same guard the
+#     corpus writer applies before it will persist a chunk); and
+#   * the anchor is MORE similar to its own repeat than to the contrast string.
+#
+# That last one is deliberately an ORDERING statement, never an absolute cosine floor.
+# Similarity magnitudes are a property of the embedding family — some families put
+# unrelated English sentences at 0.85, others at 0.05 — so any fixed floor is a
+# threshold tuned to whichever family the author had in front of them, and it will
+# reject a perfectly good model from a different one. The ordering holds for every
+# embedding space that encodes meaning at all, and fails for the two things this probe
+# exists to catch: a constant/degenerate response, and a completion endpoint.
+#
+# Cost: three short strings through the ONE gateway, so the call is metered like any
+# other (#6). No prompt path (#9): the probe strings are ours, and the model id /
+# provider text returned is plain, bounded data.
+_PROBE_ANCHOR = "authentication failed for an administrative account from a remote host"
+_PROBE_CONTRAST = "the quarterly catering invoice was filed under office expenses"
+
+#: A shape backstop, not a quality bar: real embedding families ship 128..3072
+#: dimensions, and anything below a handful of components cannot carry a meaning
+#: at all. It is deliberately far under every real family so it can never reject one.
+_PROBE_MIN_DIM = 8
+
+
+def _finite_floats(vector: Any) -> list[float] | None:
+    """``vector`` as a list of finite floats, or None when it is not numeric.
+
+    Booleans are rejected explicitly: ``bool`` is a subclass of ``int``, so a
+    ``[True, False, ...]`` response would otherwise read as a numeric vector.
+    """
+    if not isinstance(vector, (list, tuple)) or not vector:
+        return None
+    out: list[float] = []
+    for component in vector:
+        if isinstance(component, bool) or not isinstance(component, (int, float)):
+            return None
+        value = float(component)
+        if not math.isfinite(value):   # NaN / +-inf is not a usable component
+            return None
+        out.append(value)
+    return out
+
+
+def _cosine(left: list[float], right: list[float]) -> float | None:
+    """Cosine similarity, or None when either vector has no magnitude."""
+    if len(left) != len(right):
+        return None
+    dot = sum(a * b for a, b in zip(left, right))
+    norm_left = sum(a * a for a in left) ** 0.5
+    norm_right = sum(b * b for b in right) ** 0.5
+    if norm_left <= 0.0 or norm_right <= 0.0:
+        return None
+    return dot / (norm_left * norm_right)
+
+
+def _check(check_id: str, passed: bool, detail: str) -> dict[str, Any]:
+    return {"id": check_id, "passed": bool(passed), "detail": detail}
+
+
+async def probe_embedding_model(gateway: Any, cfg: ModelConfig) -> dict[str, Any]:
+    """Empirically verify that ``cfg`` names a usable EMBEDDING model. Never raises.
+
+    Returns ``{ok, checks, observed, message}``. ``ok`` is True only when every check
+    passed; ``message`` always names what was OBSERVED (dimensionality, the two
+    similarities, the provider that answered) rather than asserting a capability, so a
+    refusal is arguable against evidence instead of against a bundled list.
+
+    Portable by construction: every assertion is a property of an embedding response,
+    not of a vendor, a model family or a price row, so an operator's own endpoint is
+    judged on the same terms as a hosted one.
+    """
+    observed: dict[str, Any] = {
+        "provider": "",
+        "model": "",
+        "fallback": False,
+        "fallback_reason": "",
+        "vectors_returned": 0,
+        "dimensions": None,
+        "dimensions_stable": None,
+        "self_similarity": None,
+        "contrast_similarity": None,
+        "distinct_vectors": None,
+    }
+    texts = [_PROBE_ANCHOR, _PROBE_CONTRAST, _PROBE_ANCHOR]
+    try:
+        batch = await gateway.embed_with_provenance(texts, cfg, surface="embedding_probe")
+    except Exception as exc:  # noqa: BLE001 — a provider/gateway failure IS the finding
+        return {
+            "ok": False,
+            "checks": [_check("call_succeeded", False, _safe(exc))],
+            "observed": observed,
+            "message": (
+                "the embedding call failed, so nothing was observed about this model: "
+                f"{_safe(exc)}"
+            ),
+        }
+
+    observed["provider"] = _safe(getattr(batch, "provider", "") or "")
+    observed["model"] = _safe(getattr(batch, "model", "") or "")
+    observed["fallback"] = bool(getattr(batch, "fallback", False))
+    observed["fallback_reason"] = _safe(getattr(batch, "fallback_reason", "") or "")
+    vectors_raw = list(getattr(batch, "vectors", None) or [])
+    observed["vectors_returned"] = len(vectors_raw)
+
+    checks: list[dict[str, Any]] = []
+
+    # 1. The CONFIGURED provider answered. The gateway substitutes deterministic local
+    #    hash vectors whenever it cannot reach the provider, and those satisfy every
+    #    numeric check below — so without this the probe would happily certify a model
+    #    whose endpoint rejected the request outright.
+    if observed["fallback"]:
+        reason = observed["fallback_reason"] or "the provider did not answer"
+        checks.append(_check("configured_provider_answered", False, reason))
+        return {
+            "ok": False,
+            "checks": checks,
+            "observed": observed,
+            "message": (
+                "the configured embedding provider did not answer "
+                f"({reason}), so the vectors observed came from the local fallback "
+                "rather than from this model — nothing was learned about it"
+            ),
+        }
+    checks.append(_check("configured_provider_answered", True,
+                         f"answered by provider {observed['provider'] or 'unknown'}"))
+
+    # 2. Three numeric vectors, one per input.
+    vectors = [_finite_floats(vector) for vector in vectors_raw]
+    if len(vectors) != len(texts) or any(vector is None for vector in vectors):
+        checks.append(_check(
+            "numeric_vector_response", False,
+            f"expected {len(texts)} numeric vector(s), observed {len(vectors_raw)} "
+            "response item(s), not all of which were finite numeric vectors",
+        ))
+        return {
+            "ok": False,
+            "checks": checks,
+            "observed": observed,
+            "message": (
+                f"the endpoint returned {len(vectors_raw)} item(s) for {len(texts)} "
+                "input(s) and they were not all finite numeric vectors, so this is not "
+                "an embedding response"
+            ),
+        }
+    anchor, contrast, anchor_repeat = vectors  # type: ignore[misc]
+    checks.append(_check("numeric_vector_response", True,
+                         f"{len(vectors)} finite numeric vector(s)"))
+
+    # 3. Stable, non-trivial dimensionality.
+    dims = {len(vector) for vector in vectors}
+    observed["dimensions"] = min(dims) if len(dims) == 1 else sorted(dims)
+    observed["dimensions_stable"] = len(dims) == 1
+    checks.append(_check(
+        "stable_dimensionality", len(dims) == 1,
+        f"observed dimensionality {sorted(dims)}",
+    ))
+    non_trivial = len(dims) == 1 and min(dims) >= _PROBE_MIN_DIM
+    checks.append(_check(
+        "non_trivial_dimensionality", non_trivial,
+        f"observed {sorted(dims)} against a minimum of {_PROBE_MIN_DIM}",
+    ))
+
+    # 4. No all-zero vector (cosine against one is undefined).
+    non_zero = all(any(component != 0.0 for component in vector) for vector in vectors)
+    checks.append(_check("non_zero_vectors", non_zero,
+                         "every vector carries magnitude" if non_zero
+                         else "at least one vector is all-zero"))
+
+    # 5. Two different inputs must not produce one vector.
+    distinct = anchor != contrast
+    observed["distinct_vectors"] = bool(distinct)
+    checks.append(_check(
+        "distinct_inputs_distinct_vectors", distinct,
+        "two different inputs produced different vectors" if distinct
+        else "two different inputs produced an identical vector",
+    ))
+
+    # 6. The ORDERING statement — never an absolute similarity floor (see the note
+    #    above this function). Skipped rather than faked when a magnitude is missing.
+    self_similarity = _cosine(anchor, anchor_repeat)
+    contrast_similarity = _cosine(anchor, contrast)
+    observed["self_similarity"] = (
+        round(self_similarity, 6) if self_similarity is not None else None
+    )
+    observed["contrast_similarity"] = (
+        round(contrast_similarity, 6) if contrast_similarity is not None else None
+    )
+    if self_similarity is None or contrast_similarity is None:
+        checks.append(_check(
+            "discriminates_between_inputs", False,
+            "similarity could not be computed (a vector had no magnitude or the "
+            "dimensionality was unstable)",
+        ))
+    else:
+        checks.append(_check(
+            "discriminates_between_inputs", self_similarity > contrast_similarity,
+            f"the same input scored {self_similarity:.6f} against itself and "
+            f"{contrast_similarity:.6f} against a different input",
+        ))
+
+    ok = all(check["passed"] for check in checks)
+    dim_text = (
+        f"{observed['dimensions']}-dimensional"
+        if isinstance(observed["dimensions"], int) else
+        f"inconsistently {observed['dimensions']}-dimensional"
+    )
+    if ok:
+        message = (
+            f"observed {len(vectors)} {dim_text} vector(s) from provider "
+            f"{observed['provider'] or 'unknown'}; the same input scored "
+            f"{self_similarity:.6f} against itself and {contrast_similarity:.6f} "
+            "against a different input, so this endpoint returns a usable embedding "
+            "space"
+        )
+    else:
+        failed = ", ".join(check["id"] for check in checks if not check["passed"])
+        message = (
+            f"observed {len(vectors)} {dim_text} vector(s) from provider "
+            f"{observed['provider'] or 'unknown'}"
+            + (
+                f"; the same input scored {self_similarity:.6f} against itself and "
+                f"{contrast_similarity:.6f} against a different input"
+                if self_similarity is not None and contrast_similarity is not None
+                else ""
+            )
+            + f" — this is not a usable embedding space ({failed})"
+        )
+    return {"ok": ok, "checks": checks, "observed": observed, "message": message}
+
+
+# --------------------------------------------------------------------------- #
 # POST /api/llm/models/test — verify a model THROUGH the one gateway (hits ledger)
 # --------------------------------------------------------------------------- #
 class ModelTestBody(BaseModel):
     model: str = Field(..., min_length=1, max_length=200)
     provider: str | None = None
     prompt: str = Field(default="Reply with the single word: ok", max_length=2000)
+    #: ``chat`` (the default, byte-identical to the historical behaviour) sends the
+    #: prompt as a completion. ``embedding`` runs the empirical embedding probe
+    #: instead, so an operator can verify a model BEFORE assigning it to the
+    #: embedding role rather than discovering the mistake as a silently degraded
+    #: corpus. Additive: an existing client that omits the field is unaffected.
+    mode: str = Field(default="chat", max_length=32)
 
 
 @router.post("/llm/models/test")
@@ -215,6 +477,9 @@ async def llm_model_test(
     mid = body.model.strip()
     if not mid:
         raise HTTPException(status_code=400, detail="model is required")
+    mode = (body.mode or "chat").strip().lower()
+    if mode not in ("chat", "embedding"):
+        raise HTTPException(status_code=400, detail="mode must be 'chat' or 'embedding'")
     # A runtime-registered self-hosted / LiteLLM model routes over the openai_compatible
     # provider at ITS base_url (checked first so a bare custom id doesn't resolve to the
     # heuristic "other" — which has no provider factory — and so the endpoint is carried
@@ -249,6 +514,34 @@ async def llm_model_test(
             provider=provider, model=mid, temperature=0.1, max_tokens=16,  # type: ignore[arg-type]
             base_url=custom_base_url,
         )
+    if mode == "embedding":
+        # The empirical probe. It replaces the question "does a bundled JSON file
+        # declare this id embedding-capable?" — which cannot be answered for an
+        # operator's own endpoint — with "what does this endpoint actually return?".
+        # The catalog DECLARATION travels alongside as context, never as the verdict.
+        probe = await probe_embedding_model(state.gateway, cfg)
+        declaration = capability_state(mid, EMBEDDING_CAPABILITY)
+        return {
+            "ok": bool(probe["ok"]),
+            "mode": "embedding",
+            "model": _safe(probe["observed"].get("model") or mid),
+            "provider": _safe(probe["observed"].get("provider") or provider),
+            "checks": probe["checks"],
+            "observed": probe["observed"],
+            "message": _safe(probe["message"]),
+            # Present so a UI can explain a surprising result, NOT so anything can
+            # decide on it: ``unknown`` is the normal state for a self-hosted model and
+            # must never read as a failure.
+            "catalog_declaration": {
+                "state": declaration,
+                **capability_coverage(EMBEDDING_CAPABILITY),
+            },
+            "error": "" if probe["ok"] else _safe(probe["message"]),
+            "pricing_source": pricing_source(
+                str(probe["observed"].get("model") or mid)
+            ),
+            "base_url": cfg.base_url or base_url_for(mid),
+        }
     messages = [{"role": "user", "content": str(body.prompt)[:2000]}]
     try:
         result = await state.gateway.complete(
@@ -258,8 +551,8 @@ async def llm_model_test(
         # Plain, bounded error text (#9). If the provider ran and failed, the gateway
         # already recorded one ERROR ledger row; a budget BLOCK raised before the call
         # and recorded nothing (zero rows). Either way no OK row is written here.
-        return {"ok": False, "model": _safe(mid), "provider": _safe(provider),
-                "error": _safe(exc)}
+        return {"ok": False, "mode": "chat", "model": _safe(mid),
+                "provider": _safe(provider), "error": _safe(exc)}
     # Badge the price the same way the ledger row this call wrote did (gateway._record)
     # and the sibling /cost/estimate endpoint: an active operator overlay → 'exact',
     # else the built-in table provenance. Without this the dialog could show
@@ -272,6 +565,7 @@ async def llm_model_test(
         overlay = None
     return {
         "ok": True,
+        "mode": "chat",
         "model": _safe(eff_model),
         "provider": _safe(provider),
         "reply": _safe(result.text),

@@ -50,13 +50,31 @@ rule. The image/build pipeline passes these names directly:
 |---|---|
 | `TLSOC_VERSION` | Compose image tag/build argument; must match the code's Semantic Version (`0.1.13`) |
 | `TLSOC_RELEASE_CHANNEL` | `testing` by default; set to `stable` only for the accepted `main`/tag build |
-| `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info`, image metadata, and newly produced operational records; when unset it remains the literal `unknown` |
-| `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata |
+| `TLSOC_BUILD_SHA` | Exact source commit embedded in `/api/health/build-info`, image metadata, and newly produced operational records. The shipped Compose and demo wrappers derive it from the checkout via `scripts/lib/build-identity.sh`; a value supplied by the supervised bootstrap, or pinned to a non-empty, non-`unknown` value in `.env`, is used unchanged. Only when every source is absent does it remain the literal `unknown` |
+| `TLSOC_BUILD_DATE` | Build timestamp embedded in `/api/health/build-info` and image metadata, derived on the same terms as `TLSOC_BUILD_SHA`. Supply BOTH or neither: a half-stamped pair identifies no reproducible build |
 | `TLSOC_SOURCE_URL` | Dockerfile build argument for the canonical source URL embedded in OCI image metadata; the reference Compose files currently use the Dockerfile's repository default |
 
 The release channel is independent of SemVer: both the accepted Testing candidate and
 its Stable promotion are application `0.1.13`. Promotion changes provenance/channel,
 not the source version.
+
+`GET /api/health/build-info` answers two deliberately different questions about the
+same revision:
+
+* `provenance_complete` / `provenance_missing` — **was it stamped at all?** Any
+  non-blank, non-`unknown` value passes, so a tarball, Nix, Bazel, or CI build
+  identifier counts as honest provenance.
+* `provenance_advisories` — **is it an exact source revision an upgrade can be
+  pinned to?** A build may be complete and still carry
+  `commit_sha_not_exact_source_revision` (an abbreviated revision, a `<sha>-dirty`
+  suffix, a tag name, a build number) or `build_identity_partially_stamped` (only one
+  of the SHA/date pair supplied). Supervised updates require an exact 40-character
+  commit id, so the advisory is what explains a refusal that the completeness fields
+  alone cannot. Both are also logged as startup warnings; neither blocks boot.
+
+Never derive the SHA from an abbreviated `git rev-parse --short`: it is not an exact
+object id, so the resulting build is complete but unpinnable. `scripts/check_version.py`
+fails the build if a shipped script or document does.
 
 The Console compiles version/channel/SHA/date into its own build and displays an
 always-visible `vX.Y.Z · Testing|Stable` badge. Opening the badge compares Console

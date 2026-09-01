@@ -120,9 +120,39 @@ export interface ProvidersResponse {
   providers: ProviderRow[];
 }
 
-/** POST /api/llm/models/test result (success or a fenced error). */
+/** One assertion the embedding probe made about what the endpoint actually returned. */
+export interface ModelProbeCheck {
+  id: string;
+  passed: boolean;
+  detail: string;
+}
+
+/** What the embedding probe OBSERVED. Every field is a measurement, never a claim. */
+export interface ModelProbeObserved {
+  provider: string;
+  model: string;
+  fallback: boolean;
+  fallback_reason: string;
+  vectors_returned: number;
+  dimensions: number | null;
+  dimensions_stable: boolean | null;
+  self_similarity: number | null;
+  contrast_similarity: number | null;
+  distinct_vectors: boolean | null;
+}
+
+/**
+ * POST /api/llm/models/test result (success or a fenced error).
+ *
+ * `mode: 'chat'` (the default) fills `reply`/token counts. `mode: 'embedding'` runs
+ * the empirical probe instead and fills `checks`/`observed`/`message` — the evidence a
+ * self-hosted embedding endpoint is judged on, since the bundled catalog can hold no
+ * opinion about it. `catalog_declaration.state` is CONTEXT only: `unknown` is the
+ * normal state for a self-hosted model and must never be rendered as a failure.
+ */
 export interface ModelTestResult {
   ok: boolean;
+  mode?: 'chat' | 'embedding' | string;
   model: string;
   provider: string;
   reply?: string;
@@ -132,6 +162,14 @@ export interface ModelTestResult {
   pricing_source?: PricingSource | string;
   base_url?: string | null;
   error?: string;
+  checks?: ModelProbeCheck[];
+  observed?: ModelProbeObserved;
+  message?: string;
+  catalog_declaration?: {
+    state: 'declared' | 'declared_absent' | 'unknown' | string;
+    catalog_models: number;
+    declaring_models: number;
+  };
 }
 
 /** POST /api/cost/estimate result. */
@@ -202,8 +240,16 @@ export interface ProviderTestResult {
 export const modelsApi = {
   catalog: () => api.get<ModelsCatalogResponse>('llm/models'),
   providers: () => api.get<ProvidersResponse>('llm/providers'),
-  test: (body: { model: string; provider?: string; prompt?: string }) =>
-    api.post<ModelTestResult>('llm/models/test', body),
+  /**
+   * Send a live test call. `mode: 'embedding'` runs the empirical embedding probe
+   * (does this endpoint really return usable vectors?) instead of a completion.
+   */
+  test: (body: {
+    model: string;
+    provider?: string;
+    prompt?: string;
+    mode?: 'chat' | 'embedding';
+  }) => api.post<ModelTestResult>('llm/models/test', body),
   /** Register a self-hosted / LiteLLM (OpenAI-compatible) model at runtime ($0). */
   addCustom: (body: CustomModelInput) =>
     api.post<{ ok: boolean; model: CustomModelRow; configured: Record<string, boolean> }>(

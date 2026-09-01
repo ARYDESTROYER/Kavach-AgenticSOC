@@ -138,6 +138,78 @@ def model_supports_capability(model: str, capability: str) -> bool:
     return str(capability) in model_capabilities(model)
 
 
+# --------------------------------------------------------------------------- #
+# Capability EVIDENCE, not a capability allowlist.
+# --------------------------------------------------------------------------- #
+# ``model_supports_capability`` answers one question — "does the bundled catalog
+# declare this?" — and a boolean cannot carry the answer a configuration gate needs,
+# because it collapses two completely different states into ``False``:
+#
+#   * the catalog KNOWS this model and does not list the capability (evidence of
+#     incapability — a completion model in the embedding slot), and
+#   * the catalog has never heard of this model (no evidence at all — every
+#     self-hosted / LiteLLM / vLLM / Ollama / aggregator embedding model ever
+#     registered at runtime, and every model released after this build).
+#
+# Treating the second as the first makes a bundled 23-row JSON file the authority on
+# what a vendor-agnostic product may embed with, and the file declares the capability
+# for exactly three ids. That is not a guard: a deployment's real embedding endpoint
+# is unconfigurable while an unknown completion id sails through whichever gate reads
+# the boolean the other way round. The portable answer is an EMPIRICAL PROBE (see
+# ``api/routes_models.probe_embedding_model``); these helpers only report what the
+# catalog can and cannot speak for, so a caller can tell a refusal backed by evidence
+# from one backed by ignorance.
+CAPABILITY_DECLARED = "declared"
+CAPABILITY_DECLARED_ABSENT = "declared_absent"
+CAPABILITY_UNKNOWN = "unknown"
+
+EMBEDDING_CAPABILITY = "embedding"
+
+
+def capability_state(model: str, capability: str) -> str:
+    """What the bundled catalog can say about ``model`` and ``capability``.
+
+    One of :data:`CAPABILITY_DECLARED` (the row lists it),
+    :data:`CAPABILITY_DECLARED_ABSENT` (a row exists and does NOT list it — the only
+    catalog-backed evidence of incapability), or :data:`CAPABILITY_UNKNOWN` (no row:
+    a runtime-registered, self-hosted or newer model the bundled file predates).
+    """
+    entry = registry_entry(model)
+    if not entry:
+        return CAPABILITY_UNKNOWN
+    if str(capability) in model_capabilities(model):
+        return CAPABILITY_DECLARED
+    return CAPABILITY_DECLARED_ABSENT
+
+
+def model_may_embed(model: str) -> bool:
+    """Whether ``model`` may be ACCEPTED into an embedding slot on catalog evidence.
+
+    False only on positive evidence of incapability — a catalog row that declares
+    other capabilities and not ``embedding``. An unknown id returns True because the
+    bundled catalog holds no evidence either way; it is the empirical probe, not this
+    lookup, that decides such a model. Refusing the unknown case here is what makes
+    every self-hosted embedding endpoint unconfigurable on a vendor-agnostic product.
+    """
+    return capability_state(model, EMBEDDING_CAPABILITY) != CAPABILITY_DECLARED_ABSENT
+
+
+def capability_coverage(capability: str = EMBEDDING_CAPABILITY) -> dict[str, int]:
+    """How much of the bundled catalog a capability allowlist could speak for.
+
+    ``{"catalog_models": N, "declaring_models": K}``. Published beside a probe result
+    so an operator can see the size of the population the declaration covers rather
+    than reading a catalog silence as a verdict.
+    """
+    registry = load_registry()
+    declaring = sum(
+        1
+        for mid in registry
+        if str(capability) in model_capabilities(mid)
+    )
+    return {"catalog_models": len(registry), "declaring_models": declaring}
+
+
 def registry_price(model: str) -> tuple[float, float] | None:
     """``(input_per_million, output_per_million)`` from the registry row, or None when
     the model is unknown to the registry (→ caller falls back to PRICES / heuristic)."""

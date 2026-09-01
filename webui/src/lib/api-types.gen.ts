@@ -2000,8 +2000,11 @@ export interface paths {
          *     public ``GET /api/health``: corpus counts and per-source detection posture must not
          *     be readable by an anonymous caller.
          *
-         *     Read-only and seed-free — asking about corpus health never triggers an embedding
-         *     spend, a projection, or any write. Advisory only; never read by ``decide()`` (#3).
+         *     Seed-free, and read-only over everything an operator would call state: asking about
+         *     corpus health never triggers an embedding spend, a projection, a case write or a
+         *     configuration change. It does perform ONE bounded advisory write — the composition
+         *     baseline a class-share shift is measured against, described in the module docstring.
+         *     Advisory only; never read by ``decide()`` (#3).
          */
         get: operations["diagnostics_health_api_diagnostics_health_get"];
         put?: never;
@@ -2648,6 +2651,59 @@ export interface paths {
          *     read for DISPLAY only — nothing here is ever an input to ``decide()`` (#3).
          */
         get: operations["metrics_auto_close_health_api_metrics_auto_close_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/auto-close-health/recorded": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Auto Close Health Recorded
+         * @description The auto-close rate measured from the APPEND-ONLY decision trail.
+         *
+         *     A SEPARATE series from ``GET /api/metrics/auto-close-health``, which is unchanged
+         *     and still served. The two are expected to differ, and the response carries a
+         *     ``legacy_series.note`` saying why, because silently redefining a shipped metric
+         *     moves every historical number an operator has been tracking.
+         *
+         *     What this one does differently:
+         *
+         *     * anchors each case on its FIRST recorded ``{"event": "decision"}`` entry, so a
+         *       reopen plus a re-investigation never moves, duplicates or re-labels the count;
+         *     * reads the ``status``/``decision_by`` RECORDED in that entry rather than today's
+         *       mutable ``case.decision_by``/``case.status`` — merely acknowledging an agent
+         *       auto-close can no longer migrate it into "a human closed this";
+         *     * excludes decisions taken during a dependency outage, derived from the
+         *       deployment's own provider-health records (never a calendar date, which would be
+         *       correct in one deployment and wrong in every other) and ONLY for a failing
+         *       COMPLETION channel — the one that gates verdict production. A degraded embedding
+         *       channel and a stale knowledge corpus both fail soft, so verdicts (and
+         *       ``decide()``) still ran; those are published under ``outage.context`` and never
+         *       remove a decision from the denominator;
+         *     * reports a bucketed ``gate_series``: how much of the trail can still EXPLAIN why
+         *       auto-close did or did not fire, and for the explained ones, whether the verdict
+         *       class was closable at all and what blocked the bar (confidence / risk /
+         *       class-disabled). That series is an EVIDENCE-QUALITY signal and is explicitly
+         *       NOT a threshold-tuning target — see its ``disclaimer``.
+         *
+         *     Every input beyond the cases is optional and fails soft: a missing audit page
+         *     downgrades the gate breakdown to ``unrecorded``, and a missing health record is
+         *     reported as "no evidence", never as proof that there was no outage.
+         *
+         *     READ-ONLY. The auto-close policy is read for DISPLAY-ONLY classification of
+         *     decisions that have already been made — nothing here is ever an input to
+         *     ``decide()`` (#3).
+         */
+        get: operations["metrics_auto_close_health_recorded_api_metrics_auto_close_health_recorded_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5725,6 +5781,11 @@ export interface components {
             commit_sha: string;
             /** Ocsf Version */
             ocsf_version: string;
+            /**
+             * Provenance Advisories
+             * @default []
+             */
+            provenance_advisories: string[];
             /** Provenance Complete */
             provenance_complete: boolean;
             /** Provenance Missing */
@@ -7054,6 +7115,11 @@ export interface components {
         };
         /** ModelTestBody */
         ModelTestBody: {
+            /**
+             * Mode
+             * @default chat
+             */
+            mode: string;
             /** Model */
             model: string;
             /**
@@ -12760,6 +12826,39 @@ export interface operations {
         parameters: {
             query?: {
                 window_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_auto_close_health_recorded_api_metrics_auto_close_health_recorded_get: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+                /** @description Which decision in a case's append-only trail anchors it to a window. `first` (default) is stable under reinvestigation; `last` reproduces the legacy endpoint's rolling clock. */
+                anchor?: string;
             };
             header?: never;
             path?: never;

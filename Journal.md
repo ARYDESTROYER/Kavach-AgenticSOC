@@ -10582,3 +10582,61 @@
 - Tests: Not run (merge conflict touched `Journal.md` only; no code-path changes).
 - Status: done
 - Next: Publish the merge commit and reply on the PR thread.
+
+### 2026-09-01 21:40Z — orchestrator + sub-agent fleet — E+G3, C, H
+- Context: Brief A fully merged (#102/#103/#105) and Brief B's causal chain merged (F, G, G1 in
+  #102/#104). This wave takes the three remaining measurement/observability items.
+- Did:
+  - **E+G3.** There is no single auto-close rate — there are THREE, on three clocks, all reading the
+    MUTABLE `case.decision_by`/`status`, which are last-writer: merely ACKNOWLEDGING an agent
+    auto-close migrates it into "a human closed this", retroactively, for every past window. Two of
+    the three already carried an honesty caveat pointing at a durable record nothing read. Added
+    `recorded_auto_close_health()` over `case.history` + the DECISION audit row, anchored on the
+    FIRST decision so reinvestigation cannot move a case. Shipped ALONGSIDE: the legacy function is
+    AST-identical to HEAD modulo docstrings (machine-verified per top-level def) and pinned by a
+    frozen snapshot + key-set test. Outage exclusion derives from persisted provider/rag health with
+    ZERO date literals (the #104 lint enforces it) and asserts shift-invariance — a property a
+    hardcoded date cannot have. G3: confidence + gate outcome APPENDED at the end of the decision
+    audit row; the first five tokens keep their exact order because they are parsed positionally.
+  - **C.** Replaced the bundled-registry capability gate — which an unknown model bypassed entirely
+    and which made every self-hosted embedding model unconfigurable — with an empirical probe.
+    Composition health reports the (outcome × verdict × ground_truth_source) CROSS-TAB and alarms on
+    class-share shift and single-transaction concentration, never row count or disagreement level.
+  - **H.** One shared `scripts/lib/build-identity.sh`; the two revision predicates split rather than
+    merged (merging would mark every tarball/Nix/CI builder incomplete); startup detector.
+- Decisions / what review caught (12 of 17 confirmed):
+  - **Item C's headline fix had NOT actually landed on the first pass** — a self-hosted
+    OpenAI-compatible embedding model still could not be configured. Review caught it; now landed.
+  - `derive_outage_windows` excluded decisions on subsystems that CANNOT stop a verdict. A degraded
+    embedding channel and a stale corpus are soft failures — verdicts kept being produced through
+    both — so excluding them would have DELETED real measurements. Now only the COMPLETION channel
+    excludes; the soft failures are reported as context.
+  - The `rag_composition_shift` alarm was one-shot (baseline advanced unconditionally on every GET),
+    so it could never fire twice; `_embedding_space_block` reported the ENTIRE bundled corpus as
+    stranded on the keyless/offline profile; and diagnostics health performed a durable KV write on
+    a GET, violating that module's own documented invariant.
+  - H measured trap (2) on this checkout: `git status --porcelain` = 16 lines vs
+    `git diff --name-only HEAD --` = 14. The 2-line over-count is the failure mode — an operator note
+    would mark every future build dirty forever. Found while doing it: `bootstrap-updater.sh`
+    supplies the SHA but never the DATE, so the supervised bootstrap produced a HALF-STAMPED image.
+- ⚠️ PROCESS FAILURE I CAUSED, and its remediation. Checking out the tiles branch to fix Copilot
+  findings while the E+G3 agent was mid-write on `metrics.py` meant `git add -A` swept its PARTIAL
+  work into #105, which merged. `Testing` briefly carried `derive_outage_windows` +
+  `classify_auto_close_gate` with no `recorded_auto_close_health` or `DecisionRecord` to consume
+  them. Impact assessed and contained: I grepped every Python file in `Testing` — NOTHING called
+  them, so they were dead code, no behaviour changed and CI was legitimately green. This commit
+  supersedes them with the complete, review-corrected versions (notably the outage-exclusion fix
+  above, which the leaked version had wrong). Root cause: switching branches while a workflow held
+  the working tree. Standing practice since: isolated `git worktree` for any verification or fix
+  that must happen while a workflow is live.
+  Also worth recording: a workflow script bug of mine (unescaped backticks inside a JS template
+  literal) silently killed the H agent before it started — `parallel[1] failed: undefined is not a
+  function`. Relaunched as its own workflow with the string built via `.join()`.
+- Tests: backend **3258 passed, 4 skipped, 0 failures**; Console **314 files / 2231 passed**, zero
+  stderr; eslint 0/0 at `--max-warnings=0`; design gates 6/6; `check:types` no drift;
+  `scripts/check_version.py` consistent; ruff E9/F63/F7/F82 clean;
+  `deploy/docker-compose.agnostic.yml` zero-line diff (byte-pinned).
+  **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
+- Status: done for E+G3, C, H. 15 of 15 brief items are now built; D, A, B, I remain unstarted.
+- Next: D (provider circuit breaker, advisory-mode-first), A (caps bounds + the NumPref zero bug),
+  B (corpus repair), I (replay harness).

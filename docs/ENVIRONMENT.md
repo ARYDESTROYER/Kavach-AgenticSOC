@@ -205,8 +205,8 @@ prefixed Docker build/runtime metadata rather than `Secrets` fields:
 |---|---|---|
 | `TLSOC_VERSION` | `0.1.13` in Compose | Machine SemVer for images and API identity |
 | `TLSOC_RELEASE_CHANNEL` | `testing` | Independent promotion stamp; use `stable` only for the accepted main/tag build |
-| `TLSOC_BUILD_SHA` | `unknown` | Exact source revision |
-| `TLSOC_BUILD_DATE` | `unknown` | Reproducible-build timestamp supplied by the builder |
+| `TLSOC_BUILD_SHA` | derived by the wrapper; `unknown` otherwise | Exact source revision. `scripts/agentic-soc-compose.sh` and `scripts/run-demo.sh` both source `scripts/lib/build-identity.sh`, which derives it from the checkout — but only when nothing supplied it. A supplied release identity (the supervised bootstrap) and a non-empty, non-`unknown` `.env` pin both win. An uncommitted **tracked** change is reported as `<sha>-dirty`; untracked files are ignored, so an operator note in the deployment directory does not mark the build dirty |
+| `TLSOC_BUILD_DATE` | derived by the wrapper; `unknown` otherwise | Reproducible-build timestamp supplied by the builder, derived from the HEAD commit date on the same terms as `TLSOC_BUILD_SHA` |
 | `TLSOC_SOURCE_URL` | repository URL in each Dockerfile | Canonical source URL embedded in OCI image metadata; the reference Compose files do not map an `.env` override |
 | `AGENTIC_SOC_UPDATE_REPOSITORY` | `ARYDESTROYER/Agentic-Kibana` | Repository whose tag-bound release workflow the host supervisor trusts; configure before bootstrap, not per browser request |
 

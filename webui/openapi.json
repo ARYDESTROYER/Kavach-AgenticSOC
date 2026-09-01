@@ -454,6 +454,14 @@
             "title": "Ocsf Version",
             "type": "string"
           },
+          "provenance_advisories": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Provenance Advisories",
+            "type": "array"
+          },
           "provenance_complete": {
             "title": "Provenance Complete",
             "type": "boolean"
@@ -3324,6 +3332,12 @@
       },
       "ModelTestBody": {
         "properties": {
+          "mode": {
+            "default": "chat",
+            "maxLength": 32,
+            "title": "Mode",
+            "type": "string"
+          },
           "model": {
             "maxLength": 200,
             "minLength": 1,
@@ -11078,7 +11092,7 @@
     },
     "/api/diagnostics/health": {
       "get": {
-        "description": "The operator diagnostics roll-up for the conditions that used to fail silently.\n\nReturns the precedent-corpus health signal (size, per-source projection counts, and\nthe explicit \"0 analyst-confirmed precedents available\" flag), the SQL\nschema-migration state, and the rolling auto-close health signal — plus a flat\n``alerts`` list of positively-detected conditions and a SEPARATE ``unknowns`` list\nof signals that could not be evaluated, so an empty ``alerts`` is never mistaken for\na clean bill of health. There is no composite health score — only the two counts.\n\nAuthenticated and gated on ``settings:read``. This detail is deliberately NOT on the\npublic ``GET /api/health``: corpus counts and per-source detection posture must not\nbe readable by an anonymous caller.\n\nRead-only and seed-free — asking about corpus health never triggers an embedding\nspend, a projection, or any write. Advisory only; never read by ``decide()`` (#3).",
+        "description": "The operator diagnostics roll-up for the conditions that used to fail silently.\n\nReturns the precedent-corpus health signal (size, per-source projection counts, and\nthe explicit \"0 analyst-confirmed precedents available\" flag), the SQL\nschema-migration state, and the rolling auto-close health signal — plus a flat\n``alerts`` list of positively-detected conditions and a SEPARATE ``unknowns`` list\nof signals that could not be evaluated, so an empty ``alerts`` is never mistaken for\na clean bill of health. There is no composite health score — only the two counts.\n\nAuthenticated and gated on ``settings:read``. This detail is deliberately NOT on the\npublic ``GET /api/health``: corpus counts and per-source detection posture must not\nbe readable by an anonymous caller.\n\nSeed-free, and read-only over everything an operator would call state: asking about\ncorpus health never triggers an embedding spend, a projection, a case write or a\nconfiguration change. It does perform ONE bounded advisory write — the composition\nbaseline a class-share shift is measured against, described in the module docstring.\nAdvisory only; never read by ``decide()`` (#3).",
         "operationId": "diagnostics_health_api_diagnostics_health_get",
         "parameters": [
           {
@@ -12484,6 +12498,63 @@
           }
         },
         "summary": "Metrics Auto Close Health"
+      }
+    },
+    "/api/metrics/auto-close-health/recorded": {
+      "get": {
+        "description": "The auto-close rate measured from the APPEND-ONLY decision trail.\n\nA SEPARATE series from ``GET /api/metrics/auto-close-health``, which is unchanged\nand still served. The two are expected to differ, and the response carries a\n``legacy_series.note`` saying why, because silently redefining a shipped metric\nmoves every historical number an operator has been tracking.\n\nWhat this one does differently:\n\n* anchors each case on its FIRST recorded ``{\"event\": \"decision\"}`` entry, so a\n  reopen plus a re-investigation never moves, duplicates or re-labels the count;\n* reads the ``status``/``decision_by`` RECORDED in that entry rather than today's\n  mutable ``case.decision_by``/``case.status`` — merely acknowledging an agent\n  auto-close can no longer migrate it into \"a human closed this\";\n* excludes decisions taken during a dependency outage, derived from the\n  deployment's own provider-health records (never a calendar date, which would be\n  correct in one deployment and wrong in every other) and ONLY for a failing\n  COMPLETION channel — the one that gates verdict production. A degraded embedding\n  channel and a stale knowledge corpus both fail soft, so verdicts (and\n  ``decide()``) still ran; those are published under ``outage.context`` and never\n  remove a decision from the denominator;\n* reports a bucketed ``gate_series``: how much of the trail can still EXPLAIN why\n  auto-close did or did not fire, and for the explained ones, whether the verdict\n  class was closable at all and what blocked the bar (confidence / risk /\n  class-disabled). That series is an EVIDENCE-QUALITY signal and is explicitly\n  NOT a threshold-tuning target — see its ``disclaimer``.\n\nEvery input beyond the cases is optional and fails soft: a missing audit page\ndowngrades the gate breakdown to ``unrecorded``, and a missing health record is\nreported as \"no evidence\", never as proof that there was no outage.\n\nREAD-ONLY. The auto-close policy is read for DISPLAY-ONLY classification of\ndecisions that have already been made — nothing here is ever an input to\n``decide()`` (#3).",
+        "operationId": "metrics_auto_close_health_recorded_api_metrics_auto_close_health_recorded_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 8760,
+              "minimum": 1,
+              "title": "Window Hours",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Which decision in a case's append-only trail anchors it to a window. `first` (default) is stable under reinvestigation; `last` reproduces the legacy endpoint's rolling clock.",
+            "in": "query",
+            "name": "anchor",
+            "required": false,
+            "schema": {
+              "default": "first",
+              "description": "Which decision in a case's append-only trail anchors it to a window. `first` (default) is stable under reinvestigation; `last` reproduces the legacy endpoint's rolling clock.",
+              "pattern": "^(first|last)$",
+              "title": "Anchor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Metrics Auto Close Health Recorded Api Metrics Auto Close Health Recorded Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Auto Close Health Recorded"
       }
     },
     "/api/metrics/noise-reduction": {
