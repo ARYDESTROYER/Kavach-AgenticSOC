@@ -141,15 +141,26 @@ export interface KpiDrilldownPanelProps {
 }
 
 /** The one place a case's display id is resolved (number first, then id). */
+/**
+ * First NON-BLANK candidate, trimmed. Trimming after a `||` chain is the wrong order:
+ * a whitespace-only earlier field is truthy, so it wins the chain and then trims away to
+ * nothing, discarding a perfectly good later candidate.
+ */
+export function firstNonBlank(...candidates: (string | null | undefined)[]): string {
+  for (const candidate of candidates) {
+    const trimmed = (candidate || '').trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
 function displayId(c: Case): string {
-  return (c.case_number || c.case_id || DASH).trim() || DASH;
+  return firstNonBlank(c.case_number, c.case_id) || DASH;
 }
 
 /** The one place a case's display title is resolved. Falls back, never blanks. */
 function displayTitle(c: Case): string {
-  return (
-    (c.title || c.cluster_signature || c.rule_ids?.[0] || '').trim() || 'Untitled case'
-  );
+  return firstNonBlank(c.title, c.cluster_signature, c.rule_ids?.[0]) || 'Untitled case';
 }
 
 /** Sort key: the most recent activity instant, or 0 when nothing is parseable. */

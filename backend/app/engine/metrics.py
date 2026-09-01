@@ -27,6 +27,7 @@ on a store larger than the fetch bound.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -39,6 +40,11 @@ from ..constants import (
 )
 from ..models import Case
 from .analyst_outcomes import analyst_confirmed_outcome
+# The closable-verdict-class authority. Imported from ``case_manager`` ON PURPOSE so
+# the recorded-auto-close analysis below can never drift from the code that actually
+# closes cases (see ``classify_auto_close_gate``). READ-ONLY: this module is never
+# imported by ``decide()`` and never feeds it (#3).
+from .case_manager import _entry_for
 from .precedent import is_policy_closed
 from .priority import band_of_case
 
@@ -1760,3 +1766,346 @@ def precedent_ground_truth(
         "zero_analyst_confirmed_cases": confirmed == 0,
         **truncation_marker(len(cases), store_total),
     }
+
+
+# --------------------------------------------------------------------------- #
+# RECORDED auto-close health — the SAME signal, measured from the APPEND-ONLY trail.
+#
+# WHY THIS EXISTS (the defect it corrects). The suite ships THREE auto-close rates,
+# on three different clocks, and none of them is point-in-time:
+#
+#   1. ``quality_metrics``' ``automation_rate`` buckets by case CREATION and divides
+#      ``decision_by == AGENT`` terminal cases by terminal cases.
+#   2. :func:`auto_close_health` buckets by the LAST recorded decision and divides
+#      agent-closed cases by decided cases.
+#   3. ``trend_metrics``' ``auto_closed`` buckets by case CREATION again.
+#
+# All three read the MUTABLE ``case.decision_by`` / ``case.status``. Those fields are
+# LAST-WRITER: every analyst lifecycle action stamps ``decision_by = ANALYST``, and a
+# same-status move is permitted — so merely ACKNOWLEDGING an agent auto-close migrates
+# it out of "the agent closed this" and into "a human closed this", retroactively, for
+# every past window. The three docstrings above already warn about exactly this; the
+# functions below are the honest measurement they point at.
+#
+# THE DURABLE RECORD ALREADY EXISTS AND NOTHING READ IT. ``case_manager.apply()``
+# appends ``{"ts", "event": "decision", "status", "decision_by", "escalate",
+# "rationale"}`` to the append-only ``Case.history`` on EVERY run, and the pipeline
+# writes one ``ActionType.DECISION`` audit row beside it. Neither is ever trimmed or
+# rewritten. That pair is a point-in-time record of what the deterministic decision
+# ACTUALLY was, immune to every later analyst re-tag.
+#
+# DISCONTINUITY — READ BEFORE SWITCHING A DASHBOARD OVER. This is a NEW series under a
+# NEW name, shipped ALONGSIDE the three above; none of them changes by a single byte.
+# The two do NOT agree, by construction, and the difference is not a bug:
+#
+#   * ANCHOR. The legacy rate anchors on case creation (1, 3) or the LAST decision (2).
+#     This one anchors on the FIRST recorded decision by default, so a case is counted
+#     once, in the window in which the agent actually decided it, and REINVESTIGATION
+#     DOES NOT MOVE IT. Pass ``anchor=DECISION_ANCHOR_LAST`` for the legacy-2 clock.
+#   * PREDICATE. The legacy rate reads today's mutable ``decision_by``/``status``. This
+#     one reads the ``status``/``decision_by`` recorded IN the decision entry, so an
+#     analyst re-tag, a reopen, or a bulk action can never move a historical number.
+#   * ``analyst_decided`` IS ALWAYS ZERO HERE, and that is correct: ``decide()`` only
+#     ever returns ``AGENT`` or ``SYSTEM``. Any ``analyst`` share in the legacy series
+#     is a LATER overwrite of the decision record, never a decision an analyst made at
+#     decision time.
+#   * OUTAGE EXCLUSION. This series can exclude decisions taken while a provider or
+#     the knowledge corpus was demonstrably down (see :func:`derive_outage_windows`).
+#     The legacy series never does.
+#
+# Everything here is a READ-TIME DERIVATION. Nothing below is EVER read by
+# ``case_manager.decide()`` (#3): ``decide()`` takes ``(verdict, confidence,
+# risk_score, policy)`` and nothing else. Reading ``AutoClosePolicy`` here — and
+# reusing ``case_manager._entry_for`` — is display-only classification of a decision
+# that has ALREADY been made and persisted.
+# --------------------------------------------------------------------------- #
+
+# Which decision in a case's append-only trail anchors it to a window.
+DECISION_ANCHOR_FIRST = "first"   # default: stable under reinvestigation
+DECISION_ANCHOR_LAST = "last"     # the legacy auto_close_health clock
+
+# The auto-close gate vocabulary. ONE closed set, shared by the WRITER (the pipeline's
+# DECISION audit row) and every READER here, so the trail cannot drift from the
+# analysis. Mirrors ``case_manager.decide()``'s predicate exactly — it never re-decides
+# anything, it only LABELS a decision that was already made and persisted (#3).
+GATE_CLEARED = "cleared"
+GATE_BLOCKED_CONFIDENCE = "blocked_confidence"
+GATE_BLOCKED_RISK = "blocked_risk"
+GATE_BLOCKED_CONFIDENCE_AND_RISK = "blocked_confidence_and_risk"
+GATE_CLASS_DISABLED = "class_disabled"
+GATE_NOT_CLOSABLE = "not_closable"
+GATE_UNRECORDED = "unrecorded"
+
+#: Every gate outcome, in report order. ``unrecorded`` is FIRST-CLASS, not a leftover:
+#: a decision whose audit row predates the gate tokens cannot be explained at all, and
+#: saying so is the entire point of an evidence-quality signal.
+AUTO_CLOSE_GATE_OUTCOMES: tuple[str, ...] = (
+    GATE_CLEARED,
+    GATE_BLOCKED_CONFIDENCE,
+    GATE_BLOCKED_RISK,
+    GATE_BLOCKED_CONFIDENCE_AND_RISK,
+    GATE_CLASS_DISABLED,
+    GATE_NOT_CLOSABLE,
+    GATE_UNRECORDED,
+)
+
+#: Gate outcomes that mean "this verdict class was a candidate for auto-close at all".
+#: ``not_closable`` is deliberately absent: ``case_manager._entry_for`` returns None for
+#: NEEDS_HUMAN and for a missing verdict UNCONDITIONALLY, so those are never candidates
+#: however the policy is configured. Derived from that function, NEVER from the config
+#: schema — ``AutoClosePolicy.needs_human`` is a real, settable field whose ``enabled``
+#: flag ``_entry_for`` ignores outright, so reading the schema would report a closable
+#: class that code can never close.
+_CLOSABLE_GATE_OUTCOMES: frozenset[str] = frozenset({
+    GATE_CLEARED,
+    GATE_BLOCKED_CONFIDENCE,
+    GATE_BLOCKED_RISK,
+    GATE_BLOCKED_CONFIDENCE_AND_RISK,
+    GATE_CLASS_DISABLED,
+})
+
+
+@dataclass(frozen=True)
+class DecisionRecord:
+    """ONE ``{"event": "decision"}`` entry from a case's append-only ``history``.
+
+    A POINT-IN-TIME record: ``status`` and ``decision_by`` are the values
+    ``case_manager.apply()`` wrote at that instant, not the case's current (mutable,
+    last-writer) fields. ``index``/``total`` locate it in the case's decision trail so
+    a caller can tell a first decision from a re-decision without re-walking history.
+    """
+
+    at: datetime | None
+    status: str
+    decision_by: str
+    escalate: bool
+    rationale: str
+    index: int
+    total: int
+
+    @property
+    def auto_closed(self) -> bool:
+        """The recorded decision WAS a deterministic agent auto-close.
+
+        Exactly ``decide()``'s close branch as it was persisted: the agent authored it
+        and the recorded status is terminal. Note the recorded ``status`` is the raw
+        ``Decision.status`` — ``apply()``'s later ESCALATED remap happens only in the
+        NON-close branch, so a recorded CLOSED can never be an escalation."""
+        return (
+            self.decision_by == DecisionBy.AGENT.value
+            and self.status in _TERMINAL
+        )
+
+
+def decision_records(case: Case) -> list[DecisionRecord]:
+    """Every deterministic decision this case has on record, OLDEST first.
+
+    Reads the append-only ``Case.history`` in APPEND order (which is chronological and
+    is never rewritten) rather than sorting on ``ts``: a single malformed timestamp
+    must not be able to reorder the trail. An entry whose ``ts`` cannot be parsed keeps
+    its position with ``at=None`` so ``index``/``total`` stay truthful — a caller that
+    needs an instant checks for None instead of silently inheriting a neighbour's.
+
+    Pure and defensive: a malformed history entry is skipped, never raised on."""
+    raw = [
+        entry
+        for entry in (case.history or [])
+        if isinstance(entry, dict) and entry.get("event") == "decision"
+    ]
+    total = len(raw)
+    out: list[DecisionRecord] = []
+    for index, entry in enumerate(raw):
+        out.append(DecisionRecord(
+            at=_parse_iso(entry.get("ts")),
+            status=str(entry.get("status") or ""),
+            decision_by=str(entry.get("decision_by") or ""),
+            escalate=bool(entry.get("escalate")),
+            rationale=str(entry.get("rationale") or ""),
+            index=index,
+            total=total,
+        ))
+    return out
+
+
+def decision_record(
+    case: Case, *, anchor: str = DECISION_ANCHOR_FIRST
+) -> DecisionRecord | None:
+    """The case's anchoring decision, or None when it has never been decided.
+
+    ``anchor=DECISION_ANCHOR_FIRST`` (the default) returns the FIRST recorded decision:
+    the instant the deterministic decision was originally made, and the outcome it
+    originally had. That is what makes a rate built on it STABLE — a reopen plus a
+    re-investigation appends a second decision entry without moving, duplicating or
+    re-labelling the first, so the case keeps counting exactly once, in its original
+    window, with its original outcome.
+
+    ``anchor=DECISION_ANCHOR_LAST`` returns the newest entry instead, reproducing the
+    rolling clock :func:`auto_close_health` uses (a case decided again today belongs to
+    today). Any other value is treated as ``first`` rather than raising — a metrics
+    accessor never fails a dashboard query."""
+    records = decision_records(case)
+    if not records:
+        return None
+    return records[-1] if anchor == DECISION_ANCHOR_LAST else records[0]
+
+
+def classify_auto_close_gate(
+    policy: Any, verdict: Any, confidence: Any, risk_score: Any
+) -> str:
+    """LABEL an already-made decision with why the auto-close bar was or was not met.
+
+    The single writer/reader definition of the gate vocabulary: the pipeline stamps
+    this string into the append-only DECISION audit row, and the analysis below reads
+    it back. It mirrors ``case_manager.decide()``'s predicate
+    (``confidence >= min_confidence and risk_score <= max_risk_score``) so the label
+    and the decision cannot disagree.
+
+    It NEVER decides anything (#3). It runs strictly AFTER ``apply()`` has produced and
+    persisted the decision, and its output is an audit token — no caller branches on it.
+
+    The closable-class test is ``case_manager._entry_for`` itself, deliberately, rather
+    than an independent reading of ``AutoClosePolicy``: ``_entry_for`` returns None for
+    NEEDS_HUMAN and for a missing verdict UNCONDITIONALLY, while the config schema
+    carries a real, settable ``needs_human`` entry whose ``enabled`` flag code ignores.
+    Classifying from the schema would report a closable class that can never close.
+
+    Returns one of :data:`AUTO_CLOSE_GATE_OUTCOMES`; ``unrecorded`` when no policy was
+    supplied (the classification is genuinely unknown, never a guessed ``cleared``)."""
+    if policy is None:
+        return GATE_UNRECORDED
+    try:
+        entry = _entry_for(policy, verdict)
+    except Exception:  # noqa: BLE001 — a labelling helper never breaks a caller
+        return GATE_UNRECORDED
+    if entry is None:
+        return GATE_NOT_CLOSABLE
+    if not bool(getattr(entry, "enabled", False)):
+        return GATE_CLASS_DISABLED
+    try:
+        low_confidence = float(confidence) < float(entry.min_confidence)
+        high_risk = float(risk_score) > float(entry.max_risk_score)
+    except (TypeError, ValueError):
+        return GATE_UNRECORDED
+    if low_confidence and high_risk:
+        return GATE_BLOCKED_CONFIDENCE_AND_RISK
+    if low_confidence:
+        return GATE_BLOCKED_CONFIDENCE
+    if high_risk:
+        return GATE_BLOCKED_RISK
+    return GATE_CLEARED
+
+
+@dataclass(frozen=True)
+class OutageWindow:
+    """An interval for which the deployment holds POSITIVE EVIDENCE that the machinery
+    auto-close depends on was down.
+
+    ``start`` is the last moment the subsystem was observed WORKING; ``None`` means no
+    success was ever observed, so the window is open-ended backwards and every decision
+    up to ``end`` is suspect. ``end`` is the newest observed failure.
+
+    NOT A DATE LITERAL, and never derived from one. Both bounds come from state the
+    deployment already persists about ITSELF (``llm/provider_health`` timestamps,
+    ``stores/rag_health`` timestamps). A calendar window compiled into shipped source
+    would be correct in exactly the one deployment it was measured in and would
+    silently mislead every other installation of this suite — which is the failure the
+    portability tripwire over this module exists to prevent."""
+
+    start: datetime | None
+    end: datetime
+    subsystem: str
+    detail: str
+
+    @property
+    def start_known(self) -> bool:
+        return self.start is not None
+
+    def contains(self, at: datetime) -> bool:
+        if at > self.end:
+            return False
+        return self.start is None or at > self.start
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start.isoformat() if self.start is not None else None,
+            "end": self.end.isoformat(),
+            "subsystem": self.subsystem,
+            "detail": self.detail,
+            "start_known": self.start_known,
+        }
+
+
+def derive_outage_windows(
+    *,
+    provider_health: Any = None,
+    rag_health: Any = None,
+) -> list[OutageWindow]:
+    """Outage intervals derived from the deployment's OWN persisted health state.
+
+    Two independent sources, both already written by production code:
+
+    * ``provider_health`` — the JSON snapshot from ``ProviderHealth.snapshot()``. Any
+      provider+channel row whose ``state`` is not ``ok`` has CROSSED its consecutive-
+      failure threshold with fresh evidence, which is precisely "every call on this
+      channel is failing right now". The window runs from that row's
+      ``last_success_at`` (the last time it demonstrably worked) to its
+      ``last_failure_at``. During it, no verdict could be produced, so no decision
+      taken in it says anything about whether auto-close works.
+    * ``rag_health`` — the durable record from ``stores/rag_health``. Only a
+      ``collapsed`` refusal counts: that is the corpus-destroying class the auto-close
+      health signal was built for, and an ordinary transient seeding failure is not an
+      outage. The window runs from ``healthy_at`` (the last projection that succeeded)
+      to the refusal instant.
+
+    Both inputs are optional and both are tolerated in any shape — a missing, empty or
+    malformed record yields no windows rather than raising, so a metrics read can never
+    be broken by an observability record. Deterministic given its inputs.
+
+    Returns the windows oldest-``end`` first. An EMPTY list means "no evidence of an
+    outage", never "there was no outage": absence of a health record is not proof of
+    health, and the caller reports the distinction."""
+    windows: list[OutageWindow] = []
+
+    providers = provider_health.get("providers") if isinstance(provider_health, dict) else None
+    if isinstance(providers, dict):
+        for key, row in providers.items():
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("state") or "")
+            if not state or state == "ok":
+                continue
+            end = _parse_iso(row.get("last_failure_at"))
+            if end is None:
+                # A crossed threshold with no readable failure instant cannot bound a
+                # window. Excluding an unbounded interval on that basis would delete
+                # the metric; report nothing instead.
+                continue
+            windows.append(OutageWindow(
+                start=_parse_iso(row.get("last_success_at")),
+                end=end,
+                subsystem="llm_provider",
+                detail=f"{key or 'provider'} state={state}",
+            ))
+
+    refusal = rag_health.get("last_refusal") if isinstance(rag_health, dict) else None
+    if isinstance(refusal, dict) and bool(refusal.get("collapsed")):
+        end = _parse_iso(refusal.get("at"))
+        if end is not None:
+            windows.append(OutageWindow(
+                start=_parse_iso((rag_health or {}).get("healthy_at")),
+                end=end,
+                subsystem="knowledge_corpus",
+                detail="the knowledge projection collapsed and was refused",
+            ))
+
+    windows.sort(key=lambda w: w.end)
+    return windows
+
+
+def _in_outage(at: datetime | None, windows: "list[OutageWindow] | tuple[()]") -> OutageWindow | None:
+    if at is None:
+        return None
+    for window in windows or ():
+        if window.contains(at):
+            return window
+    return None

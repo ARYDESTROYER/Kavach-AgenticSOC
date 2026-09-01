@@ -2247,7 +2247,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 // needs. The panel restates the same series, so nothing is lost.
                 return kpi.trend ? (
                   <MetricHoverTrend
-                    key={kpi.label}
+                    key={kpi.testId}
                     {...kpi.trend}
                     focusable={false}
                     forceClosed={expanded}
@@ -2256,7 +2256,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     {tile}
                   </MetricHoverTrend>
                 ) : (
-                  <React.Fragment key={kpi.label}>{tile}</React.Fragment>
+                  <React.Fragment key={kpi.testId}>{tile}</React.Fragment>
                 );
               })}
             </Stagger>
