@@ -16,6 +16,14 @@
  * and only THEN reveals an optional "What did the AI miss?" line. The 3 detailed quality
  * stars stay behind a "Rate in detail →" disclosure.
  *
+ * GROUND TRUTH (G1): the derived agree/override signal above is NOT a label — an
+ * analyst disagreeing with the model says nothing about what actually happened. The
+ * only field here that becomes analyst-confirmed ground truth is `actual_outcome`, and
+ * until G1 this module typed it, read it and forwarded it while offering no control
+ * that could ever SET it, so `analyst_confirmed_outcome` could never fire through the
+ * feedback channel. {@link OutcomeField} is that control; its options come from the
+ * GENERATED OpenAPI schema so they cannot drift from the backend enum.
+ *
  * SECURITY (#9): analyst-authored comments render as PLAIN TEXT, never markup.
  * #3: producing a `CaseFeedbackInput` never changes verdict/status/disposition — the
  * caller (W1.E) POSTs the grading as a SEPARATE call after the deterministic close.
@@ -23,6 +31,7 @@
 import * as React from 'react';
 import { AlertTriangle, CheckCircle2, ChevronRight, Clock, Star } from 'lucide-react';
 
+import type { components } from '@/lib/api-types.gen';
 import type { CaseFeedbackInput } from '@/lib/api';
 import type { CaseFeedback, Disposition } from '@/lib/types';
 import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
@@ -33,8 +42,63 @@ import { Label } from '@/ui/label';
 import { Textarea } from '@/ui/textarea';
 import { Separator } from '@/ui/separator';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/ui/select';
 
 import { DURABLE_CONTEXT_NOTE, tsValue } from './shared';
+
+/* --------------------------------------------------- ground-truth vocabulary --- */
+
+/**
+ * The analyst-outcome vocabulary, taken STRAIGHT off the generated OpenAPI schema
+ * (`webui/openapi.json` -> `src/lib/api-types.gen.ts`, produced by `npm run gen:types`
+ * and drift-gated by `npm run check:types`). A hand-written literal list would fall
+ * silently behind `backend/app/constants.py::FeedbackOutcome`; this one cannot.
+ *
+ * Type-only import: erased at compile time, so the generated module still contributes
+ * zero runtime bytes.
+ */
+export type FeedbackOutcome = components['schemas']['FeedbackOutcome'];
+
+/**
+ * The operator-facing outcome choices, in the order they are offered.
+ *
+ * `unknown` is a real member of the wire enum and is the backend's default; it is the
+ * "not stated" choice here and is deliberately NEVER written into the draft (see
+ * {@link OutcomeField}), so an untouched grading still posts no `actual_outcome` at all.
+ *
+ * `as const satisfies` does the work in both directions: `satisfies` rejects a value
+ * that is not in the generated union, and `as const` keeps the literals so
+ * {@link FeedbackOutcomeCoverage} below can prove nothing is MISSING.
+ */
+export const OUTCOME_OPTIONS = [
+  { value: 'unknown', text: 'Not stated' },
+  { value: 'true_positive', text: 'True positive — the alert was real' },
+  { value: 'false_positive', text: 'False positive — the alert was wrong' },
+  { value: 'true_negative', text: 'True negative — correctly quiet' },
+  { value: 'false_negative', text: 'False negative — the detection missed it' },
+] as const satisfies ReadonlyArray<{ value: FeedbackOutcome; text: string }>;
+
+/** Fails to typecheck unless `T` is `never`. */
+type MustBeNever<T extends never> = T;
+
+/**
+ * Compile-time drift guard. If `FeedbackOutcome` ever gains a member that
+ * {@link OUTCOME_OPTIONS} does not offer, `Exclude` stops being `never` and this alias
+ * fails `tsc --noEmit` — so the picker cannot silently fall behind the backend enum.
+ * Exported so it is a used declaration rather than dead code.
+ */
+export type FeedbackOutcomeCoverage = MustBeNever<
+  Exclude<FeedbackOutcome, (typeof OUTCOME_OPTIONS)[number]['value']>
+>;
+
+/** The enum member that means "no outcome stated" — never persisted into the draft. */
+export const OUTCOME_UNSET: FeedbackOutcome = 'unknown';
 
 /* ------------------------------------------------------------------ types --- */
 
@@ -49,7 +113,12 @@ export interface GradingDraft {
   accuracy?: number;
   reasoning_quality?: number;
   action_appropriateness?: number;
-  actual_outcome?: string;
+  /**
+   * The CONFIRMED outcome — the only field in this draft that becomes analyst-confirmed
+   * ground truth (`engine/analyst_outcomes`). Typed to the generated wire union, and
+   * left `undefined` (never `'unknown'`) when the analyst states nothing.
+   */
+  actual_outcome?: FeedbackOutcome;
   time_saved_minutes?: number;
   comment?: string;
 }
@@ -199,6 +268,58 @@ const StarRow: React.FC<{
   </div>
 );
 
+/**
+ * The confirmed-outcome picker — the ONE control in this dialog that supplies
+ * analyst-confirmed ground truth.
+ *
+ * Options come from {@link OUTCOME_OPTIONS}, which is derived from the generated
+ * OpenAPI schema. Choosing "Not stated" clears the field rather than persisting the
+ * `unknown` member, so an untouched grading posts no `actual_outcome` and the backend
+ * default applies unchanged.
+ */
+export const OutcomeField: React.FC<{
+  value?: FeedbackOutcome;
+  onChange: (next: FeedbackOutcome | undefined) => void;
+  id?: string;
+}> = ({ value, onChange, id = 'grading-actual-outcome' }) => {
+  const helpId = `${id}-help`;
+  const selected = value ?? OUTCOME_UNSET;
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id} className="text-xs">
+        What actually happened? (optional)
+      </Label>
+      <Select
+        value={selected}
+        onValueChange={(next) =>
+          onChange(next === OUTCOME_UNSET ? undefined : (next as FeedbackOutcome))
+        }
+      >
+        <SelectTrigger
+          id={id}
+          className="h-9"
+          aria-label="What actually happened? (optional)"
+          aria-describedby={helpId}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {OUTCOME_OPTIONS.map((o) => (
+            <SelectItem key={o.value} value={o.value}>
+              {o.text}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p id={helpId} className="text-xs leading-relaxed text-muted-foreground">
+        The confirmed outcome. This is the only part of a grade that becomes
+        analyst-confirmed ground truth — the stars and the agree/override signal do not
+        label the case.
+      </p>
+    </div>
+  );
+};
+
 export interface GradingFieldsProps {
   /** The AI verdict on the case (read-only). */
   verdict?: string | null;
@@ -249,6 +370,13 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
           {badgeText}
         </Badge>
       ) : null}
+
+      {/* G1: the ground-truth intake. Always offered (not gated on an override) — an
+          agreed close is exactly as much of a confirmed outcome as a contested one. */}
+      <OutcomeField
+        value={draft.actual_outcome}
+        onChange={(actual_outcome) => patch({ actual_outcome })}
+      />
 
       {isOverride ? (
         <div className="space-y-1.5">

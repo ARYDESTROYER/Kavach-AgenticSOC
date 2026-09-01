@@ -10473,6 +10473,55 @@
 - Next: P3/P4 UI on top of this (the two disagreeing `>= 200` heuristics at `Overview.tsx:1520` and
   `:2028` can now be deleted in favour of `window_total_exact`), then G1, C, E, H, agnosticism, D, A.
 
+### 2026-08-31 06:25Z — orchestrator + sub-agent fleet — G1 ground-truth intake + portability lint
+- Context: PRs #102 (P1/F/G) and #103 (P4 store + P3 posture) merged; `Testing` at `fb8f314`.
+  Items F and G changed how the precedent corpus is RENDERED and SELECTED, but neither creates
+  SUPPLY. With intake dead the corpus can never refresh, so both operate on a frozen population.
+- Did:
+  - **G1, both channels, verified dead before fixing.** Channel A: the Console had no control that
+    ever SET `actual_outcome` — it was typed, dirty-checked, forwarded and displayed, never written
+    — so every graded close resolved to the UNKNOWN member and `analyst_confirmed_outcome` returned
+    `(None, None)`. Channel B (the bigger half): the primary close posts `wireAction:'close'` WITH a
+    disposition that the backend parsed and never assigned, and its history row recorded
+    `action:"close"`, absent from the classification set. `set_disposition` — the one verb that
+    worked — is reachable only from the overflow of an already-closed case.
+  - Added the outcome control (options derived from the GENERATED schema via
+    `as const satisfies`, plus an exhaustiveness type that fails `tsc` if the union gains a member).
+    Made a close carrying a DECLARED disposition record ground truth. Stopped the feedback POST
+    swallowing 4xx. Added a threshold-free corpus-supply signal (days since last qualifying
+    precedent; share of feedback with no ground truth) reported as measured values, null when
+    unmeasurable — never 0, because "no feedback" is not a 0% gap.
+  - **Portability lint** asserting SHAPE not vocabulary (playbook rule ids and seeded catalog names
+    match `^[a-z][a-z0-9_]*$`; catalog match fields are dotted lowercase; no date literals in
+    `engine/metrics.py`). Renamed the three bundled playbooks carrying verbatim SIEM rule titles
+    (incl. a vendor product name and an Elastic query-language marker) and every reference to them.
+- Decisions / what review caught:
+  - 🔴 **CRITICAL, found by two independent lenses: the naive G1 fix REINTRODUCED the exact
+    self-consumption loop Item F had just closed, through the intake door.** `case_manager.apply()`
+    derives `case.disposition` from the LLM verdict; the close dialog PRE-SEEDED its picker from
+    that stored value; so a bare "Close → Confirm" would have posted the model's own label back and
+    stamped it `classified_disposition`, making `analyst_confirmed_outcome` return the MODEL's
+    verdict as `explicit_analyst_disposition` ground truth — feeding the confirmed precedent tier
+    AND the tuner's independent-evidence count. Strictly worse than the original bug: it poisons the
+    SOURCE, not the rendering. It also contradicted two load-bearing comments the change shipped.
+    Fix: separate APPLYING a disposition from CLASSIFYING it. The UI pre-seed is deleted, and a
+    `disposition_declared` flag whose ONLY writer is the picker's `onChange` must be affirmatively
+    true. Presence of a field cannot establish provenance; a human operating the control can.
+  - Chose a `classified_disposition` marker on the new history entry over widening the classification
+    verb set to include `close` — most closes carry no disposition, so making `close` a
+    classification verb would promote the model-derived disposition on every bare close, the precise
+    failure `analyst_outcomes` exists to prevent. Also rejected emitting a synthetic second
+    `set_disposition` row: it would double-count in every consumer that counts analyst actions.
+  - Three more findings held: the lint applied two different grammars to ONE namespace
+    (contradicting itself), it missed `any_tags`/`mitre` which resolve against the same rule-name
+    space, and the generic renamed playbook id could collide with an operator's durable entry.
+- Tests: backend **3149 passed, 4 skipped, 0 failures** (orchestrator re-ran independently). Console
+  **311 files / 2175 passed**. eslint 0/0 at `--max-warnings=0`; design gates 6/6; ruff clean; build
+  entry 392.66 kB; `check:types` no drift.
+  **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
+- Status: done for G1 + portability. Nothing was relabelled; no migration, no backfill.
+- Next: P3/P4 UI (tile renames + drill-down panel), then C, E+G3, H, D, A, B, I.
+
 ### 2026-09-01 17:20Z — orchestrator + sub-agent fleet — P3 tile re-key + P4 drill-down panel
 - Context: PRs #102/#103/#104 merged (9 of 15 items). This wave is the operator-visible half of
   Brief A: the five KPI tiles and the drill-down the store contract from #103 unblocked.

@@ -5,7 +5,7 @@ version: 1
 description: Exact procedure for successful external access to administrative web surfaces.
 priority: 85
 match:
-  rule_ids: [External Admin Panel Successful Access ES|QL]
+  rule_ids: [external_admin_panel_access]
   entity_types: [ip, user, host, rule]
 suggested_tools: [es_query, enrich, rag_retrieve]
 rag_queries: [privileged web access response, administrative login verification]

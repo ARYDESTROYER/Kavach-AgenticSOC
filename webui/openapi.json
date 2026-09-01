@@ -530,6 +530,12 @@
             ],
             "title": "Disposition"
           },
+          "disposition_declared": {
+            "default": false,
+            "description": "True only when a human affirmatively selected `disposition` as part of this action. The disposition is applied either way; this flag is what makes it independent analyst evidence rather than a value echoed back from the model-derived disposition already stored on the case.",
+            "title": "The analyst chose this disposition in this action",
+            "type": "boolean"
+          },
           "ids": {
             "items": {
               "type": "string"
@@ -1155,6 +1161,12 @@
               }
             ],
             "title": "Disposition"
+          },
+          "disposition_declared": {
+            "default": false,
+            "description": "True only when a human affirmatively selected `disposition` as part of this action. The disposition is applied either way; this flag is what makes it independent analyst evidence rather than a value echoed back from the model-derived disposition already stored on the case.",
+            "title": "The analyst chose this disposition in this action",
+            "type": "boolean"
           },
           "level": {
             "anyOf": [

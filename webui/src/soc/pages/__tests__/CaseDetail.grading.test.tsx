@@ -25,11 +25,14 @@ import type * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
-const { caseActionExec, caseFeedback, getCase } = vi.hoisted(() => ({
+const { caseActionExec, caseFeedback, getCase, toastMock } = vi.hoisted(() => ({
   caseActionExec: vi.fn(),
   caseFeedback: vi.fn(),
   getCase: vi.fn(),
+  toastMock: { error: vi.fn(), warning: vi.fn(), success: vi.fn(), message: vi.fn() },
 }));
+
+vi.mock('sonner', () => ({ toast: toastMock, Toaster: () => null }));
 
 const BASE_CASE = {
   case_id: 'case-91',
@@ -49,9 +52,13 @@ const BASE_CASE = {
   comments: [],
 };
 
-vi.mock('@/lib/api', () => {
+vi.mock('@/lib/api', async () => {
+  // Keep the REAL `ApiError`: `runAction` (and the shared `errorMessage`) narrow on it
+  // to tell a 4xx rejection of the grading apart from a transport fault.
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
   return {
+    ApiError: actual.ApiError,
     setUnauthorizedHandler: vi.fn(),
     api: {
       getCase,
@@ -104,6 +111,8 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     caseActionExec.mockReset();
     caseFeedback.mockReset();
     getCase.mockReset();
+    toastMock.error.mockReset();
+    toastMock.warning.mockReset();
   });
 
   it('closing a VERDICT-bearing case issues BOTH the action POST and a derived feedback POST', async () => {
@@ -138,6 +147,9 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     const [, actionInput] = caseActionExec.mock.calls[0];
     expect(actionInput.action).toBe('close');
     expect(actionInput.disposition).toBe('true_positive');
+    // The analyst operated the picker, so the wire asserts INTENT alongside the value.
+    // Without this the backend applies the disposition but records no classification.
+    expect(actionInput.disposition_declared).toBe(true);
 
     // 2) The SEPARATE grading POST, carrying the derived 'agree' assessment.
     await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
@@ -215,6 +227,89 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(caseFeedback).not.toHaveBeenCalled();
   });
 
+  it('SURFACES a 422 rejection instead of swallowing it (G1c)', async () => {
+    // The catch used to discard the result outright, so a rejected grading was
+    // invisible: the case closed, the toast said nothing, and the analyst walked away
+    // believing their ground truth had been recorded. The catch stays (a grading
+    // failure must never read as a close failure, #3) — but it must SAY so.
+    const { ApiError } = await import('@/lib/api');
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'true_positive' });
+    caseActionExec.mockResolvedValue({
+      ...BASE_CASE,
+      verdict: 'true_positive',
+      status: 'closed',
+      disposition: 'true_positive',
+    });
+    caseFeedback.mockRejectedValue(
+      new ApiError(422, 'actual_outcome: input is not a valid enumeration member'),
+    );
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/True positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
+    const message = String(toastMock.error.mock.calls[0][0]);
+    expect(message).toMatch(/grading was rejected/i);
+    expect(message).toMatch(/not a valid enumeration member/i);
+    // The CLOSE still succeeded — it is a separate call and must not be reported as
+    // failed. The terminal footer proves the lifecycle action landed.
+    await screen.findByRole('button', { name: /reopen/i });
+  });
+
+  it('reports a transport fault as a warning, not as a close failure', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'true_positive' });
+    caseActionExec.mockResolvedValue({
+      ...BASE_CASE,
+      verdict: 'true_positive',
+      status: 'closed',
+      disposition: 'true_positive',
+    });
+    caseFeedback.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/True positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(toastMock.warning).toHaveBeenCalledTimes(1));
+    expect(String(toastMock.warning.mock.calls[0][0])).toMatch(/was not recorded/i);
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('POSTs the stated outcome even when the case carries NO verdict to grade', async () => {
+    // A confirmed outcome stands on its own: there is nothing to grade on a case the
+    // agent never judged, but "what actually happened" is exactly as real — and it is
+    // the only field `analyst_confirmed_outcome` can read.
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: undefined });
+    caseActionExec.mockResolvedValue({
+      ...BASE_CASE,
+      verdict: undefined,
+      status: 'closed',
+      disposition: 'false_positive',
+    });
+    caseFeedback.mockResolvedValue({ ...BASE_CASE, status: 'closed' });
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+
+    // Pick the confirmed outcome in the grading section (the 2nd combobox: the
+    // disposition picker is the 1st).
+    const outcome = within(dialog).getByLabelText(/what actually happened/i);
+    fireEvent.click(outcome);
+    fireEvent.click(await screen.findByRole('option', { name: /^false positive —/i }));
+
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    expect(caseFeedback.mock.calls[0][1].actual_outcome).toBe('false_positive');
+  });
+
   it('closing a NO-VERDICT case issues ONLY the action POST (grading skipped)', async () => {
     // No AI verdict to grade — the second POST must be suppressed.
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: undefined });
@@ -238,5 +333,84 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     await screen.findByRole('button', { name: /reopen/i });
     expect(caseActionExec).toHaveBeenCalledTimes(1);
     expect(caseFeedback).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The ground-truth intent gate (G1).
+ *
+ * `case_manager.apply()` derives `case.disposition` from the LLM verdict. The dialog
+ * used to PRE-SEED its disposition picker from that value, which meant (a) the
+ * "a disposition is mandatory" guard was already satisfied before the analyst had
+ * chosen anything, and (b) a bare Close → Confirm posted the model's own answer back as
+ * if a human had given it. The backend then recorded it as `explicit_analyst_disposition`
+ * — the exact closed loop where the tuner "confirms" the verdicts it is meant to audit.
+ *
+ * Two things are pinned here: the picker opens EMPTY on an already-dispositioned case,
+ * and the wire carries `disposition_declared` only once the analyst has picked.
+ */
+describe('CaseDetail — the disposition picker never answers for the analyst (G1)', () => {
+  beforeEach(() => {
+    caseActionExec.mockReset();
+    caseFeedback.mockReset();
+    getCase.mockReset();
+    toastMock.error.mockReset();
+    toastMock.warning.mockReset();
+  });
+
+  /** A case the AGENT already dispositioned — apply() mapped verdict → disposition. */
+  const AGENT_DISPOSITIONED = {
+    ...BASE_CASE,
+    status: 'escalated',
+    verdict: 'true_positive',
+    disposition: 'true_positive',
+    decision_by: 'system',
+  };
+
+  it('opens the close dialog with an EMPTY picker and a DISABLED submit', async () => {
+    getCase.mockResolvedValue(AGENT_DISPOSITIONED);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText('Credential stuffing burst')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
+    const dialog = await screen.findByRole('dialog');
+
+    // The picker shows its placeholder, NOT the model's answer.
+    const picker = within(dialog).getByLabelText(/disposition \(required\)/i);
+    expect(picker).toHaveTextContent(/select an outcome/i);
+    expect(picker).not.toHaveTextContent(/true positive/i);
+
+    // …so the mandatory-choice guard is real.
+    expect(within(dialog).getByRole('button', { name: /^close case/i })).toBeDisabled();
+    expect(caseActionExec).not.toHaveBeenCalled();
+
+    // The information the pre-seed used to carry is still there — as READ-ONLY
+    // context describing the picker, not as its value.
+    const help = within(dialog).getByText(/currently recorded: true positive/i);
+    expect(picker).toHaveAttribute('aria-describedby', help.id);
+  });
+
+  it('declares the disposition only once the analyst has picked one', async () => {
+    getCase.mockResolvedValue(AGENT_DISPOSITIONED);
+    caseActionExec.mockResolvedValue({ ...AGENT_DISPOSITIONED, status: 'closed' });
+    caseFeedback.mockResolvedValue({ ...AGENT_DISPOSITIONED, status: 'closed' });
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    // Re-affirming the model's own value is a legitimate analyst statement — the gate
+    // is on INTENT, not on the value differing. So pick the SAME disposition the agent
+    // had already written and prove the flag rides along.
+    const dialog = await openCloseDialogAndPick(/True positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    expect(caseActionExec.mock.calls[0][1]).toMatchObject({
+      action: 'close',
+      disposition: 'true_positive',
+      disposition_declared: true,
+    });
   });
 });

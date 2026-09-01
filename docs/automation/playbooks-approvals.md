@@ -59,9 +59,9 @@ it. Changing a playbook affects future selection or explicit re-investigation on
 does not rewrite historical case decisions.
 
 The installed catalog contains nine protected procedures for credential attacks,
-cloud-identity compromise, data exfiltration, Moodle abuse, reported phishing,
-privileged web access, ransomware impact, suspicious outbound traffic, and web
-scanner/exploit activity. Selection uses exact declared rule IDs; an unrelated rule
+cloud-identity compromise, data exfiltration, reported phishing, privileged web
+access, ransomware impact, suspicious outbound traffic, web application abuse, and
+web scanner/exploit activity. Selection uses exact declared rule IDs; an unrelated rule
 does not receive a procedure merely because its text sounds similar. Use **Dry run**
 and **Coverage** before adding operator procedures, and prefer filling a demonstrated
 unmatched family over duplicating an existing playbook with broader matching.

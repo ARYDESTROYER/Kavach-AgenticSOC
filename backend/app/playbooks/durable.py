@@ -37,7 +37,30 @@ class DurablePlaybookRegistry(PlaybookRegistry):
         self.store = store
         self._operator_rows: dict[str, dict[str, Any]] = {}
         self._bundled: list[Playbook] = []
+        #: Operator ids displaced by a BUNDLED id of the same name. ``create_durable``
+        #: refuses a colliding id, so this set is only ever populated the other way
+        #: round — by a release that ADDS or RENAMES a bundled playbook onto an id an
+        #: operator already held. Tracked (not merely logged) because every ownership
+        #: answer below has to agree that the live procedure is the bundled one.
+        self._shadowed: list[str] = []
         super().__init__(directory, protected_filenames=protected_filenames)
+
+    def _bundled_ids(self) -> set[str]:
+        return {playbook.id for playbook in self._bundled}
+
+    def _operator_row(self, playbook_id: str) -> dict[str, Any] | None:
+        """The operator row that OWNS ``playbook_id``, or ``None``.
+
+        A row whose id collides with a bundled playbook owns nothing: ``_merge_snapshot``
+        drops it from the live set, so the procedure that actually runs under that id is
+        the bundled one. Keying ownership off ``_operator_rows`` alone made the registry
+        contradict itself — reporting a bundled procedure as operator-owned and editable,
+        serving the shadowed Markdown from ``read_document``, and accepting a ``PUT``
+        that changed nothing. Every ownership question routes through here instead.
+        """
+        if playbook_id in self._bundled_ids():
+            return None
+        return self._operator_rows.get(playbook_id)
 
     def reload(self) -> dict:
         """Reload packaged files, then re-apply the last durable operator snapshot."""
@@ -48,16 +71,25 @@ class DurablePlaybookRegistry(PlaybookRegistry):
             **summary,
             "loaded": len(self._playbooks),
             "ids": [playbook.id for playbook in self._playbooks],
+            # Reported, not just logged: an operator whose procedure was displaced by an
+            # upgrade needs to SEE it. A log line reaches nobody who is looking at the
+            # catalog. Always present (usually empty) so a consumer can rely on the key.
+            "shadowed_by_bundled": list(self._shadowed),
             "storage": "state",
         }
 
     def _merge_snapshot(self) -> None:
-        bundled_ids = {playbook.id for playbook in self._bundled}
+        bundled_ids = self._bundled_ids()
         operator: list[Playbook] = []
         invalid: list[str] = []
+        # Kept apart from ``invalid``: a shadowed row is not malformed. It is a
+        # perfectly valid operator document that a bundled id of the same name now
+        # outranks, and conflating the two hid an upgrade-time displacement inside a
+        # warning about "invalid" content.
+        shadowed: list[str] = []
         for playbook_id, row in sorted(self._operator_rows.items()):
             if playbook_id in bundled_ids:
-                invalid.append(playbook_id)
+                shadowed.append(playbook_id)
                 continue
             content = str(row.get("content") or "")
             playbook = parse_playbook(
@@ -73,8 +105,16 @@ class DurablePlaybookRegistry(PlaybookRegistry):
             operator.append(playbook)
         if invalid:
             logger.warning("Ignoring invalid durable playbooks: %s", ", ".join(invalid))
+        if shadowed:
+            logger.warning(
+                "Operator playbook(s) shadowed by a bundled id of the same name and "
+                "NOT running: %s. The bundled procedure is authoritative for these ids; "
+                "the stored document is retained but inert.",
+                ", ".join(shadowed),
+            )
         with self._lock:
             self._playbooks = [*self._bundled, *operator]
+            self._shadowed = shadowed
 
     async def refresh(self) -> dict:
         """Load the confirmed operator state and atomically publish the merged set."""
@@ -86,9 +126,9 @@ class DurablePlaybookRegistry(PlaybookRegistry):
         return summary
 
     def metadata(self, playbook: Playbook) -> dict[str, object]:
-        row = self._operator_rows.get(playbook.id)
+        row = self._operator_row(playbook.id)
         if row is None:
-            return {
+            meta: dict[str, object] = {
                 "source_type": "bundled",
                 "protected": True,
                 "editable": False,
@@ -96,6 +136,13 @@ class DurablePlaybookRegistry(PlaybookRegistry):
                 "revision": 1,
                 "storage": "package",
             }
+            if playbook.id in self._operator_rows:
+                # Additive, and only ever set on a bundled entry: the operator's own
+                # document under this id exists but is inert. Surfaced so the Console
+                # can explain why an id they authored is suddenly read-only, instead of
+                # silently presenting the bundled procedure as their own.
+                meta["shadowed_operator_document"] = True
+            return meta
         return {
             "source_type": "operator",
             "protected": False,
@@ -113,7 +160,10 @@ class DurablePlaybookRegistry(PlaybookRegistry):
         playbook = self.get(playbook_id)
         if playbook is None:
             raise PlaybookNotFoundError(playbook_id)
-        row = self._operator_rows.get(playbook_id)
+        # ``_operator_row`` (not ``_operator_rows``): under a shadowed id this used to
+        # pair the operator's Markdown with the BUNDLED parsed object, so the editor
+        # showed content that was not what ran.
+        row = self._operator_row(playbook_id)
         if row is not None:
             return playbook, str(row.get("content") or "")
         return super().read_document(playbook_id)
@@ -155,8 +205,11 @@ class DurablePlaybookRegistry(PlaybookRegistry):
         current = self.get(playbook_id)
         if current is None:
             raise PlaybookNotFoundError(playbook_id)
-        row = self._operator_rows.get(playbook_id)
-        if row is None:
+        # A shadowed id fails LOUDLY here. Keying off ``_operator_rows`` let the update
+        # proceed: it wrote the store, consumed the CAS revision, audited an "updated
+        # operator playbook" that never happened, and returned the unchanged BUNDLED
+        # playbook with HTTP 200.
+        if self._operator_row(playbook_id) is None:
             raise PlaybookProtectedError(f"playbook {playbook_id!r} is bundled and read-only")
         try:
             await self.store.update(

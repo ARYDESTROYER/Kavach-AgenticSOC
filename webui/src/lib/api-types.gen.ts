@@ -5756,6 +5756,12 @@ export interface components {
             assignee?: string | null;
             /** Disposition */
             disposition?: string | null;
+            /**
+             * The analyst chose this disposition in this action
+             * @description True only when a human affirmatively selected `disposition` as part of this action. The disposition is applied either way; this flag is what makes it independent analyst evidence rather than a value echoed back from the model-derived disposition already stored on the case.
+             * @default false
+             */
+            disposition_declared: boolean;
             /** Ids */
             ids?: string[];
             /**
@@ -5981,6 +5987,12 @@ export interface components {
             assignee?: string | null;
             /** Disposition */
             disposition?: string | null;
+            /**
+             * The analyst chose this disposition in this action
+             * @description True only when a human affirmatively selected `disposition` as part of this action. The disposition is applied either way; this flag is what makes it independent analyst evidence rather than a value echoed back from the model-derived disposition already stored on the case.
+             * @default false
+             */
+            disposition_declared: boolean;
             /**
              * Legacy escalation compatibility value
              * @deprecated

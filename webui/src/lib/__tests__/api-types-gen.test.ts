@@ -12,8 +12,8 @@
  *   3. Every enum + request/shared model schema in openapi.json surfaces in the
  *      generated `components["schemas"]` block (the request/enum coverage the
  *      wave promises), and Pydantic-v2 enums render as literal unions.
- *   4. The file is ADDITIVE — nothing in src/ imports it yet, so it stays
- *      tree-shaken (0 runtime bytes) until endpoints adopt it deliberately.
+ *   4. Every src/ module that adopts it does so with a TYPE-ONLY import, so the
+ *      generated module stays fully erased at compile time (0 runtime bytes).
  *
  * The live drift gate is `npm run check:types` (regenerate + `git diff --exit-code`);
  * this test is its offline, always-runnable companion.
@@ -70,8 +70,15 @@ describe('OpenAPI codegen artifacts (Coupling-F)', () => {
     expect(gen).not.toMatch(/\benum\s+[A-Za-z]/);
   });
 
-  it('is additive — no src/ module imports it yet (stays tree-shaken, 0 runtime bytes)', () => {
-    const importers: string[] = [];
+  it('is imported TYPE-ONLY everywhere (stays fully erased, 0 runtime bytes)', () => {
+    // The generated module carries only `interface`/`type` declarations, so a VALUE
+    // import (`import { components } from …`) would emit a real runtime require for a
+    // module with nothing in it. Adoption is expected and welcome — enum vocabularies
+    // pinned to the schema is the whole point — but it must stay `import type`.
+    const offenders: string[] = [];
+    // Anchored at line start and forbidden from crossing a `;`, so one match is
+    // exactly one import statement.
+    const anyImport = /^import\s+([^;]*?)from\s*['"][^'"]*api-types\.gen(?:\.ts)?['"]/gm;
     const walk = (dir: string) => {
       for (const ent of readdirSync(dir, { withFileTypes: true })) {
         const p = join(dir, ent.name);
@@ -83,11 +90,46 @@ describe('OpenAPI codegen artifacts (Coupling-F)', () => {
           !/\.test\.(ts|tsx)$/.test(ent.name) && // tests may reference the name as a string
           p !== GEN_TS
         ) {
-          if (readFileSync(p, 'utf8').includes('api-types.gen')) importers.push(p);
+          const src = readFileSync(p, 'utf8');
+          for (const m of src.matchAll(anyImport)) {
+            if (!/^\s*type\b/.test(m[1])) offenders.push(`${p}: ${m[0].slice(0, 80)}`);
+          }
         }
       }
     };
     walk(resolve(WEBUI_DIR, 'src'));
-    expect(importers).toEqual([]);
+    expect(offenders).toEqual([]);
+  });
+
+  it('backs the ground-truth outcome picker with the SAME vocabulary the schema declares', () => {
+    // G1: the analyst-outcome control must offer exactly the backend enum. The
+    // compile-time guard in `grading.tsx` (`FeedbackOutcomeCoverage`) proves coverage
+    // against the GENERATED type; this proves the generated type still matches the
+    // committed spec, so the two cannot quietly agree on a stale vocabulary.
+    const spec = JSON.parse(readFileSync(OPENAPI_JSON, 'utf8'));
+    const declared: string[] = spec.components?.schemas?.FeedbackOutcome?.enum ?? [];
+    expect(declared.length).toBeGreaterThan(0);
+    const gen = readFileSync(GEN_TS, 'utf8');
+    const line = gen.split('\n').find((l) => l.trim().startsWith('FeedbackOutcome:'));
+    expect(line).toBeTruthy();
+    const generated = [...(line as string).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(generated.sort()).toEqual([...declared].sort());
+  });
+
+  it('keeps the ground-truth INTENT flag on the case-action wire, defaulted off', () => {
+    // G1: `disposition` alone cannot say who chose it — `case_manager.apply()` derives
+    // one from the LLM verdict, so a client echoing the stored value back is quoting
+    // the model. `disposition_declared` is the separate assertion that a human picked
+    // it, and the Console sends it only from the picker's onChange. If the backend ever
+    // drops the field, every close silently degrades to "applied but unlabelled" with
+    // no type error to catch it — so pin the contract to the committed spec.
+    const spec = JSON.parse(readFileSync(OPENAPI_JSON, 'utf8'));
+    for (const schema of ['CaseAction', 'BulkCaseAction']) {
+      const prop = spec.components?.schemas?.[schema]?.properties?.disposition_declared;
+      expect(prop, `${schema}.disposition_declared`).toBeTruthy();
+      expect(prop.type).toBe('boolean');
+      // Fail-safe by default: an omitted flag must never classify.
+      expect(prop.default).toBe(false);
+    }
   });
 });
