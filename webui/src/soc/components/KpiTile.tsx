@@ -47,6 +47,19 @@ export type KpiAccent =
  */
 export type KpiGoodDirection = 'up' | 'down' | 'none';
 
+/**
+ * One row of a tile's in-place partition (see `KpiTileProps.breakdown`). Plain text
+ * on both halves (#9) — the caller formats the number.
+ */
+export interface KpiBreakdownRow {
+  /** Short band label (plain text). */
+  label: string;
+  /** Pre-formatted value (plain text). */
+  value: string;
+  /** Optional full meaning for the truncated short label (native tooltip). */
+  title?: string;
+}
+
 export interface KpiDelta {
   /** Signed delta value; the SIGN drives the arrow (true direction of change). */
   value: number;
@@ -98,6 +111,21 @@ export interface KpiTileProps {
   /** When provided the tile becomes a keyboard-accessible button. */
   onClick?: () => void;
   /**
+   * DISCLOSURE state, for the (rare) caller whose `onClick` toggles a panel rather
+   * than navigating — the KPI drill-down on the landing strip is the only one today.
+   *
+   * Both default to `undefined` and are then NOT emitted at all, so the ~14 tiles that
+   * navigate, filter, or do nothing keep their exact current accessible semantics: a
+   * plain button with no expanded state. Announcing `aria-expanded="false"` on a tile
+   * that opens a different PAGE would be a lie to assistive tech, which is why this is
+   * opt-in rather than derived from `onClick`.
+   *
+   * Pass `ariaControls` ONLY while the controlled region is actually in the DOM — a
+   * dangling `aria-controls` id is an `aria-valid-attr-value` violation.
+   */
+  ariaExpanded?: boolean;
+  ariaControls?: string;
+  /**
    * Stable id for the `data-testid="kpi-<id>"` anchor. When omitted it is derived
    * from the label (slugified), so every tile is test-addressable without churn.
    */
@@ -131,6 +159,23 @@ export interface KpiTileProps {
   help?: string;
   /** Accessible label for the help trigger (default `About <label>`). */
   helpLabel?: string;
+  /**
+   * Optional PARTITION of the numeral, rendered inside the tile as labelled rows —
+   * the "of which" detail behind a total (e.g. the three-way close attribution behind
+   * a terminal-case count).
+   *
+   * Supply the WHOLE partition or none. A partition rendered minus one band silently
+   * folds that band's rows into a neighbour and over-states it; the residual therefore
+   * stays visible even at zero. Rendered as a real <dl>, so each row is a
+   * label/value pair rather than a run-on string.
+   *
+   * On a CLICKABLE tile the list is a SIBLING of the trigger, never a child of it:
+   * ARIA gives `role=button` "children presentational", so a <dl> inside the button is
+   * stripped of its dt/dd relationships (and of each dt's `title`) and flattened into
+   * the trigger's accessible name — the exact run-on string the paragraph above says
+   * this avoids, and it would rename the disclosure trigger on every value change.
+   */
+  breakdown?: KpiBreakdownRow[];
   className?: string;
 }
 
@@ -241,6 +286,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       variant = 'default',
       density = 'default',
       onClick,
+      ariaExpanded,
+      ariaControls,
       testId,
       countTo,
       format,
@@ -248,6 +295,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       sparkMinPoints = 5,
       help,
       helpLabel,
+      breakdown,
       className,
     },
     ref,
@@ -343,6 +391,23 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       </span>
     ) : null;
 
+    // The in-place partition ("of which"): a real definition list so each band is a
+    // label/value pair. Plain, muted text with no judgement colour — it explains what
+    // the numeral is made of, it does not compare periods.
+    const breakdownNode =
+      breakdown && breakdown.length > 0 ? (
+        <dl className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 text-2xs">
+          {breakdown.map((row) => (
+            <React.Fragment key={row.label}>
+              <dt className="min-w-0 truncate text-muted-foreground" title={row.title}>
+                {row.label}
+              </dt>
+              <dd className="font-mono font-medium tabular-nums text-foreground">{row.value}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      ) : null;
+
     const inner = (
       <>
         <div className="flex items-start justify-between gap-3">
@@ -394,8 +459,13 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               strip
                 ? compact
                   ? 'mt-1 line-clamp-1 font-mono text-2xs'
-                  : 'mt-1 truncate pr-16 font-mono text-2xs'
+                  : 'mt-1 truncate font-mono text-2xs'
                 : 'mt-2 text-xs',
+              // The 4rem gutter exists ONLY to clear the absolutely-positioned strip
+              // spark (bottom-4 right-4, w-14). Reserving it unconditionally cost every
+              // strip caption ~10 characters of permanently empty space on the tiles
+              // that pass no series, so it is tied to the spark actually rendering.
+              strip && !compact && sparkNode ? 'pr-16' : null,
             )}
           >
             {sub}
@@ -404,13 +474,34 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       </>
     );
 
+    /**
+     * The partition is rendered OUTSIDE the trigger on a clickable tile (see the
+     * `breakdown` prop doc): ARIA discards list semantics inside a button. When that
+     * happens the tile becomes wrapper > (button + dl), so the wrapper owns the cell
+     * height and the button drops its own bottom padding onto the sibling.
+     */
+    const breakdownIsSibling = clickable && breakdownNode !== null;
+    const padX = strip ? (compact ? 'px-3' : 'px-4') : 'px-4';
+    const padBottom = strip ? (compact ? 'pb-3' : 'pb-5') : 'pb-4';
+    // The cell's minimum height belongs to whichever element IS the cell root, so a
+    // wrapped tile does not add the partition's height on top of the tile floor.
+    const minH = strip ? (compact ? 'min-h-0' : 'min-h-28') : null;
+    /** Card chrome (default variant only). It follows the CELL ROOT, so a wrapped tile
+     *  keeps its border/background around the partition instead of leaving it outside. */
+    const chrome = strip ? null : 'rounded-lg border border-border bg-card';
     const base = cn(
-      'relative h-full min-w-0 overflow-hidden text-left',
+      'relative min-w-0 overflow-hidden text-left',
+      breakdownIsSibling ? null : 'h-full',
+      breakdownIsSibling ? null : minH,
+      breakdownIsSibling ? null : chrome,
+      breakdownIsSibling && !strip && 'rounded-t-lg',
       strip
         ? compact
-          ? 'min-h-0 bg-transparent px-3 py-3'
-          : 'min-h-28 bg-transparent px-4 py-5'
-        : 'rounded-lg border border-border bg-card p-4',
+          ? 'bg-transparent px-3 py-3'
+          : 'bg-transparent px-4 py-5'
+        : 'p-4',
+      // The sibling below carries the tile's bottom padding instead.
+      breakdownIsSibling && 'pb-0',
       bar && !strip && 'pl-5',
     );
 
@@ -419,23 +510,48 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     ) : null;
 
     if (clickable) {
-      return (
+      const trigger = (
         <button
           ref={ref as React.Ref<HTMLButtonElement>}
           type="button"
           onClick={onClick}
+          aria-expanded={ariaExpanded}
+          aria-controls={ariaControls}
           data-testid={kpiTestId}
           className={cn(
             base,
             'block w-full transition-colors hover:bg-accent/30',
-            !strip && 'hover:border-primary/40',
+            !strip && !breakdownIsSibling && 'hover:border-primary/40',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-            className,
+            breakdownIsSibling ? null : className,
           )}
         >
           {barEdge}
           {inner}
         </button>
+      );
+      if (!breakdownIsSibling) return trigger;
+      // The <dl> sits BESIDE the trigger, inside the same cell: still visually part of
+      // the tile, but a real definition list to assistive tech, and out of the
+      // trigger's accessible name. The testid stays on the button — it IS the tile's
+      // interactive identity — and the partition gets its own suffixed anchor.
+      return (
+        <div
+          className={cn(
+            'relative flex h-full min-w-0 flex-col overflow-hidden',
+            minH,
+            chrome,
+            className,
+          )}
+        >
+          {trigger}
+          <div
+            data-testid={`${kpiTestId}-breakdown`}
+            className={cn('min-w-0', padX, padBottom, strip ? 'bg-transparent' : null)}
+          >
+            {breakdownNode}
+          </div>
+        </div>
       );
     }
 
@@ -443,6 +559,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       <div ref={ref as React.Ref<HTMLDivElement>} data-testid={kpiTestId} className={cn(base, className)}>
         {barEdge}
         {inner}
+        {breakdownNode}
       </div>
     );
   },

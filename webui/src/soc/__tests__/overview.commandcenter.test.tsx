@@ -210,6 +210,8 @@ describe('Overview — Cyber Defence Center', () => {
       '[data-edge-kind="conserved"]',
     )).toHaveLength(4);
     expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases');
+    // A covered window is a measurement, not a floor — no "≥" prefix.
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'false');
     // The evidence rail is the responsive fallback in Simple, then becomes persistent
     // when the operator explicitly chooses Detailed.
     expect(within(funnel).getByTestId('noise-stage-rail')).toHaveClass(
@@ -261,6 +263,90 @@ describe('Overview — Cyber Defence Center', () => {
     );
   });
 
+  it('marks the funnel Open-case count partial from window_covered, not from truncated', async () => {
+    // `aging.queue_depth` is cohort-scoped, so its completeness is the WINDOW's. This
+    // posture read more than it could return (`truncated`) but did NOT reach back far
+    // enough to answer the selected window, so the count is a floor and says so.
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      truncated: true,
+      store_total: 40_000,
+      window_covered: false,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'true'),
+    );
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('≥2 open cases');
+  });
+
+  it('publishes an exact funnel Open-case count when window_covered rescues a truncated fetch', async () => {
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      truncated: true,
+      store_total: 40_000,
+      window_covered: true,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('2 open cases'),
+    );
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'false');
+  });
+
+  it('falls back to the store-proven window total, NOT to a `cases.length >= 200` guess', async () => {
+    // Without a posture rollup the count comes off the fetched page. The old client
+    // heuristic called any 200-row page truncated — so a window holding exactly 200
+    // cases was permanently reported as "≥200" even though every row had been read.
+    // `#103`'s `window_total_exact` answers the question the store actually knows.
+    const exactly200: Case[] = Array.from({ length: 200 }, (_, i) => ({
+      case_id: `w-${i}`,
+      status: 'open',
+      risk_score: 30,
+    })) as unknown as Case[];
+    fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
+    listCasesMock.mockResolvedValue({
+      cases: exactly200,
+      total: 200,
+      window_total_exact: true,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveTextContent('200 open cases'),
+    );
+    expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'false');
+  });
+
+  it('marks the fallback partial when the store proves the window holds more rows', async () => {
+    fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
+    listCasesMock.mockResolvedValue({
+      cases: CASES,
+      total: 900,
+      window_total_exact: true,
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'true'),
+    );
+  });
+
+  it('marks the fallback partial when the store cannot prove the window total', async () => {
+    // `window_total_exact` absent/false means the server answered a DIFFERENT question
+    // than the one asked (a compatibility scan, or an unparseable bound that was
+    // dropped). Absence of proof is not proof, so the count stays a floor.
+    fetchPostureMock.mockRejectedValue(new Error('posture unavailable'));
+    listCasesMock.mockResolvedValue({ cases: CASES, total: 3 });
+    render(<Overview onNavigate={vi.fn()} />);
+    const funnel = await screen.findByTestId('noise-funnel');
+    await waitFor(() =>
+      expect(within(funnel).getByTestId('noise-open-cases')).toHaveAttribute('data-partial', 'true'),
+    );
+  });
+
   it('opens the complete active-case cohort from the separate Open cases control', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
@@ -278,15 +364,15 @@ describe('Overview — Cyber Defence Center', () => {
   it('renders a KPI micro-strip of 5 alert/case tiles (LLM spend not a hero tile)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
     const strip = screen.getByTestId('kpi-strip');
     expect(strip.querySelectorAll('[data-testid^="kpi-"]')).toHaveLength(5);
     for (const id of [
+      'kpi-total-cases',
+      'kpi-total-critical',
       'kpi-open-cases',
-      'kpi-critical',
-      'kpi-escalated-to-human',
       'kpi-false-positive-rate',
-      'kpi-auto-resolved',
+      'kpi-resolved-closed',
     ]) {
       expect(within(strip).getByTestId(id)).toHaveClass('bg-transparent');
     }
@@ -315,7 +401,7 @@ describe('Overview — Cyber Defence Center', () => {
     expect(within(spend).queryByText('No spend recorded')).toBeNull();
     // Other dashboard slices remain available; the page never collapses to an error.
     expect(screen.getByTestId('noise-funnel')).toBeInTheDocument();
-    expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument();
 
     await user.click(spend);
     await waitFor(() =>

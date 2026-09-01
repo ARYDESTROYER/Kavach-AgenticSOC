@@ -33,6 +33,7 @@ import {
   Square,
   Circle,
   HelpCircle,
+  CheckCircle2,
   Link2,
   Tag as TagIcon,
   SlidersHorizontal,
@@ -149,6 +150,16 @@ const ANY = '__any__';
 const ACTIVE = '__active__';
 /** Virtual facet for work the agent explicitly handed to an analyst. */
 const NEEDS_HUMAN = '__needs_human__';
+/**
+ * Virtual status facet for the TERMINAL lifecycle set — the exact complement of
+ * `ACTIVE`, taken off the SAME `TERMINAL_STATUSES` below so the two can never disagree.
+ *
+ * It exists because terminal is TWO statuses and this filter applies exactly one: a
+ * `status: 'closed'` deep link from the Resolved / Closed KPI silently dropped every
+ * RESOLVED case from a tile that counts both, which is why that tile used to have to
+ * settle for the posture view instead of a list.
+ */
+const TERMINAL = '__terminal__';
 /** Sentinel facet value for cases with no originating source recorded. */
 const UNASSIGNED = '__unassigned__';
 const TERMINAL_STATUSES = new Set(['closed', 'resolved']);
@@ -180,6 +191,11 @@ export function matchesNoiseOutcome(c: Case, outcome: NoiseOutcomeFilter): boole
 
 function isActiveCase(c: Case): boolean {
   return !TERMINAL_STATUSES.has((c.status || '').toLowerCase());
+}
+
+/** The exact complement of {@link isActiveCase} — one status set, two facets. */
+function isTerminalCase(c: Case): boolean {
+  return TERMINAL_STATUSES.has((c.status || '').toLowerCase());
 }
 
 function needsHumanCase(c: Case): boolean {
@@ -321,13 +337,23 @@ function buildFacets(cases: Case[]): Facets {
   };
 }
 
+/**
+ * Every VIRTUAL status facet. `healFilters` allow-lists this set, so adding a sentinel
+ * here is the ONE edit that keeps it surviving a reload — the failure mode is silent
+ * (the list just shows everything), so the set lives beside the heal that consumes it.
+ */
+const STATUS_SENTINELS: ReadonlySet<string> = new Set([ACTIVE, NEEDS_HUMAN, TERMINAL]);
+
 /** Drop a single-select facet value no longer present (self-healing). */
 function healFilters(f: CaseFilters, facets: Facets): CaseFilters {
   let next = f;
+  // The VIRTUAL facets are not case statuses, so they will never appear in
+  // `facets.statuses`. Every sentinel therefore has to be allow-listed here or the
+  // heal pass silently resets it to ANY on the first load after a drill-through —
+  // showing the operator EVERY case under a facet chip that still reads "Terminal".
   if (
     f.status !== ANY &&
-    f.status !== ACTIVE &&
-    f.status !== NEEDS_HUMAN &&
+    !STATUS_SENTINELS.has(f.status) &&
     !facets.statuses.includes(f.status)
   ) {
     next = { ...next, status: ANY };
@@ -353,6 +379,8 @@ function applyFilters(cases: Case[], f: CaseFilters): Case[] {
   return cases.filter((c) => {
     if (f.status === ACTIVE) {
       if (!isActiveCase(c)) return false;
+    } else if (f.status === TERMINAL) {
+      if (!isTerminalCase(c)) return false;
     } else if (f.status === NEEDS_HUMAN) {
       if (!needsHumanCase(c)) return false;
     } else if (f.status !== ANY && (c.status || '') !== f.status) {
@@ -533,11 +561,21 @@ const SEVERITY_FILTER_VALUES = new Set(['critical', 'high', 'medium', 'low', 'in
  * Severity/status tone for the inline icon in the flat summary strip. Every value
  * routes through a semantic token (no raw hex — design gate).
  */
-type SummaryTone = 'primary' | 'info' | 'critical' | 'high' | 'medium' | 'low';
+type SummaryTone =
+  | 'primary'
+  | 'info'
+  | 'critical'
+  | 'high'
+  | 'medium'
+  | 'low'
+  | 'success';
 
 const SUMMARY_TONE: Record<SummaryTone, string> = {
   primary: 'text-primary',
   info: 'text-info-text',
+  // Terminal work is a lifecycle OUTCOME, not a severity: it takes the status axis's
+  // AA-tuned standalone companion rather than borrowing a severity band's colour.
+  success: 'text-success-text',
   critical: 'text-critical-text',
   high: 'text-high-text',
   medium: 'text-medium-text',
@@ -864,15 +902,17 @@ export default function Cases({
   // when truncated — never read as a fraction of the server total.
   const counts = React.useMemo(() => {
     let active = 0;
+    let terminal = 0;
     let needsHuman = 0;
     const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
     for (const c of cases) {
       if (isActiveCase(c)) active += 1;
+      else terminal += 1;
       if (needsHumanCase(c)) needsHuman += 1;
       const band = caseSeverityBand(c);
       if (band && band in bySeverity) bySeverity[band as keyof typeof bySeverity] += 1;
     }
-    return { active, needsHuman, bySeverity };
+    return { active, terminal, needsHuman, bySeverity };
   }, [cases]);
 
   const truncated = total > cases.length;
@@ -1357,9 +1397,28 @@ export default function Cases({
           tile narrows the list to. */}
       <div
         className={cn(
-          'grid grid-cols-2 border-y border-border/70 sm:grid-cols-3 xl:grid-cols-6',
-          '[&>*:nth-child(odd)]:border-l-0 sm:[&>*:nth-child(odd)]:border-l sm:[&>*:nth-child(3n+1)]:border-l-0',
-          'xl:[&>*]:border-l xl:[&>*:first-child]:border-l-0',
+          'grid grid-cols-2 border-y border-border/70 sm:grid-cols-3 xl:grid-cols-7',
+          /*
+           * Column dividers, stated ONCE PER MUTUALLY-EXCLUSIVE COLUMN COUNT.
+           *
+           * The rule is simple — a hairline between neighbours, never at the start of a
+           * wrapped row — but expressing it as overlapping breakpoint layers made it a
+           * SPECIFICITY TIE decided by Tailwind's emission order: `[&>*:nth-child(odd)]`
+           * and `[&>*:nth-child(3n+1)]` are both (0,2,0), and `border-l-0` is emitted
+           * before `border-l`, so at 3 columns the odd rule re-lit cells 1 and 7 (the
+           * row starts) while the stale 3n+1 rule leaked upward and killed cell 4's
+           * divider at 7 columns. Adding a seventh tile turned that latent tie into a
+           * visible hairline hanging off the third row.
+           *
+           * So each range now owns exactly two rules — an ENABLE at (0,1,0) and a
+           * ROW-START RESET at (0,2,0) — and the ranges cannot overlap. The reset wins
+           * on specificity alone, so the result no longer depends on emission order,
+           * and `Nn+1` is always the range's own `grid-cols-N`. `route-visual-standard`
+           * derives and enforces exactly this from the column counts above.
+           */
+          'max-sm:[&>*]:border-l max-sm:[&>*:nth-child(2n+1)]:border-l-0',
+          'sm:max-xl:[&>*]:border-l sm:max-xl:[&>*:nth-child(3n+1)]:border-l-0',
+          'xl:[&>*]:border-l xl:[&>*:nth-child(7n+1)]:border-l-0',
           (loading || Boolean(error)) && cases.length === 0 && 'hidden',
         )}
       >
@@ -1372,6 +1431,16 @@ export default function Cases({
           onClick={() => setFilter('status', filters.status === ACTIVE ? ANY : ACTIVE)}
           title={loadedScopeTitle}
           testId="cases-summary-open"
+        />
+        <SummaryTile
+          label="Terminal"
+          count={counts.terminal}
+          icon={CheckCircle2}
+          tone="success"
+          active={filters.status === TERMINAL}
+          onClick={() => setFilter('status', filters.status === TERMINAL ? ANY : TERMINAL)}
+          title={loadedScopeTitle}
+          testId="cases-summary-terminal"
         />
         <SummaryTile
           label="Needs human"
@@ -1464,6 +1533,7 @@ export default function Cases({
             <SelectContent>
               <SelectItem value={ANY}>All statuses</SelectItem>
               <SelectItem value={ACTIVE}>Active cases</SelectItem>
+              <SelectItem value={TERMINAL}>Terminal (resolved or closed)</SelectItem>
               <SelectItem value={NEEDS_HUMAN}>Needs human</SelectItem>
               {facets.statuses.filter((s) => s !== 'needs_human').map((s) => (
                 <SelectItem key={s} value={s}>

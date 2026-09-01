@@ -41,6 +41,17 @@ export interface PostureLifecycle {
 }
 
 export interface PostureQuality {
+  /**
+   * The AGENT-WORKED cohort size, NOT the window's arrival count. `quality_metrics`
+   * strips operator "declared benign" analyst-policy closes before computing anything
+   * here (no model ran on them, so counting them would deflate `automation_rate` and
+   * inflate `containment_rate`), and reports them separately as `policy_closed_cases`.
+   * Every rate in this block, and `terminal_cases` itself, is measured over this
+   * narrowed population — so it is the only honest denominator for them. The window's
+   * arrival cohort is the sibling `PostureResponse.case_count`, which is policy-
+   * INCLUSIVE; mixing the two puts a numerator and a denominator on two different
+   * populations.
+   */
   total_cases: number;
   verdicted_cases: number;
   true_positive_cases: number;
@@ -60,6 +71,18 @@ export interface PostureQuality {
    */
   human_closed_cases?: number;
   system_closed_cases?: number;
+  /**
+   * Cases closed deterministically by an operator's analyst RULE POLICY ("declared
+   * benign"). Stripped from `total_cases` and from every rate above — no model ran, so
+   * they are not agent performance — and reported here so the volume stays visible. A
+   * surface that counts "cases that reached a terminal state" wants
+   * `terminal_cases + policy_closed_cases`.
+   *
+   * Optional: a backend that omits it is one that does not strip them either (the
+   * exclusion and this field shipped together), so its `terminal_cases` already
+   * includes them and the sum above is still exact.
+   */
+  policy_closed_cases?: number;
   alert_to_incident_ratio: number;
   false_positive_rate: number;
   escalation_rate: number;
@@ -136,12 +159,66 @@ export interface PostureCompare {
   mtta_p50: CompareBlock;
 }
 
+/**
+ * `severity_counts` (produced by the backend's `severity_band_counts()`) — a per-band
+ * tally of the window's ARRIVAL COHORT, keyed by
+ * the backend's own closed `constants.SEVERITY_BANDS` vocabulary (never a client-side
+ * literal list). Every band is present and zero-filled, and the values sum EXACTLY to
+ * `case_count`, so it is a partition of that population rather than a filtered subset.
+ *
+ * Optional: an older server omits it, and its ABSENCE means "not reported" — never
+ * zero. It replaces the client-side band derivation over a bounded case page, which
+ * silently reported a 200-row sample as a total.
+ */
+export type PostureSeverityCounts = Record<string, number>;
+
+/**
+ * `open_now` — the open-case STOCK measured at `generated_at` over the WHOLE fetched
+ * set. Deliberately window-EXEMPT (`window_exempt: true` is on the wire for exactly
+ * this reason): a case that arrived last month and is still open is on the queue
+ * today, so this number must never be presented as summing or reconciling with the
+ * windowed cohort tiles. `aging.queue_depth` is the cohort-scoped counterpart and is
+ * a DIFFERENT number.
+ *
+ * `complete` is false when the fetch was truncated (the count is then a LOWER BOUND)
+ * or when the case read FAILED outright, with `reason` naming which. `window_covered`
+ * does NOT rescue it — its population is the fetch, not the window.
+ */
+export interface PostureOpenNow {
+  count: number;
+  window_exempt?: boolean;
+  as_of?: string;
+  complete?: boolean;
+  reason?: string;
+}
+
 export interface PostureResponse {
   window_hours: number;
   generated_at: string;
   case_count: number;
+  /** Partition of `case_count` by advisory severity band (sums to it exactly). */
+  severity_counts?: PostureSeverityCounts;
+  /** The window-EXEMPT open-case stock (see {@link PostureOpenNow}). */
+  open_now?: PostureOpenNow;
   /** True when the server's bounded case scan omitted older store rows. */
   truncated?: boolean;
+  /**
+   * Whether the SELECTED WINDOW is fully answerable from the rows actually fetched.
+   *
+   * `truncated` alone is permanent for any deployment above the route's fetch bound,
+   * so gating on it presents every posture number as a lower bound forever — true, and
+   * useless. Cases are fetched newest-first, so a truncated fetch can only have dropped
+   * rows OLDER than the oldest one read: when the window's cutoff is at or after that
+   * floor, the window's numbers are COMPLETE even though the overall fetch was not.
+   *
+   * Emitted ALONGSIDE the truncation marker, never inside it. Absent on an older
+   * server — a consumer then falls back to `truncated`.
+   */
+  window_covered?: boolean;
+  /** Plain-text reason `window_covered` is false (empty when it is true). */
+  window_coverage_reason?: string;
+  /** ISO creation instant of the OLDEST fetched case (null when none is parseable). */
+  oldest_fetched_at?: string | null;
   /** Total rows reported by the case store before the selected-window filter. */
   store_total?: number;
   /** Rows inspected before the selected-window filter. */

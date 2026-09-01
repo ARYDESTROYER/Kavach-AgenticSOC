@@ -1298,7 +1298,10 @@ function CoverageBanner({
       role="group"
       aria-label="Ingest coverage"
       data-testid="coverage-banner"
-      className="grid grid-cols-2 border-y border-border/70 [&>*:nth-child(odd)]:border-l-0 sm:grid-cols-4 sm:[&>*]:border-l sm:[&>*:first-child]:border-l-0"
+      /* One ENABLE + one ROW-START RESET per mutually-exclusive column count (see the
+         note on the same strip in `Cases.tsx`): the unscoped odd reset used to outrank
+         `sm:[&>*]:border-l` at 4 columns and leave cell 3 with no divider. */
+      className="grid grid-cols-2 border-y border-border/70 sm:grid-cols-4 max-sm:[&>*]:border-l max-sm:[&>*:nth-child(2n+1)]:border-l-0 sm:[&>*]:border-l sm:[&>*:nth-child(4n+1)]:border-l-0"
     >
       <CoverageStat
         testId="coverage-sources"

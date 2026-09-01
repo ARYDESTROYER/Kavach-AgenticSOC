@@ -9,6 +9,13 @@
  * KPI tiles. We render <WidgetGrid editing={false}/> inside DashboardDataProvider with
  * offline data mocks, wait for a widget body, and assert no axe violations.
  *
+ * It also holds the OTHER half of the KPI drill-down's ARIA contract. `KpiTile` gained
+ * optional `aria-expanded` / `aria-controls` for the landing strip's disclosure; every
+ * other consumer — the custom-dashboard widgets here among them — must be byte-identical
+ * to before, i.e. emit NEITHER. A tile that navigates or merely reports would be lying
+ * to assistive tech if it announced a collapsed state it can never expand, and a
+ * dangling `aria-controls` would be an outright invalid attribute value.
+ *
  * Offline: no network, no #3 / runtime behaviour touched.
  */
 import * as React from 'react';
@@ -94,5 +101,27 @@ describe('Custom dashboard (WidgetGrid view) — a11y smoke (jest-axe)', () => {
     expect(await axe(container)).toHaveNoViolations();
     // View mode shipped zero grid JS.
     expect(rglEvaluated.count).toBe(0);
+  });
+
+  it('leaves widget KPI tiles free of the disclosure ARIA the landing strip opts into', async () => {
+    const { container } = render(
+      <DashboardDataProvider>
+        <WidgetGrid widgets={WIDGETS} editing={false} />
+      </DashboardDataProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('Needs-human queue')).toBeInTheDocument(), {
+      timeout: 5000,
+    });
+
+    const tiles = container.querySelectorAll('[data-testid^="kpi-"]');
+    expect(tiles.length).toBeGreaterThan(0);
+    for (const tile of Array.from(tiles)) {
+      // Absent, not "false": both props default to `undefined` on `KpiTile`, so they
+      // are never rendered for a consumer that did not ask for them.
+      expect(tile).not.toHaveAttribute('aria-expanded');
+      expect(tile).not.toHaveAttribute('aria-controls');
+    }
+    // And no drill-down panel exists to be controlled from here.
+    expect(container.querySelector('[data-testid="kpi-drilldown"]')).toBeNull();
   });
 });

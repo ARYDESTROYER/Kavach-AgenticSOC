@@ -10521,3 +10521,64 @@
   **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
 - Status: done for G1 + portability. Nothing was relabelled; no migration, no backfill.
 - Next: P3/P4 UI (tile renames + drill-down panel), then C, E+G3, H, D, A, B, I.
+
+### 2026-09-01 17:20Z — orchestrator + sub-agent fleet — P3 tile re-key + P4 drill-down panel
+- Context: PRs #102/#103/#104 merged (9 of 15 items). This wave is the operator-visible half of
+  Brief A: the five KPI tiles and the drill-down the store contract from #103 unblocked.
+- Did:
+  - **P3.** Re-keyed label AND testId together. 81 anchors reviewed BY HAND across 6 spec files
+    plus the Overview source (the estimate going in was ~43): `overview.render` 51, `overview.trends`
+    11, `overview.commandcenter` 7, `KpiTile.secondary` 8, `overview.humanvsai` 2, `overview.a11y` 1.
+    `overview.commandcenter` was 7 pure presence/class assertions that would have kept passing while
+    naming the wrong metric — the exact silent-failure mode. The render spec now asserts the RETIRED
+    anchors are absent, so a future label-only edit cannot pass.
+    Tiles repointed at the #103 server data: posture case count (not `quality.total_cases`, which
+    strips policy-closed), the server per-severity count (client 200-row derivation deleted), the
+    window-EXEMPT open-now stock, and terminal with a THREE-row close partition. Fixed the same
+    `terminal - auto` "Human-handled" violation in the dashboard mix widget. One page-level coverage
+    verdict shared by strip/card/funnel. Both disagreeing `>= 200` heuristics deleted in favour of
+    `window_total_exact`. Strip sparklines removed rather than charting a bounded 200-row population
+    beneath a posture-fed numeral.
+  - **P4.** Non-modal docked `<section>`, SIBLING after the grid (not a sixth child of a grid whose
+    divider math is tuned for five). Not Dialog/Sheet — both trap focus and inert the background.
+    Optional aria-expanded/controls so the other KpiTile consumers are untouched. The terminal facet
+    needed four edits in Cases.tsx; the silent one is the `healFilters` sentinel allowlist, now pinned.
+- Decisions / what review caught: 24 candidates, **19 confirmed** across five lenses. Two HIGH:
+  (a) a case-store OUTAGE rendered as four measured zeros — #103 ships `load_ok` + a reason on the
+  wire precisely so zero-because-unreadable is never published as a measurement, and the strip read
+  neither; a not-measured population is now ABSENT, not zero, and states the server's reason.
+  (b) only ONE of two `status:'closed'` deep links was converted, so a card counting BOTH terminal
+  statuses linked to one — click a card reading 1, land on an empty list.
+  Also: the close-attribution helper printed "no resolved cases" for a reported-but-non-reconciling
+  payload (an evidence gap rendered as a measurement, which its own docstring forbids);
+  `window_total_exact` was collapsed from three-valued to boolean, labelling the DEFAULT Open Cases
+  panel a lower bound when the store had answered exactly the question asked; the breakdown `<dl>`
+  rendered inside the trigger where ARIA discards list semantics; the Escape guard was global so a
+  neighbouring hover card suppressed it; and the test named "narrows to BOTH terminal statuses" had
+  no resolved row, so it could not fail.
+- ⚠️ PROCESS NOTE: 2 of this wave's 32 agents FAILED — one on a content-safeguard false positive,
+  and the terminal `fix` agent on an org policy error ("Claude subscription access disabled for
+  Claude Code"). The workflow therefore reported 19 findings as UNAPPLIED. I audited all 19 against
+  the code rather than trusting the report: every one had already been applied by the earlier
+  review→fix iterations. Nothing was lost, but subagent capacity is intermittent — verify each
+  wave's output directly instead of relying on a terminal agent to close it.
+- Tests: Console **313 files / 2214 passed**, zero stderr (`test:strict`); backend **3119 passed,
+  4 skipped, 0 failures**; eslint 0/0 at `--max-warnings=0`; design gates 6/6; `check:types` no
+  drift; build clean, entry 392.66 kB (under the 400 kB ceiling).
+  **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
+- Status: done for P3 + P4. Brief A is now complete end to end.
+- Next: C, E+G3, H, D, A, B, I from Brief B.
+
+### 2026-09-01 17:40Z — copilot — merge-conflict resolution start
+- Context: Requested to resolve PR merge conflicts on `claude/kpi-tiles-and-drilldown` against `Testing`.
+- Did: Assessed shallow/single-branch clone state and prepared a safe fetch+deepen merge workflow for `origin/Testing`.
+- Tests: Not run yet.
+- Status: in-progress
+- Next: Merge `origin/Testing`, resolve conflicts, finalize merge commit, and publish.
+
+### 2026-09-01 17:48Z — copilot — merge-conflict resolution complete
+- Context: Finish merge requested in PR comment.
+- Did: Fetched `origin/Testing` with explicit refspec, deepened history until merge-base existed, merged `origin/Testing`, resolved the sole conflict in `Journal.md` by preserving both branch entries, and finalized merge commit `00d1f2b`.
+- Tests: Not run (merge conflict touched `Journal.md` only; no code-path changes).
+- Status: done
+- Next: Publish the merge commit and reply on the PR thread.

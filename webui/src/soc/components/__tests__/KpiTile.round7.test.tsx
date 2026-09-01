@@ -47,6 +47,29 @@ describe('KpiTile round-7 props', () => {
     expect(container.querySelector('div[aria-hidden].h-7')).not.toBeNull();
   });
 
+  it('reserves the strip caption gutter ONLY while a spark occupies it', () => {
+    // The 4rem right gutter exists solely to clear the absolutely-positioned strip
+    // spark (`bottom-4 right-4 w-14`). Reserving it unconditionally cut ~10 characters
+    // off every strip caption on the tiles that pass no series — permanently empty
+    // space, ellipsizing load-bearing subs such as the degraded open-stock line.
+    const CAPTION = 'Open now \u00b7 not window-filtered \u00b7 lower bound';
+    const sub = () => screen.getByText(CAPTION).className;
+    const { rerender } = render(
+      <KpiTile label="Open Cases" value="12" variant="strip" sub={CAPTION} />,
+    );
+    expect(sub()).not.toMatch(/\bpr-16\b/);
+    rerender(
+      <KpiTile
+        label="Open Cases"
+        value="12"
+        variant="strip"
+        sub={CAPTION}
+        spark={[1, 2, 3, 4, 5]}
+      />,
+    );
+    expect(sub()).toMatch(/\bpr-16\b/);
+  });
+
   it('accepts an explicit two-point floor for exact previous/current comparisons', () => {
     const { container } = render(
       <KpiTile

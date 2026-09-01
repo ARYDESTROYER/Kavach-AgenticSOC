@@ -4,13 +4,14 @@
  * Pins the honest hover-trend affordance on the landing metrics:
  *   1. `metricsTrends` is fetched for the selected window (typeof-guarded elsewhere);
  *   2. hovering a KPI tile reveals its server bucket series — the right VALUES for the
- *      right metric (new-cases → `new_cases`, auto-resolved → `auto_closed`,
+ *      right metric (Total Cases → `new_cases`, Resolved/Closed → `closed`,
  *      FP rate → `fp_rate`) plus the window/bucket disclosure;
  *   3. the trend card is keyboard-reachable (Radix opens on trigger focus — WCAG 1.4.13);
  *   4. a series with no usable data renders the quiet "No trend data yet." line and
  *      NEVER an invented sparkline; per-bucket nulls are disclosed as measured-of-total;
- *   5. the Critical tile deliberately has NO hover-trend affordance AND no decorative
- *      in-tile spark (no per-severity bucket series exists — honesty over decoration).
+ *   5. the two tiles with no honest series — Total Critical (no per-severity bucket
+ *      series) and Open Cases (a stock, with no open-count-over-time series) — carry NO
+ *      hover affordance and no decorative in-tile spark at all.
  *
  * Fully offline: api + posture fetch mocked; no #3 behaviour touched.
  */
@@ -69,6 +70,9 @@ const METRICS: Metrics = {
 
 const POSTURE: PostureResponse = {
   window_hours: 24, generated_at: '2026-07-01T08:00:00Z', case_count: 3,
+  severity_counts: { critical: 1, high: 1, medium: 0, low: 1, info: 0 },
+  open_now: { count: 2, window_exempt: true, as_of: '2026-07-01T08:00:00Z', complete: true, reason: '' },
+  window_covered: true, window_coverage_reason: '', oldest_fetched_at: '2026-06-30T08:00:00Z',
   lifecycle: {
     mtta_minutes: { p50: 45, p90: 120, mean: 60, max: 200, count: 2, available: true, reason: '' },
     mttr_minutes: { p50: 180, p90: 600, mean: 240, max: 900, count: 1, available: true, reason: '' },
@@ -138,14 +142,15 @@ describe('Overview — hover trendlines', () => {
     ).toBeInTheDocument();
   });
 
-  it('hover on the Open-cases tile reveals the honest new-cases arrival series', async () => {
+  it('hover on the Total-Cases tile reveals the new-cases arrival series it measures', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-open-cases')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
-    await userEvent.hover(screen.getByTestId('kpi-open-cases'));
+    await userEvent.hover(screen.getByTestId('kpi-total-cases'));
     const card = await findTrendCard();
-    // The card names the SERIES honestly (arrivals, not an invented open-count line).
+    // The tile IS the arrival cohort, so this series is the metric itself rather than
+    // the "honest related series" it used to be under the old Open-cases label.
     expect(within(card).getByText('New cases opened')).toBeInTheDocument();
     expect(within(card).getByText('case arrivals per bucket')).toBeInTheDocument();
     expect(within(card).getByText('last 24 hours · 1h buckets')).toBeInTheDocument();
@@ -154,31 +159,33 @@ describe('Overview — hover trendlines', () => {
     expect(within(card).getByText('latest 5')).toBeInTheDocument();
   });
 
-  it('hover on the Escalated tile charts the once-counted sent_to_human series', async () => {
+  it('hover on the Resolved / Closed tile reveals the terminal `closed` series', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-escalated-to-human')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kpi-resolved-closed')).toBeInTheDocument());
 
-    await userEvent.hover(screen.getByTestId('kpi-escalated-to-human'));
+    await userEvent.hover(screen.getByTestId('kpi-resolved-closed'));
     const card = await findTrendCard();
-    expect(within(card).getByText('Sent to human')).toBeInTheDocument();
-    // buckets.sent_to_human = [1, 0, 2]. The last bucket has needs_human 2 and
-    // escalated 1 overlapping on one case — a nh+esc sum would wrongly show 3.
+    // `closed`, NOT `auto_closed`: the tile counts every terminal case, so charting
+    // the agent-only subset beneath it would be a different population.
+    expect(within(card).getByText('Cases now closed')).toBeInTheDocument();
+    // buckets.closed = [1, 0, 2].
     expect(within(card).getByText('first 1')).toBeInTheDocument();
     expect(within(card).getByText('latest 2')).toBeInTheDocument();
   });
 
-  it('hover on the Auto-resolved tile reveals the auto_closed series', async () => {
+  it('gives the Open-cases STOCK tile no trend affordance (no open-count series exists)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    await waitFor(() => expect(screen.getByTestId('kpi-auto-resolved')).toBeInTheDocument());
-
-    await userEvent.hover(screen.getByTestId('kpi-auto-resolved'));
-    const card = await findTrendCard();
-    expect(within(card).getByText('Auto-resolved cases')).toBeInTheDocument();
-    // buckets.auto_closed = [1, 0, 3].
-    expect(within(card).getByText('first 1')).toBeInTheDocument();
-    expect(within(card).getByText('latest 3')).toBeInTheDocument();
+    const tile = await screen.findByTestId('kpi-open-cases');
+    expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
+    expect(tile.querySelector('svg.recharts-surface')).toBeNull();
+    await userEvent.hover(tile);
+    // Give any (wrong) hover card a beat to appear, then assert none did. The arrivals
+    // series belongs to Total Cases; charting it under a window-exempt stock would
+    // pair a cohort line with a number that is not a cohort.
+    await new Promise((r) => setTimeout(r, 350));
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
   });
 
   it('FP-rate hover preserves nulls as not-measured buckets and opens from keyboard focus', async () => {
@@ -216,7 +223,7 @@ describe('Overview — hover trendlines', () => {
   it('gives the Critical tile NO trend affordance and NO decorative spark (no honest per-severity series exists)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const tile = await screen.findByTestId('kpi-critical');
+    const tile = await screen.findByTestId('kpi-total-critical');
     // The tile is not wrapped in a hover-trend trigger at all.
     expect(tile.closest('[data-testid="metric-trend-trigger"]')).toBeNull();
     // …and it no longer draws a sample-derived sparkline the hover card cannot
@@ -262,28 +269,36 @@ describe('Overview — hover trendlines', () => {
     expect(within(card).getByText('MTTD · daily mean')).toBeInTheDocument();
   });
 
-  it('clicking a navigating KPI tile still navigates and does NOT open a trend card', async () => {
+  it('clicking a KPI tile opens its drill-down and does NOT open a trend card', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
-    const tile = await screen.findByTestId('kpi-open-cases');
+    const tile = await screen.findByTestId('kpi-total-cases');
 
-    // A plain click (no hover): the tile's own drill-through wins outright.
+    // A plain press (no hover): the tile's own disclosure wins outright, and the
+    // hover card is force-closed for as long as the panel is up — it would otherwise
+    // render straight over the panel it just opened.
     fireEvent.pointerDown(tile);
     fireEvent.pointerUp(tile);
     fireEvent.click(tile);
 
-    expect(onNavigate).toHaveBeenCalledWith('cases', expect.anything());
+    expect(await screen.findByTestId('kpi-drilldown')).toBeInTheDocument();
+    expect(onNavigate).not.toHaveBeenCalled();
     // Give any (wrong) card a beat to appear, then assert none did.
     await new Promise((r) => setTimeout(r, 350));
     expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+    // The series is not lost: the panel restates it, which is the ONLY surface a
+    // touch-only device can reach now that every tile is a clickable trigger.
+    expect(
+      within(screen.getByTestId('kpi-drilldown-trend')).getByText('New cases opened'),
+    ).toBeInTheDocument();
   });
 
   it('degrades quietly when the trends read fails: hover shows the no-data line', async () => {
     trendsMock.mockRejectedValue(new Error('trends endpoint unavailable'));
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const tile = await screen.findByTestId('kpi-open-cases');
+    const tile = await screen.findByTestId('kpi-total-cases');
     // The discoverability footnote self-omits without a bucket payload.
     expect(screen.queryByText(/Hover or focus a metric/i)).toBeNull();
 
