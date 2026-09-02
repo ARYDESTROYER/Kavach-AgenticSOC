@@ -1,3 +1,8 @@
+---
+title: Replay harness
+description: Replay a frozen fixture set through two configurations against one pinned corpus, score close-eligibility offline, and read what the result does not prove.
+---
+
 # Replay harness (`replay_experiment`)
 
 What this harness can and cannot answer.
