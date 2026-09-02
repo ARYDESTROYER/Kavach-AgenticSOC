@@ -1786,6 +1786,40 @@ class StorageLifecycleConfig(BaseModel):
         return int(self.hot_days) + int(self.warm_days)
 
 
+class ReplayCaptureConfig(BaseModel):
+    """Forward capture of frozen investigation fixtures for the replay harness.
+
+    Purely OBSERVATIONAL: capture reads nothing the decision depends on, writes nothing
+    onto a case, and is fully error-isolated, so it can never touch ``decide()`` (#3).
+    A fixture is captured immediately after deterministic risk and BEFORE any model
+    call, so it can never encode the outcome a later replay is meant to measure.
+
+    Bounded BY CONSTRUCTION rather than by expectation: a fixed slot ring of
+    ``ring_size`` bodies, each at most ``max_fixture_bytes``, so worst-case storage is
+    the product of the two and cannot grow with uptime. A body over the byte cap, or a
+    cluster over ``max_events_per_fixture``, is skipped WHOLE — never truncated and
+    never sampled, because either would silently change the evidence a replay is scored
+    on.
+
+    A fixture holds raw log records, which is strictly more than a Case retains. No API
+    ever returns a fixture body; ``DELETE /api/replay/fixtures`` is the purge control.
+    """
+
+    enabled: bool = True
+    ring_size: int = Field(
+        default=100, ge=0, le=500,
+        description="How many frozen fixtures are retained; the oldest is evicted.",
+    )
+    max_fixture_bytes: int = Field(
+        default=131_072, ge=4_096, le=1_048_576,
+        description="Per-fixture canonical-body ceiling; a larger fixture is skipped whole.",
+    )
+    max_events_per_fixture: int = Field(
+        default=50, ge=1, le=500,
+        description="Member-event ceiling; a larger cluster is skipped whole, never sampled.",
+    )
+
+
 class StandupConfig(BaseModel):
     enabled: bool = True
     window_hours: int = 24
@@ -3392,6 +3426,12 @@ class Preferences(BaseModel):
     batch: BatchConfig = Field(default_factory=BatchConfig)
     baseline: BaselineConfig = Field(default_factory=BaselineConfig)
     campaign: CampaignConfig = Field(default_factory=CampaignConfig)
+
+    # --- Replay harness fixture capture (observational; never feeds decide(), #3).
+    # ON by default because the bound is structural (ring_size x max_fixture_bytes),
+    # and because a retrospective comparison is impossible in this system: only what
+    # is captured from now on can be measured against a future change. ---
+    replay_capture: ReplayCaptureConfig = Field(default_factory=ReplayCaptureConfig)
 
     # --- Rule-identity precedent (promotion / window fairness / futility) ---
     # Promotion is OFF by default (it changes what the investigator is told). The window

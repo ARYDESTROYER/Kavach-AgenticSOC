@@ -294,6 +294,30 @@ backend/app/
                      agent_improvement (read-only aggregate comparison of the last 7
                      complete UTC days against the preceding 28; insufficient evidence
                      stays explicit and never becomes a composite score)
+  engine/replay/     the replay harness (Item I): text (the ONE unmeasurability +
+                     limitations statement, byte-identical in every output) · params
+                     (the submit contract; `extra=forbid` makes a comparison against
+                     logged history INEXPRESSIBLE, not merely discouraged) · fixtures
+                     (forward capture; bounded slot ring over the SAME shared KV, no new
+                     index/table/migration; log-bearing half stored as ONE opaque JSON
+                     string so attacker-named fields never become KV field NAMES;
+                     the source field-mapping overlay travels with the fixture and a
+                     conflicting multi-source cluster is not captured; evicted slots are
+                     scrubbed and the purge sweeps the ring's high-water slot space;
+                     oversize/overlong fixtures skipped WHOLE; strict content-hash load,
+                     mismatch or foreign schema = unavailable, never substituted)
+                     · stack (per-CELL isolated stack on the DemoStack pattern with a
+                     REAL gateway, a frozen capture-anchored log source, a frozen corpus
+                     + memory + enrichment cache, a dual usage store tagging the real
+                     ledger with the single low-cardinality `replay` surface, and a spend
+                     limiter checked pre-flight on an estimate) · scoring (offline
+                     production `decide()` (#3-safe, read-only), two-sided exact-binomial
+                     McNemar over discordant cells, MEASURED self-consistency floor
+                     compared NET-against-NET; insufficient evidence ships its counts and
+                     no rate/p-value, and never becomes a score) · job (the durable
+                     handler; the bound is per JOB, CANCELS rather than overruns, is
+                     observed at every CELL boundary, and refuses to resume across a
+                     worker restart rather than spend a second ceiling)
   threat/            mitre_techniques.json (bundled ATT&CK, 697 techniques) +
                      refresh_mitre.py + SOURCE.md (data corpus, not live fetch)
   runbooks/          protected bundled Markdown runbooks (RAG knowledge corpus;
@@ -397,6 +421,10 @@ backend/app/
                      [`GET/PUT /api/storage/lifecycle`, pure preview; deprecated direct
                      apply returns 410 and canonical fresh-auth apply is a Job limited
                      to supported owned-state targets];
+                     routes_replay [`GET /api/replay/fixtures` catalog METADATA only
+                     (never a fixture body — it is unfenced raw log data, #9) +
+                     `DELETE /api/replay/fixtures`; running a replay is the
+                     `replay_experiment` Job, never an endpoint];
                      routes_runbooks [dedicated `runbooks:read/manage` bundled/operator
                      catalog CRUD + targeted/full RAG reconciliation; direct full-catalog
                      reindex is executable but OpenAPI-deprecated, targeted remains

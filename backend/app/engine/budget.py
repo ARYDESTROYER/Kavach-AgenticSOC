@@ -65,9 +65,11 @@ class BudgetGate:
     # ----- cost estimation -----
     def estimate_cost(self, prompt: str | int, max_tokens: int,
                       model: str = "", overlay: tuple[float, float] | None = None) -> float:
-        """A conservative USD estimate for a single call: the prompt priced as input
-        tokens + ``max_tokens`` priced as output tokens (the worst case — the model
-        may emit fewer). ``prompt`` may be the text or an already-counted char length.
+        """A USD estimate for a single call: the prompt priced as input tokens +
+        ``max_tokens`` priced as output tokens. Worst-case in the OUTPUT dimension
+        only (the model may emit fewer); the INPUT term APPROXIMATES tokenisation at
+        four characters per token, so a denser real tokenisation can record more than
+        this estimated. ``prompt`` may be the text or an already-counted char length.
         Uses the same price resolution the ledger uses (overlay → table → registry →
         heuristic → default), so the pre-flight estimate matches the recorded cost."""
         prompt_chars = prompt if isinstance(prompt, int) else len(str(prompt))

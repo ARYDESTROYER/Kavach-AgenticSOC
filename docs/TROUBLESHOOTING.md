@@ -545,6 +545,57 @@ you added. That is the direct check — the rows the agent sees are the rows you
 
 ---
 
+## N0. A replay experiment reports "insufficient evidence"
+
+**Symptom.** A `replay_experiment` job succeeded, but `arm_comparison.verdict` is
+`insufficient_evidence` or `indistinguishable_from_noise` and there is no number to
+act on.
+
+**Cause.** That is the answer, not a failure. The harness measures each arm's own
+self-consistency first and refuses to call a difference real unless it clearly exceeds
+that floor. Read `reason`: `noise_floor_not_measured` (`repeats < 2` cannot measure a
+floor at all), `run_incomplete` (an interrupted or cancelled run), `no_paired_fixtures`,
+`single_arm`, or `noise_floor_undersampled` (repeat cells were lost to exclusion, so the
+floor rests on fewer comparisons than the table it would gate — `noise_floor_coverage`
+shows the shortfall). An insufficient-evidence result carries its raw counts and NO
+rate, difference or p-value: it is never converted into a score.
+
+A separate verdict, `underpowered`, means the difference DID clear the floor but this
+many discordant pairs cannot reach `alpha` under any split — add fixtures. Distinguish
+it from `indistinguishable_from_noise` by reading `above_noise_floor` and
+`significant_at_alpha`, which are reported separately from their conjunction
+`exceeds_noise_floor`.
+
+**Fix.** Run with `repeats >= 2`, enough fixtures for the paired table to be
+informative (check `arm_comparison.n_pairs`, `b` and `c` — never read `p_exact`
+without them), and a `spend_bound_usd` high enough that the run does not cancel.
+
+**Also note.** The harness cannot answer a retrospective question about a change that
+already shipped: the originating log events age out and the stored fallback strips
+record content, so no fixture for a past build can be rebuilt. Capture runs forward.
+See [`docs/development/replay-harness.md`](development/replay-harness.md).
+
+**How to confirm.** `report.json` carries `noise_floor.measured: true`, a non-zero
+`arm_comparison.n_pairs`, and `spend.tripped: false`.
+
+---
+
+## N0b. A replay experiment failed with "cannot be resumed"
+
+**Symptom.** A `replay_experiment` job that was running when the worker restarted comes
+back `failed`, with a failure reason saying the run cannot be resumed.
+
+**Cause.** Deliberate. `spend_bound_usd` applies to the whole job, and a run's accrual
+is read from a run-scoped ledger mirror a new worker cannot reconstruct. Resuming would
+hand the remaining fixtures a fresh, untouched copy of the ceiling and let one
+interruption spend it twice.
+
+**Fix.** Submit a new run for the remaining fixtures. The first attempt's spend is
+already visible in the usage ledger under `surface = "replay"` and in its keyed
+`job:<id>:replay-spend` audit row; the refusal itself spends nothing.
+
+---
+
 ## N. Settings won't save / read-only
 
 **Symptom.** The Settings form is disabled, or a PUT returns `403 Settings are in

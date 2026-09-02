@@ -200,6 +200,17 @@ JOBS_NS = "jobs"
 JOBS_KEY = "jobs"
 JOBS_DOC_ID = "jobs"                    # ES doc id within CONFIG_INDEX
 
+# Frozen investigation fixtures for the replay harness: one bounded CATALOG document
+# plus a FIXED-SIZE ring of body slots, over the SAME shared KV every other Round-3/4
+# store uses — no new Elasticsearch index, SQL table, or migration.  A fixed slot ring
+# rather than one key per fixture because :class:`app.stores.base.KVStore` has no delete
+# primitive: per-fixture keys would leave an unbounded tail of tombstones, while slot
+# ``seq % ring_size`` is simply overwritten.  The ES adapter composes ``<ns>:<key>`` doc
+# ids for both, so no per-document id mapping is required.
+REPLAY_FIXTURES_NS = "replay_fixtures"
+REPLAY_FIXTURES_KEY = "catalog"
+REPLAY_FIXTURE_SLOT_PREFIX = "slot-"    # body key = f"{PREFIX}{index:04d}"
+
 # Threshold TUNING state (per-rule tuning suggestions + counters) — the nightly
 # auto-tuner's proposed threshold adjustments awaiting apply/shadow-eval.
 TUNING_NS = "tuning"
@@ -580,6 +591,7 @@ class JobKind(str, Enum):
     RAG_REBUILD = "rag_rebuild"
     TIERED_RESET = "tiered_reset"
     STORAGE_LIFECYCLE_APPLY = "storage_lifecycle_apply"
+    REPLAY_EXPERIMENT = "replay_experiment"
 
 
 class JobStatus(str, Enum):

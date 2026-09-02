@@ -131,6 +131,17 @@ def public_job(job: Job) -> JobPublic:
         params = {"scope": raw.get("scope")}
     elif kind == "storage_lifecycle_apply":
         params = {"acknowledge": bool(raw.get("acknowledge"))}
+    elif kind == "replay_experiment":
+        params = {
+            "fixture_count": len(list(raw.get("fixture_ids") or [])),
+            "arm_ids": [
+                str(arm.get("arm_id") or "")
+                for arm in (raw.get("arms") or [])
+                if isinstance(arm, dict)
+            ],
+            "repeats": raw.get("repeats"),
+            "spend_bound_usd": raw.get("spend_bound_usd"),
+        }
     else:  # pragma: no cover - JobKind makes this unreachable
         params = {}
     return JobPublic(
@@ -197,6 +208,17 @@ def _compact_params(job: Job) -> dict[str, Any]:
         return {"scope": str(raw.get("scope") or "")[:20]}
     if kind == JobKind.STORAGE_LIFECYCLE_APPLY:
         return {"acknowledge": bool(raw.get("acknowledge"))}
+    if kind == JobKind.REPLAY_EXPERIMENT:
+        return {
+            "fixture_count": len(list(raw.get("fixture_ids") or [])),
+            "arm_ids": [
+                str(arm.get("arm_id") or "")[:40]
+                for arm in (raw.get("arms") or [])
+                if isinstance(arm, dict)
+            ][:2],
+            "repeats": int(raw.get("repeats") or 0),
+            "spend_bound_usd": float(raw.get("spend_bound_usd") or 0.0),
+        }
     return {}
 
 

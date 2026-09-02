@@ -10709,3 +10709,68 @@
 - Tests: n/a.
 - Status: done.
 - Next: verify counts against the ACTUAL fork point, never against a sibling branch's post-change total.
+
+### 2026-09-02 04:00Z — fixer — Item I: replay-harness review findings applied (25 of 25)
+- Context: Apply every confirmed finding from the adversarial review of the replay harness
+  (`claude/replay-harness`, forked from `origin/Testing` at `03754b3`) and take the branch to a
+  fully green, shippable state. Additive only; `engine/case_manager.py` byte-identical (#3).
+- Did:
+  - **Retention/privacy (F1, F18, F23).** `_reserve_slot` now reports the slots its write evicted
+    and `sink` scrubs them, so lowering `ring_size` deletes the orphaned raw records instead of
+    stranding them where neither the ring nor the purge can reach them. The catalog carries a
+    `ring_capacity` high-water mark and `clear()` sweeps that whole slot space (with a
+    full-`RING_SIZE_MAX` fallback for a mark-less catalog). `GET /api/replay/fixtures` reports
+    `max_bytes` as `max(configured product, actually stored)` so lowering `max_fixture_bytes`
+    cannot make the advertised ceiling a lie.
+  - **Reset integration (F2).** `engine/reset.py` calls `replay_fixtures.clear()` on the
+    cases/sources tiers (not a catalog blank, which would strand the bodies) and reports
+    `kv:replay_fixtures:<n>`; `ResetHost` gained the accessor and the Console DangerZone cases
+    card names the fixtures it clears.
+  - **Isolation guard (F3).** New `test_replay_mutates_no_shared_kv_store_and_no_live_corpus`
+    content-hashes every shared-KV document around a run and asserts the live corpus count.
+    Verified non-vacuous: it fails with `['tlsoc-agent-config/memory']` under a probe leak.
+  - **Statistics (F4–F12).** `arm_comparison` computes its inferential block only AFTER every
+    insufficiency gate, so an insufficient result ships counts and no rate/p-value; the floor
+    guard compares NET-against-NET (`pooled_close_rate_swing`, with a zero-event upper limit at
+    the run's own alpha) and reports `gross_discordance_rate` separately; `exceeds_noise_floor`
+    is split into `above_noise_floor` + `significant_at_alpha` (null where unmeasured) and a new
+    `underpowered` verdict distinguishes "add fixtures" from "no effect"; a floor covering fewer
+    comparisons than its table is `noise_floor_undersampled`; every rate ships its denominator
+    and is null at zero; `arms[].close_eligible_rate` is PAIRED (equals `rate_a`/`rate_b`) with
+    the descriptive figure kept as `close_eligible_rate_unpaired`; report + manifest record
+    `policy.fingerprint`; `test`/`alternative` state the two-sided choice. `REPORT_SCHEMA_VERSION`
+    1 → 2.
+  - **Spend + cancellation (F13–F16).** Cancellation, authority and the lease are observed at the
+    CELL boundary; the durable failure reason is the real one, and `JobAuthorityLost` aborts the
+    run instead of being logged as one fixture's pipeline error. A recovered replay is REFUSED
+    rather than resumed, so `spend_bound_usd` is per JOB and one interruption cannot spend the
+    ceiling twice. The ledger tag collapsed to the single low-cardinality `replay` surface so a
+    run cannot evict real production surfaces from the top-10 `by_surface` breakdown. The
+    limiter/`estimate_cost` docstrings and the docs now state the residual honestly (bounded by
+    one call's estimation error, never a whole call), pinned by a new deterministic test.
+  - **Fixture integrity (F17, F19–F22).** The log-bearing half of a body is one opaque
+    canonical-JSON string, so attacker-named log fields can never become KV document field NAMES;
+    `raw_hits` is derived at load, not stored twice; the capturing source's field-mapping overlay
+    travels with the fixture and is re-applied to both prefs and the frozen connector (a
+    conflicting multi-source cluster is not captured, counted as `skipped_mapping_conflict`);
+    `memory_enabled` is wired to a real `_FrozenMemory([])` and each arm's knobs are echoed in the
+    report; the pinned corpus is sorted on exactly what `corpus_fingerprint` hashes. Body schema
+    1 → 2, honest-unavailable on a foreign schema, no migration or backfill (#10).
+  - **Dead code + docs (F24, F25).** Removed the never-read `ReplayStack.kv`; corrected the
+    operations doc's false claim that cost analytics excludes replay spend; rewrote the harness
+    doc's storage/privacy/spend/scoring/pairing sections and the "does NOT prove" table;
+    refreshed `CHANGELOG.md [Unreleased]`, `AGENTS.md` §4 and `docs/TROUBLESHOOTING.md` (N0 + a
+    new N0b for the resume refusal).
+  - Regenerated `webui/openapi.json` + `src/lib/api-types.gen.ts`, which the branch had left stale
+    since the new `JobKind` and replay routes landed.
+- Tests: backend **3288 passed, 4 skipped, 3 deselected** (the three sanctioned environmental
+  deselects), exit 0; `ruff --select E9,F63,F7,F82` clean; `test_portability_contract.py` 3 passed.
+  Console **314 files / 2223 passed, 9 skipped**, eslint 0 errors 0 warnings, `check:types` no
+  drift. `scripts/check_version.py` consistent. **#3 re-verified: `case_manager.py` md5
+  `212873cd13d822a7b64752635285ff1f`; `risk.py`, `signatures.py` and
+  `deploy/docker-compose.agnostic.yml` untouched.**
+- Status: done — every one of the 25 confirmed findings applied, each with a regression test whose
+  non-vacuity was verified by reverting the fix.
+- Next: review the two places where I deliberately diverged from the proposed fix (the resume
+  refusal in place of a durable per-attempt spend carry-forward, and the single `replay` ledger
+  surface in place of per-run keys) before merge.

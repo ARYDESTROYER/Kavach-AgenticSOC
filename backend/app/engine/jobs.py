@@ -88,6 +88,9 @@ def job_url(job: Job) -> str:
         return "#/runbooks"
     if kind == JobKind.TIERED_RESET:
         return "#/settings?s=danger"
+    if kind == JobKind.REPLAY_EXPERIMENT:
+        # No dedicated Console surface; the unified Jobs page owns it.
+        return "#/batchjobs"
     return "#/settings?s=storage"
 
 
@@ -254,6 +257,7 @@ class JobRunner:
                 JobKind.RAG_IMPORT: self._rag_import,
                 JobKind.TIERED_RESET: self._tiered_reset,
                 JobKind.STORAGE_LIFECYCLE_APPLY: self._storage_apply,
+                JobKind.REPLAY_EXPERIMENT: self._replay_experiment,
             }[job.kind]
             await handler(job, token)
         except JobCancelled:
@@ -1407,6 +1411,17 @@ class JobRunner:
                 },
             ),
         )
+
+    async def _replay_experiment(self, job: Job, token: str) -> None:
+        """Replay frozen fixtures through named arm configurations (Item I).
+
+        The whole implementation lives in :mod:`app.engine.replay.job` so this module
+        does not grow another several-hundred-line handler; the seam is the same thin
+        delegation the export handlers use into ``routes_export``.
+        """
+        from .replay.job import run_replay_job
+
+        await run_replay_job(self, job, token)
 
     async def _finish(
         self,

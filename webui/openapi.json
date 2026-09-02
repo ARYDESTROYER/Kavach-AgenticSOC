@@ -2792,7 +2792,8 @@
           "rag_import",
           "rag_rebuild",
           "tiered_reset",
-          "storage_lifecycle_apply"
+          "storage_lifecycle_apply",
+          "replay_experiment"
         ],
         "title": "JobKind",
         "type": "string"
@@ -14461,6 +14462,50 @@
         "summary": "Check Upstream Releases",
         "tags": [
           "releases"
+        ]
+      }
+    },
+    "/api/replay/fixtures": {
+      "delete": {
+        "description": "Clear the catalog and overwrite every body slot.\n\nCapture is on by default and fixtures hold raw records, so an operator needs an\nimmediate purge that does not require a factory reset.",
+        "operationId": "purge_replay_fixtures_api_replay_fixtures_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Purge Replay Fixtures Api Replay Fixtures Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Purge Replay Fixtures",
+        "tags": [
+          "replay"
+        ]
+      },
+      "get": {
+        "description": "Catalog metadata only, plus the storage bound and the honesty statement.",
+        "operationId": "list_replay_fixtures_api_replay_fixtures_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response List Replay Fixtures Api Replay Fixtures Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Replay Fixtures",
+        "tags": [
+          "replay"
         ]
       }
     },

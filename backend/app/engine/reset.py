@@ -100,6 +100,8 @@ class ResetHost(Protocol):
     @property
     def real_batch_job_store(self) -> Any: ...
     @property
+    def replay_fixtures(self) -> Any: ...
+    @property
     def rag(self) -> Any: ...
 
     def is_sql_backend(self) -> bool: ...
@@ -167,6 +169,21 @@ async def reset_service(
                 cleared.append(f"kv:{ns}")
             else:
                 failed.append(f"kv:{ns}")
+    # Frozen replay fixtures hold each member event's complete raw record — strictly
+    # more log content than the Case it came from retained — so a cases/sources reset
+    # that left them behind would keep raw records for cases the operator just deleted.
+    # The store's own purge is called rather than blanking its catalog document: the
+    # records live in separate body slots, and blanking the catalog first would strand
+    # them permanently. Factory is skipped — the wholesale KV purge covers it, and
+    # pre-blanking only widens the stale-writer window.
+    if scope != ResetScope.FACTORY and getattr(app_state, "replay_fixtures", None):
+        attempted.append("kv:replay_fixtures")
+        try:
+            removed_fixtures = await app_state.replay_fixtures.clear()
+            cleared.append(f"kv:replay_fixtures:{removed_fixtures}")
+        except Exception as exc:  # noqa: BLE001 - reported; scoped reset continues
+            logger.warning("replay fixture reset failed (%s); continuing", exc)
+            failed.append("kv:replay_fixtures")
     # Batch work is a separate strict-CAS document. Its embedded reset epoch is
     # preserved while rows are cleared, so an already-admitted scheduler mutation
     # cannot recreate a pre-reset provider job after this boundary.

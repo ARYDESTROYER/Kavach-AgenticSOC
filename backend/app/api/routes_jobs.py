@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from ..constants import CaseStatus, JobKind, ResetScope
 from ..engine.jobs import account_generation
+from ..engine.replay.params import ReplayExperimentParams
 from ..models import (
     Job,
     JobListResponse,
@@ -209,6 +210,7 @@ _PARAM_MODELS: dict[JobKind, type[BaseModel]] = {
     JobKind.RAG_REBUILD: RagRebuildParams,
     JobKind.TIERED_RESET: ResetParams,
     JobKind.STORAGE_LIFECYCLE_APPLY: StorageParams,
+    JobKind.REPLAY_EXPERIMENT: ReplayExperimentParams,
 }
 
 
@@ -258,6 +260,11 @@ def _items(kind: JobKind, params: dict[str, Any]) -> tuple[dict[str, str], str]:
         return ({"bootstrap": "pending"} if params.get("dry_run") else {}), "cases"
     if kind == JobKind.RAG_REBUILD:
         return {"rebuild": "pending"}, "items"
+    if kind == JobKind.REPLAY_EXPERIMENT:
+        return (
+            {fixture_id: "pending" for fixture_id in params["fixture_ids"]},
+            "replay fixtures",
+        )
     key = "reindex" if kind == JobKind.RUNBOOK_REINDEX else (
         "reset" if kind == JobKind.TIERED_RESET else "apply"
     )
@@ -288,6 +295,11 @@ def _grants(kind: JobKind, params: dict[str, Any]) -> list[tuple[str, str]]:
         return [("rag", "manage")]
     if kind == JobKind.TIERED_RESET:
         return [("users", "manage")]
+    if kind == JobKind.REPLAY_EXPERIMENT:
+        # Overriding per-role model configuration and spending real provider money IS
+        # the models grant; the fixtures are case-derived alert evidence and the report
+        # enumerates per-case outcomes, hence cases:read alongside it.
+        return [("models", "manage"), ("cases", "read")]
     return [("settings", "manage")]
 
 

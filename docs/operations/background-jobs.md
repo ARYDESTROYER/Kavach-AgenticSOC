@@ -26,7 +26,8 @@ The current job registry covers:
 - bounded Knowledge imports;
 - knowledge-corpus rebuild (`rag_rebuild`);
 - cases, sources, and factory reset;
-- Storage & retention policy apply; and
+- Storage & retention policy apply;
+- replay experiments over frozen investigation fixtures (`replay_experiment`); and
 - read-only projections of related asynchronous LLM Batch work and scheduler health.
 
 Each submission snapshots its validated parameters. Changing a Case Manager selection,
@@ -50,6 +51,38 @@ policy GET/PUT and preview remain direct operations.
 The application updater is **not** part of this registry. It retains its separate,
 hardened supervisor-owned job and receipt protocol under `/api/system-updates/*`.
 Application background jobs neither replace nor relax that update boundary.
+
+### Replaying frozen fixtures
+
+`replay_experiment` replays captured investigation fixtures through one or two named
+arm CONFIGURATIONS, now, against one pinned corpus snapshot, and scores close-
+eligibility per fixture with the production `decide()` called offline. It requires
+`models:manage` and `cases:read`, and a **required** `spend_bound_usd`.
+
+It is the one job kind that spends real provider money as its whole purpose, so three
+things about it differ from every other kind:
+
+- its usage rows land in the **real** ledger tagged `surface = "replay"`, and therefore
+  count against the deployment's configured budget. That tag makes replay spend
+  **identifiable** at the ledger, but cost analytics does **not** currently exclude it:
+  a replay's spend appears in the Cost page's headline total and in `by_surface`
+  alongside production spend. Size `spend_bound_usd` accordingly, and filter on the
+  `replay` surface if you export the ledger for reporting;
+- exceeding `spend_bound_usd` **cancels** the run rather than truncating it. The bound
+  is checked before each call on an estimate and re-checked on realised actuals at every
+  cell boundary, so it can never be exceeded by a whole call; cancellation, authority
+  and the lease are observed at that same cell boundary, so an operator Cancel costs at
+  most the cell already in flight;
+- it is deliberately **not** retry-safe or resumable: the bound applies to the whole job
+  and cannot be carried across a worker restart, so a recovered run is refused (spending
+  nothing) rather than resumed with a fresh copy of the ceiling. Submit a new run for
+  the remaining fixtures.
+
+Everything else it touches is isolated per cell exactly as Demo Mode isolates its
+stack. It writes no production case row, and no audit row beyond its own lifecycle
+transitions plus one keyed spend-accountability row. Full detail, including what each
+reported statistic does NOT prove, is in
+[`docs/development/replay-harness.md`](../development/replay-harness.md).
 
 ### Rebuilding the knowledge corpus
 
