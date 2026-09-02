@@ -16,6 +16,7 @@ This module defines the schema and the loader for the secret tier. The preferenc
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from datetime import datetime, timezone
@@ -38,6 +39,8 @@ from .evidence_fields import (
 # named ``Preferences.free_text_search_fields`` method that wraps it.
 from .evidence_fields import free_text_search_fields as _resolve_free_text_search_fields
 from .utils import dotted_get, iso_now, new_id, slug
+
+logger = logging.getLogger("tlsoc.config")
 
 # The provider names the per-role ModelConfig may carry. Widened in Round 3 Wave 2b to
 # make the cloud-hosted providers (azure/bedrock/vertex) + any OpenAI-compatible
@@ -605,9 +608,33 @@ class RiskWeights(BaseModel):
 class CapsConfig(BaseModel):
     """Per-case caps / kill switches (Section 6.3 #4)."""
 
-    max_tool_calls: int = 8
-    max_tokens: int = 20000
-    timeout_seconds: int = 120
+    # BOUNDS (``ge=1``): a zero/negative cap cannot express a working configuration —
+    # it is a silent, $0, INVISIBLE failure, not a stricter policy. ``max_tokens=0``
+    # makes ``CaseBudget.exceeded()`` true at the FIRST loop check, before any model
+    # call, so the run fails to human with zero gateway calls and no error audit row;
+    # ``max_tool_calls=0`` burns the ReAct loop with no evidence gathered. There is
+    # deliberately NO UPPER bound: an upper bound would encode one vendor's hosted-API
+    # latency/context envelope as product policy (§6 agnosticism) and would silently
+    # revert the stored configuration of any deployer already above it.
+    #
+    # An out-of-range value that is ALREADY STORED is REPAIRED (clamped up to the
+    # floor) by ``Preferences._clamp_caps`` before this constraint is ever evaluated,
+    # because both preference loaders answer a validation error by returning a FULL
+    # DEFAULT ``Preferences()`` — and ``Preferences`` is one document that also carries
+    # ``auto_close`` (the policy ``decide()`` consumes), ``rule_catalog`` and
+    # ``sources``. Rejecting instead of repairing would silently revert all of that.
+    max_tool_calls: int = Field(default=8, ge=1)
+    max_tokens: int = Field(default=20000, ge=1)
+    timeout_seconds: int = Field(default=120, ge=1)
+    # The per-MODEL-REQUEST wall-clock bound, in seconds. ``timeout_seconds`` bounds the
+    # WHOLE case; this bounds ONE completion attempt inside it, so a single degraded
+    # request can no longer consume the entire case budget and starve every later step.
+    # It is config rather than a magic number buried in a provider constructor: the
+    # default 60 matches the historical per-client httpx timeout in ``llm/providers.py``
+    # so an unset value is byte-for-byte the behaviour that shipped before. (The OpenAI
+    # Flex service tier keeps its own, longer, published client timeout — this knob is a
+    # ceiling applied by the caller, never a floor raised under a provider.)
+    request_timeout_seconds: int = Field(default=60, ge=1)
     kill_switch: bool = False  # global emergency stop for all investigations
     # Round 4 (additive): the fan-out concurrency ceiling — how many investigations may
     # run in parallel behind the pipeline semaphore. Default 3 preserves a modest
@@ -627,6 +654,25 @@ class CapsConfig(BaseModel):
     # human-throughput band). The ``autopilot_profile`` dial scales it (conservative 10 /
     # balanced 25 / aggressive 100). Never feeds #3.
     max_auto_investigations_per_tick: int = Field(default=25, ge=1)
+
+
+def _caps_minimums() -> dict[str, int]:
+    """The ``ge=`` floor declared on each :class:`CapsConfig` field, read back OFF the
+    model rather than restated as a second list.
+
+    Derived (not hardcoded) so the repair path in ``Preferences._clamp_caps`` can never
+    drift from the constraints it repairs against: adding, changing or removing a floor
+    on ``CapsConfig`` automatically changes what gets clamped."""
+    out: dict[str, int] = {}
+    for name, field in CapsConfig.model_fields.items():
+        for meta in field.metadata:
+            ge = getattr(meta, "ge", None)
+            if ge is not None:
+                out[name] = int(ge)
+    return out
+
+
+CAPS_MINIMUMS: dict[str, int] = _caps_minimums()
 
 
 class FpAutoCloseConfig(BaseModel):
@@ -1490,6 +1536,98 @@ class RealtimeConfig(BaseModel):
 
     enabled: bool = True
     heartbeat_seconds: int = Field(default=15, ge=1)
+
+
+class ResilienceConfig(BaseModel):
+    """Provider circuit-breaker policy — SHIPPED IN ADVISORY MODE.
+
+    The aggregate provider-health tracker (``llm/provider_health.py``) has always been
+    able to SEE a total provider outage; it could never ACT on one. This block is the
+    action, and it is deliberately inert until an operator opts in:
+
+    * ``enabled`` (default ON) only turns on OBSERVATION — the count-based windows and
+      the append-only state transitions an operator reads to decide whether refusal is
+      warranted here.
+    * ``enforce`` (default **OFF**) is the only switch that lets an open breaker REFUSE
+      work. Ship advisory, read a week of real transitions, then enforce. An absent or
+      default-constructed block therefore refuses nothing, adds no ledger row (#6) and
+      never reaches ``case_manager.decide()`` (#3).
+
+    COUNT-BASED, never time-based
+    -----------------------------
+    A time window is unreachable on a low-volume deployment: a busy role at ~34 calls an
+    hour puts about one call inside a 120-second window, so a minimum-calls floor can
+    never be met and the breaker would be dead code exactly where an outage hurts most.
+    A ring of the last ``window_size`` terminal outcomes is volume-independent and
+    therefore portable across a 40-alert-a-day site and a 40-a-minute one.
+    ``outcome_max_age_seconds`` bounds how long a RUN of outcomes stays evidence, so a
+    decommissioned provider/model/role key drains and self-clears instead of pinning the
+    deployment to "open" forever. It is applied as an IDLE GAP, not as a per-sample
+    expiry: while calls keep arriving the ring is purely a count window, and the whole
+    accumulated run is discarded once the key has been SILENT for longer than the bound.
+    Expiring each sample individually would reintroduce the very volume dependency this
+    section rules out — it drains the ring faster than a modest deployment fills it, and
+    at the shipped sizes the quorum would be unreachable below roughly 240 calls a day
+    on one key.
+
+    Defaults are the published Resilience4j ``CircuitBreakerConfig`` defaults
+    (https://resilience4j.readme.io/docs/circuitbreaker — failure-rate threshold 50%,
+    COUNT_BASED sliding window, 60s wait in open state), with two deliberate,
+    documented adaptations and their reasons:
+
+    * ``window_size``/``minimum_calls`` are 20/10 rather than upstream's 100/100.
+      Upstream sizes its window for a high-QPS RPC service; an SOC role key sees orders
+      of magnitude fewer calls, and a 100-call quorum would reintroduce the exact
+      reachability defect a count window exists to remove. 10 is the smallest quorum at
+      which a 50% rate is a statement rather than noise.
+    * ``half_open_successes`` is 2 (upstream permits 10 half-open calls). Two
+      CONSECUTIVE probe successes is the cheapest evidence that a credential fix
+      actually took, and each probe is a real billable call.
+
+    ``failure_rate_threshold`` is floored at 0.50 ON PURPOSE and the floor is enforced
+    by the field constraint: at a 25% failure rate a breaker would refuse 100% of work
+    that would have succeeded 75% of the time. This breaker targets the near-total
+    regime (an expired key, an exhausted quota); partial degradation is the retry
+    budget's job, not the breaker's.
+    """
+
+    #: Maintain the outcome windows and record state transitions. Observation only.
+    enabled: bool = True
+    #: Let an OPEN breaker actually refuse work. OFF = advisory mode (the shipped
+    #: default). Turning this on can only ever route a case to NEEDS_HUMAN; it can
+    #: never close, escalate or discard one (#3/#4).
+    enforce: bool = False
+    #: Ring size: the last N terminal outcomes per key.
+    window_size: int = Field(default=20, ge=2, le=1000)
+    #: Evaluation quorum — no verdict until this many outcomes are in the ring.
+    minimum_calls: int = Field(default=10, ge=1, le=1000)
+    #: Upstream default (50%). The lower bound is a hard product constraint, not a
+    #: preference: below it the breaker refuses more work than it protects.
+    failure_rate_threshold: float = Field(default=0.5, ge=0.5, le=1.0)
+    #: Base OPEN duration before a HALF_OPEN probe is permitted (upstream default 60s).
+    #: The actual deadline uses FULL JITTER over [0, wait) — AWS Architecture Blog,
+    #: "Exponential Backoff And Jitter" (2015) — so many keys never resynchronise.
+    wait_seconds: float = Field(default=60.0, ge=1.0, le=86400.0)
+    #: Ceiling for the doubling that follows each failed probe.
+    max_wait_seconds: float = Field(default=600.0, ge=1.0, le=86400.0)
+    #: Consecutive HALF_OPEN probe successes required to close.
+    half_open_successes: int = Field(default=2, ge=1, le=100)
+    #: How long a recorded RUN of outcomes remains evidence of the CURRENT condition.
+    #: An IDLE-GAP bound, not a per-sample expiry (see the class docstring): silence
+    #: longer than this discards the run and lets a decommissioned key clear itself,
+    #: while a key that is still being called keeps a pure count window.
+    outcome_max_age_seconds: float = Field(default=3600.0, ge=60.0, le=604800.0)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "ResilienceConfig":
+        # A quorum larger than the ring can never be met — silently clamp rather than
+        # reject, so a hand-edited stored config degrades to a working breaker instead
+        # of failing the whole Preferences load.
+        if self.minimum_calls > self.window_size:
+            object.__setattr__(self, "minimum_calls", self.window_size)
+        if self.max_wait_seconds < self.wait_seconds:
+            object.__setattr__(self, "max_wait_seconds", self.wait_seconds)
+        return self
 
 
 _GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -2774,6 +2912,72 @@ class Preferences(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _clamp_caps(cls, data: Any) -> Any:
+        """REPAIR (never reject) a stored ``caps`` value that is below its declared floor.
+
+        ⚠ WHY THIS IS MANDATORY, not a nicety. ``CapsConfig`` now declares ``ge=1`` on its
+        numeric caps (a zero/negative cap cannot express a working configuration). But BOTH
+        preference loaders — :class:`app.stores.config_store.ConfigStore.load` and the SQL
+        ``ConfigRepository.load`` — answer ANY validation error by catching a bare
+        ``Exception`` and returning a FULL DEFAULT ``Preferences()``. And ``Preferences`` is
+        ONE document: it also carries ``auto_close`` (the very policy ``decide()`` consumes),
+        ``rule_catalog``, ``sources``, the model config and every other operator setting. So
+        introducing the bound WITHOUT this repair path would mean a single out-of-range
+        stored integer silently reverts the close policy, the rule catalog and the source
+        list for every deployer already holding one — behind a single ``logger.warning``
+        that no UI surfaces. Repairing is the only safe way to add the bound.
+
+        Deliberately NOT gated on ``_PERSISTED_CONFIG_MARKERS`` (unlike ``_migrate_autopilot``,
+        which must not clobber a targeted programmatic opt-out): a clamp has no intent to
+        respect — an out-of-range value is unusable however it was produced — and gating it
+        would skip the repair for programmatic constructions, which is exactly where a test
+        or an internal caller would hit the new hard failure.
+
+        The floors are read back off ``CapsConfig`` (:data:`CAPS_MINIMUMS`) so this can never
+        drift from the constraints it repairs. There is no upper bound to clamp against.
+        A non-numeric value is left alone for normal field validation to report.
+
+        NOTE for the API path: because this ``before`` validator repairs first, the field
+        constraint can never fire for a value that arrives in a REQUEST BODY either — a
+        settings PUT carrying ``caps.timeout_seconds = 0`` would otherwise be silently
+        accepted-as-1 rather than rejected. ``api.routes._reject_out_of_range_caps``
+        therefore checks the REQUEST BODY (never the merged document) against
+        :data:`CAPS_MINIMUMS` and answers 422 before the merge, so a live edit is rejected
+        while a stored document stays loadable. This validator's job is only the latter."""
+        if not isinstance(data, dict):
+            return data
+        caps = data.get("caps")
+        if not isinstance(caps, dict):
+            return data
+        repaired: dict[str, Any] | None = None
+        for key, floor in CAPS_MINIMUMS.items():
+            if key not in caps:
+                continue
+            raw = caps[key]
+            if isinstance(raw, bool):  # bools are ints in Python; never coerce one
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue  # not a number — let normal field validation report it
+            if value >= floor:
+                continue
+            if repaired is None:
+                repaired = dict(caps)
+            repaired[key] = floor
+            logger.warning(
+                "Preferences.caps.%s=%r is below the supported minimum; clamped %r -> %d "
+                "(the rest of the stored configuration is preserved)",
+                key, raw, raw, floor,
+            )
+        if repaired is None:
+            return data
+        out = dict(data)  # copy — never mutate the caller's dict in place
+        out["caps"] = repaired
+        return out
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_autopilot(cls, data: Any) -> Any:
         """AUTO-ADOPT + banner: a STORED ``Preferences`` predating the Autopilot overhaul
         (its ``autopilot_config_version`` is absent / < current) adopts the new default-ON
@@ -3165,6 +3369,11 @@ class Preferences(BaseModel):
     priority_matrix: PriorityMatrix = Field(default_factory=PriorityMatrix)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     realtime: RealtimeConfig = Field(default_factory=RealtimeConfig)
+    # Provider circuit-breaker policy. SHIPPED IN ADVISORY MODE: ``enforce`` is False,
+    # so an absent or default-constructed block observes and reports but REFUSES
+    # NOTHING. It gates whether a call is ATTEMPTED, never what a case decides (#3),
+    # and it writes no ledger row of its own (#6).
+    resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     # Public upstream metadata only. The corresponding service is hard-pinned to
     # api.github.com, cached, bounded, and read-only; this configuration can never
     # deploy or activate code.

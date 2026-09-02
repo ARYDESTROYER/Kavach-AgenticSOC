@@ -90,6 +90,80 @@ match, an unanimous confirmed history, a minimum confirmed count, and a matching
 precedent actually retrieved for the case. Unreviewed agent auto-closes are never
 promotable. See [Deterministic decisions](../concepts/deterministic-decisions.md).
 
+## What the precedent corpus is made of
+
+`GET /api/rag/precedent/composition` (and the equivalent
+`GET /api/diagnostics/precedent-composition`) reports what the precedent corpus holds
+today beside the projection a rebuild would produce. It embeds nothing, writes nothing
+and costs no provider spend: both halves come from a corpus metadata read plus the
+ordinary per-case projector.
+
+Read it before rebuilding. **A successful rebuild is not evidence of repair.** The
+projection pages the case store newest-first, so if a bulk confirmation put a skewed run
+at the head of the qualifying population, a rebuild re-selects the same records and
+converges on the composition it just replaced. Where the qualifying pool is itself more
+skewed than the window drawn from it, no selection policy over that pool can produce a
+healthy corpus, and the answer is better ground truth or a different window — not
+another rebuild.
+
+The report is deliberately a cross-tabulation of the analyst-confirmed outcome against
+the model's own verdict, not a count per outcome. Per-outcome counts read pristine on a
+corpus that is actively misleading the model: a corpus that is entirely
+`outcome=false_positive` looks like a clean benign baseline, and if it is also entirely
+`verdict=needs_human` what it actually tells a future investigation is "we saw this and
+escalated it every time". Alongside the cross-tab it reports per-rule counts, chunk and
+document totals, the size of the qualifying pool the bounded window was drawn from, and
+how much of the selected window one operator transaction occupies.
+
+`rebuild_corpus(dry_run=true)` returns the same report without rebuilding anything.
+
+## Excluding a precedent record
+
+Force-deleting a `resolved_case` document removes its chunks, and the next projection
+re-derives that case from the case store and puts it back, so a plain delete silently
+undoes itself. `POST /api/rag/precedent/exclusions` is the supported way to make the
+removal hold: it records a durable, case-scoped exclusion marker and performs the delete
+together, in that order, so no projection can re-derive the record while its chunks are
+being removed. The marker suppresses every path that could otherwise re-create the
+record — the bounded confirmed window, the lower-trust unconfirmed tier, the bulk
+ratification indexer, and the preserved-precedent path taken when the embedding model
+changes.
+
+An exclusion **does not touch ground truth**. No feedback row, disposition, decision
+owner, status or history entry is altered, so the case keeps its analyst label and the
+independent-evidence counts that threshold tuning derives from those labels are
+unchanged. Its intended side effect is that closing or re-closing an excluded case no
+longer indexes it either.
+
+Supply `case_ids`, or `select` a population by the projection's own metadata keys
+(detection rule identity, confirmed outcome, model verdict, trust class, ground-truth
+source, entity, status, and the bulk-ratification markers). Free-text rule-title matching
+is deliberately not offered, because a title is content that a detection-content update
+can rewrite underneath a saved selection. Add `"dry_run": true` to resolve the selection
+without excluding anything.
+
+Each exclusion carries a bounded reason (`mislabelled`, `ratification_artifact`,
+`duplicate`, `superseded`, `sensitive`, `other`) and an optional short note. Neither ever
+enters a corpus record or a model prompt; they are operator and audit fields. Every
+exclusion and restoration is audited, as is every knowledge-document delete.
+
+The exclusion set is bounded relative to the configured precedent window rather than by a
+fixed number: an exclusion list several windows deep means the corpus composition itself
+needs a policy change rather than more individual exclusions.
+
+`DELETE /api/rag/precedent/exclusions/{case_id}` removes a marker. It writes nothing to
+the corpus; the record returns on the next ordinary projection, exactly as it would have
+been derived before.
+
+`GET /api/rag/precedent/exclusions` lists the current set with a per-rule and per-reason
+breakdown. The same information appears on `GET /api/diagnostics/health`, where excluded
+cases are subtracted from the qualifying-record count so the corpus-versus-history
+reconciliation cannot report a deficit caused by a deliberate operator action, and where a
+corpus emptied by exclusions is reported as operator-excluded rather than as the starved
+state that indicates a broken projection. If the exclusion set cannot be read, the
+projection keeps honouring the last set it read successfully and diagnostics reports the
+comparison as unknown rather than publishing a confident one.
+
 ## Trust labels
 
 Only administrator-controlled `runbook` knowledge and the system-verified `mitre` and

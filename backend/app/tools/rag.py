@@ -42,6 +42,7 @@ from ..engine.precedent import (
 from ..engine.runbooks import corpus_items as runbook_corpus_items
 from ..llm.gateway import FAILURE_NOT_CONFIGURED, LLMGateway
 from ..models import RagChunk
+from ..stores.precedent_exclusions import normalise_reason as normalise_exclusion_reason
 from ..utils import iso_now
 from .base import Tool, ToolResult
 from .vectorstore import (
@@ -56,9 +57,44 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..engine.runbook_service import RunbookService
     from ..models import Case
     from ..stores.cases import CaseStore
+    from ..stores.precedent_exclusions import PrecedentExclusionStore
     from ..stores.rag_health import RagHealthStore
 
 logger = logging.getLogger("tlsoc.tools.rag")
+
+# --------------------------------------------------------------------------- #
+# Why a projection was refused — a CLOSED vocabulary, not prose.
+# --------------------------------------------------------------------------- #
+# ``ProjectionCollapsed`` carried only a message, so every refusal reached the job
+# surface and the health record as one undifferentiated FAILED. That flattens two
+# categorically different events: a corpus-destroying build failure (an outage, an
+# unreadable store) and an operator DELIBERATELY narrowing the precedent window to drop
+# a poisoned tail — which is a repair, refused because it looks like a shrink.
+#
+# ``REFUSAL_EMPTY_PROJECTION`` is UNCONDITIONAL AND UNTUNABLE and always stays that way:
+# a rebuild that yields nothing while a live corpus exists is never legitimate, whatever
+# the operator configured.
+REFUSAL_EMPTY_PROJECTION = "empty_projection"
+REFUSAL_EMPTY_UNVERIFIABLE = "empty_projection_unverifiable"
+REFUSAL_RETENTION_FLOOR = "retention_floor"
+REFUSAL_WINDOW_REDUCTION = "window_size_reduction"
+
+
+class ExclusionSetUnavailable(RuntimeError):
+    """The operator exclusion set is UNKNOWN, so no projection may derive precedent.
+
+    "Unknown" is not "empty". On a process that has never managed to read the store —
+    a cold start whose first read failed — an empty in-memory set is the absence of
+    knowledge, and treating it as "nothing is excluded" makes the very next projection
+    re-derive EVERY excluded precedent. Because ``resolved_case`` is exempt from the
+    stale sweep, those resurrected chunks then survive a full ``rebuild_corpus()``, so
+    the exclusion silently undoes itself with no operator-visible signal.
+
+    A projection that raises this instead leaves the last known-good corpus exactly as
+    it is. That is strictly the safer failure: stale knowledge, not poisoned knowledge.
+    A process that HAS read the set once keeps its last known-good copy and marks it
+    stale, which is a different (and much weaker) condition — that one never raises.
+    """
 
 
 class ProjectionCollapsed(RuntimeError):
@@ -69,7 +105,17 @@ class ProjectionCollapsed(RuntimeError):
     while losing the corpus is an ERROR with a persisted health state. The single
     ``RAG seeded with N chunk(s)`` INFO line was the only trace of this outcome BOTH
     times it happened in production; it must never be the sole record again.
+
+    ``reason_code`` carries the closed vocabulary above so a refusal that is ATTRIBUTABLE
+    to a deliberate operator action reads differently from one that is not. It is
+    additive: the message text is unchanged in shape and every existing caller that only
+    reads ``str(exc)`` is unaffected.
     """
+
+    def __init__(self, message: str, *, reason_code: str = REFUSAL_EMPTY_PROJECTION) -> None:
+        super().__init__(message)
+        self.reason_code = str(reason_code or REFUSAL_EMPTY_PROJECTION)
+
 
 # Built-in seed corpus sources — guarded from deletion via the management API
 # unless an explicit force=True is passed (so an operator cannot accidentally wipe
@@ -187,6 +233,46 @@ _CORPUS_SCAN_TRUNCATION_HINT = 10000
 # Bound the one-time rule-identity re-tag of pre-existing precedent so a large legacy
 # corpus costs a bounded management read per projection rather than an unbounded one.
 _RULE_IDENTITY_RECONCILE_CAP = 2000
+
+# How many case-scoped precedent EXCLUSION markers a deployment may hold, expressed as a
+# MULTIPLE OF THE CONFIGURED WINDOW SIZE and never as a constant. Rationale: exclusion is
+# for individually wrong precedent. Once the deny list runs several windows deep, the
+# corpus composition itself is wrong and the answer is a policy change (a different
+# window, different stratification axes, or better ground truth) — not a hand-maintained
+# list that keeps growing. Tying the bound to the operator's own window means a
+# deployment that legitimately runs a large window gets a proportionally larger allowance
+# without anybody encoding one deployment's volume here.
+_EXCLUSION_BOUND_WINDOWS = 4
+
+# Bound on the metadata-filtered BULK exclusion selection, again derived from the window
+# rather than fixed. Selection filters on the projection's OWN metadata keys only.
+_EXCLUSION_SELECT_WINDOWS = 4
+
+# Bound the per-cell/per-rule rows a composition report puts on the wire. The report is a
+# diagnostic, not an export: the head of each ranking is what answers the question, and an
+# unbounded per-rule map on a large estate would be the payload rather than the finding.
+_MAX_COMPOSITION_ROWS = 50
+
+# The projection metadata keys a bulk exclusion selection may filter on.
+#
+# An ALLOWLIST of keys THIS MODULE writes, deliberately. The tempting alternative —
+# matching a rule TITLE or any other free-text field — makes the operator's selection
+# depend on prose that a detection content update can rewrite underneath them, so the
+# same saved filter silently selects a different population later. Every key here is
+# minted by ``_resolved_case_item``/``_unconfirmed_case_item`` and is exact-matched.
+EXCLUSION_SELECTABLE_KEYS: frozenset[str] = frozenset(
+    {
+        RULE_IDENTITY_KEY,
+        "outcome",
+        "verdict",
+        "trust_class",
+        "ground_truth_source",
+        "entity",
+        "status",
+        "bulk_ratified",
+        "ratification_batch",
+    }
+)
 
 # The bulk ground-truth bootstrap (see ``routes_rag.py``). Ratification is recorded as
 # its OWN append-only ``case.history`` event type — never as a ``FeedbackEntry`` and
@@ -711,6 +797,7 @@ class RagService:
         cases: "CaseStore | None" = None,
         runbooks: "RunbookService | None" = None,
         health: "RagHealthStore | None" = None,
+        exclusions: "PrecedentExclusionStore | None" = None,
     ) -> None:
         self._gateway = gateway
         self._prefs = prefs
@@ -721,6 +808,25 @@ class RagService:
         # Defaulted None so every historical/test construction is unchanged; when
         # absent, the in-process ``last_projection`` below is the only record.
         self._health = health
+        # Optional durable per-case precedent EXCLUSION set (stores/precedent_exclusions).
+        # Defaulted None exactly like ``health`` above, so every historical/test
+        # construction — and any deployment that never excludes anything — is byte-
+        # identical: with no store there are no markers and every predicate below is a
+        # no-op.
+        self._exclusions = exclusions
+        # The exclusion set held IN MEMORY. The projection is synchronous and runs the
+        # predicate once per scanned case, so the predicate must never do I/O; the set is
+        # refreshed at the START of every projection (inside the seed lock) and
+        # immediately after every write instead.
+        self._excluded_cases: frozenset[str] = frozenset()
+        # Whether the in-memory set has ever been loaded successfully, and whether the
+        # last refresh FAILED. A failed refresh keeps the last known-good set rather than
+        # falling back to "no exclusions": defaulting to empty on a transient store glitch
+        # would resurrect every excluded precedent on that projection, which is precisely
+        # the silent self-undoing this whole mechanism exists to end. The staleness is
+        # published so the operator surface can say so instead of quietly guessing.
+        self._exclusions_loaded: bool = False
+        self.exclusions_stale: bool = False
         self._seeded = False
         self._seed_signature: tuple[Any, ...] | None = None
         self._seed_lock = asyncio.Lock()
@@ -765,6 +871,128 @@ class RagService:
         self._prefs = prefs
         # A precedent-source or window change can change what the distribution counts.
         self.invalidate_precedent_distribution()
+
+    # ------------------------------------------------------------------ #
+    # Case-scoped precedent EXCLUSION — making a force-delete stay deleted.
+    # ------------------------------------------------------------------ #
+    # Deleting a ``resolved_case`` document removes its chunks; the next projection then
+    # re-derives that precedent from the case store and puts it straight back. The
+    # operator's action silently undid itself and nothing reported that it had. The only
+    # workaround was to destroy the analyst's own label on the case, which rewrites
+    # ground truth and corrupts the tuner's independent-evidence count.
+    #
+    # The fix is a PREDICATE AT EVERY PRODUCER, not one edit. A precedent item can be
+    # (re-)derived by five distinct paths, and missing any one of them resurrects the
+    # exclusion:
+    #   1. ``_resolved_case_item``      — the analyst-CONFIRMED window projection, and
+    #                                     the incremental close-time path, which share it;
+    #   2. ``_unconfirmed_candidate``   — the lower-trust ``model_unconfirmed`` tier, and
+    #                                     through it the bulk-ratification bootstrap seam;
+    #   3. ``_preserved_resolved_case_items`` — the PRESERVED-ITEMS path taken on an
+    #                                     embedding-model change, which re-embeds straight
+    #                                     from the pre-migration snapshot and never
+    #                                     consults the per-case projector at all, so
+    #                                     missing it means the FIRST embedding change
+    #                                     resurrects every exclusion at once;
+    #   4. ``index_precedent_items``    — the explicit bootstrap indexer, which is handed
+    #                                     already-projected items from outside;
+    #   5. the two in-place chunk reconciliations, which re-write existing precedent
+    #      chunks (legacy document identity, and rule identity).
+    # The delete route itself is the sixth seam and is where an exclusion is recorded.
+    #
+    # ``_reseed``'s ROLLBACK is deliberately NOT on that list. It restores a verified
+    # snapshot of the corpus as it was moments earlier, which is the one thing a rollback
+    # must do; filtering it would make a failed migration silently lossy. A chunk it
+    # restores for an excluded case can only exist if the exclusion's delete half did not
+    # complete, which the exclusion call reports (``complete: false``) and a re-issue
+    # finishes.
+    def _filter_excluded_precedent(
+        self, survivors: list[tuple[Any, float]]
+    ) -> list[tuple[Any, float]]:
+        """Drop retrieved precedent whose case is operator-excluded. See the call site."""
+        if not self._excluded_cases:
+            return survivors
+        return [
+            (chunk, score)
+            for chunk, score in survivors
+            if chunk.source != RESOLVED_CASE_SOURCE
+            or not self._is_case_excluded((chunk.metadata or {}).get("case_id"))
+        ]
+
+    def _is_case_excluded(self, case_id: Any) -> bool:
+        """Whether this case is operator-excluded from the precedent corpus.
+
+        Pure, synchronous and I/O-free by contract: it is called once per scanned case
+        inside the projection. The set it reads is refreshed at projection boundaries.
+        """
+        key = str(case_id or "")
+        return bool(key) and key in self._excluded_cases
+
+    async def _refresh_exclusions(self, *, force: bool = False) -> bool:
+        """Reload the in-memory exclusion set. Never raises.
+
+        Called at the START of every projection (inside the seed lock) and lazily by the
+        async single-case entry points, so the synchronous predicate never touches the
+        store.
+
+        Returns whether the set is USABLE. There are three outcomes, and conflating the
+        last two is what let an exclusion undo itself:
+
+        * **Loaded** — the set is current. ``True``.
+        * **Stale but KNOWN** — the read failed on a process that has read it before, so
+          the last known-good set is kept and marked stale. ``True``: a slightly old deny
+          list still denies, and re-deriving from it is safe.
+        * **UNKNOWN** — the read failed and this process has NEVER held the set, so the
+          empty in-memory set means "we do not know", not "nothing is excluded".
+          ``False``. A producer that proceeds here re-derives every excluded precedent,
+          and ``resolved_case`` is exempt from the stale sweep, so the resurrected chunks
+          survive even a full ``rebuild_corpus()``. Callers must fail closed —
+          :meth:`_require_exclusions` is the projection's way of doing that.
+
+        A deployment with no exclusion store wired has nothing to exclude and is always
+        usable, so the whole mechanism stays a no-op there (#5).
+        """
+        if self._exclusions is None:
+            return True
+        if self._exclusions_loaded and not force:
+            return True
+        rows = await self._exclusions.load()
+        if rows is None:
+            self.exclusions_stale = True
+            if not self._exclusions_loaded:
+                logger.error(
+                    "Precedent exclusion set is UNKNOWN (it could not be read and this "
+                    "process has never held it); refusing to derive precedent rather "
+                    "than re-adding every excluded case"
+                )
+                return False
+            logger.warning(
+                "Precedent exclusion set could not be read; keeping the last known set "
+                "of %d exclusion(s) rather than re-deriving excluded precedent",
+                len(self._excluded_cases),
+            )
+            return True
+        self._excluded_cases = frozenset(rows)
+        self._exclusions_loaded = True
+        self.exclusions_stale = False
+        return True
+
+    async def _require_exclusions(self, *, force: bool = False) -> None:
+        """Refresh the exclusion set, raising when it is UNKNOWN. See above."""
+        if not await self._refresh_exclusions(force=force):
+            raise ExclusionSetUnavailable(
+                "the precedent exclusion set could not be read and has never been "
+                "loaded by this process; the existing corpus was left untouched rather "
+                "than re-deriving precedent an operator excluded"
+            )
+
+    def _exclusion_bound(self) -> int:
+        """The largest exclusion set this deployment may hold.
+
+        Derived from the operator's configured precedent window size, never a constant —
+        see ``_EXCLUSION_BOUND_WINDOWS`` for why the bound is relative.
+        """
+        return max(1, int(self._window_config().size)) * _EXCLUSION_BOUND_WINDOWS
 
     def _source_signature(self) -> tuple[Any, ...]:
         cfg = self._prefs.rag
@@ -1088,8 +1316,7 @@ class RagService:
             if chunk.source not in SEED_SOURCES
         ]
 
-    @staticmethod
-    def _preserved_resolved_case_items(chunks: list[StoredChunk]) -> list[dict[str, Any]]:
+    def _preserved_resolved_case_items(self, chunks: list[StoredChunk]) -> list[dict[str, Any]]:
         """Carry EXISTING precedent through a vector-space migration.
 
         ``_reseed`` physically replaces the vector space, and the precedent it can
@@ -1097,6 +1324,13 @@ class RagService:
         stored precedent chunks keeps everything older than that window alive; the
         freshly derived window wins on doc-id collision so the canonical text is
         still the shared builder's.
+
+        This path re-embeds STRAIGHT FROM THE PRE-MIGRATION SNAPSHOT and never consults
+        the per-case projector, so it needs its own exclusion check: without one, the
+        first embedding-model change a deployment ever makes would resurrect every
+        operator exclusion at once, silently, in the single code path that carries
+        precedent the bounded window can no longer reach. It is an instance method for
+        exactly that reason — the predicate lives on the service.
         """
         out: list[dict[str, Any]] = []
         for chunk in chunks:
@@ -1105,6 +1339,8 @@ class RagService:
             doc_id = str(chunk.doc_id or "")
             metadata = dict(chunk.metadata or {})
             case_id = str(metadata.get("case_id") or "")
+            if self._is_case_excluded(case_id):
+                continue
             document_id = str(metadata.get("document_id") or "")
             if not document_id:
                 if doc_id.startswith(f"{RESOLVED_CASE_SOURCE}:"):
@@ -1145,6 +1381,23 @@ class RagService:
         projection BEFORE any old document is removed, so an exception at this point
         leaves the previous corpus completely intact. That is the whole
         "keep the previous corpus and raise" requirement.
+
+        **KNOW WHAT THIS GUARD DOES NOT DO.** It is a SIZE guard and nothing else. A
+        reprojection that keeps the chunk count identical and flips every verdict, or
+        replaces a balanced corpus with a unanimous one, passes it completely cleanly —
+        composition is not a dimension it can see. :meth:`corpus_composition` is what
+        answers that question, and it must be read separately; a clean pass here is not
+        evidence that the corpus is healthy.
+
+        **REFUSALS ARE CLASSIFIED.** Every refusal used to reach the job surface and the
+        health record as one undifferentiated failure, which flattens two categorically
+        different events. The worst case is the repair itself: an operator who narrows
+        ``precedent.window.size`` to drop a poisoned tail is DELIBERATELY shrinking the
+        projection, and that trips the ratio floor and reports as a generic collapse — so
+        the product tells the operator their repair failed. ``reason_code`` names that
+        case (``window_size_reduction``) distinctly. The ZERO-PROJECTION refusal is
+        unaffected and stays UNCONDITIONAL AND UNTUNABLE: no configuration, and no
+        attribution, may ever let an empty rebuild replace a live corpus.
         """
         if outgoing is None:
             # The previous corpus could not be READ, so "did this shrink?" is
@@ -1155,7 +1408,8 @@ class RagService:
                 raise ProjectionCollapsed(
                     "RAG projection produced 0 chunk(s) and the previous corpus could "
                     "not be read to prove the replacement is safe; refusing. The "
-                    "existing corpus is left intact."
+                    "existing corpus is left intact.",
+                    reason_code=REFUSAL_EMPTY_UNVERIFIABLE,
                 )
             return
         # Compare LIKE WITH LIKE — on BOTH sides.
@@ -1195,19 +1449,82 @@ class RagService:
             # Nothing to lose: a first seed (or a genuinely empty corpus) proceeds.
             return
         if incoming_total == 0:
+            # UNCONDITIONAL AND UNTUNABLE. No attribution branch runs before this, and
+            # none may ever be added: an empty rebuild replacing a live corpus is never
+            # legitimate, however deliberate the configuration change behind it was.
             raise ProjectionCollapsed(
                 "RAG projection produced 0 chunk(s) while the previous corpus held "
                 f"{outgoing_total}; refusing to replace a live corpus with an empty "
-                "one. The existing corpus is left intact."
+                "one. The existing corpus is left intact.",
+                reason_code=REFUSAL_EMPTY_PROJECTION,
             )
         retention = float(getattr(self._prefs.rag, "min_projection_retention", 0.0) or 0.0)
         if retention > 0.0 and incoming_total < outgoing_total * retention:
+            attributed = self._window_reduction_attribution(
+                relevant, incoming_by_source, scope=scope
+            )
+            if attributed:
+                raise ProjectionCollapsed(
+                    f"RAG projection SHRANK from {outgoing_total} to {incoming_total} "
+                    f"chunk(s), below the configured retention floor ({retention:.0%}); "
+                    "refusing the rebuild and keeping the existing corpus. This shrink "
+                    f"is ATTRIBUTABLE to a deliberate reduction of the precedent window: "
+                    f"{attributed}. Nothing was lost — the previous corpus is intact — "
+                    "but the narrower window cannot be applied while the retention floor "
+                    "stands. Lower rag.min_projection_retention (or set it to 0) to let "
+                    "the intended reduction through; a projection reaching ZERO is still "
+                    "refused regardless.",
+                    reason_code=REFUSAL_WINDOW_REDUCTION,
+                )
             raise ProjectionCollapsed(
                 f"RAG projection SHRANK from {outgoing_total} to {incoming_total} "
                 f"chunk(s), below the configured retention floor "
                 f"({retention:.0%}); refusing the rebuild and keeping the existing "
-                "corpus. Raise rag.min_projection_retention if this shrink is intended."
+                "corpus. Raise rag.min_projection_retention if this shrink is intended.",
+                reason_code=REFUSAL_RETENTION_FLOOR,
             )
+
+    def _window_reduction_attribution(
+        self,
+        relevant: dict[str, int],
+        incoming_by_source: "Counter[str]",
+        *,
+        scope: frozenset[str] | None,
+    ) -> str:
+        """Explain a ratio refusal as an operator window reduction, or return ``""``.
+
+        The attribution is deliberately CONSERVATIVE, because a wrong one turns a real
+        corpus loss into a reassuring message. All three must hold:
+
+        1. the precedent source is in the compared scope at all (with the default
+           ``ensure_seeded`` scope it is not, so this never fires there);
+        2. NO other source shrank — a genuine build failure takes runbooks and ATT&CK
+           down with it, and a window change cannot touch them; and
+        3. the new precedent count is bounded by the configured window while the previous
+           one exceeded it, i.e. the drop is arithmetically EXPLAINED by the window bound
+           rather than merely coincident with it.
+
+        Returns the operator-facing explanation, or ``""`` when the shrink cannot be
+        attributed — in which case the caller reports the ordinary retention refusal.
+        """
+        if scope is not None and RESOLVED_CASE_SOURCE not in scope:
+            return ""
+        before = int(relevant.get(RESOLVED_CASE_SOURCE, 0))
+        after = int(incoming_by_source.get(RESOLVED_CASE_SOURCE, 0))
+        if before <= 0 or after <= 0 or after >= before:
+            return ""
+        for name, previous in relevant.items():
+            if name == RESOLVED_CASE_SOURCE:
+                continue
+            if int(incoming_by_source.get(name, 0)) < int(previous or 0):
+                return ""  # something else shrank too — this is not a window change
+        size = int(self._window_config().size)
+        if not (after <= size < before):
+            return ""
+        return (
+            f"the precedent source went from {before} to {after} chunk(s) against a "
+            f"configured window of {size}, and no other knowledge source shrank"
+        )
 
     async def _chunk_counts_by_source(self) -> dict[str, int] | None:
         """Stored chunk count per source, or ``None`` when the store cannot be read.
@@ -1298,7 +1615,12 @@ class RagService:
             logger.warning("RAG health record could not be persisted: %s", exc)
 
     async def _record_projection_refusal(
-        self, outgoing: dict[str, int] | None, reason: str, *, collapsed: bool = True
+        self,
+        outgoing: dict[str, int] | None,
+        reason: str,
+        *,
+        collapsed: bool = True,
+        reason_code: str = "",
     ) -> None:
         """Publish + persist a projection that did NOT happen.
 
@@ -1312,6 +1634,11 @@ class RagService:
             "collapsed": bool(collapsed),
             "outgoing_total": sum(int(v or 0) for v in (outgoing or {}).values()),
             "at": iso_now(),
+            # The closed refusal vocabulary. In-process only: the durable record keeps
+            # the reason TEXT (which already names an attributed window reduction in
+            # full), so persisting the code as well would need a store schema change for
+            # information the message already carries.
+            "reason_code": str(reason_code or ""),
         }
         self.last_refusal = record
         if self._health is None:
@@ -1353,6 +1680,16 @@ class RagService:
             metadata = dict(chunk.metadata or {})
             doc_id = str(chunk.doc_id or "")
             case_id = str(metadata.get("case_id") or "")
+            # An excluded case is re-tagged like any other, ON PURPOSE. Converging the
+            # chunk onto ``resolved_case:{case_id}`` cannot resurrect anything — this
+            # migration only RE-TAGS chunks that already exist and never creates one,
+            # and every producer (``_resolved_case_item``, ``_unconfirmed_candidate``,
+            # ``_preserved_resolved_case_items``, ``index_precedent_items`` and the rule-
+            # identity reconciliation) filters excluded cases itself. What it DOES do is
+            # give the exclusion's delete the only handle it has: a chunk left under the
+            # pre-fix shared ``seed:resolved_case`` grouping is addressable by no
+            # per-case document id, so skipping it here made the exclusion a permanent
+            # no-op that reported success while the precedent kept reaching prompts.
             if doc_id.startswith(f"{RESOLVED_CASE_SOURCE}:"):
                 document_id = doc_id
             elif case_id:
@@ -1387,6 +1724,13 @@ class RagService:
             # itself off.
             outgoing: dict[str, int] | None = None
             try:
+                # Refresh the operator exclusion set FIRST, inside the lock, so every
+                # producer below runs the predicate against the current set without any
+                # of them doing I/O. A read failure on a process that has held the set
+                # keeps the last known-good copy; a set this process has NEVER held is
+                # UNKNOWN, and raising here lands in the handler below that preserves the
+                # existing corpus instead of re-deriving excluded precedent into it.
+                await self._require_exclusions(force=True)
                 outgoing = await self._chunk_counts_by_source()
                 # Converge any pre-fix precedent onto per-case document identity
                 # before the projection reads/writes documents.
@@ -1438,9 +1782,15 @@ class RagService:
                 self._seeded = False
                 self._seed_signature = None
                 logger.error(
-                    "RAG projection REFUSED — the existing corpus was preserved: %s", exc
+                    "RAG projection REFUSED (%s) — the existing corpus was preserved: %s",
+                    getattr(exc, "reason_code", REFUSAL_EMPTY_PROJECTION),
+                    exc,
                 )
-                await self._record_projection_refusal(outgoing, str(exc))
+                await self._record_projection_refusal(
+                    outgoing,
+                    str(exc),
+                    reason_code=getattr(exc, "reason_code", REFUSAL_EMPTY_PROJECTION),
+                )
             except Exception as exc:  # noqa: BLE001
                 self._seeded = False
                 self._seed_signature = None
@@ -1508,8 +1858,22 @@ class RagService:
             )
         )
 
-    async def rebuild_corpus(self) -> dict[str, Any]:
+    async def rebuild_corpus(self, *, dry_run: bool = False) -> dict[str, Any]:
         """Explicitly rebuild the whole knowledge projection. Idempotent.
+
+        ``dry_run=True`` embeds nothing, writes nothing and mutates nothing: it returns
+        the :meth:`corpus_composition` report — the corpus as it stands beside the one a
+        rebuild WOULD produce — under a ``composition`` key, with ``dry_run: true`` and
+        every count field left at its pre-rebuild value. Default ``False``, so an
+        existing caller's behaviour is byte-identical.
+
+        Read the composition BEFORE rebuilding, because **a successful rebuild is not
+        evidence of repair**. The projection pages the case store newest-first, so if a
+        bulk confirmation put a skewed run at the head of the qualifying population, a
+        rebuild re-selects it and converges on the same skew it just replaced. The
+        composition report shows the qualifying POOL beside the selected window, and the
+        joint outcome-by-verdict distribution rather than outcome alone, precisely so
+        that "the rebuild succeeded" cannot be mistaken for "the corpus is now healthy".
 
         The recovery gap this closes: ``ensure_seeded`` is lazy AND signature-cached,
         so once it has run it considers itself done regardless of what the corpus
@@ -1528,6 +1892,22 @@ class RagService:
         projection was refused, and the per-source outcome.
         """
         before = await self._store.count()
+        if dry_run:
+            # Nothing is invalidated, nothing is seeded, nothing is written. The
+            # composition report is derived from a management read plus the ordinary
+            # per-case projector, so this branch cannot reach the embedding gateway.
+            return {
+                "dry_run": True,
+                "chunks_before": int(before),
+                "chunks_after": int(before),
+                "rebuilt": False,
+                "refused": False,
+                "refusal_reason": "",
+                "refusal_code": "",
+                "by_source": {},
+                "composition": await self.corpus_composition(),
+                "at": iso_now(),
+            }
         # Reset the cache OUTSIDE the seed lock: ``_seed_lock`` is a plain,
         # non-reentrant asyncio.Lock that ``ensure_seeded`` acquires itself.
         self._seeded = False
@@ -1538,11 +1918,15 @@ class RagService:
         self.corpus_degraded = bool(self.corpus_known_empty and self._any_source_enabled())
         refusal = self.last_refusal
         return {
+            "dry_run": False,
             "chunks_before": int(before),
             "chunks_after": int(after),
             "rebuilt": bool(self._seeded),
             "refused": refusal is not None,
             "refusal_reason": str((refusal or {}).get("reason") or ""),
+            # The CLOSED refusal vocabulary, so a deliberate operator-initiated window
+            # narrowing is distinguishable from a corpus-destroying build failure.
+            "refusal_code": str((refusal or {}).get("reason_code") or ""),
             "by_source": {
                 name: {"before": row.get("before"), "after": row.get("after")}
                 for name, row in dict(self.last_projection).items()
@@ -1751,7 +2135,14 @@ class RagService:
         ``resolved_case:{case_id}`` storage identity across all three vector-store
         backends, and ``metadata.document_id`` mirrors it so one case is one
         document (never a shared, single-delete blob).
+
+        Returns ``None`` for an operator-EXCLUDED case as well. Because this projection
+        is SHARED, that one check covers BOTH the bounded window and the incremental
+        close-time indexing path — which is the documented side effect of excluding a
+        case: closing (or re-closing) it no longer re-indexes it either.
         """
+        if self._is_case_excluded(getattr(case, "case_id", "")):
+            return None
         outcome, ground_truth_source = analyst_confirmed_outcome(case)
         if outcome is None:
             return None
@@ -1912,6 +2303,8 @@ class RagService:
         the caller, which is the only place it can be evaluated.
         """
         guards = self._unconfirmed_cfg()
+        if self._is_case_excluded(getattr(case, "case_id", "")):
+            return None  # operator-excluded: no tier may re-derive it
         if analyst_confirmed_outcome(case)[0] is not None:
             return None  # the CONFIRMED tier owns it — never demote a real label
         if getattr(case.decision_by, "value", case.decision_by) != DecisionBy.AGENT.value:
@@ -1943,6 +2336,16 @@ class RagService:
         single candidate.
         """
         if self._cases is None or not self._unconfirmed_enabled():
+            return []
+        # The public ``unconfirmed_precedent_candidates`` seam feeds the bulk bootstrap
+        # directly, outside any projection, so the exclusion set is loaded here too. An
+        # UNKNOWN set derives NOTHING rather than everything: this tier is an addition,
+        # so producing none of it is a loss of enrichment, while producing it blind would
+        # re-add precedent an operator excluded.
+        if not await self._refresh_exclusions():
+            logger.warning(
+                "unconfirmed precedent skipped: the exclusion set is unknown"
+            )
             return []
         guards = self._unconfirmed_cfg()
         cap = int(limit if limit is not None else guards.max_items)
@@ -2032,6 +2435,23 @@ class RagService:
         verdicts. Stamping provenance never changes ``trust_class``: a ratified item is
         still ``model_unconfirmed``, because an operator agreeing to reuse a model
         verdict is not an independent analyst outcome."""
+        if not items:
+            return 0
+        # The explicit bootstrap indexer is handed ALREADY-PROJECTED items from outside
+        # this service, so it cannot rely on the per-case projector's own exclusion
+        # check. Refresh (lazily) and filter here, or a bulk ratification re-indexes
+        # precedent an operator has excluded — and an UNKNOWN set cannot filter at all,
+        # so it indexes nothing rather than everything.
+        if not await self._refresh_exclusions():
+            logger.warning(
+                "precedent bootstrap indexing skipped: the exclusion set is unknown"
+            )
+            return 0
+        items = [
+            item
+            for item in items
+            if not self._is_case_excluded((item.get("metadata") or {}).get("case_id"))
+        ]
         if not items:
             return 0
         stamped: list[dict[str, Any]] = []
@@ -2164,8 +2584,15 @@ class RagService:
         scan_cap: int,
         visit: Callable[["Case"], bool],
         statuses: tuple[str, ...] = _PRECEDENT_SCAN_STATUSES,
-    ) -> None:
+    ) -> int:
         """Walk terminal cases within ONE bounded scan, fairly shared across statuses.
+
+        Returns HOW MANY distinct cases were actually visited. That number, not the size
+        of the qualifying result, is what says whether the scan ran to completion: a scan
+        that examined the full cap and found few qualifying cases looks identical, from
+        the result alone, to one that examined a handful and found the same few. Reporting
+        the second as a complete measurement is the false confidence this whole surface
+        exists to remove.
 
         ``visit`` is called once per distinct case and returns ``False`` to stop the
         whole scan early (the plain newest-N path, which only ever needs its first
@@ -2185,9 +2612,9 @@ class RagService:
         would spend half that tier's budget on a guaranteed-empty status.
         """
         if self._cases is None:  # pragma: no cover — callers guard this
-            return
+            return 0
         if not statuses:  # pragma: no cover — callers pass a non-empty tuple
-            return
+            return 0
         seen: set[str] = set()
         scanned = 0
         offsets: dict[str, int] = {status: 0 for status in statuses}
@@ -2236,16 +2663,17 @@ class RagService:
         )
         for status in statuses:
             if not keep_going:
-                return
+                return scanned
             await _spend(status, share)
         for status in statuses:
             if not keep_going:
-                return
+                return scanned
             leftover = scan_cap - scanned
             if leftover <= 0:
-                return
+                return scanned
             if not exhausted[status]:
                 await _spend(status, leftover)
+        return scanned
 
     async def _resolved_case_items(self, limit: int | None = None) -> list[dict[str, Any]]:
         """The ``limit`` QUALIFYING precedents to project (bounded scan).
@@ -2299,13 +2727,48 @@ class RagService:
         ordering ``stratified_selection`` has always documented, and gating them on the
         switch would simply hand the defect back to anyone who set it.
         """
-        if self._cases is None:
-            return []
+        _pool, picked, _meta = await self._collect_confirmed_precedent(limit)
+        return [item for _case, item in picked]
+
+    async def _collect_confirmed_precedent(
+        self, limit: int | None = None, *, force_full_scan: bool = False
+    ) -> tuple[
+        list[tuple["Case", dict[str, Any]]],
+        list[tuple["Case", dict[str, Any]]],
+        dict[str, Any],
+    ]:
+        """The bounded scan behind :meth:`_resolved_case_items`, with its POOL exposed.
+
+        Returns ``(pool, picked, meta)``. ``pool`` is every qualifying case the bounded
+        scan saw; ``picked`` is the window the operator's policy actually selects from it.
+        Splitting them out is what makes "200 of 889" answerable: a composition report
+        that only ever sees ``picked`` cannot say how much of the qualifying population
+        the window represents, and it is exactly that ratio — a window drawn from a pool
+        that is MORE skewed than the window itself — which proves a rebuild cannot repair
+        the corpus.
+
+        ``force_full_scan`` is for the read-only composition report: with window fairness
+        switched off the ordinary scan stops at the first ``limit`` qualifying items, so
+        the pool would trivially equal the window and the ratio would be a tautology.
+        The projection itself NEVER passes it, so the projection's scan cost and output
+        are byte-identical to before this seam existed.
+        """
         window = self._window_config()
         cap_items = max(1, int(limit if limit is not None else window.size))
         axes = self._window_axes(window)
         admission_cap = self._admission_cap(window, cap_items)
-        full_scan = bool(axes) or admission_cap is not None
+        full_scan = bool(axes) or admission_cap is not None or bool(force_full_scan)
+        meta: dict[str, Any] = {
+            "window_size": cap_items,
+            "axes": list(axes),
+            "admission_cap": admission_cap,
+            "full_scan": bool(full_scan),
+            "scan_cap": _RESOLVED_CASE_SCAN_CAP,
+            "scanned": 0,
+            "scan_complete": True,
+        }
+        if self._cases is None:
+            return [], [], meta
         collected: list[tuple["Case", dict[str, Any]]] = []
 
         def _visit(case: "Case") -> bool:
@@ -2314,12 +2777,227 @@ class RagService:
                 collected.append((case, item))
             return full_scan or len(collected) < cap_items
 
-        await self._scan_terminal_cases(scan_cap=_RESOLVED_CASE_SCAN_CAP, visit=_visit)
+        scanned = await self._scan_terminal_cases(
+            scan_cap=_RESOLVED_CASE_SCAN_CAP, visit=_visit
+        )
+        meta["scanned"] = int(scanned)
+        # Complete only when the scan STOPPED because it ran out of cases, not because it
+        # ran out of budget. Comparing the qualifying count against the cap instead would
+        # report a truncated scan as complete on any deployment whose qualifying rate is
+        # low — which is every deployment this report matters on.
+        meta["scan_complete"] = bool(int(scanned) < int(_RESOLVED_CASE_SCAN_CAP))
         collected.sort(key=lambda pair: _created_at_rank(pair[0]), reverse=True)
         picked = self._stratify(
             collected, axes=axes, limit=cap_items, admission_cap=admission_cap
         )
-        return [item for _case, item in picked]
+        return collected, picked, meta
+
+    # ----------------------------------------------------------------- #
+    # Corpus COMPOSITION — the dry run that costs zero embedding calls.
+    # ----------------------------------------------------------------- #
+    @staticmethod
+    def _composition_tally(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """Cross-tabulate precedent metadata by (analyst outcome x model verdict).
+
+        THE CROSS-TAB IS THE POINT, and reporting outcomes alone is the trap.
+
+        Per-outcome counts read PRISTINE on a corpus that is actively poisoning the
+        model. A corpus of 200 records that is 100% ``outcome=false_positive`` looks like
+        a healthy benign baseline under an outcome-only report — and stays looking
+        healthy for the entire incident — while every one of those records also carries
+        ``verdict=NEEDS_HUMAN``, i.e. the agent escalated every single one. What the
+        investigator then reads back is "we have seen this 200 times and escalated it
+        every time", which is the opposite of the benign precedent the outcome column
+        advertises. Only the JOINT distribution separates
+        ``false_positive x FALSE_POSITIVE`` (a rule the agent and the analysts agree is
+        benign) from ``false_positive x NEEDS_HUMAN`` (a rule the analysts keep
+        overturning), and the two have opposite operational meanings.
+
+        Both marginals are still reported, because an operator reasonably wants them —
+        but never on their own.
+        """
+        cross: Counter[tuple[str, str]] = Counter()
+        outcomes: Counter[str] = Counter()
+        verdicts: Counter[str] = Counter()
+        trust: Counter[str] = Counter()
+        rules: Counter[str] = Counter()
+        documents: set[str] = set()
+        for row in rows:
+            outcome = str(row.get("outcome") or "")
+            verdict = str(row.get("verdict") or "")
+            cross[(outcome, verdict)] += 1
+            outcomes[outcome] += 1
+            verdicts[verdict] += 1
+            trust[str(row.get("trust_class") or "")] += 1
+            rules[str(row.get(RULE_IDENTITY_KEY) or "")] += 1
+            document_id = str(row.get("document_id") or "") or str(row.get("case_id") or "")
+            if document_id:
+                documents.add(document_id)
+        ranked = sorted(cross.items(), key=lambda kv: (-kv[1], kv[0]))
+        ranked_rules = sorted(rules.items(), key=lambda kv: (-kv[1], kv[0]))
+        return {
+            "chunks": len(rows),
+            "documents": len(documents),
+            "rule_identities": len(rules),
+            # The JOINT distribution. Never read the two marginals without it.
+            "outcome_by_verdict": [
+                {"outcome": outcome, "verdict": verdict, "count": count}
+                for (outcome, verdict), count in ranked[:_MAX_COMPOSITION_ROWS]
+            ],
+            "outcome_by_verdict_truncated": len(ranked) > _MAX_COMPOSITION_ROWS,
+            "by_outcome": dict(sorted(outcomes.items())),
+            "by_verdict": dict(sorted(verdicts.items())),
+            "by_trust_class": dict(sorted(trust.items())),
+            "by_rule": {
+                rule: count for rule, count in ranked_rules[:_MAX_COMPOSITION_ROWS]
+            },
+            "by_rule_truncated": len(ranked_rules) > _MAX_COMPOSITION_ROWS,
+        }
+
+    def _admission_concentration(
+        self, picked: list[tuple["Case", dict[str, Any]]]
+    ) -> dict[str, Any]:
+        """How concentrated the selected window is in ONE operator transaction.
+
+        A window that is 96% one bulk analyst action is one human decision wearing 192
+        faces, and it is invisible in any per-outcome or per-rule count. The GROUP LABELS
+        are deliberately omitted from the payload: an admission group is either an opaque
+        batch id or a coarse time bucket, and neither is useful to an operator while both
+        would leak the shape of individual analyst sessions onto a diagnostics surface.
+        Only the concentration is reported.
+        """
+        groups: Counter[str] = Counter()
+        for case, _item in picked:
+            groups[self._admission_group(case)] += 1
+        total = sum(groups.values())
+        largest = max(groups.values(), default=0)
+        return {
+            "selected": total,
+            "transactions": len(groups),
+            "max_transaction_documents": int(largest),
+            "max_transaction_share": (round(largest / total, 4) if total else 0.0),
+        }
+
+    async def corpus_composition(self) -> dict[str, Any]:
+        """Compare the CURRENT precedent corpus with the one a rebuild WOULD produce.
+
+        A DRY RUN THAT COSTS ZERO EMBEDDING CALLS. Both halves are derivable without
+        embedding anything: the current corpus is read through the management API
+        (``_precedent_chunk_metadata``), and the would-be projection is the ordinary
+        per-case projector, which already writes the analyst outcome AND the model verdict
+        into each item's metadata. Nothing here embeds, seeds, writes or mutates.
+
+        **A SUCCESSFUL REBUILD IS NOT A REPAIR, and this report exists to prove it.** The
+        projection pages the case store newest-first, so on a deployment whose newest
+        analyst-confirmed terminal cases are the bulk-confirmed ones, a rebuild
+        RE-SELECTS exactly those cases. If the qualifying POOL is more skewed than the
+        window drawn from it — which is what ``pool`` here measures — then no selection
+        policy over that pool can produce a healthy corpus, and reprojecting will simply
+        reproduce the composition it just replaced. That is why this report shows the
+        pool size beside the window ("200 of 889"), the joint outcome x verdict
+        distribution rather than outcome alone, and the admission concentration: those
+        three together are what let an operator tell "the projection broke" apart from
+        "the ground truth this corpus is projected from is itself skewed".
+        """
+        window = self._window_config()
+        report: dict[str, Any] = {
+            "at": iso_now(),
+            # Stated on the payload so nobody has to infer it from the docstring.
+            "embedding_calls": 0,
+            "costs_provider_spend": False,
+            "window": {
+                "size": int(window.size),
+                "axes": self._window_axes(window),
+                "admission_cap": self._admission_cap(window, int(window.size)),
+                "max_transaction_fraction": float(
+                    getattr(window, "max_transaction_fraction", 0.0) or 0.0
+                ),
+                "scan_cap": _RESOLVED_CASE_SCAN_CAP,
+            },
+            "unconfirmed_tier_enabled": self._unconfirmed_enabled(),
+        }
+
+        # ---- the corpus as it stands -------------------------------------- #
+        try:
+            rows, truncated = await self._precedent_chunk_metadata()
+            current = {
+                "available": True,
+                "reason": "",
+                # A truncated backend read makes every count below a LOWER BOUND.
+                "truncated": bool(truncated),
+                **self._composition_tally(rows),
+            }
+        except Exception as exc:  # noqa: BLE001 — a report degrades, never raises
+            logger.warning("corpus composition could not read the corpus: %s", exc)
+            current = {
+                "available": False,
+                "reason": f"the precedent corpus could not be read ({type(exc).__name__})",
+                "truncated": False,
+            }
+        report["current"] = current
+
+        # ---- the projection a rebuild WOULD produce ----------------------- #
+        if self._cases is None:
+            report["projected"] = {
+                "available": False,
+                "reason": "no case store is wired, so no projection can be derived",
+            }
+            return report
+        if not self._prefs.rag.use_resolved_cases:
+            report["projected"] = {
+                "available": False,
+                "reason": (
+                    "the resolved-case precedent source is turned off, so a rebuild "
+                    "would project no precedent at all"
+                ),
+            }
+            return report
+        try:
+            # Read-only report: an UNKNOWN exclusion set does not stop it, because
+            # refusing to describe the corpus helps nobody — but it is disclosed, via
+            # ``report["exclusions_stale"]`` below and ``precedent_exclusions()``'s own
+            # ``available: false``, so the composition is never read as authoritative
+            # about a deny list that could not be loaded.
+            await self._refresh_exclusions(force=True)
+            pool, picked, meta = await self._collect_confirmed_precedent(
+                force_full_scan=True
+            )
+            unconfirmed = (
+                await self._unconfirmed_case_items() if self._unconfirmed_enabled() else []
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("corpus composition could not derive a projection: %s", exc)
+            report["projected"] = {
+                "available": False,
+                "reason": f"the case store could not be scanned ({type(exc).__name__})",
+            }
+            return report
+
+        picked_rows = [dict(item.get("metadata") or {}) for _case, item in picked]
+        pool_rows = [dict(item.get("metadata") or {}) for _case, item in pool]
+        unconfirmed_rows = [dict(item.get("metadata") or {}) for item in unconfirmed]
+        report["projected"] = {
+            "available": True,
+            "reason": "",
+            "confirmed": self._composition_tally(picked_rows),
+            "unconfirmed": self._composition_tally(unconfirmed_rows),
+            "admission": self._admission_concentration(picked),
+            # The QUALIFYING POOL the window was drawn from. "200 of 889".
+            "pool": {
+                "qualifying": len(pool),
+                "selected": len(picked),
+                "share": (round(len(picked) / len(pool), 4) if pool else 0.0),
+                # False when the bounded scan itself stopped short, which makes the
+                # pool a LOWER BOUND rather than the whole qualifying population.
+                "scan_complete": bool(meta["scan_complete"]),
+                "scanned_cases": int(meta.get("scanned") or 0),
+                "scan_cap": int(meta["scan_cap"]),
+                "composition": self._composition_tally(pool_rows),
+            },
+        }
+        report["excluded_cases"] = len(self._excluded_cases)
+        report["exclusions_stale"] = bool(self.exclusions_stale)
+        return report
 
     # ----------------------------------------------------------------- #
     # Per-rule precedent distribution (the deterministic half of promotion)
@@ -2456,6 +3134,8 @@ class RagService:
             case_id = str(metadata.get("case_id") or "")
             if not case_id:
                 continue
+            if self._is_case_excluded(case_id):
+                continue  # never re-write a chunk for an operator-excluded case
             try:
                 case = await self._cases.get(case_id)
             except Exception:  # noqa: BLE001
@@ -2492,6 +3172,9 @@ class RagService:
         if self._cases is None:
             return 0
         try:
+            # An UNKNOWN exclusion set indexes nothing: this bulk window would otherwise
+            # re-derive every excluded precedent in one write.
+            await self._require_exclusions()
             added = await self._embed_and_add(await self._resolved_case_items(limit))
             self.invalidate_precedent_distribution()
             return added
@@ -2518,6 +3201,12 @@ class RagService:
         if not (cfg.enabled and cfg.use_resolved_cases):
             return 0
         try:
+            # Lazily load the exclusion set once per process. A close can be the FIRST
+            # precedent write after a restart, before any projection has run, so without
+            # this an excluded case would be re-indexed by the very next close — and an
+            # UNKNOWN set cannot answer the question at all, so this close indexes no
+            # precedent (the case itself is unaffected; the write is fail-soft by design).
+            await self._require_exclusions()
             item = self._resolved_case_item(case, note=note)
             if item is None:
                 return 0
@@ -2701,6 +3390,290 @@ class RagService:
             logger.warning("RAG delete_document(%s) failed: %s", document_id, exc)
             return {"deleted": 0, "guarded": False, "found": False}
 
+    # ----------------------------------------------------------------- #
+    # Operator precedent EXCLUSION — the supported way to evict one precedent.
+    # ----------------------------------------------------------------- #
+    async def precedent_exclusions(self) -> dict[str, Any]:
+        """The current exclusion set, with the breakdown the diagnostics surface needs.
+
+        Read-only, seed-free and embedding-free. ``available`` is False when the store
+        could not be read, so an unreadable set is never reported as an empty one.
+        """
+        if self._exclusions is None:
+            return {
+                "available": False,
+                "supported": False,
+                "reason": (
+                    "this deployment has no durable exclusion store wired, so precedent "
+                    "exclusion is unavailable"
+                ),
+                "count": 0,
+                "case_ids": [],
+                "by_rule": {},
+                "by_reason": {},
+                "entries": {},
+                "stale": False,
+                "max_entries": self._exclusion_bound(),
+            }
+        rows = await self._exclusions.load()
+        if rows is None:
+            # Report the LAST KNOWN set, explicitly flagged unreadable, rather than an
+            # empty one: an unreadable exclusion set is an unknown, not "nothing is
+            # excluded", and the projection is still honouring the cached set.
+            return {
+                "available": False,
+                "supported": True,
+                "reason": "the precedent exclusion set could not be read",
+                "count": len(self._excluded_cases),
+                "case_ids": sorted(self._excluded_cases),
+                "by_rule": {},
+                "by_reason": {},
+                "entries": {},
+                "stale": True,
+                "max_entries": self._exclusion_bound(),
+            }
+        self._excluded_cases = frozenset(rows)
+        self._exclusions_loaded = True
+        self.exclusions_stale = False
+        by_rule: Counter[str] = Counter()
+        by_reason: Counter[str] = Counter()
+        for entry in rows.values():
+            by_rule[str(entry.get("rule_identity") or "")] += 1
+            by_reason[str(entry.get("reason") or "")] += 1
+        return {
+            "available": True,
+            "supported": True,
+            "reason": "",
+            "count": len(rows),
+            "case_ids": sorted(rows),
+            "by_rule": dict(sorted(by_rule.items())),
+            "by_reason": dict(sorted(by_reason.items())),
+            "entries": {case_id: dict(entry) for case_id, entry in sorted(rows.items())},
+            "stale": False,
+            "max_entries": self._exclusion_bound(),
+        }
+
+    def excluded_case_ids(self) -> frozenset[str]:
+        """The in-memory exclusion set, for surfaces that must not trigger a read."""
+        return self._excluded_cases
+
+    async def exclude_precedent_case(
+        self,
+        case_id: str,
+        *,
+        reason: str,
+        note: str = "",
+        actor: str = "",
+    ) -> dict[str, Any]:
+        """EXCLUDE = DELETE + MARK, in that order. Writing the marker alone removes nothing.
+
+        The marker is written FIRST on purpose: from the instant it lands no producer can
+        re-derive the precedent, so the delete that follows cannot race a concurrent
+        projection that puts it straight back. If the delete then fails, the exclusion
+        still HOLDS (nothing new is derived) and the call reports ``deleted: 0`` with
+        ``complete: false``; re-issuing the same exclusion is idempotent and finishes the
+        removal. There is no background eviction sweep — that is deliberately a separate
+        change — so an incomplete exclusion is reported, never quietly retried.
+
+        This NEVER touches ground truth: no feedback row, no ``disposition``, no
+        ``decision_by``, no ``status``, no history rewrite. The case keeps its analyst
+        label, so ``analyst_confirmed_outcome`` — and the threshold tuner's independent
+        evidence count, which is derived from it — are unchanged.
+        """
+        key = str(case_id or "").strip()
+        if not key:
+            return {"ok": False, "reason": "a case id is required"}
+        if self._exclusions is None:
+            return {
+                "ok": False,
+                "reason": (
+                    "this deployment has no durable exclusion store wired, so an "
+                    "exclusion could not be made durable; the delete was not performed"
+                ),
+            }
+        rule_identity = ""
+        if self._cases is not None:
+            try:
+                case = await self._cases.get(key)
+            except Exception as exc:  # noqa: BLE001 — an unreadable case still excludes
+                logger.warning("exclusion could not read case %s: %s", key, exc)
+                case = None
+            if case is not None:
+                rule_identity = case_rule_identity(case)
+        marker = await self._exclusions.exclude(
+            key,
+            reason=reason,
+            note=note,
+            actor=actor,
+            rule_identity=rule_identity,
+            max_entries=self._exclusion_bound(),
+        )
+        if marker.get("capped"):
+            return {
+                "ok": False,
+                "capped": True,
+                "count": int(marker.get("count") or 0),
+                "max_entries": self._exclusion_bound(),
+                "reason": (
+                    "the exclusion set is already at its bound of "
+                    f"{self._exclusion_bound()} case(s) (four times the configured "
+                    "precedent window). A deny list this deep means the corpus "
+                    "composition itself needs a policy change rather than more "
+                    "individual exclusions."
+                ),
+            }
+        if not marker.get("ok"):
+            return {"ok": False, "reason": "the exclusion marker could not be written"}
+        # The marker is durable; adopt it in memory immediately so a projection that
+        # starts before the next refresh already honours it.
+        self._excluded_cases = frozenset(self._excluded_cases | {key})
+        self._exclusions_loaded = True
+        document_id = f"{RESOLVED_CASE_SOURCE}:{key}"
+        removed = await self.delete_document(document_id, force=True)
+        deleted = int(removed.get("deleted") or 0)
+        complete = await self._precedent_is_gone(key, document_id)
+        self.invalidate_precedent_distribution()
+        return {
+            "ok": True,
+            "case_id": key,
+            "document_id": document_id,
+            "reason_code": normalise_exclusion_reason(reason),
+            "already_excluded": bool(marker.get("already")),
+            "deleted": deleted,
+            "found": bool(removed.get("found")),
+            # False when the marker landed but the chunks did not come out. The exclusion
+            # is in force either way; re-issue the same call to finish the removal.
+            #
+            # VERIFIED BY RE-READ, never inferred from the delete's return value:
+            # ``delete_document`` is fail-soft and answers "the store raised" with the
+            # very same ``{deleted: 0, found: False}`` it uses for "no such document", so
+            # deriving completeness from it reported a store outage as a finished
+            # removal — the operator was told the precedent was gone while it was still
+            # in the corpus and still being retrieved into prompts.
+            "complete": complete,
+            "count": int(marker.get("count") or 0),
+            "max_entries": self._exclusion_bound(),
+            "rule_identity": rule_identity,
+        }
+
+    async def _precedent_is_gone(self, case_id: str, document_id: str) -> bool:
+        """Whether this case's precedent really has left the corpus. FAILS CLOSED.
+
+        Re-reads the per-case document AND the pre-fix shared ``seed:resolved_case``
+        grouping, because a deployment that indexed precedent before the per-case
+        document-identity fix may still hold a chunk there. Anything that cannot be
+        READ is reported INCOMPLETE: "I could not check" and "it is gone" are the two
+        answers the previous inference conflated, and only the honest one prompts the
+        documented re-issue.
+        """
+        try:
+            if await self._store.list_chunks(document_id):
+                return False
+            legacy = await self._store.list_chunks(_LEGACY_RESOLVED_CASE_DOCUMENT)
+        except Exception as exc:  # noqa: BLE001 — unverifiable is reported, not assumed
+            logger.warning(
+                "exclusion of %s could not be verified (%s); reporting it incomplete",
+                case_id, exc,
+            )
+            return False
+        return not any(
+            str((chunk.metadata or {}).get("case_id") or "") == case_id
+            for chunk in legacy
+            if chunk.source == RESOLVED_CASE_SOURCE
+        )
+
+    async def restore_precedent_case(self, case_id: str) -> dict[str, Any]:
+        """Drop an exclusion marker. The precedent returns on the NEXT projection.
+
+        Nothing is written to the corpus here: restoring simply stops the projection
+        skipping the case, so it is re-derived from the case store exactly as it would
+        have been. That asymmetry is deliberate — an un-exclusion must not be able to
+        mint a precedent chunk that the ordinary projection would not have produced.
+        """
+        key = str(case_id or "").strip()
+        if not key:
+            return {"ok": False, "reason": "a case id is required"}
+        if self._exclusions is None:
+            return {"ok": False, "reason": "this deployment has no durable exclusion store"}
+        outcome = await self._exclusions.restore(key)
+        if outcome.get("ok"):
+            self._excluded_cases = frozenset(self._excluded_cases - {key})
+            self.invalidate_precedent_distribution()
+        return {
+            "ok": bool(outcome.get("ok")),
+            "case_id": key,
+            "found": bool(outcome.get("found")),
+            "count": int(outcome.get("count") or 0),
+        }
+
+    async def select_precedent_cases(self, filters: dict[str, Any]) -> dict[str, Any]:
+        """Case ids whose CURRENT precedent chunks match every supplied metadata filter.
+
+        Filters are exact matches on :data:`EXCLUSION_SELECTABLE_KEYS` — the projection's
+        OWN metadata keys — and nothing else. A free-text rule-title match is deliberately
+        not offered: titles are content that a detection-content update rewrites
+        underneath the operator, so the same saved selection would silently pick a
+        different population later. Read-only; selecting excludes nothing.
+        """
+        unknown = sorted(set(filters or {}) - set(EXCLUSION_SELECTABLE_KEYS))
+        if unknown:
+            return {
+                "ok": False,
+                "reason": (
+                    "unsupported selection key(s): "
+                    + ", ".join(unknown)
+                    + "; selection filters on the projection's own metadata keys only"
+                ),
+                "case_ids": [],
+                "count": 0,
+                "truncated": False,
+            }
+        try:
+            rows, truncated = await self._precedent_chunk_metadata()
+        except Exception as exc:  # noqa: BLE001 — selection degrades, never raises
+            logger.warning("precedent selection could not read the corpus: %s", exc)
+            return {
+                "ok": False,
+                "reason": f"the precedent corpus could not be read ({type(exc).__name__})",
+                "case_ids": [],
+                "count": 0,
+                "truncated": False,
+            }
+        wanted = {str(key): str(value).strip().lower() for key, value in (filters or {}).items()}
+        limit = max(1, int(self._window_config().size)) * _EXCLUSION_SELECT_WINDOWS
+        matched: list[str] = []
+        seen: set[str] = set()
+
+        def _match(row: dict[str, Any], key: str, value: str) -> bool:
+            # Case-insensitive exact match on the stored scalar. Booleans are compared
+            # as ``true``/``false`` so ``bulk_ratified=true`` works from a query string
+            # without the caller having to know Python's ``True`` spelling.
+            stored = row.get(key)
+            if isinstance(stored, bool):
+                return ("true" if stored else "false") == value
+            return str(stored or "").strip().lower() == value
+
+        for row in rows:
+            if any(not _match(row, key, value) for key, value in wanted.items()):
+                continue
+            case_id = str(row.get("case_id") or "")
+            if not case_id or case_id in seen:
+                continue
+            seen.add(case_id)
+            matched.append(case_id)
+        matched.sort()
+        return {
+            "ok": True,
+            "reason": "",
+            "case_ids": matched[:limit],
+            "count": len(matched),
+            "limit": limit,
+            "selection_truncated": len(matched) > limit,
+            # The CORPUS read itself may have been cut short by the backend, so the
+            # selection is a lower bound rather than every matching precedent.
+            "truncated": bool(truncated),
+        }
+
     async def rag_stats(self) -> dict[str, Any]:
         """Corpus stats: total chunks, count by source, embedding model + dim, and
         the document count. Never raises."""
@@ -2835,6 +3808,14 @@ class RagService:
             # The lower-trust tier is filtered BEFORE ranking so a disabled or aged-out
             # chunk cannot consume a candidate slot. No-op when nothing unconfirmed is
             # in the pool, which is every deployment that never enabled the tier.
+            # DEFENCE IN DEPTH for exclusion: drop any chunk whose case is on the deny
+            # list, whatever the corpus still physically holds. Exclusion is enforced by
+            # the producers and by a delete, but a delete that could not complete (or a
+            # chunk resurrected before this release) would otherwise keep reaching the
+            # model — and one exclusion reason is precisely "this must not appear in
+            # retrieved context at all". Pure in-memory filter: no I/O, and a no-op on
+            # every deployment with an empty deny list.
+            survivors = self._filter_excluded_precedent(survivors)
             survivors = self._filter_unconfirmed(survivors)
             if not survivors:
                 return RagRetrievalObservation(
@@ -2965,6 +3946,12 @@ class RagService:
         old-space snapshot is restored if the replacement write or read-back fails.
         """
         async with self._seed_lock:
+            # Same contract as ``ensure_seeded``: refresh inside the lock, before any
+            # producer runs. This path matters most — it is the one that re-embeds
+            # precedent straight from the pre-migration snapshot, so an UNKNOWN set here
+            # would resurrect every exclusion in one write. Raising leaves the corpus in
+            # its current space, which the caller already reports as unmeasured.
+            await self._require_exclusions(force=True)
             backup = await self._snapshot_store_chunks()
             outgoing = await self._chunk_counts_by_source()
             cleared = False
@@ -3027,10 +4014,16 @@ class RagService:
                 # record rather than being flattened into a generic migration error.
                 if isinstance(exc, ProjectionCollapsed):
                     logger.error(
-                        "RAG vector-space migration REFUSED — the existing corpus was "
-                        "preserved: %s", exc,
+                        "RAG vector-space migration REFUSED (%s) — the existing corpus "
+                        "was preserved: %s",
+                        getattr(exc, "reason_code", REFUSAL_EMPTY_PROJECTION),
+                        exc,
                     )
-                    await self._record_projection_refusal(outgoing, str(exc))
+                    await self._record_projection_refusal(
+                        outgoing,
+                        str(exc),
+                        reason_code=getattr(exc, "reason_code", REFUSAL_EMPTY_PROJECTION),
+                    )
                 if cleared:
                     try:
                         await self._store.clear()

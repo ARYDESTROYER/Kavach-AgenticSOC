@@ -65,10 +65,17 @@ export function AdvancedSection({
           description="Hard limits per investigation. A case that hits a cap is routed to NEEDS_HUMAN rather than running unbounded."
           wide
         >
+          {/*
+            `min={1}` mirrors the backend floor (`CapsConfig`, `ge=1`): 0 and negatives
+            are not a stricter limit, they are a broken configuration that fails the run
+            silently and for $0. There is deliberately NO `max` — an upper bound here
+            would encode one vendor's hosted-API envelope as product policy and would
+            fight the config of any deployer already above it.
+          */}
           <div className="grid gap-4 sm:grid-cols-3">
-            <NumPref label="Max tool calls / case" value={caps.max_tool_calls} onChange={(v) => setCaps({ max_tool_calls: v })} />
-            <NumPref label="Max tokens / case" value={caps.max_tokens} onChange={(v) => setCaps({ max_tokens: v })} />
-            <NumPref label="Timeout (seconds)" value={caps.timeout_seconds} onChange={(v) => setCaps({ timeout_seconds: v })} />
+            <NumPref label="Max tool calls / case" value={caps.max_tool_calls} min={1} step={1} onChange={(v) => setCaps({ max_tool_calls: v })} />
+            <NumPref label="Max tokens / case" value={caps.max_tokens} min={1} step={1} onChange={(v) => setCaps({ max_tokens: v })} />
+            <NumPref label="Timeout (seconds)" value={caps.timeout_seconds} min={1} step={1} onChange={(v) => setCaps({ timeout_seconds: v })} />
           </div>
         </SettingsCard>
 

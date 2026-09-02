@@ -237,6 +237,24 @@ def _describe_field(
         "choices": _choices(ann),
         "description": (field.description or "").strip() or None,
     }
+    # DECLARED BOUNDS (additive; omitted when a field declares none, so every existing
+    # descriptor is byte-identical). The schema-driven "Advanced (all settings)" renderer
+    # is the only surface some sections have, and without these it offered an unbounded
+    # integer control for a field the API now rejects below its floor — the operator only
+    # learned the bound from a 422.
+    for meta in field.metadata:
+        for attr, out_key in (("ge", "minimum"), ("le", "maximum")):
+            bound = getattr(meta, attr, None)
+            if bound is None or out_key in desc:
+                continue
+            if isinstance(bound, bool):  # bools are ints in Python; never a bound
+                continue
+            try:
+                desc[out_key] = bound if isinstance(bound, (int, float)) else float(bound)
+            except (TypeError, ValueError):
+                # A non-numeric constraint on an exotic annotated type. Describing the
+                # field without a bound is always safe; failing the whole schema is not.
+                continue
     # ELEMENT-MODEL DESCENT (additive): a list/dict OF a Pydantic model grows an
     # `element` descriptor so the generic renderer can describe rule collections. The
     # `type` above stays "array"/"object" (byte-identical for existing consumers).

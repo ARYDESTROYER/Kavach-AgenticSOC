@@ -241,8 +241,19 @@ export function NumPref({
 }) {
   // Keep raw text while EDITING so the field can be cleared/retyped without snapping to
   // 0 (the old `value ?? 0` controlled input committed `Number('') === 0` on clear and
-  // showed a literal "0" for an unset pref). Commit on blur: parse, clamp to [min,max],
-  // and an empty field falls back to `min ?? 0` rather than a bogus mid-edit 0.
+  // showed a literal "0" for an unset pref). Commit on blur: parse and clamp to
+  // [min,max].
+  //
+  // ⚠ AN EMPTY FIELD IS NOT A VALUE. Clearing the input and blurring used to commit
+  // `min ?? 0`, so EVERY numeric preference rendered WITHOUT a `min` silently wrote a
+  // literal 0 — an invented value the operator never typed. For the per-case caps that
+  // is not a stricter limit, it is a broken configuration: `max_tokens = 0` makes the
+  // budget exceeded at the FIRST loop check, before any model call, so the run fails to
+  // human with zero gateway calls and no error audit row (a silent, $0, invisible
+  // failure), and `max_tool_calls = 0` burns the ReAct loop with no evidence gathered.
+  // An empty field now restores the CURRENT value and commits NOTHING — one line here
+  // fixes every numeric preference in Settings at once. (`min` is still enforced for a
+  // value the operator actually typed; it is no longer a fallback for absence.)
   const [text, setText] = React.useState<string>(value == null ? '' : String(value));
   const [editing, setEditing] = React.useState(false);
   React.useEffect(() => {
@@ -252,7 +263,12 @@ export function NumPref({
   const commit = (raw: string) => {
     setEditing(false);
     const trimmed = raw.trim();
-    let n = trimmed === '' ? (min ?? 0) : Number(trimmed);
+    if (trimmed === '') {
+      // Cleared: restore what the pref currently holds and do not call onChange.
+      setText(value == null ? '' : String(value));
+      return;
+    }
+    let n = Number(trimmed);
     if (Number.isNaN(n)) {
       setText(value == null ? '' : String(value));
       return;

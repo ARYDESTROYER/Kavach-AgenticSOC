@@ -74,6 +74,36 @@ DEFAULT_HEARTBEAT_SECONDS = 15
 
 
 # --------------------------------------------------------------------------- #
+# Canonical SSE event-type (channel) names — the ONE registry of what this backend
+# publishes.
+#
+# ⚠ WHY THIS EXISTS. A browser ``EventSource`` matches a typed ``event:`` field
+# EXACTLY: ``addEventListener('agent', …)`` receives NOTHING from a producer that
+# publishes ``agent.step``. Neither end can observe the mismatch — the publish
+# succeeds, the subscription succeeds, the frames are simply never delivered — so the
+# investigation-progress channel was silently dead from the day it was written.
+# Naming the channels once, here, is what stops the two ends drifting again; the
+# browser client mirrors this list in ``webui/src/lib/useEventStream.ts`` and its
+# tests assert the two agree.
+#
+# These are TRANSPORT names only. Nothing here decides anything (#3): a frame is a
+# NUDGE and the client always refetches authoritative state.
+AGENT_STEP_EVENT = "agent.step"      # investigator/pipeline progress, room cases:{id}
+CASE_ACTIVITY_EVENT = "case.activity"  # case collaboration timeline, room cases:{id}
+INAPP_EVENT = "inapp"                # in-app notifications, topics notifications/inbox
+JOB_EVENT = "job"                    # durable background-job progress, topic jobs
+OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
+
+SSE_EVENT_TYPES: frozenset[str] = frozenset({
+    AGENT_STEP_EVENT,
+    CASE_ACTIVITY_EVENT,
+    INAPP_EVENT,
+    JOB_EVENT,
+    OVERFLOW_EVENT,
+})
+
+
+# --------------------------------------------------------------------------- #
 # SSE frame formatting (pure functions — unit-testable with no network).
 # --------------------------------------------------------------------------- #
 def _data_lines(payload: str) -> str:
@@ -387,7 +417,7 @@ class EventBus:
                     # Tell the client it missed events (it can refetch authoritative
                     # state). A control event on a reserved channel, never a real model.
                     yield format_sse(
-                        "overflow",
+                        OVERFLOW_EVENT,
                         _encode({"dropped": dropped, "ts": iso_now()}),
                     ).encode("utf-8")
                 for ev in batch:

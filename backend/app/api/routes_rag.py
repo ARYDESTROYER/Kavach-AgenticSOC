@@ -28,7 +28,13 @@ from pydantic import BaseModel, Field
 
 from ..constants import ActionType
 from ..state import AppState
+from ..stores.precedent_exclusions import (
+    PRECEDENT_EXCLUSION_REASONS,
+    normalise_note,
+    normalise_reason,
+)
 from ..tools.rag import (
+    EXCLUSION_SELECTABLE_KEYS,
     PRECEDENT_RATIFICATION_ACKNOWLEDGEMENT,
     PRECEDENT_RATIFICATION_PROVENANCE,
     TRUST_MODEL_UNCONFIRMED,
@@ -140,12 +146,25 @@ async def rag_import(
 @router.delete("/rag/documents/{document_id}")
 async def rag_delete_document(
     document_id: str,
+    request: Request,
     force: bool = False,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("rag", "manage")),
 ) -> dict[str, Any]:
     """Delete an imported document. 404 if missing; 400 if a guarded seed source
-    (runbook/mitre/suppression/resolved_case) unless ``?force=true``."""
+    (runbook/mitre/suppression/resolved_case) unless ``?force=true``.
+
+    Every SUCCESSFUL delete is audited. It previously was not: a ``force=true`` delete
+    is the single most destructive corpus mutation the API offers — it removes protected
+    built-in knowledge or an analyst-confirmed precedent — and it left no record at all,
+    so "where did that runbook go?" was unanswerable. The row carries the document id and
+    the force flag; no chunk text ever enters it (#9).
+
+    For a PRECEDENT document, note that a plain force-delete does not stay deleted: the
+    next projection re-derives that case from the case store. ``POST
+    /api/rag/precedent/exclusions`` is the supported way to make a precedent removal
+    stick, and it performs this same delete as its second half.
+    """
     result = await state.rag_service.delete_document(document_id, force=force)
     if not result.get("found"):
         raise HTTPException(status_code=404, detail="document not found")
@@ -154,6 +173,19 @@ async def rag_delete_document(
             status_code=400,
             detail="built-in seed corpus is protected; pass force=true to delete",
         )
+    actor = current_username(request) or "operator"
+    try:
+        await state.audit.record(
+            action_type=ActionType.CONTEXT,
+            surface="rag_document_delete",
+            actor=actor,
+            result_summary=(
+                f"deleted knowledge document {document_id} "
+                f"chunks={int(result.get('deleted') or 0)} force={bool(force)}"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — the delete already happened
+        logger.warning("rag document delete audit failed for %s: %s", document_id, exc)
     return {"document_id": document_id, "deleted": result.get("deleted", 0)}
 
 
@@ -476,6 +508,219 @@ async def precedent_bootstrap(
         state,
         current_username(request) or "operator",
     )
+
+
+# --------------------------------------------------------------------------- #
+# PRECEDENT CORPUS REPAIR — composition, and exclusions that stay excluded.
+#
+# Two distinct operator questions, answered by two read/write surfaces:
+#
+#   * ``GET /api/rag/precedent/composition`` — WHAT IS IN THERE, and what would a
+#     rebuild put in there? A dry run that costs zero embedding calls. Read it BEFORE
+#     rebuilding: reprojection is not a repair, because the projection re-selects the
+#     same newest qualifying cases it selected last time.
+#   * ``/api/rag/precedent/exclusions`` — evict ONE precedent so it STAYS evicted. A
+#     plain force-delete does not: the next projection re-derives the case and puts it
+#     straight back, and until now the only way to make it stick was to destroy the
+#     analyst's own label — which rewrites ground truth and corrupts the threshold
+#     tuner's independent-evidence count.
+#
+# Neither surface touches ground truth (#3-adjacent, and deliberately): no feedback row,
+# no disposition, no decision_by, no status, no history rewrite. Neither the exclusion
+# reason nor its note ever enters a corpus chunk or a prompt (#9) — they are UI/audit
+# fields only.
+# --------------------------------------------------------------------------- #
+_EXCLUSION_MAX_CASE_IDS = 200
+
+
+class PrecedentExclusionRequest(BaseModel):
+    """Exclude one or more cases from the precedent corpus.
+
+    Supply ``case_ids`` directly, or ``select`` a population by the projection's OWN
+    metadata keys. Free-text rule-title matching is deliberately NOT offered: a title is
+    content, and a detection-content update rewrites it underneath a saved selection.
+    """
+
+    case_ids: list[str] = Field(default_factory=list, max_length=_EXCLUSION_MAX_CASE_IDS)
+    # Bounded implicitly by the allowlist check below: any key that is not one of the
+    # projection's own metadata keys is a 400, so this map can never exceed that set.
+    select: dict[str, str] = Field(default_factory=dict)
+    reason: str = Field(default="other", max_length=64)
+    note: str = Field(default="", max_length=2000)
+    dry_run: bool = False
+
+
+@router.get("/rag/precedent/composition")
+async def precedent_composition(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("rag", "read")),
+) -> dict[str, Any]:
+    """The corpus as it stands, beside the projection a rebuild WOULD produce.
+
+    Read-only and free: it embeds nothing, seeds nothing and writes nothing, because both
+    halves are derivable from a management read plus the ordinary per-case projector,
+    whose item metadata already carries the analyst outcome AND the model verdict.
+
+    Reports the JOINT (analyst outcome x model verdict) distribution rather than either
+    marginal alone — outcome-only counts read PRISTINE on a corpus that is actively
+    poisoning the model — plus per-rule counts, chunk/document totals, the size of the
+    QUALIFYING POOL the window was drawn from (so "200 of 889" is visible), and how
+    concentrated the selected window is in one operator transaction.
+    """
+    return await state.rag_service.corpus_composition()
+
+
+@router.get("/rag/precedent/exclusions")
+async def precedent_exclusions(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("rag", "read")),
+) -> dict[str, Any]:
+    """The case-scoped precedent exclusion set: count, ids, per-rule and per-reason.
+
+    ``available: false`` means the set could not be READ — never that nothing is
+    excluded. The two are different answers and conflating them would report a broad
+    exclusion as an empty one.
+    """
+    payload = await state.rag_service.precedent_exclusions()
+    payload["reasons"] = list(PRECEDENT_EXCLUSION_REASONS)
+    payload["selectable_keys"] = sorted(EXCLUSION_SELECTABLE_KEYS)
+    return payload
+
+
+@router.post("/rag/precedent/exclusions")
+async def precedent_exclude(
+    body: PrecedentExclusionRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("rag", "manage")),
+) -> dict[str, Any]:
+    """Exclude cases from the precedent corpus: DELETE + MARK, per case, atomically.
+
+    The marker is written first so no producer can re-derive the precedent while its
+    chunks are being removed; the delete follows. Idempotent — re-issuing the same
+    exclusion refreshes the marker and finishes any removal that did not complete.
+
+    ``dry_run`` resolves the selection and returns the case ids WITHOUT excluding
+    anything. Every exclusion is audited per case.
+
+    Ground truth is untouched: the case keeps its analyst label, so
+    ``analyst_confirmed_outcome`` — and the threshold tuner's independent-evidence count,
+    which is derived from it — are unchanged. Side effect, by design: an excluded case is
+    also no longer indexed by the incremental close-time path.
+    """
+    rag = state.rag_service
+    reason = normalise_reason(body.reason)
+    note = normalise_note(body.note)
+    case_ids = [str(cid).strip() for cid in body.case_ids if str(cid).strip()]
+    selection: dict[str, Any] = {}
+    if body.select:
+        selection = await rag.select_precedent_cases(dict(body.select))
+        if not selection.get("ok"):
+            raise HTTPException(status_code=400, detail=str(selection.get("reason") or ""))
+        case_ids.extend(str(cid) for cid in selection.get("case_ids") or [])
+    # De-duplicate while preserving the caller's order, then bound.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for case_id in case_ids:
+        if case_id not in seen:
+            seen.add(case_id)
+            ordered.append(case_id)
+    ordered = ordered[:_EXCLUSION_MAX_CASE_IDS]
+    if not ordered:
+        raise HTTPException(
+            status_code=400, detail="no case matched; supply case_ids or a select filter"
+        )
+    if body.dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "reason": reason,
+            "selected": len(ordered),
+            "case_ids": ordered,
+            "selection": selection,
+            "excluded": 0,
+        }
+
+    actor = current_username(request) or "operator"
+    excluded: list[str] = []
+    incomplete: list[str] = []
+    failed: list[dict[str, str]] = []
+    for case_id in ordered:
+        outcome = await rag.exclude_precedent_case(
+            case_id, reason=reason, note=note, actor=actor
+        )
+        if not outcome.get("ok"):
+            failed.append({"case_id": case_id, "reason": str(outcome.get("reason") or "")})
+            continue
+        excluded.append(case_id)
+        if not outcome.get("complete"):
+            incomplete.append(case_id)
+        try:
+            await state.audit.record(
+                action_type=ActionType.CONTEXT,
+                surface="rag_precedent_exclusion",
+                actor=actor,
+                case_id=case_id,
+                result_summary=(
+                    f"excluded case from the precedent corpus reason={reason} "
+                    f"chunks_deleted={int(outcome.get('deleted') or 0)} "
+                    f"complete={bool(outcome.get('complete'))} "
+                    "ground_truth_unchanged=true"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — the exclusion already stands
+            logger.warning("precedent exclusion audit failed for %s: %s", case_id, exc)
+    return {
+        "ok": not failed,
+        "dry_run": False,
+        "at": iso_now(),
+        "actor": actor,
+        "reason": reason,
+        "selected": len(ordered),
+        "excluded": len(excluded),
+        "case_ids": excluded,
+        # Marker written, chunks not removed. The exclusion is in force either way;
+        # re-issue the same request to finish the removal.
+        "incomplete": incomplete,
+        "failed": failed,
+        "selection": selection,
+    }
+
+
+@router.delete("/rag/precedent/exclusions/{case_id}")
+async def precedent_restore(
+    case_id: str,
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("rag", "manage")),
+) -> dict[str, Any]:
+    """Drop a precedent exclusion. 404 when the case is not excluded.
+
+    Removes the marker only: the precedent reappears on the NEXT ordinary projection,
+    derived from the case store exactly as it would have been. Nothing is written to the
+    corpus here — an un-exclusion must not be able to mint a chunk the projection would
+    not have produced.
+    """
+    outcome = await state.rag_service.restore_precedent_case(case_id)
+    if not outcome.get("ok"):
+        raise HTTPException(status_code=400, detail=str(outcome.get("reason") or ""))
+    if not outcome.get("found"):
+        raise HTTPException(status_code=404, detail="case is not excluded")
+    actor = current_username(request) or "operator"
+    try:
+        await state.audit.record(
+            action_type=ActionType.CONTEXT,
+            surface="rag_precedent_exclusion",
+            actor=actor,
+            case_id=str(case_id),
+            result_summary=(
+                "restored case to the precedent corpus; it is re-derived on the next "
+                "projection ground_truth_unchanged=true"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("precedent restore audit failed for %s: %s", case_id, exc)
+    return {"ok": True, "case_id": str(case_id), "count": int(outcome.get("count") or 0)}
 
 
 # --------------------------------------------------------------------------- #

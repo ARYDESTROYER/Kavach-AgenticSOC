@@ -1804,6 +1804,25 @@ class UsageDoc(BaseModel):
     # this unset; Batch results use ``batch:<local-job-id>:<custom-id>`` so the bundled
     # ledgers can upsert/check one authoritative row before marking retrieval complete.
     idempotency_key: str | None = None
+    # --- Resilience provenance (additive + defaulted → every stored row loads
+    # unchanged, and #6 is preserved: still exactly ONE UsageDoc per LLM call). ---
+    # WHY a call failed, as one ``gateway.PROVIDER_FAILURE_CLASSES`` literal — plus the
+    # one deliberate non-member, ``gateway.FAILURE_ABANDONED``, for a request that WAS
+    # issued and that the caller then stopped waiting for (a case time budget, a hard
+    # pipeline timeout).  That one is kept out of the provider vocabulary on purpose: it
+    # is our own decision, not evidence about the provider, so it never feeds the health
+    # tracker or the circuit breaker — but the row still has to exist, because the call
+    # reached the provider and #6 says every LLM call reaches the ledger.  Empty on
+    # a successful call.  It is one of OUR closed-vocabulary strings and NEVER provider
+    # response text: an error body is attacker-influenceable UNTRUSTED DATA (#9) and a
+    # ledger column is read back by cost and diagnostics surfaces.  On an embedding row
+    # it also names the reason a local-hash fallback engaged, which is how a degraded
+    # (rather than absent) embedding space is attributable after the fact.
+    failure_class: str = ""
+    # Attempts the provider call actually consumed inside its bounded retry budget.
+    # 1 means "answered, or failed, first time"; >1 means the retry budget was spent,
+    # which is what separates an exhausted quota from a single rate-limit burst.
+    attempts: int = 1
 
 
 # --------------------------------------------------------------------------- #

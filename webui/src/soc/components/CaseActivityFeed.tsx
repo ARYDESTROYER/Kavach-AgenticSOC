@@ -14,10 +14,24 @@
  * `onLiveActivity` so the parent refetches the authoritative feed (#3 untouched). This
  * is purely additive: with no `liveCaseId` (the default) the component is exactly the
  * pure presentational timeline it has always been, and the parent keeps polling.
+ *
+ * AGENT STEPS: the same ONE subscription also consumes `agent.step`, the channel the
+ * pipeline publishes while an investigation is actually running. They are rendered as
+ * TRANSIENT rows above the persisted timeline — a narration of the run in flight, never
+ * a record: nothing is decided from them (#3), they are dropped when the case changes,
+ * and the authoritative feed still comes from the API. Folding them into the existing
+ * stream (rather than opening a second `EventSource` on the same room) keeps one socket
+ * per case, which matters because CaseDetail already mounts two components on it.
  */
 import * as React from 'react';
 
-import { useEventStream } from '@/lib/useEventStream';
+import {
+  agentStepFromFrame,
+  appendAgentStep,
+  useEventStream,
+  type AgentStep,
+  type StreamEvent,
+} from '@/lib/useEventStream';
 import {
   Activity,
   Bell,
@@ -40,6 +54,15 @@ import { LoadingState } from '@/design-system';
 import { EmptyState } from '@/soc/components/EmptyState';
 
 import type { CaseActivityItem } from '@/soc/pages/CaseDetail.api';
+
+/**
+ * How many in-flight `agent.step` frames the transient narration keeps.
+ *
+ * A narration, not a record: the authoritative trail is the audit feed above, so this
+ * only has to hold the tail of a run that is happening right now. Bounded so a long or
+ * looping investigation cannot grow the DOM without limit.
+ */
+const LIVE_STEP_LIMIT = 12;
 
 /* ------------------------------------------------------------------ kinds -- */
 
@@ -108,13 +131,27 @@ export const CaseActivityFeed: React.FC<CaseActivityFeedProps> = ({
   liveCaseId,
   onLiveActivity,
 }) => {
-  // Live nudge: a `case.activity` frame on this case's room → refetch authoritative
-  // state. The frame payload is never rendered here (#9) — it only triggers a reload.
+  // In-flight agent steps for THIS case. Bounded, and cleared whenever the case
+  // changes so one run's narration can never bleed into another's.
+  const [liveSteps, setLiveSteps] = React.useState<AgentStep[]>([]);
+  React.useEffect(() => {
+    setLiveSteps([]);
+  }, [liveCaseId]);
+
+  // ONE subscription, two frame types:
+  //  * `case.activity` is a nudge — the payload is never rendered (#9); it only asks
+  //    the parent to refetch the authoritative feed.
+  //  * `agent.step` is the narration of a running investigation, rendered below.
   const onEvent = React.useCallback(
-    (ev: { type: string }) => {
-      if (ev.type === 'case.activity') onLiveActivity?.();
+    (ev: StreamEvent) => {
+      if (ev.type === 'case.activity') {
+        onLiveActivity?.();
+        return;
+      }
+      const entry = agentStepFromFrame(ev, liveCaseId);
+      if (entry) setLiveSteps((prev) => appendAgentStep(prev, entry, LIVE_STEP_LIMIT));
     },
-    [onLiveActivity],
+    [liveCaseId, onLiveActivity],
   );
   useEventStream(liveCaseId ? [`cases:${liveCaseId}`] : [], {
     enabled: Boolean(liveCaseId),
@@ -133,7 +170,7 @@ export const CaseActivityFeed: React.FC<CaseActivityFeedProps> = ({
       />
     );
   }
-  if (!items.length) {
+  if (!items.length && !liveSteps.length) {
     return (
       <EmptyState
         icon={Activity}
@@ -144,7 +181,45 @@ export const CaseActivityFeed: React.FC<CaseActivityFeedProps> = ({
     );
   }
   return (
-    <ol className={cn('relative space-y-3 border-l border-border pl-5', className)}>
+    <div className={cn('space-y-3', className)}>
+      <LiveAgentSteps steps={liveSteps} />
+      {items.length ? <ActivityTimeline items={items} /> : null}
+    </div>
+  );
+};
+
+/** The in-flight run narration. Renders nothing when no step has arrived. */
+const LiveAgentSteps: React.FC<{ steps: AgentStep[] }> = ({ steps }) => {
+  if (!steps.length) return null;
+  return (
+    <section
+      aria-label="Investigation in progress"
+      className="rounded-md border border-info/40 bg-info/5 px-3 py-2"
+    >
+      <p className="text-2xs font-medium uppercase tracking-wide text-info">
+        Investigation in progress
+      </p>
+      <ol className="mt-1 space-y-0.5">
+        {steps.map((s, i) => (
+          <li
+            key={`${s.receivedAt}-${i}`}
+            className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground"
+          >
+            {/* UNTRUSTED, length-capped upstream — plain text nodes only (#9). */}
+            <span className="font-medium text-foreground">{humanizeToken(s.step) || s.step}</span>
+            <span>{s.status}</span>
+            {s.detail ? <span className="truncate">{s.detail}</span> : null}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+};
+
+/** The persisted, authoritative timeline: newest-first. */
+const ActivityTimeline: React.FC<{ items: CaseActivityItem[] }> = ({ items }) => {
+  return (
+    <ol className="relative space-y-3 border-l border-border pl-5">
       {items.map((it, i) => {
         const meta = kindMeta(it.kind);
         const Icon = meta.icon;

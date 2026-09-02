@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from .. import __version__
 from ..build_identity import build_identity_advisories, build_stamp
 from ..config import (
+    CAPS_MINIMUMS,
     Preferences,
     SourceInstance,
     SuppressionRule,
@@ -1792,6 +1793,47 @@ async def _record_settings_rule_versions(
             pass
 
 
+def _reject_out_of_range_caps(body: Any) -> None:
+    """422 on a ``caps`` value below its declared floor that arrived in a REQUEST BODY.
+
+    ``Preferences._clamp_caps`` is a ``mode="before"`` validator, so it REPAIRS the
+    merged document before ``CapsConfig``'s ``ge=`` constraints are ever evaluated. That
+    repair is mandatory for a STORED document — both preference loaders answer any
+    validation error by returning a full default ``Preferences()``, which would silently
+    revert ``auto_close``, the rule catalog and the source list — but it is the wrong
+    answer for a live edit: it made this endpoint return 200 while storing a value the
+    operator never typed, and ``timeout_seconds=1`` is exactly as unusable as the 0 they
+    meant to reject. The sibling ``resilience`` block was already rejected by its own
+    field constraints, so the surface was inconsistent as well as silent.
+
+    It inspects the BODY, never the merged document, so an already-poisoned stored
+    configuration stays loadable and repairable. The floors are read off
+    :data:`CAPS_MINIMUMS` (derived from ``CapsConfig`` itself) rather than restated, so
+    this can never drift from what it enforces. There is no upper bound to check — one
+    would encode a single vendor's latency/context envelope as product policy.
+    """
+    if not isinstance(body, dict):
+        return
+    caps = body.get("caps")
+    if not isinstance(caps, dict):
+        return
+    for key, floor in CAPS_MINIMUMS.items():
+        if key not in caps:
+            continue
+        raw = caps[key]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue  # let normal field validation report a non-numeric value
+        if float(raw) >= floor:
+            continue
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: caps.{key} must be at least {floor} "
+                f"(received {raw!r})"
+            ),
+        )
+
+
 @router.put("/settings")
 async def put_settings(
     body: dict[str, Any],
@@ -1833,6 +1875,10 @@ async def put_settings(
             and body.get("read_only_settings_mode") is not False
         ):
             raise HTTPException(status_code=403, detail="Settings are in read-only mode")
+        # AFTER the read-only gate (that answer takes precedence) and BEFORE the merge:
+        # the check must see the REQUEST BODY, because `_clamp_caps` repairs the merged
+        # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
+        _reject_out_of_range_caps(body)
         old_prefs = current
         merged = _deep_update(current.model_dump(mode="json"), body)
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.

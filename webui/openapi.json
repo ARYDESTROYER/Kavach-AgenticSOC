@@ -3714,6 +3714,45 @@
         "title": "PrecedentBootstrapRequest",
         "type": "object"
       },
+      "PrecedentExclusionRequest": {
+        "description": "Exclude one or more cases from the precedent corpus.\n\nSupply ``case_ids`` directly, or ``select`` a population by the projection's OWN\nmetadata keys. Free-text rule-title matching is deliberately NOT offered: a title is\ncontent, and a detection-content update rewrites it underneath a saved selection.",
+        "properties": {
+          "case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Case Ids",
+            "type": "array"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Note",
+            "type": "string"
+          },
+          "reason": {
+            "default": "other",
+            "maxLength": 64,
+            "title": "Reason",
+            "type": "string"
+          },
+          "select": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Select",
+            "type": "object"
+          }
+        },
+        "title": "PrecedentExclusionRequest",
+        "type": "object"
+      },
       "PricingBody": {
         "properties": {
           "input_per_million": {
@@ -11134,6 +11173,26 @@
         "summary": "Diagnostics Health"
       }
     },
+    "/api/diagnostics/precedent-composition": {
+      "get": {
+        "description": "WHAT the precedent corpus is made of — now, and after a rebuild. Read-only.\n\n**Reprojection is not the repair, and this endpoint is what proves it.** The\nprojection pages the case store newest-first, so on the deployment that motivated\nthis the bulk-confirmed cases were still the newest analyst-confirmed terminal cases:\na rebuild RE-SELECTS them and converges on the composition it just replaced. Worse,\nthe qualifying POOL was MORE skewed than the window drawn from it, so no selection\npolicy over that pool could have produced a healthy corpus. A successful rebuild is\ntherefore not evidence of repair, and \"the job succeeded\" must never be read as one.\n\nWhat makes that visible, and what the payload carries:\n\n* the JOINT (analyst outcome x model verdict) cross-tab, for the CURRENT corpus and\n  for the projection a rebuild WOULD produce. Per-outcome counts alone read PRISTINE\n  through the entire incident — a corpus that is 100% ``outcome=false_positive`` and\n  also 100% ``verdict=NEEDS_HUMAN`` is telling the investigator \"we escalated this\n  every time\", not \"this is benign\";\n* per-rule counts, and chunk/document totals;\n* the size of the qualifying POOL the bounded window was drawn from, so \"200 of 889\"\n  is legible rather than implied;\n* the admission CONCENTRATION — how much of the selected window one operator\n  transaction bought.\n\nIt is deliberately a SEPARATE endpoint rather than a block inside\n``/api/diagnostics/health``: deriving the would-be projection costs a bounded scan of\nthe case store, and the health rollup is polled by the Console. It costs **zero\nembedding calls** either way — both halves come from a management read plus the\nordinary per-case projector, whose metadata already carries both axes.\n\nGated on ``settings:read`` like the rest of this router, seed-free, and advisory (#3).",
+        "operationId": "diagnostics_precedent_composition_api_diagnostics_precedent_composition_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Diagnostics Precedent Composition Api Diagnostics Precedent Composition Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Diagnostics Precedent Composition"
+      }
+    },
     "/api/enrichment/lookup": {
       "get": {
         "description": "Enrich one indicator across the capable, enabled providers (cached, fenced).\n\nThe fused reputation uses the byte-identical default ``max()`` (#3 untouched);\nevery provider-returned string is FENCED as UNTRUSTED before it is returned (#9).",
@@ -13983,7 +14042,7 @@
     },
     "/api/rag/documents/{document_id}": {
       "delete": {
-        "description": "Delete an imported document. 404 if missing; 400 if a guarded seed source\n(runbook/mitre/suppression/resolved_case) unless ``?force=true``.",
+        "description": "Delete an imported document. 404 if missing; 400 if a guarded seed source\n(runbook/mitre/suppression/resolved_case) unless ``?force=true``.\n\nEvery SUCCESSFUL delete is audited. It previously was not: a ``force=true`` delete\nis the single most destructive corpus mutation the API offers — it removes protected\nbuilt-in knowledge or an analyst-confirmed precedent — and it left no record at all,\nso \"where did that runbook go?\" was unanswerable. The row carries the document id and\nthe force flag; no chunk text ever enters it (#9).\n\nFor a PRECEDENT document, note that a plain force-delete does not stay deleted: the\nnext projection re-derives that case from the case store. ``POST\n/api/rag/precedent/exclusions`` is the supported way to make a precedent removal\nstick, and it performs this same delete as its second half.",
         "operationId": "rag_delete_document_api_rag_documents__document_id__delete",
         "parameters": [
           {
@@ -14169,6 +14228,125 @@
           }
         },
         "summary": "Precedent Bootstrap"
+      }
+    },
+    "/api/rag/precedent/composition": {
+      "get": {
+        "description": "The corpus as it stands, beside the projection a rebuild WOULD produce.\n\nRead-only and free: it embeds nothing, seeds nothing and writes nothing, because both\nhalves are derivable from a management read plus the ordinary per-case projector,\nwhose item metadata already carries the analyst outcome AND the model verdict.\n\nReports the JOINT (analyst outcome x model verdict) distribution rather than either\nmarginal alone — outcome-only counts read PRISTINE on a corpus that is actively\npoisoning the model — plus per-rule counts, chunk/document totals, the size of the\nQUALIFYING POOL the window was drawn from (so \"200 of 889\" is visible), and how\nconcentrated the selected window is in one operator transaction.",
+        "operationId": "precedent_composition_api_rag_precedent_composition_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Precedent Composition Api Rag Precedent Composition Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Precedent Composition"
+      }
+    },
+    "/api/rag/precedent/exclusions": {
+      "get": {
+        "description": "The case-scoped precedent exclusion set: count, ids, per-rule and per-reason.\n\n``available: false`` means the set could not be READ — never that nothing is\nexcluded. The two are different answers and conflating them would report a broad\nexclusion as an empty one.",
+        "operationId": "precedent_exclusions_api_rag_precedent_exclusions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Precedent Exclusions Api Rag Precedent Exclusions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Precedent Exclusions"
+      },
+      "post": {
+        "description": "Exclude cases from the precedent corpus: DELETE + MARK, per case, atomically.\n\nThe marker is written first so no producer can re-derive the precedent while its\nchunks are being removed; the delete follows. Idempotent — re-issuing the same\nexclusion refreshes the marker and finishes any removal that did not complete.\n\n``dry_run`` resolves the selection and returns the case ids WITHOUT excluding\nanything. Every exclusion is audited per case.\n\nGround truth is untouched: the case keeps its analyst label, so\n``analyst_confirmed_outcome`` — and the threshold tuner's independent-evidence count,\nwhich is derived from it — are unchanged. Side effect, by design: an excluded case is\nalso no longer indexed by the incremental close-time path.",
+        "operationId": "precedent_exclude_api_rag_precedent_exclusions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrecedentExclusionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Precedent Exclude Api Rag Precedent Exclusions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Precedent Exclude"
+      }
+    },
+    "/api/rag/precedent/exclusions/{case_id}": {
+      "delete": {
+        "description": "Drop a precedent exclusion. 404 when the case is not excluded.\n\nRemoves the marker only: the precedent reappears on the NEXT ordinary projection,\nderived from the case store exactly as it would have been. Nothing is written to the\ncorpus here — an un-exclusion must not be able to mint a chunk the projection would\nnot have produced.",
+        "operationId": "precedent_restore_api_rag_precedent_exclusions__case_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Precedent Restore Api Rag Precedent Exclusions  Case Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Precedent Restore"
       }
     },
     "/api/rag/search": {

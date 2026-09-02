@@ -171,7 +171,35 @@ whenever `M` exceeds the precedent window size; only a large shortfall is report
 If a rebuild legitimately produces a much smaller corpus (you disabled sources on
 purpose), lower `rag.min_projection_retention`, or set it to `0` to disable the ratio
 guard. A projection reaching **zero** is refused regardless — that is never a
-legitimate rebuild of a non-empty corpus.
+legitimate rebuild of a non-empty corpus, and no setting changes that.
+
+Narrowing `precedent.window.size` to drop unwanted precedent is a shrink like any other
+and can therefore trip the same ratio floor. When the refusal is attributable to that —
+the precedent source shrank to within the new window while every other knowledge source
+held steady — health reports it as a refused **window reduction** rather than as a corpus
+loss. Nothing was destroyed and the model provider is not implicated; lower
+`rag.min_projection_retention` to let the intended reduction through.
+
+## The knowledge corpus rebuilt, but auto-close is still wrong
+
+A rebuild that succeeds proves only that a projection completed. The retention guard is a
+**size** guard: a reprojection that keeps the same number of records and reverses every
+one of them passes it cleanly.
+
+Read **`GET /api/diagnostics/precedent-composition`** before and after any rebuild. It
+costs nothing — no embedding calls, no writes — and reports what the corpus holds beside
+what a rebuild would produce, cross-tabulating the analyst-confirmed outcome against the
+model's own verdict. Counts per outcome alone are the trap: a corpus that is entirely
+"false positive" reads as a clean benign baseline even while every one of those records
+also says the agent escalated it.
+
+If the report shows the qualifying **pool** is skewed the same way the selected window is,
+rebuilding cannot help: the projection selects the newest qualifying cases, so it will
+re-select the same records. Fix the ground truth instead — see
+[excluding a precedent record](../intelligence/knowledge-memory.md#excluding-a-precedent-record)
+for how to evict individual records so they stay evicted, and check the admission
+concentration in the same report to see whether one bulk analyst action bought most of
+the window.
 
 ## Escalation package
 

@@ -628,6 +628,15 @@ class AppState:
             custom_models=self.custom_models,
             discounted_policy=lambda: self.prefs.batch,
             provider_health=self._provider_health,
+            # The operator's circuit-breaker policy, read per call (like the discount
+            # policy above) so a settings change takes effect without a rewire. Without
+            # this the ``resilience`` block would be a fully persisted, schema-exposed,
+            # Console-editable section that NOTHING reads: the tracker would run on its
+            # mirrored defaults forever and ``/api/diagnostics/health`` would report a
+            # policy the operator never configured. A default-constructed block is
+            # byte-identical to those mirrored defaults and leaves ``enforce`` off, so
+            # wiring it changes nothing for a deployment that never edits it (#5).
+            resilience_policy=lambda: self.prefs.resilience,
         )
         # Auth service (Wave 2). Disabled unless secrets.auth_enabled — the no-auth
         # "old version" is the default. Building it is cheap and re-runs on rewire.
@@ -1137,6 +1146,7 @@ class AppState:
         (#3), recomputes a ``cluster_signature`` (#4), or slows the poll/ingest path (its
         record path is fail-open)."""
         from .stores.noise_counters import NoiseCounterStore
+        from .stores.precedent_exclusions import PrecedentExclusionStore
         from .stores.rag_health import RagHealthStore
 
         self._real_noise_counters = NoiseCounterStore(self._kv)
@@ -1144,6 +1154,11 @@ class AppState:
         # in-process only, so the evidence of a corpus collapse died on restart —
         # which is the first thing an operator does when something looks wrong.
         self._rag_health = RagHealthStore(self._kv)
+        # Durable, case-scoped precedent EXCLUSION markers. Without them a force-deleted
+        # precedent is re-derived by the very next projection, so the operator's action
+        # silently undid itself. Same single-KV-document pattern: no new index, no table,
+        # no migration.
+        self._precedent_exclusions = PrecedentExclusionStore(self._kv)
 
     @property
     def enrichment_registry(self):
@@ -2348,6 +2363,7 @@ class AppState:
                 cases=self._real_cases,
                 runbooks=self.runbooks,
                 health=getattr(self, "_rag_health", None),
+                exclusions=getattr(self, "_precedent_exclusions", None),
             )
         try:
             from .es.client import RealESClient
@@ -2365,6 +2381,7 @@ class AppState:
             cases=self._real_cases,
             runbooks=self.runbooks,
             health=getattr(self, "_rag_health", None),
+            exclusions=getattr(self, "_precedent_exclusions", None),
         )
 
     def rebuild_log_source(self) -> None:
