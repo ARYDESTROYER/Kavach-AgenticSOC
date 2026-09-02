@@ -15,8 +15,16 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { useEventStream } from '../useEventStream';
+import {
+  AGENT_STEP_CHANNEL,
+  STREAM_CHANNELS,
+  useAgentSteps,
+  useEventStream,
+} from '../useEventStream';
 
 /* ----------------------------------------------------------- EventSource mock */
 
@@ -253,5 +261,140 @@ describe('useEventStream (Wave-4 live wiring / graceful fallback)', () => {
 
     unmount();
     expect(es.closed).toBe(true);
+  });
+});
+
+
+/* ------------------------------------------------- A4: the dead agent-step channel */
+
+/**
+ * The channel-name contract, from both ends.
+ *
+ * An `EventSource` matches a typed `event:` field by EXACT string. This list carried
+ * `agent` while the backend producer publishes `agent.step`, and nothing on either side
+ * can observe that kind of mismatch: the publish succeeds, the subscription succeeds,
+ * and the frames are silently never delivered. So the investigation-progress channel
+ * had never delivered a single frame. These tests read the backend's own registry off
+ * disk so the two ends cannot drift apart again.
+ */
+describe('SSE channel names (A4)', () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const REALTIME_PY = resolve(HERE, '../../../../backend/app/realtime.py');
+
+  it('listens on the exact channel the pipeline publishes', () => {
+    expect(AGENT_STEP_CHANNEL).toBe('agent.step');
+    expect(STREAM_CHANNELS).toContain('agent.step');
+    // The defect, pinned: the bare `agent` token matched nothing the backend emits.
+    expect(STREAM_CHANNELS).not.toContain('agent');
+  });
+
+  it('covers every typed channel the backend registry declares', (ctx) => {
+    // A REAL skip, not a silent pass, if the backend tree is not checked out alongside
+    // the webui (the CI lanes always have both). An early `return` inside an `it()` body
+    // reports the test as PASSED — which is exactly the silent success this drift guard
+    // exists to eliminate, so it must not be how the guard itself opts out.
+    if (!existsSync(REALTIME_PY)) return ctx.skip();
+    const py = readFileSync(REALTIME_PY, 'utf8');
+    const declared = [...py.matchAll(/^[A-Z][A-Z0-9_]*_EVENT\s*=\s*"([^"]+)"/gm)].map(
+      (m) => m[1],
+    );
+    expect(declared.length).toBeGreaterThan(0);
+    for (const name of declared) {
+      expect(STREAM_CHANNELS as readonly string[]).toContain(name);
+    }
+  });
+});
+
+describe('useAgentSteps (A4 consumer)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
+    fetchMock = vi.fn();
+    (globalThis as unknown as { fetch: unknown }).fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('is inert without a case id', () => {
+    const { result } = renderHook(() => useAgentSteps(null));
+    expect(result.current.steps).toEqual([]);
+    expect(result.current.live).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('subscribes to the case room and accumulates agent.step frames', async () => {
+    fetchMock.mockResolvedValue(probeResponse(200));
+    const { result } = renderHook(() => useAgentSteps('case-0001'));
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    expect(MockEventSource.instances[0].url).toContain(
+      `topics=${encodeURIComponent('cases:case-0001')}`,
+    );
+    const es = MockEventSource.instances[0];
+    act(() => es.emitOpen());
+    await waitFor(() => expect(result.current.live).toBe(true));
+
+    act(() =>
+      es.emit(
+        'agent.step',
+        JSON.stringify({ case_id: 'case-0001', step: 'triage', status: 'running' }),
+        '1',
+      ),
+    );
+    act(() =>
+      es.emit(
+        'agent.step',
+        JSON.stringify({ case_id: 'case-0001', step: 'tools', detail: 'investigation running' }),
+        '2',
+      ),
+    );
+
+    await waitFor(() => expect(result.current.steps).toHaveLength(2));
+    expect(result.current.steps.map((s) => s.step)).toEqual(['triage', 'tools']);
+    // An absent status defaults to `running`; detail is carried as plain text.
+    expect(result.current.steps[1].status).toBe('running');
+    expect(result.current.steps[1].detail).toBe('investigation running');
+  });
+
+  it('ignores other channels and frames naming a different case', async () => {
+    fetchMock.mockResolvedValue(probeResponse(200));
+    const { result } = renderHook(() => useAgentSteps('case-0001'));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const es = MockEventSource.instances[0];
+    act(() => es.emitOpen());
+
+    act(() => es.emit('case.activity', JSON.stringify({ case_id: 'case-0001' }), '1'));
+    act(() =>
+      es.emit('agent.step', JSON.stringify({ case_id: 'case-9999', step: 'tools' }), '2'),
+    );
+    act(() => es.emit('agent.step', JSON.stringify({ case_id: 'case-0001' }), '3'));
+
+    expect(result.current.steps).toEqual([]);
+  });
+
+  it('bounds the buffer and clears it when the case changes', async () => {
+    fetchMock.mockResolvedValue(probeResponse(200));
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useAgentSteps(id, { limit: 3 }),
+      { initialProps: { id: 'case-0001' } },
+    );
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const es = MockEventSource.instances[0];
+    act(() => es.emitOpen());
+
+    for (let i = 0; i < 5; i++) {
+      act(() =>
+        es.emit('agent.step', JSON.stringify({ case_id: 'case-0001', step: `s${i}` }), String(i)),
+      );
+    }
+    await waitFor(() => expect(result.current.steps).toHaveLength(3));
+    expect(result.current.steps.map((s) => s.step)).toEqual(['s2', 's3', 's4']);
+
+    rerender({ id: 'case-0002' });
+    await waitFor(() => expect(result.current.steps).toEqual([]));
   });
 });

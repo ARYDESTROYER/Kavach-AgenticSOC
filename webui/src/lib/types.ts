@@ -1903,6 +1903,10 @@ export interface SettingsSchemaField {
   /** Enumerated choices for an enum / Literal field, else null. */
   choices: string[] | null;
   description: string | null;
+  /** Declared lower bound (`ge`), when the backend field declares one. */
+  minimum?: number;
+  /** Declared upper bound (`le`), when the backend field declares one. */
+  maximum?: number;
   /** Additive (Sett-C): the element-model descriptor for list/dict-of-model fields. */
   element?: SettingsElementSchema;
 }

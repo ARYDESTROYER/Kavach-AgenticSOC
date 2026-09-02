@@ -193,6 +193,33 @@ async def _corpus_snapshot(rag: Any) -> tuple[bool, str, list[dict[str, Any]]]:
     return True, "", [r for r in rows if isinstance(r, dict)]
 
 
+async def _precedent_exclusions(rag: Any) -> dict[str, Any]:
+    """The operator precedent-exclusion set, read fail-open.
+
+    A missing/older RAG service (or a store glitch) reports ``supported``/``available``
+    honestly rather than a confident zero: an exclusion set that could not be read is an
+    unknown, and reporting it as "nothing is excluded" would make the blocks below blame
+    the projection for an operator action.
+    """
+    reader = getattr(rag, "precedent_exclusions", None) if rag is not None else None
+    if reader is None:
+        return {"available": False, "supported": False, "count": 0, "case_ids": [], "by_rule": {}}
+    try:
+        payload = await reader()
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("precedent exclusion read soft-failed: %s", exc)
+        return {"available": False, "supported": True, "count": 0, "case_ids": [], "by_rule": {}}
+    block = dict(payload or {})
+    # The per-case ``entries`` map carries the operator's free-text note. This router is
+    # gated on ``settings:read``, which every built-in role holds, while the exclusion
+    # entries themselves live behind ``rag:read`` on
+    # ``GET /api/rag/precedent/exclusions``. Publish only what this surface needs — the
+    # count, the ids and the per-rule/per-reason breakdown — rather than widening the
+    # audience of an operator-authored field for no diagnostic gain.
+    block.pop("entries", None)
+    return block
+
+
 async def _precedent_corpus_block(state: AppState, cases: list, store_total: int) -> dict[str, Any]:
     """Precedent-corpus health: size, per-source counts, and the explicit starvation
     flag — plus the analyst-confirmed ground truth the case history actually holds, so
@@ -208,6 +235,12 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
         precedent_enabled and getattr(rag_cfg, "use_unconfirmed_resolved_cases", False)
     )
     source = _precedent_source()
+    exclusions = await _precedent_exclusions(rag)
+    excluded_ids = {str(cid) for cid in (exclusions.get("case_ids") or [])}
+    # Analyst-confirmed terminal cases the projection can draw from, MINUS the ones an
+    # operator excluded. Subtracting them is what stops the reconciliation below
+    # reporting a deficit and blaming the projection for a deliberate operator action.
+    projectable_after_exclusions = _projectable_precedent_records(cases, excluded_ids)
 
     available, reason, docs = await _corpus_snapshot(rag)
     chunks_by_source: dict[str, int] = {}
@@ -274,6 +307,17 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
             "the resolved-case precedent source is turned off, so a zero precedent "
             "count is the configured behaviour"
         )
+    elif zero_precedents and excluded_ids and projectable_after_exclusions == 0:
+        # OPERATOR-EXCLUDED, not starved. Without this branch a broad exclusion — the
+        # supported repair for a poisoned corpus — reports as the exact incident
+        # signature this block exists to detect, so the product would raise a CRITICAL
+        # against an operator for doing what it told them to do.
+        status = "operator_excluded"
+        status_reason = (
+            f"every qualifying case ({len(excluded_ids)} excluded) is operator-excluded "
+            "from the precedent corpus, so an empty corpus is the requested state rather "
+            "than a projection failure"
+        )
     elif zero_precedents:
         status = "starved"
         status_reason = (
@@ -315,6 +359,10 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
         "corpus_degraded": bool(getattr(rag, "corpus_degraded", False)),
         "projection": _projection_block(rag),
         "ground_truth": precedent_ground_truth(cases, store_total=store_total),
+        # The operator exclusion set: count, ids and the per-rule breakdown. Published
+        # here so a small corpus can be attributed to a deliberate operator action rather
+        # than to a broken projection.
+        "exclusions": exclusions,
         # The last REFUSED projection (in-process, falling back to the durable
         # record so a restart does not erase the evidence).
         "last_refusal": await _last_refusal(rag),
@@ -328,13 +376,14 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
             confirmed_exact=confirmed_exact,
             analyst_confirmed_documents=analyst_confirmed_documents,
             ground_truth=precedent_ground_truth(cases, store_total=store_total),
-            projectable_records=_projectable_precedent_records(cases),
+            projectable_records=projectable_after_exclusions,
+            excluded_records=len(excluded_ids),
             corpus_may_be_truncated=_corpus_may_be_truncated(rag, total_chunks),
         ),
     }
 
 
-def _projectable_precedent_records(cases: list) -> int:
+def _projectable_precedent_records(cases: list, excluded: set[str] | None = None) -> int:
     """Analyst-confirmed cases the precedent projection can ACTUALLY draw from.
 
     Deliberately NOT ``precedent_ground_truth()["analyst_confirmed_cases"]``: that
@@ -343,12 +392,20 @@ def _projectable_precedent_records(cases: list) -> int:
     Analyst feedback on an escalated or in-progress case is perfectly ordinary, and
     counting it as projectable would manufacture a deficit against a corpus that is
     behaving exactly as designed. The two must be measured over the same population.
+
+    ``excluded`` is the operator's precedent-exclusion set, and subtracting it is the
+    same rule applied once more: the projection deliberately skips those cases, so
+    counting them as projectable would report a deficit against a corpus that is doing
+    exactly what the operator asked — and blame the projection for it.
     """
     terminal = {CaseStatus.CLOSED.value, CaseStatus.RESOLVED.value}
+    skip = excluded or set()
     count = 0
     for case in cases:
         status = getattr(getattr(case, "status", None), "value", None)
         if str(status or "") not in terminal:
+            continue
+        if str(getattr(case, "case_id", "") or "") in skip:
             continue
         if analyst_confirmed_outcome(case)[0] is not None:
             count += 1
@@ -408,6 +465,7 @@ def _reconciliation_block(
     corpus_may_be_truncated: bool,
     rag_enabled: bool = True,
     projectable_records: int | None = None,
+    excluded_records: int = 0,
 ) -> dict[str, Any]:
     """Compare the corpus (N) with the qualifying source history (M).
 
@@ -436,6 +494,10 @@ def _reconciliation_block(
         "qualifying_source_records": None,
         "expected_documents": None,
         "window_size": None,
+        # Qualifying records the OPERATOR removed from the projection on purpose. They
+        # are already subtracted from ``qualifying_source_records``; the count is
+        # published so the subtraction is visible rather than implicit.
+        "operator_excluded_records": int(excluded_records or 0),
     }
     if not rag_enabled or not precedent_enabled:
         # Configured behaviour, not an unmeasurable signal. Retrieval switched off
@@ -1386,21 +1448,57 @@ def _build_alerts(
             )
         )
 
+    # ------------------------------------------------------------------ #
+    # Operator EXCLUSIONS: attributable, and never a wolf cry.
+    # ------------------------------------------------------------------ #
+    exclusions = precedent.get("exclusions") or {}
+    if exclusions.get("supported") and not exclusions.get("available"):
+        # An unreadable exclusion set makes the reconciliation above a guess: excluded
+        # records cannot be subtracted, so a deliberate operator action could read as a
+        # projection deficit. Say so instead of publishing a confident comparison.
+        unknowns.append(
+            _alert(
+                "unknown", "precedent_exclusions_unreadable",
+                "The precedent exclusion set could not be read",
+                "Cases an operator excluded from the precedent corpus cannot be "
+                "subtracted from the qualifying-record count, so the corpus-vs-history "
+                "reconciliation may understate the corpus.",
+                "Check the state backend; the projection keeps honouring the last "
+                "exclusion set it successfully read.",
+            )
+        )
+
     projection = precedent.get("projection") or {}
     # A REFUSED projection is a first-class condition: the rebuild did not happen and
     # the corpus is whatever it was before, which may be stale or already empty.
     refusal = precedent.get("last_refusal") or {}
     if refusal.get("collapsed"):
-        alerts.append(
-            _alert(
-                "critical", "rag_projection_refused",
-                "The last knowledge projection was REFUSED",
-                str(refusal.get("reason") or "")[:400],
-                "The existing corpus was preserved rather than replaced by an empty or "
-                "drastically smaller one. Fix the underlying cause (most often the "
-                "embedding provider) and rebuild.",
+        # An ATTRIBUTABLE window reduction is not a corpus loss and must not be reported
+        # as one: the operator deliberately narrowed the precedent window (the obvious
+        # move for dropping a poisoned tail) and the ratio floor blocked it. Nothing was
+        # destroyed, and the remedy is the retention floor, not the embedding provider.
+        if str(refusal.get("reason_code") or "") == "window_size_reduction":
+            alerts.append(
+                _alert(
+                    "warning", "rag_projection_refused_window_reduction",
+                    "A deliberate precedent-window reduction was refused",
+                    str(refusal.get("reason") or "")[:400],
+                    "Nothing was lost — the previous corpus is intact. Lower "
+                    "rag.min_projection_retention (or set it to 0) to let the intended "
+                    "reduction through. A projection reaching zero is refused regardless.",
+                )
             )
-        )
+        else:
+            alerts.append(
+                _alert(
+                    "critical", "rag_projection_refused",
+                    "The last knowledge projection was REFUSED",
+                    str(refusal.get("reason") or "")[:400],
+                    "The existing corpus was preserved rather than replaced by an empty or "
+                    "drastically smaller one. Fix the underlying cause (most often the "
+                    "embedding provider) and rebuild.",
+                )
+            )
 
     if projection.get("available"):
         for name in projection.get("collapsed_sources") or []:
@@ -1702,6 +1800,65 @@ def _build_alerts(
         )
 
     return alerts, unknowns
+
+
+@router.get("/diagnostics/precedent-composition")
+async def diagnostics_precedent_composition(
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("settings", "read")),
+) -> dict[str, Any]:
+    """WHAT the precedent corpus is made of — now, and after a rebuild. Read-only.
+
+    **Reprojection is not the repair, and this endpoint is what proves it.** The
+    projection pages the case store newest-first, so on the deployment that motivated
+    this the bulk-confirmed cases were still the newest analyst-confirmed terminal cases:
+    a rebuild RE-SELECTS them and converges on the composition it just replaced. Worse,
+    the qualifying POOL was MORE skewed than the window drawn from it, so no selection
+    policy over that pool could have produced a healthy corpus. A successful rebuild is
+    therefore not evidence of repair, and "the job succeeded" must never be read as one.
+
+    What makes that visible, and what the payload carries:
+
+    * the JOINT (analyst outcome x model verdict) cross-tab, for the CURRENT corpus and
+      for the projection a rebuild WOULD produce. Per-outcome counts alone read PRISTINE
+      through the entire incident — a corpus that is 100% ``outcome=false_positive`` and
+      also 100% ``verdict=NEEDS_HUMAN`` is telling the investigator "we escalated this
+      every time", not "this is benign";
+    * per-rule counts, and chunk/document totals;
+    * the size of the qualifying POOL the bounded window was drawn from, so "200 of 889"
+      is legible rather than implied;
+    * the admission CONCENTRATION — how much of the selected window one operator
+      transaction bought.
+
+    It is deliberately a SEPARATE endpoint rather than a block inside
+    ``/api/diagnostics/health``: deriving the would-be projection costs a bounded scan of
+    the case store, and the health rollup is polled by the Console. It costs **zero
+    embedding calls** either way — both halves come from a management read plus the
+    ordinary per-case projector, whose metadata already carries both axes.
+
+    Gated on ``settings:read`` like the rest of this router, seed-free, and advisory (#3).
+    """
+    rag = getattr(state, "rag_service", None)
+    reader = getattr(rag, "corpus_composition", None) if rag is not None else None
+    if reader is None:
+        return {
+            "generated_at": iso_now(),
+            "available": False,
+            "reason": (
+                "this deployment's retrieval service does not expose a corpus "
+                "composition report"
+            ),
+        }
+    try:
+        payload = await reader()
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("precedent composition soft-failed: %s", exc)
+        return {
+            "generated_at": iso_now(),
+            "available": False,
+            "reason": f"the composition report could not be produced ({type(exc).__name__})",
+        }
+    return {"generated_at": iso_now(), "available": True, "reason": "", **dict(payload or {})}
 
 
 @router.get("/diagnostics/health")

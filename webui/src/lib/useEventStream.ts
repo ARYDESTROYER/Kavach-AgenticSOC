@@ -69,6 +69,32 @@ export interface UseEventStreamState {
 /** Endpoint the hook subscribes to (same-origin; the Vite/nginx `/api` proxy fronts it). */
 const DEFAULT_URL = '/api/events';
 
+/**
+ * The typed SSE channels we explicitly listen on. An `EventSource` delivers a typed
+ * `event:` frame to `addEventListener(<name>)` and NOT to `onmessage`, so a channel
+ * missing from this list is simply never seen. `message` (the untyped default
+ * channel) is wired as well so a default-channel frame is not dropped.
+ *
+ * ⚠ THESE MUST MATCH THE BACKEND EXACTLY, character for character. `EventSource`
+ * matches a typed `event:` by exact string, and neither end can observe a mismatch:
+ * the publish succeeds, the subscription succeeds, and the frames are silently never
+ * delivered. That is precisely what happened to investigation progress — this list
+ * carried `agent`, while the producer (`app/agents/pipeline.py`) publishes
+ * `agent.step`, so not one agent-step frame had ever reached a browser. The backend
+ * side now names its channels once in `app/realtime.py` (`SSE_EVENT_TYPES`), and the
+ * test for this module asserts that registry and this list agree.
+ */
+export const AGENT_STEP_CHANNEL = 'agent.step';
+
+export const STREAM_CHANNELS = [
+  'message',
+  'inapp',
+  'case.activity',
+  AGENT_STEP_CHANNEL,
+  'job',
+  'overflow',
+] as const;
+
 /** Backoff schedule (ms) for reconnect attempts; index is clamped to the last slot. */
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
 /**
@@ -193,10 +219,8 @@ export function useEventStream(
       }
     };
 
-    // Known producer channels we explicitly listen on (EventSource delivers a typed
-    // `event:` to addEventListener, NOT to onmessage). `message` (untyped) is also
-    // wired for any default-channel frame.
-    const CHANNELS = ['message', 'inapp', 'case.activity', 'agent', 'job', 'overflow'];
+    // The exact typed channels the backend publishes (see STREAM_CHANNELS above).
+    const CHANNELS: readonly string[] = STREAM_CHANNELS;
 
     const openStream = () => {
       teardownEs();
@@ -324,6 +348,142 @@ export function useEventStream(
   }, [enabled, topicKey, url]);
 
   return { live };
+}
+
+/**
+ * One received `agent.step` frame, normalised to plain strings.
+ *
+ * Every field is UNTRUSTED (#9): the backend fences at its boundary and the bus
+ * encodes verbatim, so a consumer must still let React escape these on render and
+ * must never treat `detail` as markup.
+ */
+export interface AgentStep {
+  /** The case the step belongs to (as reported by the producer). */
+  caseId: string;
+  /** Short step label, e.g. `triage`, `tools`, `decision`. */
+  step: string;
+  /** Step status, e.g. `running`, `done`. Defaults to `running` when absent. */
+  status: string;
+  /** Optional short, already-render-safe detail label. May be empty. */
+  detail: string;
+  /** Client receive time (ms since epoch) — ordering only, never authoritative. */
+  receivedAt: number;
+}
+
+export interface UseAgentStepsOptions {
+  /** Master switch (default true). Combined with a non-empty `caseId`. */
+  enabled?: boolean;
+  /** Ring size; the oldest steps past this are dropped (default 50). */
+  limit?: number;
+  /** Override the endpoint path (tests). */
+  url?: string;
+}
+
+export interface UseAgentStepsState {
+  /** Steps received on this mount, oldest first, bounded by `limit`. */
+  steps: AgentStep[];
+  /** True only while a healthy stream is open (mirrors `useEventStream`). */
+  live: boolean;
+}
+
+/** Coerce an untrusted payload value to a short plain string (never markup). */
+function asShortText(value: unknown, max = 200): string {
+  if (value == null) return '';
+  const text = String(value).trim();
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+/**
+ * A STANDALONE subscriber for the investigation-progress channel.
+ *
+ * Opens its own stream on a case's room (`cases:{caseId}`) and accumulates the
+ * `agent.step` frames the pipeline publishes while an investigation runs. Use it for a
+ * surface that wants ONLY the steps and holds no stream of its own.
+ *
+ * The rendered consumer today is `CaseActivityFeed`, which folds the same frames into
+ * the ONE subscription it already holds on that room (via `agentStepFromFrame` above) —
+ * CaseDetail deliberately does not mount this hook as well, because a second
+ * `EventSource` on one room spends a browser connection slot for nothing.
+ *
+ * PURE TRANSPORT, exactly like `useEventStream`: the steps are a NARRATION. Nothing
+ * here decides anything (#3) — the authoritative case record still comes from the
+ * API, and a consumer that wants authoritative state refetches it.
+ *
+ * The buffer is bounded (`limit`) and is CLEARED whenever `caseId` changes, so one
+ * case's steps can never bleed into another's.
+ */
+/**
+ * Parse one raw SSE frame into an `AgentStep`, or `null` when it is not one.
+ *
+ * Exported because the rendered consumer is `CaseActivityFeed`, which already holds an
+ * open stream on the case room and folds `agent.step` into that ONE subscription — a
+ * second `EventSource` on the same room would spend a browser connection slot for
+ * nothing. `useAgentSteps` below is the same logic for a surface that wants only the
+ * steps and has no stream of its own; CaseDetail deliberately does not mount it.
+ *
+ * Every field is provider-/log-influenceable UNTRUSTED text (#9): it is length-capped
+ * here and rendered exclusively as a plain text node by the consumer.
+ */
+export function agentStepFromFrame(
+  ev: StreamEvent,
+  caseId?: string | null,
+): AgentStep | null {
+  if (ev.type !== AGENT_STEP_CHANNEL) return null;
+  const raw = (ev.data && typeof ev.data === 'object' ? ev.data : {}) as Record<string, unknown>;
+  const frameCase = asShortText(raw.case_id, 120);
+  // Defence in depth: the room is already per-case, but never accept a frame that
+  // names a different case.
+  if (caseId && frameCase && frameCase !== caseId) return null;
+  const step = asShortText(raw.step, 80);
+  if (!step) return null;
+  return {
+    caseId: frameCase || String(caseId ?? ''),
+    step,
+    status: asShortText(raw.status, 40) || 'running',
+    detail: asShortText(raw.detail),
+    receivedAt: Date.now(),
+  };
+}
+
+/** Append one step to a BOUNDED buffer (oldest dropped first). Pure. */
+export function appendAgentStep(
+  prev: AgentStep[],
+  entry: AgentStep,
+  limit: number,
+): AgentStep[] {
+  const next = [...prev, entry];
+  return next.length > limit ? next.slice(next.length - limit) : next;
+}
+
+export function useAgentSteps(
+  caseId: string | null | undefined,
+  opts: UseAgentStepsOptions = {},
+): UseAgentStepsState {
+  const { enabled = true, limit = 50, url } = opts;
+  const [steps, setSteps] = React.useState<AgentStep[]>([]);
+  const active = Boolean(caseId) && enabled;
+
+  // A different case is a different run — never carry steps across.
+  React.useEffect(() => {
+    setSteps([]);
+  }, [caseId]);
+
+  const onEvent = React.useCallback(
+    (ev: StreamEvent) => {
+      const entry = agentStepFromFrame(ev, caseId);
+      if (!entry) return;
+      setSteps((prev) => appendAgentStep(prev, entry, limit));
+    },
+    [caseId, limit],
+  );
+
+  const { live } = useEventStream(active && caseId ? [`cases:${caseId}`] : [], {
+    enabled: active,
+    onEvent,
+    url,
+  });
+
+  return { steps, live };
 }
 
 export default useEventStream;

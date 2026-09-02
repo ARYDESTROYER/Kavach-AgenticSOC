@@ -8,6 +8,7 @@ rather than silently dropping an alert.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from .providers import (
     MockProvider,
     ProviderError,
     ensure_providers_discovered,
+    last_attempt_count,
+    reset_attempt_count,
 )
 
 logger = logging.getLogger("tlsoc.gateway")
@@ -42,6 +45,28 @@ class GatewayError(RuntimeError):
     """
 
     failure_class: str = ""
+
+
+class BreakerOpen(GatewayError):
+    """Raised INSTEAD of attempting a call whose provider circuit breaker is open.
+
+    It MUST subclass :class:`GatewayError`. Six call sites already catch
+    ``GatewayError`` and turn it into a NEEDS_HUMAN verdict or a preserved draft; a
+    sibling exception type would escape every one of them and surface as an uncaught
+    exception on the ingest path — turning a graceful degradation into a dropped alert.
+    Being a ``GatewayError`` means an open breaker routes to a human exactly like any
+    other provider failure, and can never close or escalate a case (#3).
+
+    No ledger row is written for a refused call: nothing was spent, so nothing is
+    metered (#6). ``failure_class`` carries the class that tripped the breaker so the
+    operator-visible reason still names the real cause.
+    """
+
+    #: The breaker key that refused, e.g. ``openai:completion:router:gpt-x``. Built
+    #: entirely from operator configuration and our own closed vocabularies.
+    breaker_key: str = ""
+    #: Why it is open, as one closed-vocabulary reason code.
+    breaker_reason: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -62,6 +87,17 @@ FAILURE_UNAUTHENTICATED = "unauthenticated"
 FAILURE_QUOTA = "quota"
 FAILURE_UNSUPPORTED = "unsupported"
 FAILURE_UNAVAILABLE = "unavailable"
+
+#: The caller stopped waiting for a request that HAD been issued.
+#:
+#: Deliberately NOT a member of :data:`PROVIDER_FAILURE_CLASSES`: abandoning a call is
+#: our own decision (a case time budget, a hard pipeline timeout), not evidence about the
+#: provider, so it must never feed the health tracker or the circuit breaker — counting
+#: it would let our own deadlines open a key on a provider that was answering fine.
+#: It exists so the LEDGER still sees the call: #6 says 100% of LLM calls reach the
+#: ledger, and a request that reached the provider costs money whether or not we waited
+#: for the answer.
+FAILURE_ABANDONED = "abandoned"
 
 #: Every code a provider failure may be reported as. Anything unrecognised
 #: degrades to ``unavailable`` rather than leaking provider text.
@@ -88,12 +124,12 @@ def classify_provider_failure(exc: BaseException) -> str:
     """
     status = getattr(exc, "status", None)
     if not isinstance(status, int):
-        # Not every provider routes through ``with_retry``/``ProviderError``: Azure,
-        # Bedrock and Vertex call ``raise_for_status()`` directly, so a RAW
-        # ``httpx.HTTPStatusError`` reaches us with its code on ``response``. Without
-        # this, a 401 from those providers degraded to "unavailable" and the operator
-        # was told the model was slow rather than that the key was rejected — the
-        # exact confusion this classification exists to end.
+        # Not every failure arrives as a ``ProviderError``: an out-of-tree provider, or
+        # any ``raise_for_status()`` outside the shared retry helper, delivers a RAW
+        # ``httpx.HTTPStatusError`` whose code lives on ``response``. Without this, a
+        # 401 from such a provider degraded to "unavailable" and the operator was told
+        # the model was slow rather than that the key was rejected — the exact confusion
+        # this classification exists to end.
         response = getattr(exc, "response", None)
         code = getattr(response, "status_code", None)
         if isinstance(code, int):
@@ -102,7 +138,17 @@ def classify_provider_failure(exc: BaseException) -> str:
         if status in (401, 403):
             return FAILURE_UNAUTHENTICATED
         if status == 429:
-            return FAILURE_QUOTA
+            # A 429 is a rate-limit signal, not by itself an exhausted quota. It is
+            # reported as ``quota`` — an IMMEDIATE-TRIP class for the circuit breaker —
+            # only when the bounded retry budget was actually spent on it (or the
+            # provider's own Retry-After declared a window longer than we will wait).
+            # ``retry_spent`` is stamped by ``providers.with_retry``; its ABSENCE means
+            # no retry budget was involved (a raw httpx error, or an error constructed
+            # outside the retry loop), and those keep the historical classification.
+            spent = getattr(exc, "retry_spent", None)
+            if spent is None or bool(spent):
+                return FAILURE_QUOTA
+            return FAILURE_UNAVAILABLE
     if isinstance(exc, NotImplementedError):
         # e.g. Anthropic/Bedrock/Vertex expose no embedding endpoint at all.
         return FAILURE_UNSUPPORTED
@@ -111,6 +157,72 @@ def classify_provider_failure(exc: BaseException) -> str:
     if isinstance(exc, GatewayError) and "not configured" in str(exc):
         return FAILURE_NOT_CONFIGURED
     return FAILURE_UNAVAILABLE
+
+
+#: Gateway-AUTHORED failure text that passes through :func:`sanitized_failure_message`
+#: verbatim.
+#:
+#: Sanitisation exists to strip PROVIDER-authored bytes (#9). These messages are raised
+#: by ``_provider``/``_provider_kwargs`` BEFORE any request is made, so they contain no
+#: response body at all — and they are the only text that names WHICH key an operator
+#: has to set, which is exactly what the model-test dialog exists to tell them.
+#: Flattening them to "provider call failed (not_configured)" removed the answer and
+#: left nothing in its place.
+#:
+#: The match is on our own literals AND on ``GatewayError`` specifically: a provider
+#: (in-tree or an out-of-tree ``tlsoc.llm_providers`` entry point) raises
+#: ``ProviderError`` or an ``httpx`` error, never this class, so a response body that
+#: happens to contain one of these phrases still cannot escape. The remaining
+#: interpolation is a provider NAME from operator configuration, never log-derived —
+#: length-capped anyway, because everything here can reach a Case field.
+_GATEWAY_AUTHORED_PREFIXES = ("Unknown provider: ",)
+_GATEWAY_AUTHORED_SUFFIXES = (" API key not configured",)
+_GATEWAY_AUTHORED_MAX_CHARS = 120
+
+
+def _gateway_authored_message(exc: BaseException) -> str:
+    """The message verbatim when the gateway itself authored it, else ``""``."""
+    if not isinstance(exc, GatewayError):
+        return ""
+    text = str(exc)
+    if text.startswith(_GATEWAY_AUTHORED_PREFIXES) or text.endswith(
+        _GATEWAY_AUTHORED_SUFFIXES
+    ):
+        return text[:_GATEWAY_AUTHORED_MAX_CHARS]
+    return ""
+
+
+def sanitized_failure_message(failure_class: str, exc: BaseException) -> str:
+    """The operator-safe text for a provider failure. NEVER the provider's body.
+
+    ``ProviderError``'s message embeds up to 300 bytes of the provider's response body
+    (``providers.classify_http_error``), and the gateway's exception message is
+    interpolated by the router into ``TriageResult.reason`` and by the investigator into
+    ``VerdictResult.recommended_action`` — a Case field that the resolved-case RAG
+    projection later renders straight back into a prompt, unfenced. That made an
+    attacker-influenceable response body a durable corpus entry (#9).
+
+    Everything this returns is either one of our own closed-vocabulary literals, a
+    three-digit HTTP status, or one of the GATEWAY-AUTHORED messages allow-listed in
+    :data:`_GATEWAY_AUTHORED_PREFIXES`/:data:`_GATEWAY_AUTHORED_SUFFIXES`. A status code
+    is protocol metadata from a closed numeric range, not authored text, so it carries
+    the diagnosis an operator actually needs (401 vs 429 vs 503) with none of the
+    injection surface a body has.
+    """
+    authored = _gateway_authored_message(exc)
+    if authored:
+        # Our own pre-request text (an unset key, an unknown provider name). Sanitising
+        # it would delete the one message that says which key to set while removing no
+        # provider bytes at all — there are none in it.
+        return authored
+    status = getattr(exc, "status", None)
+    if not isinstance(status, int):
+        response = getattr(exc, "response", None)
+        code = getattr(response, "status_code", None)
+        status = code if isinstance(code, int) else None
+    if isinstance(status, int) and 100 <= status <= 599:
+        return f"provider call failed ({failure_class}, HTTP {status})"
+    return f"provider call failed ({failure_class})"
 
 
 @dataclass(frozen=True)
@@ -163,6 +275,7 @@ class LLMGateway:
         custom_models: Any = None,
         discounted_policy: Callable[[], Any] | None = None,
         provider_health: Any = None,
+        resilience_policy: Callable[[], Any] | None = None,
     ) -> None:
         self._secrets = secrets
         self._usage = usage_store
@@ -197,36 +310,117 @@ class LLMGateway:
         # every direct test construction is unchanged. Advisory only — never read by
         # case_manager.decide() (#3), and it adds no ledger row (#6).
         self._provider_health = provider_health
+        # Live getter for ``Preferences.resilience`` (the circuit-breaker policy).
+        # Optional and defaulted None so every historical/test constructor is unchanged;
+        # when it is absent the tracker runs on its own mirrored defaults, which are
+        # ADVISORY (``enforce`` off) — so an unwired deployment observes and reports but
+        # refuses nothing, which is exactly the shipped posture.
+        self._resilience_policy = resilience_policy
 
     # ------------------------------------------------------------------ #
     # Provider-health bookkeeping. Fail-open by construction: observability
     # must never be able to break a model call.
     # ------------------------------------------------------------------ #
     def _note_provider_success(
-        self, model_cfg: ModelConfig, channel: str = "completion"
+        self, model_cfg: ModelConfig, channel: str = "completion", role: str = ""
     ) -> None:
-        tracker = self._provider_health
+        tracker = self._sync_resilience_policy()
         if tracker is None:
             return
         try:
             tracker.record_success(
-                str(model_cfg.provider), str(model_cfg.model), channel
+                str(model_cfg.provider), str(model_cfg.model), channel, role=str(role)
             )
+        except TypeError:
+            # A duck-typed tracker without the ``role`` keyword. An unexpected-keyword
+            # TypeError is raised at the call boundary BEFORE the body runs, so the
+            # retry cannot double-count; the coarse health signal matters more than the
+            # breaker key. The retry gets its own guard: observability must never be
+            # able to raise into a model call.
+            try:
+                tracker.record_success(
+                    str(model_cfg.provider), str(model_cfg.model), channel
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("provider-health success note failed", exc_info=True)
         except Exception:  # noqa: BLE001 — never let telemetry surface an error
             logger.debug("provider-health success note failed", exc_info=True)
 
     def _note_provider_failure(
-        self, model_cfg: ModelConfig, failure_class: str, channel: str = "completion"
+        self, model_cfg: ModelConfig, failure_class: str, channel: str = "completion",
+        role: str = "",
     ) -> None:
-        tracker = self._provider_health
+        tracker = self._sync_resilience_policy()
         if tracker is None:
             return
         try:
             tracker.record_failure(
-                str(model_cfg.provider), str(failure_class), str(model_cfg.model), channel
+                str(model_cfg.provider), str(failure_class), str(model_cfg.model),
+                channel, role=str(role),
             )
+        except TypeError:
+            try:
+                tracker.record_failure(
+                    str(model_cfg.provider), str(failure_class), str(model_cfg.model),
+                    channel,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("provider-health failure note failed", exc_info=True)
         except Exception:  # noqa: BLE001
             logger.debug("provider-health failure note failed", exc_info=True)
+
+    # ------------------------------------------------------------------ #
+    # Circuit breaker (item D) — SHIPPED IN ADVISORY MODE.
+    # ------------------------------------------------------------------ #
+    def _sync_resilience_policy(self) -> Any:
+        """Point the health tracker at the live operator policy and return it.
+
+        Read per call so a settings change takes effect without reconstructing the
+        gateway, mirroring ``_discounted_policy``. Best-effort in every direction: no
+        tracker, no getter, or a getter that raises all degrade to the tracker running
+        on its own mirrored ADVISORY defaults.
+        """
+        tracker = self._provider_health
+        if tracker is None:
+            return None
+        getter = self._resilience_policy
+        if getter is None:
+            return tracker
+        try:
+            policy = getter()
+        except Exception as exc:  # noqa: BLE001 — a settings read must not drop a call
+            logger.warning("resilience policy read failed (%s); using defaults", exc)
+            return tracker
+        try:
+            tracker.set_policy(policy)
+        except Exception:  # noqa: BLE001
+            logger.debug("resilience policy set failed", exc_info=True)
+        return tracker
+
+    def _breaker_verdict(
+        self, model_cfg: ModelConfig, role: str, channel: str, surface: str
+    ) -> tuple[bool, str, str]:
+        """``(allowed, reason, failure_class)`` for the next call on this key.
+
+        A ``surface="model_test"`` call ALWAYS bypasses the breaker. That surface exists
+        precisely so an operator can verify a credential they just fixed; refusing it
+        while the breaker waits out its jittered timer would make the fix unverifiable
+        and the breaker un-clearable by the one action that should clear it. Its outcome
+        still feeds the window, so a successful test is the probe that closes the key.
+        """
+        tracker = self._sync_resilience_policy()
+        if tracker is None or surface == "model_test":
+            return True, "", ""
+        # ``allows`` is called even in ADVISORY mode (where it always answers True), so
+        # the OPEN → HALF_OPEN clock advances and an operator can watch a full recovery
+        # cycle in the transition log rather than one permanently open key.
+        try:
+            return tracker.allows(
+                str(model_cfg.provider), channel, str(role), str(model_cfg.model)
+            )
+        except Exception:  # noqa: BLE001 — an admission bug must never drop an alert
+            logger.debug("breaker admission failed; allowing", exc_info=True)
+            return True, "", ""
 
     def provider_health_state(self) -> str:
         """The worst active provider-health state, or ``"ok"``.
@@ -399,10 +593,34 @@ class LLMGateway:
         # config carried none, so a role bound to a self-hosted / LiteLLM model routes
         # to the right server. No-op for every model with an explicit / registry base_url.
         model_cfg = await self._resolve_endpoint(model_cfg)
+        # Circuit-breaker admission, immediately after the budget pre-flight and BEFORE
+        # the try: like that pre-flight, a refusal happens before any provider call and
+        # therefore writes NO ledger row (#6 — a call that never happened costs nothing
+        # and must not appear to). It raises a GatewayError subclass, so every existing
+        # handler routes it to NEEDS_HUMAN and it can never close a case (#3). No
+        # provider failure is recorded either: refusing a call is not evidence about the
+        # provider, and counting it would let an open breaker keep itself open.
+        allowed, breaker_reason, breaker_class = self._breaker_verdict(
+            model_cfg, role_str, "completion", surface
+        )
+        if not allowed:
+            logger.warning(
+                "circuit breaker OPEN (role=%s model=%s reason=%s class=%s); "
+                "failing to human without a provider call",
+                role_str, model_cfg.model, breaker_reason, breaker_class or "unknown",
+            )
+            error = BreakerOpen(
+                f"provider circuit breaker open ({breaker_class or breaker_reason})"
+            )
+            error.failure_class = breaker_class or FAILURE_UNAVAILABLE
+            error.breaker_reason = breaker_reason
+            error.breaker_key = f"{model_cfg.provider}:completion:{role_str}:{model_cfg.model}"
+            raise error
         service_tier, fallback_to_standard = self._alert_processing_preference(
             model_cfg, surface
         )
         started = time.perf_counter()
+        reset_attempt_count()
         try:
             provider = self._provider(
                 model_cfg.provider, model=model_cfg.model, endpoint=model_cfg,
@@ -412,23 +630,53 @@ class LLMGateway:
             result = await provider.complete(
                 role_str, messages, model_cfg.model, model_cfg.temperature, model_cfg.max_tokens
             )
+        except asyncio.CancelledError:
+            # The CALLER stopped waiting (its slice of the case time budget, or the
+            # pipeline's hard timeout) for a request that was already in flight. The
+            # provider may well bill it, so #6 requires a row: without one the spend is
+            # invisible to the ledger, the cost page and every budget rollup.
+            #
+            # ``CancelledError`` is a BaseException, so the ``except Exception`` below
+            # never saw it. No provider failure is noted and no breaker key is touched:
+            # our own deadline says nothing about the provider's health.
+            latency = int((time.perf_counter() - started) * 1000)
+            try:
+                await self._record(
+                    role_str, surface, case_id, model_cfg.model, 0, 0, latency,
+                    UsageOutcome.ERROR, failure_class=FAILURE_ABANDONED,
+                    attempts=last_attempt_count(),
+                )
+            except (Exception, asyncio.CancelledError):  # noqa: BLE001 — re-cancelled, or a store glitch
+                logger.warning(
+                    "abandoned LLM call (role=%s model=%s) could not be ledgered",
+                    role_str, model_cfg.model,
+                )
+            raise
         except Exception as exc:  # noqa: BLE001
             latency = int((time.perf_counter() - started) * 1000)
             failure_class = classify_provider_failure(exc)
-            self._note_provider_failure(model_cfg, failure_class)
+            attempts = last_attempt_count()
+            self._note_provider_failure(model_cfg, failure_class, "completion", role_str)
             await self._record(role_str, surface, case_id, model_cfg.model, 0, 0, latency,
-                               UsageOutcome.ERROR)
-            logger.warning("LLM call failed (role=%s model=%s class=%s): %s",
-                           role_str, model_cfg.model, failure_class, exc)
+                               UsageOutcome.ERROR, failure_class=failure_class,
+                               attempts=attempts)
+            logger.warning("LLM call failed (role=%s model=%s class=%s attempts=%d): %s",
+                           role_str, model_cfg.model, failure_class, attempts, exc)
             # Carry the CLOSED-VOCABULARY class on the exception so the pipeline can
-            # name the real cause instead of reporting a downstream time cap. The
-            # message itself is unchanged (callers and tests match on it), and the
-            # provider's own text is never promoted into a label (#9).
-            error = GatewayError(str(exc))
+            # name the real cause instead of reporting a downstream time cap.
+            #
+            # The MESSAGE is sanitised (see ``sanitized_failure_message``), NOT
+            # ``str(exc)``: it is interpolated into Case fields that the precedent
+            # projection renders back into a prompt (#9). Sanitising it HERE fixes every
+            # downstream call site at once and cannot be bypassed by a new one. The full
+            # exception is preserved on the logger call above and as this error's
+            # ``__cause__``, so nothing diagnostic is lost.
+            error = GatewayError(sanitized_failure_message(failure_class, exc))
             error.failure_class = failure_class
             raise error from exc
 
-        self._note_provider_success(model_cfg)
+        attempts = last_attempt_count()
+        self._note_provider_success(model_cfg, "completion", role_str)
         latency = int((time.perf_counter() - started) * 1000)
         model_used = result.model or model_cfg.model
         cache_read = int(getattr(result, "cache_read_tokens", 0) or 0)
@@ -448,7 +696,7 @@ class LLMGateway:
             role_str, surface, case_id, model_used,
             result.prompt_tokens, result.completion_tokens, latency, UsageOutcome.OK, cost,
             cache_read_tokens=cache_read, cache_write_tokens=cache_write, batch=is_batch,
-            processing_tier=processing_tier,
+            processing_tier=processing_tier, attempts=attempts,
         )
         return result
 
@@ -529,12 +777,58 @@ class LLMGateway:
         provider_used = str(model_cfg.provider)
         fallback = False
         fallback_reason = ""
+        embed_role = Role.EMBEDDING.value
+        # The embedding path NEVER raises on an open breaker. Every caller of this
+        # method depends on it returning vectors, and the whole path is built to degrade
+        # to local hashing instead of failing. Refusing would be actively harmful, not
+        # merely unhelpful: queries would be hashed while the PERSISTED corpus stays in
+        # the real embedding space, so retrieval would return NOISE rather than nothing —
+        # degraded precedent, more NEEDS_HUMAN verdicts, and those verdicts render back
+        # into the analyst-baseline block. The breaker would manufacture exactly the
+        # poison it exists to prevent. So an open key short-circuits STRAIGHT to the
+        # fallback with the tripping class as ``fallback_reason``, which is what makes
+        # the existing guards refuse to persist hash-space chunks.
+        allowed, breaker_reason, breaker_class = self._breaker_verdict(
+            model_cfg, embed_role, "embedding", surface
+        )
+        if not allowed:
+            fallback_reason = breaker_class or FAILURE_UNAVAILABLE
+            logger.error(
+                "Embedding provider circuit breaker OPEN (reason=%s class=%s) for "
+                "model=%s; retrieval is degraded to local hash embeddings and NO chunk "
+                "will be persisted in that space",
+                breaker_reason, fallback_reason, model_cfg.model,
+            )
+            # No provider call happened, so no ERROR ledger row is written for one and
+            # no provider failure is recorded (#6). The mock fallback's own OK row below
+            # is the single row this call produces, exactly as on any fallback.
+            result = await self._mock_fallback.embed(texts, "mock-embed")
+            provider_used = "mock"
+            model_used = "mock-embed"
+            latency = int((time.perf_counter() - started) * 1000)
+            cost = (
+                _demo_synthetic_cost(result.tokens, 0)
+                if self._demo
+                else cost_for(model_used, result.tokens, 0,
+                              await self._effective_price_tuple(model_used))
+            )
+            await self._record(embed_role, surface, case_id, model_used,
+                               result.tokens, 0, latency, UsageOutcome.OK, cost,
+                               failure_class=fallback_reason)
+            return EmbeddingBatch(
+                vectors=result.vectors,
+                provider=provider_used,
+                model=model_used,
+                fallback=True,
+                fallback_reason=fallback_reason,
+            )
+        reset_attempt_count()
         try:
             provider = self._provider(model_cfg.provider, for_embedding=True,
                                        model=model_cfg.model, endpoint=model_cfg)
             result = await provider.embed(texts, model_cfg.model)
             model_used = model_cfg.model
-            self._note_provider_success(model_cfg)
+            self._note_provider_success(model_cfg, "embedding", embed_role)
         except Exception as exc:  # noqa: BLE001
             fallback_reason = classify_provider_failure(exc)
             if fallback_reason == FAILURE_NOT_CONFIGURED:
@@ -554,13 +848,17 @@ class LLMGateway:
                     "space: %s",
                     fallback_reason, model_cfg.model, exc,
                 )
-            self._note_provider_failure(model_cfg, fallback_reason, "embedding")
+            self._note_provider_failure(
+                model_cfg, fallback_reason, "embedding", embed_role
+            )
             # Record the provider failure so the ledger shows the outage, then fall
             # back to local hashing so RAG keeps working (graceful degradation).
-            await self._record(Role.EMBEDDING.value, surface, case_id,
+            await self._record(embed_role, surface, case_id,
                                model_cfg.model, 0, 0,
                                int((time.perf_counter() - started) * 1000),
-                               UsageOutcome.ERROR, 0.0)
+                               UsageOutcome.ERROR, 0.0,
+                               failure_class=fallback_reason,
+                               attempts=last_attempt_count())
             result = await self._mock_fallback.embed(texts, "mock-embed")
             provider_used = "mock"
             model_used = "mock-embed"
@@ -575,8 +873,10 @@ class LLMGateway:
         else:
             cost = cost_for(model_used, result.tokens, 0,
                             await self._effective_price_tuple(model_used))
-        await self._record(Role.EMBEDDING.value, surface, case_id, model_used,
-                           result.tokens, 0, latency, UsageOutcome.OK, cost)
+        await self._record(embed_role, surface, case_id, model_used,
+                           result.tokens, 0, latency, UsageOutcome.OK, cost,
+                           failure_class=fallback_reason,
+                           attempts=last_attempt_count())
         return EmbeddingBatch(
             vectors=result.vectors,
             provider=provider_used,
@@ -688,6 +988,8 @@ class LLMGateway:
         processing_tier: str | None = None,
         idempotency_key: str | None = None,
         require_persistence: bool = False,
+        failure_class: str = "",
+        attempts: int = 1,
     ) -> None:
         total = prompt_tokens + completion_tokens
         # Demo Mode: a $0 mock run — pricing_source is ALWAYS 'zero' (the cost is
@@ -729,6 +1031,11 @@ class LLMGateway:
             batch=bool(batch),
             processing_tier=(processing_tier or ("batch" if batch else "standard")),
             idempotency_key=idempotency_key,
+            # Closed-vocabulary provenance for this row (never provider text, #9):
+            # WHY it failed and how many attempts it took. Both are additive and
+            # defaulted, so #6 still holds — one row per call, just a wider row.
+            failure_class=str(failure_class or ""),
+            attempts=max(1, int(attempts or 1)),
         )
         if require_persistence:
             await self._usage.write_strict(doc)

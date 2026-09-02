@@ -183,6 +183,11 @@ function ScalarField({
               id={id}
               aria-describedby={describedBy}
               type={numeric ? 'number' : 'text'}
+              // The bounds the backend actually declares, so a generic control cannot
+              // offer a value the settings PUT will reject with a 422. Omitted when the
+              // field declares none — never invented here.
+              min={numeric ? field.minimum : undefined}
+              max={numeric ? field.maximum : undefined}
               step={field.type === 'integer' ? 1 : 'any'}
               value={value == null ? '' : String(value)}
               onChange={(e) => {

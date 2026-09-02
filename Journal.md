@@ -10637,6 +10637,75 @@
   `scripts/check_version.py` consistent; ruff E9/F63/F7/F82 clean;
   `deploy/docker-compose.agnostic.yml` zero-line diff (byte-pinned).
   **#3 re-verified: `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` unchanged.**
-- Status: done for E+G3, C, H. 15 of 15 brief items are now built; D, A, B, I remain unstarted.
+- Status: done for E+G3, C, H. 12 of 15 brief items are now built; D, A, B, I remain unstarted.
 - Next: D (provider circuit breaker, advisory-mode-first), A (caps bounds + the NumPref zero bug),
   B (corpus repair), I (replay harness).
+
+### 2026-09-02 00:20Z — orchestrator + 37-agent workflow — Items D, A, B (breaker, caps bounds, corpus repair)
+- Context: Brief B items D (provider circuit breaker), A (caps bounds + the NumPref zero-on-clear bug),
+  and B (operator-facing precedent corpus repair). Built as one wave: three disjoint implementers in
+  parallel, then 5 review lenses, per-finding adversarial refutation (default refuted), then a fix pass.
+- Did:
+  - **D — circuit breaker, SHIPPED IN ADVISORY MODE.** New `ResilienceConfig` (`enabled=True` observation,
+    `enforce=False` — an open breaker refuses nothing until an operator opts in). The window is
+    COUNT-based, never time-based: a 120s time window is unreachable at ~34 calls/hour, so the breaker
+    would be dead code exactly where an outage hurts. Keyed on `(provider, channel, role, model)` with a
+    coarse `(provider, channel)` key alongside — the fine key owns the failure RATE, the coarse key owns
+    terminal-class immediate trips, and they never borrow each other's evidence. Resilience4j semantics
+    with the published defaults (50% threshold, 60s open wait) and two documented adaptations: 20/10
+    window/quorum rather than 100/100, and `half_open_successes=2`. Immediate trip on `unauthenticated`
+    and `quota` ONLY — `unsupported` is excluded on purpose (a refused call writes no ledger row, erasing
+    the only durable evidence of an operator typo). `BreakerOpen` subclasses `GatewayError` so all six
+    existing handlers still route it to NEEDS_HUMAN (#3). Embeddings NEVER raise: an open key
+    short-circuits to the hash fallback, because refusing there manufactures retrieval noise.
+  - **D also closed a #9 leak the brief did not name.** `GatewayError(str(exc))` spliced up to 300 bytes
+    of provider response BODY into a message the router interpolates into `TriageResult.reason` and the
+    investigator into `VerdictResult.recommended_action` — Case fields the resolved-case RAG projection
+    renders back into a prompt UNFENCED. Sanitised at the gateway (closed vocabulary + HTTP status), which
+    fixes every existing interpolation and every future one and cannot be bypassed by a new call site.
+  - **A — caps bounds that cannot destroy the operator config.** `ge=1` alone would have been a
+    regression: both preference loaders answer any validation error with a full default `Preferences()`,
+    which carries `auto_close` — the policy `decide()` consumes. So a mandatory `mode="before"` clamping
+    validator repairs an out-of-range STORED value up to its floor and logs it, while `PUT /api/settings`
+    rejects a below-floor value in the REQUEST BODY with 422. No upper bound.
+  - **A — the formatter time reserve was `min(request_timeout, span/2)`, which binds EXACTLY at the
+    shipped defaults**, making half of every configured 120s timeout unreachable and downgrading real
+    verdicts to NEEDS_HUMAN. Now `min(request_timeout, 0.15 x span)` plus a measured viability floor: the
+    loop refuses to start a request under a slice shorter than the longest request this same case has
+    already completed. An issued-then-cancelled call now writes exactly one `UsageDoc` under a new
+    NON-provider class `abandoned` — #6 restored without letting our own deadlines feed the breaker.
+  - **A — the NumPref zero-on-clear bug, one line.** `commit()` resolved an empty field to `(min ?? 0)`,
+    so clearing any min-less numeric preference and blurring wrote a literal 0. An empty field now
+    restores the current value and fires `onChange` zero times.
+  - **B — framing correction first, and it is in the code and the docs in these words:** reprojection is
+    NOT the repair. The projection pages the case store newest-first, so a rebuild RE-SELECTS the same
+    bulk-confirmed cases; on the motivating deployment the qualifying pool was more verdict-skewed than
+    the window drawn from it, so no selection policy over that pool restores a healthy corpus. What B
+    ships is VISIBILITY (a zero-spend composition dry-run reporting the JOINT outcome x verdict cross-tab,
+    never the marginals alone — per-outcome counts read 198/2 "pristine" while the corpus was actively
+    poisoning the model), a LEGIBLE refusal (a deliberate window-size reduction is no longer reported as a
+    generic collapse; the zero-projection refusal stays unconditional and untunable), and a durable
+    case-scoped EXCLUSION path so a force-deleted precedent is not re-derived by the next projection.
+- Verified myself on a quiet tree (not trusting the agents' reports):
+  backend `3292/3295 collected, 3 deselected, exit 0, zero failures` (fork point 03754b3 was 3153 —
+  the wave adds 142 tests); webui `test:strict` 316 files / 2246 passed, zero stderr; eslint 0 errors
+  0 warnings; design gates 6/6; `check:types` no drift; `check_version.py` consistent (app 0.1.13,
+  docs 0.1); ruff E9,F63,F7,F82 clean; portability lint 3 passed.
+  `case_manager.py` md5 `212873cd13d822a7b64752635285ff1f` (unchanged); `risk.py`, `signatures.py` and
+  `deploy/docker-compose.agnostic.yml` zero-line diff.
+- Review: 28 candidate findings across 5 lenses; 17 survived adversarial refutation and were all fixed
+  (11 refuted with reproduction evidence). The highest-value catches were an idle-gap vs per-sample
+  ageing bug that reintroduced the volume dependency the count window exists to remove, a 21st-sample
+  off-by-one between the trip decision and the reported rate, and a legacy reconciliation that skipped
+  excluded cases — which removed the only handle the delete had.
+- Status: done — ready to rebase onto current `Testing` and open a PR.
+- Next: Item I (replay harness) is building in an isolated worktree; it is the last outstanding item.
+
+### 2026-09-02 00:20Z — orchestrator — process note: the wrong baseline was handed to two waves
+- Context: I put "baseline is 3258 passed" into the Item I and Wave 7 agent prompts.
+- Did: That number was the count ON THE #106 BRANCH, not on `origin/Testing @ 03754b3` where both waves
+  forked. The Item I implementer caught it and verified the real fork point in a throwaway worktree:
+  3153 collected. Recorded the corrected ladder so no reviewer treats a correct count as a regression.
+- Tests: n/a.
+- Status: done.
+- Next: verify counts against the ACTUAL fork point, never against a sibling branch's post-change total.

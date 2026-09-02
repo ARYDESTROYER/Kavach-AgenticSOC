@@ -414,6 +414,91 @@ and, just as importantly, makes each of these conditions a state an operator can
   keyed off the bundled set, a shadowed id fails closed with the read-only error, and
   the displacement is reported in the reload summary (`shadowed_by_bundled`) and on the
   entry itself (`shadowed_operator_document`) instead of only in a log line.
+- **A degraded model provider no longer costs an investigation its reasoning, and can
+  no longer spend the whole case budget on one request.** Each investigator model call
+  is now bounded by `min(caps.request_timeout_seconds, the case time actually left)`,
+  and the ReAct loop stops COOPERATIVELY — so the partial reasoning reaches the VERDICT
+  audit row and the spend lands on the normal return path instead of being reconstructed
+  from the timeout side-channel. The reserve held back for the closing formatter call is
+  a small fraction of the case budget (15%, itself clamped by the configured per-request
+  timeout), NOT one whole per-request slice: at the shipped defaults the latter came to
+  exactly half of `caps.timeout_seconds`, which would have made half of every
+  operator-configured timeout unreachable. The loop also declines to START a request
+  under a slice shorter than the longest request the same case has already completed,
+  because a request that is issued and then abandoned costs real provider spend and
+  returns no reasoning. Whatever the loop stops on, the verdict is NEEDS_HUMAN, which
+  never auto-closes (#3 untouched).
+- **A request that was issued and then abandoned still reaches the usage ledger.**
+  `asyncio.CancelledError` is a `BaseException`, so a cancelled provider call slipped
+  past the gateway's error handling and wrote no `UsageDoc` at all — provider spend
+  invisible to the cost page and to every budget rollup. It is now recorded once, with
+  the deliberately non-provider failure class `abandoned`: stopping a call is our
+  decision, not evidence about the provider, so it never feeds the health tracker or the
+  circuit breaker (#6 restored without polluting the provider failure vocabulary).
+- **An out-of-range `caps` value in a settings request is rejected, not silently
+  rewritten.** `PUT /api/settings` carrying `caps.timeout_seconds = 0` answered 200 and
+  stored 1 — a value the operator never typed and just as unusable as the one they meant
+  to reject — because the repair validator that keeps an already-stored document loadable
+  runs before any field constraint can fire. The request body is now checked against the
+  declared floors and answers 422, while a STORED document is still repaired rather than
+  reverting the whole `Preferences` document. `GET /api/settings/schema` also publishes
+  each declared `minimum`/`maximum`, so the schema-driven Advanced settings renderer can
+  bound a control instead of learning the floor from a rejection.
+- **The provider circuit breaker scores the evidence it actually holds.** The trip
+  evaluation read a stale, pre-trim alias of the outcome ring, so a single failure after
+  an idle gap could open a key whose quorum is ten — logging a transition that reported
+  `samples=1` against a policy declaring `minimum_calls: 10` — while the 21st sample was
+  scored over 21 entries rather than the 20 the ring keeps. `outcome_max_age_seconds` is
+  also now an IDLE-GAP bound rather than a per-sample expiry: expiring each sample drained
+  the ring faster than a modest deployment filled it, making the failure-rate arm dead
+  code below roughly 240 calls a day per key — the exact volume dependency a COUNT window
+  exists to remove. Evidence is aged on READ as well as on write, so a decommissioned
+  provider/model/role key drains and clears itself instead of naming an outage nobody can
+  clear; a drained key never clears before its OPEN wait has elapsed.
+- **`Preferences.resilience` is actually read.** The block was persisted, published in
+  the settings schema and rendered as live controls, while nothing passed it to the
+  health tracker: `enforce` did not enforce, every size was ignored, and
+  `/api/diagnostics/health` reported a policy the operator never configured. A
+  default-constructed block is byte-identical to the mirrored defaults and leaves
+  `enforce` off, so a deployment that never edits it is unchanged.
+- **One rate-limited provider call can no longer park a worker for the whole case
+  budget.** `RETRY_AFTER_MAX_SECONDS` clamped each individual sleep but not their sum, so
+  an ordinary `Retry-After: 60` cost `(attempts - 1) x 60s` — 120s at the default three
+  attempts, the entire default `caps.timeout_seconds`, and an interactive chat turn has
+  no case budget to be cut off by at all. The budget is now cumulative over the call.
+- **An unset API key says which key to set again.** Sanitising the gateway's failure
+  message (which exists to keep attacker-influenceable provider response bodies out of
+  Case fields and therefore out of prompts, #9) also flattened the gateway's OWN
+  pre-request messages, so the model-test dialog answered "provider call failed
+  (not_configured)". Those three literals contain no provider bytes and now pass through;
+  a provider body echoing one of them still cannot, because the allowlist matches our own
+  exception type as well as our own text.
+- **Excluding a precedent case now removes it, or says it did not.** The removal was
+  reported `complete: true` whenever the fail-soft delete returned "not found" — which is
+  also what it returns when the store RAISED, so a store outage read as a finished
+  removal while the precedent stayed in the corpus and kept being retrieved into prompts.
+  Completeness is verified by re-reading, and fails closed. Precedent still held under the
+  pre-fix shared `seed:resolved_case` grouping is converged onto its per-case document
+  instead of being skipped, which was the only handle the delete had — skipping it made
+  the exclusion a permanent no-op that a re-issue and a full rebuild could not finish.
+  And retrieval now filters excluded cases as a backstop, so a chunk that could not be
+  deleted still cannot reach a prompt.
+- **An unreadable exclusion store no longer means "nothing is excluded".** On a process
+  that had never held the set — a cold start whose first read failed — the empty
+  in-memory set was treated as an empty DENY LIST, so the next projection re-derived
+  every excluded precedent; because `resolved_case` is exempt from the stale sweep, those
+  chunks then survived a full `rebuild_corpus()` and the exclusion silently undid itself.
+  "Unknown" is now distinguished from "stale but known": a projection that cannot know
+  leaves the existing corpus untouched, and the single-case producers derive nothing
+  rather than everything. A process that has read the set once still keeps its last
+  known-good copy and projects normally.
+- **The investigation-progress stream reaches a rendered surface.** The client listened
+  on `agent`, a channel nothing has ever published (the pipeline publishes `agent.step`),
+  and after the name was corrected every subscribed component still dropped the frame.
+  `CaseActivityFeed` now draws in-flight agent steps as transient rows above the
+  persisted timeline, on the SAME subscription the activity nudge already uses — one
+  socket per case room. The steps are a narration: nothing is decided from them, and the
+  authoritative case record still comes from the API.
 
 ### Added
 

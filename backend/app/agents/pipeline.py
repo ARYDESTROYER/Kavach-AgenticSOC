@@ -216,9 +216,9 @@ class InvestigationPipeline:
         it regardless)."""
         try:
             bus = self.event_bus
-            if bus is None:
-                from ..realtime import get_event_bus
+            from ..realtime import AGENT_STEP_EVENT, get_event_bus
 
+            if bus is None:
                 bus = get_event_bus()
             if bus is None or not case_id:
                 return
@@ -227,7 +227,10 @@ class InvestigationPipeline:
                 payload["detail"] = truncate(str(detail), 200)
             if extra:
                 payload.update(extra)
-            bus.publish(f"cases:{case_id}", "agent.step", payload)
+            # The channel name comes from the ONE registry in ``realtime`` — a literal
+            # here is exactly how the client and the producer drifted apart before
+            # (the client listened on ``agent``, which nothing ever published).
+            bus.publish(f"cases:{case_id}", AGENT_STEP_EVENT, payload)
         except Exception as exc:  # noqa: BLE001 — realtime is advisory; never break the flow
             logger.debug("agent.step publish skipped for %s: %s", case_id, exc)
 
@@ -681,6 +684,28 @@ class InvestigationPipeline:
                 # under-count vs the ledger). It is a side-channel for the timeout path
                 # ONLY: the normal path uses the returned flow_cost (sum is identical).
                 cost_accum: list[float] = []
+                # Stamp the case TIME budget HERE — at the ``wait_for`` site — and not at
+                # ``CaseBudget`` construction: construction happens before enrichment,
+                # persona/playbook selection and the platform-tuning snapshot, so a
+                # deadline stamped there would already be partly spent when this clock
+                # starts and the two clocks would disagree. With it stamped, the ReAct
+                # loop bounds each model request by ``min(caps.request_timeout_seconds,
+                # time actually left)`` and stops COOPERATIVELY a small reserved slice
+                # early, so a degraded provider no longer costs the accumulated
+                # reasoning. The outer ``wait_for`` below remains the hard backstop.
+                #
+                # HONEST ABOUT THE COST: for a run that would have blown the case cap
+                # anyway the outcome is identical (NEEDS_HUMAN either way). Stopping
+                # before the cap can also end a run that would have reached a verdict, so
+                # the reserve is a small FRACTION of the case rather than a whole
+                # per-request slice, and the loop only declines to start a request when
+                # the slice left is shorter than one this case has already completed.
+                # Whatever it stops on, the verdict is NEEDS_HUMAN — which never
+                # auto-closes, so #3 is untouched in either direction.
+                budget.start(
+                    timeout_seconds=prefs.caps.timeout_seconds,
+                    request_timeout_seconds=prefs.caps.request_timeout_seconds,
+                )
                 try:
                     verdict, flow_cost = await asyncio.wait_for(
                         run_investigation(

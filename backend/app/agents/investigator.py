@@ -9,6 +9,7 @@ spend (Section 6.3 #4). ANY failure returns NEEDS_HUMAN — never a dropped aler
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -229,14 +230,50 @@ class Investigator:
             max_steps = prefs.caps.max_tool_calls + 3
 
             for _step in range(max_steps):
-                if budget.exceeded():
+                # Token/tool/kill-switch caps AND the case TIME budget. The time check
+                # stops the loop COOPERATIVELY — before the outer ``asyncio.wait_for`` in
+                # the pipeline would cancel this coroutine outright, and before the slice
+                # left would be too short for a request that could actually finish.
+                #
+                # For a run that would have exceeded the case cap anyway the decision is
+                # unchanged (the draft is still None, so it is the same NEEDS_HUMAN a
+                # hard cancellation produces) and what it buys is that the accumulated
+                # reasoning reaches the VERDICT audit row and the spend lands on the
+                # normal return path. It is NOT a no-op in general: stopping earlier than
+                # the cap ends a run that might have reached a verdict, which is why the
+                # reserve is a small fraction of the case rather than a whole per-request
+                # slice, and why the viability floor is measured from this case's own
+                # completed calls instead of guessed.
+                if budget.exceeded() or budget.time_exhausted():
                     reasoning += f"\n[capped] {budget.capped_reason}"
                     break
+                # Bound THIS request by the configured per-request timeout, itself bounded
+                # by the case time actually left. ``None`` == nothing configured and no
+                # deadline stamped, i.e. the pre-change behaviour (the provider client's
+                # own timeout is then the only bound).
+                request_timeout = budget.request_timeout()
+                request_started = budget.request_started()
                 try:
-                    res = await self._gateway.complete(
+                    call = self._gateway.complete(
                         Role.INVESTIGATOR, messages, model_cfg,
                         surface=surface, case_id=case_id,
                     )
+                    if request_timeout is None:
+                        res = await call
+                    else:
+                        res = await asyncio.wait_for(call, timeout=request_timeout)
+                    # How long a COMPLETED request took on this deployment. It is the
+                    # budget's only evidence for refusing to dispatch a later request
+                    # under a slice that demonstrably cannot hold one.
+                    budget.note_request(request_started)
+                except asyncio.TimeoutError:
+                    # One request outran its slice of the case budget. Stop the loop the
+                    # same cooperative way a cap does, so the partial reasoning survives.
+                    reasoning += (
+                        f"\n[capped] model request exceeded its "
+                        f"{round(request_timeout or 0.0, 3)}s slice of the case time budget"
+                    )
+                    break
                 except GatewayError as exc:
                     # Name the CLASS of provider fault (an expired key, an exhausted
                     # quota) rather than only the raw message, so the operator-visible

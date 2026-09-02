@@ -105,10 +105,10 @@ the exact request model and every operation under a prefix.
 | Workspace | `POST /api/chat`, `/api/chat/conversations*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat with per-user history, entity investigation, cross-surface search, scan queues, and personas |
 | Detection and automation | `/api/rules*` (including `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
 | Playbooks | `GET/POST /api/playbooks`, `GET/PUT /api/playbooks/{playbook_id}`, `POST /api/playbooks/reload`, `/dry-run`, `GET /coverage`, `/selection/{case_id}`, `POST /api/cases/{case_id}/run-playbook` | Durable catalog/open/edit, deterministic diagnostics and coverage, selection provenance, and case execution |
-| Knowledge and memory | `/api/rag/*`, `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, manage operator memory, and manage protected/owned runbooks |
+| Knowledge and memory | `/api/rag/*` (including `/api/rag/precedent/composition` and `/api/rag/precedent/exclusions*`), `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, inspect precedent composition, evict individual precedent records durably, manage operator memory, and manage protected/owned runbooks |
 | Enrichment and MITRE | `/api/enrichment/*`, `/api/mitre/coverage*`, `GET /api/cases/{case_id}/threat-context` | IOC enrichment, provider configuration, ATT&CK coverage, and Navigator export |
 | Dashboards and metrics | `/api/dashboards*`, `/api/metrics*`, `/api/feedback/stats`, `/api/usage/summary`, `/api/cost/estimate` | Personal dashboards, posture/noise/improvement metrics, usage, feedback, and cost estimates |
-| Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface, including the per-rule precedent distribution and futility findings |
+| Agent health diagnostics | `GET /api/diagnostics/health`, `GET /api/diagnostics/precedent-composition`, `GET /api/metrics/auto-close-health` | Permission-separated precedent/migration and auto-close evidence for the range-aware Effectiveness surface, including the per-rule precedent distribution, futility findings, and the zero-cost corpus composition report |
 | Standup and handoff | `/api/standup*` | Shift report, acknowledgements, and action items |
 | Notifications | `/api/notifications/providers`, `/channels/*`, `/preview`, `/test`, `/prefs`, `/inbox*` | Channel catalog/secrets, safe previews, tests, per-user preferences, and in-app inbox |
 | Application background jobs | `POST/GET /api/jobs`, `GET /api/jobs/{job_id}`, `POST /cancel`, `GET /artifact` | Self-scoped durable work, progress, cooperative cancellation, bounded failures, result projections, and verified retained artifacts |
@@ -279,6 +279,40 @@ decisions return `409`, storage failures remain visible/retryable, and a trusted
 Memory approval succeeds only after confirmed persistence. Approve and reject both
 require strict append-only control-audit evidence keyed by proposal id before final
 status, so an unavailable audit ledger fails closed and a retry reuses the same row.
+
+## Precedent corpus composition and exclusion
+
+`GET /api/rag/precedent/composition` (`rag:read`) and
+`GET /api/diagnostics/precedent-composition` (`settings:read`) report the same read-only
+composition: the precedent corpus as it stands beside the projection a rebuild would
+produce. Both are seed-free and cost zero embedding calls — the payload states so
+explicitly with `embedding_calls: 0`.
+
+Each half cross-tabulates the analyst-confirmed `outcome` against the model's own
+`verdict` (`outcome_by_verdict`) as well as reporting each marginal, per-rule counts, and
+chunk/document totals. The joint distribution is the point: per-outcome counts alone read
+clean on a corpus that is unanimously `false_positive` and also unanimously
+`needs_human`. `projected.pool` reports the qualifying population the bounded window was
+drawn from, its own composition, and whether the bounded scan completed, so a window
+drawn from an equally skewed pool — which no reprojection can repair — is visible.
+`projected.admission` reports how much of the window one operator transaction occupies.
+`rebuild_corpus(dry_run=true)` returns the same report and changes nothing.
+
+`POST /api/rag/precedent/exclusions` (`rag:manage`) durably excludes cases from the
+precedent projection and deletes their records in the same operation, so an eviction is
+not undone by the next projection. `GET` lists the set with per-rule and per-reason
+breakdowns (`rag:read`); `DELETE /api/rag/precedent/exclusions/{case_id}` removes a
+marker, after which the record is re-derived on the next projection. Selection uses
+projection metadata keys only. Exclusions never modify case ground truth, are bounded
+relative to the configured precedent window, and are audited in both directions, as are
+knowledge-document deletes.
+
+`GET /api/diagnostics/health` reports the exclusion set inside `precedent_corpus`,
+subtracts excluded cases from the reconciliation's qualifying-record count, and reports a
+corpus emptied by exclusions as `operator_excluded` rather than `starved`. A refused
+projection attributable to a deliberate precedent-window reduction is reported as a
+warning with `reason_code: window_size_reduction`, not as a critical corpus loss; a
+projection that would reach zero is refused unconditionally and no setting changes that.
 
 ## Analyst-confirmed precedent evidence
 

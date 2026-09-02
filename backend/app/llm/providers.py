@@ -8,11 +8,14 @@ text + token counts. This keeps the swap-in seam (LiteLLM/vLLM) trivial.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import random
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -28,13 +31,95 @@ logger = logging.getLogger("tlsoc.llm.providers")
 # jitter, so the gateway sees a clean exception either way (it still writes the ONE
 # error usage row + raises GatewayError on final failure — #6 is untouched).
 # --------------------------------------------------------------------------- #
-class ProviderError(RuntimeError):
-    """A provider-call failure carrying whether it is retryable + an HTTP status."""
+#: Hard ceiling on how long a provider-supplied ``Retry-After`` may make us wait.
+#:
+#: ``Retry-After`` is PROVIDER-CONTROLLED input that we would otherwise use directly as
+#: a sleep duration, so it is clamped like any other untrusted value: a hostile or
+#: buggy ``Retry-After: 86400`` must not be able to park an ingest worker for a day.
+#: The clamp doubles as the signal that separates a burst from a wall — see
+#: :func:`with_retry`. 60s is the common upper bound of per-minute rate-limit windows
+#: published by the major inference APIs; anything beyond it is a longer quota window
+#: than a live investigation can usefully wait out.
+#:
+#: It bounds the WHOLE call, not each sleep. Clamping only the individual sleep leaves
+#: the total at ``(attempts - 1) x 60s``: an ordinary ``Retry-After: 60`` would then park
+#: one ``gateway.complete()`` for 120s at the default 3 attempts — the entire default
+#: ``caps.timeout_seconds`` — so a single rate-limited router call would consume the
+#: whole case budget, and an interactive chat turn would block for two minutes.
+RETRY_AFTER_MAX_SECONDS = 60.0
 
-    def __init__(self, message: str, *, retryable: bool, status: int | None = None) -> None:
+#: Attempts actually made by the innermost :func:`with_retry` on the current task.
+#:
+#: A task-local rather than a return value: threading an attempt count through every
+#: provider's response plumbing would touch every call site for one ledger column.
+#: ``ContextVar`` is copied per asyncio Task, so two concurrent gateway calls cannot
+#: read each other's count, and a single task always reads the call it just awaited.
+_ATTEMPTS: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "tlsoc_provider_attempts", default=1
+)
+
+
+def reset_attempt_count() -> None:
+    """Arm the attempt counter before a provider call."""
+    _ATTEMPTS.set(1)
+
+
+def last_attempt_count() -> int:
+    """Attempts made by the most recent provider call on this task (>= 1)."""
+    try:
+        return max(1, int(_ATTEMPTS.get(1)))
+    except Exception:  # noqa: BLE001 — a ledger column must never break a call
+        return 1
+
+
+def parse_retry_after(value: Any, *, now: "datetime | None" = None) -> float | None:
+    """Parse an RFC 9110 §10.2.3 ``Retry-After`` into seconds, or ``None``.
+
+    Both forms are accepted: ``delta-seconds`` (an integer) and an HTTP-date. The
+    result is a raw, UNCLAMPED hint — the caller decides what it is willing to wait
+    (see :data:`RETRY_AFTER_MAX_SECONDS`). Total by construction: any unparseable or
+    hostile value yields ``None`` rather than an exception or a nonsense duration.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(int(text)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    return max(0.0, (parsed - reference).total_seconds())
+
+
+class ProviderError(RuntimeError):
+    """A provider-call failure carrying whether it is retryable + an HTTP status.
+
+    ``retry_after`` is the provider's own (unclamped) hint in seconds when it sent one.
+
+    Retry PROVENANCE — ``attempts`` and ``retry_spent`` — is deliberately NOT set in
+    ``__init__``. :func:`with_retry` stamps it on the instance it re-raises, so the
+    presence of the attribute means "this error came out of a bounded retry budget"
+    and its absence means "no retry budget was involved". The gateway's classifier
+    relies on that distinction to decide whether an HTTP 429 is an exhausted quota or
+    an un-retried burst, and a default in ``__init__`` would erase it.
+    """
+
+    def __init__(self, message: str, *, retryable: bool, status: int | None = None,
+                 retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+        self.retry_after = retry_after
 
 
 def classify_http_error(exc: Exception) -> ProviderError:
@@ -54,10 +139,23 @@ def classify_http_error(exc: Exception) -> ProviderError:
             body = exc.response.text[:300]
         except Exception:  # noqa: BLE001
             body = ""
-        return ProviderError(f"HTTP {status}: {body}".strip(), retryable=retryable, status=status)
+        retry_after = None
+        try:
+            retry_after = parse_retry_after(exc.response.headers.get("retry-after"))
+        except Exception:  # noqa: BLE001 — a malformed header is just no hint
+            retry_after = None
+        return ProviderError(f"HTTP {status}: {body}".strip(), retryable=retryable,
+                             status=status, retry_after=retry_after)
     if isinstance(exc, httpx.TransportError):
         return ProviderError(f"transport error: {exc}", retryable=True)
     return ProviderError(str(exc), retryable=False)
+
+
+def _stamp_retry_provenance(error: ProviderError, *, attempts: int, spent: bool) -> ProviderError:
+    """Record how much of the retry budget this failure actually consumed."""
+    error.attempts = max(1, int(attempts))
+    error.retry_spent = bool(spent)
+    return error
 
 
 async def with_retry(coro_factory, *, attempts: int = 3, base_delay: float = 0.5,
@@ -65,25 +163,80 @@ async def with_retry(coro_factory, *, attempts: int = 3, base_delay: float = 0.5
     """Await ``coro_factory()`` with capped exponential backoff + jitter, retrying
     ONLY the retryable error class (see :func:`classify_http_error`). Re-raises the
     last :class:`ProviderError` on exhaustion. ``coro_factory`` is a 0-arg callable
-    returning a fresh coroutine each attempt (so the request can be re-issued)."""
+    returning a fresh coroutine each attempt (so the request can be re-issued).
+
+    Two additions the circuit breaker depends on:
+
+    * **``Retry-After`` is honoured as a CLAMPED DELAY HINT, never as a verdict.** When
+      the provider tells us how long to wait we wait that long (bounded by
+      :data:`RETRY_AFTER_MAX_SECONDS`) instead of our own much shorter backoff, which
+      previously burned the whole budget inside the rate-limit window and guaranteed
+      the call failed. When the hint EXCEEDS the ceiling the wait is not a burst but a
+      wall, so we stop retrying immediately and report the budget as spent — retrying
+      into a window we are not willing to wait out is pure waste.
+    * **The retry budget is CUMULATIVE.** :data:`RETRY_AFTER_MAX_SECONDS` bounds the sum
+      of every wait this call makes, not each wait in isolation, so the total blocking
+      time of one logical completion is bounded however many attempts it is given and
+      whatever the provider asks for. Reaching the bound is reported the same way a wall
+      is: the budget is SPENT.
+    * **Retry provenance is stamped on the raised error** (``attempts`` /
+      ``retry_spent``) so the gateway can tell an exhausted quota from a first-attempt
+      rate-limit, and so the usage ledger can record what the call actually cost in
+      attempts.
+    """
     last: ProviderError | None = None
-    for attempt in range(max(1, attempts)):
+    budget = max(1, attempts)
+    waited = 0.0
+    for attempt in range(budget):
+        _ATTEMPTS.set(attempt + 1)
         try:
             return await coro_factory()
         except ProviderError as pe:
             last = pe
-            if not pe.retryable or attempt == attempts - 1:
-                raise
         except Exception as exc:  # noqa: BLE001 — normalise any httpx error
             pe = classify_http_error(exc)
             last = pe
-            if not pe.retryable or attempt == attempts - 1:
-                raise pe from exc
-        delay = min(max_delay, base_delay * (2 ** attempt)) * (0.5 + random.random())
-        logger.info("provider call retry %d/%d in %.2fs (%s)", attempt + 1, attempts, delay, last)
+            if not pe.retryable or attempt == budget - 1:
+                raise _stamp_retry_provenance(
+                    pe, attempts=attempt + 1, spent=attempt >= 1
+                ) from exc
+        # Reached only when a ProviderError was caught above (the success path returns).
+        if not last.retryable or attempt == budget - 1:
+            # ``spent`` is "we actually paid for a retry and it still failed", NOT "the
+            # loop finished". A single-attempt budget never tested whether a wait would
+            # have cleared the condition, so calling that an exhausted quota would be
+            # exactly the over-claim this provenance exists to prevent.
+            raise _stamp_retry_provenance(
+                last, attempts=attempt + 1, spent=attempt >= 1
+            )
+        hint = getattr(last, "retry_after", None)
+        if isinstance(hint, (int, float)) and hint > RETRY_AFTER_MAX_SECONDS:
+            # A wall, not a burst. Report the budget as SPENT: we are declining to wait
+            # it out, and the condition is exactly the sustained refusal the breaker's
+            # terminal classes describe.
+            logger.info(
+                "provider Retry-After %.0fs exceeds the %.0fs budget; not retrying",
+                float(hint), RETRY_AFTER_MAX_SECONDS,
+            )
+            raise _stamp_retry_provenance(last, attempts=attempt + 1, spent=True)
+        if isinstance(hint, (int, float)) and hint >= 0:
+            delay = min(RETRY_AFTER_MAX_SECONDS, float(hint))
+        else:
+            delay = min(max_delay, base_delay * (2 ** attempt)) * (0.5 + random.random())
+        if waited + delay > RETRY_AFTER_MAX_SECONDS:
+            # The CUMULATIVE budget, not this one sleep. Waiting again would push the
+            # total blocking time of this single call past the ceiling; that is the same
+            # "declining to wait it out" condition as a wall, so the budget is spent.
+            logger.info(
+                "provider retry budget spent after %.0fs of waiting; not retrying again",
+                waited,
+            )
+            raise _stamp_retry_provenance(last, attempts=attempt + 1, spent=waited > 0)
+        logger.info("provider call retry %d/%d in %.2fs (%s)", attempt + 1, budget, delay, last)
+        waited += delay
         await asyncio.sleep(delay)
     if last is not None:  # pragma: no cover - loop always returns or raises
-        raise last
+        raise _stamp_retry_provenance(last, attempts=budget, spent=budget > 1)
     raise ProviderError("retry exhausted", retryable=False)  # pragma: no cover
 
 
@@ -560,13 +713,21 @@ class AzureOpenAIProvider(OpenAIProvider):
         else:
             payload["temperature"] = temperature
             payload["max_tokens"] = max_tokens
-        resp = await self._client.post(
-            f"/openai/deployments/{model}/chat/completions",
-            params={"api-version": self._api_version},
-            headers={"api-key": self._key, "content-type": "application/json"},
-            json=payload,
-        )
-        resp.raise_for_status()
+        async def _post():
+            resp = await self._client.post(
+                f"/openai/deployments/{model}/chat/completions",
+                params={"api-version": self._api_version},
+                headers={"api-key": self._key, "content-type": "application/json"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp
+
+        # Azure used to bypass the retry budget entirely: a single 429 or 503 failed the
+        # call outright, and a 429 that a two-second wait would have cleared was reported
+        # as an exhausted quota — which, once a breaker exists, is an immediate-trip
+        # class. Every provider now shares one bounded, Retry-After-aware budget.
+        resp = await with_retry(_post)
         data = resp.json()
         text = data["choices"][0]["message"]["content"] or ""
         usage = data.get("usage", {})
@@ -672,8 +833,19 @@ class BedrockProvider(BaseProvider):
             payload["system"] = "\n\n".join(system_parts)
         body = json.dumps(payload).encode("utf-8")
         path = f"/model/{model}/invoke"
-        resp = await self._client.post(path, headers=self._signed_headers(path, body), content=body)
-        resp.raise_for_status()
+
+        async def _post():
+            # Re-sign on every attempt: a SigV4 signature is bound to its x-amz-date and
+            # a replayed one is rejected outside the service's clock skew window, so a
+            # retry that reused the first signature would fail as an auth error and
+            # misreport a transient throttle as a credential problem.
+            resp = await self._client.post(
+                path, headers=self._signed_headers(path, body), content=body
+            )
+            resp.raise_for_status()
+            return resp
+
+        resp = await with_retry(_post)
         data = resp.json()
         text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
         usage = data.get("usage", {})
@@ -726,12 +898,19 @@ class VertexProvider(BaseProvider):
             f"/v1/projects/{self._project}/locations/{self._location}"
             f"/publishers/google/models/{model}:generateContent"
         )
-        resp = await self._client.post(
-            path,
-            headers={"Authorization": f"Bearer {self._token}", "content-type": "application/json"},
-            json=payload,
-        )
-        resp.raise_for_status()
+        async def _post():
+            resp = await self._client.post(
+                path,
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    "content-type": "application/json",
+                },
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp
+
+        resp = await with_retry(_post)
         data = resp.json()
         cands = data.get("candidates", [])
         text = ""

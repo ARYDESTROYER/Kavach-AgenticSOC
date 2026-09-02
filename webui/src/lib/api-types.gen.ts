@@ -2015,6 +2015,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/diagnostics/precedent-composition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diagnostics Precedent Composition
+         * @description WHAT the precedent corpus is made of — now, and after a rebuild. Read-only.
+         *
+         *     **Reprojection is not the repair, and this endpoint is what proves it.** The
+         *     projection pages the case store newest-first, so on the deployment that motivated
+         *     this the bulk-confirmed cases were still the newest analyst-confirmed terminal cases:
+         *     a rebuild RE-SELECTS them and converges on the composition it just replaced. Worse,
+         *     the qualifying POOL was MORE skewed than the window drawn from it, so no selection
+         *     policy over that pool could have produced a healthy corpus. A successful rebuild is
+         *     therefore not evidence of repair, and "the job succeeded" must never be read as one.
+         *
+         *     What makes that visible, and what the payload carries:
+         *
+         *     * the JOINT (analyst outcome x model verdict) cross-tab, for the CURRENT corpus and
+         *       for the projection a rebuild WOULD produce. Per-outcome counts alone read PRISTINE
+         *       through the entire incident — a corpus that is 100% ``outcome=false_positive`` and
+         *       also 100% ``verdict=NEEDS_HUMAN`` is telling the investigator "we escalated this
+         *       every time", not "this is benign";
+         *     * per-rule counts, and chunk/document totals;
+         *     * the size of the qualifying POOL the bounded window was drawn from, so "200 of 889"
+         *       is legible rather than implied;
+         *     * the admission CONCENTRATION — how much of the selected window one operator
+         *       transaction bought.
+         *
+         *     It is deliberately a SEPARATE endpoint rather than a block inside
+         *     ``/api/diagnostics/health``: deriving the would-be projection costs a bounded scan of
+         *     the case store, and the health rollup is polled by the Console. It costs **zero
+         *     embedding calls** either way — both halves come from a management read plus the
+         *     ordinary per-case projector, whose metadata already carries both axes.
+         *
+         *     Gated on ``settings:read`` like the rest of this router, seed-free, and advisory (#3).
+         */
+        get: operations["diagnostics_precedent_composition_api_diagnostics_precedent_composition_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/enrichment/lookup": {
         parameters: {
             query?: never;
@@ -3611,6 +3660,17 @@ export interface paths {
          * Rag Delete Document
          * @description Delete an imported document. 404 if missing; 400 if a guarded seed source
          *     (runbook/mitre/suppression/resolved_case) unless ``?force=true``.
+         *
+         *     Every SUCCESSFUL delete is audited. It previously was not: a ``force=true`` delete
+         *     is the single most destructive corpus mutation the API offers — it removes protected
+         *     built-in knowledge or an analyst-confirmed precedent — and it left no record at all,
+         *     so "where did that runbook go?" was unanswerable. The row carries the document id and
+         *     the force flag; no chunk text ever enters it (#9).
+         *
+         *     For a PRECEDENT document, note that a plain force-delete does not stay deleted: the
+         *     next projection re-derives that case from the case store. ``POST
+         *     /api/rag/precedent/exclusions`` is the supported way to make a precedent removal
+         *     stick, and it performs this same delete as its second half.
          */
         delete: operations["rag_delete_document_api_rag_documents__document_id__delete"];
         options?: never;
@@ -3673,6 +3733,101 @@ export interface paths {
          */
         post: operations["precedent_bootstrap_api_rag_precedent_bootstrap_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/composition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Precedent Composition
+         * @description The corpus as it stands, beside the projection a rebuild WOULD produce.
+         *
+         *     Read-only and free: it embeds nothing, seeds nothing and writes nothing, because both
+         *     halves are derivable from a management read plus the ordinary per-case projector,
+         *     whose item metadata already carries the analyst outcome AND the model verdict.
+         *
+         *     Reports the JOINT (analyst outcome x model verdict) distribution rather than either
+         *     marginal alone — outcome-only counts read PRISTINE on a corpus that is actively
+         *     poisoning the model — plus per-rule counts, chunk/document totals, the size of the
+         *     QUALIFYING POOL the window was drawn from (so "200 of 889" is visible), and how
+         *     concentrated the selected window is in one operator transaction.
+         */
+        get: operations["precedent_composition_api_rag_precedent_composition_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/exclusions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Precedent Exclusions
+         * @description The case-scoped precedent exclusion set: count, ids, per-rule and per-reason.
+         *
+         *     ``available: false`` means the set could not be READ — never that nothing is
+         *     excluded. The two are different answers and conflating them would report a broad
+         *     exclusion as an empty one.
+         */
+        get: operations["precedent_exclusions_api_rag_precedent_exclusions_get"];
+        put?: never;
+        /**
+         * Precedent Exclude
+         * @description Exclude cases from the precedent corpus: DELETE + MARK, per case, atomically.
+         *
+         *     The marker is written first so no producer can re-derive the precedent while its
+         *     chunks are being removed; the delete follows. Idempotent — re-issuing the same
+         *     exclusion refreshes the marker and finishes any removal that did not complete.
+         *
+         *     ``dry_run`` resolves the selection and returns the case ids WITHOUT excluding
+         *     anything. Every exclusion is audited per case.
+         *
+         *     Ground truth is untouched: the case keeps its analyst label, so
+         *     ``analyst_confirmed_outcome`` — and the threshold tuner's independent-evidence count,
+         *     which is derived from it — are unchanged. Side effect, by design: an excluded case is
+         *     also no longer indexed by the incremental close-time path.
+         */
+        post: operations["precedent_exclude_api_rag_precedent_exclusions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/exclusions/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Precedent Restore
+         * @description Drop a precedent exclusion. 404 when the case is not excluded.
+         *
+         *     Removes the marker only: the precedent reappears on the NEXT ordinary projection,
+         *     derived from the case store exactly as it would have been. Nothing is written to the
+         *     corpus here — an un-exclusion must not be able to mint a chunk the projection would
+         *     not have produced.
+         */
+        delete: operations["precedent_restore_api_rag_precedent_exclusions__case_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -7286,6 +7441,37 @@ export interface components {
              * @default 200
              */
             limit: number;
+        };
+        /**
+         * PrecedentExclusionRequest
+         * @description Exclude one or more cases from the precedent corpus.
+         *
+         *     Supply ``case_ids`` directly, or ``select`` a population by the projection's OWN
+         *     metadata keys. Free-text rule-title matching is deliberately NOT offered: a title is
+         *     content, and a detection-content update rewrites it underneath a saved selection.
+         */
+        PrecedentExclusionRequest: {
+            /** Case Ids */
+            case_ids?: string[];
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Reason
+             * @default other
+             */
+            reason: string;
+            /** Select */
+            select?: {
+                [key: string]: string;
+            };
         };
         /** PricingBody */
         PricingBody: {
@@ -11869,6 +12055,26 @@ export interface operations {
             };
         };
     };
+    diagnostics_precedent_composition_api_diagnostics_precedent_composition_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
     enrichment_lookup_api_enrichment_lookup_get: {
         parameters: {
             query: {
@@ -14137,6 +14343,110 @@ export interface operations {
                 "application/json": components["schemas"]["PrecedentBootstrapRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    precedent_composition_api_rag_precedent_composition_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    precedent_exclusions_api_rag_precedent_exclusions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    precedent_exclude_api_rag_precedent_exclusions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrecedentExclusionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    precedent_restore_api_rag_precedent_exclusions__case_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
