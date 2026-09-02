@@ -864,6 +864,16 @@ class RagService:
         self._precedent_distribution: PrecedentDistribution | None = None
         self._precedent_distribution_at: float | None = None
 
+    @property
+    def store(self) -> VectorStore:
+        """The backing vector store — a READ-ONLY accessor for corpus snapshotting.
+
+        The replay harness pins one corpus snapshot per run (``list_all_chunks`` +
+        restore), which needs the store itself rather than a projection. Exposed as a
+        property so that seam is a contract instead of a private-attribute reach.
+        """
+        return self._store
+
     def set_prefs(self, prefs: Preferences) -> None:
         """Point the service at the latest preferences so a live settings change
         (e.g. toggling rag.enabled / use_resolved_cases / min_score) takes effect

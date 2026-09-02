@@ -3914,6 +3914,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/replay/fixtures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Replay Fixtures
+         * @description Catalog metadata only, plus the storage bound and the honesty statement.
+         */
+        get: operations["list_replay_fixtures_api_replay_fixtures_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Purge Replay Fixtures
+         * @description Clear the catalog and overwrite every body slot.
+         *
+         *     Capture is on by default and fixtures hold raw records, so an operator needs an
+         *     immediate purge that does not require a factory reset.
+         */
+        delete: operations["purge_replay_fixtures_api_replay_fixtures_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/roles": {
         parameters: {
             query?: never;
@@ -7040,7 +7067,7 @@ export interface components {
          * @description Registered server-owned long-operation kinds.
          * @enum {string}
          */
-        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "rag_rebuild" | "tiered_reset" | "storage_lifecycle_apply";
+        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "rag_rebuild" | "tiered_reset" | "storage_lifecycle_apply" | "replay_experiment";
         /** JobListResponse */
         JobListResponse: {
             /** Jobs */
@@ -14556,6 +14583,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReleaseDiscoveryResponse"];
+                };
+            };
+        };
+    };
+    list_replay_fixtures_api_replay_fixtures_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    purge_replay_fixtures_api_replay_fixtures_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
         };

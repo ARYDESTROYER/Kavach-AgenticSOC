@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ..audit.audit_log import AuditLogger
@@ -111,6 +112,7 @@ class InvestigationPipeline:
         event_bus: Any = None,
         investigation_gate: Any = None,
         mutation_task_spawner: Any = None,
+        fixture_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._es = es
         # The agent's read-only log surface. Defaults to wrapping ``es`` in an
@@ -166,6 +168,13 @@ class InvestigationPipeline:
         # create_task fallback; production injects a spawner that factory reset can
         # cancel/await before it clears tenant state.
         self._mutation_task_spawner = mutation_task_spawner
+        # OBSERVATIONAL forward capture of frozen investigation fixtures for the replay
+        # harness. Default None → behaviour is byte-identical to before. It is invoked
+        # once per investigated cluster, AFTER deterministic risk and BEFORE any model
+        # call, so a fixture can never encode the outcome a replay is meant to measure;
+        # it is fully error-isolated, reads nothing the decision depends on, and writes
+        # nothing onto the case (#3).
+        self._fixture_sink = fixture_sink
         # Per-cluster-signature locks (Round-4 harden). The poller fan-out
         # (:class:`PollerManager`) runs per-source pollers CONCURRENTLY, so two ticks /
         # sources correlating the SAME cluster signature could both run the
@@ -259,6 +268,53 @@ class InvestigationPipeline:
         formatter = Formatter(self._gateway, self._audit)
         investigator = Investigator(self._gateway, registry, self._audit, formatter)
         return investigator, enrich
+
+    async def _capture_fixture(
+        self,
+        cluster: Cluster,
+        enrichment: EnrichmentResult | None,
+        prefs: Preferences,
+        *,
+        case_id: str,
+        source_surface: SourceSurface,
+    ) -> None:
+        """Hand one frozen-fixture candidate to the optional capture sink.
+
+        This is the single point every investigated cluster from every surface passes
+        through with the cluster, the enrichment result and the resolved risk all
+        final and no model yet called. The RESOLVED evidence projection travels with
+        it because ``render_cluster`` otherwise re-resolves it from whatever
+        Preferences are live at replay time — an operator edit between capture and
+        replay would silently change what the model sees.
+
+        Best-effort and never raises: capture is observational, so a sink failure
+        must leave the case byte-identical to a run with no sink at all."""
+        sink = self._fixture_sink
+        if sink is None:
+            return
+        try:
+            from ..engine.replay.fixtures import source_field_mapping
+
+            source_ids = cluster.contributing_source_ids()
+            await sink({
+                "cluster": cluster.model_dump(mode="json"),
+                "enrichment": (
+                    enrichment.model_dump(mode="json") if enrichment is not None else None
+                ),
+                "evidence_fields": list(prefs.evidence_fields_for(source_ids)),
+                "evidence_max_chars": int(prefs.evidence_budget_for(source_ids)),
+                # The capturing source's effective FIELD MAPPING. Without it a replay
+                # reads the frozen records under the global ECS defaults, so a non-ECS
+                # source's investigator would query the wrong time/entity fields and
+                # see an empty log surface where production saw real evidence.
+                "field_mapping": source_field_mapping(prefs, source_ids),
+                "origin_case_id": case_id,
+                "source_surface": source_surface.value,
+            })
+        except Exception as exc:  # noqa: BLE001 — capture is observational
+            logger.debug(
+                "replay fixture capture skipped for %s: %s", cluster.signature, exc
+            )
 
     def _maybe_notify(self, case: Case) -> None:
         """Schedule a fire-and-forget notification for a freshly-saved case (#3-safe).
@@ -577,6 +633,11 @@ class InvestigationPipeline:
             breakdown = compute_risk(cluster, prefs, reputation)
             cluster.risk_score = breakdown.total
             cluster.risk_breakdown = breakdown
+
+            await self._capture_fixture(
+                cluster, enrichment, prefs,
+                case_id=case_id, source_surface=source_surface,
+            )
 
             budget = CaseBudget(prefs.caps)
             cost = 0.0

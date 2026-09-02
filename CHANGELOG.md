@@ -502,6 +502,91 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **A replay harness, because the A/B question could not be answered by waiting.**
+  A new durable job kind, `replay_experiment`, replays FROZEN investigation fixtures
+  through one or two named arm *configurations*, now, against one pinned corpus
+  snapshot, and scores close-eligibility per fixture by importing and calling the
+  production `case_manager.decide()` offline against the deployer's configured policy.
+  Scoring is paired: an exact-binomial McNemar over the discordant cells, never
+  reported without `a`, `b`, `c`, `d` and `n_pairs` beside it. Before any arm-versus-arm
+  claim the run MEASURES each arm's own self-consistency from its repeats — the shipped
+  default completion family drops the configured temperature entirely at the provider
+  boundary while other providers send it, so the floor is deployment-specific and only
+  a measurement is honest. A difference that does not clearly exceed that floor is
+  reported as `indistinguishable_from_noise` in a machine-readable field, and an
+  insufficient-evidence result is never converted into a score — an insufficient
+  comparison ships its raw counts and NO rate, difference or p-value beside them. The
+  guard compares like with like: `rate_difference` is a NET signed difference, so it is
+  tested against the largest NET close-rate swing any arm shows against itself, never
+  against the GROSS per-fixture flip rate (both are reported, on their own scales).
+  `exceeds_noise_floor` is a conjunction whose parts — `above_noise_floor` and
+  `significant_at_alpha` — are reported separately and stay `null` where no comparison
+  was performed, and a difference that clears the floor on too few discordant pairs for
+  any split to reach `alpha` is reported as `underpowered` ("add fixtures") rather than
+  as noise. Every rate ships with its denominator and is `null` when that denominator is
+  zero; the per-arm headline rate is computed over the PAIRED population so it cannot
+  contradict the paired table beside it. The report and manifest record the decision
+  POLICY (`policy.fingerprint`) as well as the corpus, because `close_eligible` is a
+  function of both.
+
+  Two things this deliberately does **not** claim. It cannot answer the retrospective
+  question about a change that already shipped: the only two paths from a stored case
+  back to its alert content either re-query the live log surface (whose contents roll
+  with retention) or synthesise placeholder events with the record content stripped,
+  and no snapshot of the earlier knowledge corpus exists. That comparison is *refused
+  by the API* — there is no parameter through which it can be expressed — rather than
+  discouraged in prose. And it cannot execute two code builds in one process; the
+  cross-build procedure is manual and is valid only when both artifacts report the same
+  `corpus_fingerprint` AND the same `policy.fingerprint`, which the harness emits so the
+  check is mechanical. The corpus pin is sorted on exactly what its fingerprint hashes,
+  so equal-scoring chunks cannot be presented in a different order between two runs that
+  report the same fingerprint.
+
+  **Fixture capture runs forward and is ON by default** (`Preferences.replay_capture`),
+  bounded by construction: a fixed slot ring over the existing shared KV — no new index,
+  table, or migration — so worst-case storage is `ring_size x max_fixture_bytes`
+  (12.5 MiB at the defaults). That bound holds across a CONFIG CHANGE too: every slot the
+  catalog stops naming is scrubbed at the moment it is evicted, so lowering `ring_size`
+  to hold LESS raw log data cannot instead strand the old records where neither the ring
+  nor the purge can reach them. An oversize body or an overlong cluster is skipped
+  WHOLE, never truncated and never sampled, because either would silently change the
+  evidence a later replay is scored on. Capture happens after deterministic risk and
+  before any model call, is fully error-isolated, and pins the RESOLVED evidence
+  projection AND the capturing source's effective field mapping — without the latter a
+  non-ECS source's frozen records would be queried with the global ECS defaults and the
+  investigator's log tool would return nothing where production returned real evidence.
+  A cluster whose sources disagree on a mapping key has no faithful frozen surface and
+  is not captured at all. The log-bearing half of a body is stored as one opaque
+  canonical-JSON string, so attacker-named log fields can never become document field
+  NAMES in the shared, dynamically-mapped KV index; the frozen log surface is derived
+  from the cluster at load rather than stored a second time. Fixtures hold raw records
+  and are never returned by any API; the cases/sources tiered resets, the factory purge,
+  and `DELETE /api/replay/fixtures` all scrub the body slots, and the on-demand purge
+  sweeps the whole slot space the ring has ever addressed.
+
+  The gateway is **real** — a mock proves nothing about model behaviour — so spend is
+  real, and is therefore made visible rather than hidden: every usage row lands in the
+  real ledger tagged `surface = "replay"` — one stable, low-cardinality bucket, so a
+  replay cannot evict real production surfaces from the ledger's bounded surface
+  breakdown — and one keyed audit row names who spent how much. That tag makes replay
+  spend identifiable; no automatic exclusion ships, so it does appear in the headline
+  cost total, and per-run spend is read from the job record rather than from the
+  ledger's surface dimension. The required `spend_bound_usd` is enforced before every
+  completion and every embedding, and on realised actuals at every CELL boundary;
+  exceeding it CANCELS the run rather than truncating it, and no cell produced after the
+  trip enters any rate or the paired table — a blocked completion surfaces as
+  `NEEDS_HUMAN`, which is precisely the metric under study. Cancellation, authority and
+  the lease are observed at that same cell boundary, so an operator Cancel costs at most
+  the cell in flight rather than every remaining cell of the fixture. The bound is per
+  JOB and a job spends in exactly one attempt: a run recovered after a worker restart is
+  refused, having spent nothing, rather than resumed with a fresh copy of the ceiling.
+  Everything else is isolated per cell on the Demo Mode pattern: a replay writes zero
+  rows to the production case store, zero rows to any shared KV store, and zero audit
+  rows beyond the job's own lifecycle transitions and that one spend row.
+  `engine/case_manager.py` is untouched (#3), and the run is refused, having spent
+  nothing, when the knowledge corpus is empty or not in the space queries would use.
+  See `docs/development/replay-harness.md`.
+
 - **Case evidence fields are configurable, globally and per source.**
   `Preferences.evidence_fields` / `evidence_max_chars_per_event` (Settings ›
   General › Case evidence fields) and the matching per-source

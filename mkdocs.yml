@@ -186,6 +186,7 @@ nav:
           - Console design system: development/design-system.md
           - Extensions: development/extensions.md
           - Testing and contracts: development/testing.md
+          - Replay harness: development/replay-harness.md
   - Releases and versions:
       - Agentic SOC 0.1: releases/0.1.md
       - Agentic SOC 0.1.13: releases/0.1.13.md

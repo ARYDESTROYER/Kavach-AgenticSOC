@@ -92,6 +92,7 @@ const TIERS: TierCopy[] = [
     clears: [
       'All cases, campaigns and baselines',
       'Per-case collaboration, ordinary inbox items and activity',
+      'Frozen replay fixtures and the raw records they hold',
       'LLM Batch records and live-tail log buffers',
     ],
     keeps: [

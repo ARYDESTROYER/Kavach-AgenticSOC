@@ -670,6 +670,11 @@ class AppState:
         # config/cursor stores use for the active backend (SQL: SqlKVStore; ES: a
         # thin EsKVStore over the config index) — no new index/table/migration.
         self._real_memory = self._build_memory()
+        # Frozen investigation fixtures for the replay harness. Over the SAME shared KV
+        # as the MEMORY store — no new index/table/migration. It is written ONLY by the
+        # observational capture sink below and read only by the replay job / its
+        # read-only routes.
+        self.replay_fixtures = self._build_replay_fixtures()
         # Agent-DRAFTED proposals awaiting human approval (HITL). Backed by the SAME
         # KV as the MEMORY store — no new index/table/migration.
         self._real_proposals = self._build_proposals()
@@ -712,6 +717,9 @@ class AppState:
             event_bus=self.event_bus,
             investigation_gate=self.investigation_gate,
             mutation_task_spawner=self.spawn_mutation_task,
+            # Forward fixture capture for the replay harness. Wired ONLY on the real
+            # pipeline: demo traffic is synthetic and must never enter a replay corpus.
+            fixture_sink=self.replay_fixtures.sink,
         )
         self._real_chat_engine = ChatEngine(
             es, self.gateway, self._real_audit, self._real_cases, self.rag,
@@ -1019,6 +1027,12 @@ class AppState:
         from .stores.memory import MemoryStore
 
         return MemoryStore(self._kv)
+
+    def _build_replay_fixtures(self):
+        """Construct the replay fixture catalog over the active backend's KV."""
+        from .engine.replay.fixtures import ReplayFixtureStore
+
+        return ReplayFixtureStore(self._kv, self.get_prefs)
 
     def _build_runbooks(self):
         from .engine.runbook_service import RunbookService
