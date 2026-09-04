@@ -172,6 +172,20 @@ function echo(over: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * One page of the ACTIVE lifecycle group, answered by a store that resolved the group
+ * itself: the page IS the population, and every row this request matches has been read.
+ * The three-valued exactness flag is the ONLY thing a caller varies.
+ */
+function groupPage(exact: boolean) {
+  return {
+    cases: [CASES[0], CASES[1]],
+    total: 2,
+    window_total_exact: exact,
+    ...echo({ status_group_applied: 'active' }),
+  };
+}
+
 function renderOverview(onNavigate = vi.fn()) {
   return {
     onNavigate,
@@ -648,6 +662,96 @@ describe('Overview — KPI drill-down depth', () => {
   });
 
   // ---- (D) honesty --------------------------------------------------------- //
+
+  /**
+   * WHAT THE THREE TESTS BELOW CATCH.
+   *
+   * `window_total_exact` is three-valued, and `false` is a state a store really sends.
+   * The compatibility `list_window` fallback resolves a lifecycle group in Python over
+   * ONE bounded scan and reports not-exact for it — explicitly so even when NO time
+   * window was asked for, because a scan is a lower bound whatever the request said.
+   * The status-group tiles are the path that reaches it: they push a group down and,
+   * being window-exempt, push down no window at all.
+   *
+   * Each test below names the wrong implementation it fails under, and each was run
+   * against that mutation to confirm it does:
+   *
+   *   1. The not-exact cell fails once the flag stops being consulted at all
+   *      (`complete = total != null && readThrough >= total`). Every row the store
+   *      matched HAS been read here, so nothing but the flag separates this page from
+   *      a complete one.
+   *   2. The control fails whenever the footer is wired to one wording. The two cells
+   *      differ in NOTHING but the flag — same tile, same rows, same total, same single
+   *      page — so a footer hardcoded to "lower bound" would satisfy (1) for no reason
+   *      and be caught here instead.
+   *   3. The third cell fails under the collapse proper:
+   *      `res.window_total_exact === true || !narrowed`, which keeps `true` vs
+   *      not-`true` and decides the remaining case from the REQUEST SHAPE. Reading the
+   *      flag two-valued cannot tell "no window was requested, so the total IS the whole
+   *      population" from "the store could not prove this", and (3) is the cell with
+   *      nothing narrowed for the request shape to be right about — the mutation renders
+   *      it a complete page of a total the store expressly refused to prove. The
+   *      expression that keeps the third value is
+   *      `flag === true || (!narrowed && flag == null)`: an explicit `false` is never
+   *      proof under any branch.
+   */
+  it('never reads an explicit not-exact as a complete page', async () => {
+    listCasesMock.mockResolvedValue(groupPage(false));
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    await openPanel('kpi-open-cases');
+    // The pushed-down lifecycle path, and no window: exactly the request whose
+    // compatibility answer is "windowless but not exact".
+    expect(lastQuery().status_group).toBe('active');
+    expect(lastQuery()).not.toHaveProperty('from');
+
+    // Every row the store matched was read, and the page still cannot be called
+    // complete: the store said it could not prove the number it returned.
+    const scope = () => screen.getByTestId('kpi-drilldown-scope');
+    await waitFor(() => expect(scope()).toHaveTextContent(/lower bound/i));
+    expect(scope()).toHaveTextContent('newest 2 of 2 read');
+    expect(scope()).not.toHaveTextContent(/complete/i);
+  });
+
+  it('reads the SAME page as complete once the store proves the total', async () => {
+    // The control. Identical fixture, flag flipped — so "lower bound" above is a read
+    // of the flag and not a constant, and the pair fails in one direction or the other
+    // for any implementation that stops distinguishing the three values.
+    listCasesMock.mockResolvedValue(groupPage(true));
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    await openPanel('kpi-open-cases');
+
+    const scope = () => screen.getByTestId('kpi-drilldown-scope');
+    await waitFor(() => expect(scope()).toHaveTextContent(/complete page of 2 cases/i));
+    expect(scope()).not.toHaveTextContent(/lower bound/i);
+  });
+
+  it('lets an explicit not-exact outrank the request shape', async () => {
+    // A deployment that predates the group parameter: it ignores the unknown query
+    // term, echoes nothing back, and answers with an undifferentiated page — but it
+    // does carry the exactness flag, and its bounded scan reports not-exact. Nothing
+    // the OPERATOR asked for narrowed this request: the tile is window-exempt, and the
+    // group is not narrowing because the response never says it was applied (the head
+    // pin does not count — it is this panel's own paging device). So `narrowed` is
+    // false here, and `... || !narrowed` alone would call three of three rows a
+    // complete page of a total the store expressly refused to prove.
+    listCasesMock.mockResolvedValue({
+      cases: CASES,
+      total: CASES.length,
+      window_total_exact: false,
+    });
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    await openPanel('kpi-open-cases');
+    expect(lastQuery().status_group).toBe('active');
+    expect(lastQuery()).not.toHaveProperty('from');
+
+    const scope = () => screen.getByTestId('kpi-drilldown-scope');
+    await waitFor(() => expect(scope()).toHaveTextContent(/lower bound/i));
+    expect(scope()).toHaveTextContent('newest 3 of 3 read');
+    expect(scope()).not.toHaveTextContent(/complete/i);
+  });
 
   it('states a page-scoped range once it is past the first page', async () => {
     const many = Array.from({ length: DRILLDOWN_PAGE_LIMIT }, (_, i) => ({
