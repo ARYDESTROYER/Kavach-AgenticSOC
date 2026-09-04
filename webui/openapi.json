@@ -3754,6 +3754,18 @@
         "title": "PrecedentExclusionRequest",
         "type": "object"
       },
+      "PrecedentRepairRequest": {
+        "description": "Re-render stored precedent from the CURRENT builder and rewrite what drifted.\n\nThere is no selector here, and that is the design. No metadata key records which\ngeneration of the builder produced a chunk's text, so the ONLY honest selector is\nto render each case again through the same projector the projection uses and\ncompare the two strings. A free-text selector over chunk TEXT would be strictly\nworse than the free-text metadata selector this module already refuses: precedent\ntext carries the analyst note, the model's recommended action and log-derived\nevidence summaries, so matching prose means matching attacker- and\noperator-influenceable content (#9).",
+        "properties": {
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "title": "PrecedentRepairRequest",
+        "type": "object"
+      },
       "PricingBody": {
         "properties": {
           "input_per_million": {
@@ -8849,6 +8861,7 @@
     },
     "/api/cases": {
       "get": {
+        "description": "List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.\n\nThe declared 200 schema is the envelope EVERY caller has always received. A request\nthat engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally\nreceives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,\n``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and\n``status_group_applied`` — describing what the server actually applied.\n\nThey are additive and opt-in rather than always present, because a caller that sends\nnone of the new parameters must keep receiving its envelope key for key. They are\ndeliberately not folded into the declared response model: as optional fields there\nthey would be emitted as nulls to every legacy caller, and declaring the extended\nenvelope as a second response model splits the shared ``Case`` component into\nvalidation and serialisation variants, which changes every generated case type.",
         "operationId": "list_cases_api_cases_get",
         "parameters": [
           {
@@ -8949,6 +8962,54 @@
                 }
               ],
               "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_field",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort Field"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_order",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort Order"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_group",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status Group"
             }
           }
         ],
@@ -14348,6 +14409,46 @@
           }
         },
         "summary": "Precedent Restore"
+      }
+    },
+    "/api/rag/precedent/repair": {
+      "post": {
+        "description": "Repair precedent whose stored TEXT no longer matches the current projection.\n\n``dry_run`` (the default) reports per-tier ``scanned / current / stale /\nundetermined / not_projecting`` counts plus ``would_repair`` and ``would_evict``,\nand costs nothing. A real run re-embeds exactly the chunks whose re-render differs\nand upserts them on their existing chunk id — one metered embedding per repaired\nchunk (#6), bounded per run by a cap derived from the configured precedent window.\n\nThe ONLY removable chunk is one whose case is POSITIVELY absent from the case\nstore. An operator-EXCLUDED case and one whose analyst label was WITHDRAWN are\nreported, never deleted: those are operator decisions and their home is the\nexclusion API. Before any removal the evicted document id, text and metadata are\nwritten to the append-only audit trail — that record is the only reconstruction\npath, because the store upserts and a repair is idempotent and re-derivable but not\nreversible to the prior render.\n\nGround truth is untouched: no feedback row, no disposition, no decision_by, no\nstatus, no history rewrite (#3).",
+        "operationId": "precedent_repair_api_rag_precedent_repair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrecedentRepairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Precedent Repair Api Rag Precedent Repair Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Precedent Repair"
       }
     },
     "/api/rag/search": {

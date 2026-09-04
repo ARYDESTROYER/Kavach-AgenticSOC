@@ -964,7 +964,23 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Cases */
+        /**
+         * List Cases
+         * @description List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.
+         *
+         *     The declared 200 schema is the envelope EVERY caller has always received. A request
+         *     that engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally
+         *     receives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,
+         *     ``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and
+         *     ``status_group_applied`` — describing what the server actually applied.
+         *
+         *     They are additive and opt-in rather than always present, because a caller that sends
+         *     none of the new parameters must keep receiving its envelope key for key. They are
+         *     deliberately not folded into the declared response model: as optional fields there
+         *     they would be emitted as nulls to every legacy caller, and declaring the extended
+         *     envelope as a second response model splits the shared ``Case`` component into
+         *     validation and serialisation variants, which changes every generated case type.
+         */
         get: operations["list_cases_api_cases_get"];
         put?: never;
         post?: never;
@@ -3828,6 +3844,43 @@ export interface paths {
          *     not have produced.
          */
         delete: operations["precedent_restore_api_rag_precedent_exclusions__case_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/rag/precedent/repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Precedent Repair
+         * @description Repair precedent whose stored TEXT no longer matches the current projection.
+         *
+         *     ``dry_run`` (the default) reports per-tier ``scanned / current / stale /
+         *     undetermined / not_projecting`` counts plus ``would_repair`` and ``would_evict``,
+         *     and costs nothing. A real run re-embeds exactly the chunks whose re-render differs
+         *     and upserts them on their existing chunk id — one metered embedding per repaired
+         *     chunk (#6), bounded per run by a cap derived from the configured precedent window.
+         *
+         *     The ONLY removable chunk is one whose case is POSITIVELY absent from the case
+         *     store. An operator-EXCLUDED case and one whose analyst label was WITHDRAWN are
+         *     reported, never deleted: those are operator decisions and their home is the
+         *     exclusion API. Before any removal the evicted document id, text and metadata are
+         *     written to the append-only audit trail — that record is the only reconstruction
+         *     path, because the store upserts and a repair is idempotent and re-derivable but not
+         *     reversible to the prior render.
+         *
+         *     Ground truth is untouched: no feedback row, no disposition, no decision_by, no
+         *     status, no history rewrite (#3).
+         */
+        post: operations["precedent_repair_api_rag_precedent_repair_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -7500,6 +7553,26 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /**
+         * PrecedentRepairRequest
+         * @description Re-render stored precedent from the CURRENT builder and rewrite what drifted.
+         *
+         *     There is no selector here, and that is the design. No metadata key records which
+         *     generation of the builder produced a chunk's text, so the ONLY honest selector is
+         *     to render each case again through the same projector the projection uses and
+         *     compare the two strings. A free-text selector over chunk TEXT would be strictly
+         *     worse than the free-text metadata selector this module already refuses: precedent
+         *     text carries the analyst note, the model's recommended action and log-derived
+         *     evidence summaries, so matching prose means matching attacker- and
+         *     operator-influenceable content (#9).
+         */
+        PrecedentRepairRequest: {
+            /**
+             * Dry Run
+             * @default true
+             */
+            dry_run: boolean;
+        };
         /** PricingBody */
         PricingBody: {
             /** Input Per Million */
@@ -10450,6 +10523,9 @@ export interface operations {
                 offset?: number;
                 from?: string | null;
                 to?: string | null;
+                sort_field?: string | null;
+                sort_order?: string | null;
+                status_group?: string | null;
             };
             header?: never;
             path?: never;
@@ -14474,6 +14550,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    precedent_repair_api_rag_precedent_repair_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrecedentRepairRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
