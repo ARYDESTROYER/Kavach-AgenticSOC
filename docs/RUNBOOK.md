@@ -212,6 +212,74 @@ per-rule `correlation_rules`, `risk_weights`, `asset_criticality`,
 (the live auto-close policy knob — `fp_auto_close` is deprecated and auto-migrated
 into it), caps.
 
+### 4.5 Repairing precedent whose stored text drifted
+
+The precedent corpus (`resolved_case`) stores a rendered snippet per case. When the
+renderer changes, chunks written by the older one keep serving their old wording — and
+nothing surfaces it: the composition report compares metadata tallies, the collapse
+guard is a size guard, and the per-rule distribution reads metadata with the text
+discarded. No metadata key records which generation produced a chunk, so the only way
+to detect drift is to render each case again and compare.
+
+**1. Look, for free.** The dry run is the default: it embeds nothing, writes nothing
+and deletes nothing.
+
+```bash
+curl -s -X POST localhost:8088/api/rag/precedent/repair \
+  -H 'content-type: application/json' -d '{}' | jq '{complete, scanned, tiers}'
+```
+
+Read the per-tier counts (`analyst_confirmed` and `model_unconfirmed`):
+
+| count | means |
+|---|---|
+| `current` | the stored text is exactly what the projector renders today. Nothing to do. |
+| `stale` | the re-render differs. `would_repair` of these fit in this run's cap. |
+| `undetermined` | the backing case could not be read, or the chunk has no case id / no durable chunk id. Never touched. |
+| `not_projecting` | broken out as `excluded` / `withdrawn` / `absent`. Only `absent` is removable. |
+| `complete` | `false` means this run could not cover everything — a truncated backend read, an undetermined chunk, or candidates past the cap. A `false` here is never "0 stale remain". |
+
+`GET /api/diagnostics` publishes the same per-tier counts as
+`precedent_corpus.stale_text_chunks` if you would rather watch it than poll the repair.
+
+**2. Then repair.** Same route, `dry_run: false`, `rag:manage`, audited.
+
+```bash
+curl -s -X POST localhost:8088/api/rag/precedent/repair \
+  -H 'content-type: application/json' -d '{"dry_run": false}' | jq '{repaired, evicted, remaining, complete}'
+```
+
+Each repaired chunk costs exactly one embedding, through the single gateway and the
+cost ledger. A byte-identical re-render costs nothing. Embeddings are metered but are
+not pre-flight budget-gated, so the run carries its own bound — four times the
+configured precedent window — and reports `remaining` when it hits it. **Re-run until
+`remaining` is 0**; the pass is resumable and each run re-classifies from scratch.
+
+**3. Refusals are answers, not errors.** A refusal reports `refused: true` with a
+`reason_code` and changes nothing:
+
+| `reason_code` | what to do |
+|---|---|
+| `repair_embedding_space_changed` | the embedding model changed; let the ordinary reseed run — it re-derives every chunk from the current builder anyway. |
+| `repair_embedding_degraded` | the embedding provider is degraded. Fix it first; hash-space vectors must never become durable. |
+| `repair_mass_eviction` / `repair_tier_emptied` | the case store says most (or all) of a tier's cases are gone. Treat that as a case-store problem, not corpus drift. Tier-emptying is refused unconditionally and cannot be configured away. |
+| `repair_exclusion_set_unknown` | the precedent exclusion set could not be read and this process has never held it. Restore the state backend first. |
+
+**4. Know what is and is not reversible.** A repair is **idempotent and re-derivable**
+— running it again renders the same text from the same case — but it is **not
+reversible to the prior render**. The store upserts, and the prior render is by
+definition the stale one nobody wants back. For the **delete** path only, the evicted
+document id, text and metadata are written to the append-only audit trail *before* the
+removal, and **that record is the only reconstruction path**; if it cannot be written,
+the removal does not happen. Find it with
+`GET /api/audit?surface=rag_precedent_repair` (rows carrying
+`tool_name=precedent_evicted_chunk`).
+
+Ground truth is never touched: no feedback row, no disposition, no `decision_by`, no
+status, no history rewrite. To remove a precedent *deliberately*, use the exclusion API
+(§ `POST /api/rag/precedent/exclusions`) — that is the supported path, and it is the
+only one that holds across a reprojection.
+
 ## 5. Scaling notes
 
 - **The poller is single, in-process.** **Do not run two backend replicas** — there

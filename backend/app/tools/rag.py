@@ -22,7 +22,7 @@ from collections import Counter
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..config import Preferences
 from ..constants import CaseStatus, DecisionBy, Verdict
@@ -53,7 +53,11 @@ from .vectorstore import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..config import PrecedentWindowConfig, UnconfirmedPrecedentConfig
+    from ..config import (
+        PrecedentRepairConfig,
+        PrecedentWindowConfig,
+        UnconfirmedPrecedentConfig,
+    )
     from ..engine.runbook_service import RunbookService
     from ..models import Case
     from ..stores.cases import CaseStore
@@ -78,6 +82,38 @@ REFUSAL_EMPTY_PROJECTION = "empty_projection"
 REFUSAL_EMPTY_UNVERIFIABLE = "empty_projection_unverifiable"
 REFUSAL_RETENTION_FLOOR = "retention_floor"
 REFUSAL_WINDOW_REDUCTION = "window_size_reduction"
+
+# Why an explicit precedent TEXT REPAIR run refused. A refusal is a REPORTED OUTCOME
+# with its own code, never an exception: the repair is an operator-invoked maintenance
+# pass that must never be able to abort seeding, and "I refused, here is why" is the
+# only answer that tells the operator what to change.
+REPAIR_REFUSAL_NO_CASE_STORE = "repair_no_case_store"
+REPAIR_REFUSAL_EXCLUSIONS_UNKNOWN = "repair_exclusion_set_unknown"
+REPAIR_REFUSAL_CORPUS_UNREADABLE = "repair_corpus_unreadable"
+REPAIR_REFUSAL_EMBEDDING_SPACE = "repair_embedding_space_changed"
+REPAIR_REFUSAL_EMBEDDING_DEGRADED = "repair_embedding_degraded"
+REPAIR_REFUSAL_MASS_EVICTION = "repair_mass_eviction"
+REPAIR_REFUSAL_TIER_EMPTIED = "repair_tier_emptied"
+
+# The four classes a stored precedent chunk falls into when its text is compared with
+# what the CURRENT projector renders for the same case. Exactly one applies per chunk.
+REPAIR_CURRENT = "current"
+REPAIR_STALE = "stale"
+REPAIR_UNDETERMINED = "undetermined"
+REPAIR_NOT_PROJECTING = "not_projecting"
+
+# WHY a chunk does not project. Three different situations reach one code path, and
+# only ONE of them may ever delete:
+#   * ``excluded``  — the operator excluded the case. Its home is the exclusion API,
+#                     which already removed the chunk and reports when it could not.
+#   * ``withdrawn`` — the case is still there but no longer carries the label the tier
+#                     projects from. Deleting on that turns "an analyst changed their
+#                     mind" into data loss.
+#   * ``absent``    — the case is POSITIVELY gone from the case store, established by a
+#                     read that fails closed. This is the only removable one.
+REPAIR_EXCLUDED = "excluded"
+REPAIR_WITHDRAWN = "withdrawn"
+REPAIR_ABSENT = "absent"
 
 
 class ExclusionSetUnavailable(RuntimeError):
@@ -247,6 +283,22 @@ _EXCLUSION_BOUND_WINDOWS = 4
 # Bound on the metadata-filtered BULK exclusion selection, again derived from the window
 # rather than fixed. Selection filters on the projection's OWN metadata keys only.
 _EXCLUSION_SELECT_WINDOWS = 4
+
+# How many chunks ONE explicit repair run may rewrite or evict, again expressed as a
+# MULTIPLE OF THE CONFIGURED WINDOW and never as a constant, for the same reason as the
+# two exclusion bounds above. Drift deeper than several windows is not drift: the
+# projection changed wholesale, and the cheaper, better-understood answer is an ordinary
+# reseed, which re-derives every chunk from the current builder in one metered batch.
+# The run reports what it did not reach and is resumable, so the bound costs coverage,
+# never correctness.
+_REPAIR_CAP_WINDOWS = 4
+
+# The ADAPTIVE default for the repair collapse guard's absolute eviction floor: a
+# twentieth of the configured precedent window. An operator may pin an explicit floor in
+# ``prefs.precedent.repair``; ``0`` (the default) means "derive it", so a deployment that
+# legitimately runs a large window gets a proportionally larger allowance and nobody
+# encodes one estate's volume here.
+_REPAIR_EVICTION_FLOOR_DIVISOR = 20
 
 # Bound the per-cell/per-rule rows a composition report puts on the wire. The report is a
 # diagnostic, not an export: the head of each ranking is what answers the question, and an
@@ -433,6 +485,72 @@ def _case_context_text_values(case: "Case") -> dict[str, str]:
             f"Recommended action: {case.recommended_action or 'n/a'}."
         ),
     }
+
+
+def _empty_repair_tier() -> dict[str, Any]:
+    """One tier's repair tally. Every key is reported even at zero, so a tier that
+    happens to be absent from a corpus reads as an explicit zero rather than a gap."""
+    return {
+        "scanned": 0,
+        "current": 0,
+        "stale": 0,
+        "undetermined": 0,
+        "not_projecting": 0,
+        # The three reasons a chunk does not project, broken out because only ONE of
+        # them is ever removable and an operator has to be able to see which is which.
+        "excluded": 0,
+        "withdrawn": 0,
+        "absent": 0,
+        "would_repair": 0,
+        "would_evict": 0,
+        "repaired": 0,
+        "evicted": 0,
+        "remaining": 0,
+        "complete": True,
+    }
+
+
+def _tally_precedent_findings(
+    findings: "list[PrecedentTextFinding]",
+) -> dict[str, dict[str, Any]]:
+    """Per-tier counts over a classified corpus. Counts only — never chunk text."""
+    tiers: dict[str, dict[str, Any]] = {
+        TRUST_ANALYST_CONFIRMED: _empty_repair_tier(),
+        TRUST_MODEL_UNCONFIRMED: _empty_repair_tier(),
+    }
+    for finding in findings:
+        tier = tiers.setdefault(finding.tier, _empty_repair_tier())
+        tier["scanned"] += 1
+        tier[finding.classification] += 1
+        if finding.classification == REPAIR_NOT_PROJECTING and finding.reason in (
+            REPAIR_EXCLUDED,
+            REPAIR_WITHDRAWN,
+            REPAIR_ABSENT,
+        ):
+            tier[finding.reason] += 1
+    return tiers
+
+
+@dataclass(frozen=True)
+class PrecedentTextFinding:
+    """One stored precedent chunk, classified against the CURRENT projector.
+
+    ``item`` is the freshly rendered projection item and is populated ONLY for a STALE
+    finding — it is what a repair writes, carrying the stale chunk's own ``doc_id`` so
+    the store upserts in place instead of landing a second chunk beside it.
+    """
+
+    document_id: str
+    doc_id: str
+    case_id: str
+    tier: str
+    classification: str
+    reason: str = ""
+    item: dict[str, Any] | None = None
+    #: The STORED chunk, carried so an eviction can write the payload it is about to
+    #: destroy to the append-only trail BEFORE destroying it.
+    text: str = ""
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1326,23 +1444,34 @@ class RagService:
             if chunk.source not in SEED_SOURCES
         ]
 
-    def _preserved_resolved_case_items(self, chunks: list[StoredChunk]) -> list[dict[str, Any]]:
+    async def _preserved_resolved_case_items(
+        self, chunks: list[StoredChunk]
+    ) -> list[dict[str, Any]]:
         """Carry EXISTING precedent through a vector-space migration.
 
         ``_reseed`` physically replaces the vector space, and the precedent it can
-        re-derive from the CaseStore is only the bounded window. Re-embedding the
-        stored precedent chunks keeps everything older than that window alive; the
-        freshly derived window wins on doc-id collision so the canonical text is
-        still the shared builder's.
+        re-derive from the CaseStore is only the bounded window. Carrying the stored
+        precedent chunks keeps everything older than that window alive; the freshly
+        derived window wins on doc-id collision so the canonical text is still the
+        shared builder's.
 
-        This path re-embeds STRAIGHT FROM THE PRE-MIGRATION SNAPSHOT and never consults
-        the per-case projector, so it needs its own exclusion check: without one, the
-        first embedding-model change a deployment ever makes would resurrect every
-        operator exclusion at once, silently, in the single code path that carries
-        precedent the bounded window can no longer reach. It is an instance method for
-        exactly that reason — the predicate lives on the service.
+        This path never consulted the per-case projector at all, which left it as a
+        SECOND producer of durable precedent text that could only ever reproduce
+        whatever generation of the builder happened to write the chunk. An out-of-window
+        chunk therefore carried its stale rendering through every future migration, and
+        no amount of repairing the corpus could reach it. It now routes through the SAME
+        derive-and-compare the explicit repair uses and falls back to the STORED text
+        only when the case is unavailable — unreadable, gone, or no longer projecting —
+        because a migration must never drop a chunk it cannot re-derive.
+
+        It also needs its own exclusion check: without one, the first embedding-model
+        change a deployment ever makes would resurrect every operator exclusion at once,
+        silently, in the single code path that carries precedent the bounded window can
+        no longer reach. It is an instance method for exactly that reason — the
+        predicate, and now the projector, live on the service.
         """
         out: list[dict[str, Any]] = []
+        derived: dict[tuple[str, str], str | None] = {}
         for chunk in chunks:
             if chunk.source != RESOLVED_CASE_SOURCE:
                 continue
@@ -1360,10 +1489,25 @@ class RagService:
                 else:
                     continue
             metadata["document_id"] = document_id
+            text = chunk.text
+            if case_id:
+                tier = (
+                    TRUST_MODEL_UNCONFIRMED
+                    if self._is_unconfirmed(chunk)
+                    else TRUST_ANALYST_CONFIRMED
+                )
+                key = (case_id, tier)
+                if key not in derived:
+                    derived[key] = await self._current_precedent_text(
+                        case_id, tier, metadata
+                    )
+                current = derived[key]
+                if current is not None:
+                    text = current
             out.append(
                 {
-                    "text": chunk.text,
-                    "embedding_text": chunk.text,
+                    "text": text,
+                    "embedding_text": text,
                     "source": chunk.source,
                     "metadata": metadata,
                     "doc_id": doc_id or document_id,
@@ -3034,14 +3178,25 @@ class RagService:
         could never detect the truncation it exists to report), and every count derived
         from a truncated read is a lower bound rather than a confident total.
         """
+        chunks, truncated = await self._precedent_chunks()
+        return [dict(chunk.metadata or {}) for chunk in chunks], truncated
+
+    async def _precedent_chunks(self) -> tuple[list[StoredChunk], bool]:
+        """Every stored precedent chunk, in ONE corpus read, plus the truncation hint.
+
+        The same single-pass read :meth:`_precedent_chunk_metadata` has always used, kept
+        as its own method because the text repair needs the CHUNKS (their text and their
+        durable chunk ids) and not just the metadata rows the reporting surfaces read.
+        The truncation hint is computed against the WHOLE chunk count before the source
+        filter, exactly as before, because that is the count the backend's page ceiling
+        actually bounds.
+        """
         chunks = await self._store.list_all_chunks()
         truncated = self._read_may_be_truncated(len(chunks))
-        rows = [
-            dict(chunk.metadata or {})
-            for chunk in chunks
-            if chunk.source == RESOLVED_CASE_SOURCE
-        ]
-        return rows, truncated
+        return (
+            [chunk for chunk in chunks if chunk.source == RESOLVED_CASE_SOURCE],
+            truncated,
+        )
 
     def _read_may_be_truncated(self, chunk_count: int) -> bool:
         """Whether a whole-corpus read could have been cut short by the BACKEND.
@@ -3684,6 +3839,647 @@ class RagService:
             "truncated": bool(truncated),
         }
 
+
+    # ----------------------------------------------------------------- #
+    # Precedent TEXT repair — re-render from the CURRENT builder, compare, rewrite.
+    # ----------------------------------------------------------------- #
+    def _repair_config(self) -> "PrecedentRepairConfig":
+        """The repair bounds block (falls back to shipped defaults if absent)."""
+        cfg = getattr(getattr(self._prefs, "precedent", None), "repair", None)
+        if cfg is None:  # pragma: no cover - a stored pre-block preference
+            from ..config import PrecedentRepairConfig
+
+            return PrecedentRepairConfig()
+        return cfg
+
+    def _repair_cap(self) -> int:
+        """How many chunks ONE repair run may mutate.
+
+        A MULTIPLE OF THE CONFIGURED WINDOW, never a constant — see
+        ``_REPAIR_CAP_WINDOWS``. Embeddings are metered but deliberately NOT pre-flight
+        budget-gated, so the shipped budget backstop cannot stop a runaway sweep; this
+        bound is the only thing that can, and it has to be the operator's own scale
+        rather than one estate's volume encoded here.
+        """
+        return max(1, int(self._window_config().size)) * _REPAIR_CAP_WINDOWS
+
+    def _repair_eviction_floor(self) -> int:
+        """The collapse guard's absolute eviction floor: the operator's, else derived."""
+        pinned = int(getattr(self._repair_config(), "eviction_floor", 0) or 0)
+        if pinned > 0:
+            return pinned
+        window = max(1, int(self._window_config().size))
+        return max(1, window // _REPAIR_EVICTION_FLOOR_DIVISOR)
+
+    def _reprojected_precedent_item(
+        self, case: "Case", tier: str, stored: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The item the CURRENT projector renders for ``case``, WITHIN ``tier``.
+
+        Repair re-renders a chunk inside the tier it is already in and never moves one
+        between tiers. A tier transition is an upsert the ordinary projection already
+        performs — both tiers share the ``resolved_case:{case_id}`` document identity
+        precisely so a later analyst confirmation replaces the lower-trust chunk in
+        place — and letting a maintenance pass re-grade precedent instead would make
+        "repair the text" silently mean "change what this chunk claims about its own
+        provenance".
+
+        ``None`` means the current projector produces NOTHING for this case in this
+        tier: the analyst label was withdrawn, or the model never made a binary
+        judgement. That is a report, never a delete (see :meth:`repair_precedent_projection`).
+        """
+        if tier == TRUST_MODEL_UNCONFIRMED:
+            outcome = self._unconfirmed_outcome(case)
+            if outcome is None:
+                return None
+            # ``recurrence`` is a POPULATION statistic counted over whatever the
+            # projection scan happened to see, not a property of this case, so a TEXT
+            # repair carries the stored one forward rather than minting a new one from
+            # a different scan. It is metadata only and never reaches the chunk text.
+            try:
+                recurrence = int(stored.get("recurrence") or 0)
+            except (TypeError, ValueError):
+                recurrence = 0
+            return self._unconfirmed_case_item(
+                case, outcome=outcome, recurrence=recurrence
+            )
+        return self._resolved_case_item(case)
+
+    async def _current_precedent_text(
+        self, case_id: str, tier: str, stored: dict[str, Any]
+    ) -> str | None:
+        """What the CURRENT builder renders for this case, or ``None`` if unavailable.
+
+        Collapses "unreadable", "absent" and "no longer projects" into one ``None``
+        on purpose: the single caller — the vector-space migration's preserved-items
+        path — must FALL BACK to the stored text for all three, never drop the chunk.
+        The explicit repair keeps those three apart because only one of them may delete.
+        """
+        if self._cases is None:
+            return None
+        try:
+            case = await self._cases.get(case_id)
+        except Exception as exc:  # noqa: BLE001 — a migration never fails on a case read
+            logger.warning(
+                "precedent text could not be re-derived for case %s: %s", case_id, exc
+            )
+            return None
+        if case is None:
+            return None
+        item = self._reprojected_precedent_item(case, tier, stored)
+        if item is None:
+            return None
+        return str(item.get("text") or "") or None
+
+    async def _classify_precedent_text(
+        self,
+        chunks: list[StoredChunk],
+        resolve: Callable[[str], Awaitable[tuple["Case | None", bool]]],
+    ) -> list[PrecedentTextFinding]:
+        """Classify every stored precedent chunk against the CURRENT projector.
+
+        **THE SELECTOR IS DERIVE-AND-COMPARE, and it cannot be anything else.** No
+        metadata key records which generation of the builder produced a chunk's text —
+        runbooks carry a ``revision``, precedent carries nothing equivalent — so the
+        only way to know whether stored text is current is to render the case again
+        through the SAME projector the projection uses and compare the two strings.
+
+        A prose selector is the tempting alternative and it is a corpus-destroying one.
+        ``_unconfirmed_case_text`` renders the model's verdict sentence UNCONDITIONALLY
+        for every lower-trust chunk, while ``tests/test_precedent_corpus.py`` asserts
+        that same phrase never appears in the confirmed tier: one phrase, two opposite
+        meanings. A substring match on it deletes an entire trust tier — one that is
+        empty on most deployments, so nothing would notice until the deployment that
+        did enable it lost the tier whole. Confirmed-tier text also carries the analyst
+        note, the model's recommended action and log-derived evidence summaries, so any
+        substring selector over precedent text is a selector over attacker- and
+        operator-influenceable content (#9).
+
+        ``resolve`` answers ``(case, readable)``. ``(None, True)`` is a POSITIVE "no
+        such case"; ``(None, False)`` is "I could not tell". Conflating them is what
+        turns a store outage into a mass deletion, so they stay separate all the way
+        through.
+        """
+        findings: list[PrecedentTextFinding] = []
+        seen: dict[str, tuple["Case | None", bool]] = {}
+        for chunk in chunks:
+            if chunk.source != RESOLVED_CASE_SOURCE:
+                continue
+            metadata = dict(chunk.metadata or {})
+            case_id = str(metadata.get("case_id") or "")
+            doc_id = str(chunk.doc_id or "")
+            document_id = str(metadata.get("document_id") or "") or doc_id
+            # A chunk with NO ``trust_class`` reads as CONFIRMED, exactly as
+            # ``_is_unconfirmed`` has always treated it, so a legacy chunk keeps the
+            # retrieval treatment it already has (#10). Tier is resolved through that
+            # ONE predicate; a second tier test here could disagree with retrieval.
+            tier = (
+                TRUST_MODEL_UNCONFIRMED
+                if self._is_unconfirmed(chunk)
+                else TRUST_ANALYST_CONFIRMED
+            )
+            base = {
+                "document_id": document_id,
+                "doc_id": doc_id,
+                "case_id": case_id,
+                "tier": tier,
+                "text": str(chunk.text or ""),
+                "metadata": metadata,
+            }
+            if not case_id:
+                findings.append(
+                    PrecedentTextFinding(
+                        **base,
+                        classification=REPAIR_UNDETERMINED,
+                        reason="the chunk carries no case id to re-derive from",
+                    )
+                )
+                continue
+            if not doc_id:
+                # Without a durable chunk id the store cannot upsert in place, and
+                # writing anyway would land a SECOND chunk beside the stale one under
+                # the same document. Re-homing legacy chunks is the legacy-document
+                # reconciliation's job, not this pass's.
+                findings.append(
+                    PrecedentTextFinding(
+                        **base,
+                        classification=REPAIR_UNDETERMINED,
+                        reason="the stored chunk has no durable chunk id to rewrite in place",
+                    )
+                )
+                continue
+            if case_id not in seen:
+                seen[case_id] = await resolve(case_id)
+            case, readable = seen[case_id]
+            if not readable:
+                findings.append(
+                    PrecedentTextFinding(
+                        **base,
+                        classification=REPAIR_UNDETERMINED,
+                        reason="the backing case could not be read",
+                    )
+                )
+                continue
+            if case is None:
+                findings.append(
+                    PrecedentTextFinding(
+                        **base,
+                        classification=REPAIR_NOT_PROJECTING,
+                        reason=REPAIR_ABSENT,
+                    )
+                )
+                continue
+            if self._is_case_excluded(case_id):
+                findings.append(
+                    PrecedentTextFinding(
+                        **base,
+                        classification=REPAIR_NOT_PROJECTING,
+                        reason=REPAIR_EXCLUDED,
+                    )
+                )
+                continue
+            item = self._reprojected_precedent_item(case, tier, metadata)
+            if item is None:
+                findings.append(
+                    PrecedentTextFinding(
+                        **base,
+                        classification=REPAIR_NOT_PROJECTING,
+                        reason=REPAIR_WITHDRAWN,
+                    )
+                )
+                continue
+            if str(item.get("text") or "") == str(chunk.text or ""):
+                findings.append(
+                    PrecedentTextFinding(**base, classification=REPAIR_CURRENT)
+                )
+                continue
+            # THE repair item. ``doc_id`` and ``metadata.document_id`` are the STALE
+            # chunk's own, never the projector's freshly minted pair: ``_managed_items``
+            # mints a TEXT-DERIVED chunk id whenever ``doc_id`` is absent, so a repair
+            # that let the id drift would land the corrected chunk ALONGSIDE the stale
+            # one under the same document and double it in every tally.
+            repaired = dict(item)
+            # Stored keys the projector does not mint are CARRIED FORWARD, projector
+            # keys win on collision. The bulk-ratification stamp is the reason: it is
+            # written by the bootstrap indexer, never by either projector, and it is
+            # what keeps a ratified MODEL verdict distinguishable from independent
+            # analyst ground truth. Dropping it while repairing a sentence would
+            # silently erase that distinction — and it is a selectable exclusion key,
+            # so an operator's saved selection would quietly stop matching.
+            repaired_metadata = {**metadata, **dict(repaired.get("metadata") or {})}
+            repaired_metadata["document_id"] = document_id
+            repaired["metadata"] = repaired_metadata
+            repaired["doc_id"] = doc_id
+            findings.append(
+                PrecedentTextFinding(
+                    **base, classification=REPAIR_STALE, item=repaired
+                )
+            )
+        return findings
+
+    async def precedent_text_staleness(self, cases: list["Case"]) -> dict[str, Any]:
+        """Per-tier stale-text counts for the read-only diagnostics surface.
+
+        FREE by construction: ONE management read of the corpus, the already-fetched
+        case page as the only case source, and the ordinary per-case projector. It
+        embeds nothing, seeds nothing, writes nothing and deletes nothing.
+
+        A case that is not on the supplied page is UNDETERMINED, never absent — a page
+        is not the store, and reporting "the case is gone" from a bounded read is the
+        exact inference that turns an eviction path into a data-loss path.
+        """
+        if self._cases is None or not self._prefs.rag.use_resolved_cases:
+            return {
+                "available": False,
+                "reason": (
+                    "the resolved-case precedent source is turned off, so no precedent "
+                    "text is projected"
+                ),
+                "complete": False,
+                "truncated": False,
+                "scanned": 0,
+                "stale": 0,
+                "by_trust_class": {},
+            }
+        try:
+            # Fail-OPEN, exactly like the composition report: refusing to describe the
+            # corpus because a deny list could not be read helps nobody, and the
+            # exclusion surface publishes its own ``available: false`` beside this one.
+            await self._refresh_exclusions(force=True)
+            chunks, truncated = await self._precedent_chunks()
+        except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never raise
+            logger.warning("precedent staleness could not read the corpus: %s", exc)
+            return {
+                "available": False,
+                "reason": f"the precedent corpus could not be read ({type(exc).__name__})",
+                "complete": False,
+                "truncated": False,
+                "scanned": 0,
+                "stale": 0,
+                "by_trust_class": {},
+            }
+        page = {str(getattr(case, "case_id", "") or ""): case for case in cases or []}
+
+        async def _resolve(case_id: str) -> tuple["Case | None", bool]:
+            case = page.get(case_id)
+            return (case, True) if case is not None else (None, False)
+
+        findings = await self._classify_precedent_text(chunks, _resolve)
+        tiers = _tally_precedent_findings(findings)
+        undetermined = sum(int(t["undetermined"]) for t in tiers.values())
+        stale = sum(int(t["stale"]) for t in tiers.values())
+        for tier in tiers.values():
+            tier["complete"] = bool(not truncated and not tier["undetermined"])
+        return {
+            "available": True,
+            "reason": "",
+            # False whenever the backend read may have been cut short, or any chunk's
+            # case was off the fetched page: either way "0 stale" would be a claim the
+            # measurement cannot support.
+            "complete": bool(not truncated and undetermined == 0),
+            "truncated": bool(truncated),
+            "scanned": len(findings),
+            "stale": stale,
+            "by_trust_class": tiers,
+        }
+
+    async def repair_precedent_projection(
+        self,
+        *,
+        dry_run: bool = True,
+        on_evict: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
+        """Re-render every stored precedent chunk from the CURRENT builder and, where
+        the stored text differs, re-embed and upsert it IN PLACE.
+
+        EXPLICIT ONLY. Nothing calls this — not ``ensure_seeded``, not ``_reseed``, not
+        any projection. ``resolved_case`` is deliberately exempt from the stale sweep
+        because its projection is a bounded WINDOW, so a chunk the window no longer
+        covers is archived precedent, not a deletion; a repair that ran as a side effect
+        of seeding would quietly re-acquire the authority that exemption removed.
+
+        **COST.** A changed text means the embedded input changed, so the stored vector
+        is wrong for it and MUST be recomputed — writing corrected text against a stale
+        vector decouples the two permanently and silently, which is worse than the
+        staleness. That makes this a real, ledgered provider spend of exactly one
+        embedding per repaired chunk (#6), and embeddings are metered but deliberately
+        NOT pre-flight budget-gated, so this pass carries its OWN window-derived bound
+        (:meth:`_repair_cap`). A byte-identical re-render costs nothing: it is simply
+        not written. ``dry_run`` is the DEFAULT and spends nothing at all.
+
+        **REVERSIBILITY, stated honestly.** A repair is IDEMPOTENT and RE-DERIVABLE —
+        running it again renders the same text from the same case — but it is NOT
+        reversible to the prior render, because the store upserts and the prior render
+        is by definition the stale one nobody wants back. For the DELETE path only, the
+        evicted payload written to the append-only trail before removal IS the
+        reconstruction path; ``on_evict`` is therefore mandatory for an eviction, and
+        without it evictions are reported and skipped rather than performed.
+
+        **WHAT IT MAY DELETE.** Exactly one thing: a chunk whose case is POSITIVELY
+        ABSENT from the case store, established by a read that fails closed. An
+        operator-EXCLUDED case and a case whose analyst label was WITHDRAWN both stop
+        projecting too, and both are REPORTED — those are operator decisions whose home
+        is the exclusion API, and deleting on them would turn "an analyst changed their
+        mind" into data loss. Removal is verified by RE-READ through the existing
+        fail-closed helper, never inferred from the delete's return value, which answers
+        "the store raised" with the very same shape it uses for "no such document".
+        """
+        cap = self._repair_cap()
+        report: dict[str, Any] = {
+            "at": iso_now(),
+            "dry_run": bool(dry_run),
+            "ok": True,
+            "refused": False,
+            "reason_code": "",
+            "reason": "",
+            "complete": True,
+            "truncated": False,
+            "repair_cap": cap,
+            "eviction_floor": self._repair_eviction_floor(),
+            "eviction_fraction": float(
+                getattr(self._repair_config(), "eviction_fraction", 0.0) or 0.0
+            ),
+            "scanned": 0,
+            # The four classes, totalled over the tiers (see ``_settle``).
+            "current": 0,
+            "stale": 0,
+            "undetermined": 0,
+            "not_projecting": 0,
+            "excluded": 0,
+            "withdrawn": 0,
+            "absent": 0,
+            "would_repair": 0,
+            "would_evict": 0,
+            "mutated": 0,
+            "repaired": 0,
+            "evicted": 0,
+            "remaining": 0,
+            "embedding_calls": 0,
+            "evictions_unrecorded": 0,
+            "tiers": {
+                TRUST_ANALYST_CONFIRMED: _empty_repair_tier(),
+                TRUST_MODEL_UNCONFIRMED: _empty_repair_tier(),
+            },
+            "repaired_documents": [],
+            "evicted_documents": [],
+            "incomplete_evictions": [],
+        }
+
+        def _refuse(code: str, reason: str) -> dict[str, Any]:
+            """A refusal is a REPORTED OUTCOME, never an exception (it must never be
+            able to abort seeding), and it always leaves ``mutated == 0``."""
+            report["ok"] = False
+            report["refused"] = True
+            report["reason_code"] = code
+            report["reason"] = reason
+            report["complete"] = False
+            report["mutated"] = 0
+            report["repaired"] = 0
+            report["evicted"] = 0
+            for tier in report["tiers"].values():
+                tier["complete"] = False
+                tier["repaired"] = 0
+                tier["evicted"] = 0
+            # Keep the CLASS totals: a refusal is a finding, and the counts that
+            # triggered it are the operator's evidence for what to do next.
+            for key in (
+                "current",
+                "stale",
+                "undetermined",
+                "not_projecting",
+                "excluded",
+                "withdrawn",
+                "absent",
+                "would_repair",
+                "would_evict",
+            ):
+                report[key] = sum(
+                    int(tier[key]) for tier in report["tiers"].values()
+                )
+            logger.warning("precedent repair REFUSED (%s): %s", code, reason)
+            return report
+
+        if self._cases is None:
+            return _refuse(
+                REPAIR_REFUSAL_NO_CASE_STORE,
+                "no case store is wired, so no precedent text can be re-derived",
+            )
+        try:
+            # The same discipline every producer follows: an UNKNOWN exclusion set is
+            # not an empty one, and re-rendering a chunk for a case an operator excluded
+            # would put excluded precedent back into a current-looking state.
+            await self._require_exclusions(force=True)
+        except Exception as exc:  # noqa: BLE001 — reported, never raised
+            return _refuse(REPAIR_REFUSAL_EXCLUSIONS_UNKNOWN, str(exc))
+        try:
+            stored_space = await self._store.embedding_space()
+            chunks, truncated = await self._precedent_chunks()
+        except Exception as exc:  # noqa: BLE001
+            return _refuse(
+                REPAIR_REFUSAL_CORPUS_UNREADABLE,
+                f"the precedent corpus could not be read ({type(exc).__name__})",
+            )
+        report["truncated"] = bool(truncated)
+        configured_model = str(self._embedding_space()[0])
+        if stored_space is not None and str(stored_space[0] or "") != configured_model:
+            # The corpus is already due for a whole-space migration, which re-derives
+            # every chunk from the current builder anyway. Repairing text into the old
+            # space would be spend that the very next reseed throws away, and it would
+            # mix two incomparable spaces in the meantime.
+            return _refuse(
+                REPAIR_REFUSAL_EMBEDDING_SPACE,
+                f"the corpus holds {stored_space[0]!r} vectors but "
+                f"{configured_model!r} is configured; the ordinary reseed owns that "
+                "migration and re-derives every chunk from the current builder",
+            )
+
+        cases = self._cases
+
+        async def _resolve(case_id: str) -> tuple["Case | None", bool]:
+            try:
+                return await cases.get(case_id), True
+            except Exception as exc:  # noqa: BLE001 — unreadable is NEVER "absent"
+                logger.warning(
+                    "precedent repair could not read case %s: %s", case_id, exc
+                )
+                return None, False
+
+        findings = await self._classify_precedent_text(chunks, _resolve)
+        tiers = _tally_precedent_findings(findings)
+        report["tiers"] = tiers
+        report["scanned"] = len(findings)
+
+        stale = sorted(
+            (f for f in findings if f.classification == REPAIR_STALE),
+            key=lambda f: (f.tier, f.doc_id),
+        )
+        evictable = sorted(
+            (
+                f
+                for f in findings
+                if f.classification == REPAIR_NOT_PROJECTING
+                and f.reason == REPAIR_ABSENT
+            ),
+            key=lambda f: (f.tier, f.doc_id),
+        )
+        # Repairs first, then evictions with whatever budget is left: the pass exists to
+        # correct text, and a run that spent its whole allowance deleting would report
+        # the corpus repaired while every stale chunk it never reached is still served.
+        to_repair = stale[:cap]
+        to_evict = evictable[: max(0, cap - len(to_repair))]
+        for finding in to_repair:
+            tiers[finding.tier]["would_repair"] += 1
+        for finding in to_evict:
+            tiers[finding.tier]["would_evict"] += 1
+
+        # ---- the guards, evaluated on the UNCAPPED intent and BEFORE any write ---- #
+        #
+        # Uncapped on purpose: judging them on what this run happens to fit inside its
+        # budget would let a large eviction walk past both guards a few chunks at a time.
+        floor = int(report["eviction_floor"])
+        fraction = float(report["eviction_fraction"])
+        for name, tier in tiers.items():
+            stored = int(tier["scanned"])
+            intent = int(tier["absent"])
+            if not stored or not intent:
+                continue
+            if intent >= stored:
+                # UNCONDITIONAL AND UNTUNABLE, exactly like the empty-projection refusal:
+                # no configuration may let a maintenance pass empty a trust tier.
+                return _refuse(
+                    REPAIR_REFUSAL_TIER_EMPTIED,
+                    f"the run would remove all {stored} stored {name} precedent "
+                    "chunk(s); a maintenance pass may never empty a tier",
+                )
+            if intent > floor and intent > fraction * stored:
+                # The shared projection collapse guard is structurally blind here: it is
+                # a SIZE guard over the FULLY RECONCILED sources, and ``resolved_case``
+                # is deliberately outside its scope. This pass therefore carries its own.
+                return _refuse(
+                    REPAIR_REFUSAL_MASS_EVICTION,
+                    f"the run would remove {intent} of {stored} stored {name} "
+                    f"precedent chunk(s), above both the floor of {floor} and "
+                    f"{fraction:.2f} of the tier; a removal that large is a case-store "
+                    "problem, not corpus drift",
+                )
+
+        undetermined = sum(int(t["undetermined"]) for t in tiers.values())
+        unreached = (len(stale) - len(to_repair)) + (len(evictable) - len(to_evict))
+
+        def _settle() -> dict[str, Any]:
+            report["remaining"] = unreached
+            # The four classes, and the two intents, also totalled across the tiers:
+            # the per-tier breakdown is the one that matters for the guards, but a
+            # reader asking "is anything stale at all" should not have to add up.
+            for key in (
+                "current",
+                "stale",
+                "undetermined",
+                "not_projecting",
+                "excluded",
+                "withdrawn",
+                "absent",
+                "would_repair",
+                "would_evict",
+            ):
+                report[key] = sum(int(tier[key]) for tier in tiers.values())
+            for tier in tiers.values():
+                tier_left = (
+                    int(tier["stale"]) - int(tier["would_repair"])
+                ) + (int(tier["absent"]) - int(tier["would_evict"]))
+                tier["remaining"] = tier_left
+                tier["complete"] = bool(
+                    not truncated and tier_left == 0 and not tier["undetermined"]
+                )
+            report["complete"] = bool(
+                not truncated and unreached == 0 and undetermined == 0
+            )
+            # A PARTIAL repair is never a success: a truncated read, an undetermined
+            # chunk or an unreached candidate all mean "0 stale remain" is unsupportable.
+            report["ok"] = bool(report["complete"])
+            return report
+
+        if dry_run:
+            # A dry run reports the INTENT, including an intended eviction, so the
+            # operator sees what a real run would do before they authorise one.
+            for tier in tiers.values():
+                tier["repaired"] = 0
+                tier["evicted"] = 0
+            return _settle()
+
+        if to_evict and on_evict is None:
+            # No audit sink, no eviction: the evicted payload is the ONLY reconstruction
+            # path, so removing a chunk without first recording it is unrecoverable.
+            report["evictions_unrecorded"] = len(to_evict)
+            for finding in to_evict:
+                tiers[finding.tier]["would_evict"] -= 1
+            unreached += len(to_evict)
+            to_evict = []
+
+        # ---- the writes ---------------------------------------------------- #
+        if to_repair:
+            items = [dict(finding.item or {}) for finding in to_repair]
+            try:
+                written = await self._embed_and_add(items)
+            except EmbeddingSpaceMismatch as exc:
+                # INHERITED, never bypassed: ``_embed_items`` validates the whole batch
+                # before ``_store.add``, so a degraded provider aborts the run with
+                # nothing written rather than persisting hash-space vectors.
+                return _refuse(REPAIR_REFUSAL_EMBEDDING_DEGRADED, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return _refuse(
+                    REPAIR_REFUSAL_CORPUS_UNREADABLE,
+                    f"the repaired chunks could not be written ({type(exc).__name__})",
+                )
+            report["embedding_calls"] = len(items)
+            report["repaired"] = int(written)
+            for finding in to_repair:
+                tiers[finding.tier]["repaired"] += 1
+                report["repaired_documents"].append(finding.document_id)
+
+        for finding in to_evict:
+            payload = {
+                "document_id": finding.document_id,
+                "doc_id": finding.doc_id,
+                "case_id": finding.case_id,
+                "trust_class": finding.tier,
+                "text": finding.text,
+                "metadata": dict(finding.metadata or {}),
+            }
+            try:
+                await on_evict(payload)  # type: ignore[misc] — None is handled above
+            except Exception as exc:  # noqa: BLE001 — no record, no removal
+                logger.error(
+                    "precedent repair could not record the evicted payload for %s (%s); "
+                    "the chunk was left in place",
+                    finding.document_id,
+                    exc,
+                )
+                tiers[finding.tier]["would_evict"] -= 1
+                report["evictions_unrecorded"] += 1
+                unreached += 1
+                continue
+            await self.delete_document(finding.document_id, force=True)
+            if not await self._precedent_is_gone(finding.case_id, finding.document_id):
+                # Verified by RE-READ. The delete's return value cannot tell a store
+                # outage apart from "no such document", and the Elasticsearch backend
+                # short-counts silently on a partial failure.
+                report["incomplete_evictions"].append(finding.document_id)
+                tiers[finding.tier]["would_evict"] -= 1
+                unreached += 1
+                continue
+            report["evicted"] += 1
+            tiers[finding.tier]["evicted"] += 1
+            report["evicted_documents"].append(finding.document_id)
+
+        report["mutated"] = int(report["repaired"]) + int(report["evicted"])
+        if report["mutated"]:
+            # The TENTH invalidation site. A cached per-rule distribution that outlives
+            # this write serves counts from before the repair for the whole TTL, and the
+            # failure is silent.
+            self.invalidate_precedent_distribution()
+        return _settle()
+
     async def rag_stats(self) -> dict[str, Any]:
         """Corpus stats: total chunks, count by source, embedding model + dim, and
         the document count. Never raises."""
@@ -3981,7 +4777,7 @@ class RagService:
                 managed.extend(
                     item
                     for item in self._managed_items(
-                        self._preserved_resolved_case_items(backup)
+                        await self._preserved_resolved_case_items(backup)
                     )
                     if str(item.get("doc_id") or "") not in staged_doc_ids
                 )

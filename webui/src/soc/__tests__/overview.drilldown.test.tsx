@@ -321,7 +321,15 @@ describe('Overview — KPI drill-down disclosure', () => {
     await waitFor(() => expect(rowText()).toHaveLength(4));
 
     // ---- sort ----
-    // Default is most-recent-first.
+    // Default is most-recent-first. RE-DERIVED, because the sort AXIS deliberately
+    // changed: "most recent" is now the immutable `created_at` the server orders by,
+    // not the mutable `updated_at || created_at` a client comparator used to prefer.
+    // Working it out for THIS cohort: created_at descending is 06:00 → 04:00 → 02:00 →
+    // 00:00, i.e. c-open-crit, c-open-low, c-closed-fp, c-resolved. The fixture's
+    // updated_at happens to run in the same order (07:00 → 05:00 → 03:00 → 01:00), so
+    // the expected first row is unchanged — and it is still a SPECIFIC row, not a set
+    // membership. `overview.drilldown.depth.test.tsx` carries the cohort whose two
+    // timestamps DISAGREE, which is what actually pins the axis.
     expect(rowText()[0]).toContain('Unauthorized S3 access');
     await userEvent.click(screen.getByTestId('kpi-drilldown-sort'));
     await userEvent.click(await screen.findByRole('option', { name: 'Lowest risk' }));

@@ -226,6 +226,48 @@ const ACTIVE_CASES_FILTER = '__active__';
 const TERMINAL_CASES_FILTER = '__terminal__';
 
 /**
+ * `stores.base.CASE_STATUS_GROUPS` — the SERVER's scalar names for the same two
+ * multi-status lifecycle sets, resolved there from `constants.OPEN_CASE_STATUSES` /
+ * `TERMINAL_CASE_STATUSES`. Sending one of these makes the drill-down's fetched page the
+ * tile's population instead of an undifferentiated page the browser then carves up, so
+ * its facet menus and its paging describe the population rather than the page. A status
+ * LIST can never be sent instead: the query helper stringifies an array into one
+ * comma-joined term that matches nothing, silently, at every layer.
+ *
+ * Same lightweight local-contract rule as the two sentinels above — the string is the
+ * wire, not an import. Note the deliberate difference from the Cases-page sentinels:
+ * these are the wire names of a SERVER-side group, those are virtual facets the Cases
+ * page resolves itself.
+ */
+const ACTIVE_STATUS_GROUP = 'active';
+const TERMINAL_STATUS_GROUP = 'terminal';
+
+/**
+ * `constants.DecisionBy.ANALYST_POLICY` — an operator's audited per-rule declaration,
+ * applied deterministically with NO model call.
+ */
+const ANALYST_POLICY_DECISION = 'analyst_policy';
+
+/**
+ * Client mirror of `engine.precedent.is_policy_closed`, the ONE predicate every server
+ * statistic uses to exclude a policy close from the agent's measured performance.
+ *
+ * It matters here because the False Positive Rate tile's numeral and its drill-down list
+ * must count the SAME population. The server's rate strips these cases before it counts
+ * anything — no model ran, so no verdict of the agent's exists — while a listing that
+ * matched on `verdict` alone would happily show a policy-closed case as part of "the
+ * rate's numerator". Both halves of the server predicate are on the wire, so this is the
+ * same test, not an approximation: `decision_by` alone is erasable by any later analyst
+ * action, which is why the durable `analyst_policy` payload is checked too.
+ */
+function isPolicyClosed(c: Case): boolean {
+  return (
+    (c.decision_by || '').toLowerCase() === ANALYST_POLICY_DECISION ||
+    (c.analyst_policy ?? null) != null
+  );
+}
+
+/**
  * The most severe band on the product's ONE severity ladder. `SEVERITY_BAND_ORDER`
  * (badges.tsx) is ASCENDING, so the last entry is the top band — derived rather than
  * retyped, so a future ladder change cannot leave a stale literal behind (§4).
@@ -1670,6 +1712,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
     const criticalCount = measured(posture?.severity_counts?.[TOP_SEVERITY_BAND]);
     const topBandLabel = humanizeToken(TOP_SEVERITY_BAND);
 
+    // The same server-side per-band tally, handed whole to every drill-down so its
+    // severity MENU can offer the bands this window actually contains instead of the
+    // bands that happen to land on the rows it read. The band is derived at read time
+    // and stored nowhere, so it can never be a query filter — this rollup is the only
+    // whole-population view of it there is. The panel uses it ONLY while it is on the
+    // dashboard's own window, because outside that range the tally answers a different
+    // question, and it says which source the menu came from either way. Absent when
+    // posture did not report it, which is "not reported", never "no bands".
+    const bandHistogram = posture?.severity_counts ?? null;
+
     // --- Open Cases: a STOCK measured at `generated_at`, deliberately window-exempt. ---
     const openNow = posture?.open_now;
     const openNowCount = measured(openNow?.count);
@@ -1790,15 +1842,26 @@ export default function Overview({ onNavigate }: OverviewProps) {
           key: 'total-cases',
           title: 'Total Cases',
           population: 'Every case that arrived in this window, policy-closed included.',
-          // The whole cohort — no population predicate at all.
+          // The whole cohort — no population predicate at all, so the rows the store
+          // returns ARE the population and nothing about it is decided in the browser.
           match: () => true,
+          populationResolvedBy: 'store',
           defaultRange: 'window',
+          severityHistogram: bandHistogram,
           target: navigate
             ? {
                 label: 'Open in Cases',
-                // NO status facet: the list must show the same undivided cohort the
-                // numeral counts, so the Cases page's default active filter is dropped.
-                onSelect: () => navigate('cases', { window: navWindow }),
+                honours: ['band', 'status', 'windowHours'],
+                // NO status facet by default: the list must show the same undivided
+                // cohort the numeral counts, so the Cases page's default active filter
+                // is dropped. An operator's OWN facets travel, because every one of them
+                // narrows the list they were already reading.
+                onSelect: (ctx) =>
+                  navigate('cases', {
+                    ...(ctx.band ? { severity: ctx.band } : {}),
+                    ...(ctx.status ? { status: ctx.status } : {}),
+                    ...(ctx.windowHours != null ? { window: ctx.windowHours } : {}),
+                  }),
               }
             : undefined,
         },
@@ -1824,12 +1887,22 @@ export default function Overview({ onNavigate }: OverviewProps) {
           title: 'Total Critical',
           population: `Cases in the ${topBandLabel} band of this window's arrivals.`,
           match: (c) => bandOfCase(c) === TOP_SEVERITY_BAND,
+          // The band is derived at READ time after paging and is stored, mapped and
+          // materialised nowhere, so no store can filter or order by it. This predicate
+          // can only run over the rows that were read, and the panel says so.
+          populationResolvedBy: 'rows-read',
           defaultRange: 'window',
+          severityHistogram: bandHistogram,
           target: navigate
             ? {
                 label: 'Open in Cases',
-                onSelect: () =>
-                  navigate('cases', { severity: TOP_SEVERITY_BAND, window: navWindow }),
+                honours: ['band', 'status', 'windowHours'],
+                onSelect: (ctx) =>
+                  navigate('cases', {
+                    severity: ctx.band ?? TOP_SEVERITY_BAND,
+                    ...(ctx.status ? { status: ctx.status } : {}),
+                    ...(ctx.windowHours != null ? { window: ctx.windowHours } : {}),
+                  }),
               }
             : undefined,
         },
@@ -1859,17 +1932,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
           title: 'Open Cases',
           population: 'Cases in a non-terminal state right now — not filtered by the window.',
           match: (c) => OPEN_STATUSES.has((c.status || '').toLowerCase()),
+          // The SAME lifecycle set, resolved by the store instead of carved out of a
+          // mixed page. The predicate above still runs, and now selects nothing the
+          // request has not already selected.
+          statusGroup: ACTIVE_STATUS_GROUP,
+          populationResolvedBy: 'store',
           // A window-EXEMPT stock opens on an ALL-TIME page: scoping the list to the
           // dashboard window would hand the operator a shorter list than the number
           // they just clicked.
           defaultRange: 'all',
+          severityHistogram: bandHistogram,
           target: navigate
             ? {
                 label: 'Open in Cases',
-                // Deliberately carries NO `window`, for the same reason (Cases defaults
-                // to the all-time horizon). It opens every non-terminal status — the
-                // same lifecycle set the count is taken over.
-                onSelect: () => navigate('cases', { status: ACTIVE_CASES_FILTER }),
+                honours: ['band', 'status', 'windowHours'],
+                // Deliberately carries NO `window` by default, for the same reason
+                // (Cases defaults to the all-time horizon). It opens every non-terminal
+                // status — the same lifecycle set the count is taken over — unless the
+                // operator has already narrowed to ONE of those statuses, which is a
+                // narrowing of their own and travels with them.
+                onSelect: (ctx) =>
+                  navigate('cases', {
+                    status: ctx.status ?? ACTIVE_CASES_FILTER,
+                    ...(ctx.band ? { severity: ctx.band } : {}),
+                    ...(ctx.windowHours != null ? { window: ctx.windowHours } : {}),
+                  }),
               }
             : undefined,
         },
@@ -1912,14 +1999,30 @@ export default function Overview({ onNavigate }: OverviewProps) {
           // A RATE has no list. What a list can honestly show is its NUMERATOR, so the
           // panel says which half of the ratio it is showing rather than implying the
           // rows below add up to a percentage.
-          population: 'The rate\u2019s numerator: cases the agent verdicted false positive.',
-          match: (c) => (c.verdict || '').toLowerCase() === FALSE_POSITIVE_VERDICT,
+          population:
+            'The rate\u2019s numerator: cases the agent verdicted false positive, ' +
+            'excluding operator policy closes exactly as the rate itself does.',
+          // The SAME population the server's rate counts. Its numerator and denominator
+          // are both taken AFTER policy-closed cases are stripped — a case closed by an
+          // operator's rule declaration never reached the agent, so no verdict of the
+          // agent's exists for it — and listing such a case as part of "the rate's
+          // numerator" would count a different population than the numeral above it.
+          // Both fields the server predicate reads are on the wire, so this is the same
+          // test rather than a disclosure that the two disagree.
+          match: (c) =>
+            (c.verdict || '').toLowerCase() === FALSE_POSITIVE_VERDICT && !isPolicyClosed(c),
+          // `verdict` is not a query parameter on the case list and is deliberately not
+          // becoming one, so this predicate runs over the rows that were read.
+          populationResolvedBy: 'rows-read',
           defaultRange: 'window',
+          severityHistogram: bandHistogram,
           target: navigate
             ? {
                 // The rate itself, with its denominator, lives in the posture rollup —
-                // the Cases list cannot state a rate.
+                // the Cases list cannot state a rate. That rollup answers over its own
+                // window, so it can honour none of the panel's narrowings.
                 label: 'Open in Analytics',
+                honours: [],
                 onSelect: () => navigate('metrics', { tab: 'posture' }),
               }
             : undefined,
@@ -1951,16 +2054,27 @@ export default function Overview({ onNavigate }: OverviewProps) {
           population:
             'Cases from this window that reached a terminal state, declared-benign policy closes included.',
           match: (c) => CLOSED_STATUSES.has((c.status || '').toLowerCase()),
+          // The SAME terminal set, resolved by the store. The predicate above still
+          // runs, and now selects nothing the request has not already selected.
+          statusGroup: TERMINAL_STATUS_GROUP,
+          populationResolvedBy: 'store',
           defaultRange: 'window',
+          severityHistogram: bandHistogram,
           target: navigate
             ? {
                 label: 'Open in Cases',
+                honours: ['band', 'status', 'windowHours'],
                 // Terminal is TWO statuses and the Cases status filter applies exactly
                 // one, so this used to have to settle for the posture view. It now uses
                 // the `__terminal__` virtual facet Cases gained alongside this panel —
-                // the same set `CLOSED_STATUSES` names here.
-                onSelect: () =>
-                  navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow }),
+                // the same set `CLOSED_STATUSES` names here — unless the operator has
+                // already narrowed to one of those two, which travels with them.
+                onSelect: (ctx) =>
+                  navigate('cases', {
+                    status: ctx.status ?? TERMINAL_CASES_FILTER,
+                    ...(ctx.band ? { severity: ctx.band } : {}),
+                    ...(ctx.windowHours != null ? { window: ctx.windowHours } : {}),
+                  }),
               }
             : undefined,
         },
@@ -1975,7 +2089,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
     humanVsAi,
     hours,
     navigate,
-    navWindow,
     bucketTrends,
     trendFallbackLabel,
   ]);

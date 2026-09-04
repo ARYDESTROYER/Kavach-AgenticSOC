@@ -12,6 +12,7 @@ from typing import Any, Literal
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -73,6 +74,7 @@ from ..playbooks.registry import (
     PlaybookProtectedError,
 )
 from ..state import AppState
+from ..stores.base import CASE_STATUS_GROUPS
 from ..stores.chat_conversations import (
     ChatConversationMissing,
     ChatHistoryUnavailable,
@@ -5195,6 +5197,79 @@ class CaseListResponse(BaseModel):
     window_total_exact: bool | None = None
 
 
+class CaseListEcho(BaseModel):
+    """The ADDITIVE keys a case-list response gains when the request engaged one of the
+    paging/sort parameters (``sort_field`` / ``sort_order`` / ``status_group``).
+
+    They are echoes of what the server actually applied. Every one exists because the
+    matching server decision was previously INVISIBLE, and an invisible clamp is
+    indistinguishable from a small result set.
+
+    They are appended to the response ONLY for a request that asked for them, so a
+    client that sends none of the new parameters keeps receiving the exact
+    :class:`CaseListResponse` envelope it has always received — key for key. Answering a
+    question nobody asked is not additive to a caller that has to parse the answer.
+    """
+
+    # Which fields this deployment can actually sort a case listing by. The console
+    # builds its sort menu from THIS, so a deployment whose store supports a different
+    # set gets the right menu with no client change and no client-side literal list.
+    sortable_fields: list[str]
+    # What the server sorted by, after the allow-list. A request that asked for an
+    # unsupported field is answered in the DEFAULT order, and this says so rather than
+    # letting the client believe its sort was honoured.
+    sort_field: str
+    sort_order: str
+    # What the server actually paged with, after clamping.
+    limit_applied: int
+    offset_applied: int
+    # The largest ``offset`` this endpoint will accept for ``limit_applied``, so a
+    # client can stop before it asks for a page the store cannot serve.
+    max_offset: int
+    # The multi-status lifecycle group that was applied, if any.
+    status_group_applied: str | None = None
+
+
+# The case-list SORT ALLOW-LIST, enforced at this HTTP boundary and nowhere lower.
+#
+# It has to live ABOVE both bundled stores because the two disagree about an unknown
+# field and NEITHER disagreement is safe to expose:
+#
+#   * the Elasticsearch store interpolates the field name straight into the query
+#     document as a KEY (``{"sort": [{field: {...}}]}``). A mapped ``text`` field, an
+#     ``enabled: false`` object, or an unmapped name is a 400 from the cluster, which
+#     would surface as a 500 from this route; and no escaping can make an attacker-chosen
+#     document key safe after the fact, so the name must be CHOSEN, not sanitised.
+#   * the SQL repository silently falls back to ``created_at``, which means it answers a
+#     different question than it was asked and never says so.
+#
+# The in-memory Elasticsearch double accepts ANY key and resolves an unplaceable value to
+# a sentinel, so an allow-list asserted only against it would pass offline and 400 in
+# production. Membership below is therefore chosen against the REAL contracts: every
+# entry is a universal ``Case`` field that is sortably mapped in ``es/indices``
+# ``CASES_MAPPING`` AND has a real ORDER BY expression in the SQL repository's
+# ``_case_sort_column`` (``risk_score`` via its numeric JSON extraction). ``severity_band``
+# is deliberately absent: it is derived at READ time after paging and is not stored,
+# mapped or materialised anywhere, so no store can order by it.
+CASE_SORT_FIELDS: tuple[str, ...] = ("created_at", "updated_at", "risk_score")
+CASE_SORT_ORDERS: tuple[str, ...] = ("desc", "asc")
+CASE_SORT_FIELD_DEFAULT = CASE_SORT_FIELDS[0]
+CASE_SORT_ORDER_DEFAULT = CASE_SORT_ORDERS[0]
+
+# The largest page this endpoint serves. Naming the existing literal changes nothing
+# about the clamp; it makes the clamp quotable in the response (``limit_applied``).
+CASE_PAGE_LIMIT = 200
+
+# Elasticsearch/OpenSearch reject a ``from + size`` deeper than ``index.max_result_window``
+# (default 10 000) rather than truncating, so offset paging has a hard ceiling on the
+# bundled default backend. Basis: the same default this repository already pins for the
+# LOG read path (``connectors/elastic._MAX_RESULT_WINDOW``); the case path had no ceiling
+# at all, so a deep page surfaced as an unhandled backend error on real Elasticsearch and
+# as plausible-looking wrong rows on the in-memory double. Refusing here is legible and
+# identical on every backend.
+CASE_RESULT_WINDOW = 10_000
+
+
 def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
     """Populate the five READ-TIME advisory band fields (severity/impact/urgency/
     priority) on a Case copy for the presentation surfaces (Round-7 W0.7).
@@ -5218,9 +5293,30 @@ async def list_cases(
     offset: int = 0,
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
+    # Plain defaults, matching the filter parameters above: this route is also called
+    # directly as a coroutine by in-process callers and tests, where a ``Query(...)``
+    # default would arrive as the FieldInfo object itself.
+    sort_field: str | None = None,
+    sort_order: str | None = None,
+    status_group: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> CaseListResponse:
+) -> CaseListResponse | JSONResponse:
+    """List cases, optionally windowed, sorted, paged and narrowed to a lifecycle group.
+
+    The declared 200 schema is the envelope EVERY caller has always received. A request
+    that engages one of ``sort_field`` / ``sort_order`` / ``status_group`` additionally
+    receives the :class:`CaseListEcho` keys — ``sortable_fields``, ``sort_field``,
+    ``sort_order``, ``limit_applied``, ``offset_applied``, ``max_offset`` and
+    ``status_group_applied`` — describing what the server actually applied.
+
+    They are additive and opt-in rather than always present, because a caller that sends
+    none of the new parameters must keep receiving its envelope key for key. They are
+    deliberately not folded into the declared response model: as optional fields there
+    they would be emitted as nulls to every legacy caller, and declaring the extended
+    envelope as a second response model splits the shared ``Case`` component into
+    validation and serialisation variants, which changes every generated case type.
+    """
     # ADDITIVE (Round-6 #37): an OPTIONAL created_at time window so Overview widgets can
     # honor the TimeRangePicker. Default (both None) == byte-identical prior behaviour:
     # the windowless call below is untouched.
@@ -5232,23 +5328,109 @@ async def list_cases(
     # wrong — so a previous-window comparison fetch at 7d/30d could report ZERO while the
     # true count was in the hundreds, and every delta at those ranges was measured against
     # an empty set. ``window_total_exact`` reports whether the store could PROVE the total.
+    #
+    # ADDITIVE: an OPTIONAL server-side sort, a bounded ``offset``, and an OPTIONAL scalar
+    # multi-status ``status_group``, so a drill-down can page and order the whole matching
+    # population instead of re-sorting one page of the newest rows in the browser. A
+    # request that sends NONE of them takes byte-identical parameters into the store and
+    # gets the byte-identical base envelope back.
+    extended = sort_field is not None or sort_order is not None or status_group is not None
+
+    if status_group is not None:
+        if status:
+            # The two answer the same question with different arities. Applying both
+            # would either intersect them (silently emptying the list whenever the single
+            # status is outside the group) or pick a winner, and neither is something a
+            # caller can predict from the request.
+            raise HTTPException(
+                status_code=400,
+                detail="status and status_group are mutually exclusive; send one",
+            )
+        if status_group not in CASE_STATUS_GROUPS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown status_group '{status_group}'; "
+                    f"expected one of {sorted(CASE_STATUS_GROUPS)}"
+                ),
+            )
+
+    # An unsupported sort is answered in the DEFAULT order rather than refused: a sort is
+    # a presentation preference, and a deployment that cannot honour one should still
+    # return the operator's cases. The echo below is what keeps that honest.
+    applied_sort_field = (
+        sort_field if sort_field in CASE_SORT_FIELDS else CASE_SORT_FIELD_DEFAULT
+    )
+    applied_sort_order = (
+        sort_order if sort_order in CASE_SORT_ORDERS else CASE_SORT_ORDER_DEFAULT
+    )
+    # ``limit`` keeps its existing upper clamp exactly (including the pre-existing
+    # tolerance of a zero/negative limit). ``offset`` gains the lower bound it never had:
+    # real Elasticsearch rejects a negative ``from`` while the in-memory double slices
+    # from the END of the result and returns plausible WRONG rows, so an unbounded
+    # negative offset was a silent-corruption path on the default backend. The same
+    # ``max(0, ...)`` the compatibility ``list_window`` already applies.
+    applied_limit = min(limit, CASE_PAGE_LIMIT)
+    applied_offset = max(0, offset)
+    max_offset = max(0, CASE_RESULT_WINDOW - max(1, applied_limit))
+    if applied_offset > max_offset:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"offset {applied_offset} with limit {applied_limit} crosses the "
+                f"{CASE_RESULT_WINDOW}-row result window this endpoint pages within; "
+                f"the deepest offset for this limit is {max_offset}"
+            ),
+        )
+
     window_total_exact: bool | None = None
-    if from_ or to:
+    if from_ or to or status_group:
+        # ``status_group`` is passed ONLY when one was asked for. ``list_window`` is a
+        # non-abstract method a third-party repository MAY override, and unconditionally
+        # handing an override a keyword it predates would break a deployment that never
+        # uses the group at all.
+        group_kw: dict[str, Any] = {"status_group": status_group} if status_group else {}
         cases, total, window_total_exact = await state.cases.list_window(
             created_from=from_, created_to=to,
             status=status, source_surface=surface, entity_value=entity,
-            limit=min(limit, 200), offset=offset,
+            limit=applied_limit, offset=applied_offset,
+            sort_field=applied_sort_field, sort_order=applied_sort_order,
+            **group_kw,
         )
     else:
         cases, total = await state.cases.list(
             status=status, source_surface=surface, entity_value=entity,
-            limit=min(limit, 200), offset=offset,
+            limit=applied_limit, offset=applied_offset,
+            sort_field=applied_sort_field, sort_order=applied_sort_order,
         )
     # ADDITIVE (Round-7 W0.7): populate the read-time advisory bands (severity/impact/
     # urgency/priority) for the list surface. Fail-open per case — never 500 (#3).
     prefs = state.execution_prefs
     cases = [_with_advisory_bands(c, prefs) for c in cases]
-    return CaseListResponse(cases=cases, total=total, window_total_exact=window_total_exact)
+    payload = CaseListResponse(cases=cases, total=total, window_total_exact=window_total_exact)
+    # A request that engaged NONE of the new parameters is answered by the declared
+    # response model, exactly as before — same keys, same bytes, same object for the
+    # in-process callers that await this coroutine directly.
+    if not extended:
+        return payload
+    # A request that DID engage them gets the same envelope plus the echoes. Encoding
+    # through ``jsonable_encoder`` is the same step FastAPI's own response-model path
+    # takes, so the shared keys are byte for byte what they always were.
+    body = jsonable_encoder(payload)
+    body.update(
+        jsonable_encoder(
+            CaseListEcho(
+                sortable_fields=list(CASE_SORT_FIELDS),
+                sort_field=applied_sort_field,
+                sort_order=applied_sort_order,
+                limit_applied=applied_limit,
+                offset_applied=applied_offset,
+                max_offset=max_offset,
+                status_group_applied=status_group,
+            )
+        )
+    )
+    return JSONResponse(body)
 
 
 @router.get("/cases/{case_id}", response_model=Case)

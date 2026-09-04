@@ -26,7 +26,11 @@ from typing import Any, Awaitable, Callable
 
 from ..build_identity import stamp_new_record
 from ..config import Preferences
-from ..constants import ActionType
+from ..constants import (
+    OPEN_CASE_STATUSES,
+    TERMINAL_CASE_STATUSES,
+    ActionType,
+)
 from ..models import AuditDoc, Case, Cursor, UsageDoc
 from ..utils import parse_millis_strict, relative_to_millis_strict, truncate
 
@@ -249,6 +253,49 @@ def case_in_created_window(case: Any, lo: int | None, hi: int | None) -> bool:
     return True
 
 
+# A SCALAR name for a MULTI-status lifecycle set, resolved here from the product's own
+# status constants rather than sent as a list by the caller. Two reasons it is a scalar:
+#
+#   * the console's query helper stringifies an array into ONE comma-joined term, which a
+#     store applies as a single exact match and which therefore silently matches nothing —
+#     no error is raised at any layer, so a multi-value status filter fails invisibly; and
+#   * a set the SERVER owns cannot drift from the lifecycle taxonomy the rest of the suite
+#     decides with. The membership below is `constants.OPEN_CASE_STATUSES` /
+#     `constants.TERMINAL_CASE_STATUSES` verbatim, never a restated list.
+#
+# ``active`` rather than ``open`` deliberately: ``open`` is ALSO one concrete
+# ``CaseStatus`` value, and a group whose name collides with a member of the very
+# vocabulary it groups is a trap for both operators and readers.
+CASE_STATUS_GROUPS: dict[str, tuple[str, ...]] = {
+    "active": OPEN_CASE_STATUSES,
+    "terminal": TERMINAL_CASE_STATUSES,
+}
+
+
+def status_group_statuses(group: str | None) -> tuple[str, ...] | None:
+    """Resolve a status-group name to its statuses (``None`` when no group applies).
+
+    An UNKNOWN name also resolves to ``None`` here. That is deliberate: this helper is
+    the shared resolution step for the stores, and rejecting an unknown name is the
+    HTTP boundary's job (a store that silently applied "no filter" for a typo would
+    hand back the whole corpus and call it a lifecycle set)."""
+    if not group:
+        return None
+    return CASE_STATUS_GROUPS.get(str(group))
+
+
+def case_in_status_group(case: Any, statuses: tuple[str, ...] | None) -> bool:
+    """Is this case's status inside ``statuses``? ``None`` means "no group asked for".
+
+    The ONE in-Python definition of the group predicate, so the bundled push-downs have
+    something to be proven equal to rather than something to be assumed equal to."""
+    if statuses is None:
+        return True
+    value = getattr(case, "status", None)
+    value = getattr(value, "value", value)
+    return str(value or "") in statuses
+
+
 def window_bounds_proven(
     created_from: Any, created_to: Any, lo: Any, hi: Any
 ) -> bool:
@@ -335,6 +382,7 @@ class CaseRepository(ABC):
         *,
         created_from: str | None = None,
         created_to: str | None = None,
+        status_group: str | None = None,
         **kw: Any,
     ) -> tuple[list[Case], int, bool]:
         """:meth:`list`, additionally windowed on ``created_at`` → (cases, total, exact).
@@ -365,17 +413,32 @@ class CaseRepository(ABC):
         ``exact=True`` here. A bound that was requested but could not be read also leaves
         both bounds ``None`` and falls into the same plain-:meth:`list` branch — but the
         answer is then the whole corpus, not the requested window, so it reports
-        ``exact=False`` (see :func:`window_bounds_proven`)."""
+        ``exact=False`` (see :func:`window_bounds_proven`).
+
+        ``status_group`` is an OPTIONAL scalar naming a multi-status lifecycle set
+        (:data:`CASE_STATUS_GROUPS`). It is an explicit NAMED parameter here and is
+        consumed here — deliberately never forwarded into ``**kw`` and never added to
+        the abstract :meth:`list`, because a new keyword on an abstract method breaks
+        every third-party repository with a ``TypeError``. A repository that implements
+        only the abstract surface therefore keeps working: it takes this same bounded
+        scan, filters the group in Python against the same constants the push-downs
+        use, and says so by reporting ``exact=False`` even when NO time window was
+        requested. "Windowless but not exact" is a real state a client must be able to
+        read; it must never be presented as a complete page."""
         lo = relative_to_millis_strict(created_from) if created_from else None
         hi = relative_to_millis_strict(created_to) if created_to else None
         proven = window_bounds_proven(created_from, created_to, lo, hi)
-        if lo is None and hi is None:
+        group = status_group_statuses(status_group)
+        if lo is None and hi is None and group is None:
             cases, total = await self.list(**kw)
             return cases, total, proven
         limit = max(0, int(kw.pop("limit", 50) or 0))
         offset = max(0, int(kw.pop("offset", 0) or 0))
         scanned, _total = await self.list(limit=WINDOW_FALLBACK_SCAN, offset=0, **kw)
-        kept = [c for c in scanned if case_in_created_window(c, lo, hi)]
+        kept = [
+            c for c in scanned
+            if case_in_created_window(c, lo, hi) and case_in_status_group(c, group)
+        ]
         page = kept[offset: offset + limit] if limit else []
         return page, len(kept), False
 

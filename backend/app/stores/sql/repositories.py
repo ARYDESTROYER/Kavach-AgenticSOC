@@ -61,6 +61,7 @@ from ..base import (
     CursorRepository,
     KVStore,
     UsageRepository,
+    status_group_statuses,
     window_bounds_proven,
 )
 from ..usage import (
@@ -175,6 +176,25 @@ def _case_sort_column(sort_field: str) -> Any:
     return CaseRow.created_at
 
 
+def _case_order_by(sort_field: str, sort_order: str) -> list[Any]:
+    """The full ORDER BY term list for a case listing: primary key, then TIEBREAKER.
+
+    ``case_id`` is the table's primary key, so it is unique and totally orders any set
+    of rows that tie on the primary key. Without it the SQL standard promises nothing
+    about the order of equal keys, so ``LIMIT``/``OFFSET`` paging over a tied column
+    (``risk_score`` clusters on a handful of round values; ``created_at`` is
+    second-resolution) can repeat rows on one page and skip them on the next. SQLite
+    usually falls back to rowid order and hides this in every offline test, which is why
+    the contract is asserted on the emitted ORDER BY SHAPE, not on observed rows."""
+    descending = sort_order == "desc"
+    column = _case_sort_column(sort_field)
+    tiebreaker = CaseRow.case_id
+    return [
+        column.desc() if descending else column.asc(),
+        tiebreaker.desc() if descending else tiebreaker.asc(),
+    ]
+
+
 class SqlCaseRepository(CaseRepository):
     """Cases persisted as JSON with materialised filter/sort columns."""
 
@@ -261,8 +281,7 @@ class SqlCaseRepository(CaseRepository):
             stmt = stmt.where(CaseRow.entity_value == entity_value)
             count_stmt = count_stmt.where(CaseRow.entity_value == entity_value)
 
-        col = _case_sort_column(sort_field)
-        stmt = stmt.order_by(col.desc() if sort_order == "desc" else col.asc())
+        stmt = stmt.order_by(*_case_order_by(sort_field, sort_order))
         stmt = stmt.limit(limit).offset(offset)
 
         async with self._sm() as session:
@@ -279,6 +298,7 @@ class SqlCaseRepository(CaseRepository):
         status: str | None = None,
         source_surface: str | None = None,
         entity_value: str | None = None,
+        status_group: str | None = None,
         limit: int = 50,
         offset: int = 0,
         sort_field: str = "created_at",
@@ -320,11 +340,18 @@ class SqlCaseRepository(CaseRepository):
 
         An unresolvable BOUND is treated as absent rather than as "right now", and
         ``exact`` then reports ``False``: the applied window is wider than the one that
-        was requested (see :func:`~app.stores.base.window_bounds_proven`)."""
+        was requested (see :func:`~app.stores.base.window_bounds_proven`).
+
+        ``status_group`` pushes a MULTI-status lifecycle set down as a real ``IN``
+        predicate over the materialised, indexed ``status`` column, resolved from the
+        product's own status constants
+        (:data:`~app.stores.base.CASE_STATUS_GROUPS`). It narrows WHICH rows match and
+        therefore leaves the window's ``exact`` contract alone."""
         lo = relative_to_iso_utc_strict(created_from) if created_from else None
         hi = relative_to_iso_utc_strict(created_to) if created_to else None
         proven = window_bounds_proven(created_from, created_to, lo, hi)
-        if lo is None and hi is None:
+        group = status_group_statuses(status_group)
+        if lo is None and hi is None and group is None:
             cases, total = await self.list(
                 status=status, source_surface=source_surface, entity_value=entity_value,
                 limit=limit, offset=offset, sort_field=sort_field, sort_order=sort_order,
@@ -337,6 +364,7 @@ class SqlCaseRepository(CaseRepository):
             CaseRow.status == status if status else None,
             CaseRow.source_surface == source_surface if source_surface else None,
             CaseRow.entity_value == entity_value if entity_value else None,
+            CaseRow.status.in_(list(group)) if group is not None else None,
         ):
             if clause is not None:
                 stmt = stmt.where(clause)
@@ -346,18 +374,22 @@ class SqlCaseRepository(CaseRepository):
             CaseRow.created_at >= lo if lo is not None else None,
             CaseRow.created_at <= hi if hi is not None else None,
         ) if c is not None]
-        keep = or_(
-            CaseRow.created_at.is_(None),
-            CaseRow.created_at == "",
-            ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
-            ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
-            and_(*inside),
-        )
-        stmt = stmt.where(keep)
-        count_stmt = count_stmt.where(keep)
+        # Only a request that actually carries a TIME bound gets the never-drop window
+        # clause. A group-only request reaches this branch with no bounds at all, and
+        # emitting the clause there would be an empty ``AND`` — a no-op at best and a
+        # deprecation at worst — dressed up as a window that was never asked for.
+        if inside:
+            keep = or_(
+                CaseRow.created_at.is_(None),
+                CaseRow.created_at == "",
+                ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
+                ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
+                and_(*inside),
+            )
+            stmt = stmt.where(keep)
+            count_stmt = count_stmt.where(keep)
 
-        col = _case_sort_column(sort_field)
-        stmt = stmt.order_by(col.desc() if sort_order == "desc" else col.asc())
+        stmt = stmt.order_by(*_case_order_by(sort_field, sort_order))
         stmt = stmt.limit(limit).offset(offset)
 
         async with self._sm() as session:

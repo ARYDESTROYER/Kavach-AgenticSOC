@@ -220,6 +220,44 @@ async def _precedent_exclusions(rag: Any) -> dict[str, Any]:
     return block
 
 
+async def _precedent_text_staleness(rag: Any, cases: list) -> dict[str, Any]:
+    """Per-tier counts of precedent whose stored TEXT no longer matches the projection.
+
+    Read fail-open and FREE: one management read of the corpus, the case page this
+    endpoint already fetched as the only case source, and the ordinary per-case
+    projector. It embeds nothing and writes nothing.
+
+    Before this, stale precedent text was invisible on EVERY surface. The composition
+    report compares metadata tallies, the collapse guard is a size guard, and the
+    distribution reads metadata rows with the text discarded — so a chunk rendered by an
+    old builder tallied identically to a freshly projected one and no metric moved.
+    """
+    reader = getattr(rag, "precedent_text_staleness", None) if rag is not None else None
+    if reader is None:
+        return {
+            "available": False,
+            "reason": "this RAG service does not measure precedent text staleness",
+            "complete": False,
+            "truncated": False,
+            "scanned": 0,
+            "stale": 0,
+            "by_trust_class": {},
+        }
+    try:
+        return dict(await reader(cases))
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("precedent staleness read soft-failed: %s", exc)
+        return {
+            "available": False,
+            "reason": f"precedent text staleness could not be measured ({type(exc).__name__})",
+            "complete": False,
+            "truncated": False,
+            "scanned": 0,
+            "stale": 0,
+            "by_trust_class": {},
+        }
+
+
 async def _precedent_corpus_block(state: AppState, cases: list, store_total: int) -> dict[str, Any]:
     """Precedent-corpus health: size, per-source counts, and the explicit starvation
     flag — plus the analyst-confirmed ground truth the case history actually holds, so
@@ -243,6 +281,7 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
     projectable_after_exclusions = _projectable_precedent_records(cases, excluded_ids)
 
     available, reason, docs = await _corpus_snapshot(rag)
+    stale_text = await _precedent_text_staleness(rag, cases)
     chunks_by_source: dict[str, int] = {}
     documents_by_source: dict[str, int] = {}
     precedent_document_ids: set[str] = set()
@@ -363,6 +402,11 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
         # here so a small corpus can be attributed to a deliberate operator action rather
         # than to a broken projection.
         "exclusions": exclusions,
+        # Per-tier stale-text counts. COUNTS ONLY — no chunk text reaches this
+        # surface, and measuring it costs zero embedding calls. ``complete: false``
+        # means the measurement could not cover the whole corpus (a truncated backend
+        # read, or a case off the fetched page), so "0 stale" would be unsupportable.
+        "stale_text_chunks": stale_text,
         # The last REFUSED projection (in-process, falling back to the durable
         # record so a restart does not erase the evidence).
         "last_refusal": await _last_refusal(rag),

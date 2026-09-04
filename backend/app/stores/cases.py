@@ -21,7 +21,7 @@ from ..constants import (
 from ..es.base import BaseESClient
 from ..models import Case
 from ..utils import relative_to_iso_utc_strict
-from .base import CaseRepository, window_bounds_proven
+from .base import CaseRepository, status_group_statuses, window_bounds_proven
 
 logger = logging.getLogger("tlsoc.cases")
 
@@ -29,6 +29,36 @@ logger = logging.getLogger("tlsoc.cases")
 # lookup (#4) — including the F8 statuses (NEW/INVESTIGATING/ESCALATED/ON_HOLD), so
 # an escalated/held case still attaches its new events instead of duplicating.
 _OPEN_STATUSES = list(OPEN_CASE_STATUSES)
+
+# The FINAL, UNIQUE sort key appended to every case listing. ``case_id`` is the
+# Elasticsearch document id and is mapped ``keyword`` (``es/indices.CASES_MAPPING``), so
+# it is both sortable and unique — which is exactly what a tiebreaker has to be.
+#
+# Why it is not optional: a one-element sort array leaves the order among EQUAL primary
+# keys undefined. Real Elasticsearch resolves such ties per shard and is not obliged to
+# resolve them the same way on the next search, so ``from``/``size`` paging over a tied
+# key repeats some rows on the next page and skips others. ``risk_score`` ties hard (the
+# risk engine emits a small set of round values) and ``created_at`` is second-resolution,
+# so ties are the normal case here, not the exotic one. Neither offline backend can show
+# this — :class:`~app.es.fake.InMemoryESClient` sorts with Python's STABLE sort — which is
+# why the contract is asserted on the emitted sort SHAPE instead of on observed rows.
+CASE_SORT_TIEBREAKER = "case_id"
+
+
+def case_sort_clause(sort_field: str, sort_order: str) -> list[dict[str, dict[str, str]]]:
+    """The Elasticsearch ``sort`` array for a case listing: primary key, then tiebreaker.
+
+    ``sort_order`` is normalised to one of the two directions the DSL accepts rather
+    than interpolated verbatim: this function is the boundary where a caller-supplied
+    value becomes part of a query document, and a value real Elasticsearch cannot read
+    is a 400 for the whole listing. (The HTTP surface allow-lists the field name for the
+    same reason — the field becomes a query-document KEY, which no escaping can make
+    safe after the fact.)"""
+    order = "asc" if str(sort_order).lower() == "asc" else "desc"
+    clause = [{sort_field: {"order": order}}]
+    if sort_field != CASE_SORT_TIEBREAKER:
+        clause.append({CASE_SORT_TIEBREAKER: {"order": order}})
+    return clause
 
 
 class CaseStore(CaseRepository):
@@ -104,7 +134,7 @@ class CaseStore(CaseRepository):
             "size": limit,
             "from": offset,
             "query": {"bool": {"filter": filters}} if filters else {"match_all": {}},
-            "sort": [{sort_field: {"order": sort_order}}],
+            "sort": case_sort_clause(sort_field, sort_order),
         }
         resp = await self._es.search(CASES_READ_PATTERN, body)
         cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]
@@ -119,6 +149,7 @@ class CaseStore(CaseRepository):
         status: str | None = None,
         source_surface: str | None = None,
         entity_value: str | None = None,
+        status_group: str | None = None,
         limit: int = 50,
         offset: int = 0,
         sort_field: str = "created_at",
@@ -156,11 +187,19 @@ class CaseStore(CaseRepository):
         unreadable bound is reported, not silently resolved to ``now()``); an
         unresolvable bound is treated as absent rather than as "right now", and
         ``exact`` then reports ``False`` because the applied window is WIDER than the
-        one the caller asked for (see :func:`~app.stores.base.window_bounds_proven`)."""
+        one the caller asked for (see :func:`~app.stores.base.window_bounds_proven`).
+
+        ``status_group`` pushes a MULTI-status lifecycle set down as a real ``terms``
+        clause, resolved from the product's own status constants
+        (:data:`~app.stores.base.CASE_STATUS_GROUPS`). It is a genuine backend filter, so
+        the page is drawn from the whole matching set and ``total`` counts it — the
+        window's ``exact`` contract is untouched, because the group narrows WHICH rows
+        match, never how well the requested time bounds could be resolved."""
         lo = relative_to_iso_utc_strict(created_from) if created_from else None
         hi = relative_to_iso_utc_strict(created_to) if created_to else None
         proven = window_bounds_proven(created_from, created_to, lo, hi)
-        if lo is None and hi is None:
+        group = status_group_statuses(status_group)
+        if lo is None and hi is None and group is None:
             cases, total = await self.list(
                 status=status, source_surface=source_surface, entity_value=entity_value,
                 limit=limit, offset=offset, sort_field=sort_field, sort_order=sort_order,
@@ -174,6 +213,8 @@ class CaseStore(CaseRepository):
             filters.append({"term": {"source_surface": source_surface}})
         if entity_value:
             filters.append({"term": {"entity.value": entity_value}})
+        if group is not None:
+            filters.append({"terms": {"status": list(group)}})
         outside: list[dict[str, Any]] = []
         if lo is not None:
             outside.append({"range": {"created_at": {"lt": lo}}})
@@ -186,7 +227,7 @@ class CaseStore(CaseRepository):
             "size": limit,
             "from": offset,
             "query": query,
-            "sort": [{sort_field: {"order": sort_order}}],
+            "sort": case_sort_clause(sort_field, sort_order),
         }
         resp = await self._es.search(CASES_READ_PATTERN, body)
         cases = [Case.model_validate(h["_source"]) for h in resp.get("hits", {}).get("hits", [])]

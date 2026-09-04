@@ -202,9 +202,23 @@ describe('Overview — a11y smoke (jest-axe)', () => {
       const panel = await screen.findByTestId('kpi-drilldown');
       await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
 
+      // The budget is DERIVED from the stops this fixture actually produces, never a
+      // literal. A literal is worse than wrong here: the day a control is added, the walk
+      // simply finishes INSIDE the panel and the containment assertion below fails while
+      // saying nothing at all about the real cause.
+      const FOCUSABLE =
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]),' +
+        ' textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])';
+      const controls = panel.querySelectorAll(FOCUSABLE).length;
+      // Guard against a vacuous sweep: a panel that rendered no controls at all would
+      // make every budget sufficient and prove nothing.
+      expect(controls).toBeGreaterThan(0);
+      const budget = controls + 4;
+      expect(budget).toBeGreaterThan(controls);
+
       // Walk forward well past the panel's own controls. A focus TRAP would keep
       // cycling inside it, and a blur-to-close panel would vanish.
-      for (let i = 0; i < 12; i += 1) await userEvent.tab();
+      for (let i = 0; i < budget; i += 1) await userEvent.tab();
 
       expect(screen.getByTestId('kpi-drilldown')).toBe(panel);
       expect(tile).toHaveAttribute('aria-expanded', 'true');
@@ -241,6 +255,41 @@ describe('Overview — a11y smoke (jest-axe)', () => {
       await waitFor(() => expect(sortTrigger).toHaveAttribute('aria-expanded', 'false'));
       expect(screen.getByTestId('kpi-drilldown')).toBeInTheDocument();
       expect(tile).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('closes on Escape from EVERY control the panel renders, new ones included', async () => {
+      const { tile } = await mountStrip();
+      await userEvent.click(tile);
+      const panel = await screen.findByTestId('kpi-drilldown');
+      await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+      // The Escape guard is a CONJUNCTION: an Escape whose target is inside this
+      // section closes unconditionally, and one from outside it defers to
+      // `defaultPrevented`. Both halves bind every control. A new control that consumed
+      // Escape without leaving the subtree would have its own key swallowed AND take the
+      // panel down with it; one that portalled out without moving focus would make the
+      // panel stop closing. Rather than trusting a reading of each new control, walk to
+      // every focusable stop the panel actually renders and press Escape from it.
+      const FOCUSABLE =
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]),' +
+        ' textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])';
+      const stops = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+      expect(stops.length).toBeGreaterThan(0);
+
+      for (const stop of stops) {
+        // Reopen for each stop: Escape closes, so every iteration needs its own panel.
+        if (screen.queryByTestId('kpi-drilldown') === null) {
+          await userEvent.click(tile);
+          await screen.findByTestId('kpi-drilldown');
+        }
+        const live = screen
+          .getByTestId('kpi-drilldown')
+          .querySelector<HTMLElement>(`[data-testid="${stop.dataset.testid ?? ''}"]`);
+        (live ?? stop).focus();
+        await userEvent.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+        expect(tile).toHaveFocus();
+      }
     });
 
     it("closes on Escape while a NEIGHBOUR tile's hover card is open", async () => {
