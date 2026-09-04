@@ -220,6 +220,44 @@ async def _precedent_exclusions(rag: Any) -> dict[str, Any]:
     return block
 
 
+async def _precedent_text_staleness(rag: Any, cases: list) -> dict[str, Any]:
+    """Per-tier counts of precedent whose stored TEXT no longer matches the projection.
+
+    Read fail-open and FREE: one management read of the corpus, the case page this
+    endpoint already fetched as the only case source, and the ordinary per-case
+    projector. It embeds nothing and writes nothing.
+
+    Before this, stale precedent text was invisible on EVERY surface. The composition
+    report compares metadata tallies, the collapse guard is a size guard, and the
+    distribution reads metadata rows with the text discarded — so a chunk rendered by an
+    old builder tallied identically to a freshly projected one and no metric moved.
+    """
+    reader = getattr(rag, "precedent_text_staleness", None) if rag is not None else None
+    if reader is None:
+        return {
+            "available": False,
+            "reason": "this RAG service does not measure precedent text staleness",
+            "complete": False,
+            "truncated": False,
+            "scanned": 0,
+            "stale": 0,
+            "by_trust_class": {},
+        }
+    try:
+        return dict(await reader(cases))
+    except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
+        logger.warning("precedent staleness read soft-failed: %s", exc)
+        return {
+            "available": False,
+            "reason": f"precedent text staleness could not be measured ({type(exc).__name__})",
+            "complete": False,
+            "truncated": False,
+            "scanned": 0,
+            "stale": 0,
+            "by_trust_class": {},
+        }
+
+
 async def _precedent_corpus_block(state: AppState, cases: list, store_total: int) -> dict[str, Any]:
     """Precedent-corpus health: size, per-source counts, and the explicit starvation
     flag — plus the analyst-confirmed ground truth the case history actually holds, so
@@ -243,6 +281,7 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
     projectable_after_exclusions = _projectable_precedent_records(cases, excluded_ids)
 
     available, reason, docs = await _corpus_snapshot(rag)
+    stale_text = await _cached_precedent_staleness(rag, cases)
     chunks_by_source: dict[str, int] = {}
     documents_by_source: dict[str, int] = {}
     precedent_document_ids: set[str] = set()
@@ -363,6 +402,11 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
         # here so a small corpus can be attributed to a deliberate operator action rather
         # than to a broken projection.
         "exclusions": exclusions,
+        # Per-tier stale-text counts. COUNTS ONLY — no chunk text reaches this
+        # surface, and measuring it costs zero embedding calls. ``complete: false``
+        # means the measurement could not cover the whole corpus (a truncated backend
+        # read, or a case off the fetched page), so "0 stale" would be unsupportable.
+        "stale_text_chunks": stale_text,
         # The last REFUSED projection (in-process, falling back to the durable
         # record so a restart does not erase the evidence).
         "last_refusal": await _last_refusal(rag),
@@ -810,11 +854,14 @@ CORPUS_READ_TTL_SECONDS = 15.0
 
 _documents_read_lock = asyncio.Lock()
 _precedent_read_lock = asyncio.Lock()
+_staleness_read_lock = asyncio.Lock()
 #: ``(rag, at, value)`` for each cached read, or None before the first one.
 _documents_read_entry: tuple[Any, float, tuple[bool, str, list[dict[str, Any]]]] | None = None
 _precedent_read_entry: tuple[
     Any, float, tuple[bool, str, list[dict[str, Any]], bool]
 ] | None = None
+#: ``(rag, case-page fingerprint, at, value)`` — this one is keyed on the page too.
+_staleness_read_entry: tuple[Any, tuple[str, ...], float, dict[str, Any]] | None = None
 
 
 def _fresh(entry: tuple[Any, float, Any] | None, rag: Any, now: float) -> bool:
@@ -847,6 +894,47 @@ async def _cached_precedent_rows(
             _precedent_read_entry = (rag, now, await _precedent_metadata_rows(rag))
         available, reason, rows, truncated = _precedent_read_entry[2]  # type: ignore[index]
     return available, reason, list(rows), truncated
+
+
+async def _cached_precedent_staleness(rag: Any, cases: list) -> dict[str, Any]:
+    """``_precedent_text_staleness`` behind the SAME short TTL, and for the same reason.
+
+    The staleness measurement is free of PROVIDER cost — it embeds nothing, and a
+    tripwire test pins that — but it is not free of I/O: it forces an exclusion refresh
+    and then reads the whole corpus through ``list_all_chunks``, which on the
+    Elasticsearch store is the bounded page whose ``_source`` carries every stored
+    EMBEDDING VECTOR. That is the read this module already caches for the composition
+    cross-tab and the space audit, and running it uncached on every health-strip refresh
+    would put a third full corpus scan on the same request.
+
+    The CASE PAGE is part of the key, not just the service: this measurement is computed
+    against the page the endpoint fetched, and a caller asking about a different page is
+    asking a different question — a case that is off the page is UNDETERMINED, which is
+    the difference between "nothing is stale" and "I could not tell". Keying on the
+    service alone would answer the second question with the first one's number. Within
+    one page identity the TTL is the staleness bound, exactly as it is for the reads
+    above: a case whose content changed inside the window is picked up on the next miss.
+    """
+    global _staleness_read_entry
+    fingerprint = tuple(str(getattr(case, "case_id", "") or "") for case in cases or [])
+    async with _staleness_read_lock:
+        now = monotonic()
+        entry = _staleness_read_entry
+        fresh = (
+            entry is not None
+            and entry[0] is rag
+            and entry[1] == fingerprint
+            and (now - entry[2]) < CORPUS_READ_TTL_SECONDS
+        )
+        if not fresh:
+            _staleness_read_entry = (
+                rag,
+                fingerprint,
+                now,
+                await _precedent_text_staleness(rag, cases),
+            )
+        payload = _staleness_read_entry[3]  # type: ignore[index]
+    return dict(payload)
 
 
 def _composition_cells(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], int]:

@@ -687,6 +687,119 @@ async def precedent_exclude(
     }
 
 
+class PrecedentRepairRequest(BaseModel):
+    """Re-render stored precedent from the CURRENT builder and rewrite what drifted.
+
+    There is no selector here, and that is the design. No metadata key records which
+    generation of the builder produced a chunk's text, so the ONLY honest selector is
+    to render each case again through the same projector the projection uses and
+    compare the two strings. A free-text selector over chunk TEXT would be strictly
+    worse than the free-text metadata selector this module already refuses: precedent
+    text carries the analyst note, the model's recommended action and log-derived
+    evidence summaries, so matching prose means matching attacker- and
+    operator-influenceable content (#9).
+    """
+
+    #: DEFAULT. Resolves and reports without embedding, writing or deleting anything.
+    dry_run: bool = True
+
+
+@router.post("/rag/precedent/repair")
+async def precedent_repair(
+    body: PrecedentRepairRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("rag", "manage")),
+) -> dict[str, Any]:
+    """Repair precedent whose stored TEXT no longer matches the current projection.
+
+    ``dry_run`` (the default) reports per-tier ``scanned / current / stale /
+    undetermined / not_projecting`` counts plus ``would_repair`` and ``would_evict``,
+    and costs nothing. A real run re-embeds exactly the chunks whose re-render differs
+    and upserts them on their existing chunk id — one metered embedding per repaired
+    chunk (#6), bounded per run by a cap derived from the configured precedent window.
+
+    The ONLY removable chunk is one whose case is POSITIVELY absent from the case
+    store. An operator-EXCLUDED case and one whose analyst label was WITHDRAWN are
+    reported, never deleted: those are operator decisions and their home is the
+    exclusion API. Before any removal the evicted document id, text and metadata are
+    written to the append-only audit trail — that record is the only reconstruction
+    path, because the store upserts and a repair is idempotent and re-derivable but not
+    reversible to the prior render.
+
+    Ground truth is untouched: no feedback row, no disposition, no decision_by, no
+    status, no history rewrite (#3).
+    """
+    actor = current_username(request) or "operator"
+
+    async def _record_evicted(payload: dict[str, Any]) -> None:
+        """Write the payload BEFORE its chunk is destroyed. Raising blocks the removal.
+
+        This is the ONE place a precedent chunk's text reaches the audit trail, and it
+        is deliberate: an eviction is unrecoverable without it. ``record_strict``
+        propagates a durability failure, and the caller treats that as "no record, no
+        removal" rather than destroying evidence it could not preserve.
+        """
+        await state.audit.record_strict(
+            action_type=ActionType.CONTEXT,
+            surface="rag_precedent_repair",
+            actor=actor,
+            case_id=str(payload.get("case_id") or "") or None,
+            tool_name="precedent_evicted_chunk",
+            tool_input=payload,
+            result_summary=(
+                "evicted precedent whose case is absent from the case store "
+                f"document_id={payload.get('document_id')} "
+                f"trust_class={payload.get('trust_class')} "
+                "ground_truth_unchanged=true"
+            ),
+        )
+
+    report = await state.rag_service.repair_precedent_projection(
+        dry_run=bool(body.dry_run), on_evict=_record_evicted
+    )
+    if body.dry_run:
+        # A dry run mutates nothing, so it leaves no trail: an append-only log of
+        # "somebody looked" would bury the records that describe an actual change.
+        return report
+    try:
+        tiers = report.get("tiers") or {}
+        await state.audit.record(
+            action_type=ActionType.CONTEXT,
+            surface="rag_precedent_repair",
+            actor=actor,
+            # COUNTS, DOCUMENT IDS AND REASON CODES ONLY. The evicted-payload record
+            # above is the deliberate, narrow exception and is scoped to the delete
+            # path alone; a summary row must never carry corpus text.
+            result_summary=(
+                f"repaired the precedent projection scanned={int(report.get('scanned') or 0)} "
+                f"repaired={int(report.get('repaired') or 0)} "
+                f"evicted={int(report.get('evicted') or 0)} "
+                f"remaining={int(report.get('remaining') or 0)} "
+                f"complete={bool(report.get('complete'))} "
+                f"refused={bool(report.get('refused'))} "
+                f"reason_code={str(report.get('reason_code') or '')} "
+                + " ".join(
+                    f"{name}.stale={int(tier.get('stale') or 0)}"
+                    for name, tier in sorted(tiers.items())
+                )
+                + " ground_truth_unchanged=true"
+            ),
+            tool_name="precedent_repair",
+            tool_input={
+                "repaired_documents": list(report.get("repaired_documents") or []),
+                "evicted_documents": list(report.get("evicted_documents") or []),
+                "incomplete_evictions": list(report.get("incomplete_evictions") or []),
+                # Written, but not visible on the verifying read-back. Document ids
+                # only, like every other list here.
+                "unverified_repairs": list(report.get("unverified_repairs") or []),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — the repair already stands
+        logger.warning("precedent repair audit failed: %s", exc)
+    return report
+
+
 @router.delete("/rag/precedent/exclusions/{case_id}")
 async def precedent_restore(
     case_id: str,

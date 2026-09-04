@@ -2205,6 +2205,32 @@ class PrecedentFutilityConfig(BaseModel):
     max_auto_close_rate: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
+class PrecedentRepairConfig(BaseModel):
+    """Bounds on the EXPLICIT, operator-invoked precedent TEXT-repair pass.
+
+    Deliberately NOT on ``PrecedentWindowConfig`` and NOT on
+    ``UnconfirmedPrecedentConfig``: both of those are dumped into the corpus SOURCE
+    SIGNATURE, so a field added there changes the signature bytes for every
+    deployment on upgrade and re-embeds the whole corpus at the operator's expense.
+    These are bounds on a maintenance pass, not a projection policy, so they must
+    never be able to trigger a reprojection.
+
+    Both thresholds are ADAPTIVE by default: ``0`` means "derive it from the
+    configured precedent window", so a deployment running a larger window gets a
+    proportionally larger allowance without anybody encoding one estate's volume here.
+
+    Nothing in this block is read by ``engine.case_manager.decide()`` (#3).
+    """
+
+    #: How many chunks ONE run may evict before the collapse guard even considers the
+    #: run large. ``0`` derives it from the precedent window size.
+    eviction_floor: int = Field(default=0, ge=0, le=100000)
+    #: The share of a tier's STORED chunks one run may evict. Combined with the floor
+    #: by AND, so lowering this cannot open the guard: at ``0.0`` EVERY eviction is
+    #: above the share and the floor alone decides. There is no value that disables it.
+    eviction_fraction: float = Field(default=0.25, ge=0.0, le=1.0)
+
+
 class PrecedentConfig(BaseModel):
     """Rule-identity precedent: promotion, window fairness and futility reporting.
 
@@ -2214,6 +2240,9 @@ class PrecedentConfig(BaseModel):
     promotion: PrecedentPromotionConfig = Field(default_factory=PrecedentPromotionConfig)
     window: PrecedentWindowConfig = Field(default_factory=PrecedentWindowConfig)
     futility: PrecedentFutilityConfig = Field(default_factory=PrecedentFutilityConfig)
+    #: Bounds on the explicit text-repair pass. Not part of the corpus source
+    #: signature (see :class:`PrecedentRepairConfig`).
+    repair: PrecedentRepairConfig = Field(default_factory=PrecedentRepairConfig)
     # How long the per-rule corpus distribution may be reused before it is recomputed.
     # 0 disables the cache (recompute on every investigation).
     distribution_ttl_seconds: int = Field(default=300, ge=0, le=3600)

@@ -2552,6 +2552,41 @@ export interface CasesResponse {
    * infer truncation from `cases.length >= 200` when it asked for a window.
    */
   window_total_exact?: boolean | null;
+
+  // ---- Paging / sort ECHOES --------------------------------------------- //
+  // Present ONLY on a response to a request that engaged one of the paging/sort
+  // parameters (`sort_field` / `sort_order` / `status_group`). A request that sends
+  // none of them receives the byte-identical legacy envelope, so every field below is
+  // optional and a client must treat absence as "this server was not asked".
+
+  /**
+   * The fields THIS deployment can sort a case listing by. The drill-down builds its
+   * sort menu from this rather than from a client-side literal, so a deployment whose
+   * store supports a different set gets the right menu with no client change.
+   */
+  sortable_fields?: string[] | null;
+  /**
+   * What the server actually sorted by. A request that asked for a field outside
+   * `sortable_fields` is answered in the DEFAULT order, and this is how a client finds
+   * out rather than believing its sort was honoured.
+   */
+  sort_field?: string | null;
+  sort_order?: string | null;
+  /**
+   * The limit the server actually applied, after its own clamp. Without this a client
+   * that asked for more than the server serves cannot tell a CLAMP from a small result
+   * set — the clamp emits no error, no header and no other signal.
+   */
+  limit_applied?: number | null;
+  offset_applied?: number | null;
+  /**
+   * The deepest `offset` this endpoint accepts for `limit_applied`. Offset paging on
+   * the bundled Elasticsearch backend has a hard result-window ceiling; a client uses
+   * this to stop asking rather than to discover the ceiling as an error.
+   */
+  max_offset?: number | null;
+  /** The multi-status lifecycle group that was applied, if any. */
+  status_group_applied?: string | null;
 }
 
 // --------------------------------------------------------------------------- //

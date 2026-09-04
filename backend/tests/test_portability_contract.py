@@ -24,6 +24,7 @@ Keep this file fast and import-light.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -220,4 +221,213 @@ def test_metrics_module_has_no_absolute_date_literal() -> None:
         "outage or backfill window genuinely has to be excluded, that window is "
         "CONFIG (a Preferences field an operator sets for their own environment), "
         "never a literal compiled into shipped source."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The precedent TEXT-REPAIR selector must stay derive-and-compare.
+# --------------------------------------------------------------------------- #
+RAG_MODULE = BACKEND_ROOT / "app" / "tools" / "rag.py"
+
+# The functions that make up the explicit precedent text-repair pass. Named rather
+# than pattern-matched so a rename has to come here and be thought about.
+REPAIR_FUNCTIONS = (
+    "repair_precedent_projection",
+    "precedent_text_staleness",
+    "_classify_precedent_text",
+    "_reprojected_precedent_item",
+    # Renamed from ``_current_precedent_text`` when the migration path was fixed to
+    # carry text and metadata TOGETHER: it returns the whole projected item now, so a
+    # caller cannot adopt one half of a rendering. Same code, same coverage.
+    "_current_precedent_projection",
+    "_tally_precedent_findings",
+)
+
+# Ways of asking "does this text contain that". None of them belongs in a selector
+# whose only legitimate question is "does the current builder render exactly this".
+TEXT_SEARCH_METHODS = frozenset(
+    {
+        "startswith",
+        "endswith",
+        "find",
+        "rfind",
+        "index",
+        "rindex",
+        "count",
+        "lower",
+        "upper",
+        "casefold",
+        "search",
+        "match",
+        "fullmatch",
+        "findall",
+        "finditer",
+        "sub",
+        "split",
+    }
+)
+
+# A SQL wildcard predicate, in the one shape that can appear in shipped source.
+SQL_LIKE = re.compile(r"\bLIKE\b")
+
+# The length above which a spaced string literal is PROSE rather than a key or a
+# separator. Below it, a substring test against rendered precedent produces noise
+# ("at" is inside "Analyst"), which is why the derived check below applies only to
+# literals that are long enough to be a template fragment.
+PROSE_LITERAL_MIN_CHARS = 8
+
+_TEACH_REPAIR_SELECTOR = (
+    "The precedent repair selector is DERIVE-AND-COMPARE: render the case again "
+    "through the same projector the projection uses, and compare the two strings. It "
+    "cannot be a prose match, and that is not a style preference.\n\n"
+    "`_unconfirmed_case_text` renders the model's verdict sentence UNCONDITIONALLY for "
+    "every lower-trust chunk, while `test_precedent_corpus.py` asserts that exact "
+    "phrase never appears in the confirmed tier. One phrase, two opposite meanings — "
+    "so a substring selector on it deletes a whole trust tier, and only on the "
+    "deployments that enabled that tier. Confirmed-tier text additionally carries the "
+    "analyst note, the model's recommended action and log-derived evidence summaries, "
+    "so any selector over chunk text is a selector over attacker- and "
+    "operator-influenceable content (#9).\n\n"
+    "SHAPE, never vocabulary: there is no blocklist here. The prose check below is "
+    "DERIVED from what the product's own builders render today, so it stays true for "
+    "any future template."
+)
+
+
+def _repair_function_nodes() -> dict[str, ast.AST]:
+    """Every repair function's AST, located by name in the real module source."""
+    tree = ast.parse(RAG_MODULE.read_text(encoding="utf-8"))
+    found: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in REPAIR_FUNCTIONS:
+                found[node.name] = node
+    missing = sorted(set(REPAIR_FUNCTIONS) - set(found))
+    assert not missing, (
+        f"the repair lint cannot find {missing} in {RAG_MODULE.name}; a rename must "
+        "update REPAIR_FUNCTIONS or this lint silently checks nothing"
+    )
+    return found
+
+
+def _string_constants(node: ast.AST) -> list[str]:
+    """Every string literal in a function EXCEPT its docstring."""
+    docstring = ast.get_docstring(node, clean=False) if isinstance(
+        node, (ast.FunctionDef, ast.AsyncFunctionDef)
+    ) else None
+    out: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+            if docstring is not None and child.value == docstring:
+                continue
+            out.append(child.value)
+    return out
+
+
+def test_the_precedent_repair_selector_is_not_a_text_match() -> None:
+    """No containment test, no string-search call, no regex, no SQL wildcard."""
+    offences: list[str] = []
+    for name, node in sorted(_repair_function_nodes().items()):
+        for child in ast.walk(node):
+            if isinstance(child, ast.Compare):
+                operands = [child.left, *child.comparators]
+                literal = any(
+                    isinstance(op, ast.Constant) and isinstance(op.value, str)
+                    for op in operands
+                )
+                if literal and any(
+                    isinstance(op, (ast.In, ast.NotIn)) for op in child.ops
+                ):
+                    offences.append(f"{name}: substring/containment test on a literal")
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+                if child.func.attr in TEXT_SEARCH_METHODS:
+                    offences.append(f"{name}: text-search call .{child.func.attr}()")
+            if isinstance(child, ast.Name) and child.id == "re":
+                offences.append(f"{name}: regular-expression matching")
+        for literal in _string_constants(node):
+            if SQL_LIKE.search(literal):
+                offences.append(f"{name}: SQL LIKE predicate in {literal!r}")
+
+    assert not offences, (
+        "Precedent repair uses a text match:\n  "
+        + "\n  ".join(sorted(set(offences)))
+        + "\n\n"
+        + _TEACH_REPAIR_SELECTOR
+    )
+
+
+def test_the_precedent_repair_carries_no_projection_template_prose() -> None:
+    """No literal in the repair is a fragment of what the projectors render.
+
+    DERIVED, not enumerated: both tiers are rendered here from a synthetic case and
+    the repair's own literals are checked against those renderings. A future template
+    change moves the reference automatically, and a deployment that has never heard of
+    this vocabulary gets the same verdict.
+    """
+    renderings = " \n ".join(_rendered_precedent_tiers()).lower()
+    offences: list[str] = []
+    for name, node in sorted(_repair_function_nodes().items()):
+        for literal in _string_constants(node):
+            candidate = literal.strip()
+            if len(candidate) < PROSE_LITERAL_MIN_CHARS or " " not in candidate:
+                continue
+            if candidate.lower() in renderings:
+                offences.append(f"{name}: {literal!r}")
+
+    assert not offences, (
+        "A repair literal reproduces projection template prose:\n  "
+        + "\n  ".join(sorted(set(offences)))
+        + "\n\n"
+        + _TEACH_REPAIR_SELECTOR
+    )
+
+
+def test_the_repair_derives_through_the_shared_projectors() -> None:
+    """The positive half: the repair must CALL the projectors, not re-implement them.
+
+    A second renderer would drift from the projection it is supposed to converge on,
+    and the drift would be invisible for exactly the same reason the original defect
+    was — nothing records which generation produced a chunk's text.
+    """
+    nodes = _repair_function_nodes()
+    called = {
+        child.func.attr
+        for node in nodes.values()
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+    }
+    for projector in ("_resolved_case_item", "_unconfirmed_case_item"):
+        assert projector in called, (
+            f"the repair does not call {projector}; re-rendering must go through the "
+            "SAME projector the projection uses or the two will disagree"
+        )
+    assert "_is_unconfirmed" in called, (
+        "tier must be resolved through the EXISTING retrieval predicate; a second "
+        "tier test can disagree with how retrieval actually treats the chunk"
+    )
+
+
+def _rendered_precedent_tiers() -> tuple[str, str]:
+    """What each precedent tier renders TODAY, for one synthetic case."""
+    from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface, Verdict
+    from app.models import Case, Entity, EvidenceItem
+    from app.tools.rag import RagService
+
+    case = Case(
+        case_id="case-lint",
+        cluster_signature="sig:lint",
+        source_surface=SourceSurface.AUTOMATED_SCAN,
+        entity=Entity(type=EntityType.IP, value="198.51.100.1"),
+        rule_ids=["portable_rule_id"],
+        verdict=Verdict.FALSE_POSITIVE,
+        confidence=0.5,
+        risk_score=1.0,
+        status=CaseStatus.CLOSED,
+        decision_by=DecisionBy.AGENT,
+        evidence=[EvidenceItem(summary="synthetic")],
+        recommended_action="none",
+    )
+    return (
+        RagService._resolved_case_text(case, "false_positive", "synthetic"),
+        RagService._unconfirmed_case_text(case, "false_positive"),
     )
