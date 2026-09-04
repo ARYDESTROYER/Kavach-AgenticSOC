@@ -12,6 +12,43 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**Repairing a corpus that could only be repaired forward.** The precedent projection is a
+bounded window, so a change to the chunk TEXT repaired only what the window happened to
+re-select; everything older kept the old rendering permanently, and the migration path
+carried it across every future embedding change by re-embedding the stored text verbatim.
+No metadata key records a chunk's text generation, so re-render-and-compare is the only
+selector available — the shipped builder is its own oracle, which also means this class of
+drift cannot recur silently. A prose selector was never an option: the lower-trust tier
+legitimately renders the very phrase a substring match would have keyed on, so a text sweep
+would have deleted that entire tier on any deployment that enabled it.
+
+`RagService.repair_precedent_projection` is a separate, explicitly-invoked pass that reads
+the corpus once, classifies each chunk per trust tier, re-embeds and upserts in place where
+the rendering has moved, and reports the rest. Eviction is deliberately narrow — only a case
+positively absent from the case store, with the evicted payload written to the append-only
+trail before removal and the removal confirmed by re-read. An excluded or label-withdrawn
+case is reported, never deleted: those are operator decisions whose home is the exclusion
+API. Repair is idempotent and re-derivable, but it is **not** reversible to the prior
+rendering, and the prior rendering is by definition the stale one.
+
+**A drill-down that answered whole-population questions from one page.** The Overview KPI
+panel read the newest rows and then computed populations, facet menus and "highest risk"
+over them, so anything past the first page was unreachable and a cohort present only outside
+it could not be discovered. It now sorts server-side behind a route-level allowlist, pages by
+offset under a pinned head, resolves multi-status populations from the product's own status
+constants server-side, and seeds its severity menu from the whole-window histogram. The
+footer says which narrowings were evaluated over the rows read rather than the population,
+and the drill-through carries the operator's filters into Cases and discloses anything it
+had to drop.
+
+The allowlist is a security fix, not a nicety: the Elasticsearch case store interpolated the
+sort field directly into the query DSL, the SQL store allowlisted only by accident of a
+fallback, and the in-memory test double accepts any key — so the offline suite would have
+passed on a field that fails in production. Both bundled stores also gained a unique sort
+tiebreaker, without which offset paging over tied scores repeats and skips rows on real
+Elasticsearch and PostgreSQL while both offline backends hide it.
+
+
 **The self-running deployment that stopped closing cases.** A field report from a
 long-running autonomous instance traced a fall from roughly 96% auto-close to zero,
 with no operator-visible signal anywhere in the product. The cause was not one bug but

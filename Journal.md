@@ -10774,3 +10774,62 @@
 - Next: review the two places where I deliberately diverged from the proposed fix (the resume
   refusal in place of a durable per-attempt spend carry-forward, and the single `replay` ledger
   surface in place of per-run keys) before merge.
+
+### 2026-09-02 12:20Z — orchestrator (Opus) — Precedent corpus repair + KPI drill-down depth
+- Context: two asks from an operator brief — repair the stale precedent projection (Ask 1) and
+  give the Overview KPI drill-down real population depth (Ask 2). Run as a gated staged workflow:
+  recon → gate → spec → serial implement → blind tests → context-free verify → fix.
+- Did:
+  - **Stage 0 recon (2 read-only agents).** Established that Ask 1's EVICTION path already ships
+    end to end (library call, undo, routes, three window-derived caps, dry-run, per-case audit,
+    `rag:manage` gate, ~40 tests) and only REPAIR was missing; and that three of Ask 2's six
+    sub-asks already ship (the three-valued footer, the stores' sort half, the gate-series
+    backend). Also found two live hazards the brief did not: `cases.py` interpolates the sort
+    field straight into the query DSL with no allowlist and the in-memory double masks it, and
+    `UnconfirmedPrecedentConfig` feeds `_source_signature` unguarded with no pinning test.
+  - **Stage 0.5 gate.** Both lanes declared OpenAPI-visible changes and their file lists
+    intersected on five artefacts → ruled STRICTLY SERIAL, backend first. The five shared files
+    were removed from both lanes; the orchestrator regenerated the generated pair once at the
+    rejoin and wrote Journal/CHANGELOG itself.
+  - **Stage 1 `tmp/SPEC.md`** — 98 criteria (A1–A41, B1–B48, X1–X9), each tagged
+    `[CMD]`/`[TEST-FAKE]`/`[OPERATOR]`, containing **zero numeric literals** so no
+    reference-deployment number could reach a threshold, fixture or assertion.
+  - **Ask 1.** `RagService.repair_precedent_projection` — a separate, explicitly-invoked pass;
+    one-pass corpus read; four-way classification per trust tier; derive-and-compare selector
+    (`render(current builder, case) != stored text`), because no metadata key records a chunk's
+    text generation. Re-embed + upsert on the unchanged `doc_id`; narrow eviction only for a case
+    positively absent from the case store, payload audited before removal, removal verified by
+    re-read. Own collapse guard, truncation and embedding-space refusals, cap derived from the
+    configured window. `_preserved_resolved_case_items` now re-derives, closing the migration hole.
+  - **Ask 2.** Route-level sort allowlist above both stores (the ES store interpolates the field
+    into the DSL), a unique tiebreaker in both bundled stores asserted on emitted sort SHAPE,
+    bounded offset paging under a pinned head with dedupe and echoed effective limit, a scalar
+    `status_group` the server resolves from its own constants (never a client-sent list — the
+    query helper comma-joins arrays into one term that matches nothing), session/window-scoped
+    facet menus, a page-aware footer naming client-side narrowings, and a context-carrying
+    drill-through that discloses what it drops.
+  - **Stage 3.** 56 tests written from the spec alone by an agent barred from the nine
+    implementation files. **Zero divergences.** It cleared two candidate findings by measurement.
+  - **Stage 4.** One context-free verifier (diff + criteria only): **96 SATISFIED, 1 PARTIAL,
+    0 NOT SATISFIED, 1 DEFERRED**. It caught that the A33 migration fix re-derived TEXT but kept
+    STORED metadata while the repair merges both — so a migrated chunk could carry current text
+    beside a stale `rule_identity`/`trust_class`, and the text-only selector would then read it
+    CURRENT forever. Fixed structurally: the helper returns the whole projected item, so a caller
+    cannot adopt half a rendering. Also fixed: repair success was inferred from a write call that
+    returns its input length regardless of what persisted (now verified by read-back, with
+    unverified reported rather than refused); the diagnostics staleness read now shares the
+    neighbouring TTL cache; two report fields renamed to what they count.
+- Tests: backend **3621 passed, 4 skipped, 3 deselected**, exit 0 (HEAD was 3494 collected/188
+  files; now 193 files). Console **319 files / 2289 passed**, zero stderr. `gates` 6/6, `lint`
+  0/0, `build` clean (entry 393.16 kB), `check:types` no drift **with `TLSOC_REQUIRE_TYPEGEN=1`**
+  so it could not skip silently. **#3 re-verified: `case_manager.py` md5
+  `212873cd13d822a7b64752635285ff1f`; `risk.py`, `signatures.py` and
+  `deploy/docker-compose.agnostic.yml` at zero diff.** P5 audit clean — only two existing test
+  files touched, two removed lines total, one a comment and one the sanctioned derived-Tab-budget
+  re-pin.
+- Status: done, awaiting review. No close-rate target was set, measured or claimed anywhere;
+  delivering withheld evidence may lower a close rate and that is the system getting more correct.
+- Next: the optional gate-series histogram (B40) was deliberately skipped — its backend ships with
+  zero consumers, and wiring it needs a new panel fetch that would disturb six existing test
+  mocks. Two accepted-and-documented items: the migration's per-case read fan-out, and the head
+  pin's exclusion from the narrowing disclosure.
