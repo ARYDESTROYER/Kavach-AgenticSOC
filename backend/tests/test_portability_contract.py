@@ -236,7 +236,10 @@ REPAIR_FUNCTIONS = (
     "precedent_text_staleness",
     "_classify_precedent_text",
     "_reprojected_precedent_item",
-    "_current_precedent_text",
+    # Renamed from ``_current_precedent_text`` when the migration path was fixed to
+    # carry text and metadata TOGETHER: it returns the whole projected item now, so a
+    # caller cannot adopt one half of a rendering. Same code, same coverage.
+    "_current_precedent_projection",
     "_tally_precedent_findings",
 )
 

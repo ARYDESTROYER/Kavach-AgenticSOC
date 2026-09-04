@@ -281,7 +281,7 @@ async def _precedent_corpus_block(state: AppState, cases: list, store_total: int
     projectable_after_exclusions = _projectable_precedent_records(cases, excluded_ids)
 
     available, reason, docs = await _corpus_snapshot(rag)
-    stale_text = await _precedent_text_staleness(rag, cases)
+    stale_text = await _cached_precedent_staleness(rag, cases)
     chunks_by_source: dict[str, int] = {}
     documents_by_source: dict[str, int] = {}
     precedent_document_ids: set[str] = set()
@@ -854,11 +854,14 @@ CORPUS_READ_TTL_SECONDS = 15.0
 
 _documents_read_lock = asyncio.Lock()
 _precedent_read_lock = asyncio.Lock()
+_staleness_read_lock = asyncio.Lock()
 #: ``(rag, at, value)`` for each cached read, or None before the first one.
 _documents_read_entry: tuple[Any, float, tuple[bool, str, list[dict[str, Any]]]] | None = None
 _precedent_read_entry: tuple[
     Any, float, tuple[bool, str, list[dict[str, Any]], bool]
 ] | None = None
+#: ``(rag, case-page fingerprint, at, value)`` — this one is keyed on the page too.
+_staleness_read_entry: tuple[Any, tuple[str, ...], float, dict[str, Any]] | None = None
 
 
 def _fresh(entry: tuple[Any, float, Any] | None, rag: Any, now: float) -> bool:
@@ -891,6 +894,47 @@ async def _cached_precedent_rows(
             _precedent_read_entry = (rag, now, await _precedent_metadata_rows(rag))
         available, reason, rows, truncated = _precedent_read_entry[2]  # type: ignore[index]
     return available, reason, list(rows), truncated
+
+
+async def _cached_precedent_staleness(rag: Any, cases: list) -> dict[str, Any]:
+    """``_precedent_text_staleness`` behind the SAME short TTL, and for the same reason.
+
+    The staleness measurement is free of PROVIDER cost — it embeds nothing, and a
+    tripwire test pins that — but it is not free of I/O: it forces an exclusion refresh
+    and then reads the whole corpus through ``list_all_chunks``, which on the
+    Elasticsearch store is the bounded page whose ``_source`` carries every stored
+    EMBEDDING VECTOR. That is the read this module already caches for the composition
+    cross-tab and the space audit, and running it uncached on every health-strip refresh
+    would put a third full corpus scan on the same request.
+
+    The CASE PAGE is part of the key, not just the service: this measurement is computed
+    against the page the endpoint fetched, and a caller asking about a different page is
+    asking a different question — a case that is off the page is UNDETERMINED, which is
+    the difference between "nothing is stale" and "I could not tell". Keying on the
+    service alone would answer the second question with the first one's number. Within
+    one page identity the TTL is the staleness bound, exactly as it is for the reads
+    above: a case whose content changed inside the window is picked up on the next miss.
+    """
+    global _staleness_read_entry
+    fingerprint = tuple(str(getattr(case, "case_id", "") or "") for case in cases or [])
+    async with _staleness_read_lock:
+        now = monotonic()
+        entry = _staleness_read_entry
+        fresh = (
+            entry is not None
+            and entry[0] is rag
+            and entry[1] == fingerprint
+            and (now - entry[2]) < CORPUS_READ_TTL_SECONDS
+        )
+        if not fresh:
+            _staleness_read_entry = (
+                rag,
+                fingerprint,
+                now,
+                await _precedent_text_staleness(rag, cases),
+            )
+        payload = _staleness_read_entry[3]  # type: ignore[index]
+    return dict(payload)
 
 
 def _composition_cells(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], int]:

@@ -250,10 +250,19 @@ curl -s -X POST localhost:8088/api/rag/precedent/repair \
 ```
 
 Each repaired chunk costs exactly one embedding, through the single gateway and the
-cost ledger. A byte-identical re-render costs nothing. Embeddings are metered but are
-not pre-flight budget-gated, so the run carries its own bound — four times the
-configured precedent window — and reports `remaining` when it hits it. **Re-run until
-`remaining` is 0**; the pass is resumable and each run re-classifies from scratch.
+cost ledger — that is what `embedded_chunks` reports; `embedding_calls` counts gateway
+round trips, and one batch is one call, so the two are different numbers and only the
+first is proportional to spend. A byte-identical re-render costs nothing. Embeddings
+are metered but are not pre-flight budget-gated, so the run carries its own bound —
+four times the configured precedent window — and reports `remaining` when it hits it.
+**Re-run until `remaining` is 0**; the pass is resumable and each run re-classifies
+from scratch.
+
+`repaired` is a VERIFIED count. Both mutations are confirmed by re-reading the corpus
+afterwards rather than trusting the store's own return value, so a chunk that was
+written but does not come back is listed in `unverified_repairs`, stays counted as
+outstanding, and keeps `complete`/`ok` false. Re-running is the fix: the pass will
+simply classify it stale again.
 
 **3. Refusals are answers, not errors.** A refusal reports `refused: true` with a
 `reason_code` and changes nothing:
@@ -279,6 +288,12 @@ Ground truth is never touched: no feedback row, no disposition, no `decision_by`
 status, no history rewrite. To remove a precedent *deliberately*, use the exclusion API
 (§ `POST /api/rag/precedent/exclusions`) — that is the supported path, and it is the
 only one that holds across a reprojection.
+
+**5. Expect extra case-store reads during an embedding-model migration.** Changing the
+embedding model re-derives the precedent it carries forward, so a reseed now issues one
+case-store read per distinct archived-precedent case (memoised within the run, so it is
+bounded by the number of distinct cases, not by chunks) where it previously issued
+none — plan a migration on an estate with a long archived-precedent tail accordingly.
 
 ## 5. Scaling notes
 

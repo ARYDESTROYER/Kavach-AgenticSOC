@@ -1460,8 +1460,9 @@ class RagService:
         whatever generation of the builder happened to write the chunk. An out-of-window
         chunk therefore carried its stale rendering through every future migration, and
         no amount of repairing the corpus could reach it. It now routes through the SAME
-        derive-and-compare the explicit repair uses and falls back to the STORED text
-        only when the case is unavailable — unreadable, gone, or no longer projecting —
+        derive-and-compare the explicit repair uses and falls back to the STORED chunk
+        — its text AND its metadata, together, never a half-derived mix of the two —
+        only when the case is unavailable (unreadable, gone, or no longer projecting),
         because a migration must never drop a chunk it cannot re-derive.
 
         It also needs its own exclusion check: without one, the first embedding-model
@@ -1471,7 +1472,7 @@ class RagService:
         predicate, and now the projector, live on the service.
         """
         out: list[dict[str, Any]] = []
-        derived: dict[tuple[str, str], str | None] = {}
+        derived: dict[tuple[str, str], dict[str, Any] | None] = {}
         for chunk in chunks:
             if chunk.source != RESOLVED_CASE_SOURCE:
                 continue
@@ -1498,12 +1499,33 @@ class RagService:
                 )
                 key = (case_id, tier)
                 if key not in derived:
-                    derived[key] = await self._current_precedent_text(
+                    derived[key] = await self._current_precedent_projection(
                         case_id, tier, metadata
                     )
                 current = derived[key]
-                if current is not None:
-                    text = current
+                current_text = str((current or {}).get("text") or "")
+                if current is not None and current_text:
+                    # TEXT AND METADATA MOVE TOGETHER, exactly as the explicit repair
+                    # moves them. Adopting the fresh sentence while keeping the stored
+                    # ``verdict``/``outcome``/``status``/``note``/``rule_identity``/
+                    # ``trust_class`` would leave a HALF-repaired chunk — and the
+                    # repair's selector compares TEXT, so that chunk would then read as
+                    # CURRENT and its stale metadata would be permanently unreachable by
+                    # the one pass built to find drift. Two of those keys steer
+                    # retrieval, so the mismatch is not cosmetic.
+                    #
+                    # The merge direction mirrors the repair's: STORED keys neither
+                    # projector mints are carried forward (the bulk-ratification stamp
+                    # is written by the bootstrap indexer alone, and it is what keeps a
+                    # ratified MODEL verdict distinguishable from independent analyst
+                    # ground truth — and it is a selectable exclusion key, so dropping
+                    # it would silently stop an operator's saved selection matching),
+                    # and the projector wins on collision. ``document_id`` is re-pinned
+                    # afterwards because the stored chunk's document identity is the one
+                    # this migration must preserve.
+                    text = current_text
+                    metadata = {**metadata, **dict(current.get("metadata") or {})}
+                    metadata["document_id"] = document_id
             out.append(
                 {
                     "text": text,
@@ -3846,7 +3868,13 @@ class RagService:
     def _repair_config(self) -> "PrecedentRepairConfig":
         """The repair bounds block (falls back to shipped defaults if absent)."""
         cfg = getattr(getattr(self._prefs, "precedent", None), "repair", None)
-        if cfg is None:  # pragma: no cover - a stored pre-block preference
+        if cfg is None:  # pragma: no cover - see below: not a stored-config case
+            # NOT "a preference stored before this block existed": the field carries a
+            # ``default_factory``, so validation refills it and a stored configuration
+            # written without the key still arrives here complete. This branch exists
+            # only for a caller that hands the service an object which is not a
+            # validated ``Preferences`` at all, which is why it is unreachable from
+            # the product's own configuration path.
             from ..config import PrecedentRepairConfig
 
             return PrecedentRepairConfig()
@@ -3905,15 +3933,23 @@ class RagService:
             )
         return self._resolved_case_item(case)
 
-    async def _current_precedent_text(
+    async def _current_precedent_projection(
         self, case_id: str, tier: str, stored: dict[str, Any]
-    ) -> str | None:
-        """What the CURRENT builder renders for this case, or ``None`` if unavailable.
+    ) -> dict[str, Any] | None:
+        """What the CURRENT projector renders for this case, or ``None`` if unavailable.
+
+        Returns the WHOLE item — text and metadata together — and never one half of
+        it. The two are one rendering of one case: a caller that adopted the fresh
+        text while keeping the stored metadata would leave a chunk whose sentence
+        says one thing and whose ``verdict``/``outcome``/``rule_identity`` say
+        another, and (worse) would make that chunk read as CURRENT to the
+        derive-and-compare selector, which compares text. The mismatch would then be
+        permanently unreachable by the one pass built to find drift.
 
         Collapses "unreadable", "absent" and "no longer projects" into one ``None``
         on purpose: the single caller — the vector-space migration's preserved-items
-        path — must FALL BACK to the stored text for all three, never drop the chunk.
-        The explicit repair keeps those three apart because only one of them may delete.
+        path — must FALL BACK to the stored chunk for all three, never drop it. The
+        explicit repair keeps those three apart because only one of them may delete.
         """
         if self._cases is None:
             return None
@@ -3926,10 +3962,7 @@ class RagService:
             return None
         if case is None:
             return None
-        item = self._reprojected_precedent_item(case, tier, stored)
-        if item is None:
-            return None
-        return str(item.get("text") or "") or None
+        return self._reprojected_precedent_item(case, tier, stored)
 
     async def _classify_precedent_text(
         self,
@@ -4183,6 +4216,14 @@ class RagService:
         mind" into data loss. Removal is verified by RE-READ through the existing
         fail-closed helper, never inferred from the delete's return value, which answers
         "the store raised" with the very same shape it uses for "no such document".
+
+        **BOTH MUTATIONS ARE VERIFIED BY RE-READ.** The same argument applies to a
+        repair: ``_embed_and_add`` reports how many chunks it handed to the store, not
+        how many the store kept, so a repaired chunk is counted only once a read-back
+        shows the new text under its own chunk id. Anything the read-back cannot show —
+        including anything a truncated read could not reach — is reported in
+        ``unverified_repairs`` and left counted as outstanding, so a partial write can
+        never surface as ``ok: true``.
         """
         cap = self._repair_cap()
         report: dict[str, Any] = {
@@ -4214,7 +4255,10 @@ class RagService:
             "repaired": 0,
             "evicted": 0,
             "remaining": 0,
+            # Gateway calls, and the chunks those calls embedded. One batch is one
+            # call; the ledgered spend is one embedding PER CHUNK.
             "embedding_calls": 0,
+            "embedded_chunks": 0,
             "evictions_unrecorded": 0,
             "tiers": {
                 TRUST_ANALYST_CONFIRMED: _empty_repair_tier(),
@@ -4223,6 +4267,9 @@ class RagService:
             "repaired_documents": [],
             "evicted_documents": [],
             "incomplete_evictions": [],
+            #: Written, but not visible on the read-back that followed. Counted as
+            #: outstanding rather than repaired.
+            "unverified_repairs": [],
         }
 
         def _refuse(code: str, reason: str) -> dict[str, Any]:
@@ -4420,7 +4467,7 @@ class RagService:
         if to_repair:
             items = [dict(finding.item or {}) for finding in to_repair]
             try:
-                written = await self._embed_and_add(items)
+                await self._embed_and_add(items)
             except EmbeddingSpaceMismatch as exc:
                 # INHERITED, never bypassed: ``_embed_items`` validates the whole batch
                 # before ``_store.add``, so a degraded provider aborts the run with
@@ -4431,11 +4478,52 @@ class RagService:
                     REPAIR_REFUSAL_CORPUS_UNREADABLE,
                     f"the repaired chunks could not be written ({type(exc).__name__})",
                 )
-            report["embedding_calls"] = len(items)
-            report["repaired"] = int(written)
+            # ``_embed_items`` sends the WHOLE batch in one ``embed_with_provenance``
+            # call, so a repair of any size is one gateway call — while the SPEND is
+            # one embedding per chunk. The two numbers answer different questions and
+            # are reported separately; conflating them under either name misleads in
+            # one direction or the other.
+            report["embedding_calls"] = 1 if items else 0
+            report["embedded_chunks"] = len(items)
+            # VERIFIED BY RE-READ, for the same reason the eviction is: a store's own
+            # return value is not evidence. ``_embed_and_add`` answers "how many chunks
+            # did I hand to ``add``", not "how many did the store persist", so a partial
+            # or silently-failed write would otherwise be reported as
+            # ``repaired: N, ok: true, complete: true`` — the projection path already
+            # refuses to trust that seam (``_verify_projection``) and this one must not
+            # either. ONE more whole-corpus read, never a per-document fan-out (A10).
+            try:
+                landed_chunks, _readback_truncated = await self._precedent_chunks()
+            except Exception as exc:  # noqa: BLE001 — unverifiable, never assumed
+                # NOT a refusal. A refusal promises ``mutated == 0``, and the write has
+                # already happened by this point — saying "nothing changed" because the
+                # verifying read failed would be a stronger claim than the failure
+                # supports. Every attempted repair simply goes unverified below.
+                logger.warning(
+                    "precedent repair could not verify its own write (%s); every "
+                    "repaired chunk is reported unverified",
+                    exc,
+                )
+                landed_chunks = []
+            landed = {
+                str(chunk.doc_id or ""): str(chunk.text or "")
+                for chunk in landed_chunks
+            }
             for finding in to_repair:
-                tiers[finding.tier]["repaired"] += 1
-                report["repaired_documents"].append(finding.document_id)
+                expected = str((finding.item or {}).get("text") or "")
+                if finding.doc_id and landed.get(finding.doc_id) == expected:
+                    report["repaired"] += 1
+                    tiers[finding.tier]["repaired"] += 1
+                    report["repaired_documents"].append(finding.document_id)
+                    continue
+                # Unproven, never assumed. A chunk the read-back cannot show is
+                # reported as still outstanding — which keeps ``complete``/``ok``
+                # false — rather than counted as a success nobody verified. A
+                # truncated read-back lands here too, and that is the correct
+                # answer: "I could not check" is not "it worked".
+                report["unverified_repairs"].append(finding.document_id)
+                tiers[finding.tier]["would_repair"] -= 1
+                unreached += 1
 
         for finding in to_evict:
             payload = {

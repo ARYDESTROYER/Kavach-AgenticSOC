@@ -790,6 +790,9 @@ async def precedent_repair(
                 "repaired_documents": list(report.get("repaired_documents") or []),
                 "evicted_documents": list(report.get("evicted_documents") or []),
                 "incomplete_evictions": list(report.get("incomplete_evictions") or []),
+                # Written, but not visible on the verifying read-back. Document ids
+                # only, like every other list here.
+                "unverified_repairs": list(report.get("unverified_repairs") or []),
             },
         )
     except Exception as exc:  # noqa: BLE001 — the repair already stands

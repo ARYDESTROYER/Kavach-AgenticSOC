@@ -58,6 +58,7 @@ from app.constants import (
     Verdict,
 )
 from app.engine.analyst_outcomes import analyst_confirmed_outcome
+from app.engine.precedent import RULE_IDENTITY_KEY
 from app.es.fake import InMemoryESClient
 from app.models import Case, Entity, EvidenceItem
 from app.state import AppState
@@ -2561,3 +2562,311 @@ async def test_a_configuration_stored_before_this_block_existed_still_repairs(
     report = await app_state.rag.repair_precedent_projection()
     assert report["refused"] is False
     assert report["complete"] is True
+
+
+# --------------------------------------------------------------------------- #
+# The migration path carries TEXT AND METADATA TOGETHER — never one half.
+# --------------------------------------------------------------------------- #
+async def test_the_preserved_items_path_carries_metadata_with_the_text(
+    app_state: AppState,
+) -> None:
+    """Catches a migration that re-derives a chunk's TEXT while keeping its STORED
+    METADATA — the HALF-repair, which is worse than carrying both halves untouched.
+
+    The wrong implementation this pins is the obvious one: re-render the case, take
+    ``item["text"]``, and append it beside the ``metadata`` dict the chunk already
+    had. Both halves used to be stale TOGETHER — inconsistent, but reachable, because
+    the repair's selector compares TEXT and would have classified the chunk STALE and
+    rewritten both. Half-repair it and the selector sees current text, classifies the
+    chunk CURRENT, and the stale ``verdict``/``outcome``/``note``/``rule_identity``/
+    ``trust_class`` become permanently unreachable by the one pass built to find drift
+    — and two of those keys steer retrieval, so it is not cosmetic.
+
+    Widening the selector to compare metadata is NOT the fix: it would reclassify a
+    large population as stale and re-embed it through the metered gateway. The fix is
+    that the migration moves the pair, which is what this asserts.
+    """
+    _enable_precedent(app_state, min_projection_retention=0.0)
+    current_render = await _seed_one(
+        app_state, "carrymeta-100", created_at="2026-01-01T00:00:00Z"
+    )
+    await _seed_one(app_state, "carrymeta-newer", created_at="2026-03-01T00:00:00Z")
+
+    projected = await _chunk_for(app_state, "carrymeta-100")
+    assert projected is not None
+    fresh_metadata = dict(projected.metadata or {})
+    assert fresh_metadata["outcome"] == "false_positive"
+    assert fresh_metadata["trust_class"] == "analyst_confirmed"
+
+    # Drift BOTH halves, exactly as a superseded builder generation leaves them: an
+    # old rendering, and the metadata that rendering was written beside.
+    drifted = {
+        **fresh_metadata,
+        "outcome": "true_positive",
+        "verdict": Verdict.TRUE_POSITIVE.value,
+        "note": "a note this build no longer renders",
+        RULE_IDENTITY_KEY: "an identity this case never had",
+        # A stored key NEITHER projector mints — the bulk-ratification stamp is
+        # written by the bootstrap indexer alone, and it is what keeps a ratified
+        # MODEL verdict distinguishable from independent analyst ground truth. It is
+        # also a selectable exclusion key, so losing it would silently stop an
+        # operator's saved selection matching. It must survive the merge.
+        "ratification_batch": "carried-batch",
+    }
+    # …and no ``trust_class`` at all, the way a chunk written before the tier existed
+    # is stored. It reads as CONFIRMED through the one existing predicate either way.
+    drifted.pop("trust_class", None)
+    await app_state.rag._store.add(
+        [
+            StoredChunk(
+                text=_STALE_TEXT,
+                source=projected.source,
+                metadata=drifted,
+                embedding=list(projected.embedding),
+                embedding_model=projected.embedding_model,
+                dim=projected.dim,
+                doc_id=projected.doc_id,
+            )
+        ]
+    )
+    # An ORPHAN, whose case cannot be re-derived at all: its stored PAIR must survive.
+    await app_state.rag._store.add(
+        [
+            StoredChunk(
+                text="Prior case carrymeta-orphan: archived precedent.",
+                source="resolved_case",
+                metadata={
+                    "document_id": "resolved_case:carrymeta-orphan",
+                    "case_id": "carrymeta-orphan",
+                    "outcome": "true_positive",
+                    "note": "the stored note of a case nothing can re-read",
+                    RULE_IDENTITY_KEY: "an identity only this chunk remembers",
+                },
+                embedding=list(projected.embedding),
+                embedding_model=projected.embedding_model,
+                dim=projected.dim,
+                doc_id="resolved_case:carrymeta-orphan",
+            )
+        ]
+    )
+    # The bounded window now covers only the NEWER case, so the drifted one reaches the
+    # replacement corpus through the preserved-items path and nothing else.
+    _set_window(app_state, size=1)
+
+    await app_state.rag._reseed()
+
+    carried = await _chunk_for(app_state, "carrymeta-100")
+    assert carried is not None
+    assert carried.text == current_render, "the migration did not re-derive the text"
+    after = dict(carried.metadata or {})
+    # THE ASSERTION THIS TEST EXISTS FOR: the metadata moved WITH the text. Every
+    # projector-minted key is back to what the projector renders today…
+    assert after["outcome"] == fresh_metadata["outcome"]
+    assert after["verdict"] == fresh_metadata["verdict"]
+    assert after["note"] == fresh_metadata["note"]
+    assert after[RULE_IDENTITY_KEY] == fresh_metadata[RULE_IDENTITY_KEY]
+    assert after["trust_class"] == fresh_metadata["trust_class"]
+    # …the stored-only stamp survived the merge…
+    assert after["ratification_batch"] == "carried-batch"
+    # …and the document identity the migration exists to preserve is unchanged.
+    assert after["document_id"] == fresh_metadata["document_id"]
+    assert carried.doc_id == projected.doc_id
+    assert after == {**fresh_metadata, "ratification_batch": "carried-batch"}
+
+    # The chunk reads CURRENT to the repair now because it IS current, rather than
+    # because a text-only selector cannot see the half that is still stale.
+    report = await app_state.rag.repair_precedent_projection()
+    assert report["stale"] == 0
+
+    # The UNAVAILABLE case falls back to the stored PAIR — both halves, never a mix.
+    orphan = await _chunk_for(app_state, "carrymeta-orphan")
+    assert orphan is not None
+    assert orphan.text == "Prior case carrymeta-orphan: archived precedent."
+    orphan_metadata = dict(orphan.metadata or {})
+    assert orphan_metadata["outcome"] == "true_positive"
+    assert orphan_metadata["note"] == "the stored note of a case nothing can re-read"
+    assert orphan_metadata[RULE_IDENTITY_KEY] == "an identity only this chunk remembers"
+
+
+# --------------------------------------------------------------------------- #
+# A repair is VERIFIED BY RE-READ, exactly like an eviction.
+# --------------------------------------------------------------------------- #
+async def test_a_write_the_store_did_not_persist_is_never_reported_as_repaired(
+    app_state: AppState,
+) -> None:
+    """Catches ``repaired = len(the chunks I handed to the store)``.
+
+    The eviction path already refuses to trust a store's return value — its comment
+    argues that a delete cannot tell an outage apart from "no such document", and that
+    one backend short-counts silently on a partial failure. The same is true of a
+    write: the add helper answers "how many chunks did I hand over", not "how many did
+    the store keep". Without a read-back a dropped write reports
+    ``repaired: N, ok: true, complete: true`` — a confident count of something that
+    did not happen.
+    """
+    _enable_precedent(app_state)
+    await _seed_one(app_state, "verify-000")
+    await _overwrite_text(app_state, "verify-000", _STALE_TEXT)
+
+    store = app_state.rag._store
+    real_add = store.add
+    handed_over: list[int] = []
+
+    async def _silently_drops(chunks: list[StoredChunk]) -> None:
+        """Accepts the batch and keeps none of it — no exception, like a partial
+        failure the backend never surfaces."""
+        handed_over.append(len(chunks))
+
+    store.add = _silently_drops  # type: ignore[assignment]
+    report = await app_state.rag.repair_precedent_projection(dry_run=False)
+    store.add = real_add  # type: ignore[assignment]
+
+    assert handed_over == [1], "the write really was attempted"
+    assert report["repaired"] == 0
+    assert report["repaired_documents"] == []
+    assert report["unverified_repairs"] == ["resolved_case:verify-000"]
+    assert report["mutated"] == 0
+    assert report["ok"] is False
+    assert report["complete"] is False
+    assert report["remaining"] == 1
+    still_stale = await _chunk_for(app_state, "verify-000")
+    assert still_stale is not None and still_stale.text == _STALE_TEXT
+
+    # CONTROL, so the assertions above cannot pass vacuously against an implementation
+    # that simply never reports a repair: the same run against the real store verifies.
+    control = await app_state.rag.repair_precedent_projection(dry_run=False)
+    assert control["repaired"] == 1
+    assert control["unverified_repairs"] == []
+    assert control["repaired_documents"] == ["resolved_case:verify-000"]
+    assert control["ok"] is True and control["complete"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Two different numbers, each under the name of what it counts.
+# --------------------------------------------------------------------------- #
+async def test_gateway_calls_and_embeddings_billed_are_reported_separately(
+    app_state: AppState,
+) -> None:
+    """Catches a spend figure published under a call-count name (or the reverse).
+
+    The embed helper sends the whole batch in ONE provider call, while the ledger bills
+    one embedding PER CHUNK. Publishing the chunk count as ``embedding_calls`` overstates
+    the round trips; publishing the call count as the spend understates the bill. Both
+    numbers are asserted here against what actually happened, so neither name can drift
+    from its meaning.
+    """
+    _enable_precedent(app_state)
+    await _seed_one(app_state, "count-000")
+    await _seed_one(app_state, "count-001")
+    await _overwrite_text(app_state, "count-000", _STALE_TEXT)
+    await _overwrite_text(app_state, "count-001", _STALE_TEXT)
+
+    invocations = [0]
+    real = app_state.rag._gateway.embed_with_provenance
+
+    async def _counted(texts, *args: Any, **kwargs: Any):
+        invocations[0] += 1
+        return await real(texts, *args, **kwargs)
+
+    app_state.rag._gateway.embed_with_provenance = _counted  # type: ignore[assignment]
+    report = await app_state.rag.repair_precedent_projection(dry_run=False)
+
+    assert report["repaired"] == 2
+    # The SPEND: one embedding per repaired chunk, which is what the runbook promises.
+    assert report["embedded_chunks"] == report["repaired"] == 2
+    # The ROUND TRIPS: one batch is one gateway call, observed rather than assumed.
+    assert report["embedding_calls"] == invocations[0] == 1
+
+
+# --------------------------------------------------------------------------- #
+# The diagnostics staleness read is behind the same short TTL as its siblings.
+# --------------------------------------------------------------------------- #
+async def test_the_diagnostics_staleness_read_is_cached_per_case_page(
+    app_state: AppState,
+) -> None:
+    """Catches a whole-corpus read added to a health endpoint on every request.
+
+    Reporting staleness is free of PROVIDER cost — a tripwire above proves it embeds
+    nothing — but it is not free of I/O: it reads the entire corpus, which on the
+    Elasticsearch store is one bounded page whose source carries every stored embedding
+    vector. This router already caches that read for its sibling blocks for exactly
+    that reason, and the Overview health strip fires the endpoint on every refresh.
+
+    The CASE PAGE is part of the key, not just the service: a different page is a
+    different question, because a case off the page is UNDETERMINED rather than clean.
+    """
+    _enable_precedent(app_state)
+    await _seed_one(app_state, "ttl-000")
+    await _seed_one(app_state, "ttl-001")
+    cases = [
+        await app_state.cases.get("ttl-000"),
+        await app_state.cases.get("ttl-001"),
+    ]
+
+    store = app_state.rag._store
+    real_all = store.list_all_chunks
+    reads = [0]
+
+    async def _counted() -> list[StoredChunk]:
+        reads[0] += 1
+        return await real_all()
+
+    store.list_all_chunks = _counted  # type: ignore[assignment]
+
+    first = await _precedent_corpus_block(app_state, cases, 2)
+    after_first = reads[0]
+    assert after_first >= 1, "the staleness block must actually read the corpus"
+
+    second = await _precedent_corpus_block(app_state, cases, 2)
+    assert reads[0] == after_first, (
+        "the whole-corpus staleness read repeated on a second request for the same "
+        "case page; it must share the short TTL its sibling corpus reads use"
+    )
+    assert second["stale_text_chunks"] == first["stale_text_chunks"]
+
+    # A DIFFERENT page is a different question and must be measured, not served from
+    # the previous page's answer.
+    partial = await _precedent_corpus_block(app_state, cases[:1], 2)
+    assert reads[0] > after_first
+    assert partial["stale_text_chunks"]["complete"] is False
+
+
+async def test_an_unverifiable_write_is_reported_unverified_rather_than_refused(
+    app_state: AppState,
+) -> None:
+    """Catches a read-back failure reported as a refusal.
+
+    A refusal promises ``mutated == 0`` — it is the shape reserved for a run that
+    stood down BEFORE touching anything. Once the write has gone out, "nothing
+    changed" is a stronger claim than a failed verifying read supports, so the run
+    reports what it actually knows: the chunks were written and could not be
+    confirmed.
+    """
+    _enable_precedent(app_state)
+    await _seed_one(app_state, "unver-000")
+    await _overwrite_text(app_state, "unver-000", _STALE_TEXT)
+
+    store = app_state.rag._store
+    real_all = store.list_all_chunks
+    calls = [0]
+
+    async def _fails_on_the_read_back() -> list[StoredChunk]:
+        calls[0] += 1
+        if calls[0] > 1:
+            raise RuntimeError("the corpus could not be re-read")
+        return await real_all()
+
+    store.list_all_chunks = _fails_on_the_read_back  # type: ignore[assignment]
+    report = await app_state.rag.repair_precedent_projection(dry_run=False)
+    store.list_all_chunks = real_all  # type: ignore[assignment]
+
+    assert calls[0] == 2, "the write must be followed by a verifying read"
+    assert report["refused"] is False
+    assert report["reason_code"] == ""
+    assert report["repaired"] == 0
+    assert report["unverified_repairs"] == ["resolved_case:unver-000"]
+    assert report["ok"] is False and report["complete"] is False
+    # The write really did land — it simply could not be confirmed, which is exactly
+    # the difference between "unverified" and "refused".
+    written = await _chunk_for(app_state, "unver-000")
+    assert written is not None and written.text != _STALE_TEXT
