@@ -12,6 +12,38 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**A landing dashboard that read as five stacked bands.** The Cyber Defence Center put its
+widest instrument — the noise-reduction flow — below the fold in a second grid, kept its
+time controls at the far right of the masthead away from the title they qualify, and stacked
+the open and resolved snapshots so half the page's horizontal space went unused. The two
+bands are now ONE twelve-column band of three rows, led by the flow: flow and close
+attribution, then the case snapshots side by side and the live queue, then the timing pair.
+The masthead's controls moved into the header's `meta` slot, which renders inside the title
+row, so title and controls read as one cluster; the strip runs at the shipped compact
+density.
+
+The grid is `xl`, never `lg`, and the reason is measurable rather than aesthetic: the flow
+diagram hides its graph below 608px of container width and falls back to a text rail, and at
+the tightest supported desktop an eight-of-twelve cell clears that by a margin thin enough
+that the document scrollbar decides it. The horizontal padding is `px-3` for exactly that
+reason, which also puts all five cells of the band on one 12px rail.
+
+Opening a case from the queue or a drill-down row no longer navigates away from the numerals
+that prompted the click — it mounts the shared case surface over the page. Closing it now
+returns keyboard focus to the row that opened it; it previously dropped focus on the document
+body, because this sheet is opened by state rather than by a trigger and the dialog primitive
+suppresses its own restore before focusing a trigger that does not exist. Every consumer of
+that surface benefits.
+
+The KPI drill-down became a workspace rather than a single-metric readout: a metric switcher
+that re-points the panel without closing it (carrying an operator-set range and their free
+text, but never an untouched default onto a population that has no window), four scalars
+computed over exactly the rows the table lists, a records table of fields the case really
+carries, a detection-source facet, and a CSV export of the listed rows that neutralises
+spreadsheet formula prefixes on log-derived text. The Cases-burndown chart left the dashboard
+for Metrics → Posture, where it already renders as "Closure vs arrival"; the chart, its wire
+field and its backend are untouched.
+
 **Repairing a corpus that could only be repaired forward.** The precedent projection is a
 bounded window, so a change to the chunk TEXT repaired only what the window happened to
 re-select; everything older kept the old rendering permanently, and the migration path

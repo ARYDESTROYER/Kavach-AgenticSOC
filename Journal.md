@@ -10833,3 +10833,69 @@
   zero consumers, and wiring it needs a new panel fetch that would disturb six existing test
   mocks. Two accepted-and-documented items: the migration's per-case read fan-out, and the head
   pin's exclusion from the narrowing disclosure.
+
+### 2026-09-07 09:45Z — Claude (orchestrator + 12 recon / 1 test-author / 6 verify sub-agents) — Cyber Defence Center layout rebuild
+- Context: operator brief to rebuild the landing dashboard — flow-led lattice, masthead
+  controls beside the title, compact strip, burndown demoted, in-place case sheet, shell
+  search centred, plus a hover preview and a deep-inspection drill-down.
+- Did (6 commits on `Testing`, `a1d0d1a`→`027e4ac`):
+  - **Lattice.** The `lg:` INSTRUMENT and `xl:` OPERATIONS bands merged into ONE `xl`
+    twelve-column band of three rows: noise flow (8) + Human-vs-AI (4); open + resolved
+    snapshots (8, split 2-up at `xl`) + latest-case queue (4); MTTD/response full width.
+    The grid MUST stay `xl:` — the flow's own `@[38rem]/noise` query needs 608px of
+    container width or it silently swaps the graph for a text rail.
+  - **Masthead** `actions=` → `meta=` (one word; `actions` renders a sibling of the left
+    cluster inside the header's `sm:justify-between` row, `meta` renders inside the title
+    row). Right half intentionally empty, per operator. KPI strip at `density="compact"`.
+  - **Burndown** removed from Overview (section + memo + import; `noUnusedLocals` forces
+    all three). `BurnDownChart`, the `burndown` field/type and the backend are UNTOUCHED —
+    it lives on Metrics → Posture as "Closure vs arrival". Docs re-pointed.
+  - **Case sheet.** The two call sites that carried a `caseId` now mount the SHARED
+    `CaseDetail` over the page; the other twelve `navigate('cases')` sites open filtered
+    LISTS and were left alone. Mount is conditional because `CaseDetail` calls `useAuth()`
+    above its own empty-state return and no Overview spec supplies a provider.
+  - **Shell search** centred (`w-full … max-w-* mx-auto`, not `flex-1` — a flex item cannot
+    both absorb free space and be centred by auto margins) and widened to `lg:max-w-2xl`.
+    Separate commit: one `AppShell` wraps all 37 in-shell routes.
+  - **Drill-down** extended (never forked): metric switcher, four stat cards over the rows
+    the table lists, real records table, detection-source facet, CSV export of listed rows.
+  - **Defects found and fixed beyond the brief** — case-sheet close dropped focus on
+    `<body>` (WCAG 2.4.3: Radix `preventDefault`s its own restore then focuses a null
+    `triggerRef`, since every consumer opens this sheet by state, not a `SheetTrigger`);
+    a leaked Radix hover timer popped the row preview over the just-opened sheet and ate
+    the first Escape; the in-source 608px arithmetic omitted the root scrollbar (~3px real
+    margin, not ~10px — `px-3` now buys 8px back and puts all five cells on one 12px rail);
+    four honesty defects in the panel; and five a11y defects incl. two WCAG 2.5.3
+    label-in-name and a keyboard-unreachable table scroller.
+- Tests: Console **322 files / 2304 passed**, exit 0, zero stderr. `typecheck` clean,
+  `lint` **0 errors 0 warnings**, `gates` 6/6, `build` clean (entry **393.04 kB** of the
+  400 kB ceiling; the bundle-first-paint gate, which skips without a `dist/`, actually
+  RAN). `check:types` no drift with `TLSOC_REQUIRE_TYPEGEN=1` so it could not skip.
+  Backend `test_ws_be_dashboard_metrics.py` green. **#3 re-verified: `case_manager.py`
+  md5 `212873cd13d822a7b64752635285ff1f`; `backend/` and `deploy/` at ZERO diff.**
+  No new npm dependency.
+- Method: 12 recon agents verified every file:line in the brief against HEAD before any
+  edit (the brief was accurate bar a handful of drifted line numbers, one FALSE claim, and
+  a `PageContainer` max-width it got wrong). Tests were written by an agent given the
+  requirements but not the diff. Six adversarial lenses then audited the merged tree
+  context-free; two converged independently on the same two layout defects.
+- Status: done, awaiting review. Not pushed at time of writing.
+- Next: three PRE-EXISTING a11y defects were reported and deliberately left — SnapshotCard's
+  donut total and legend are inside a button with an explicit `aria-label` (name-from-contents
+  suppressed, numbers unannounced); MTTD/Respond definitions ride a native `title` on a
+  non-focusable div; snapshot trendlines have no touch path. Also unfixed by choice: a range
+  change still clears status/severity facets via the universe reset, and `Cases`/`Scans` carry
+  the same latent hover-preview defect (their `forceClosed` opt-in is a separate change).
+  Not built, with reasons stated: a dual-axis arrivals-vs-clearance chart (no sub-60-minute
+  bucketing exists anywhere in this system) and numbered pagination (the panel accumulates
+  under a pinned head; its footer already refuses an unproven exact total).
+  One further PRE-EXISTING finding survived adversarial adjudication on a SPLIT vote and is
+  recorded rather than fixed: on a band-disjoint tile (`total-critical`) the severity menu is
+  seeded from the window's whole-cohort tally, so it offers bands the listed population cannot
+  contain and selecting one yields the empty state. One judge reproduced it live; the other
+  refuted the DIAGNOSIS on the ground that the rows-read fallback offers the same impossible
+  options (and `statusUniverse`/`sourceUniverse` are built from the same unfiltered page), so
+  suppressing the histogram for narrowed specs would move the symptom rather than remove it.
+  Both are right about their half: it is a shared property of the rows-read facet derivation,
+  it shows a truthful empty list rather than a wrong one, and it wants one deliberate change
+  across all three menus rather than a partial fix here.
