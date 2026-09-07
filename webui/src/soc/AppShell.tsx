@@ -1280,19 +1280,33 @@ export const AppShell: React.FC<AppShellProps> = ({
             <span className="truncate text-muted-foreground" aria-current="page">{pageLabel}</span>
           </nav>
 
-          {/* Wide search trigger — an input-styled button that spans the bar and
-              opens the command palette (Cmd-K). It grows to fill the space between
-              the breadcrumb and the right cluster; on the narrowest widths it is
-              hidden and the `md:hidden` icon opener in the right cluster takes over.
-              The visible placeholder is decorative — the accessible name comes from
-              `aria-label` so it stays distinct from the mobile "Open search" opener. */}
+          {/* Wide search trigger — an input-styled button that opens the command palette
+              (Cmd-K). It is CENTRED in the track between the breadcrumb and the right
+              cluster; on the narrowest widths it is hidden and the `md:hidden` icon
+              opener in the right cluster takes over. The visible placeholder is
+              decorative — the accessible name comes from `aria-label` so it stays
+              distinct from the mobile "Open search" opener.
+
+              Centring is `w-full … max-w-* mx-auto`, NOT `flex-1`. A flex item cannot
+              both absorb free space and be centred by auto margins — per flexbox, free
+              space goes to auto margins first and such an item never grows — so `flex-1`
+              (which is what pinned this hard against the breadcrumb) had to go. What
+              replaces it behaves in two honest regimes: when the track is narrower than
+              the cap the item shrinks to fill it exactly and the margins collapse to
+              zero; when the track is wider the max-width clamps the item and the two auto
+              margins split what is left, which is the optical centre.
+
+              Optical, not geometric: the right cluster cannot shrink and nothing in it
+              truncates, so the bar's true midpoint is unreachable without narrowing this
+              trigger until it overflows at `md`. This centres it between its two
+              neighbours instead, which is the honest version of the ask. */}
           <button
             type="button"
             onClick={(event) => openPalette(event.currentTarget)}
             aria-label="Search cases, sources, and actions"
             aria-keyshortcuts="Control+K Meta+K"
             className={cn(
-              'hidden h-9 min-w-0 max-w-md flex-1 items-center gap-2 rounded-md border border-input bg-background/60 px-3 text-sm text-muted-foreground transition-colors md:flex lg:max-w-lg',
+              'mx-auto hidden h-9 w-full min-w-0 max-w-md items-center gap-2 rounded-md border border-input bg-background/60 px-3 text-sm text-muted-foreground transition-colors md:flex lg:max-w-2xl',
               'hover:border-border-strong hover:text-foreground',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
@@ -1306,7 +1320,14 @@ export const AppShell: React.FC<AppShellProps> = ({
             </kbd>
           </button>
 
-          <div className="ml-auto flex items-center gap-1 sm:gap-2">
+          {/* `ml-auto` only BELOW `md`. There the wide trigger is `display:none`, generates
+              no box and contributes no auto margins, so this is the only thing holding the
+              cluster against the right edge. At `md` and up the trigger's own `mx-auto`
+              does the centring, and a third auto margin here would split the free space in
+              thirds — a gap of 1/3 before the trigger and 2/3 after it, which is not
+              centred. Dropping it costs nothing: with all the free space consumed by the
+              trigger's margins, this cluster is still flush right. */}
+          <div className="ml-auto flex items-center gap-1 sm:gap-2 md:ml-0">
             {/* Compact search opener for the narrowest widths, where the wide trigger
                 above is hidden (`md:hidden`). Opens the same command palette. */}
             <Button
