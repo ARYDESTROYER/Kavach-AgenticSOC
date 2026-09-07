@@ -22,6 +22,20 @@ export interface CaseHoverCardProps {
   children: React.ReactNode;
   openDelay?: number;
   closeDelay?: number;
+  /**
+   * Hold the preview CLOSED and refuse every open transition while true.
+   *
+   * A consumer that opens a case sheet from this very trigger needs it. Radix's hover card
+   * arms its open timer on pointer-enter AND again on focus, overwriting the timer id
+   * without clearing the first (`@radix-ui/react-hover-card` `handleOpen`) — so a single
+   * click leaks a timer that the following blur never cancels. It fires a moment later and
+   * pops the preview OVER the sheet the click just opened, where, as a dismissable layer
+   * stacked above it, it swallows the first Escape the operator presses.
+   *
+   * Defaults to false, which is behaviour-identical to the uncontrolled card this
+   * replaced, so a consumer that does not opt in is unaffected.
+   */
+  forceClosed?: boolean;
   side?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['side'];
   align?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['align'];
   sideOffset?: number;
@@ -39,6 +53,7 @@ export function CaseHoverCard({
   children,
   openDelay = 280,
   closeDelay = 180,
+  forceClosed = false,
   side,
   align = 'start',
   sideOffset,
@@ -64,8 +79,25 @@ export function CaseHoverCard({
     severityBand(c.severity_band) ??
     severityBand(typeof c.risk_score === 'number' ? c.risk_score : null);
 
+  // Controlled so `forceClosed` can REFUSE an open, including one already in flight on a
+  // leaked Radix timer (see the prop's note). With `forceClosed` false this is
+  // behaviour-identical to the uncontrolled card: Radix still drives every hover, focus
+  // and dismiss transition through `onOpenChange`.
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (forceClosed) setOpen(false);
+  }, [forceClosed]);
+
   return (
-    <HoverCard openDelay={openDelay} closeDelay={closeDelay}>
+    <HoverCard
+      open={forceClosed ? false : open}
+      onOpenChange={(next) => {
+        if (forceClosed) return;
+        setOpen(next);
+      }}
+      openDelay={openDelay}
+      closeDelay={closeDelay}
+    >
       <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
       <HoverCardContent
         side={side}

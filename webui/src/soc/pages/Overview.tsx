@@ -813,6 +813,7 @@ function TopCasesPanel({
   navigate,
   navWindow,
   onOpenCase,
+  caseOpen = false,
 }: {
   cases: Case[];
   navigate?: Navigate;
@@ -822,6 +823,14 @@ function TopCasesPanel({
    * navigating to the Cases route. "View all" still navigates — that one is a list.
    */
   onOpenCase?: (caseId: string) => void;
+  /**
+   * True while a case sheet is open over this page. It suppresses the row hover previews,
+   * which would otherwise stack a dismissable layer above the sheet and eat the operator's
+   * first Escape — see `CaseHoverCard`'s `forceClosed`. This mattered less when the row
+   * NAVIGATED away, because the stray preview opened onto a page that was being replaced;
+   * now the dashboard stays put behind the sheet and it is plainly visible.
+   */
+  caseOpen?: boolean;
 }) {
   return (
     <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col p-3">
@@ -856,6 +865,7 @@ function TopCasesPanel({
               <li key={k.case_id} className="min-w-0">
                 <CaseHoverCard
                   case={k}
+                  forceClosed={caseOpen}
                   openDelay={320}
                   closeDelay={220}
                   side="left"
@@ -2698,6 +2708,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   navigate={navigate}
                   navWindow={navWindow}
                   onOpenCase={setOpenCaseId}
+                  caseOpen={openCaseId !== null}
                 />
               </div>
             </div>

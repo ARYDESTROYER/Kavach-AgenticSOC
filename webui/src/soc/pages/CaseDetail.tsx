@@ -202,6 +202,25 @@ const CaseDetailSurface: React.FC<{
   onClose: () => void;
   children: React.ReactNode;
 }> = ({ presentation, open, onClose, children }) => {
+  /**
+   * The element that had focus when this sheet opened, so closing can give it back.
+   *
+   * Captured during RENDER, not in an effect, and that is load-bearing: child effects run
+   * before a parent's, so by the time any effect of ours could run, Radix's `FocusScope`
+   * has already moved focus into the sheet and the opener is gone. The render pass that
+   * first sees `open` is the last moment the opener still holds focus. Reading
+   * `document.activeElement` is a pure read — nothing is mutated — so this is safe in
+   * render, and the ref deliberately is NOT cleared when `open` goes false, because the
+   * close handler that consumes it runs after that render (and after unmount, since Radix
+   * routes the same callback through `onUnmountAutoFocus`).
+   */
+  const openerRef = React.useRef<HTMLElement | null>(null);
+  if (open && !openerRef.current && typeof document !== 'undefined') {
+    const active = document.activeElement;
+    openerRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+  }
+
   if (presentation === 'embedded') {
     return (
       <section
@@ -225,6 +244,35 @@ const CaseDetailSurface: React.FC<{
         size="full"
         className="w-full max-w-[min(98vw,1400px)] p-0"
         aria-label="Case detail"
+        /**
+         * Focus RETURN on close (WCAG 2.4.3) — which Radix cannot do for this sheet.
+         *
+         * `DialogContent` hard-wires its own `onCloseAutoFocus` to
+         * `event.preventDefault(); context.triggerRef.current?.focus()`. That
+         * `preventDefault()` also suppresses `FocusScope`'s own restore-to-previous
+         * behaviour, and `triggerRef` is null here because this sheet is opened by STATE
+         * (a row, a table cell, a queue item elsewhere on the page) rather than by a
+         * `<SheetTrigger>`. The result was focus landing on `<body>`: a keyboard operator
+         * who pressed Escape lost their place in the list entirely.
+         *
+         * So the opener is captured and restored explicitly. `composeEventHandlers` runs
+         * this handler BEFORE Radix's, and skips Radix's once this one has prevented the
+         * default — the same pattern the Tuning inspector already uses.
+         *
+         * Every consumer benefits: Cases, Scans, Investigate and the dashboard all mount
+         * this one surface, and every one of them opens it from state.
+         */
+        onCloseAutoFocus={(event) => {
+          const opener = openerRef.current;
+          openerRef.current = null;
+          // Only claim the default when there is somewhere real to send focus. A opener
+          // that has since unmounted (its row re-rendered away, its page navigated) is
+          // left to Radix rather than focused blind.
+          if (opener && opener.isConnected) {
+            event.preventDefault();
+            opener.focus();
+          }
+        }}
       >
         {children}
       </SheetContent>
