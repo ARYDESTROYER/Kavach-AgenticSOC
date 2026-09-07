@@ -47,9 +47,10 @@ changing any case or detection policy.
    references through the persisted deterministic cluster and opened case to its current
    or terminal outcome. Coverage, store-page, and sample notices identify every bound
    instead of presenting partial data as complete.
-5. **Check burndown and response timing** — look for backlog growth and changes in
-   MTTD, MTTA, MTTR, or dwell, then open **Deeper analytics** for autonomy,
-   connector coverage, workload, outcomes, top signatures, and top entities.
+5. **Check response timing** — look for changes in MTTD, MTTA, MTTR, or dwell, then
+   open **Deeper analytics** for autonomy, connector coverage, workload, outcomes, top
+   signatures, and top entities. For opened-versus-resolved backlog growth, open
+   **Metrics → Posture** and read **Closure vs arrival**.
 
 False Positive Rate and Auto-resolved come from the server posture rollup rather
 than the bounded case list. They are keyed to the selected window and comparison

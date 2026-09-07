@@ -238,7 +238,10 @@ describe('Overview — Cyber Defence Center', () => {
     // The previous usable aggregate remains visible and healthy siblings stay mounted.
     expect(screen.getByTestId('noise-funnel')).toBe(funnel);
     expect(screen.getByRole('region', { name: /Latest cases/i })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: /Cases burndown/i })).toBeInTheDocument();
+    // Same witness, different sibling: this asserts a noise-only failure does not unmount
+    // the healthy bands around it. It used to name the Cases-burndown chart, which has
+    // moved to Metrics → Posture, so it now names the timing pair that took its cell.
+    expect(screen.getByRole('region', { name: /Mean time to detect/i })).toBeInTheDocument();
 
     await user.click(within(unavailable).getByRole('button', { name: 'Retry noise reduction' }));
     await waitFor(() => expect(screen.queryByTestId('noise-reduction-unavailable')).toBeNull());

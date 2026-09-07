@@ -12,8 +12,10 @@
  *  2b. the tile ANCHORS were re-keyed with the labels — `kpi-open-cases` names the
  *      open stock, not the cohort total, and the retired anchors are gone;
  *  2c. the posture-fed tiles gate on `window_covered`, not on `truncated`;
- *   3. the integrated instrument band = Human vs AI + resolved/open snapshots + latest cases;
- *   4. the operations band = Noise-Reduction flow + compact burndown/timing rail;
+ *   3. the ONE integrated 12-column lattice, three rows — Noise-Reduction flow + Human
+ *      vs AI, then resolved/open snapshots + latest cases, then the timing pair;
+ *   4. the Cases-burndown chart is NOT on this page (it lives on Metrics → Posture as
+ *      "Closure vs arrival"); reading ORDER within the lattice is asserted, not presence;
  *   5. timing reads the SERVER posture (honest DASH / "not measured" for missing samples);
  *   6. NO period-over-period delta chips on the KPI strip (the FP-rate compare chip was
  *      deliberately removed — its baseline was not explainable at a glance);
@@ -284,7 +286,13 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const resolved = within(screen.getByTestId('kpi-resolved-closed'));
     expect(resolved.getByText('1')).toBeInTheDocument();
     expect(resolved.getByText('Reached a terminal state')).toBeInTheDocument();
-    expect(screen.getByTestId('kpi-total-cases')).toHaveClass('min-h-28', 'px-4', 'py-5');
+    // DENSITY REGRESSION GUARD. The landing strip runs `density="compact"` because it
+    // heads a page that must also seat the flow diagram, the case queue and the timing
+    // pair. These three tokens are exactly what compact swaps on a strip tile that does
+    // NOT render a breakdown partition (`kpi-total-cases` is such a tile — only
+    // `kpi-resolved-closed` carries one, and there the min-height moves to the wrapper).
+    // Update this triple if density changes; never delete it.
+    expect(screen.getByTestId('kpi-total-cases')).toHaveClass('min-h-0', 'px-3', 'py-3');
   });
 
   it('pairs every KPI numeral with the honest denominator it is a share of', async () => {
@@ -890,16 +898,20 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(legendRow).getByText('1,234')).toBeInTheDocument();
   });
 
-  it('leads with the burndown · detect/respond · top-cases zone', async () => {
+  it('orders the live queue ahead of the detect/respond pair', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    for (const name of [
-      /Cases burndown/i,
-      /Mean time to detect \/ respond/i,
-      /Latest cases/i,
-    ]) {
-      expect(screen.getByRole('region', { name })).toBeInTheDocument();
-    }
+
+    // The Cases-burndown chart is deliberately NOT here any more: opened-vs-resolved
+    // backlog moved to Metrics → Posture ("Closure vs arrival"), where it sits beside
+    // the aging series it is read against. Only these two regions remain, and the
+    // presence loop this replaced could never have caught them swapping — so assert
+    // the ORDER, which is the actual contract.
+    const queue = screen.getByRole('region', { name: /Latest cases/i });
+    const timing = screen.getByRole('region', { name: /Mean time to detect \/ respond/i });
+
+    expect(screen.queryByRole('region', { name: /Cases burndown/i })).toBeNull();
+    expect(queue.compareDocumentPosition(timing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('reads timing from the SERVER posture, honoring the honest "not measured" DASH', async () => {

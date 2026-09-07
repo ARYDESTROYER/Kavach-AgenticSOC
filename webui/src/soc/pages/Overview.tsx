@@ -5,26 +5,37 @@
  *
  *   ┌ MASTHEAD ─── a PLAIN, dense <PageHeader> (no card / no glow — the big title sits
  *   │             flush on the page background, like the Sources page) carrying the
- *   │             <TimeRangePicker> + auto-refresh + a manual refresh pulse in its actions.
+ *   │             <TimeRangePicker> + auto-refresh + a manual refresh pulse in its `meta`
+ *   │             slot, i.e. BESIDE the title on the left. The right half is deliberately
+ *   │             empty: the page's search lives in the app shell's top bar, one band up.
  *   ├ KPI STRIP ── five borderless, SERVER-FED telemetry cells separated by hairlines:
  *   │             Total Cases · Total Critical · Open Cases · False Positive Rate ·
- *   │             Resolved / Closed. Four are cohort numbers scoped to the selected
- *   │             window; "Open Cases" is a window-EXEMPT stock and says so, so it is
- *   │             never read as a fifth summand. Each cell DISCLOSES its own drill-down
- *   │             panel below the strip (see "Drill-down" further down).
- *   ├ INSTRUMENT ── one integrated 12-column band: the Human-vs-AI close-attribution
- *   │             instrument, resolved/open donut snapshots, and the latest-case queue.
- *   ├ OPERATIONS ── the Noise-Reduction flow plus a compact burndown/timing rail.
+ *   │             Resolved / Closed, at `density="compact"` because the strip HEADS this
+ *   │             page rather than being all of it. Four are cohort numbers scoped to the
+ *   │             selected window; "Open Cases" is a window-EXEMPT stock and says so, so
+ *   │             it is never read as a fifth summand. Each cell DISCLOSES its own
+ *   │             drill-down panel below the strip (see "Drill-down" further down).
+ *   ├ LATTICE ──── ONE twelve-column `xl` band, three rows (see the block comment on it):
+ *   │               row 1  Noise-Reduction flow (8)      · Human-vs-AI attribution (4)
+ *   │               row 2  open + resolved snapshots (8) · latest-case queue (4)
+ *   │               row 3  MTTD / response                        (full width)
+ *   │             The flow leads because it is the page's widest instrument and its own
+ *   │             container query needs 608px of cell width to draw a graph at all.
  *   └ DEEPER ───── a COLLAPSED "Deeper analytics" group folding the secondary bands
  *                  (spend tripwire, full response timing, autonomy split, connectors,
  *                  case-volume, workload, top signatures/entities).
+ *
+ * Opening a case from the latest-case queue or from a drill-down row does NOT navigate:
+ * it mounts the shared <CaseDetail> in its right-hand sheet over this page, so the
+ * numerals stay on screen behind it. The mount is conditional (see the bottom of the
+ * render) because CaseDetail reads auth context unconditionally.
  *
  * Data: `usePosture(hours, 'prev')` is the AUTHORITATIVE server-side lifecycle rollup
  * (MTTA/MTTR/dwell/MTTD p50 + SLA + quality rates + period-over-period deltas). It is
  * STALE-WHILE-REVALIDATE: a window change keeps the last successful snapshot mounted
  * (marked by the tiles' "Loading Nh" sub) instead of blanking every posture consumer.
- * `listCases` (current + previous window), `getMetrics` (burndown + timing_trend +
- * by_status), `usageSummary`, `noiseReduction`, and `metricsTrends` (the hover-trend
+ * `listCases` (current + previous window), `getMetrics` (timing_trend + by_status),
+ * `usageSummary`, `noiseReduction`, and `metricsTrends` (the hover-trend
  * bucket series) are fetched with allSettled so one failing call degrades a single
  * widget, never the page; a superseded window's late-settling batch is discarded.
  * Usage and Noise Reduction keep independent availability/error state: a failed refresh
@@ -148,7 +159,6 @@ import { Reveal } from '@/soc/components/Reveal';
 import { CountUp } from '@/soc/components/CountUp';
 import { Stagger } from '@/soc/components/Stagger';
 import { DonutChart, TrendArea, type DonutSegment } from '@/soc/components/charts';
-import { BurnDownChart } from '@/soc/components/charts-soc';
 import { token, VERDICT_COLOR, type VerdictKey } from '@/soc/components/palette';
 import {
   SEVERITY_BAND_ORDER,
@@ -605,6 +615,7 @@ function SnapshotCard({
   ctaLabel,
   onClick,
   trend,
+  className,
 }: {
   title: string;
   caption: string;
@@ -617,6 +628,17 @@ function SnapshotCard({
   onClick?: () => void;
   /** Optional honest hover trendline for the snapshot total. */
   trend?: MetricTrendSeries;
+  /**
+   * Layout-only overrides for the card's own root.
+   *
+   * The root's `border-b … last:border-b-0` is STACKING logic expressed as a DOM-order
+   * selector, so it is right only while the cards are stacked. When the parent lays them
+   * out side by side, the first card keeps a hairline under it that separates nothing —
+   * hence a caller-supplied `xl:border-b-0`. Always suppress with a BREAKPOINT-PREFIXED
+   * utility: `cn` is `twMerge`, and a bare `border-b-0` would delete the base `border-b`
+   * outright, taking the stacked rule with it.
+   */
+  className?: string;
 }) {
   const segments = sevSegments(counts);
   const legend = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
@@ -698,7 +720,7 @@ function SnapshotCard({
   );
 
   return (
-    <section className="min-w-0 border-b border-border/70 py-3 last:border-b-0">
+    <section className={cn('min-w-0 border-b border-border/70 py-3 last:border-b-0', className)}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">{title}</h2>
@@ -1384,13 +1406,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // series is likewise ACK-based server-side.
   const mttdBlock = posture?.lifecycle?.mttd_minutes;
   const respondBlock = posture?.lifecycle?.mtta_minutes;
-
-  // Burn-down (opened vs resolved) series for the compact operations rail.
-  const burndownData = React.useMemo(
-    () => (metrics?.burndown ?? []).map((p) => ({ x: p.date, open: p.opened, closed: p.resolved })),
-    [metrics],
-  );
-
 
   // ----- Exactly four most-recent cases — compact live instrument queue ----- //
   const latestCases = React.useMemo(
@@ -2248,11 +2263,24 @@ export default function Overview({ onNavigate }: OverviewProps) {
     <PageContainer variant="wide" className="space-y-4">
       {/* ---- MASTHEAD: a PLAIN, dense header (the big title sits flush on the page
              background, like the Sources page) with the time-range + refresh controls in
-             its `actions` slot. ---- */}
+             its `meta` slot — BESIDE the title, not opposite it.
+
+             `meta` rather than `actions` is the whole of requirement 1. `actions` renders
+             into a wrapper that is a SIBLING of the left cluster inside the header's
+             `sm:justify-between` row, which is what pushed the controls to the far right;
+             `meta` renders inside the title row itself. With `actions` now absent that row
+             has a single non-growing child, so the title and its controls pack left as one
+             cluster and the masthead's right half is deliberately empty. Nothing else about
+             the header changes, and no other PageHeader caller is touched.
+
+             The controls keep their own `role="group"` wrapper verbatim: it is the labelled
+             landmark the Console's tests and screen-reader users both resolve the cluster
+             by. No width or grow utility is added — `w-full sm:w-auto` is `actions`-slot
+             behaviour and inside `meta` it would force the title onto its own line. ---- */}
       <PageHeader
         data-testid="page-hero"
         title={PAGE_TITLE}
-        actions={
+        meta={
           <div
             role="group"
             aria-label="Dashboard controls"
@@ -2340,6 +2368,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     icon={kpi.icon}
                     accent={kpi.accent}
                     variant="strip"
+                    // The strip HEADS this page rather than being all of it: a flow
+                    // diagram, a case queue and a timing pair have to sit below it in the
+                    // same view. Compact swaps the tile's existing padding/numeral tokens
+                    // (min-h-28→min-h-0, px-4 py-5→px-3 py-3, text-4xl→text-2xl); it does
+                    // not touch the cell COUNT, which the grid's nth-child divider math is
+                    // hand-tuned to. See ui-standard, "Operational summaries".
+                    density="compact"
                     goodDirection={kpi.goodDirection}
                     countTo={kpi.countTo}
                     format={kpi.format}
@@ -2401,253 +2436,259 @@ export default function Overview({ onNavigate }: OverviewProps) {
             ) : null}
           </div>
 
-          {/* ---- INSTRUMENT BAND: close attribution · case state · live queue ---- */}
+          {/* ---- THE COMMAND LATTICE ----------------------------------------------
+               ONE band, three rows, all on the SAME twelve-column xl grid:
+
+                 row 1  noise-reduction flow (8)          · close attribution (4)
+                 row 2  open + resolved snapshots (8)     · latest-case queue (4)
+                 row 3  MTTD / response                            (full width)
+
+               This used to be two sibling bands — an INSTRUMENT grid at `lg:` and an
+               OPERATIONS grid at `xl:` — which cost a duplicated `border-y` pair and a
+               16px gap between two things that read as one instrument panel.
+
+               ⚠️ THE GRID IS `xl:`, NEVER `lg:`. The flow diagram's own container query
+               hides its graph below 38rem (608px) of cell width and falls back to a text
+               rail. At the tightest supported desktop — 1280px viewport, sidebar pinned —
+               an 8-of-12 cell measures 1280 − 240 (sidebar) − 64 (content inset) = 976,
+               × 8/12 = 650.67, − 32 (p-4) − 1 (border) = 617.67px: it clears 608 by under
+               10px. On an `lg:` grid the same cell at 1024px viewport would be ~448px and
+               the graph would silently vanish on every laptop. Below `xl` the rows stack
+               full-width, which is far wider still. Four columns can never carry the flow:
+               even at a 1920px cap that is 608px BEFORE padding. Hence 8/4, not 6/6.
+               (Widths are derived from class tokens, not measured.) ---- */}
           <Reveal
             variant="rise"
             delay={40}
             data-testid="hero-row"
-            className="grid min-w-0 items-stretch border-y border-border lg:grid-cols-12"
+            className="min-w-0 border-y border-border"
           >
-            {/* Close attribution — the band's lead instrument (it replaced the Active
-                Risk Index, whose gauge duplicated risk the page already states in the
-                severity donuts, the risk-ordered queue, and every case row). */}
-            <div className="min-w-0 border-b border-border/70 lg:col-span-4 lg:border-b-0 lg:border-r">
-              <HumanVsAiCard
-                totals={humanVsAi.totals}
-                unavailableReason={humanVsAi.reason}
-                series={humanVsAi.series}
-                windowLabel={bucketTrends?.label ?? trendFallbackLabel}
-                truncated={humanVsAi.truncated}
-                stale={humanVsAi.stale}
-                alertsIngested={humanVsAi.alerts}
-                className="h-full w-full"
-              />
-            </div>
-
-            <section
-              aria-label="Resolved and open cases"
-              className="min-w-0 border-b border-border/70 px-3 lg:col-span-4 lg:border-b-0 lg:border-r"
-            >
-              <SnapshotCard
-                title="Open cases"
-                caption={`Still open from the last ${windowLabel(hours)}`}
-                total={derived.open}
-                delta={countDelta(derived.open, prev?.open ?? null)}
-                goodDirection="down"
-                counts={derived.openSev}
-                ariaLabel="Open cases by severity"
-                ctaLabel="View open cases"
-                trend={{
-                  metric: 'New cases opened',
-                  points: bucketTrends?.newCases,
-                  windowLabel: bucketTrends?.label ?? trendFallbackLabel,
-                  caption: 'case arrivals per bucket',
-                  format: fmtInt,
-                  colorToken: 'primary',
-                }}
-                onClick={navigate
-                  ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
-                  : undefined}
-              />
-              <SnapshotCard
-                title="Cases resolved"
-                caption={`Closed in the last ${windowLabel(hours)}`}
-                total={derived.resolved}
-                delta={countDelta(derived.resolved, prev?.resolved ?? null)}
-                goodDirection="up"
-                counts={derived.resolvedSev}
-                ariaLabel="Resolved cases by severity"
-                ctaLabel="View resolved cases"
-                trend={{
-                  metric: 'Cases now closed',
-                  points: bucketTrends?.closed,
-                  windowLabel: bucketTrends?.label ?? trendFallbackLabel,
-                  caption: 'by case-arrival bucket',
-                  format: fmtInt,
-                  colorToken: 'success',
-                }}
-                // `derived.resolved` counts BOTH terminal statuses (`CLOSED_STATUSES`),
-                // so the deep link must too: the Cases status filter applies exactly
-                // one status, and `status: 'closed'` silently dropped every RESOLVED
-                // case — a card reading 1 landing on an empty list. Same `__terminal__`
-                // facet the Resolved / Closed KPI drill-through uses.
-                onClick={
-                  navigate
-                    ? () =>
-                        navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow })
-                    : undefined
-                }
-              />
-            </section>
-
-            <div className="min-w-0 lg:col-span-4">
-              <TopCasesPanel
-                cases={latestCases}
-                navigate={navigate}
-                navWindow={navWindow}
-              />
-            </div>
-          </Reveal>
-
-          {/* ---- OPERATIONS BAND: wide noise flow + compact burndown/timing rail ---- */}
-          <Reveal
-            variant="rise"
-            delay={70}
-            className="grid min-w-0 border-y border-border xl:grid-cols-12"
-          >
-            {noiseCellVisible ? (
-              <div className="min-w-0 border-b border-border/70 p-4 xl:col-span-8 xl:border-b-0 xl:border-r">
-                {noiseUnavailable ? (
-                  <EmptyState
-                    data-testid="noise-reduction-unavailable"
-                    icon={Workflow}
-                    variant="error"
-                    compact
-                    title="Noise reduction unavailable"
-                    description={
-                      noise
-                        ? 'Refresh failed. Showing the last loaded flow.'
-                        : "The selected window's noise-reduction flow could not be loaded."
-                    }
-                    action={
-                      <Button size="sm" variant="outline" onClick={() => void retryNoise()}>
-                        <RefreshCw aria-hidden />
-                        Retry noise reduction
-                      </Button>
-                    }
-                    className={cn(
-                      'rounded-md border border-critical/30 bg-transparent',
-                      noise && 'mb-3',
-                    )}
-                  />
-                ) : null}
-                {noise ? (
-                  <NoiseFunnel
-                    data={noise}
-                    onStageClick={onStageClick}
-                    openCases={{
-                      count: posture?.aging.queue_depth ?? derived.open,
-                      // `queue_depth` is COHORT-scoped (open cases that arrived in the
-                      // window), so its completeness is the window's: `#103`'s
-                      // `window_covered`, not the permanent `truncated` flag. Without a
-                      // posture rollup the fallback count is the fetched page, whose
-                      // completeness the store now proves via `window_total_exact` —
-                      // replacing a `cases.length >= 200` guess that disagreed with the
-                      // posture branch a few lines up.
-                      partial: posture
-                        ? !postureCovered
-                        : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
-                    }}
-                    onOpenCasesClick={onOpenCasesClick}
-                    hidden={noiseHidden}
-                    onToggleHidden={toggleNoiseHidden}
-                    expandable
-                    variant="flat"
-                    className="w-full"
-                  />
-                ) : null}
-              </div>
-            ) : null}
-
-            <div
-              className={cn(
-                'min-w-0',
-                noiseCellVisible ? 'xl:col-span-4' : 'md:grid md:grid-cols-2 xl:col-span-12',
-              )}
-            >
-              <section aria-label="Cases burndown" className="border-b border-border/70 p-4 md:border-r xl:border-r-0">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
-                      Cases burndown
-                    </h2>
-                    <p className="mt-0.5 text-2xs text-muted-foreground">opened vs resolved over time</p>
-                  </div>
-                  {/* A real legend keyed to the chart's status-axis tokens (was "opn vs res"). */}
-                  <span className="flex shrink-0 items-center gap-3 text-2xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 rounded-full bg-info" aria-hidden />
-                      Opened
-                    </span>
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
-                      Resolved
-                    </span>
-                  </span>
-                </div>
-                <div className="mt-3">
-                  <BurnDownChart
-                    data={burndownData}
-                    height={126}
-                    openLabel="Opened"
-                    closedLabel="Resolved"
-                    format={fmtInt}
-                    ariaLabel="Cases opened vs resolved over time"
-                  />
-                </div>
-              </section>
-
-              <section aria-label="Mean time to detect / respond" className="p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
-                      MTTD / response
-                    </h2>
-                    <p className="mt-0.5 text-2xs text-muted-foreground">p50 · server-computed</p>
-                  </div>
-                  {navigate ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-2xs"
-                      onClick={() => navigate('metrics', { tab: 'posture' })}
-                    >
-                      Detail →
-                    </Button>
+            {/* ---- ROW 1 — the flow, and who closed what ---- */}
+            <div className="grid min-w-0 items-stretch border-b border-border/70 xl:grid-cols-12">
+              {noiseCellVisible ? (
+                <div className="min-w-0 border-b border-border/70 p-4 xl:col-span-8 xl:border-b-0 xl:border-r">
+                  {noiseUnavailable ? (
+                    <EmptyState
+                      data-testid="noise-reduction-unavailable"
+                      icon={Workflow}
+                      variant="error"
+                      compact
+                      title="Noise reduction unavailable"
+                      description={
+                        noise
+                          ? 'Refresh failed. Showing the last loaded flow.'
+                          : "The selected window's noise-reduction flow could not be loaded."
+                      }
+                      action={
+                        <Button size="sm" variant="outline" onClick={() => void retryNoise()}>
+                          <RefreshCw aria-hidden />
+                          Retry noise reduction
+                        </Button>
+                      }
+                      className={cn(
+                        'rounded-md border border-critical/30 bg-transparent',
+                        noise && 'mb-3',
+                      )}
+                    />
+                  ) : null}
+                  {noise ? (
+                    <NoiseFunnel
+                      data={noise}
+                      onStageClick={onStageClick}
+                      openCases={{
+                        count: posture?.aging.queue_depth ?? derived.open,
+                        // `queue_depth` is COHORT-scoped (open cases that arrived in the
+                        // window), so its completeness is the window's: `#103`'s
+                        // `window_covered`, not the permanent `truncated` flag. Without a
+                        // posture rollup the fallback count is the fetched page, whose
+                        // completeness the store now proves via `window_total_exact` —
+                        // replacing a `cases.length >= 200` guess that disagreed with the
+                        // posture branch a few lines up.
+                        partial: posture
+                          ? !postureCovered
+                          : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
+                      }}
+                      onOpenCasesClick={onOpenCasesClick}
+                      hidden={noiseHidden}
+                      onToggleHidden={toggleNoiseHidden}
+                      expandable
+                      variant="flat"
+                      className="w-full"
+                    />
                   ) : null}
                 </div>
-                <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
-                  <div className="pr-4">
-                    <MetricHoverTrend
-                      metric="MTTD · daily mean"
-                      points={timingTrends?.mttd}
-                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                      format={humanizeMins}
-                      colorToken="info"
-                      side="top"
-                    >
-                      <TimingStat
-                        label="MTTD"
-                        sub="Detect · log arrival → case"
-                        block={mttdBlock}
-                        dotClass="bg-info"
-                        compact
-                        help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
-                      />
-                    </MetricHoverTrend>
-                  </div>
-                  <div className="pl-4">
-                    <MetricHoverTrend
-                      metric="Respond · daily mean"
-                      points={timingTrends?.respond}
-                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                      format={humanizeMins}
-                      colorToken="success"
-                      side="top"
-                    >
-                      <TimingStat
-                        label="Respond"
-                        sub="First human action e.g. assignment / ack"
-                        block={respondBlock}
-                        dotClass="bg-success"
-                        compact
-                        help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
-                      />
-                    </MetricHoverTrend>
-                  </div>
-                </div>
-              </section>
+              ) : null}
+
+              {/* Close attribution — the lattice's lead instrument (it replaced the Active
+                  Risk Index, whose gauge duplicated risk the page already states in the
+                  severity donuts, the risk-ordered queue, and every case row).
+
+                  The widen-fallback keys on `noiseSupported`, NOT `noiseCellVisible`: the
+                  former is a `typeof api.noiseReduction === 'function'` probe that is
+                  settled on the first render, while the latter is false for the loading
+                  tick and would paint this card twelve columns wide and then snap it to
+                  four. A backend that cannot serve the funnel at all is the case this
+                  actually covers, and there the card takes the whole row rather than
+                  leaving eight columns of dead space beside it. */}
+              <div className={cn('min-w-0', noiseSupported ? 'xl:col-span-4' : 'xl:col-span-12')}>
+                <HumanVsAiCard
+                  totals={humanVsAi.totals}
+                  unavailableReason={humanVsAi.reason}
+                  series={humanVsAi.series}
+                  windowLabel={bucketTrends?.label ?? trendFallbackLabel}
+                  truncated={humanVsAi.truncated}
+                  stale={humanVsAi.stale}
+                  alertsIngested={humanVsAi.alerts}
+                  className="h-full w-full"
+                />
+              </div>
             </div>
+
+            {/* ---- ROW 2 — case state, and the live queue ---- */}
+            <div className="grid min-w-0 items-stretch border-b border-border/70 xl:grid-cols-12">
+              {/* ONE labelled region holding both snapshots, split into two cells at `xl`.
+                  Promoting the cards to independent grid children would delete this
+                  landmark and the h2 order that is read from it. The split is gated at
+                  `xl:` rather than `sm:` on purpose: below it the cards are already
+                  full-width, and halving them earlier would make each narrower than it is
+                  today between 640 and 1024px, where the severity legend starts
+                  truncating band labels. */}
+              <section
+                aria-label="Resolved and open cases"
+                className="min-w-0 border-b border-border/70 px-3 xl:col-span-8 xl:grid xl:grid-cols-2 xl:divide-x xl:divide-border/70 xl:border-b-0 xl:border-r"
+              >
+                <SnapshotCard
+                  title="Open cases"
+                  caption={`Still open from the last ${windowLabel(hours)}`}
+                  total={derived.open}
+                  delta={countDelta(derived.open, prev?.open ?? null)}
+                  goodDirection="down"
+                  counts={derived.openSev}
+                  ariaLabel="Open cases by severity"
+                  ctaLabel="View open cases"
+                  // Side by side at `xl` the card is no longer ABOVE its sibling, so the
+                  // stacked rule under it separates nothing; the parent's `xl:divide-x`
+                  // draws the rule that does. Prefixed, so the stacked rule survives.
+                  className="xl:border-b-0 xl:pr-4"
+                  trend={{
+                    metric: 'New cases opened',
+                    points: bucketTrends?.newCases,
+                    windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                    caption: 'case arrivals per bucket',
+                    format: fmtInt,
+                    colorToken: 'primary',
+                  }}
+                  onClick={navigate
+                    ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
+                    : undefined}
+                />
+                <SnapshotCard
+                  title="Cases resolved"
+                  caption={`Closed in the last ${windowLabel(hours)}`}
+                  total={derived.resolved}
+                  delta={countDelta(derived.resolved, prev?.resolved ?? null)}
+                  goodDirection="up"
+                  counts={derived.resolvedSev}
+                  ariaLabel="Resolved cases by severity"
+                  ctaLabel="View resolved cases"
+                  className="xl:pl-4"
+                  trend={{
+                    metric: 'Cases now closed',
+                    points: bucketTrends?.closed,
+                    windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                    caption: 'by case-arrival bucket',
+                    format: fmtInt,
+                    colorToken: 'success',
+                  }}
+                  // `derived.resolved` counts BOTH terminal statuses (`CLOSED_STATUSES`),
+                  // so the deep link must too: the Cases status filter applies exactly
+                  // one status, and `status: 'closed'` silently dropped every RESOLVED
+                  // case — a card reading 1 landing on an empty list. Same `__terminal__`
+                  // facet the Resolved / Closed KPI drill-through uses.
+                  onClick={
+                    navigate
+                      ? () =>
+                          navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow })
+                      : undefined
+                  }
+                />
+              </section>
+
+              <div className="min-w-0 xl:col-span-4">
+                <TopCasesPanel
+                  cases={latestCases}
+                  navigate={navigate}
+                  navWindow={navWindow}
+                />
+              </div>
+            </div>
+
+            {/* ---- ROW 3 — the timing pair, full width ----
+                It used to share a rail with a Cases-burndown chart; that chart now lives on
+                Metrics → Posture as "Closure vs arrival", beside the aging series it is
+                actually read against. With the rail retired and the flow promoted to row 1,
+                this section is a full-width row of the lattice. Its top rule is the row-2
+                wrapper's `border-b`, and the lattice's own `border-y` closes it below. */}
+            <section aria-label="Mean time to detect / respond" className="min-w-0 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
+                    MTTD / response
+                  </h2>
+                  <p className="mt-0.5 text-2xs text-muted-foreground">p50 · server-computed</p>
+                </div>
+                {navigate ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-2xs"
+                    onClick={() => navigate('metrics', { tab: 'posture' })}
+                  >
+                    Detail →
+                  </Button>
+                ) : null}
+              </div>
+              <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
+                <div className="pr-4">
+                  <MetricHoverTrend
+                    metric="MTTD · daily mean"
+                    points={timingTrends?.mttd}
+                    windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                    format={humanizeMins}
+                    colorToken="info"
+                    side="top"
+                  >
+                    <TimingStat
+                      label="MTTD"
+                      sub="Detect · log arrival → case"
+                      block={mttdBlock}
+                      dotClass="bg-info"
+                      compact
+                      help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                    />
+                  </MetricHoverTrend>
+                </div>
+                <div className="pl-4">
+                  <MetricHoverTrend
+                    metric="Respond · daily mean"
+                    points={timingTrends?.respond}
+                    windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                    format={humanizeMins}
+                    colorToken="success"
+                    side="top"
+                  >
+                    <TimingStat
+                      label="Respond"
+                      sub="First human action e.g. assignment / ack"
+                      block={respondBlock}
+                      dotClass="bg-success"
+                      compact
+                      help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
+                    />
+                  </MetricHoverTrend>
+                </div>
+              </div>
+            </section>
           </Reveal>
 
           {/* ---- DEEPER ANALYTICS (collapsed by default) ---- */}

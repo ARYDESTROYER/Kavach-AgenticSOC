@@ -330,8 +330,12 @@ Operational summaries use one continuous strip rather than a row of independent
 cards. The strip owns its outer hairlines; each metric supplies only the responsive
 internal divider needed for the current column count. At the one-, two-, and four-
 column breakpoints, no cell may acquire both a left and top divider or lose the line
-that separates it from the preceding row. Use the compact `KpiTile` density when the
-strip is supporting a workflow rather than serving as the page's primary dashboard.
+that separates it from the preceding row. Use the compact `KpiTile` density whenever the
+strip is one band among several rather than the surface's only content — including the
+primary dashboard, where the strip heads a page that must also seat a flow diagram, a
+case queue and a timing pair. Reserve the default density for a strip that stands alone.
+Density changes padding and numeral scale only; it must never alter the cell count or the
+per-breakpoint divider rules above, which are tuned to an exact number of cells.
 
 Observed-outcome metrics embedded in another operational page use the integrated
 `ComparisonMetric` variant. Keep the shared reporting window, evidence state, and
