@@ -394,7 +394,7 @@ describe('Overview — KPI drill-down disclosure', () => {
       expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(/lower bound/i),
     );
     expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(
-      'newest 4 of 4,821 read',
+      'first 4 of 4,821 in this order',
     );
   });
 

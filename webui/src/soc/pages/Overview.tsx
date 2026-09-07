@@ -886,8 +886,14 @@ function TopCasesPanel({
                         ? 'transition-colors hover:border-border hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
                         : 'cursor-default',
                     )}
+                    // WCAG 2.5.3 (Label in Name): the row's visible label includes the
+                    // case IDENTIFIER, so the accessible name has to contain it too —
+                    // otherwise a speech-input user cannot say what they can see. The id
+                    // trails the title so the name still reads as a sentence.
                     aria-label={
-                      onOpenCase ? `Open case ${displayTitle}` : `Preview case ${displayTitle}`
+                      onOpenCase
+                        ? `Open case ${displayTitle} (${displayId})`
+                        : `Preview case ${displayTitle} (${displayId})`
                     }
                   >
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">

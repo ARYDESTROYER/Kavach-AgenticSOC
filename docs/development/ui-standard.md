@@ -328,9 +328,10 @@ authority. Rule preview sends the same single authoritative predicate that Save 
 
 Operational summaries use one continuous strip rather than a row of independent
 cards. The strip owns its outer hairlines; each metric supplies only the responsive
-internal divider needed for the current column count. At the one-, two-, and four-
-column breakpoints, no cell may acquire both a left and top divider or lose the line
-that separates it from the preceding row. Use the compact `KpiTile` density whenever the
+internal divider needed for the current column count. At every column count a strip
+uses — they differ per surface, and the primary dashboard runs one, two, three and five
+— no cell may acquire both a left and top divider or lose the line that separates it
+from the preceding row. Use the compact `KpiTile` density whenever the
 strip is one band among several rather than the surface's only content — including the
 primary dashboard, where the strip heads a page that must also seat a flow diagram, a
 case queue and a timing pair. Reserve the default density for a strip that stands alone.

@@ -717,7 +717,7 @@ describe('Overview — KPI drill-down depth', () => {
     // complete: the store said it could not prove the number it returned.
     const scope = () => screen.getByTestId('kpi-drilldown-scope');
     await waitFor(() => expect(scope()).toHaveTextContent(/lower bound/i));
-    expect(scope()).toHaveTextContent('newest 2 of 2 read');
+    expect(scope()).toHaveTextContent('first 2 of 2 in this order');
     expect(scope()).not.toHaveTextContent(/complete/i);
   });
 
@@ -757,7 +757,7 @@ describe('Overview — KPI drill-down depth', () => {
 
     const scope = () => screen.getByTestId('kpi-drilldown-scope');
     await waitFor(() => expect(scope()).toHaveTextContent(/lower bound/i));
-    expect(scope()).toHaveTextContent('newest 3 of 3 read');
+    expect(scope()).toHaveTextContent('first 3 of 3 in this order');
     expect(scope()).not.toHaveTextContent(/complete/i);
   });
 
@@ -781,11 +781,11 @@ describe('Overview — KPI drill-down depth', () => {
     await openPanel('kpi-total-cases');
     // Page one: the old wording, unchanged — it really is the newest N.
     expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(
-      'newest 200 of 260 read',
+      'first 200 of 260 in this order',
     );
 
     await userEvent.click(screen.getByTestId('kpi-drilldown-more'));
-    // Page two: "newest 260 of 260" would be a lie about WHICH rows were read, and the
+    // Page two: "first 260 of 260 in this order" would be a lie about WHICH rows were read, and the
     // completeness test now accounts for the offset instead of comparing the total with
     // one page's length.
     await waitFor(() =>
@@ -793,7 +793,7 @@ describe('Overview — KPI drill-down depth', () => {
         /complete: all 260 cases read/i,
       ),
     );
-    expect(screen.getByTestId('kpi-drilldown-scope')).not.toHaveTextContent(/newest 260/);
+    expect(screen.getByTestId('kpi-drilldown-scope')).not.toHaveTextContent(/first 260 of/);
     expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(/2 pages read/i);
   });
 

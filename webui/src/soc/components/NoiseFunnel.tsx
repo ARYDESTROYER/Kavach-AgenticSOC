@@ -1263,14 +1263,17 @@ function Header({
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex items-center gap-1.5">
-        <h3
+        {/* h2, matching every other band heading on the one page that renders this
+            component. It sits directly under the page h1, and since the flow became the
+            lattice's leading cell an h3 here would skip a level in the landing state. */}
+        <h2
           className={cn(
             'font-semibold text-foreground',
             flat ? 'text-2xs uppercase tracking-widest' : 'text-sm',
           )}
         >
           {flat ? 'Noise reduction flow' : 'Noise reduction'}
-        </h3>
+        </h2>
         <HelpTip
           label="What the noise-reduction funnel means"
           text={view === 'detailed' ? LEGACY_NOISE_FUNNEL_HELP_TEXT : NOISE_FUNNEL_HELP_TEXT}

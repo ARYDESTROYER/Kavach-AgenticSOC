@@ -372,7 +372,7 @@ describe('Overview — the command lattice', () => {
     // case, and this assertion is about the queue's row.
     const queue = await screen.findByRole('region', { name: 'Latest cases' });
     const row = within(queue).getByRole('button', {
-      name: 'Open case Unauthorized S3 access',
+      name: 'Open case Unauthorized S3 access (T-1)',
     });
     await openQueuedCase(row);
 
@@ -390,7 +390,7 @@ describe('Overview — the command lattice', () => {
     await waitFor(() => expect(screen.getByTestId('kpi-drilldown-rows')).toBeInTheDocument());
 
     await userEvent.click(
-      within(panel).getByRole('button', { name: 'Open case Benign admin login' }),
+      within(panel).getByRole('button', { name: 'Open case Benign admin login (T-3)' }),
     );
 
     expect(await screen.findByTestId('case-detail-probe')).toHaveTextContent('c-closed-fp');
@@ -438,7 +438,7 @@ describe('Overview — the command lattice', () => {
     await screen.findByTestId('page-hero');
     const queue = await screen.findByRole('region', { name: 'Latest cases' });
     const row = within(queue).getByRole('button', {
-      name: 'Open case Noisy scanner beacon',
+      name: 'Open case Noisy scanner beacon (T-2)',
     });
 
     const pointer = userEvent.setup({ pointerEventsCheck: 0 });
@@ -460,7 +460,7 @@ describe('Overview — the command lattice', () => {
     await screen.findByTestId('page-hero');
     const queue = await screen.findByRole('region', { name: 'Latest cases' });
     const row = within(queue).getByRole('button', {
-      name: 'Open case Noisy scanner beacon',
+      name: 'Open case Noisy scanner beacon (T-2)',
     });
 
     await openQueuedCase(row);
@@ -507,7 +507,7 @@ describe('Overview — the command lattice', () => {
     );
 
     await openQueuedCase(
-      within(queue).getByRole('button', { name: 'Open case Unauthorized S3 access' }),
+      within(queue).getByRole('button', { name: 'Open case Unauthorized S3 access (T-1)' }),
     );
     await screen.findByTestId('case-detail-probe');
     // Non-vacuous: the audited tree really does contain the open layer.

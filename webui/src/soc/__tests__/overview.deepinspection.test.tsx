@@ -355,11 +355,15 @@ describe('Overview — KPI deep-inspection panel', () => {
     const stats = await screen.findByTestId('kpi-drilldown-stats');
     const acknowledged = within(stats).getByTestId('kpi-drilldown-stat-acknowledged');
 
-    // A dash and the reason. A zero here would claim a measurement over a field no listed
-    // case carries — the lifecycle anchors are optional on the backend and default to
-    // null, so the unpopulated deployment is the ORDINARY case, not an error.
+    // A dash and the reason. A zero here would claim a measurement over a field this
+    // deployment does not record at all — the lifecycle anchors are optional on the
+    // backend, so the unpopulated deployment is the ORDINARY case, not an error.
+    //
+    // The test is presence of the KEY, not truthiness of the value, and the fixture above
+    // omits `acknowledged_at` entirely. A deployment that DOES record acknowledgement but
+    // has none yet must read "0", not this dash — that case is pinned below.
     expect(acknowledged).toHaveTextContent('—');
-    expect(acknowledged).toHaveTextContent('no listed case carries an acknowledgement instant');
+    expect(acknowledged).toHaveTextContent('this deployment records no acknowledgement instant');
     expect(acknowledged.textContent ?? '').not.toMatch(/\d/);
 
     // A card whose field IS populated still reports a real number, so the dash above is a
@@ -373,6 +377,33 @@ describe('Overview — KPI deep-inspection panel', () => {
     );
   });
 
+  /**
+   * The other half of the same contract, and the half that is easy to get backwards.
+   *
+   * A deployment that RECORDS acknowledgement but has none yet must read "0 of 2 listed",
+   * not the dash above. Zero acknowledged and "we cannot tell" are different answers, and
+   * collapsing them would tell a shift lead that a wired deployment is unwired. The
+   * discriminator is presence of the KEY — `acknowledged_at: null` on the wire means
+   * recorded-and-empty — so this fixture sets it explicitly null on every listed case.
+   */
+  it('reports a recorded-but-empty stat card as a real zero, not as not-measured', async () => {
+    listCasesMock.mockResolvedValue({
+      ...RESPONSE,
+      cases: PAGE.map((c) => ({ ...c, acknowledged_at: null })),
+    });
+
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    await openPanel('kpi-total-cases');
+
+    const stats = await screen.findByTestId('kpi-drilldown-stats');
+    const acknowledged = within(stats).getByTestId('kpi-drilldown-stat-acknowledged');
+
+    expect(acknowledged).toHaveTextContent('0');
+    expect(acknowledged).toHaveTextContent('of 2 listed');
+    expect(acknowledged).not.toHaveTextContent('this deployment records no acknowledgement');
+  });
+
   // ------------------------------------------------------------------- D6 ---
   it('calls an unproven page a LOWER BOUND and never claims it is complete', async () => {
     renderOverview();
@@ -384,7 +415,7 @@ describe('Overview — KPI deep-inspection panel', () => {
     // narrowing that was asked for. That is never proof, under any branch.
     expect(scope).toHaveTextContent(/lower bound/i);
     expect(scope.textContent ?? '').not.toMatch(/complete/i);
-    expect(scope).toHaveTextContent('newest 2 of 900 read');
+    expect(scope).toHaveTextContent('first 2 of 900 in this order');
     // Two numerals, two questions — and the panel says so rather than letting the reader
     // fuse "900 matched" with "2 read".
     expect(screen.getByTestId('kpi-drilldown-caveats')).toHaveTextContent(
