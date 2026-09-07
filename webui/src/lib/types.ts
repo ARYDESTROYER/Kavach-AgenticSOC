@@ -2459,8 +2459,27 @@ export interface Case {
   tags?: string[];
   /** Analyst comments thread (POST /api/cases/{id}/comment). */
   comments?: CaseComment[];
-  /** Assigned analyst (POST /api/cases/{id}/assign). */
+  /** Assigned analyst (POST /api/cases/{id}/assign). Backend default is `''`, so an
+   *  UNASSIGNED case carries an empty string rather than null — test for blankness. */
   assignee?: string;
+  /**
+   * Lifecycle interval anchors, mirroring `models.py` `Case.detected_at` /
+   * `acknowledged_at` / `first_response_at`. All three are optional on the backend and
+   * default to None, so a deployment where nothing has populated them yet is the NORMAL
+   * case, not an error: a reader must distinguish "no case here has been acknowledged"
+   * from "zero acknowledged" and say the former rather than counting the latter.
+   *
+   * ADVISORY / REPORTING ONLY. `decide()` never reads them (#3).
+   */
+  detected_at?: string | null;
+  acknowledged_at?: string | null;
+  first_response_at?: string | null;
+  /**
+   * Which detection path opened this case — the backend `DetectionSource` vocabulary
+   * (`detection` | `anomaly` | `rule`). Optional and defaulted None, and ADVISORY only
+   * (#3). This is the product's own word for the concept; it is not a vendor "sensor".
+   */
+  detection_source?: string | null;
   /** Outbound notification send records (F5; additive, optional). */
   notifications_sent?: NotificationSendRecord[];
   /**

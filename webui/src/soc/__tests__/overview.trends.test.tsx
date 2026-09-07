@@ -130,15 +130,23 @@ describe('Overview — hover trendlines', () => {
     await waitFor(() =>
       expect(trendsMock).toHaveBeenCalledWith(24, expect.any(AbortSignal)),
     );
-    // The quiet discoverability line replaces the removed delta footnote. It is
-    // device-honest: the hover/focus copy shows only on hover-capable devices,
+    // The quiet discoverability line replaces the removed delta footnote. Its TREND
+    // half is device-honest: the hover/focus copy shows only on hover-capable devices,
     // while touch-only devices (hover: none) get the tap instruction — both spans
     // ship and CSS media picks exactly one.
     expect(
-      await screen.findByText(/Hover or focus a metric for its last 24 hours · 1h buckets trend\./i),
+      await screen.findByText(/Hover or focus one for its last 24 hours · 1h buckets trend\./i),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Tap a metric for its last 24 hours · 1h buckets trend\./i),
+      screen.getByText(/Tap one for its last 24 hours · 1h buckets trend\./i),
+    ).toBeInTheDocument();
+    // The SELECT half is unconditional and sits in the same line: only three of the five
+    // tiles carry a trend, so the hover card alone could never make the click
+    // discoverable on all of them.
+    expect(
+      within(screen.getByTestId('kpi-strip-affordance')).getByText(
+        /Select a metric for its full population, filters and paging\./i,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -299,8 +307,14 @@ describe('Overview — hover trendlines', () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     const tile = await screen.findByTestId('kpi-total-cases');
-    // The discoverability footnote self-omits without a bucket payload.
-    expect(screen.queryByText(/Hover or focus a metric/i)).toBeNull();
+    // The TREND half of the footnote self-omits without a bucket payload; the SELECT
+    // half does not, because every tile is a disclosure trigger regardless of trends.
+    expect(screen.queryByText(/Hover or focus one for its/i)).toBeNull();
+    expect(
+      within(screen.getByTestId('kpi-strip-affordance')).getByText(
+        /Select a metric for its full population/i,
+      ),
+    ).toBeInTheDocument();
 
     await userEvent.hover(tile);
     const card = await findTrendCard();

@@ -2181,6 +2181,35 @@ export default function Overview({ onNavigate }: OverviewProps) {
   );
 
   /**
+   * Re-point the OPEN panel at another metric, from the panel's own switcher.
+   *
+   * Unlike `toggleKpiPanel` this never closes: the operator is inside the panel comparing
+   * populations, and closing it under them because they picked the metric they were
+   * already on would lose their filters and their place. It also moves the expanded tile,
+   * so `aria-expanded`/`aria-controls` remain true on exactly one trigger, and the panel
+   * re-announces itself and re-focuses its heading through its own `spec.key` effect.
+   */
+  const selectKpiPanel = React.useCallback(
+    (key: string) => {
+      if (openKpi === key) return;
+      setOpenKpi(key);
+      announce(`${kpiLabel(key)} details opened`);
+    },
+    [openKpi, announce, kpiLabel],
+  );
+
+  /**
+   * The switcher's entries: each tile's key, label and RENDERED numeral, taken verbatim
+   * from the same `kpis` array the strip renders — never recomputed, so a tile and its
+   * switcher entry can never disagree. These are the dashboard's window rollups; the
+   * panel labels them as such, because the list it draws underneath reads case pages.
+   */
+  const kpiMetrics = React.useMemo(
+    () => kpis.map((k) => ({ key: k.testId, label: k.label, value: k.value })),
+    [kpis],
+  );
+
+  /**
    * The open tile's full panel contract: what the tile declared, plus the two things
    * only the page knows — the selected window and the tile's honest server trend. The
    * trend is restated INSIDE the panel because the tile's hover card is suppressed
@@ -2416,6 +2445,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   <MetricHoverTrend
                     key={kpi.testId}
                     {...kpi.trend}
+                    // The preview says WHAT the numeral counts and what a click will do.
+                    // Both are restated from data the tile already declares — the
+                    // drill-down's own population sentence, and a fixed affordance line —
+                    // so the card can never disagree with the panel it points at.
+                    preview={{
+                      eyebrow: kpi.label,
+                      population: kpi.drilldown.population,
+                      affordance: 'Select for the full population, filters and paging.',
+                    }}
                     focusable={false}
                     forceClosed={expanded}
                     side="bottom"
@@ -2427,20 +2465,36 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 );
               })}
             </Stagger>
-            {bucketTrends ? (
-              <p className="px-0.5 text-2xs text-muted-foreground">
-                {/* Device-honest affordance copy: hover-capable inputs get the
-                    hover/focus instruction; touch-only devices (hover: none) are
-                    told to tap — the trend card toggles on tap there. Both spans
-                    ship; the CSS media variant picks exactly one. */}
-                <span className="hidden [@media(hover:hover)]:inline">
-                  Hover or focus a metric for its {bucketTrends.label} trend.
-                </span>
-                <span className="[@media(hover:hover)]:hidden">
-                  Tap a metric for its {bucketTrends.label} trend.
-                </span>
-              </p>
-            ) : null}
+            {/* The strip's affordance line, in two independent halves.
+
+                The SELECT half is unconditional, because every tile is a disclosure
+                trigger whether or not a trend series exists for it — and only three of
+                the five have one, so the hover card alone could never make the click
+                discoverable on all of them. Being always visible, it also reaches touch
+                and keyboard users, who never see a hover card at all.
+
+                The TREND half stays conditional on there being a series to promise. */}
+            <p
+              data-testid="kpi-strip-affordance"
+              className="px-0.5 text-2xs text-muted-foreground"
+            >
+              Select a metric for its full population, filters and paging.
+              {bucketTrends ? (
+                <>
+                  {' '}
+                  {/* Device-honest affordance copy: hover-capable inputs get the
+                      hover/focus instruction; touch-only devices (hover: none) are
+                      told to tap — the trend card toggles on tap there. Both spans
+                      ship; the CSS media variant picks exactly one. */}
+                  <span className="hidden [@media(hover:hover)]:inline">
+                    Hover or focus one for its {bucketTrends.label} trend.
+                  </span>
+                  <span className="[@media(hover:hover)]:hidden">
+                    Tap one for its {bucketTrends.label} trend.
+                  </span>
+                </>
+              ) : null}
+            </p>
 
             {/* The drill-down disclosure. A SIBLING of the grid, never a sixth child of
                 it: the strip carries hand-tuned `nth-child` divider math for exactly
@@ -2451,6 +2505,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 panelId={KPI_PANEL_ID}
                 headingId={KPI_PANEL_HEADING_ID}
                 onClose={closeKpiPanel}
+                metrics={kpiMetrics}
+                // Switching metric re-points the SAME disclosure rather than closing it,
+                // so the expanded tile moves with it and `aria-expanded`/`aria-controls`
+                // stay truthful on exactly one tile.
+                onSelectMetric={selectKpiPanel}
               />
             ) : null}
           </div>

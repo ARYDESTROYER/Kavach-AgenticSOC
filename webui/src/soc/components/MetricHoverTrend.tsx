@@ -150,7 +150,33 @@ export function MetricTrendBody({
   );
 }
 
+/**
+ * The extra zones the hover PREVIEW shows around the trend — what the numeral counts, an
+ * optional small partition of it, and the affordance saying what a click will do.
+ *
+ * Preview-only: `MetricTrendBody` never renders these, because the drill-down panel that
+ * renders it is already the thing this affordance points at, and it states the population
+ * in its own heading.
+ *
+ * There is deliberately NO period-over-period delta chip here. The strip dropped those on
+ * purpose — a percentage whose baseline is not explainable at a glance — and the card
+ * already carries the honest form of the same fact: `first → latest` over a NAMED window.
+ * A chip would restate it with the baseline hidden again.
+ */
+export interface MetricPreview {
+  /** Short semantic label above the population sentence (e.g. "ACTIVE BACKLOG"). */
+  eyebrow?: string;
+  /** ONE plain sentence naming what the numeral counts. Rendered as plain text (#9). */
+  population?: string;
+  /** A small partition of the numeral: 2-3 cells, each already formatted. */
+  breakdown?: readonly { key: string; label: string; value: string }[];
+  /** What activating the tile does. Present on every tile, so the click is discoverable. */
+  affordance?: string;
+}
+
 export interface MetricHoverTrendProps extends MetricTrendSeries {
+  /** Extra preview zones. Omitted → the card is exactly the trend it has always been. */
+  preview?: MetricPreview;
   /**
    * Put the WRAPPER in the tab order (default true). Pass `false` when the child
    * already contains a focusable element (e.g. a clickable KpiTile button) so the
@@ -197,6 +223,7 @@ export function MetricHoverTrend({
   caption,
   format,
   colorToken = 'primary',
+  preview,
   focusable = true,
   toggleOnClick,
   forceClosed = false,
@@ -313,6 +340,22 @@ export function MetricHoverTrend({
         data-testid="metric-trend-card"
         className="w-72 p-3"
       >
+        {/* WHAT the numeral counts, above the series that moves it. Plain text (#9). */}
+        {preview?.eyebrow || preview?.population ? (
+          <div className="mb-2 min-w-0 border-b border-border/70 pb-2">
+            {preview.eyebrow ? (
+              <p className="truncate text-2xs uppercase tracking-widest text-muted-foreground">
+                {preview.eyebrow}
+              </p>
+            ) : null}
+            {preview.population ? (
+              <p className="mt-0.5 text-2xs leading-relaxed text-foreground">
+                {preview.population}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         <MetricTrendBody
           metric={metric}
           points={points}
@@ -321,6 +364,39 @@ export function MetricHoverTrend({
           format={format}
           colorToken={colorToken}
         />
+
+        {/* A small partition of the numeral. Each cell arrives already formatted, so this
+            never re-derives a share and never disagrees with the tile it explains. */}
+        {preview?.breakdown?.length ? (
+          <dl
+            data-testid="metric-trend-breakdown"
+            className="mt-2 grid min-w-0 grid-cols-3 gap-2 border-t border-border/70 pt-2"
+          >
+            {preview.breakdown.map((b) => (
+              <div key={b.key} className="min-w-0">
+                <dt className="truncate text-2xs text-muted-foreground" title={b.label}>
+                  {b.label}
+                </dt>
+                <dd className="mt-0.5 truncate font-mono text-2xs font-semibold tabular-nums text-foreground">
+                  {b.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+
+        {/* The click affordance. Decoration over an already-interactive tile: the card is
+            never the only route to the panel — activating the tile by keyboard opens it
+            directly, and on touch, where this card cannot be reached at all, the panel is
+            the surface that carries the same series. */}
+        {preview?.affordance ? (
+          <p
+            data-testid="metric-trend-affordance"
+            className="mt-2 border-t border-border/70 pt-2 text-2xs text-muted-foreground"
+          >
+            {preview.affordance}
+          </p>
+        ) : null}
       </HoverCardContent>
     </HoverCard>
   );
