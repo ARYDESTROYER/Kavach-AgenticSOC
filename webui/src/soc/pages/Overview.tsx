@@ -169,6 +169,7 @@ import { BarList, type BarListItem } from '@/soc/components/BarList';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { AutomationNudge } from './AutomationNudge';
+import { CaseDetail } from '@/soc/pages/CaseDetail';
 import { HealthDegradationIndicator } from '@/soc/components/HealthDegradationIndicator';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { usePosture } from '@/soc/hooks/usePosture';
@@ -811,10 +812,16 @@ function TopCasesPanel({
   cases,
   navigate,
   navWindow,
+  onOpenCase,
 }: {
   cases: Case[];
   navigate?: Navigate;
   navWindow: number;
+  /**
+   * Open one case IN PLACE (the shared CaseDetail sheet over this page) rather than
+   * navigating to the Cases route. "View all" still navigates — that one is a list.
+   */
+  onOpenCase?: (caseId: string) => void;
 }) {
   return (
     <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col p-3">
@@ -859,19 +866,19 @@ function TopCasesPanel({
                 >
                   <button
                     type="button"
-                    onClick={
-                      navigate
-                        ? () => navigate('cases', { caseId: k.case_id, window: navWindow })
-                        : undefined
-                    }
-                    aria-disabled={!navigate}
+                    // Opens the case OVER this page instead of routing away to the Cases
+                    // list: the operator keeps the numerals that made them click.
+                    onClick={onOpenCase ? () => onOpenCase(k.case_id) : undefined}
+                    aria-disabled={!onOpenCase}
                     className={cn(
                       'flex w-full items-center justify-between gap-3 rounded-sm border border-border/70 bg-card/30 px-2 py-1.5 text-left',
-                      navigate
+                      onOpenCase
                         ? 'transition-colors hover:border-border hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
                         : 'cursor-default',
                     )}
-                    aria-label={navigate ? `Open case ${displayTitle}` : `Preview case ${displayTitle}`}
+                    aria-label={
+                      onOpenCase ? `Open case ${displayTitle}` : `Preview case ${displayTitle}`
+                    }
                   >
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex min-w-0 items-center gap-2 font-mono text-xs">
@@ -2119,6 +2126,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
    */
   const announce = useAnnouncer();
   const [openKpi, setOpenKpi] = React.useState<string | null>(null);
+  /**
+   * The case opened OVER this page, if any. Opening a case from the live queue or from a
+   * drill-down row mounts the shared <CaseDetail> in its right-hand sheet rather than
+   * routing to the Cases list, so the dashboard the operator was reading stays behind it.
+   *
+   * There is no `caseId` in this route's hash (the router allow-lists that key for the
+   * `cases`/`case_manager` routes only), so an Overview sheet is deliberately NOT
+   * addressable by URL — it is a peek, and "View all" is still the route.
+   */
+  const [openCaseId, setOpenCaseId] = React.useState<string | null>(null);
   const tileEls = React.useRef(new Map<string, HTMLElement | null>());
   const tileRefSetters = React.useRef(new Map<string, (el: HTMLElement | null) => void>());
   /** A STABLE ref callback per tile id, so a re-render never detaches the trigger. */
@@ -2178,12 +2195,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
       ...item.drilldown,
       windowHours: hours,
       trend: item.trend,
-      // Opening one listed case carries NO window: the panel's own range can be wider
-      // than the dashboard's (the open-case stock is all-time), and a window narrower
-      // than the row the operator just clicked would hide the very case being opened.
-      onOpenCase: navigate ? (caseId: string) => navigate('cases', { caseId }) : undefined,
+      // Opening one listed case opens it OVER the dashboard rather than routing to the
+      // Cases list — the panel stays open behind the sheet, so closing the case returns
+      // the operator to the exact population they were reading. This also removes the
+      // old window question entirely: there is no navigation, so there is no window to
+      // carry or to accidentally narrow past the row that was just clicked.
+      onOpenCase: setOpenCaseId,
     };
-  }, [openKpi, kpis, hours, navigate]);
+  }, [openKpi, kpis, hours]);
 
   // ----- Noise-Reduction funnel drill-through ----------------------------- //
   const onStageClick = React.useCallback(
@@ -2619,6 +2638,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   cases={latestCases}
                   navigate={navigate}
                   navWindow={navWindow}
+                  onOpenCase={setOpenCaseId}
                 />
               </div>
             </div>
@@ -2972,6 +2992,30 @@ export default function Overview({ onNavigate }: OverviewProps) {
           </DashboardGroup>
         </div>
       )}
+
+      {/* The case, opened OVER the dashboard. This is the SHARED <CaseDetail> — the same
+          component the Scans and Investigate boards mount — so its RBAC gates, lifecycle
+          actions and untrusted-text handling are the ones already reviewed there. A
+          second case surface would fork all three.
+
+          Mounted CONDITIONALLY, which is not a style choice: CaseDetail calls `useAuth()`
+          unconditionally, ABOVE its own empty-state return, and `useAuth` throws outside
+          an <AuthProvider>. This page uses no auth hook of its own and none of its specs
+          supplies a provider, so an always-mounted CaseDetail would throw on every render
+          of the dashboard under test. The honest cost is the sheet's exit animation: an
+          unmount cannot play one. */}
+      {openCaseId ? (
+        <CaseDetail
+          caseId={openCaseId}
+          onClose={() => {
+            setOpenCaseId(null);
+            // A lifecycle action inside the sheet (close, escalate, assign) changes the
+            // very numerals the strip and the lattice are showing behind it.
+            refreshAll();
+          }}
+          onNavigate={navigate}
+        />
+      ) : null}
     </PageContainer>
   );
 }

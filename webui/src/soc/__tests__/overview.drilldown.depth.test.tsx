@@ -34,6 +34,14 @@ vi.mock('../pages/Metrics.posture.api', async () => {
   return { ...actual, fetchPosture: fetchPostureMock };
 });
 
+// Opening a listed case mounts the SHARED <CaseDetail> over the dashboard. The real
+// component reads auth context unconditionally and this page mounts under no
+// <AuthProvider>, so it is stubbed to a probe (the same stub Scans and Investigate use).
+vi.mock('@/soc/pages/CaseDetail', () => ({
+  CaseDetail: ({ caseId }: { caseId?: string | null }) =>
+    caseId ? <div data-testid="case-detail-probe">{caseId}</div> : null,
+}));
+
 const { listCasesMock, getMetricsMock, usageMock, trendsMock } = vi.hoisted(() => ({
   listCasesMock: vi.fn(),
   getMetricsMock: vi.fn(),
@@ -897,11 +905,18 @@ describe('Overview — KPI drill-down depth', () => {
     await userEvent.click(
       within(panel).getByRole('button', { name: /Open case Newest by creation/i }),
     );
-    expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'axis-newest-created' });
-    expect(onNavigate.mock.calls[0][1]).not.toHaveProperty('window');
+    // The row opens the case OVER the dashboard rather than routing to it, so nothing is
+    // handed over that could carry a window narrower than the row just clicked.
+    expect(await screen.findByTestId('case-detail-probe')).toHaveTextContent(
+      'axis-newest-created',
+    );
+    expect(onNavigate).not.toHaveBeenCalledWith(
+      'cases',
+      expect.objectContaining({ caseId: 'axis-newest-created' }),
+    );
 
-    // The window-exempt stock's own hand-off still carries no window when the operator
-    // has not narrowed the range.
+    // The window-exempt stock's own drill-THROUGH is still a navigation, and still
+    // carries no window when the operator has not narrowed the range.
     onNavigate.mockClear();
     await userEvent.click(screen.getByTestId('kpi-drilldown-drillthrough'));
     expect(onNavigate).toHaveBeenCalledWith('cases', { status: '__active__' });

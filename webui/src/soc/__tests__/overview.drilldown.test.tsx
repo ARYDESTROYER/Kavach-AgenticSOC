@@ -34,6 +34,16 @@ vi.mock('../pages/Metrics.posture.api', async () => {
   return { ...actual, fetchPosture: fetchPostureMock };
 });
 
+// Opening a listed case now mounts the SHARED <CaseDetail> over the dashboard instead of
+// routing to the Cases list. The real component reads auth context unconditionally and
+// this page mounts under no <AuthProvider>, so it is stubbed down to a probe — exactly as
+// the Scans and Investigate boards stub it. The probe's id is what proves WHICH case the
+// panel handed over.
+vi.mock('@/soc/pages/CaseDetail', () => ({
+  CaseDetail: ({ caseId }: { caseId?: string | null }) =>
+    caseId ? <div data-testid="case-detail-probe">{caseId}</div> : null,
+}));
+
 const { listCasesMock, getMetricsMock, usageMock, trendsMock } = vi.hoisted(() => ({
   listCasesMock: vi.fn(),
   getMetricsMock: vi.fn(),
@@ -458,8 +468,12 @@ describe('Overview — KPI drill-down disclosure', () => {
     await userEvent.click(
       within(panel).getByRole('button', { name: /Open case Unauthorized S3 access/i }),
     );
-    expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'c-open-crit' });
-    expect(onNavigate.mock.calls[0][1]).not.toHaveProperty('window');
+    // The case opens OVER the dashboard, so the panel stays open behind it and the
+    // operator returns to the exact population they were reading. There is no navigation
+    // at all, which is what settles the old window question: nothing can carry a window
+    // narrower than the row just clicked, because nothing is carried.
+    expect(await screen.findByTestId('case-detail-probe')).toHaveTextContent('c-open-crit');
+    expect(onNavigate).not.toHaveBeenCalledWith('cases', expect.objectContaining({ caseId: 'c-open-crit' }));
   });
 
   it('degrades to an honest empty state rather than an empty list', async () => {

@@ -33,6 +33,14 @@ vi.mock('../pages/Metrics.posture.api', async () => {
   return { ...actual, fetchPosture: fetchPostureMock };
 });
 
+// Opening a listed case mounts the SHARED <CaseDetail> over the dashboard. The real
+// component reads auth context unconditionally and this page mounts under no
+// <AuthProvider>, so it is stubbed to a probe (the same stub Scans and Investigate use).
+vi.mock('@/soc/pages/CaseDetail', () => ({
+  CaseDetail: ({ caseId }: { caseId?: string | null }) =>
+    caseId ? <div data-testid="case-detail-probe">{caseId}</div> : null,
+}));
+
 const { listCasesMock, getMetricsMock, usageMock, trendsMock } = vi.hoisted(() => ({
   listCasesMock: vi.fn(),
   getMetricsMock: vi.fn(),
