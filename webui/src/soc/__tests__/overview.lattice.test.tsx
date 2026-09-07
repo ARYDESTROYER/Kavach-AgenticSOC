@@ -275,15 +275,16 @@ async function settleHoverPreview() {
  * Every row in that queue is a `CaseHoverCard` trigger, and Radix arms its open timer
  * TWICE on a single click — once from the pointer-enter and once from the focus — while
  * only ever remembering the second timer id. The blur that follows (focus moves into the
- * sheet) therefore cancels one of the two, and the orphan still fires ~320ms later. So the
- * preview WILL open after the click no matter what the test does; the only question is
- * whether it opens while the test owns the clock. Left alone it does not, and it is also a
- * dismissable layer stacked above the case sheet, which would swallow the very Escape the
- * sheet is tested with.
+ * sheet) therefore cancels only one of the two, and the orphan fires ~320ms later. Left
+ * unhandled that pops the preview OVER the case sheet the click just opened, where, as a
+ * dismissable layer stacked above it, it swallows the very Escape the sheet is tested with.
  *
- * Hence: click, let the preview open under `act`, take the pointer off the row exactly as
- * a real cursor would, and let it close again. What the tests below observe afterwards is
- * a settled page with one layer on it.
+ * The page suppresses it: while a case is open the queue passes `forceClosed` to
+ * `CaseHoverCard`, which refuses the open even though the timer still fires. This helper
+ * drives the full pointer story anyway — click, settle, unhover, settle — so the tests
+ * below observe a page whose timers have all resolved rather than one mid-flight, and so
+ * that a regression in that suppression shows up here as a stray layer rather than as a
+ * mysterious Escape that stops working.
  *
  * The pointer-events check is disabled for this one instance because an open modal sheet
  * sets `pointer-events: none` on `<body>`; user-event's guard exists to catch clicks on
@@ -419,6 +420,41 @@ describe('Overview — the command lattice', () => {
    * which is null for a sheet opened by state rather than by a `<SheetTrigger>` — so
    * without an explicit restore, focus is dropped on `<body>`.
    */
+  /**
+   * The row's hover preview must NOT stack over the sheet the same click just opened.
+   *
+   * Radix arms the hover card's open timer twice on one click (pointer-enter, then focus)
+   * while remembering only the second id, so the blur that follows cancels one and the
+   * orphan fires ~320ms later. The page holds the card shut with `forceClosed` while a case
+   * is open. Without that, the preview lands ON TOP of the sheet as a dismissable layer and
+   * eats the operator's first Escape.
+   *
+   * This asserts at the only moment that can see it: after the click has settled but BEFORE
+   * the pointer leaves the row, since leaving closes the preview and would make the check
+   * vacuous. Verified to fail when the suppression is removed.
+   */
+  it('does not pop the row preview over the sheet the click just opened', async () => {
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    const queue = await screen.findByRole('region', { name: 'Latest cases' });
+    const row = within(queue).getByRole('button', {
+      name: 'Open case Noisy scanner beacon',
+    });
+
+    const pointer = userEvent.setup({ pointerEventsCheck: 0 });
+    await pointer.click(row);
+    await settleHoverPreview();
+
+    expect(await screen.findByTestId('case-detail-probe')).toBeInTheDocument();
+    // Radix portals popper content into a wrapper div; one would mean a preview is stacked
+    // above the sheet. The sheet itself is NOT popper content, so this counts only previews.
+    expect(document.querySelectorAll('[data-radix-popper-content-wrapper]')).toHaveLength(0);
+
+    // Leave the row settled so no timer resolves into a torn-down tree.
+    await pointer.unhover(row);
+    await settleHoverPreview();
+  });
+
   it('dismisses the sheet on Escape and hands the dashboard back intact', async () => {
     renderOverview();
     await screen.findByTestId('page-hero');

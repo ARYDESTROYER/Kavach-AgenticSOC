@@ -2536,15 +2536,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
                16px gap between two things that read as one instrument panel.
 
                ⚠️ THE GRID IS `xl:`, NEVER `lg:`. The flow diagram's own container query
-               hides its graph below 38rem (608px) of cell width and falls back to a text
-               rail. At the tightest supported desktop — 1280px viewport, sidebar pinned —
-               an 8-of-12 cell measures 1280 − 240 (sidebar) − 64 (content inset) = 976,
-               × 8/12 = 650.67, − 32 (p-4) − 1 (border) = 617.67px: it clears 608 by under
-               10px. On an `lg:` grid the same cell at 1024px viewport would be ~448px and
-               the graph would silently vanish on every laptop. Below `xl` the rows stack
+               hides its graph below 38rem (608px) of CONTAINER width and silently falls
+               back to a text rail. The tightest supported desktop is a 1280px viewport
+               with the sidebar pinned (its default), and the margin there is thin enough
+               that the arithmetic has to be exact:
+
+                 layout width   = 1280 − S (the ROOT SCROLLBAR: media queries still match
+                                  at 1280 while the scrollbar has already taken its width
+                                  out of layout. theme.css pins it — `scrollbar-width:
+                                  thin` plus a 10px `::-webkit-scrollbar` — so S ≈ 10,
+                                  but it is NOT zero, which is what an earlier version of
+                                  this comment assumed)
+                 − 240 (sidebar, in flow) − 64 (content inset at lg:px-8) = 966
+                 × 8/12 = 644, − 24 (px-3) − 1 (border) = 619px.
+
+               That clears 608 by ~11px, and still clears it (~614px) even on a UA that
+               ignores both scrollbar rules and draws a classic 17px bar. The horizontal
+               padding is `px-3` rather than `p-4` for exactly this reason — the 8px it
+               returns is most of the safety margin — and it also puts all three rows of
+               this band on ONE 12px left rail, matching the 4-column cells beside them.
+
+               On an `lg:` grid the same cell at a 1024px viewport would be ~448px and the
+               graph would silently vanish on every laptop. Below `xl` the rows stack
                full-width, which is far wider still. Four columns can never carry the flow:
-               even at a 1920px cap that is 608px BEFORE padding. Hence 8/4, not 6/6.
-               (Widths are derived from class tokens, not measured.) ---- */}
+               even at the 1920px cap that is 608px BEFORE padding. Hence 8/4, not 6/6.
+               (Every figure here is derived from class tokens, not measured.) ---- */}
           <Reveal
             variant="rise"
             delay={40}
@@ -2554,7 +2570,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
             {/* ---- ROW 1 — the flow, and who closed what ---- */}
             <div className="grid min-w-0 items-stretch border-b border-border/70 xl:grid-cols-12">
               {noiseCellVisible ? (
-                <div className="min-w-0 border-b border-border/70 p-4 xl:col-span-8 xl:border-b-0 xl:border-r">
+                <div className="min-w-0 border-b border-border/70 px-3 py-4 xl:col-span-8 xl:border-b-0 xl:border-r">
                   {noiseUnavailable ? (
                     <EmptyState
                       data-testid="noise-reduction-unavailable"
@@ -2719,7 +2735,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 actually read against. With the rail retired and the flow promoted to row 1,
                 this section is a full-width row of the lattice. Its top rule is the row-2
                 wrapper's `border-b`, and the lattice's own `border-y` closes it below. */}
-            <section aria-label="Mean time to detect / respond" className="min-w-0 p-4">
+            <section aria-label="Mean time to detect / respond" className="min-w-0 px-3 py-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
