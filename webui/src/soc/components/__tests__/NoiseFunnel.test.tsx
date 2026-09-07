@@ -188,6 +188,26 @@ function directLabel(container: HTMLElement, key: string): HTMLButtonElement {
   return button!;
 }
 
+/**
+ * Open the funnel's disclosure popover and return its content.
+ *
+ * The share RULE ("each percentage is that stage's share of the stage it came from",
+ * the baseline em dash) used to sit in the always-visible caption. It moved into a
+ * popover, so these specs stopped being able to read it off the paragraph — and the
+ * honest replacement is not to drop the assertion but to prove the sentence is still
+ * REACHABLE. The trigger is a real button (click / Enter / Space), never a tooltip, so
+ * this passes for pointer, keyboard and touch alike; a tooltip would have been a
+ * regression dressed as a cleanup.
+ */
+async function openShareRule(): Promise<HTMLElement> {
+  const disclosure = screen.getByTestId('noise-share-disclosure');
+  const trigger = within(disclosure).getByRole('button', {
+    name: /how to read these counts and percentages/i,
+  });
+  await userEvent.click(trigger);
+  return screen.getByRole('dialog');
+}
+
 describe('NoiseFunnel', () => {
   it('defaults to Simple and draws the full alert-to-cluster-to-case flow edge to edge', () => {
     const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
@@ -865,7 +885,7 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     return count!.nextElementSibling!.textContent!.trim();
   }
 
-  it('prints Simple\'s one share rule on the narrow rail too, matching the disclosure', () => {
+  it('prints Simple\'s one share rule on the narrow rail too, matching the disclosure', async () => {
     render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
 
     // The two Simple surfaces are mutually exclusive: the flow band needs a >=38rem
@@ -887,13 +907,14 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     expect(within(rail).queryByText('100%')).toBeNull();
     expect(within(rail).queryByText(/of ingested/i)).toBeNull();
 
-    // The share rule is stated unconditionally BECAUSE it now holds on both surfaces;
-    // only the surface-specific sentence is gated to the container that renders it.
+    // The surface-specific sentence stays INLINE and stays gated to the container that
+    // renders it; the share RULE, which holds on both surfaces, moved to the popover.
     const disclosure = screen.getByTestId('noise-share-disclosure');
-    expect(disclosure).toHaveTextContent(
+    const rule = await openShareRule();
+    expect(rule).toHaveTextContent(
       /each percentage is that stage's share of the stage it came from/i,
     );
-    expect(disclosure).toHaveTextContent(/first stage is the baseline, so it shows an em dash/i);
+    expect(rule).toHaveTextContent(/first stage is the baseline, so it shows an em dash/i);
     expect(disclosure.querySelector('[data-disclosure-surface="flow"]')).toHaveClass(
       'hidden',
       '@[38rem]/noise:inline',
@@ -903,7 +924,7 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     );
   });
 
-  it('describes the flow band alone once it is the only rendered surface', () => {
+  it('describes the flow band alone once it is the only rendered surface', async () => {
     render(<NoiseFunnel data={fixture()} animate={false} variant="flat" wideInspection />);
 
     // Wide inspection always draws the band and drops the rail entirely.
@@ -912,13 +933,13 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     const disclosure = screen.getByTestId('noise-share-disclosure');
     expect(disclosure.querySelector('[data-disclosure-surface="flow"]')).not.toHaveClass('hidden');
     expect(disclosure.querySelector('[data-disclosure-surface="rail"]')).toBeNull();
-    // The surface sentence and the always-true share rule read as one paragraph.
-    expect(disclosure).toHaveTextContent(
-      /Filled ribbons show the alert .+ display scale\. Labels are the exact counts/i,
-    );
+    // The surface sentence stays inline, and it still NAMES the scale: a "compressed"
+    // scale the reader cannot identify is not a disclosure. The rest is one click away.
+    expect(disclosure).toHaveTextContent(/Filled ribbons show the alert .+ compressed \(√\) display scale\./i);
+    expect(await openShareRule()).toHaveTextContent(/Labels are the exact counts/i);
   });
 
-  it('never claims ribbons when the graph is withheld and the rail is all there is', () => {
+  it('never claims ribbons when the graph is withheld and the rail is all there is', async () => {
     render(
       <NoiseFunnel
         data={withStageTotals({ cases: 41, auto_cleared: 25, escalated: 15 })}
@@ -938,9 +959,8 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
       '@[38rem]/noise:hidden',
     );
     expect(disclosure).not.toHaveTextContent(/Filled ribbons/i);
-    expect(disclosure).toHaveTextContent(
-      /stage rail lists this window's stages in flow order\. Labels are the exact counts/i,
-    );
+    expect(disclosure).toHaveTextContent(/stage rail lists this window's stages in flow order\./i);
+    expect(await openShareRule()).toHaveTextContent(/Labels are the exact counts/i);
     // The rail still obeys the stated rule, baseline em dash included.
     expect(
       railShareText(within(rail).getByRole('button', { name: /^Ingested: 1000 alerts/i })),

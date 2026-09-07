@@ -32,7 +32,7 @@
  * has no touch path to the card at all — which is why the card's content is exported as
  * `MetricTrendBody` for the surface that press opens to restate.
  *
- * Coexisting with a docked panel: `forceClosed` holds the card shut and refuses every
+ * Coexisting with a modal panel: `forceClosed` holds the card shut and refuses every
  * open transition. A disclosure opened FROM the wrapped child needs it — the card opens
  * on focus (so the panel's focus return would otherwise pop it straight back), it renders
  * over the panel, and its dismissable layer would swallow the panel's Escape.
@@ -241,7 +241,7 @@ export function MetricHoverTrend({
   const [open, setOpen] = React.useState(false);
   /**
    * Wall-clock instant until which an OPEN transition is refused, set when `forceClosed`
-   * falls. See the "Coexisting with a docked panel" note above: Radix's open is deferred
+   * falls. See the "Coexisting with a modal panel" note above: Radix's open is deferred
    * by `openDelay`, so the timer armed by the dismissal's own focus return resolves after
    * the prop has already flipped back. A ref (not state) because refusing must not
    * re-render, and because the deferred callback reads it at call time.
@@ -261,9 +261,19 @@ export function MetricHoverTrend({
       return;
     }
     // Falling edge ONLY (never mount, where an immediate hover is legitimate): hold the
-    // refusal for one more `openDelay` so a timer armed by the focus return that
-    // accompanies the dismissal cannot resolve into a reopen.
-    if (wasForceClosed) suppressOpenUntilRef.current = Date.now() + openDelay;
+    // refusal past any open-timer armed by the focus return that accompanies the dismissal.
+    //
+    // The margin is TWO `openDelay`s, and the second one is not padding. When the panel was
+    // a docked section the parent restored focus SYNCHRONOUSLY, before the commit that
+    // dropped `forceClosed`, so the reopen timer was armed before this window even opened
+    // and always resolved inside it. The panel is now a modal, and a focus trap bounces a
+    // synchronous restore — so the restore moved to Radix's close-autofocus, which runs
+    // AFTER this commit. The reopen timer is therefore armed at ~the same instant the grace
+    // begins and resolves exactly ON its boundary; measured, the card reopened every time.
+    // One extra `openDelay` covers the teardown hop and timer coarseness with room to spare,
+    // and 320ms of "the card will not spring back the moment you closed the panel" is
+    // imperceptible next to a card appearing over the strip unbidden.
+    if (wasForceClosed) suppressOpenUntilRef.current = Date.now() + openDelay * 2;
   }, [forceClosed, openDelay]);
   const effectiveOpen = forceClosed ? false : open;
   const handleOpenChange = React.useCallback(

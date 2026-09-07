@@ -1,17 +1,19 @@
 /**
- * Overview — only the degradation indicator belongs on the dashboard.
+ * Overview — Agent health does NOT belong on the dashboard.
  *
- * The full health panel moved to Analytics → Effectiveness. This spec pins the remaining
- * Overview host contract:
+ * The degradation strip used to mount here, handed the dashboard's own time window. It
+ * moved into the notification bell (AppShell → NotificationBell), so a degradation is
+ * visible from every route and a HEALTHY deployment spends zero dashboard space on it.
  *
- *   1. the degradation-only indicator mounts when the client exposes the health
- *      endpoints, and it is handed the dashboard's own time window;
- *   2. it is omitted entirely when the client exposes neither endpoint, so a trimmed
- *      surface can never trigger a call it cannot answer (the AutomationNudge /
- *      noiseReduction guard pattern).
+ * This spec is the removal guard, and it is deliberately about behaviour rather than the
+ * absence of a testid: the dashboard must render no health surface AND must issue no
+ * health request, even when the api client exposes both endpoints. A second reader would
+ * silently double the polling and re-introduce the strip's window-inheritance bug.
  *
- * The indicator itself is stubbed here; healthy/degraded rendering is pinned by
- * `soc/components/__tests__/HealthDegradationIndicator.test.tsx`.
+ * Where the coverage went:
+ *   - the reducer            → `soc/components/__tests__/health-degradation-signals.test.ts`
+ *   - the bell's rendering   → `soc/components/__tests__/NotificationBell.health.test.tsx`
+ *   - the shell's ownership  → `soc/__tests__/appshell.health.test.tsx`
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -48,12 +50,6 @@ vi.mock('@/lib/api', () => ({
       return withHealth.value ? autoCloseMock : undefined;
     },
   },
-}));
-
-vi.mock('@/soc/components/HealthDegradationIndicator', () => ({
-  HealthDegradationIndicator: ({ windowHours }: { windowHours?: number }) => (
-    <section data-testid="health-indicator-host">health:{windowHours}</section>
-  ),
 }));
 
 import Overview from '../pages/Overview';
@@ -116,7 +112,7 @@ const POSTURE: PostureResponse = {
   sla: { enabled: false, evaluated: 0, response_breached: 0, response_at_risk: 0, resolve_breached: 0, resolve_at_risk: 0, attainment_pct: 100, breaching: [] },
 };
 
-describe('Overview — degradation-only agent health host', () => {
+describe('Overview — agent health is NOT a dashboard concern', () => {
   beforeEach(() => {
     withHealth.value = true;
     fetchPostureMock.mockReset();
@@ -131,19 +127,30 @@ describe('Overview — degradation-only agent health host', () => {
     usageMock.mockResolvedValue({ total_cost: 0, total_tokens: 0, call_count: 0, currency: 'USD' });
   });
 
-  it('mounts the degradation indicator with the dashboard window', async () => {
+  it('renders no health surface even when BOTH endpoints are exposed', async () => {
     render(<Overview onNavigate={vi.fn()} />);
 
-    const indicator = await screen.findByTestId('health-indicator-host');
-    expect(indicator).toHaveTextContent('health:24');
+    expect(await screen.findByTestId('page-hero')).toBeInTheDocument();
+    expect(screen.queryByTestId('health-degradation-section')).toBeNull();
+    expect(screen.queryByRole('alert', { name: /agent health/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /view effectiveness/i })).toBeNull();
   });
 
-  it('omits the indicator host when the client exposes neither health endpoint', async () => {
+  it('issues no health request of its own, so the shell stays the single reader', async () => {
+    render(<Overview onNavigate={vi.fn()} />);
+
+    await screen.findByTestId('page-hero');
+    expect(diagnosticsMock).not.toHaveBeenCalled();
+    expect(autoCloseMock).not.toHaveBeenCalled();
+  });
+
+  it('still renders when the client exposes neither endpoint', async () => {
     withHealth.value = false;
 
     render(<Overview onNavigate={vi.fn()} />);
 
     expect(await screen.findByTestId('page-hero')).toBeInTheDocument();
-    expect(screen.queryByTestId('health-indicator-host')).toBeNull();
+    expect(diagnosticsMock).not.toHaveBeenCalled();
+    expect(autoCloseMock).not.toHaveBeenCalled();
   });
 });

@@ -1,23 +1,66 @@
 /**
- * KpiDrilldownPanel — the in-page detail disclosure behind a KPI tile.
+ * KpiDrilldownPanel — the deep-inspection MODAL behind a KPI tile.
  *
- * A NON-MODAL, docked `<section>` that opens BELOW the landing strip when an operator
- * activates a tile. It is deliberately not a Dialog and not a Sheet: both wrap
- * `@radix-ui/react-dialog`, which traps focus and marks the rest of the page `inert`,
- * so the operator could no longer read the tile the panel explains, compare it with its
- * four neighbours, or tab on into the instrument band. This panel is read ALONGSIDE the
- * strip, so it uses the plain WAI disclosure contract instead:
+ * ## This reverses a documented decision (#109 / #111), at operator instruction
  *
- *   trigger  — the tile `<button>`, carrying `aria-expanded` + `aria-controls`
- *              (both OPTIONAL on `KpiTile`, so no other consumer is affected).
- *   panel    — `<section aria-labelledby>` with NO `role="dialog"` and NO `aria-modal`.
+ * Until now this was a NON-MODAL docked `<section>` that opened below the landing strip.
+ * The case for that was written here and is worth stating accurately before it is undone,
+ * because one clause of it was true and one was a mechanism error:
+ *
+ *   "the operator could no longer … compare it with its four neighbours" — RESOLVED, not
+ *   overridden. The in-panel metric switcher (see the switcher band below) ships every
+ *   tile's key, label and RENDERED numeral, taken verbatim from the same `kpis` array the
+ *   strip draws, and re-points the open panel without closing it. SEQUENTIAL comparison
+ *   survives intact; SIMULTANEOUS comparison does not, because behind a Radix layer the
+ *   neighbouring tiles are `aria-hidden` and `pointer-events: none`. The switcher is
+ *   therefore load-bearing, not chrome: deleting it would re-open this objection.
+ *
+ *   "tab on into the instrument band" — NOT resolved. A focus trap ends it, and that is a
+ *   real cost the operator has accepted. It is mitigated only by Escape returning focus to
+ *   the exact tile that opened the panel, so the keyboard journey resumes where it stopped.
+ *
+ *   "marks the rest of the page `inert`" — this was WRONG about the mechanism, and the
+ *   specs that asserted `querySelector('[inert]')` were vacuous because of it. Radix uses
+ *   `aria-hidden` (via `aria-hidden`'s `hideOthers`) and never sets the `inert` attribute.
+ *
+ * ## The modal contract
+ *
+ *   trigger  — the tile `<button>`, carrying `aria-haspopup="dialog"`. It no longer carries
+ *              `aria-expanded`/`aria-controls`: those are DISCLOSURE semantics, wrong on a
+ *              dialog trigger, and a portalled `aria-controls` target does not exist while
+ *              the panel is closed.
+ *   panel    — `<DialogContent role="dialog" aria-modal="true" aria-labelledby>` portalled
+ *              to `document.body`, over a scrim, with focus trapped.
+ *   describe — `aria-describedby` points at the POPULATION sentence, so opening the panel
+ *              announces which population is being listed (and, for a window-exempt stock,
+ *              that it is "not filtered by the window") rather than dangling.
  *   focus    — moves to the panel's `<h2 tabIndex={-1}>`, never to a filter control:
  *              a screen-reader user must hear WHAT opened before they hear how to
- *              narrow it.
- *   escape   — closes and returns focus to the trigger (the parent owns the return,
- *              since only it holds the tile refs).
- *   tab      — leaves freely and NEVER auto-closes. A docked panel that vanished when
- *              focus moved on would be unusable with a keyboard.
+ *              narrow it. `onOpenAutoFocus` is prevented to make that so.
+ *   escape   — Radix's own `DismissableLayer` owns Escape AND the scrim click; both route
+ *              through `onOpenChange(false)` → `onClose`. The hand-rolled containment
+ *              guard this file used to carry is gone with the non-modal contract that
+ *              needed it.
+ *   return   — the PARENT restores focus to the trigger tile synchronously in its close
+ *              handler (only it holds the tile refs). The built-in Radix close (X) is
+ *              suppressed with `hideClose`, because it is the one path that would drop
+ *              focus on `<body>`; this panel renders its own labelled Close instead.
+ *
+ * ## Geometry: a page-in-page, not a growing dialog
+ *
+ * The height is FIXED (`h-[92dvh]`, capped at 900px), never `max-h`: identical for three
+ * rows or two hundred, with the row table absorbing the difference. `max-h-[900px]` is
+ * load-bearing — `h-*` and `max-h-*` are different tailwind-merge groups, so the base
+ * `max-h-[85dvh]` on `DialogContent` would survive and silently clamp the panel; only the
+ * pixel cap evicts it. Width mirrors the product's own page cap (`PageContainer` `wide`)
+ * rather than a narrower dialog width, because a drill-down must not be narrower than the
+ * dashboard it explains.
+ *
+ * Interior: four `shrink-0` bands (identity · switcher · toolbar · footer) around EXACTLY
+ * ONE `min-h-0 flex-1 overflow-auto` scroll region. The footer is a SIBLING of that
+ * scroller, never a child, so the completeness disclosure cannot clip under a fixed shell
+ * on a short laptop. The old `max-h-80` on the row table is gone: that 320px constant, not
+ * the dialog, was what wasted the vertical space this change is about.
  *
  * Depth. The panel asks the STORE the question, rather than asking for the newest page
  * and answering whole-population questions over it in the browser:
@@ -60,7 +103,9 @@ import type { Case, CasesResponse } from '@/lib/types';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { DASH, fmtNumber, humanizeAge, humanizeToken } from '@/lib/format';
+import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
+import { Dialog, DialogContent, DialogTitle } from '@/ui/dialog';
 import { Input } from '@/ui/input';
 import {
   Select,
@@ -240,12 +285,40 @@ export interface KpiDrilldownSpec {
 
 export interface KpiDrilldownPanelProps {
   spec: KpiDrilldownSpec;
-  /** `aria-controls` target on the trigger. */
+  /**
+   * The dialog element's own `id`, and the stem for the population sentence's `id`
+   * (`aria-describedby`). It is no longer an `aria-controls` target: the trigger is a
+   * dialog trigger, and a portalled target does not exist while the panel is closed.
+   */
   panelId: string;
   /** `aria-labelledby` target — the panel's own heading. */
   headingId: string;
-  /** Close the panel. The PARENT restores focus to the trigger tile. */
+  /**
+   * Close the panel. The PARENT restores focus to the trigger tile.
+   *
+   * Reached from three places, all of which must behave identically: this panel's own
+   * Close button, Radix's Escape, and a scrim click. The latter two arrive through
+   * `onOpenChange(false)`.
+   */
   onClose: () => void;
+  /**
+   * The element focus must return to on close (WCAG 2.4.3) — the tile that opened this.
+   *
+   * A getter rather than a ref, because only the PARENT holds the tile refs and only it
+   * knows which tile is current. It is read during Radix's close-autofocus, so it must be
+   * evaluated then and not captured earlier.
+   *
+   * MEASURED, not assumed: without this, focus lands on `<body>` for BOTH close paths.
+   * `DialogContent` hard-wires `onCloseAutoFocus` to
+   * `event.preventDefault(); context.triggerRef.current?.focus()`, and `triggerRef` is null
+   * here because the panel opens from STATE, never a `DialogTrigger` — so Radix suppresses
+   * `FocusScope`'s own restore and then focuses nothing. A synchronous `.focus()` in the
+   * parent's close handler does not fix it either: it runs while the trap is still mounted
+   * and is bounced straight back. This is the same fix, and the same reasoning, as the
+   * CaseDetail sheet (`pages/CaseDetail.tsx`), which is opened from state for the same
+   * reason and already carries its own regression spec.
+   */
+  restoreFocusTo?: () => HTMLElement | null;
   /**
    * Every metric the strip offers, so the operator can move between populations without
    * closing and reopening the panel. Omitted → no switcher is rendered and the panel is
@@ -508,13 +581,21 @@ export function KpiDrilldownPanel({
   panelId,
   headingId,
   onClose,
+  restoreFocusTo,
   metrics,
   onSelectMetric,
   className,
 }: KpiDrilldownPanelProps) {
   const { onOpenCase } = spec;
   const headingRef = React.useRef<HTMLHeadingElement>(null);
-  const sectionRef = React.useRef<HTMLElement>(null);
+  /**
+   * `aria-describedby` target. Pointing it at the POPULATION sentence does two jobs at
+   * once: it removes the dangling reference Radix would otherwise leave (it wires
+   * `aria-describedby` before the consumer spread, so passing `undefined` is not enough),
+   * and it makes the panel ANNOUNCE, on open, which population is being listed — including
+   * the "not filtered by the window" caveat that a window-exempt stock carries.
+   */
+  const populationId = `${panelId}-population`;
 
   const [range, setRange] = React.useState<DrilldownRange>(spec.defaultRange);
   const [sort, setSort] = React.useState<DrilldownSort>('recent');
@@ -1000,38 +1081,50 @@ export function KpiDrilldownPanel({
   }, [visible]);
 
   /**
-   * ESCAPE closes — but only its OWN Escape.
+   * Escape and the scrim click are Radix's, not ours.
    *
-   * A Radix Select inside this panel portals its content out to `document.body` while
-   * keeping it in the panel's REACT tree, so its Escape dismissal still bubbles to this
-   * handler; without a guard, closing a dropdown would tear the whole panel down with
-   * it. `defaultPrevented` alone is the WRONG guard for that, because every Radix
-   * dismissable layer marks Escape prevented from a DOCUMENT-level capture listener —
-   * including a neighbouring tile's hover card, which is not ours and which the operator
-   * never asked to be a modal barrier. Trusting that flag globally left the panel
-   * un-closable after an ordinary click-A-then-click-B, or after the pointer merely
-   * drifted onto another tile.
-   *
-   * The discriminator is CONTAINMENT, not the flag: when one of our own Selects consumes
-   * the key, Radix has moved focus into its portalled listbox, so `e.target` is outside
-   * this section's DOM subtree (while still inside its React tree — which is why the
-   * event reaches us at all). An Escape whose target is inside the panel was never
-   * consumed by a layer of ours, whoever else may have marked it prevented.
-   *
-   * Both halves bind every control added here. A new control that portals out must move
-   * focus with it or the panel will stop closing; a new control that consumes Escape
-   * without leaving the subtree would have its Escape swallowed AND take the panel down
-   * with it. The paging control below is a plain `<button>`: it neither portals nor
-   * consumes the key, so it is neutral to both halves.
+   * The panel used to carry a hand-rolled Escape handler with a CONTAINMENT guard, because
+   * a non-modal disclosure had to tell its own Escape apart from a Radix Select's (which
+   * portals out of the subtree) and from a neighbouring hover card's (which marked the key
+   * `defaultPrevented` from a document-level capture listener). None of that survives the
+   * modal contract: `DismissableLayer` owns dismissal, layers unwind newest-first, and the
+   * neighbouring hover cards cannot open at all behind the scrim. Both paths arrive here as
+   * `onOpenChange(false)`.
    */
-  const onKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
-    if (e.key !== 'Escape') return;
-    const target = e.target instanceof Node ? e.target : null;
-    const fromInsidePanel = target != null && sectionRef.current?.contains(target) === true;
-    if (!fromInsidePanel && e.defaultPrevented) return;
-    e.stopPropagation();
-    onClose();
-  };
+  const onOpenChange = React.useCallback(
+    (next: boolean) => {
+      if (!next) onClose();
+    },
+    [onClose],
+  );
+
+  /**
+   * Focus the HEADING, never a filter control: a screen-reader user must hear WHAT opened
+   * before they hear how to narrow it. This covers the OPEN; the `spec.key` effect above
+   * covers a metric SWITCH, where the dialog does not remount and this never fires.
+   */
+  const onOpenAutoFocus = React.useCallback((event: Event) => {
+    event.preventDefault();
+    headingRef.current?.focus();
+  }, []);
+
+  /**
+   * Focus RETURN on close. `composeEventHandlers` runs this BEFORE Radix's own handler and
+   * skips Radix's once this one has prevented the default — so claiming the default is
+   * exactly what stops focus being dropped on `<body>`.
+   */
+  const onCloseAutoFocus = React.useCallback(
+    (event: Event) => {
+      const opener = restoreFocusTo?.() ?? null;
+      // Only claim the default when there is somewhere real to send focus. An opener that
+      // has since unmounted is left to Radix rather than focused blind.
+      if (opener && opener.isConnected) {
+        event.preventDefault();
+        opener.focus();
+      }
+    },
+    [restoreFocusTo],
+  );
 
   const rangeOptions: DrilldownRange[] = ['window', '1h', '24h', '7d', '30d', 'all'];
   const windowOptionLabel = `Dashboard window (${spec.windowHours}h)`;
@@ -1163,29 +1256,46 @@ export function KpiDrilldownPanel({
   const carried = setKeys.filter((k) => honoured.includes(k));
 
   return (
-    /* eslint-disable jsx-a11y/no-noninteractive-element-interactions -- Escape-to-close
-       is the WAI disclosure contract, and the handler has to sit on the SUBTREE ROOT:
-       focus is moved into this section on open (the heading is programmatically
-       focusable) and then moves freely across its search box, four Selects, the paging
-       control and the drill-through, so any narrower target would leave Escape dead from
-       most of the panel. A document-level listener would be worse, not better — it would
-       close a NON-MODAL panel from Escape presses that belong to the rest of the page.
-       The section deliberately carries no role: it is not a dialog and must not claim to
-       be one. */
-    <section
-      ref={sectionRef}
-      id={panelId}
-      aria-labelledby={headingId}
-      data-testid="kpi-drilldown"
-      data-kpi={spec.key}
-      onKeyDown={onKeyDown}
-      className={cn(
-        'min-w-0 rounded-md border border-border bg-card/40 p-3 sm:p-4',
-        className,
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent
+        // Radix wires `role="dialog"`, `aria-labelledby` and `aria-describedby` BEFORE the
+        // consumer spread, but it never sets `aria-modal` (it hides the rest of the page
+        // with `aria-hidden` instead). The contract asks for the flag, so it is stated here.
+        aria-modal="true"
+        aria-labelledby={headingId}
+        // Never `undefined`: Radix's own default would then dangle. Pointing it at the
+        // population sentence also makes the open ANNOUNCE which population is listed.
+        aria-describedby={populationId}
+        id={panelId}
+        data-testid="kpi-drilldown"
+        data-kpi={spec.key}
+        onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={onCloseAutoFocus}
+        // The built-in top-right X is suppressed for TWO reasons: it is absolutely
+        // positioned into this header's own control row, and it is the one close path that
+        // drops focus on `<body>` (this panel opens from STATE, never a `DialogTrigger`, so
+        // Radix's default `onCloseAutoFocus` has a null trigger to restore to). The panel's
+        // own labelled Close calls `onClose` directly, and the PARENT restores focus.
+        hideClose
+        className={cn(
+          // A page-in-page: the height is FIXED so the shell is identical for three rows or
+          // two hundred, and the row table absorbs the difference. `max-h-[900px]` is
+          // LOAD-BEARING — `h-*` and `max-h-*` are different tailwind-merge groups, so the
+          // base `max-h-[85dvh]` survives a bare `h-[92dvh]` and silently clamps the panel.
+          // Dynamic viewport units only — mobile URL bars make the static ones wrong, and
+          // `viewport-units.test.ts` lints this file for them. The width is
+          // `w-[calc(100%-2rem)]` rather than a viewport-width unit, which would
+          // double-count the scrollbar Radix's react-remove-scroll has already removed.
+          'flex h-[92dvh] max-h-[900px] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0',
+          // The width cap MIRRORS the product's own page cap (PageContainer `wide`). A
+          // drill-down must never be narrower than the dashboard it explains.
+          'max-w-[1760px] 2xl:max-w-[1920px]',
+          className,
+        )}
+      >
+        {/* ---- BAND 1a — IDENTITY (shrink-0) ------------------------------------- */}
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-5 py-3">
+          <div className="min-w-0">
           {/* Where the operator is. Plain text, product vocabulary only. */}
           <p
             data-testid="kpi-drilldown-breadcrumb"
@@ -1197,18 +1307,35 @@ export function KpiDrilldownPanel({
             <span aria-hidden>/</span>
             <span className="truncate">Deep inspection</span>
           </p>
-          {/* tabIndex -1 so open() can move focus here. The heading is OUTSIDE the
-              trigger button by design: a heading swallowed by a button's
-              name-from-contents breaks heading-jump navigation. */}
-          <h2
-            ref={headingRef}
-            id={headingId}
-            tabIndex={-1}
-            data-testid="kpi-drilldown-heading"
-            className="text-xs font-semibold uppercase tracking-widest text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {spec.title} · details
-          </h2>
+          {/* The dialog's accessible NAME, rendered `asChild` so it stays an <h2> — a
+              heading-jump user must still find it, and Radix's default <h2>-styled div
+              would not be one. `tabIndex={-1}` so `onOpenAutoFocus` can move focus here. */}
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <DialogTitle asChild>
+              <h2
+                ref={headingRef}
+                id={headingId}
+                tabIndex={-1}
+                data-testid="kpi-drilldown-heading"
+                className="-mx-1 rounded-sm px-1 text-xs font-semibold uppercase tracking-widest text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {spec.title} · details
+              </h2>
+            </DialogTitle>
+            {/* Completeness, from the SAME three-valued `window_total_exact` read the footer
+                states at length — never a "LIVE" badge, which would claim a freshness this
+                panel does not measure. Withheld entirely until a page has been read, because
+                before that `complete` is false for want of evidence, not for want of rows. */}
+            {rows != null && !error && !loading ? (
+              <Badge
+                variant={complete ? 'success' : 'secondary'}
+                data-testid="kpi-drilldown-completeness"
+                className="px-1.5 py-0 text-2xs"
+              >
+                {complete ? 'Complete page' : 'Bounded page · lower bound'}
+              </Badge>
+            ) : null}
+          </div>
           {/* The population sentence describes the TILE's population, which is not always
               the population this panel is listing. A window-exempt stock says in so many
               words that it is "not filtered by the window" — and stays true only until the
@@ -1216,8 +1343,16 @@ export function KpiDrilldownPanel({
               alone the sentence then contradicts the list directly underneath it, which is
               worse than saying nothing: it is the surface an operator reads to decide what
               the rows in front of them ARE. So the narrowing is stated beside it whenever
-              one is in force. */}
-          <p className="mt-0.5 text-2xs text-muted-foreground">
+              one is in force.
+
+              It is also the dialog's `aria-describedby` target, so it is announced on open.
+              It must therefore stay a RENDERED, visible text node — never `sr-only`, never
+              hover-only: a sighted operator needs it as much as a screen-reader one. */}
+          <p
+            id={populationId}
+            data-testid="kpi-drilldown-population"
+            className="mt-0.5 text-2xs text-muted-foreground"
+          >
             {spec.population}
             {rangeNarrows ? (
               <>
@@ -1262,23 +1397,31 @@ export function KpiDrilldownPanel({
         </div>
       </div>
 
-      {/* METRIC SWITCHER — move between the strip's populations without closing.
-          Deliberately NOT a Radix Tabs: the panels these would control are the strip's
-          own tiles, which live outside this section, so a tablist here would claim an
-          ownership it does not have. This is a labelled group of buttons, each carrying
-          `aria-pressed` for the one that is current.
+        {/* ---- BAND 1b — METRIC SWITCHER (shrink-0) -------------------------------
+            This band is LOAD-BEARING, not chrome. Behind a modal scrim the four
+            neighbouring tiles are `aria-hidden` and unclickable, so this is the only
+            remaining way to compare populations — which is exactly the objection the
+            non-modal contract raised. It gets its OWN row rather than sitting inline in
+            the header, and it is NEVER breakpoint-gated: hiding it below `xl` would delete
+            that justification on a 13" laptop. Our labels are long ("False Positive Rate",
+            "Resolved / Closed"), so inline placement would also wrap and grow the header.
 
-          The numerals are the TILES' numerals, restated verbatim — server rollups over
-          the dashboard's window. The table below reads pages of the case list. The group
-          label says which these are, and the footer keeps saying what the table read, so
-          the two are never presented as one measurement. */}
-      {metrics && metrics.length > 1 && onSelectMetric ? (
-        <div
-          role="group"
-          aria-label="Switch metric — values are the dashboard's own numerals"
-          data-testid="kpi-drilldown-metrics"
-          className="mt-3 flex min-w-0 flex-wrap gap-1"
-        >
+            Deliberately NOT a Radix Tabs: the panels these would control are the strip's
+            own tiles, which live outside this dialog, so a tablist here would claim an
+            ownership it does not have. This is a labelled group of buttons, each carrying
+            `aria-pressed` for the one that is current.
+
+            The numerals are the TILES' numerals, restated verbatim — server rollups over
+            the dashboard's window. The table below reads pages of the case list. The group
+            label says which these are, and the footer keeps saying what the table read, so
+            the two are never presented as one measurement. */}
+        {metrics && metrics.length > 1 && onSelectMetric ? (
+          <div
+            role="group"
+            aria-label="Switch metric — values are the dashboard's own numerals"
+            data-testid="kpi-drilldown-metrics"
+            className="flex min-w-0 shrink-0 flex-wrap gap-1 border-b border-border/60 px-5 py-2"
+          >
           {/* Visible, not only in the group's aria-label: a sighted operator otherwise sees
               five bare numerals with nothing saying they are whole-window rollups rather
               than counts of the rows in the table below. */}
@@ -1314,10 +1457,172 @@ export function KpiDrilldownPanel({
         </div>
       ) : null}
 
+        {/* ---- BAND 2 — TOOLBAR (shrink-0) ----------------------------------------
+            Every narrowing the operator can apply, lifted out of the body so the scroll
+            region below is nothing but evidence. It WRAPS and never scrolls: a toolbar with
+            its own scrollbar hides controls, and hidden controls are the ones that get
+            re-applied by accident.
+
+            These are NOT all server-side, and the panel never pretends otherwise. Only the
+            time range and the status group are pushed down to the store; severity, detection
+            source and the free-text search are evaluated in the BROWSER over the rows read.
+            The footer NAMES each browser-side narrowing that is in force (see `pageScoped`),
+            so a narrowing can never change the list without changing the sentence under it. */}
+        <div
+          role="group"
+          aria-label={`${spec.title} detail filters`}
+          data-testid="kpi-drilldown-controls"
+          className="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border bg-muted/20 px-5 py-2.5 text-xs"
+        >
+          <div className="relative min-w-0 flex-1 basis-56">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter these cases…"
+              aria-label={`Filter ${spec.title} cases`}
+              data-testid="kpi-drilldown-search"
+              className="h-8 rounded-[4px] pl-8 text-xs"
+            />
+          </div>
+
+          <Select value={band} onValueChange={setBand}>
+            <SelectTrigger
+              className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+              aria-label={`Filter ${spec.title} cases by severity`}
+              data-testid="kpi-drilldown-severity"
+            >
+              <SelectValue placeholder="Severity" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>All severities</SelectItem>
+              {bandFacets.map((b) => (
+                <SelectItem key={b} value={b}>
+                  {humanizeToken(b)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={status} onValueChange={setStatus}>
+            <SelectTrigger
+              className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+              aria-label={`Filter ${spec.title} cases by status`}
+              data-testid="kpi-drilldown-status"
+            >
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>All statuses</SelectItem>
+              {statusFacets.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {humanizeToken(s)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Detection source. Offered only when the rows read actually carry one, because
+              unlike `status_group` there is no server-side source narrowing to push this
+              into — the menu can only describe the pages that were read, and an empty menu
+              would invite a filter that could never match. */}
+          {sourceFacets.length ? (
+            <Select value={source} onValueChange={setSource}>
+              <SelectTrigger
+                className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+                aria-label={`Filter ${spec.title} cases by detection source`}
+                data-testid="kpi-drilldown-source"
+              >
+                <SelectValue placeholder="Source" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>All sources</SelectItem>
+                {sourceFacets.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {humanizeToken(s)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Select value={sort} onValueChange={(v) => setSort(v as DrilldownSort)}>
+              <SelectTrigger
+                className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+                aria-label={`Sort ${spec.title} cases`}
+                data-testid="kpi-drilldown-sort"
+              >
+                <SelectValue placeholder="Sort" />
+              </SelectTrigger>
+              <SelectContent>
+                {sortOptions.map((o) => (
+                  <SelectItem key={o.key} value={o.key}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={range}
+              onValueChange={(v) => {
+                // Mark the range as the OPERATOR's, so a metric switch carries it forward
+                // instead of resetting to the next population's default.
+                setRangeTouched(true);
+                setRange(v as DrilldownRange);
+              }}
+            >
+              <SelectTrigger
+                className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+                aria-label={`Time range for ${spec.title} cases`}
+                data-testid="kpi-drilldown-range"
+              >
+                <SelectValue placeholder="Time range" />
+              </SelectTrigger>
+              <SelectContent>
+                {rangeOptions.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {r === 'window' ? windowOptionLabel : RANGE_LABEL[r]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+      {/* ---- BAND 3 — THE ONE SCROLL REGION (min-h-0 flex-1) --------------------
+          Exactly one scroller, and `min-h-0` is what makes it real: without it a flex item
+          refuses to shrink below its content and the fixed shell would overflow instead of
+          scrolling, taking the footer disclosure off-screen with it.
+
+          The old `max-h-80` on the row table is gone. That 320px constant, not the dialog,
+          was what wasted the vertical space this change is about — and because the sticky
+          `<thead>` pins to its nearest scrollport, moving the scroll here is also what makes
+          the header pin to the box the operator is actually looking at.
+
+          `tabIndex={0}` + an accessible name is what makes the scroller reachable at all by
+          keyboard: the row table is wider than the panel at narrow widths and high zoom, and
+          every focusable cell lives in the FIRST column, so without a focusable scroll port a
+          keyboard-only operator could never reach Source, Severity, Status or Owner. */}
+      {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- a SCROLLABLE region is the
+          documented exception: WCAG 2.1.1 requires a container that scrolls to be
+          keyboard-operable, and giving it an accessible name is exactly how that is done. The
+          rule cannot see that `overflow-auto` plus wider content makes this element operable. */}
+      <div
+        data-testid="kpi-drilldown-scroll"
+        tabIndex={0}
+        role="group"
+        aria-label={`${spec.title} cases — scrollable evidence`}
+        className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
       {spec.trend ? (
         <div
           data-testid="kpi-drilldown-trend"
-          className="mt-3 rounded-md border border-border/70 bg-background/40 p-3"
+          className="sticky left-0 mb-3 mt-3 rounded-md border border-border/70 bg-background/40 p-3"
         >
           <MetricTrendBody {...spec.trend} />
         </div>
@@ -1327,7 +1632,7 @@ export function KpiDrilldownPanel({
           never disagree with the list under it. The heading says whose numbers these are,
           because the tile numerals above them answer over the whole window instead. */}
       {statCards.length ? (
-        <div className="mt-3">
+        <div className="sticky left-0 mb-3 mt-3">
           <p className="mb-1.5 text-2xs text-muted-foreground">
             Over the {fmtNumber(visible.length)} case{visible.length === 1 ? '' : 's'} listed
             below, not the whole window.
@@ -1369,133 +1674,6 @@ export function KpiDrilldownPanel({
         </div>
       ) : null}
 
-      <div
-        role="group"
-        aria-label={`${spec.title} detail filters`}
-        data-testid="kpi-drilldown-controls"
-        className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4"
-      >
-        <div className="relative min-w-0 sm:col-span-2 xl:col-span-1">
-          <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter these cases…"
-            aria-label={`Filter ${spec.title} cases`}
-            data-testid="kpi-drilldown-search"
-            className="h-8 rounded-[4px] pl-8 text-xs"
-          />
-        </div>
-
-        <Select value={band} onValueChange={setBand}>
-          <SelectTrigger
-            className="h-8 rounded-[4px] text-xs"
-            aria-label={`Filter ${spec.title} cases by severity`}
-            data-testid="kpi-drilldown-severity"
-          >
-            <SelectValue placeholder="Severity" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ANY}>All severities</SelectItem>
-            {bandFacets.map((b) => (
-              <SelectItem key={b} value={b}>
-                {humanizeToken(b)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={status} onValueChange={setStatus}>
-          <SelectTrigger
-            className="h-8 rounded-[4px] text-xs"
-            aria-label={`Filter ${spec.title} cases by status`}
-            data-testid="kpi-drilldown-status"
-          >
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ANY}>All statuses</SelectItem>
-            {statusFacets.map((s) => (
-              <SelectItem key={s} value={s}>
-                {humanizeToken(s)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {/* Detection source. Offered only when the rows read actually carry one, because
-            unlike `status_group` there is no server-side source narrowing to push this
-            into — the menu can only describe the pages that were read, and an empty menu
-            would invite a filter that could never match. */}
-        {sourceFacets.length ? (
-          <Select value={source} onValueChange={setSource}>
-            <SelectTrigger
-              className="h-8 rounded-[4px] text-xs"
-              aria-label={`Filter ${spec.title} cases by detection source`}
-              data-testid="kpi-drilldown-source"
-            >
-              <SelectValue placeholder="Source" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>All sources</SelectItem>
-              {sourceFacets.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {humanizeToken(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
-
-        <div className="grid min-w-0 grid-cols-2 gap-2">
-          <Select value={sort} onValueChange={(v) => setSort(v as DrilldownSort)}>
-            <SelectTrigger
-              className="h-8 rounded-[4px] text-xs"
-              aria-label={`Sort ${spec.title} cases`}
-              data-testid="kpi-drilldown-sort"
-            >
-              <SelectValue placeholder="Sort" />
-            </SelectTrigger>
-            <SelectContent>
-              {sortOptions.map((o) => (
-                <SelectItem key={o.key} value={o.key}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={range}
-            onValueChange={(v) => {
-              // Mark the range as the OPERATOR's, so a metric switch carries it forward
-              // instead of resetting to the next population's default.
-              setRangeTouched(true);
-              setRange(v as DrilldownRange);
-            }}
-          >
-            <SelectTrigger
-              className="h-8 rounded-[4px] text-xs"
-              aria-label={`Time range for ${spec.title} cases`}
-              data-testid="kpi-drilldown-range"
-            >
-              <SelectValue placeholder="Time range" />
-            </SelectTrigger>
-            <SelectContent>
-              {rangeOptions.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {r === 'window' ? windowOptionLabel : RANGE_LABEL[r]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      <div className="mt-3 min-w-0">
         {error ? (
           <LoadError
             error={error}
@@ -1522,42 +1700,35 @@ export function KpiDrilldownPanel({
              CLIPPED rather than scrollable. Every column below is backed by a field the
              Case really carries — no column is invented, and any the population does not
              carry renders an explicit dash. */
-          /* `tabIndex={0}` + a group name is what makes this scroller reachable at all by
-             keyboard. The table is wider than the panel at narrow widths and high zoom, and
-             every focusable thing in it lives in the FIRST column — so without a focusable
-             scroll port a keyboard-only operator could never reach Source, Severity, Status
-             or Owner. A scrollable region carrying its own accessible name is the standard
-             remedy, and it is the reason this is a labelled group rather than a bare div. */
-          /* eslint-disable jsx-a11y/no-noninteractive-tabindex -- a SCROLLABLE region is
-             the documented exception to this rule: WCAG 2.1.1 requires that a container
-             which scrolls be operable by keyboard, and a container carrying an accessible
-             name is exactly how that is done. The rule cannot see that `overflow-auto`
-             plus content wider than the box makes this element operable. */
+          /* This wrapper deliberately carries NO overflow of its own. The one scroll port
+             is the band above it, so the sticky `<thead>` pins to the box the operator sees;
+             a second scroller here would re-introduce the nested-scroller problem and pin the
+             header to a box that never moves. */
           <div
             data-testid="kpi-drilldown-rows"
-            tabIndex={0}
-            role="group"
-            aria-label={`${spec.title} cases — scrollable table`}
-            className="max-h-80 min-w-0 overflow-auto rounded-md border border-border/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-w-0 rounded-md border border-border/70"
           >
             <table className="w-full min-w-[44rem] border-collapse text-left">
               <caption className="sr-only">
                 {spec.title} — the cases read for the current filters
               </caption>
-              <thead className="sticky top-0 z-10 bg-card">
+              {/* Sticky against the ONE scroll port above. The opaque fill lives on the CELLS:
+                  a background on `<thead>` is not reliably painted, and rows scrolling
+                  behind a transparent header read straight through its labels. */}
+              <thead className="sticky top-0 z-10">
                 <tr className="border-b border-border/70 text-2xs uppercase tracking-widest text-muted-foreground">
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Case</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Case</th>
                   {/* CREATED, not "detected". `Case.detected_at` is declared on the wire
                       but no backend path assigns it, so a "Detected" column could only ever
                       show the creation instant under a label that claims a sensor time the
                       product does not have. Naming the field we actually read is the whole
                       fix. */}
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Created</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Title / rule</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Source</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Severity</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Status</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Owner</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Created</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Title / rule</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Source</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Severity</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Status</th>
+                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Owner</th>
                 </tr>
               </thead>
               <tbody>
@@ -1627,100 +1798,115 @@ export function KpiDrilldownPanel({
               </tbody>
             </table>
           </div>
-          /* eslint-enable jsx-a11y/no-noninteractive-tabindex */
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2">
-        <p data-testid="kpi-drilldown-scope" className="min-w-0 text-2xs text-muted-foreground">
-          {error ? (
-            'This page could not be read.'
-          ) : loading ? (
-            // A range change keeps the previous rows mounted rather than blanking the
-            // panel, so the footer must NOT keep describing them as this range's
-            // answer while the new one is still in flight.
-            'Re-reading this range…'
-          ) : (
-            <>
-              {pagesRead <= 1
-                ? `Showing ${fmtNumber(visible.length)} of ${fmtNumber(population.length)} in this page`
-                : `Showing ${fmtNumber(visible.length)} of ${fmtNumber(population.length)} in the ${fmtNumber(pagesRead)} pages read`}
-              {/* The tile's numeral is a server rollup over the whole window; this list
-                  is one or more pages of it. Never imply they are the same measurement,
-                  and never call a page after the first "the newest N" — it is not.
-                  Page ONE is not "the newest" either unless the newest-first sort is the
-                  one in force: under "Oldest first" it is the oldest rows, and under
-                  either risk sort it is neither. The store really applies all four, so
-                  the neutral "first N in this order" is the only phrasing true of all of
-                  them — and the order itself is named by the Sort control beside it. */}
-              {total != null && rows != null
-                ? complete
-                  ? pagesRead <= 1
-                    ? ` · complete page of ${fmtNumber(total)} case${total === 1 ? '' : 's'}`
-                    : ` · complete: all ${fmtNumber(total)} case${total === 1 ? '' : 's'} read`
-                  : pagesRead <= 1
-                    ? ` · first ${fmtNumber(rows.length)} of ${fmtNumber(total)} in this order · lower bound`
-                    : ` · rows 1–${fmtNumber(readThrough)} of ${fmtNumber(total)} read · lower bound`
-                : ' · bounded page'}
-            </>
-          )}
-        </p>
-        <div className="flex shrink-0 items-center gap-2">
-          {moreToRead && !beyondCeiling ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setPage((p) => p + 1)}
-              data-testid="kpi-drilldown-more"
-              aria-label={`Read the next ${fmtNumber(pageSize)} ${spec.title} cases`}
-              className="h-7 px-2 text-2xs"
+        {/* ---- FOOTER — PINNED (shrink-0) -----------------------------------------
+            A SIBLING of the scroller, never a child of it. In normal flow this could not clip;
+            under a fixed shell on a 700px-tall laptop it would, and the thing that would clip is
+            the completeness disclosure — the one sentence that separates a drill-down from a
+            lie. It states what was read, whether the store PROVED that page complete, which
+            narrowings were applied to the rows rather than to the population, and offers the
+            full list. */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-muted/20 px-5 py-2.5">
+          <p data-testid="kpi-drilldown-scope" className="min-w-0 text-2xs text-muted-foreground">
+            {error ? (
+              'This page could not be read.'
+            ) : loading ? (
+              // A range change keeps the previous rows mounted rather than blanking the
+              // panel, so the footer must NOT keep describing them as this range's
+              // answer while the new one is still in flight.
+              'Re-reading this range…'
+            ) : (
+              <>
+                {pagesRead <= 1
+                  ? `Showing ${fmtNumber(visible.length)} of ${fmtNumber(population.length)} in this page`
+                  : `Showing ${fmtNumber(visible.length)} of ${fmtNumber(population.length)} in the ${fmtNumber(pagesRead)} pages read`}
+                {/* The tile's numeral is a server rollup over the whole window; this list
+                    is one or more pages of it. Never imply they are the same measurement,
+                    and never call a page after the first "the newest N" — it is not.
+                    Page ONE is not "the newest" either unless the newest-first sort is the
+                    one in force: under "Oldest first" it is the oldest rows, and under
+                    either risk sort it is neither. The store really applies all four, so
+                    the neutral "first N in this order" is the only phrasing true of all of
+                    them — and the order itself is named by the Sort control beside it. */}
+                {total != null && rows != null
+                  ? complete
+                    ? pagesRead <= 1
+                      ? ` · complete page of ${fmtNumber(total)} case${total === 1 ? '' : 's'}`
+                      : ` · complete: all ${fmtNumber(total)} case${total === 1 ? '' : 's'} read`
+                    : pagesRead <= 1
+                      ? ` · first ${fmtNumber(rows.length)} of ${fmtNumber(total)} in this order · lower bound`
+                      : ` · rows 1–${fmtNumber(readThrough)} of ${fmtNumber(total)} read · lower bound`
+                  : ' · bounded page'}
+              </>
+            )}
+          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            {moreToRead && !beyondCeiling ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setPage((p) => p + 1)}
+                data-testid="kpi-drilldown-more"
+                aria-label={`Read the next ${fmtNumber(pageSize)} ${spec.title} cases`}
+                className="h-7 px-2 text-2xs"
+              >
+                <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                Read more
+              </Button>
+            ) : null}
+            {spec.target ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                // CLOSE, then hand off. Today the hand-off navigates away and unmounts the
+                // page this panel lives on, so the modal would disappear either way — but
+                // that is the DESTINATION's behaviour, not this panel's, and a modal left
+                // open over a page the operator has just left is never right. Closing first
+                // also returns focus to the tile before the route changes, so the operator
+                // is not dropped on `<body>` at the far end.
+                onClick={() => {
+                  onClose();
+                  spec.target?.onSelect(targetContext);
+                }}
+                data-testid="kpi-drilldown-drillthrough"
+                className="h-7 px-2 text-2xs"
+              >
+                {spec.target.label}
+              </Button>
+            ) : null}
+          </div>
+          {caveats.length > 0 && !error && !loading ? (
+            <p
+              data-testid="kpi-drilldown-caveats"
+              className="min-w-0 basis-full text-2xs text-muted-foreground"
             >
-              <ChevronDown className="h-3.5 w-3.5" aria-hidden />
-              Read more
-            </Button>
+              {caveats.join(' ')}
+            </p>
           ) : null}
-          {spec.target ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => spec.target?.onSelect(targetContext)}
-              data-testid="kpi-drilldown-drillthrough"
-              className="h-7 px-2 text-2xs"
+          {/* Only when something the operator set will NOT survive the hand-off. A filter
+              that silently disappears is worse than one that never travelled: the
+              destination list then looks authoritative while being wider than it claims.
+              When everything travels there is nothing to warn about, so this stays quiet. */}
+          {spec.target && dropped.length > 0 ? (
+            <p
+              data-testid="kpi-drilldown-carryover"
+              className="min-w-0 basis-full text-2xs text-muted-foreground"
             >
-              {spec.target.label}
-            </Button>
+              {carried.length > 0
+                ? `“${spec.target.label}” carries ${carried.map((k) => CONTEXT_LABEL[k]).join(', ')}. `
+                : ''}
+              {`It cannot carry ${dropped
+                .map((k) => CONTEXT_LABEL[k])
+                .join(', ')} — reapply ${dropped.length === 1 ? 'it' : 'them'} there.`}
+            </p>
           ) : null}
         </div>
-        {caveats.length > 0 && !error && !loading ? (
-          <p
-            data-testid="kpi-drilldown-caveats"
-            className="min-w-0 basis-full text-2xs text-muted-foreground"
-          >
-            {caveats.join(' ')}
-          </p>
-        ) : null}
-        {/* Only when something the operator set will NOT survive the hand-off. A filter
-            that silently disappears is worse than one that never travelled: the
-            destination list then looks authoritative while being wider than it claims.
-            When everything travels there is nothing to warn about, so this stays quiet. */}
-        {spec.target && dropped.length > 0 ? (
-          <p
-            data-testid="kpi-drilldown-carryover"
-            className="min-w-0 basis-full text-2xs text-muted-foreground"
-          >
-            {carried.length > 0
-              ? `“${spec.target.label}” carries ${carried.map((k) => CONTEXT_LABEL[k]).join(', ')}. `
-              : ''}
-            {`It cannot carry ${dropped
-              .map((k) => CONTEXT_LABEL[k])
-              .join(', ')} — reapply ${dropped.length === 1 ? 'it' : 'them'} there.`}
-          </p>
-        ) : null}
-      </div>
-    </section>
-    /* eslint-enable jsx-a11y/no-noninteractive-element-interactions */
+      </DialogContent>
+    </Dialog>
   );
 }
 

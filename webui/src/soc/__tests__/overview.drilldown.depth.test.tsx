@@ -207,6 +207,10 @@ function renderOverview(onNavigate = vi.fn()) {
 
 async function openPanel(testId: string) {
   const tile = await screen.findByTestId(testId);
+  // Opening from the STRIP is only reachable while nothing is open: behind an open panel
+  // the strip is `aria-hidden` and `pointer-events: none`. Fail loudly here rather than
+  // letting user-event's pointer guard report a modal scrim as an inert control.
+  expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   await userEvent.click(tile);
   await screen.findByTestId('kpi-drilldown');
   await waitFor(() =>
@@ -217,13 +221,40 @@ async function openPanel(testId: string) {
   return tile;
 }
 
+/**
+ * Re-point the OPEN panel at another metric through the panel's OWN switcher.
+ *
+ * Clicking a neighbouring TILE is no longer a user-reachable path, and forcing it
+ * synthetically would not test this either: the pointerdown lands outside the layer, so
+ * Radix dismisses the panel and the tile's own click then re-opens it. The panel would
+ * CLOSE AND REOPEN rather than swap — remounting the fetch, which is precisely what the
+ * double-fetch test below forbids — so the failure would have nothing to do with the
+ * contract under test. The switcher reaches the SAME `onSelectMetric` path the panel's
+ * render-phase re-seed is written for.
+ */
+async function switchMetric(key: string) {
+  await userEvent.click(screen.getByTestId(`kpi-drilldown-metric-${key}`));
+  await waitFor(() =>
+    expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', key),
+  );
+}
+
 const rowText = () =>
   screen.getAllByTestId('kpi-drilldown-row').map((r) => r.textContent ?? '');
 
 const lastQuery = () =>
   (listCasesMock.mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
 
-/** Open a Radix Select and read back the option labels it offers. */
+/**
+ * Open a Radix Select and read back the option labels it offers.
+ *
+ * Everything here happens INSIDE the drill-down's modal layer, and both halves survive
+ * that: the Select's own portal is created AFTER the dialog ran `hideOthers` (which has
+ * no MutationObserver), so it is never `aria-hidden` and the role queries resolve; and
+ * the closing Escape dismisses the HIGHEST layer only, so it takes the listbox and leaves
+ * the dialog beneath it standing. That is the layer stack, not the `defaultPrevented`
+ * guard the panel used to carry.
+ */
 async function optionsOf(testId: string): Promise<string[]> {
   await userEvent.click(screen.getByTestId(testId));
   const listbox = await screen.findByRole('listbox');
@@ -232,6 +263,7 @@ async function optionsOf(testId: string): Promise<string[]> {
     .map((o) => o.textContent ?? '');
   await userEvent.keyboard('{Escape}');
   await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+  expect(screen.getByTestId('kpi-drilldown')).toBeInTheDocument();
   return labels;
 }
 
@@ -466,19 +498,26 @@ describe('Overview — KPI drill-down depth', () => {
       window_total_exact: true,
       ...echo({ limit_applied: CASES.length }),
     });
-    const { container } = renderOverview();
+    renderOverview();
     await screen.findByTestId('page-hero');
     const tile = await openPanel('kpi-total-cases');
     const more = screen.getByTestId('kpi-drilldown-more');
 
     // The panel's own axe pass runs in `overview.a11y.test.tsx`, on a fixture whose
     // store is exhausted and which therefore never renders this control at all.
-    expect(await axe(container)).toHaveNoViolations();
+    //
+    // `document.body`, NOT the render container: the panel — and with it the paging
+    // control this whole test exists for — is portalled OUT of `container`, and
+    // `container` is itself `aria-hidden` while the dialog is open. A container-scoped
+    // run therefore audits neither the panel nor, meaningfully, the page, and reports
+    // success. The probe on the line above the run is what keeps it non-vacuous.
+    expect(document.body.querySelector('[data-testid="kpi-drilldown-more"]')).not.toBeNull();
+    expect(await axe(document.body)).toHaveNoViolations();
 
-    // The Escape guard is a CONJUNCTION, and every control has to satisfy both halves.
-    // A control that consumed Escape without leaving the panel's DOM subtree would have
-    // its key swallowed AND tear the panel down; one that portalled out without moving
-    // focus would make the panel stop closing altogether.
+    // The paging control is a plain <button> inside the layer: it registers no
+    // dismissable layer of its own, so Escape reaches Radix's document listener and
+    // dismisses the TOP layer — this one. A control that portalled out and registered
+    // nothing would swallow the key instead, and the panel would stop closing from it.
     more.focus();
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
@@ -488,7 +527,7 @@ describe('Overview — KPI drill-down depth', () => {
     // 5s is a scheduling accident away from failing under a fully parallel run.
   }, 20_000);
 
-  it('does not double-fetch on a tile swap that changes the default range', async () => {
+  it('does not double-fetch on a metric switch that changes the default range', async () => {
     renderOverview();
     await screen.findByTestId('page-hero');
     await openPanel('kpi-total-cases');
@@ -497,10 +536,13 @@ describe('Overview — KPI drill-down depth', () => {
     // Total Cases opens on the dashboard window; Open Cases is window-EXEMPT and opens
     // all-time. A reset that ran as an EFFECT issued the old range's request first and
     // superseded it a tick later — discarded by the sequence guard, but paid for.
-    await userEvent.click(screen.getByTestId('kpi-open-cases'));
-    await waitFor(() =>
-      expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'open-cases'),
-    );
+    //
+    // Driven from the panel's own switcher, which is now the only way to re-point an
+    // open panel. It reaches the identical render-phase re-seed the code under test
+    // lives in; a synthetic click on the neighbouring TILE would instead dismiss the
+    // modal and remount the panel, and the second fetch this test forbids would then be
+    // issued by that remount rather than by the bug.
+    await switchMetric('open-cases');
     await waitFor(() => expect(listCasesMock).toHaveBeenCalled());
     expect(listCasesMock).toHaveBeenCalledTimes(1);
     expect(lastQuery()).not.toHaveProperty('from');
@@ -560,14 +602,11 @@ describe('Overview — KPI drill-down depth', () => {
     expect(Array.isArray(lastQuery().status_group)).toBe(false);
     expect(lastQuery()).not.toHaveProperty('status');
 
-    await userEvent.click(screen.getByTestId('kpi-resolved-closed'));
+    await switchMetric('resolved-closed');
     await waitFor(() => expect(lastQuery().status_group).toBe('terminal'));
 
     // The cohort tiles have no lifecycle set to push down and must not invent one.
-    await userEvent.click(screen.getByTestId('kpi-total-cases'));
-    await waitFor(() =>
-      expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'total-cases'),
-    );
+    await switchMetric('total-cases');
     expect(lastQuery()).not.toHaveProperty('status_group');
   });
 
@@ -719,6 +758,11 @@ describe('Overview — KPI drill-down depth', () => {
     await waitFor(() => expect(scope()).toHaveTextContent(/lower bound/i));
     expect(scope()).toHaveTextContent('first 2 of 2 in this order');
     expect(scope()).not.toHaveTextContent(/complete/i);
+    // The heading badge is a SECOND rendering of the same three-valued read, and the
+    // negative assertion above is only sound while it stays OUT of this subtree.
+    const badge = screen.getByTestId('kpi-drilldown-completeness');
+    expect(badge).toHaveTextContent(/^Bounded page · lower bound$/);
+    expect(scope().contains(badge)).toBe(false);
   });
 
   it('reads the SAME page as complete once the store proves the total', async () => {
@@ -733,6 +777,11 @@ describe('Overview — KPI drill-down depth', () => {
     const scope = () => screen.getByTestId('kpi-drilldown-scope');
     await waitFor(() => expect(scope()).toHaveTextContent(/complete page of 2 cases/i));
     expect(scope()).not.toHaveTextContent(/lower bound/i);
+    // …and the badge flips with it. The pair is what stops the two surfaces drifting into
+    // answering the same question differently.
+    expect(screen.getByTestId('kpi-drilldown-completeness')).toHaveTextContent(
+      /^Complete page$/,
+    );
   });
 
   it('lets an explicit not-exact outrank the request shape', async () => {
@@ -871,6 +920,12 @@ describe('Overview — KPI drill-down depth', () => {
       'cases',
       expect.objectContaining({ status: 'investigating' }),
     );
+    // The panel does NOT close itself on a hand-off, and deliberately asserts nothing
+    // about that here: `onNavigate` is a spy, so the route never changes and this page
+    // never unmounts. In the app the navigation unmounts <Overview/> — and the panel it
+    // owns with it — so the operator is never left behind a modal over a page they have
+    // already left. If the hand-off ever stops unmounting this page, the dismissal
+    // becomes the panel's own responsibility and belongs here as an assertion.
   });
 
   it('DISCLOSES what the destination cannot carry', async () => {
@@ -905,6 +960,11 @@ describe('Overview — KPI drill-down depth', () => {
     await userEvent.click(
       within(panel).getByRole('button', { name: /Open case Newest by creation/i }),
     );
+    // NOTE for whoever un-stubs <CaseDetail>: it is a Radix Sheet, i.e. a SECOND layer
+    // over this one. Stubbed to a plain <div> here (see the mock at the top of the file),
+    // nothing stacks — which is the only reason the in-panel click further down still
+    // reaches a top layer. Restore the real component and this file needs the layered
+    // treatment `overview.lattice.test.tsx` gives the sheet.
     // The row opens the case OVER the dashboard rather than routing to it, so nothing is
     // handed over that could carry a window narrower than the row just clicked.
     expect(await screen.findByTestId('case-detail-probe')).toHaveTextContent(

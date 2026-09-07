@@ -351,8 +351,8 @@ describe('HealthDiagnostics surface', () => {
         precedent_corpus: {
           ...base.precedent_corpus,
           // Trimmed/older payload: the explicit zero flag is present, while the
-          // pre-reduced status + alerts list were omitted/stale. Overview exercises
-          // this exact direct-field-only shape in HealthDegradationIndicator.test.
+          // pre-reduced status + alerts list were omitted/stale. The reducer exercises
+          // this exact direct-field-only shape in health-degradation-signals.test.
           status: 'ok',
           status_reason: '',
           analyst_confirmed_precedent_documents: 0,

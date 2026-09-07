@@ -20,6 +20,22 @@
  *      `soc/pages/__tests__/CaseDetail.focus-return.test.tsx` — the sheet is stubbed here,
  *      so asserting it in this file would only test the stub.)
  *
+ *      From a drill-down row that is MODAL OVER MODAL, and deliberately so. The KPI
+ *      drill-down is itself a Radix Dialog now, so opening a case stacks a second layer on
+ *      it rather than replacing it: the documented behaviour is that closing the case
+ *      returns the operator to the exact population they were reading, and throwing that
+ *      population away to save one layer would be the more expensive choice. Radix unwinds
+ *      dismissable layers NEWEST FIRST (`useEscapeKeydown` bails unless the layer is the
+ *      highest), so one Escape closes the case and leaves the panel standing, and a second
+ *      closes the panel. Both halves are asserted below.
+ *
+ *      While the sheet is on top the panel underneath is a SUPPRESSED layer: Radix gives
+ *      inline `pointer-events: auto` only to the highest layer, and the sheet's own
+ *      `hideOthers` marks the panel's portal `aria-hidden`. So `within(panel).getByRole(…)`
+ *      and any click into the panel stop working for as long as the case is open — every
+ *      such interaction in this file happens BEFORE the sheet exists, and that ordering is
+ *      load-bearing rather than incidental.
+ *
  *   C. ACCESSIBILITY WITH THE SHEET OPEN. `axe` runs against `document.body`, not the
  *      render container: the sheet is portalled out of the container and aria-hides its
  *      siblings, so a container-scoped run would happily pass over a page it never saw.
@@ -299,6 +315,26 @@ async function openQueuedCase(row: HTMLElement) {
   await settleHoverPreview();
 }
 
+/**
+ * Forget user-event's memoised `pointer-events` verdict for one node.
+ *
+ * user-event caches that verdict ON the element under a private symbol, and `document.body`
+ * is the ONE node that survives RTL's cleanup between tests. A test that ends with a Radix
+ * layer still open therefore leaves `body` memoised as `pointer-events: none` — and the
+ * next test's `pointerEventsCheck: 0` instance, which by design never re-checks, reads that
+ * stale verdict and throws before it has touched the page at all. (This only started
+ * biting when the KPI drill-down became a modal: a test can now finish with a layer open.)
+ *
+ * Clearing the memo is harness bookkeeping, never product state — every check that matters
+ * is then recomputed against the live DOM, which is strictly more honest than the cache.
+ */
+function forgetPointerEventsMemo(node: Element): void {
+  const own = node as unknown as Record<symbol, unknown>;
+  for (const key of Object.getOwnPropertySymbols(node)) {
+    if ((key.description ?? '').includes('pointer-events')) own[key] = undefined;
+  }
+}
+
 /** Did any navigation carry a case id? A peek must carry none. */
 function navigatedToACase(onNavigate: ReturnType<typeof vi.fn>): boolean {
   return onNavigate.mock.calls.some(
@@ -309,6 +345,7 @@ function navigatedToACase(onNavigate: ReturnType<typeof vi.fn>): boolean {
 
 describe('Overview — the command lattice', () => {
   beforeEach(() => {
+    forgetPointerEventsMemo(document.body);
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
     getMetricsMock.mockReset();
@@ -381,7 +418,18 @@ describe('Overview — the command lattice', () => {
     expect(navigatedToACase(onNavigate)).toBe(false);
   });
 
-  it('opens a drill-down row OVER the dashboard too, leaving the panel behind it', async () => {
+  /**
+   * MODAL OVER MODAL, decided rather than tolerated.
+   *
+   * The drill-down is a Radix Dialog and the case sheet is another Radix layer, so opening
+   * a case from a drill-down row stacks two. Collapsing the panel to keep one layer was
+   * the alternative and was rejected: the operator opened this case FROM a population they
+   * were reading, and the whole point of the peek is that closing it hands that population
+   * back. Radix's shared, module-level layer registry makes the stack behave — one Escape
+   * per layer, newest first — so the cost of the second layer is a keystroke, and the cost
+   * of collapsing it would be the operator's place.
+   */
+  it('stacks the case sheet ON the drill-down, and unwinds one layer per Escape', async () => {
     const { onNavigate } = renderOverview();
     await screen.findByTestId('page-hero');
 
@@ -389,14 +437,46 @@ describe('Overview — the command lattice', () => {
     const panel = await screen.findByTestId('kpi-drilldown');
     await waitFor(() => expect(screen.getByTestId('kpi-drilldown-rows')).toBeInTheDocument());
 
+    // ORDERING IS LOAD-BEARING. The drill-down is still the TOP layer at this instant, so
+    // its content carries Radix's inline `pointer-events: auto` and is not aria-hidden.
+    // The same two lines run after the sheet opens would fail the role query AND throw on
+    // the click — which is the contract, not a harness quirk.
     await userEvent.click(
       within(panel).getByRole('button', { name: 'Open case Benign admin login (T-3)' }),
     );
 
     expect(await screen.findByTestId('case-detail-probe')).toHaveTextContent('c-closed-fp');
+    // A peek, not a destination: the operator keeps the numerals that made them click.
     expect(navigatedToACase(onNavigate)).toBe(false);
-    // The population the operator was reading is still there to come back to.
-    expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'total-cases');
+
+    // The population the operator was reading is still there to come back to — but as a
+    // SUPPRESSED layer, which is the fact worth pinning: `pointer-events` is handed to the
+    // highest layer only, and the sheet's `hideOthers` aria-hides the panel's portal.
+    const panelAfter = screen.getByTestId('kpi-drilldown');
+    expect(panelAfter).toHaveAttribute('data-kpi', 'total-cases');
+    expect(panelAfter.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(panelAfter.style.pointerEvents).toBe('none');
+
+    // ONE Escape closes ONE layer, newest first: the case goes and the panel stays. A
+    // regression that took both down would return the operator to a dashboard instead of
+    // to the list they were working through, and would look like a fixed bug.
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('case-detail-probe')).toBeNull());
+    const panelBack = screen.getByTestId('kpi-drilldown');
+    expect(panelBack).toHaveAttribute('data-kpi', 'total-cases');
+    // …and it is the top layer again: readable, and operable.
+    await waitFor(() => expect(panelBack.closest('[aria-hidden="true"]')).toBeNull());
+    await waitFor(() => expect(panelBack.style.pointerEvents).toBe('auto'));
+
+    // The SECOND Escape is what closes the panel, and only then is the page handed back.
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+    await waitFor(() => expect(document.body.style.pointerEvents).toBe(''));
+    expect(screen.getByTestId('kpi-strip').closest('[aria-hidden="true"]')).toBeNull();
+
+    // Closing the panel returns focus to the tile, whose hover card opens on focus behind
+    // a delay — settle it here rather than letting it resolve into a torn-down tree.
+    await settleHoverPreview();
   });
 
   /**
@@ -475,10 +555,14 @@ describe('Overview — the command lattice', () => {
 
     await waitFor(() => expect(screen.queryByTestId('case-detail-probe')).toBeNull());
     // The row the operator came from is still the same live element, and the page around
-    // it is readable again — no orphaned `aria-hidden`, no inert shell.
+    // it is readable again — no orphaned `aria-hidden`, no stranded pointer-events lock.
     expect(document.body.contains(row)).toBe(true);
     await waitFor(() => expect(queue.closest('[aria-hidden="true"]')).toBeNull());
-    expect(document.querySelector('[inert]')).toBeNull();
+    // Radix never sets `inert` — it hides with `aria-hidden` (the line above), so the
+    // `querySelector('[inert]')` assertion that used to stand here could not fail and
+    // taught the wrong mechanism. What a leaked layer really WOULD strand is the body
+    // pointer-events lock, which is unreachable-page territory, so assert that instead.
+    await waitFor(() => expect(document.body.style.pointerEvents).toBe(''));
     // Whatever holds focus afterwards is still part of the live document — the layer did
     // not leave it parked on a detached node.
     expect(document.activeElement?.isConnected).toBe(true);

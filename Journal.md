@@ -10899,3 +10899,65 @@
   Both are right about their half: it is a shared property of the rows-read facet derivation,
   it shows a truthful empty list rather than a wrong one, and it wants one deliberate change
   across all three menus rather than a partial fix here.
+
+### 2026-09-07 16:10Z — Console agent — KPI drill-down becomes a modal; health moves to the bell; width reclaimed; dark mode re-skinned
+- Context: six operator requests against `Testing` @ `8ecba49` — (1)+(2) retire the dashboard's
+  Agent-health banner into the notification bell, (3)+(4) turn the KPI deep-inspection panel
+  into a real modal with a fixed page-in-page shell, (5) relocate always-visible disclosure
+  copy to reachable help surfaces, (6) reclaim horizontal width — plus a dark-mode re-skin to
+  a supplied reference (deep navy, blue-led) replacing the near-black/ultraviolet palette.
+- Did:
+  - **Modal (#2).** `KpiDrilldownPanel` now renders `<DialogContent>` (no fork of `ui/dialog`,
+    no new dep): `aria-modal`, `aria-labelledby`, and an `aria-describedby` that RESOLVES to a
+    visible population sentence rather than dangling. Fixed `h-[92dvh] max-h-[900px]` (the
+    pixel cap is load-bearing — it evicts the base `max-h-[85dvh]`, which twMerge keeps),
+    width mirroring `PageContainer` `wide`. Four `shrink-0` bands around exactly ONE
+    `min-h-0 flex-1 overflow-auto` scroller, with the completeness footer as its SIBLING.
+    `max-h-80` on the row table is gone: measured 568px of rows at 900px viewport height vs
+    320px before, and the footer stays visible at 700px. The hand-rolled Escape containment
+    guard is deleted — Radix owns Escape and the scrim.
+  - **Focus return — the brief's recommended route was MEASURED WRONG and abandoned.** A
+    synchronous restore from the parent is bounced by the trap, and Radix's null-`triggerRef`
+    `onCloseAutoFocus` then drops focus on `<body>`; measured on BOTH close paths. Adopted the
+    repo's own `CaseDetail` precedent (`onCloseAutoFocus` + a `restoreFocusTo` getter). That
+    moved the restore after the commit that drops `forceClosed`, so the trend card reopened on
+    the boundary of `MetricHoverTrend`'s one-`openDelay` grace; widened to two, and re-measured.
+  - **Health → bell (#4).** `useHealthDiagnosticsData` hoisted into the shell at a FIXED 24h
+    window, fed to `NotificationBell` as an optional prop so the bell stays provider-free.
+    Pinned section OUTSIDE the inbox scroller, a third trigger marker, the state spelled into
+    the trigger's `aria-label` (the badges are `aria-hidden`), and an announcement through the
+    shell's one live region, gated on the degradation ID set. `HealthDegradationIndicator` and
+    its spec deleted; coverage re-homed to the reducer, the bell and the shell.
+  - **Width (#5).** `CONTENT_INSET` flattened to `px-4 sm:px-6` — the old ladder made content
+    NARROW as the viewport widened (‑15px at 640, ‑15px at 1024, ‑31px at 1536). Paired with
+    `CaseManager`'s bleed (`w-auto sm:-mx-2`), which is tuned to it; a source-string assertion
+    now pins the two together, since no gate can see either.
+  - **Disclosure (#3).** Per the operator table. `KpiTile` gained a SIBLING help trigger for
+    clickable tiles (a nested button is invalid DOM) using a new `HelpTip alwaysPopover` — a
+    tooltip never opens on touch, and a disclosure a tablet cannot reach is deleted, not tidied.
+    The strip-level affordance sentence became an always-visible per-tile mark derived from the
+    same `ariaHasPopup` prop that carries the claim to AT.
+  - **Dark theme.** `.dark` re-valued to the navy reference: canvas `#0c1018`, card `#121826`,
+    primary `#709df0`, cool-grey text, amber warning, fresh green success, blue-led chart ramp.
+    Every in-file ratio comment re-measured; light mode untouched.
+- Tests: Console **325 files / 2341 passed**, zero stderr and zero captured console output.
+  `gates` 6/6 (contrast 96 axes both themes, CVD, login accents). `lint` 0 errors 0 warnings.
+  `tsc --noEmit` clean. `build` clean — entry **396.08 kB** against the 400 kB ceiling, which
+  the first build BREACHED at 400.04 kB: the fix was to move the diagnostics reader off the
+  eager graph behind a dynamic import (`components/HealthWatch.tsx`), the pattern route-motion
+  already uses, NOT to raise the ceiling. **#3 re-verified: `case_manager.py` md5
+  `212873cd13d822a7b64752635285ff1f`; `backend/` and `deploy/` at ZERO diff.** No new npm dep.
+- Method: two recon agents produced a 1,500-line per-assertion rewrite inventory before any
+  spec was touched; two more rewrote the seven affected spec files from that inventory without
+  reading the implementation diff. The whole stack was then run locally (`run-demo.sh`, seeded
+  demo data) and driven with Playwright — which is how four defects invisible to jsdom were
+  found and fixed: tile captions ellipsised at every width below 1920px, the sticky table
+  header was transparent (a background on `<thead>` is not reliably painted) and sat 12px below
+  the scroll port, and the help popover opened on top of the hover trend card.
+- Status: done. Committed to `Testing`; not pushed at time of writing.
+- Next: the specs record two things deliberately left. A cross-test harness hazard now has a
+  documented workaround rather than a fix — user-event memoises its `pointer-events` verdict on
+  `document.body`, which survives RTL cleanup, so a test that ends with a Radix layer open
+  poisons the next file. And `overview.a11y.test.tsx` keeps one document-wide `[inert]` probe
+  that cannot currently fail (Radix uses `aria-hidden`); it is retained only as a negative guard
+  beside the positive `aria-hidden` shape that carries the real proof.

@@ -748,9 +748,15 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
 
   return (
     <ProtectedRoute resource="cases" action="read">
+      {/* The bleed is a MATCHED PAIR with `AppShell.CONTENT_INSET`: it widens the board back
+          out of the shell gutter to a constant 16px inset at every width. The shell gutter is
+          now flat (px-4, sm:px-6), so the bleed is flat too (0, then -8). Keep `w-auto` — it
+          is what makes a negative margin WIDEN the box rather than shift it. If either side
+          changes alone the board overflows `<main class="… overflow-x-hidden">`; see
+          `route-visual-standard.test.ts`, which asserts them together. */}
       <PageContainer
         variant="fluid"
-        className="h-[calc(100dvh-7rem)] min-h-0 w-auto sm:-mx-2 lg:-mx-4 xl:min-h-[600px] 2xl:-mx-8"
+        className="h-[calc(100dvh-7rem)] min-h-0 w-auto sm:-mx-2 xl:min-h-[600px]"
         data-testid="case-manager"
       >
         <div

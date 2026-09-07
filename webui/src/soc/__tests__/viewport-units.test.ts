@@ -31,6 +31,10 @@ describe('dynamic viewport shell contract', () => {
     ['shared AlertDialog', '..', '..', 'ui', 'alert-dialog.tsx'],
     ['shared Sheet', '..', '..', 'ui', 'sheet.tsx'],
     ['expanded Noise Funnel', '..', 'components', 'NoiseFunnel.tsx'],
+    // The KPI deep-inspection modal is a FIXED-height page-in-page (`h-[92dvh]`), so it is
+    // exactly the kind of surface a stray `vh` would break: on mobile it would size to the
+    // largest viewport and hide its own pinned footer behind the browser toolbar.
+    ['KPI deep-inspection modal', '..', 'components', 'KpiDrilldownPanel.tsx'],
   ])('%s uses dynamic rather than legacy viewport units', (_label, ...segments) => {
     const source = readFileSync(path.resolve(__dirname, ...segments), 'utf8');
 

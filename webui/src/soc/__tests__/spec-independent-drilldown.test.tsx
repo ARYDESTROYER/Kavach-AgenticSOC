@@ -219,7 +219,21 @@ function renderOverview() {
   };
 }
 
+/**
+ * Open one tile's panel from the STRIP, and wait for its first page.
+ *
+ * The panel is a Radix MODAL: while one is open `body { pointer-events: none }`, a tile
+ * behind the scrim is unclickable, and user-event throws rather than silently doing
+ * nothing. So a second call closes the open panel first — which is also what an operator
+ * has to do to reach a neighbouring tile. Switching metric WITHOUT closing is a different
+ * act with its own in-panel affordance (`kpi-drilldown-metric-<key>`), used where a test
+ * is about the switch rather than about the tile.
+ */
 async function openPanel(testId: string) {
+  if (screen.queryByTestId('kpi-drilldown')) {
+    await userEvent.click(screen.getByTestId('kpi-drilldown-close'));
+    await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+  }
   const tile = await screen.findByTestId(testId);
   await userEvent.click(tile);
   await screen.findByTestId('kpi-drilldown');
@@ -237,6 +251,11 @@ async function optionsOf(testId: string): Promise<string[]> {
   const labels = (await screen.findAllByRole('option')).map((o) => o.textContent ?? '');
   await userEvent.keyboard('{Escape}');
   await waitFor(() => expect(screen.queryAllByRole('option')).toHaveLength(0));
+  // Dismissing the SELECT must not dismiss the panel under it. Radix escapes exactly one
+  // layer per keystroke — the highest — and the select is the highest here, so the panel
+  // survives. That is the contract the panel's retired hand-rolled containment guard used
+  // to approximate, and it is cheap to keep proving from every menu read in this file.
+  expect(screen.getByTestId('kpi-drilldown')).toBeInTheDocument();
   return labels;
 }
 
@@ -496,7 +515,13 @@ describe('KPI drill-down — spec-derived depth', () => {
     // own population while presenting them as that population.
     expect([allFalsePositives - excludedCount, allFalsePositives]).toContain(shown);
     // And the footer must still separate "what the store matched" from "what was read".
-    expect(caveats).toMatch(/rows read|this page|page/);
+    //
+    // The two halves of that separation, named. The alternation that used to stand here
+    // (`/rows read|this page|page/`) could not fail: the footer unconditionally says
+    // "Status options come from every page read here.", so the bare `page` branch matched
+    // every possible footer — including one that had dropped the separation entirely.
+    expect(caveats).toMatch(/counts every case the store matched for this request/);
+    expect(caveats).toMatch(/the counts above describe the rows read/);
   });
 
   /* ===================================================================== */
@@ -514,36 +539,22 @@ describe('KPI drill-down — spec-derived depth', () => {
     const chosen = PRESENT_BANDS[0];
     await chooseOption('kpi-drilldown-severity', cap(chosen));
     await userEvent.type(screen.getByTestId('kpi-drilldown-search'), 'case');
+    // Wait for the panel's OWN acknowledgement that both narrowings are in force before
+    // reading anything off the hand-off. Typing settles over several renders, and a
+    // drill-through clicked mid-flight builds its context from whatever had landed — which
+    // turns "the search was not carried" into a race rather than a finding.
+    expect(screen.getByTestId('kpi-drilldown-search')).toHaveValue('case');
+    await waitFor(() =>
+      expect(screen.getByTestId('kpi-drilldown-caveats')).toHaveTextContent(
+        /the free-text search/i,
+      ),
+    );
     await waitFor(() => expect(rowIds().length).toBeGreaterThan(0));
 
-    await userEvent.click(screen.getByTestId('kpi-drilldown-drillthrough'));
-    expect(onNavigate).toHaveBeenCalled();
-    const [, carried] = onNavigate.mock.calls[onNavigate.mock.calls.length - 1];
-
-    // B37 — the ZERO-ARGUMENT call is replaced: something about the operator's live
-    // state travels. A destination that receives nothing cannot honour anything.
-    expect(carried, 'the drill-through must receive the live state').toBeTruthy();
-    const payload = JSON.stringify(carried).toLowerCase();
-
-    // B38 — whatever is NOT in the payload must be named beside the button. The two
-    // halves are checked TOGETHER so "carry nothing and say nothing" cannot pass.
-    const disclosure = (
-      screen.queryByTestId('kpi-drilldown-carryover')?.textContent ?? ''
-    ).toLowerCase();
-    const combined = `${payload} ${disclosure}`;
-    for (const [label, probe] of [
-      ['the severity band', chosen],
-      ['the free-text search', 'case'],
-      ['the time range', 'window'],
-    ] as const) {
-      expect(
-        combined.includes(probe) || /cannot|not carried|reapply|drop/.test(disclosure),
-        `${label} was neither carried nor disclosed`,
-      ).toBe(true);
-    }
-
-    // B39 — opening a SINGLE case carries no window, so a narrower window can never
-    // hide the row the operator just clicked.
+    // B39 — opening a SINGLE case carries no window, so a narrower window can never hide
+    // the row the operator just clicked. It is exercised HERE, before the hand-off, because
+    // the hand-off deliberately closes the panel (see below) and there would be no row left
+    // to click afterwards.
     onNavigate.mockClear();
     const row = screen.getAllByTestId('kpi-drilldown-row')[0];
     const opener = within(row).queryAllByRole('button')[0] ?? row;
@@ -552,6 +563,63 @@ describe('KPI drill-down — spec-derived depth', () => {
       const [, single] = onNavigate.mock.calls[onNavigate.mock.calls.length - 1];
       expect(JSON.stringify(single ?? {}).toLowerCase()).not.toContain('window');
     }
+
+    // B38 — the disclosure is read WHILE the panel is open, which is also the only moment
+    // an operator reads it: it is a sentence BESIDE the button, weighed before pressing it,
+    // not a receipt handed over afterwards.
+    const disclosure = (
+      screen.queryByTestId('kpi-drilldown-carryover')?.textContent ?? ''
+    ).toLowerCase();
+
+    onNavigate.mockClear();
+    await userEvent.click(screen.getByTestId('kpi-drilldown-drillthrough'));
+    expect(onNavigate).toHaveBeenCalled();
+    const [, carried] = onNavigate.mock.calls[onNavigate.mock.calls.length - 1];
+
+    // The hand-off CLOSES the panel before it navigates. In the app the destination
+    // unmounts this page and the modal would go anyway, but that is the destination's
+    // behaviour and not this panel's — and a modal left standing over a page the operator
+    // has left is never right. Closing first is also what returns focus to the tile before
+    // the route changes, rather than dropping it on `<body>` at the far end.
+    expect(screen.queryByTestId('kpi-drilldown')).toBeNull();
+
+    // B37 — the ZERO-ARGUMENT call is replaced: something about the operator's live
+    // state travels. A destination that receives nothing cannot honour anything.
+    expect(carried, 'the drill-through must receive the live state').toBeTruthy();
+    const params = carried as Record<string, unknown>;
+    const payload = JSON.stringify(carried).toLowerCase();
+    // The destination's VALUES, never the stringified object. The old probe ran over
+    // `JSON.stringify(carried)`, and the context's own key `windowHours` contains the
+    // literal `window` — so the time-range row below matched the KEY and could not fail
+    // whatever the payload actually carried.
+    const values = Object.values(params).map((v) => String(v).toLowerCase());
+    const travelled = (probe: string) => values.some((v) => v.includes(probe));
+
+    // B38 — whatever is NOT in the payload must be named beside the button. The two halves
+    // are checked TOGETHER so "carry nothing and say nothing" cannot pass, and each half is
+    // now tied to its OWN label: the disclosure test used to be a blanket
+    // `/cannot|not carried|reapply|drop/` that a single "It cannot carry …" sentence
+    // satisfied for all three labels at once, whichever one it actually named.
+    const dropClause = (disclosure.match(/cannot carry ([^—.]+)/) ?? ['', ''])[1];
+    const checks: [string, boolean, RegExp][] = [
+      ['the severity band', travelled(chosen), /severity|band/],
+      ['the free-text search', travelled('case'), /search|text/],
+      // The time range is the only member of the context that is a bare number, so a
+      // numeric value in the payload IS the window travelling — asserted without this
+      // file writing down an hour count it would then be pinning twice.
+      ['the time range', values.some((v) => /^\d+$/.test(v)), /time range|window/],
+    ];
+    for (const [label, wasCarried, named] of checks) {
+      expect(
+        wasCarried || named.test(dropClause),
+        `${label} was neither carried nor disclosed as dropped — payload ${payload}, disclosure "${disclosure}"`,
+      ).toBe(true);
+    }
+    // Non-vacuous: at least one narrowing really travelled, so the loop above is not
+    // passing purely on the disclosure branch of every row. (The converse is deliberately
+    // NOT asserted: a destination that grew the ability to honour everything would leave
+    // nothing to disclose, and that is an improvement rather than a regression.)
+    expect(checks.some(([, wasCarried]) => wasCarried)).toBe(true);
   });
 
   /* ===================================================================== */
@@ -600,12 +668,16 @@ describe('KPI drill-down — spec-derived depth', () => {
       () => expect(Number(pageRequests()[pageRequests().length - 1].offset)).toBe(0),
       { timeout: 3000 },
     );
-  });
+    // A harness budget, not a slack assertion: this test drives two full paging round
+    // trips, a menu read and a typed narrowing whose own settle already reserves 3s of the
+    // default 5s. It measures ~2.5s alone and has been seen to cross 5s when the file runs
+    // beside the other Overview suites, which is a flake with nothing to teach.
+  }, 15_000);
 
   /* ===================================================================== */
   /* B23 / B30 — the fetch dependencies, and the status facet's memory      */
   /* ===================================================================== */
-  it('B23: a tile swap issues exactly one new fetch, never a stale-closure double', async () => {
+  it('B23: a metric swap issues exactly one new fetch, never a stale-closure double', async () => {
     listCasesMock.mockImplementation(async (params: Record<string, unknown>) => {
       if (!params || !('offset' in params)) return page([], 0);
       const size = Number(params.limit);
@@ -621,7 +693,13 @@ describe('KPI drill-down — spec-derived depth', () => {
     const afterFirst = pageRequests().length;
     expect(afterFirst).toBeGreaterThan(0);
 
-    await userEvent.click(screen.getByTestId('kpi-open-cases'));
+    // The IN-PANEL switcher, not the neighbouring tile: behind the modal scrim that tile
+    // is unclickable, and a synthetic click on it would also trip the layer's
+    // `onPointerDownOutside` and close-then-reopen the panel — which would fail the
+    // "exactly one new fetch" count below for a reason that has nothing to do with the
+    // effect dependencies this test is about. The pill performs the same state write the
+    // tile does, so the contract under test is unchanged.
+    await userEvent.click(screen.getByTestId('kpi-drilldown-metric-open-cases'));
     await waitFor(() =>
       expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'open-cases'),
     );
@@ -633,7 +711,7 @@ describe('KPI drill-down — spec-derived depth', () => {
     expect(settled - afterFirst).toBe(1);
   });
 
-  it('B30: status options accumulate across pages and reset on a tile swap', async () => {
+  it('B30: status options accumulate across pages and reset on a metric swap', async () => {
     // Two pages with DISJOINT status vocabularies, so a page-scoped option list and a
     // session-scoped union give visibly different answers.
     const firstStatus = 'open';
@@ -669,8 +747,10 @@ describe('KPI drill-down — spec-derived depth', () => {
     expect(union).toContain(firstStatus);
     expect(union).toContain(secondStatus);
 
-    // …and the memory is scoped to the tile: swapping resets it.
-    await userEvent.click(screen.getByTestId('kpi-open-cases'));
+    // …and the memory is scoped to the METRIC: re-pointing the panel resets it. Driven
+    // from the in-panel switcher because the neighbouring tile is behind the modal scrim;
+    // the re-seed under test is keyed on the panel's metric either way.
+    await userEvent.click(screen.getByTestId('kpi-drilldown-metric-open-cases'));
     await waitFor(() =>
       expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'open-cases'),
     );
@@ -703,20 +783,51 @@ describe('KPI drill-down — spec-derived depth', () => {
 
     const caveats = (screen.getByTestId('kpi-drilldown-caveats').textContent ?? '').toLowerCase();
 
-    // Each of the four is named. Matched on a family of words rather than one exact
-    // phrase, because the WORDING is the panel's to choose — the criterion is that the
-    // operator is told which narrowings only saw the rows that were read.
-    const named: Record<string, RegExp> = {
-      'the tile population predicate': /population|this tile/,
-      'the ordering': /order|sort/,
-      'the free-text search': /search|text|filter/,
-      'the severity band': /severity|band/,
-    };
-    for (const [what, probe] of Object.entries(named)) {
-      expect(probe.test(caveats), `${what} is not named in the footer: ${caveats}`).toBe(true);
-    }
+    /**
+     * The narrowings must be named in the PAGE-SCOPED LIST — the clause the footer opens
+     * with "…not the whole population:" — and nowhere else.
+     *
+     * Matching the whole footer was vacuous, and quietly so. It always carries "Severity
+     * options are derived from the rows read." and "Status options come from every page
+     * read here.", so `/severity|band/` and `/search|text|filter/` matched a footer that
+     * had never heard of the operator's narrowings, and `/population/` matched the
+     * boilerplate "not the whole population" in the very sentence being read. Scoping to
+     * the list is what makes each probe fail when its narrowing goes unnamed.
+     */
+    const scopedList = (s: string) =>
+      (s.match(/not the whole population: ([^.]+)\./) ?? ['', ''])[1];
+
+    const listed = scopedList(caveats);
+    expect(listed, `the footer names no page-scoped narrowing at all: ${caveats}`).toBeTruthy();
+    expect(listed).toContain('the severity band');
+    expect(listed).toContain('the free-text search');
+    expect(listed).toContain('the ordering');
+    // The FOURTH narrowing the criterion enumerates is the tile's own population
+    // predicate — and it belongs in this list only for a tile that resolves its population
+    // in the BROWSER. "Total Cases" is the whole cohort the store returned, so naming a
+    // predicate here would be a false caveat, which is the same failure as a missing one
+    // pointed the other way.
+    expect(listed).not.toContain('population rule');
+
+    // So re-point the OPEN panel at a metric whose population really is resolved over the
+    // rows read (the false-positive population is a browser-side verdict predicate: no
+    // `verdict` query parameter exists), and the clause must appear. Driven from the
+    // in-panel switcher because every neighbouring tile is behind the modal scrim.
+    await userEvent.click(screen.getByTestId('kpi-drilldown-metric-false-positive-rate'));
+    await waitFor(() =>
+      expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute(
+        'data-kpi',
+        'false-positive-rate',
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        scopedList((screen.getByTestId('kpi-drilldown-caveats').textContent ?? '').toLowerCase()),
+      ).toContain('population rule'),
+    );
+
     // …and the whole statement is scoped to the rows read, not to the population.
-    expect(caveats).toMatch(/rows read|this page/);
+    expect(caveats).toMatch(/evaluated over the [\d,]+ rows read, not the whole population/);
   });
 
   /* ===================================================================== */

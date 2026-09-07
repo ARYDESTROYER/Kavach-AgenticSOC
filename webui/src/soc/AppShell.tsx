@@ -90,7 +90,13 @@ import { useTheme } from './theme';
 import { usePrefs } from './prefs';
 import { useDemo } from './demo';
 import { DemoIndicator } from './components/DemoIndicator';
-import { AnnouncerProvider } from './components/announcer';
+import { AnnouncerProvider, useAnnouncer } from './components/announcer';
+// TYPE-ONLY import (elided at build → zero runtime import): the diagnostics state module
+// must NEVER ride the eager AppShell first-paint graph, so `HealthWatch` — the component
+// that actually calls its hook — is reached purely through the DYNAMIC `import()` below.
+// See components/HealthWatch.tsx + bundle-first-paint.test.ts.
+import type { HealthWatchProps } from './components/HealthWatch';
+import type { HealthDegradation } from './components/health-diagnostics-state';
 import { CommandPalette } from './components/CommandPalette';
 import { GlassSurface } from './components/GlassSurface';
 import { NavSidebar, useNavPrefs } from './components/NavSidebar';
@@ -115,8 +121,66 @@ import type { Navigate } from './router';
 // DYNAMIC `import()` below. See soc/components/motion/* + bundle-first-paint.test.ts.
 import type { RouteMotionProps } from './components/motion/RouteMotion';
 
-/** The single content inset (gutter + vertical rhythm) applied to every routed page. */
-const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6 lg:px-8 2xl:px-12';
+/**
+ * The single content inset (gutter + vertical rhythm) applied to every routed page.
+ *
+ * FLAT from 640px up, at operator instruction. This REVERSES the widening gutter ladder in
+ * `docs/research/2026-07-round5/DESIGN_STANDARD.md:437` (`px-4 sm:px-6 lg:px-8 2xl:px-12`),
+ * which was arithmetically wrong in the one way a gutter ladder cannot be: content NARROWED
+ * as the viewport widened. Crossing 639→640 cost 15px of content, 1023→1024 cost another
+ * 15px, and 1535→1536 cost 31px — the viewport grew by one pixel and the operator's usable
+ * width shrank. No width cap can undo that, because the cap is not what is binding: with the
+ * 240px rail and a ~10px root scrollbar, `PageContainer` variant `wide` (1760 / 2xl:1920)
+ * first binds at ~2256px, so below that the cap contributes exactly 0px of waste.
+ *
+ * Net gain: +16px at 1024-1535, +48px at ≥1536, decaying to 0 above ~2256px.
+ *
+ * PAIRED EDIT — `soc/pages/CaseManager.tsx` carries a negative-margin bleed that was tuned
+ * to this exact ladder to land on a constant 16px inset. Flattening one without the other
+ * overflows the board out of `<main class="… overflow-x-hidden">` by 8px per side on every
+ * screen ≥1536px. The two are a matched pair; `route-visual-standard.test.ts` pins them.
+ */
+const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';
+
+/**
+ * The shell reads Agent health over a FIXED window. Unlike the dashboard host it replaced,
+ * the shell has no operator-selected time range, and the auto-close verdict the reducer
+ * consumes IS window-scoped — so the window is stated in the bell's section header rather
+ * than silently inherited.
+ */
+const SHELL_HEALTH_WINDOW_HOURS = 24;
+
+/** Stable empty default, so a healthy shell never hands the bell a fresh array identity. */
+const NO_DEGRADATIONS: HealthDegradation[] = [];
+
+/**
+ * Speaks a NEW Agent-health degradation through the shell's one `aria-live` region.
+ *
+ * This exists as a child component because `AnnouncerProvider` is rendered BY `AppShell`,
+ * so `AppShell`'s own body is not a descendant of it and `useAnnouncer()` there would
+ * resolve to the no-op default. It is also deliberately not folded into `NotificationBell`:
+ * on mobile the bell lives inside a `Sheet` and is unmounted until the operator opens it,
+ * so the announcement would never fire.
+ *
+ * Gated on a change in the degradation ID SET — an `aria-label` change is not a content
+ * mutation and is never announced on its own, but re-announcing the same set on every
+ * route change would be worse than silence.
+ */
+const HealthAnnouncer: React.FC<{ degradations: HealthDegradation[] }> = ({ degradations }) => {
+  const announce = useAnnouncer();
+  const spokenRef = React.useRef('');
+  React.useEffect(() => {
+    const key = degradations.map((signal) => signal.id).join('|');
+    if (key === spokenRef.current) return;
+    spokenRef.current = key;
+    if (!key) return;
+    announce(
+      `Agent health needs attention: ${degradations.map((signal) => signal.label).join('; ')}`,
+      'polite',
+    );
+  }, [announce, degradations]);
+  return null;
+};
 
 /**
  * Self-update is deliberately stricter than the Console's auth-off/RBAC-off
@@ -1101,6 +1165,32 @@ export const AppShell: React.FC<AppShellProps> = ({
       : baseHv;
   const HealthIcon = hv.icon;
 
+  // AGENT HEALTH (Round-12) — hoisted out of the Cyber Defence Center and into the shell,
+  // ONCE, at a FIXED 24h window. The dashboard had a time range to hand it; the shell does
+  // not, and the auto-close verdict this reads is itself window-scoped, so the bell's
+  // section header states the window instead of implying the operator's current one.
+  //
+  // The reader is loaded AFTER first paint (nothing on the landing frame depends on it),
+  // through the same dynamic-import pattern as the route-motion layer, so the diagnostics
+  // state module stays off the eager entry chunk. Client-derived only: the hook self-gates
+  // on RBAC and on whether the api client exposes the two endpoints at all, so a trimmed
+  // surface issues zero requests.
+  const [agentDegradations, setAgentDegradations] = React.useState<HealthDegradation[]>(
+    NO_DEGRADATIONS,
+  );
+  const [HealthWatch, setHealthWatch] = React.useState<React.ComponentType<HealthWatchProps> | null>(
+    null,
+  );
+  React.useEffect(() => {
+    let alive = true;
+    void import('./components/HealthWatch').then((mod) => {
+      if (alive) setHealthWatch(() => mod.HealthWatch);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Cmd/Ctrl-K opens the palette; Cmd/Ctrl-B toggles the sidebar width. The palette
   // has no Radix DialogTrigger of its own, so retain the actual external opener and
   // explicitly restore it when Escape, selection, or the close button dismisses it.
@@ -1152,6 +1242,13 @@ export const AppShell: React.FC<AppShellProps> = ({
     // shares announce() so deep components (DataTable sort/bulk outcomes, etc.) can
     // speak status to assistive tech without a visible UI change.
     <AnnouncerProvider>
+      {HealthWatch ? (
+        <HealthWatch
+          windowHours={SHELL_HEALTH_WINDOW_HOURS}
+          onChange={setAgentDegradations}
+        />
+      ) : null}
+      <HealthAnnouncer degradations={agentDegradations} />
       <JobMonitor actor={username} onNavigate={onNavigate} />
       <div className="flex min-h-dvh overflow-x-hidden bg-canvas text-foreground">
         {/* Skip-to-main link (#1 — WCAG 2.4.1). Visually hidden until it receives
@@ -1344,8 +1441,10 @@ export const AppShell: React.FC<AppShellProps> = ({
             {!isMobile ? (
               <>
                 {/* In-app notification bell (#8) — self-contained: polls the unread
-                    count, opens a recent-items dropdown, links to the Inbox page. */}
-                <NotificationBell onNavigate={onNavigate} />
+                    count, opens a recent-items dropdown, links to the Inbox page. It
+                    also HOSTS the pinned Agent-health section, which the shell derives
+                    (the bell must stay provider-free). */}
+                <NotificationBell onNavigate={onNavigate} healthDegradations={agentDegradations} />
 
                 {/* Theme toggle */}
                 <Tooltip>
@@ -1460,10 +1559,24 @@ export const AppShell: React.FC<AppShellProps> = ({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 shrink-0"
+                        className="relative h-8 w-8 shrink-0"
                         aria-label="Open console controls"
                       >
                         <SlidersHorizontal className="h-4 w-4" aria-hidden />
+                        {/* The mobile bell lives INSIDE this Sheet, so without a marker
+                            here a degradation would be invisible until the operator
+                            opened the panel. The aria-label is deliberately unchanged —
+                            the bell's own label carries the state to assistive tech at
+                            every width, and the shell's live region announces it. */}
+                        {agentDegradations.length > 0 ? (
+                          <span
+                            className="absolute -bottom-0.5 -right-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-warning px-[3px] text-2xs font-semibold leading-none text-warning-foreground"
+                            data-testid="compact-controls-health-marker"
+                            aria-hidden
+                          >
+                            <AlertTriangle className="size-2.5" />
+                          </span>
+                        ) : null}
                       </Button>
                     </SheetTrigger>
                   </TooltipTrigger>
@@ -1497,6 +1610,7 @@ export const AppShell: React.FC<AppShellProps> = ({
                         </div>
                         <NotificationBell
                           onNavigate={navigateFromCompactControls}
+                          healthDegradations={agentDegradations}
                           className="h-11 w-11 shrink-0"
                         />
                       </div>

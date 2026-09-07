@@ -12,6 +12,42 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**A drill-down that had to be read past, and a warning that only one page could show.**
+The KPI deep-inspection panel docked below the landing strip and pushed the instrument band
+down the page; its row table was capped at a 320px window whatever the screen; and the
+Agent-health warning it shared the page with was visible from the dashboard and nowhere else.
+
+The drill-down is now a MODAL — a fixed page-in-page, the same width as the dashboard it
+explains, with four pinned bands around exactly one scroll region. Removing the 320px cap and
+the page behind it turns 320px of rows into 568px at a 900px-tall viewport, and the
+completeness footer stays on screen at 700px. This deliberately REVERSES the non-modal
+decision this file recorded, and the reasoning is preserved in the component rather than
+discarded: one half of that case — comparing a tile with its four neighbours — is answered by
+the in-panel metric switcher, which is why the switcher gets its own always-visible row and is
+never breakpoint-gated; the other half, tabbing on into the page, is a real cost, mitigated
+only by Escape returning focus to the exact tile that opened the panel.
+
+Agent health moved into the notification bell, pinned above the inbox and outside its
+scroller, so a degradation is visible from every route and a healthy deployment spends no
+dashboard space at all. The shell reads it once, at a stated 24-hour window, and speaks it
+through the console's one live region; the trigger's accessible label carries the state,
+because every badge on it is `aria-hidden`.
+
+Two smaller corrections travel with them. The page gutter was a ladder that made content
+NARROWER as the viewport grew — crossing 1536px cost 31px of usable width — and is now flat
+from 640px up, paired with the Case Manager bleed that is tuned to it. And the always-visible
+copy under the KPI tiles was carrying explanations rather than qualifiers: the tautologies are
+gone, the long sentences moved to per-tile help that opens on click (a tooltip never opens on
+touch), and the strip's shared "select a metric" line became a mark on every tile, derived
+from the same property that announces the popup to assistive technology.
+
+**Dark mode is re-skinned** from near-black-and-ultraviolet to a deep-navy command centre:
+`#0c1018` ground, `#121826` panels, a mid-blue primary, cool blue-grey text, amber warning and
+a fresher green success, with a blue-led chart ramp. Light mode is untouched. Every measured
+contrast ratio in the file was re-measured rather than re-stated, and the palette clears the
+same 96-axis WCAG gate and the three-dichromacy chart-separation gate as before.
+
+
 **A landing dashboard that read as five stacked bands.** The Cyber Defence Center put its
 widest instrument — the noise-reduction flow — below the fold in a second grid, kept its
 time controls at the far right of the masthead away from the title they qualify, and stacked

@@ -31,11 +31,27 @@ describe('KpiTile round-7 props', () => {
     expect(screen.getByRole('button', { name: 'How dwell is measured' })).toBeInTheDocument();
   });
 
-  it('does NOT nest a HelpTip button inside a clickable tile (no invalid nested buttons)', () => {
+  it('renders a clickable tile’s HelpTip BESIDE the trigger, never nested inside it', () => {
+    // The help used to be SUPPRESSED on a clickable tile, because the tile is itself a
+    // <button> and a nested button is invalid DOM (React logs `validateDOMNesting`, which
+    // the zero-console gate treats as a failure). Suppression was the wrong half of the
+    // trade: it deleted the explanation rather than relocating it. The trigger now renders
+    // as a SIBLING in the same cell — exactly the arrangement `breakdown` already uses —
+    // so the help is reachable by pointer, keyboard AND touch, and still contributes
+    // nothing to the tile's accessible name.
     render(<KpiTile label="Open" value="9" help="explanation" onClick={() => {}} />);
-    // The clickable tile IS a button; the help trigger is suppressed to avoid nesting.
-    expect(screen.queryByRole('button', { name: /About/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /Open/ })).toBeInTheDocument();
+
+    // Anchored names: the help trigger's own accessible name CONTAINS the tile's label
+    // ("About Open"), so a loose /Open/ matches both buttons — which is itself a small
+    // proof that the two are distinct controls rather than one nested in the other.
+    const tile = screen.getByRole('button', { name: /^Open\b/ });
+    const help = screen.getByRole('button', { name: 'About Open' });
+    expect(help).toBeInTheDocument();
+    // The load-bearing half: present, but NOT inside the trigger.
+    expect(tile.contains(help)).toBe(false);
+    expect(tile.querySelector('button')).toBeNull();
+    // Still one cell: they share a common ancestor that is not the document.
+    expect(help.closest('div')?.parentElement).toBe(tile.parentElement);
   });
 
   it('renders the decorative sparkline slot ONLY when ≥5 points are supplied', () => {

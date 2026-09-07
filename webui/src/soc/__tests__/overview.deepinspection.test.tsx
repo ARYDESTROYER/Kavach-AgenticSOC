@@ -1,17 +1,34 @@
 /**
  * Overview → the KPI DEEP-INSPECTION panel (`KpiDrilldownPanel`).
  *
+ * The panel is a Radix MODAL — `<DialogContent role="dialog" aria-modal="true">` portalled
+ * to `document.body`, over a scrim, with focus trapped. It used to be a docked, non-modal
+ * `<section>` read alongside the strip; that decision was reversed, and the specs that
+ * described a "disclosure" were rewritten with it rather than deleted. Two consequences run
+ * through every test below and are worth stating once:
+ *
+ *   - `getByTestId` still reaches the panel through the portal, but `getByRole` for
+ *     anything OUTSIDE the top layer does not: Radix `aria-hidden`s the rest of the page.
+ *   - `body { pointer-events: none }` while a layer is open, so a tile behind the scrim is
+ *     unclickable and user-event THROWS on it. Metric switching therefore goes through the
+ *     in-panel switcher pill, which is inside the layer, and which is the affordance a real
+ *     operator has for the same act.
+ *
  * The panel grew a metric switcher, a block of stat cards, a records table with a
  * detection-source facet, and a CSV export. This file pins the parts of that growth that
  * are about not lying and not losing the operator's place:
  *
  *   1. SWITCHING is a re-point, never a close. The operator is inside the panel comparing
  *      populations; closing it under them would throw away their filters and their place.
+ *      Behind a scrim the switcher is the ONLY way to compare, so it is load-bearing.
  *   2. Their free text SURVIVES the switch (it is always an explicit act, and it is the
  *      narrowing most worth holding across populations) while PAGING restarts, because
  *      page four of the previous population indexes nothing in the new one.
- *   3. Focus lands on the panel HEADING after a switch — a screen-reader user has to hear
- *      WHAT they are now reading before they hear how to narrow it.
+ *   3. Focus lands on the panel HEADING — on open and again after a switch — because a
+ *      screen-reader user has to hear WHAT they are reading before they hear how to narrow
+ *      it. It is TRAPPED while the panel is open and RETURNED to the tile that opened it
+ *      when the panel closes, by Escape and by the panel's own Close alike: a focus trap is
+ *      a real cost, and the return is what pays for it.
  *   4. The severity facet speaks the PRODUCT's five bands. No vendor priority ladder
  *      (`P0`…`P3`) may leak into the panel: this suite is vendor-agnostic and the two
  *      ladders do not even have the same number of rungs.
@@ -19,12 +36,14 @@
  *      plus the reason — never a zero. "Nothing here is acknowledged" and "zero
  *      acknowledged" are different claims.
  *   6. A page the store could not PROVE complete is called a lower bound, never complete.
- *   7. All of it stays axe-clean with the panel open.
+ *   7. All of it stays axe-clean with the panel open, and the POPULATION sentence is the
+ *      dialog's `aria-describedby` target — so opening the panel announces which
+ *      population is being listed rather than dangling at a missing id.
  *
  * Offline: the api and the posture fetch are mocked; read-only, nothing here reaches #3.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
@@ -230,6 +249,11 @@ describe('Overview — KPI deep-inspection panel', () => {
     const panel = screen.getByTestId('kpi-drilldown');
     expect(panel).toHaveAttribute('data-kpi', 'total-cases');
     expect(screen.getByTestId('kpi-drilldown-heading')).toHaveTextContent('Total Cases · details');
+    // The heading is the dialog's accessible NAME, not merely a styled line of text.
+    expect(panel).toHaveAttribute(
+      'aria-labelledby',
+      screen.getByTestId('kpi-drilldown-heading').id,
+    );
 
     const switcher = screen.getByTestId('kpi-drilldown-metrics');
     // Every strip metric is reachable from inside the panel, and exactly one is current.
@@ -245,20 +269,42 @@ describe('Overview — KPI deep-inspection panel', () => {
 
     await userEvent.click(screen.getByTestId('kpi-drilldown-metric-open-cases'));
 
-    // Still open — the disclosure was re-pointed, not torn down and rebuilt.
+    // Still open — the panel was re-pointed, not torn down and rebuilt. One dialog, one
+    // layer: a remount would have flashed the scrim and thrown away the operator's place.
     await waitFor(() =>
       expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'open-cases'),
     );
     expect(screen.getAllByTestId('kpi-drilldown')).toHaveLength(1);
     expect(screen.getByTestId('kpi-drilldown-heading')).toHaveTextContent('Open Cases · details');
-    // The population sentence moved with it, so the panel cannot describe the old cohort.
-    expect(screen.getByTestId('kpi-drilldown')).toHaveTextContent(/not filtered by the window/i);
-    // And the expanded tile moved too: exactly one trigger claims the panel.
-    expect(screen.getByTestId('kpi-open-cases')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByTestId('kpi-total-cases')).toHaveAttribute('aria-expanded', 'false');
+    // The population sentence moved with it, so the panel cannot describe the old cohort —
+    // and it is the node a screen reader reads out on open, so it must stay the DESCRIBED
+    // one rather than merely be present somewhere in the subtree.
+    const population = screen.getByTestId('kpi-drilldown-population');
+    expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute(
+      'aria-describedby',
+      population.id,
+    );
+    expect(population).toHaveTextContent(/not filtered by the window/i);
+
+    // The tile is a DIALOG TRIGGER now, not a disclosure: it advertises the layer it opens
+    // and never claims an expanded state, because the panel it would "control" does not
+    // exist while it is closed and is portalled out of the tile's tree when it does.
+    for (const id of ['kpi-open-cases', 'kpi-total-cases']) {
+      const trigger = screen.getByTestId(id);
+      expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(trigger).not.toHaveAttribute('aria-expanded');
+      expect(trigger).not.toHaveAttribute('aria-controls');
+    }
+    // "Exactly one metric claims the panel" is carried by the panel itself now: one dialog
+    // in the document, pointed at one metric, with one pressed switcher pill.
+    expect(document.body.querySelectorAll('[data-testid="kpi-drilldown"]')).toHaveLength(1);
     expect(screen.getByTestId('kpi-drilldown-metric-open-cases')).toHaveAttribute(
       'aria-pressed',
       'true',
+    );
+    expect(screen.getByTestId('kpi-drilldown-metric-total-cases')).toHaveAttribute(
+      'aria-pressed',
+      'false',
     );
   });
 
@@ -316,6 +362,82 @@ describe('Overview — KPI deep-inspection panel', () => {
     expect(switchTo).not.toHaveFocus();
     expect(screen.getByTestId('kpi-drilldown-search')).not.toHaveFocus();
     expect(heading).toHaveAttribute('tabindex', '-1');
+
+    // …and the journey onwards stays INSIDE the layer. A focus trap is the real cost the
+    // modal contract accepts (the operator can no longer tab on into the page behind it),
+    // so it is asserted rather than assumed: tabbing off the heading must land on another
+    // panel control, never on a strip tile behind the scrim.
+    await userEvent.tab();
+    expect(screen.getByTestId('kpi-drilldown').contains(document.activeElement)).toBe(true);
+  });
+
+  // ------------------------------------------------------------------ D3b ---
+  /**
+   * The two dismissal behaviours the modal contract now owns outright: Radix's
+   * `DismissableLayer` owns Escape (the hand-rolled containment guard the docked panel had
+   * to carry is retired with it), and focus comes back to the exact tile the operator left
+   * — the mitigation that pays for the trap D3 just pinned. Both close paths are exercised,
+   * because they run through different code and only one of them goes through Radix.
+   *
+   * The return is deliberately NOT asserted synchronously. `FocusScope` dispatches its
+   * unmount autofocus inside a `setTimeout(…, 0)`, and a `.focus()` from the parent in the
+   * same tick would be bounced straight back into the still-mounted trap and then dropped
+   * on `<body>`. The panel restores from `onCloseAutoFocus` instead, so this waits.
+   */
+  async function settleFocusReturn() {
+    // The tile's hover card opens on FOCUS behind an open delay, so the return arms a timer
+    // the test must let resolve — inside `act`, or its state update lands mid-assertion in
+    // the next test and the strict console gate fails a suite that passed.
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 400);
+      });
+    });
+  }
+
+  it('closes on Escape and hands focus back to the tile that opened it', async () => {
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    const tile = await openPanel('kpi-total-cases');
+    await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+    // Radix's built-in top-right X is suppressed (`hideClose`), so there is exactly ONE
+    // close control. A stray second one would make every `name: /close/i` query ambiguous
+    // and, being a `DialogClose`, would drop focus on `<body>`: this panel opens from state
+    // rather than from a `DialogTrigger`, so Radix has no trigger to restore to. Anchored,
+    // not `/close/i`: the switcher offers a "Resolved / Closed" metric, and a substring
+    // match would count it and pass for the wrong reason.
+    expect(
+      within(screen.getByTestId('kpi-drilldown')).getAllByRole('button', { name: /^close$/i }),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    });
+    await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+    await waitFor(() => expect(tile).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+    // …and the page it was covering is readable and operable again.
+    expect(screen.getByTestId('kpi-strip').closest('[aria-hidden="true"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+    await settleFocusReturn();
+  });
+
+  it('closes on its own Close control and returns focus the same way', async () => {
+    renderOverview();
+    await screen.findByTestId('page-hero');
+    const tile = await openPanel('kpi-total-cases');
+    await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
+
+    // The second close path, measured rather than assumed to behave like the first: it
+    // runs `onClose` directly instead of through `DismissableLayer`, and it is the one a
+    // mouse operator actually uses.
+    await userEvent.click(screen.getByTestId('kpi-drilldown-close'));
+    await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+    await waitFor(() => expect(tile).toHaveFocus());
+    expect(screen.getByTestId('kpi-strip').closest('[aria-hidden="true"]')).toBeNull();
+    expect(document.body.style.pointerEvents).toBe('');
+    await settleFocusReturn();
   });
 
   // ------------------------------------------------------------------- D4 ---
@@ -453,15 +575,34 @@ describe('Overview — KPI deep-inspection panel', () => {
     );
     await openPanel('kpi-total-cases');
     // Non-vacuous: the audit below must actually contain the panel's table, switcher and
-    // stat block.
+    // stat block, and the open layer itself.
     expect(screen.getByTestId('kpi-drilldown-rows')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-drilldown-metrics')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-drilldown-stats')).toBeInTheDocument();
+    expect(document.body.querySelector('[role="dialog"][aria-modal="true"]')).not.toBeNull();
+
+    // EXACTLY ONE scroll region, with the row table inside it. The nested scroller this
+    // panel used to carry (a `max-h-80` on the table) is the defect the fixed-height shell
+    // removed: two scrollports pin the sticky `<thead>` to a box the operator is not
+    // looking at, and a re-introduction would be invisible to every other assertion here.
+    expect(screen.getAllByTestId('kpi-drilldown-scroll')).toHaveLength(1);
+    expect(screen.getByTestId('kpi-drilldown-scroll')).toContainElement(
+      screen.getByTestId('kpi-drilldown-rows'),
+    );
 
     // `document.body` rather than the container, so a control that portals out of the
-    // panel (every Radix Select here does) is inside the audited tree too.
+    // panel (every Radix Select here does) — and the panel itself, which is portalled —
+    // is inside the audited tree too.
     expect(await axe(document.body)).toHaveNoViolations();
-    // The panel is a disclosure read alongside the strip, so nothing behind it is inerted.
-    expect(container.querySelector('[inert]')).toBeNull();
+
+    // The panel is a MODAL. Radix hides the rest of the page with `aria-hidden` (through
+    // `aria-hidden`'s `hideOthers`) and NEVER sets the `inert` attribute — the
+    // `querySelector('[inert]')` assertion that used to stand here was vacuous for that
+    // reason, and its comment ("nothing behind it is inerted") stated the opposite of the
+    // contract. The positive shape is the one the case-sheet spec already uses.
+    expect(screen.getByTestId('kpi-strip').closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(document.body.style.pointerEvents).toBe('none');
+    // …and the panel really is portalled out of the render container.
+    expect(container.querySelector('[data-testid="kpi-drilldown"]')).toBeNull();
   });
 });

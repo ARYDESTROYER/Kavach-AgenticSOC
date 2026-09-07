@@ -236,12 +236,14 @@ describe('CaseManager', () => {
       'min-h-0',
       'w-auto',
       'sm:-mx-2',
-      'lg:-mx-4',
       'xl:min-h-[600px]',
-      '2xl:-mx-8',
     );
     expect(manager.className.split(/\s+/)).not.toContain('min-h-[600px]');
     expect(manager.className.split(/\s+/)).not.toContain('w-full');
+    // The bleed tracks the shell's now-FLAT gutter. The old ladder steps would over-bleed
+    // and push the board out of the shell's `overflow-x-hidden` main at >=1024px.
+    expect(manager.className.split(/\s+/)).not.toContain('lg:-mx-4');
+    expect(manager.className.split(/\s+/)).not.toContain('2xl:-mx-8');
 
     const splitFrame = manager.firstElementChild as HTMLElement;
     expect(splitFrame).toHaveClass(

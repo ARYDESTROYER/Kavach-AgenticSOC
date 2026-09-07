@@ -104,7 +104,14 @@ export const HUMAN_VS_AI_HELP =
   'agent-closed case that a human later acknowledges or re-tags moves into the human ' +
   'share. System covers deterministic routing plus older cases that recorded no ' +
   'decider, and operator "declared benign" policy closes are excluded entirely. ' +
-  'Shares are of closed cases in this window and always add up to 100%.';
+  'Shares are of closed cases in this window and always add up to 100%. ' +
+  // Relocated from the share line, where it was competing with the bucket granularity.
+  'Trend buckets are keyed by case ARRIVAL time, not close time. ' +
+  // ALSO kept inline below, deliberately. This is the AGENTS.md §3 separation of
+  // recommendation from close authority, and it has already been relocated once; a
+  // reader who never opens this popover still has to see it.
+  'Advisory only — the agent recommends; the deterministic case manager decides. This ' +
+  'dashboard never influences that.';
 
 /** Band identity: key, short label, and the series colour it shares with the chart. */
 interface BandDef {
@@ -288,14 +295,17 @@ export function HumanVsAiCard({
             {unavailableReason}
           </p>
         )}
+        {/* `· by case-arrival bucket` moved to the help popover; `{windowLabel}` did NOT.
+            It names the chart's BUCKET GRANULARITY ("last 24 hours · 1h buckets"), which is
+            stated nowhere else on this card and cannot be inferred from the bars. */}
         <p className="text-2xs text-muted-foreground">
-          Share of closed cases · by case-arrival bucket · {windowLabel}
+          Share of closed cases · {windowLabel}
           {truncated && !stale ? ' · bounded sample, shares unavailable' : ''}
         </p>
         {typeof alertsIngested === 'number' && Number.isFinite(alertsIngested) ? (
           <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-alerts">
-            Ingest context: {fmtNumber(alertsIngested)} alerts ingested (an ingest-hour tally, not
-            this case cohort).
+            {fmtNumber(alertsIngested)} alerts ingested · ingest-hour tally, not this case
+            cohort.
           </p>
         ) : null}
         <p className="text-2xs text-muted-foreground">

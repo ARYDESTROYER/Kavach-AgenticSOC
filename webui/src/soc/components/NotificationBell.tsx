@@ -8,7 +8,11 @@
  *     (GET /api/notifications/inbox), each rendered as PLAIN text;
  *   - offers "Mark all read" (POST …/read-all) and a "View all" link that routes to
  *     the in-app Inbox page (PageId 'inbox') — NOT to any item's source-controlled
- *     `url` (#9: never follow attacker-influenceable hrefs).
+ *     `url` (#9: never follow attacker-influenceable hrefs);
+ *   - pins the shell-derived Agent-health degradations above the inbox list (Round-12),
+ *     replacing the Cyber Defence Center's dashboard warning strip. The bell does NOT
+ *     fetch them: the shell owns the hook and passes the result down, so the bell stays
+ *     provider-free and no new backend call or permission is introduced.
  *
  * SECURITY (#9): item `title`/`body`/`category`/`severity` originate from
  * cases/sources/operator text and are UNTRUSTED — they are rendered as plain text,
@@ -26,7 +30,14 @@
  */
 import * as React from 'react';
 import { useEventStream } from '@/lib/useEventStream';
-import { Bell, CheckCheck, Inbox as InboxIcon, AlertTriangle, LoaderCircle } from 'lucide-react';
+import {
+  Bell,
+  CheckCheck,
+  Inbox as InboxIcon,
+  AlertTriangle,
+  ArrowRight,
+  LoaderCircle,
+} from 'lucide-react';
 import { Button } from '@/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { ScrollArea } from '@/ui/scroll-area';
@@ -37,7 +48,14 @@ import { humanizeAge, humanizeToken } from '@/lib/format';
 import { ApiError } from '@/lib/api';
 import { LoadingState } from '@/design-system';
 import { semanticIcon, type SeverityKey } from './palette';
+// TYPE-ONLY (elided at build): importing the VALUE side of health-diagnostics-state would
+// drag `useCan` -> `useAuth` into the bell, and the bell is rendered provider-free by its
+// own specs. The shell owns the hook; the bell only receives its result.
+import type { HealthDegradation } from './health-diagnostics-state';
 import type { Navigate } from '../router';
+
+/** Stable empty default so a bell with no degradations never re-renders on identity. */
+const EMPTY_DEGRADATIONS: HealthDegradation[] = [];
 import { isActiveJobStatus, JOBS_CHANGED_EVENT } from '../jobs/jobs';
 import {
   fetchActiveJobCount,
@@ -242,17 +260,61 @@ const InboxRow: React.FC<{ item: InboxItem }> = ({ item }) => {
   );
 };
 
+/**
+ * One Agent-health degradation, rendered as a pinned row above the inbox.
+ *
+ * Shape-not-colour (see SEVERITY_TEXT above): the warning triangle plus an sr-only
+ * severity word carry the state, so the row never depends on the tint alone. The
+ * backend-supplied `label`/`detail` are UNTRUSTED (#9) and are rendered as PLAIN text
+ * nodes — never into an `href`/`src`.
+ */
+const HealthRow: React.FC<{ signal: HealthDegradation }> = ({ signal }) => (
+  <li className="flex min-w-0 items-start gap-2" data-testid={`health-degradation-${signal.id}`}>
+    <AlertTriangle
+      className={cn(
+        'mt-0.5 size-3.5 shrink-0',
+        signal.severity === 'critical' ? 'text-critical-text' : 'text-warning-text',
+      )}
+      aria-hidden
+    />
+    <span className="sr-only">{signal.severity === 'critical' ? 'Critical' : 'Warning'}: </span>
+    <span className="min-w-0 flex-1">
+      <span className="block text-xs font-medium text-foreground">{signal.label}</span>
+      {signal.detail ? (
+        <span className="mt-0.5 block text-2xs text-muted-foreground">{signal.detail}</span>
+      ) : null}
+    </span>
+  </li>
+);
+
 export interface NotificationBellProps {
   /** Navigate to a page (the bell routes to the Inbox page id). */
   onNavigate: Navigate;
   className?: string;
+  /**
+   * Client-derived Agent-health degradations, hoisted into the SHELL so the bell stays
+   * provider-free (it is rendered in isolation by its own specs, where `useAuth` — and
+   * therefore the RBAC self-gate inside `useHealthDiagnosticsData` — would throw).
+   * Degradations only: an unknown/unmeasured signal must never reach the badge.
+   */
+  healthDegradations?: HealthDegradation[];
 }
 
 /**
  * The mounted-once top-bar bell. Owns its own poll + dropdown state. Safe when auth
  * is off / the inbox is unavailable: it shows a clean, empty, quiet bell.
+ *
+ * AGENT HEALTH (Round-12): the Cyber Defence Center's degradation strip moved here, so a
+ * healthy deployment spends ZERO dashboard pixels on it and a degraded one is visible from
+ * every route rather than only from Overview. The section is PINNED outside the inbox
+ * `ScrollArea` so a degradation can never scroll away behind the notification list, and the
+ * trigger's `aria-label` carries the state because the badges are `aria-hidden`.
  */
-export function NotificationBell({ onNavigate, className }: NotificationBellProps) {
+export function NotificationBell({
+  onNavigate,
+  className,
+  healthDegradations = EMPTY_DEGRADATIONS,
+}: NotificationBellProps) {
   const [open, setOpen] = React.useState(false);
   const [items, setItems] = React.useState<InboxItem[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -313,7 +375,13 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
     onNavigate('inbox');
   }, [onNavigate]);
 
+  const goEffectiveness = React.useCallback(() => {
+    setOpen(false);
+    onNavigate('metrics', { tab: 'effectiveness' });
+  }, [onNavigate]);
+
   const badge = badgeText(unread);
+  const degraded = healthDegradations.length > 0;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -322,8 +390,11 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
           variant="ghost"
           size="icon"
           className={cn('relative h-8 w-8', className)}
+          // Every badge below is `aria-hidden` (the label carries the state), so the
+          // health marker MUST be spelled out here too — otherwise a screen-reader user
+          // gets nothing at all for a safety state (WCAG 4.1.2).
           aria-label={
-            `Notifications, ${unread > 0 ? `${unread} unread` : 'none unread'}, ${activeJobs} active job${activeJobs === 1 ? '' : 's'}`
+            `Notifications, ${unread > 0 ? `${unread} unread` : 'none unread'}, ${activeJobs} active job${activeJobs === 1 ? '' : 's'}${degraded ? ', agent health needs attention' : ''}`
           }
         >
           <Bell className="h-4 w-4" aria-hidden />
@@ -346,6 +417,20 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
               aria-hidden
             >
               {badgeText(activeJobs)}
+            </span>
+          ) : null}
+          {/* Third trigger marker (unread = top-right, jobs = bottom-left, health =
+              bottom-right). Same chip geometry as the jobs badge, warning tint, and a
+              GLYPH rather than a count: the number of degraded signals is not a quantity
+              an operator acts on. `aria-hidden` like its siblings — the trigger's
+              `aria-label` above carries the state. */}
+          {degraded ? (
+            <span
+              className="absolute -bottom-0.5 -right-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-warning px-[3px] text-2xs font-semibold leading-none text-warning-foreground"
+              data-testid="notification-bell-health-marker"
+              aria-hidden
+            >
+              <AlertTriangle className="size-2.5" />
             </span>
           ) : null}
         </Button>
@@ -371,6 +456,42 @@ export function NotificationBell({ onNavigate, className }: NotificationBellProp
           </button>
         </div>
         <Separator />
+
+        {/* PINNED — a sibling of the inbox scroller, never a child of it, so a degradation
+            can never scroll away behind the notification list. The window is FIXED at 24h
+            because the shell (unlike the old dashboard host) has no time range of its own,
+            and the auto-close verdict this reads IS window-scoped — so the header states
+            the window rather than implying the operator's current one. */}
+        {degraded ? (
+          <section
+            aria-labelledby="notification-bell-health-title"
+            data-testid="health-degradation-section"
+            className="shrink-0 border-b border-warning/30 bg-warning/5 px-3 py-2"
+          >
+            <h3
+              id="notification-bell-health-title"
+              className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-warning-text"
+            >
+              <AlertTriangle className="size-3" aria-hidden />
+              Agent health · last 24 hours
+            </h3>
+            <ul className="mt-1.5 space-y-1.5">
+              {healthDegradations.map((signal) => (
+                <HealthRow key={signal.id} signal={signal} />
+              ))}
+            </ul>
+            {/* The one canonical drill-through, kept verbatim from the retired dashboard
+                strip; it additionally closes the popover, as every other bell action does. */}
+            <button
+              type="button"
+              onClick={goEffectiveness}
+              className="mt-1.5 inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-warning-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              View effectiveness
+              <ArrowRight className="size-3.5" aria-hidden />
+            </button>
+          </section>
+        ) : null}
 
         <ScrollArea className="max-h-80">
           <div className="p-1.5">

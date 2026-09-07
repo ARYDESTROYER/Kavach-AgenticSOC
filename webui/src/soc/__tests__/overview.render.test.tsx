@@ -257,7 +257,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       expect(within(strip).queryByTestId(retired)).toBeNull();
     }
     // EXACTLY 5 hero tiles.
-    expect(strip.querySelectorAll('[data-testid^="kpi-"]')).toHaveLength(5);
+    // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile now also
+    // carries a decorative affordance mark (`kpi-<id>-affordance`) and may carry a
+    // partition (`kpi-<id>-breakdown`), so a prefix count answers a different question
+    // than the one this test asks — and answering it by loosening the number would have
+    // stopped proving there are exactly five tiles at all.
+    expect(
+      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"]):not([data-testid*="-breakdown"])'),
+    ).toHaveLength(5);
     // Spend is not on the strip.
     expect(within(strip).queryByTestId('kpi-llm-spend')).toBeNull();
 
@@ -265,11 +272,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // `quality.total_cases` (3) and NOT the bounded case page (3 rows).
     const totalCases = within(screen.getByTestId('kpi-total-cases'));
     expect(totalCases.getByText('4')).toBeInTheDocument();
-    expect(totalCases.getByText('Arrivals in this window · policy-closed included')).toBeInTheDocument();
+    expect(totalCases.getByText('Window arrivals · policy-closed included')).toBeInTheDocument();
     // Total Critical = the SERVER band tally, not a band counted over the page.
     expect(within(screen.getByTestId('kpi-total-critical')).getByText('1')).toBeInTheDocument();
+    // `· counted server-side` moved to the tile's help popover; the BAND NAME stays inline,
+    // because it is derived from the severity ladder and is designed to be able to disagree
+    // with the tile's literal label.
     expect(
-      within(screen.getByTestId('kpi-total-critical')).getByText('Critical band · counted server-side'),
+      within(screen.getByTestId('kpi-total-critical')).getByText('Critical band'),
     ).toBeInTheDocument();
     // Open Cases = the window-EXEMPT stock (5), which is deliberately LARGER than the
     // 4-case window cohort — proof it is not being window-filtered — and its sub says
@@ -279,20 +289,30 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(openCases.getByText('Open now · not window-filtered')).toBeInTheDocument();
     // False-positive rate reads the server quality rate (0.5 → "50%").
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('50%')).toBeInTheDocument();
+    // The sub is GONE, not moved: "Closed as false positive" only restated the label. What
+    // the tile actually needed explaining — that the denominator is verdicted cases, not
+    // every case — is in its help popover instead.
     expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).getByText('Closed as false positive'),
-    ).toBeInTheDocument();
+      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('Closed as false positive'),
+    ).toBeNull();
     // Resolved / Closed = TERMINAL cases (1), not the agent-only auto-closed subset.
     const resolved = within(screen.getByTestId('kpi-resolved-closed'));
     expect(resolved.getByText('1')).toBeInTheDocument();
-    expect(resolved.getByText('Reached a terminal state')).toBeInTheDocument();
+    // Likewise a tautology of the label, and likewise deleted rather than shortened.
+    expect(resolved.queryByText('Reached a terminal state')).toBeNull();
     // DENSITY REGRESSION GUARD. The landing strip runs `density="compact"` because it
     // heads a page that must also seat the flow diagram, the case queue and the timing
-    // pair. These three tokens are exactly what compact swaps on a strip tile that does
-    // NOT render a breakdown partition (`kpi-total-cases` is such a tile — only
-    // `kpi-resolved-closed` carries one, and there the min-height moves to the wrapper).
-    // Update this triple if density changes; never delete it.
-    expect(screen.getByTestId('kpi-total-cases')).toHaveClass('min-h-0', 'px-3', 'py-3');
+    // pair. `px-3 py-3` is what compact swaps on a strip tile's trigger.
+    //
+    // `min-h-0` is asserted on the CELL ROOT rather than the trigger. Every strip tile now
+    // has one: the trigger is a <button>, so anything that must sit beside it rather than
+    // inside it — the help popover trigger (a nested button is invalid DOM) and the
+    // partition (ARIA discards list semantics inside a button) — forces a wrapper, and the
+    // wrapper is then the cell and owns the cell's height. Update these tokens if density
+    // changes; never delete them.
+    const totalCasesTrigger = screen.getByTestId('kpi-total-cases');
+    expect(totalCasesTrigger).toHaveClass('px-3', 'py-3');
+    expect(totalCasesTrigger.parentElement).toHaveClass('min-h-0');
   });
 
   it('pairs every KPI numeral with the honest denominator it is a share of', async () => {
@@ -756,12 +776,16 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).queryByText('Loading 7 days'),
     ).toBeNull();
+    // Both tiles' captions were retired as tautologies, so "the subs return to their
+    // captions" is now proven by the LOADING caption clearing rather than by a caption
+    // reappearing. The line above already asserts that; these two assert the tiles are
+    // rendering their real numerals again, which is the same claim without the dead copy.
     expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).getByText('Closed as false positive'),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId('kpi-resolved-closed')).getByText('Reached a terminal state'),
-    ).toBeInTheDocument();
+      within(screen.getByTestId('kpi-resolved-closed')).queryByText('Loading 7 days'),
+    ).toBeNull();
+    // Queried from `screen`, not from within the tile: the mark is a SIBLING of the
+    // trigger button (it sits in the cell's corner overlay), not a descendant of it.
+    expect(screen.getByTestId('kpi-resolved-closed-affordance')).toBeInTheDocument();
 
     // Even if the aborted transport settles late, its 24h data remains discarded.
     requests[1].resolve({

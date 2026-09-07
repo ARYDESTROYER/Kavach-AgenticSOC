@@ -2349,8 +2349,16 @@ export function NoiseFunnel({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
+          {/* SHORTENED inline, not deleted. The two `data-disclosure-surface` spans and
+              their container-query classes must keep SHIPPING — the specs assert
+              `not.toHaveClass('hidden')`, never `toBeNull()`, because which surface is
+              visible is decided by CSS at the container width, not by React. The short form
+              still NAMES the square-root scale: a "compressed" scale the reader cannot
+              identify is not a disclosure, and 4% of ingested really does draw at ~20%
+              thickness. Everything that is true regardless of which surface rendered —
+              what the labels and percentages mean — moved to the popover beside it. */}
           <p
-            className="text-2xs leading-relaxed text-muted-foreground"
+            className="flex min-w-0 flex-wrap items-center gap-x-1 text-2xs leading-relaxed text-muted-foreground"
             data-testid="noise-share-disclosure"
           >
             {simpleFlowDrawn ? (
@@ -2358,8 +2366,8 @@ export function NoiseFunnel({
                 data-disclosure-surface="flow"
                 className={cn(simpleRailIsFallback && 'hidden @[38rem]/noise:inline')}
               >
-                Filled ribbons show the alert → cluster → case reduction, and thickness uses
-                a compressed display scale.{' '}
+                Filled ribbons show the alert → cluster → case reduction. Ribbon thickness
+                uses a compressed (√) display scale.{' '}
               </span>
             ) : null}
             {simpleRailRendered ? (
@@ -2370,10 +2378,19 @@ export function NoiseFunnel({
                 The aligned stage rail lists this window&apos;s stages in flow order.{' '}
               </span>
             ) : null}
-            Labels are the exact counts and units, and each percentage is that stage&apos;s
-            share of the stage it came from — clusters of alerts ingested, cases of clusters,
-            the case split of cases opened, and human closure of escalated cases. The first
-            stage is the baseline, so it shows an em dash.
+            <HelpTip
+              alwaysPopover
+              label="How to read these counts and percentages"
+              text={
+                "Labels are the exact counts and units. Each percentage is that stage's " +
+                'share of the stage it came from — clusters of alerts ingested, cases of ' +
+                'clusters, the case split of cases opened, and human closure of escalated ' +
+                'cases. The first stage is the baseline, so it shows an em dash. Ribbon ' +
+                'thickness is a square-root scale, so a thin ribbon is thicker than its ' +
+                'share: 4% of alerts ingested draws at about 20% of the full height.'
+              }
+              className="align-middle"
+            />
           </p>
           {validOpenCases ? (
             <button

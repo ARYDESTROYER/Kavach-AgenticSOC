@@ -69,9 +69,25 @@ describe("Console route visual standard", () => {
     const manager = source("soc/pages/CaseManager.tsx");
     expect(manager).toContain("<PageContainer");
     expect(manager).toContain('variant="fluid"');
-    expect(manager).toContain("w-auto sm:-mx-2 lg:-mx-4");
-    expect(manager).toContain("2xl:-mx-8");
+    expect(manager).toContain("w-auto sm:-mx-2");
     expect(manager).toContain('role="separator"');
+    // The bleed no longer steps with the old gutter ladder, so it must not re-grow one.
+    expect(manager).not.toContain("lg:-mx-4");
+    expect(manager).not.toContain("2xl:-mx-8");
+  });
+
+  it("keeps the shell gutter and the Case Manager bleed a MATCHED PAIR", () => {
+    // These two strings are the whole contract: the bleed widens the board back out of the
+    // shell gutter to a constant 16px inset at every width. Tuned independently they drift,
+    // and at >=1536px the board overflows `<main class="… overflow-x-hidden">` by 8px/side.
+    // jsdom cannot see either (no layout, no media queries), so the source strings ARE the
+    // proof — no other gate covers this.
+    expect(source("soc/AppShell.tsx")).toContain(
+      "const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';",
+    );
+    expect(source("soc/pages/CaseManager.tsx")).toContain(
+      'className="h-[calc(100dvh-7rem)] min-h-0 w-auto sm:-mx-2 xl:min-h-[600px]"',
+    );
 
     const home = source("soc/pages/Home.tsx");
     expect(home).toContain("<Overview");

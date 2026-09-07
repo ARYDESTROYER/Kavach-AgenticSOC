@@ -93,7 +93,10 @@ describe('Overview — Total Critical follows the ladder, not a literal', () => 
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
     expect(within(tile).queryByText('2')).toBeNull();
     expect(within(tile).getByText('82% of 11')).toBeInTheDocument();
-    expect(within(tile).getByText('High band · counted server-side')).toBeInTheDocument();
+    // `· counted server-side` moved to the tile's help popover. The BAND NAME must stay
+    // inline and must stay a template literal: the label says "Total Critical" while the
+    // ladder's real top band here is High, and the two are designed to be able to disagree.
+    expect(within(tile).getByText('High band')).toBeInTheDocument();
     expect(within(tile).queryByText(/Critical band/)).toBeNull();
 
     // The panel the tile discloses, and the list it deep-links to, agree with it.

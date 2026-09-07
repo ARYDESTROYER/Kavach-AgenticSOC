@@ -5,7 +5,7 @@
  * new app entry at cutover (NOT by the legacy EUI entry), so the legacy app is
  * untouched until then. Two first-class themes:
  *   - light  (:root)          — clean, professional light SOC console
- *   - dark   (.dark on <html>) — near-black + ultraviolet command center
+ *   - dark   (.dark on <html>) — deep-navy command center (blue-led accents)
  * Branding can override --primary / --accent at runtime (see branding wiring).
  */
 @tailwind base;
@@ -162,64 +162,67 @@
 
   .dark {
     /* ---- Dark theme — sampled from the supplied command-center reference. ---
-       The canvas is an exact #050505 near-black; depth comes from neutral luminance
-       steps, hairlines, and an ultraviolet selection surface instead of blue haze. */
-    /* TIER 1 — reference neutral + ultraviolet ramps (bare HSL triples). */
-    --slate-1: 0 0% 2%;      --slate-2: 0 0% 4%;      --slate-3: 0 0% 7%;
-    --slate-4: 0 0% 9%;      --slate-5: 255 13% 19%;  --slate-6: 220 5% 11%;
-    --slate-7: 256 10% 30%;  --slate-8: 257 9% 40%;   --slate-9: 257 8% 48%;
-    --slate-10: 257 9% 58%;  --slate-11: 262 19% 80%; --slate-12: 15 7% 89%;
-    /* Primary ultraviolet — #cdbdfa is the exact reference accent. */
-    --blue-1: 255 30% 8%;    --blue-6: 256 31% 46%;   --blue-7: 256 42% 61%;
-    --blue-8: 256 86% 86%;   --blue-9: 256 86% 86%;   --blue-10: 256 88% 89%;
-    --blue-11: 256 90% 92%;  --blue-12: 256 100% 96%;
+       The canvas is a deep desaturated navy (#0c1018); depth comes from cool
+       luminance steps up the same navy ramp, a visible #202837 hairline, and a
+       quiet navy selection surface. The accent is a mid-bright blue, not a violet. */
+    /* TIER 1 — reference navy neutral + blue accent ramps (bare HSL triples). */
+    --slate-1: 220 35% 7%;   --slate-2: 222 36% 11%;  --slate-3: 221 33% 13%;
+    --slate-4: 220 31% 14%;  --slate-5: 219 31% 16%;  --slate-6: 219 26% 17%;
+    --slate-7: 219 22% 26%;  --slate-8: 218 19% 36%;  --slate-9: 218 17% 51%;
+    --slate-10: 220 20% 65%; --slate-11: 220 26% 80%; --slate-12: 221 32% 92%;
+    /* Primary blue — #709df0 is the reference case-link / sparkline / active-nav accent. */
+    --blue-1: 220 40% 10%;   --blue-6: 219 55% 40%;   --blue-7: 219 68% 52%;
+    --blue-8: 219 83% 73%;   --blue-9: 219 81% 69%;   --blue-10: 219 85% 76%;
+    --blue-11: 219 88% 83%;  --blue-12: 219 92% 93%;
 
     /* TIER 2 — semantic aliases (dark). Ratios MEASURED (DESIGN_STANDARD §1.2). */
-    --canvas: var(--slate-1);            /* #050505 reference canvas */
+    --canvas: var(--slate-1);            /* #0c1018 reference canvas */
     --surface: var(--slate-1);           /* shell/sidebar stay flush with canvas */
     --surface-sunken: var(--slate-1);    /* NEW — one step darker than card */
     --background: var(--slate-1);
-    --foreground: var(--slate-12);       /* #e5e2e1 — 15.8:1 on canvas */
+    --foreground: var(--slate-12);       /* #e4e8f1 — 15.57:1 on canvas, 14.47:1 on card */
 
-    --card: var(--slate-2);
+    --card: var(--slate-2);              /* #121826 panel — one clear step up from canvas */
     --card-foreground: var(--slate-12);
-    --popover: var(--slate-2);           /* near-black detached menus match command chrome */
+    /* Floating menus sit one step ABOVE the card (#161d2c vs #121826) so a popover
+       reads as detached instead of merging into the panel it opened from. */
+    --popover: var(--slate-3);
     --popover-foreground: var(--slate-12);
 
-    --primary: var(--blue-9);            /* exact #cdbdfa */
-    --primary-foreground: var(--slate-1);/* near-black on lavender, 11.9:1 */
+    --primary: var(--blue-9);            /* #709df0 — 7.04:1 on canvas */
+    --primary-foreground: var(--slate-1);/* canvas navy on blue, 7.04:1 */
     --secondary: var(--slate-3);
-    --secondary-foreground: var(--slate-11);
+    --secondary-foreground: var(--slate-11); /* #bfc8d9 — 10.50:1 on card */
     --muted: var(--slate-3);
-    --muted-foreground: var(--slate-10); /* target violet-grey, AA on #0a0a0a */
-    /* Exact #2d2a36 target selection; hover stays a quieter #171717. */
+    --muted-foreground: var(--slate-10); /* #94a0b8 cool blue-grey — 6.72:1 on card */
+    /* #1c2535 quiet navy selection; hover stays one notch below at #19202f. */
     --accent: var(--slate-5);
     --accent-foreground: var(--slate-12);
     --hover: var(--slate-4);
 
-    --border: var(--slate-6);            /* exact #1b1c1e reference hairline */
-    --border-strong: var(--slate-9);      /* structural/interactive, ≥3:1 */
+    --border: var(--slate-6);            /* #202837 cool hairline — 1.20:1 on card (decorative) */
+    --border-strong: var(--slate-9);      /* #6d7c97 structural/interactive — 4.22:1 on card */
     --input: var(--slate-9);
-    --ring: var(--blue-8);
+    --ring: var(--blue-8);               /* #81a9f3 — 7.52:1 on card, 8.09:1 on background */
 
     /* ---- 3 semantic axes (dark). *-text measured as text on card. ---------- */
     /* SEVERITY / RISK — no green (--low is BLUE); --info blue-grey. */
-    --critical: 2 68% 58%;    --critical-foreground: var(--slate-1); --critical-text: 2 68% 58%;   /* #dd524c */
-    --high:     27 81% 62%;   --high-foreground: var(--slate-1);     --high-text: 27 81% 62%;      /* #ed974f */
-    --medium:   46 74% 64%;   --medium-foreground: var(--slate-1);   --medium-text: 46 74% 64%;    /* warm reference gold */
-    --low:      221 82% 62%;  --low-foreground: var(--slate-1);      --low-text: 217 86% 70%;      /* #4e81ee / #71a4f4 */
-    --info:     217 28% 63%;  --info-foreground: var(--slate-1);     --info-text: 217 35% 72%;
-    /* STATUS — exact lime success from the reference; warning stays gold. */
-    --success: 84 56% 53%;   --success-foreground: var(--slate-1); --success-text: 84 56% 53%;   /* #94ca42 */
-    --warning: 46 74% 64%;   --warning-foreground: var(--slate-1); --warning-text: 46 74% 64%;
-    --danger:  2 68% 58%;    --danger-foreground: var(--slate-1);  --danger-text: 2 68% 58%;
+    --critical: 2 72% 64%;    --critical-foreground: var(--slate-1); --critical-text: 2 72% 64%;   /* #e56661 — 4.82:1 on its 10% wash */
+    --high:     28 81% 64%;   --high-foreground: var(--slate-1);     --high-text: 28 81% 64%;      /* #ee9e59 — 6.93:1 on its 10% wash */
+    --medium:   41 75% 59%;   --medium-foreground: var(--slate-1);   --medium-text: 41 75% 59%;    /* #e5b348 gold — 7.68:1 on its 10% wash */
+    --low:      217 86% 70%;  --low-foreground: var(--slate-1);      --low-text: 217 86% 70%;      /* #71a3f4 — 5.95:1 on its 10% wash */
+    --info:     218 25% 66%;  --info-foreground: var(--slate-1);     --info-text: 218 25% 66%;     /* #93a3be — 5.91:1 on its 10% wash */
+    /* STATUS — the reference's fresh green success; warning stays gold. */
+    --success: 135 50% 62%;  --success-foreground: var(--slate-1); --success-text: 135 50% 62%;  /* #6ecf86 — 7.64:1 on its 10% wash */
+    --warning: 41 75% 59%;   --warning-foreground: var(--slate-1); --warning-text: 41 75% 59%;   /* aliases the medium gold */
+    --danger:  2 72% 64%;    --danger-foreground: var(--slate-1);  --danger-text: 2 72% 64%;     /* aliases critical */
 
     /* ---- Round-3 extra token set (dark values). radius/density/font-display are
        MODE-AGNOSTIC and declared ONCE in :root (they resolve on <html> in both
        modes). Only the PER-THEME tokens (tints + glass) are redeclared here. */
-    --canvas-tint: 0 0% 2%;
-    --surface-tint: 0 0% 4%;
-    --accent2: 256 86% 86%;
+    --canvas-tint: 220 35% 7%;
+    --surface-tint: 222 36% 11%;
+    --accent2: 243 78% 78%;              /* #a09bf3 — the :root indigo, lifted for the navy ground */
     /* Material-pack chrome (quiet defaults; command raises via theme.tsx). */
     --glass-tint: var(--slate-1);
     --glass-opacity: 0.96;
@@ -230,11 +233,13 @@
     --noise-outcome-opacity: 0.26;
     --noise-ribbon-stroke-opacity: 0.44;
 
-    /* ---- Chart ramp (dark): lift L, drop chroma slightly; yellow bright. */
-    --chart-1: 217 86% 70%;  --chart-2: 27 81% 62%;  --chart-3: 84 56% 53%;   --chart-4: 256 86% 86%;
-    --chart-5: 185 56% 59%;  --chart-6: 2 68% 58%;   --chart-7: 46 74% 64%;   --chart-8: 0 0% 72%;
+    /* ---- Chart ramp (dark): blue-led, then orange → green → violet → cyan → red →
+       tan → slate. All ≥3:1 on the card (worst #e56661 at 5.40:1) and ≥ the CIE JND
+       apart under all three dichromacies (worst ΔE 5.08, deuteranopia 3↔7). */
+    --chart-1: 219 81% 69%;  --chart-2: 28 81% 64%;  --chart-3: 135 50% 62%;  --chart-4: 262 75% 78%;
+    --chart-5: 190 60% 62%;  --chart-6: 2 72% 64%;   --chart-7: 40 45% 70%;   --chart-8: 218 18% 72%;
 
-    /* ---- Elevation / shadow (dark): near-black, larger + darker. */
+    /* ---- Elevation / shadow (dark): pure black, larger + darker. */
     --shadow-color: 0 0% 0%;
     --elev-1: 0 1px 2px hsl(0 0% 0% / 0.40), 0 1px 3px hsl(0 0% 0% / 0.30);
     --elev-2: 0 4px 12px -4px hsl(0 0% 0% / 0.50), 0 8px 24px -10px hsl(0 0% 0% / 0.45);
@@ -529,7 +534,7 @@
  * Identity canvas — an isolated, source-measured authentication theme.       *
  *                                                                           *
  * Login intentionally does not inherit the Console's blue/light or          *
- * ultraviolet/near-black material surfaces. It uses the current Mistral      *
+ * blue/deep-navy material surfaces. It uses the current Mistral              *
  * identity palette and geometry exactly while retaining Agentic SOC's own    *
  * mark, copy, routes, and authentication state machine. These variables are  *
  * scoped to `.login-auth-canvas`, so no Console page can inherit them.        *

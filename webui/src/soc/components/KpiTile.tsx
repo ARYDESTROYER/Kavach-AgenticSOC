@@ -1,6 +1,11 @@
 import * as React from 'react';
 import { cn } from '@/lib/cn';
-import { ArrowDownRight, ArrowUpRight, type LucideIcon } from 'lucide-react';
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  SquareArrowOutUpRight,
+  type LucideIcon,
+} from 'lucide-react';
 import { CountUp } from './CountUp';
 import { HelpTip } from './HelpTip';
 
@@ -111,20 +116,21 @@ export interface KpiTileProps {
   /** When provided the tile becomes a keyboard-accessible button. */
   onClick?: () => void;
   /**
-   * DISCLOSURE state, for the (rare) caller whose `onClick` toggles a panel rather
-   * than navigating — the KPI drill-down on the landing strip is the only one today.
+   * For the (rare) caller whose `onClick` opens a MODAL rather than navigating — the KPI
+   * drill-down on the landing strip is the only one today.
    *
-   * Both default to `undefined` and are then NOT emitted at all, so the ~14 tiles that
+   * This replaced `ariaExpanded`/`ariaControls` when that drill-down became a dialog.
+   * `aria-expanded` is a DISCLOSURE semantic and is wrong on a dialog trigger, and
+   * `aria-controls` could only ever dangle: the dialog is portalled and does not exist in
+   * the DOM while it is closed.
+   *
+   * Defaults to `undefined` and is then NOT emitted at all, so the ~14 tiles that
    * navigate, filter, or do nothing keep their exact current accessible semantics: a
-   * plain button with no expanded state. Announcing `aria-expanded="false"` on a tile
-   * that opens a different PAGE would be a lie to assistive tech, which is why this is
-   * opt-in rather than derived from `onClick`.
-   *
-   * Pass `ariaControls` ONLY while the controlled region is actually in the DOM — a
-   * dangling `aria-controls` id is an `aria-valid-attr-value` violation.
+   * plain button with no popup claim. Announcing a popup on a tile that opens a different
+   * PAGE would be a lie to assistive tech, which is why this is opt-in rather than
+   * derived from `onClick`.
    */
-  ariaExpanded?: boolean;
-  ariaControls?: string;
+  ariaHasPopup?: 'dialog';
   /**
    * Stable id for the `data-testid="kpi-<id>"` anchor. When omitted it is derived
    * from the label (slugified), so every tile is test-addressable without churn.
@@ -159,6 +165,15 @@ export interface KpiTileProps {
   help?: string;
   /** Accessible label for the help trigger (default `About <label>`). */
   helpLabel?: string;
+  /**
+   * Told when this tile's help popover opens or closes.
+   *
+   * A tile can be wrapped in a hover trend card, and the help trigger is INSIDE that
+   * wrapper — so by the time the operator reaches the `?` the card is already open, and
+   * clicking would leave two floating surfaces over one tile. The host owns both, so the
+   * host is told and stands the card down.
+   */
+  onHelpOpenChange?: (open: boolean) => void;
   /**
    * Optional PARTITION of the numeral, rendered inside the tile as labelled rows —
    * the "of which" detail behind a total (e.g. the three-way close attribution behind
@@ -286,8 +301,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       variant = 'default',
       density = 'default',
       onClick,
-      ariaExpanded,
-      ariaControls,
+      ariaHasPopup,
       testId,
       countTo,
       format,
@@ -295,6 +309,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       sparkMinPoints = 5,
       help,
       helpLabel,
+      onHelpOpenChange,
       breakdown,
       className,
     },
@@ -341,14 +356,61 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         </div>
       ) : null;
 
-    // Inline help (?) — only on the non-clickable tile (see prop doc: no nested button).
-    const helpNode =
-      help && !clickable ? (
-        <HelpTip
-          text={help}
-          label={helpLabel ?? `About ${label}`}
-          className="-my-1 text-muted-foreground/70"
+    /**
+     * Inline help (?).
+     *
+     * On a NON-clickable tile it sits inside the tile, beside the label. On a CLICKABLE
+     * tile it cannot: a `<button>` inside a `<button>` is invalid DOM (React logs a
+     * `validateDOMNesting` warning, which `npm run test:strict` treats as a failure), and
+     * ARIA would swallow it into the trigger's name anyway. So it renders as a SIBLING of
+     * the trigger in the same cell — exactly the arrangement `breakdown` already uses.
+     *
+     * `alwaysPopover` because this is where always-visible disclosure copy was RELOCATED
+     * to: a tooltip never opens on touch, and a disclosure a tablet operator cannot reach
+     * has been deleted, not tidied.
+     */
+    const helpNode = help ? (
+      <HelpTip
+        text={help}
+        label={helpLabel ?? `About ${label}`}
+        alwaysPopover
+        onOpenChange={onHelpOpenChange}
+        className={clickable ? 'text-muted-foreground/70' : '-my-1 text-muted-foreground/70'}
+      />
+    ) : null;
+    const helpIsSibling = clickable && helpNode !== null;
+
+    /**
+     * The always-visible "this opens something" mark.
+     *
+     * It replaces a strip-level sentence that told the operator, once, in prose, that the
+     * tiles were selectable. A sentence under a five-tile row is read once and then becomes
+     * furniture; a mark ON the control is read every time, and — unlike the hover card that
+     * used to carry the same promise — it reaches touch and keyboard users, who never see a
+     * hover card at all.
+     *
+     * Decorative only (`aria-hidden`): the ACCESSIBLE claim is `aria-haspopup` on the
+     * button, so the two can never disagree, and it is deliberately tied to that same prop
+     * rather than to `onClick` — a tile that navigates elsewhere must not wear a mark that
+     * promises a panel.
+     */
+    const affordanceNode =
+      ariaHasPopup === 'dialog' ? (
+        <SquareArrowOutUpRight
+          data-testid={`${kpiTestId}-affordance`}
+          className="size-3 shrink-0 text-muted-foreground/60"
+          aria-hidden
         />
+      ) : null;
+    /** Anything that must sit ON the cell but OUTSIDE the trigger button. */
+    const cellOverlay =
+      helpIsSibling || (clickable && affordanceNode) ? (
+        // `pointer-events-none` on the cluster so the decorative mark never steals a click
+        // from the trigger underneath it; the help button re-enables them for itself.
+        <div className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-0.5">
+          {helpIsSibling ? <span className="pointer-events-auto">{helpNode}</span> : null}
+          {affordanceNode}
+        </div>
       ) : null;
 
     // Scale context ("N of M" / "P% of N" / an em dash). Muted, tabular, plain text —
@@ -410,7 +472,10 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
 
     const inner = (
       <>
-        <div className="flex items-start justify-between gap-3">
+        {/* The corner overlay sits at the TOP-RIGHT, so only this row reserves space for
+            it. Reserving it on the whole trigger instead cost every sub-line ~40px and
+            ellipsized load-bearing captions such as the degraded open-stock line. */}
+        <div className={cn('flex items-start justify-between gap-3', cellOverlay && 'pr-10')}>
           <span
             className={cn(
               'inline-flex items-center gap-1 font-semibold uppercase tracking-wide',
@@ -421,7 +486,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               <Icon className={cn('h-3.5 w-3.5 shrink-0', ACCENT_TEXT[accent])} aria-hidden />
             ) : null}
             {label}
-            {helpNode}
+            {helpIsSibling ? null : helpNode}
           </span>
           {Icon && !bar && !strip ? (
             <span
@@ -458,7 +523,13 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               'block text-muted-foreground',
               strip
                 ? compact
-                  ? 'mt-1 line-clamp-1 font-mono text-2xs'
+                  ? // TWO lines on the compact strip. MEASURED: the strip's captions carry a
+                    // qualifier as well as a subject ("Window arrivals · policy-closed
+                    // included"), and at one line that clamped on every desktop below
+                    // 1920px — the widths this console is actually used at. The tile has
+                    // the room: the space under the caption was empty. Two lines is the
+                    // ceiling, so a caption still cannot push the strip's rhythm around.
+                    'mt-1 line-clamp-2 font-mono text-2xs'
                   : 'mt-1 truncate font-mono text-2xs'
                 : 'mt-2 text-xs',
               // The 4rem gutter exists ONLY to clear the absolutely-positioned strip
@@ -481,6 +552,15 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
      * height and the button drops its own bottom padding onto the sibling.
      */
     const breakdownIsSibling = clickable && breakdownNode !== null;
+    /**
+     * Does this tile need a CELL ROOT — a wrapper that is the grid cell, with the trigger
+     * inside it? Yes whenever something must render beside the trigger rather than within
+     * it: the partition (ARIA discards list semantics inside a button) or the corner
+     * overlay (a button inside a button is invalid DOM). The cell root then owns the cell's
+     * height and card chrome, so a wrapped tile never draws two borders or stacks the
+     * partition's height on top of the tile floor.
+     */
+    const needsCellRoot = breakdownIsSibling || cellOverlay !== null;
     const padX = strip ? (compact ? 'px-3' : 'px-4') : 'px-4';
     const padBottom = strip ? (compact ? 'pb-3' : 'pb-5') : 'pb-4';
     // The cell's minimum height belongs to whichever element IS the cell root, so a
@@ -491,9 +571,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     const chrome = strip ? null : 'rounded-lg border border-border bg-card';
     const base = cn(
       'relative min-w-0 overflow-hidden text-left',
-      breakdownIsSibling ? null : 'h-full',
-      breakdownIsSibling ? null : minH,
-      breakdownIsSibling ? null : chrome,
+      needsCellRoot ? null : 'h-full',
+      needsCellRoot ? null : minH,
+      needsCellRoot ? null : chrome,
       breakdownIsSibling && !strip && 'rounded-t-lg',
       strip
         ? compact
@@ -515,22 +595,21 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           ref={ref as React.Ref<HTMLButtonElement>}
           type="button"
           onClick={onClick}
-          aria-expanded={ariaExpanded}
-          aria-controls={ariaControls}
+          aria-haspopup={ariaHasPopup}
           data-testid={kpiTestId}
           className={cn(
             base,
             'block w-full transition-colors hover:bg-accent/30',
             !strip && !breakdownIsSibling && 'hover:border-primary/40',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-            breakdownIsSibling ? null : className,
+            needsCellRoot ? null : className,
           )}
         >
           {barEdge}
           {inner}
         </button>
       );
-      if (!breakdownIsSibling) return trigger;
+      if (!needsCellRoot) return trigger;
       // The <dl> sits BESIDE the trigger, inside the same cell: still visually part of
       // the tile, but a real definition list to assistive tech, and out of the
       // trigger's accessible name. The testid stays on the button — it IS the tile's
@@ -545,12 +624,15 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           )}
         >
           {trigger}
-          <div
-            data-testid={`${kpiTestId}-breakdown`}
-            className={cn('min-w-0', padX, padBottom, strip ? 'bg-transparent' : null)}
-          >
-            {breakdownNode}
-          </div>
+          {cellOverlay}
+          {breakdownIsSibling ? (
+            <div
+              data-testid={`${kpiTestId}-breakdown`}
+              className={cn('min-w-0', padX, padBottom, strip ? 'bg-transparent' : null)}
+            >
+              {breakdownNode}
+            </div>
+          ) : null}
         </div>
       );
     }

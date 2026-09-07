@@ -1,15 +1,20 @@
 /**
- * Overview — the KPI tile drill-down disclosure (behaviour).
+ * Overview — the KPI tile drill-down (behaviour).
  *
- * The a11y contract (roles, focus, Escape, Tab, hover-card suppression) lives in
- * `overview.a11y.test.tsx`. THIS file pins the parts that are about being useful and
- * being honest:
+ * The a11y contract (roles, focus, Escape, Tab, the scrim, hover-card suppression) lives
+ * in `overview.a11y.test.tsx`, and it was INVERTED when this panel became a Radix Dialog:
+ * that file is where the modal contract is stated. THIS file pins the parts that are
+ * about being useful and being honest:
  *
- *   1. PLACEMENT — the panel is a SIBLING of the KPI grid, rendered AFTER it and after
- *      the trend caption. Never a sixth child: the grid carries hand-tuned `nth-child`
- *      divider math for exactly five cells, and a sixth would silently redraw every
+ *   1. PLACEMENT — the panel is PORTALLED to `document.body`, so it is not a child or a
+ *      sibling of the KPI grid at all. That permanently settles the hazard the docked
+ *      contract had to be tested for: the grid carries hand-tuned `nth-child` divider
+ *      math for exactly five cells, and a sixth child would silently redraw every
  *      hairline on the strip.
- *   2. ONE AT A TIME — activating a second tile swaps the panel rather than stacking.
+ *   2. ONE AT A TIME — re-pointing the panel at another metric swaps it rather than
+ *      stacking. Behind the scrim the neighbouring TILES are `aria-hidden` and
+ *      unclickable, so that is done through the panel's own metric switcher — which is
+ *      why the switcher is load-bearing rather than chrome.
  *   3. POPULATION — each tile's panel lists ITS OWN population, taken off the product's
  *      own status/verdict/band vocabulary, not a client-side literal list.
  *   4. FILTER / SORT / RANGE — all three narrow or reorder in place, without navigating.
@@ -197,8 +202,26 @@ function renderOverview(onNavigate = vi.fn()) {
   };
 }
 
+/**
+ * The ONE open modal layer, asserted rather than assumed.
+ *
+ * Every interaction in this file is INSIDE that layer, which carries inline
+ * `pointer-events: auto` while it is on top — so the direct user-event API keeps working
+ * and its pointer-events guard stays meaningful. (The suites that must reach outside the
+ * layer disable that guard per-instance; see `overview.a11y.test.tsx`.)
+ */
+function openDialog(): HTMLElement {
+  const layers = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+  expect(layers).toHaveLength(1);
+  return layers[0];
+}
+
 async function openPanel(testId: string) {
   const tile = await screen.findByTestId(testId);
+  // Opening from the STRIP is only reachable while nothing is open: behind an open panel
+  // the strip is `aria-hidden` and `pointer-events: none`. Fail loudly here rather than
+  // letting user-event's pointer guard report a modal scrim as an inert control.
+  expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   await userEvent.click(tile);
   await screen.findByTestId('kpi-drilldown');
   await waitFor(() =>
@@ -209,10 +232,26 @@ async function openPanel(testId: string) {
   return tile;
 }
 
+/**
+ * Re-point the OPEN panel at another metric through the panel's OWN switcher.
+ *
+ * Clicking a neighbouring TILE is no longer a user-reachable path, and forcing it
+ * synthetically would not test this either: the pointerdown lands outside the layer, so
+ * Radix dismisses the panel and the tile's own click then re-opens it. The panel would
+ * CLOSE AND REOPEN rather than swap — remounting the fetch and double-announcing — and a
+ * call-count assertion would fail for a reason that has nothing to do with the contract.
+ */
+async function switchMetric(key: string) {
+  await userEvent.click(screen.getByTestId(`kpi-drilldown-metric-${key}`));
+  await waitFor(() =>
+    expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', key),
+  );
+}
+
 const rowText = () =>
   screen.getAllByTestId('kpi-drilldown-row').map((r) => r.textContent ?? '');
 
-describe('Overview — KPI drill-down disclosure', () => {
+describe('Overview — KPI drill-down', () => {
   beforeEach(() => {
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
@@ -232,7 +271,7 @@ describe('Overview — KPI drill-down disclosure', () => {
     });
   });
 
-  it('docks the panel AFTER the KPI grid and its caption, never inside the grid', async () => {
+  it('keeps the KPI grid at five cells and renders the panel outside the page', async () => {
     renderOverview();
     await screen.findByTestId('page-hero');
     await openPanel('kpi-total-cases');
@@ -241,43 +280,68 @@ describe('Overview — KPI drill-down disclosure', () => {
     const panel = screen.getByTestId('kpi-drilldown');
 
     // A sixth child would silently break the strip's five-cell `nth-child` divider math.
+    // That can no longer happen by accident — but the five-cell count is still the reason
+    // the panel is not rendered inline, so it stays pinned.
     expect(strip.contains(panel)).toBe(false);
     expect(strip.children).toHaveLength(5);
-    // Same parent, and strictly after the grid — DOCUMENT_POSITION_FOLLOWING.
-    expect(panel.parentElement).toBe(strip.parentElement);
-    expect(strip.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // …and after the trend caption that sits between them, so reading order matches
-    // the visual stack.
-    // Both media-variant spans of the caption ship; either one locates the <p>.
-    const caption = screen.getAllByText(/a metric for its/i)[0].closest('p') as HTMLElement;
-    expect(caption.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // …because it is portalled OUT of the page entirely, which is the real contract now.
+    // The old assertions here — same parent, DOCUMENT_POSITION_FOLLOWING after the grid
+    // and after the trend caption — were retired rather than repaired: a portal div is
+    // appended to `document.body` after the whole RTL container, so ANY portalled node
+    // trivially "follows" everything in the page and the comparison measures nothing.
+    // Reading order inside the layer is owned by the dialog and is pinned by the
+    // labelledby/describedby assertions in `overview.a11y.test.tsx`.
+    expect(panel.parentElement).not.toBe(strip.parentElement);
+    expect(strip.parentElement?.contains(panel)).toBe(false);
+    expect(panel.closest('[data-testid="page-hero"]')).toBeNull();
+    expect(document.body.contains(panel)).toBe(true);
+    // Walk to the top of the panel's own ancestor chain: it terminates at a direct child
+    // of `<body>` that holds none of the page. Written as a walk rather than a fixed
+    // parent depth so a Radix portal/guard wrapper can be added without a false failure.
+    let root = panel as HTMLElement;
+    while (root.parentElement && root.parentElement !== document.body) root = root.parentElement;
+    expect(root.parentElement).toBe(document.body);
+    expect(root.contains(strip)).toBe(false);
   });
 
-  it('keeps exactly one panel open and swaps it when a second tile is activated', async () => {
+  it('keeps exactly one panel open and swaps it when another metric is selected', async () => {
     renderOverview();
     await screen.findByTestId('page-hero');
     await openPanel('kpi-total-cases');
     expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'total-cases');
 
-    await userEvent.click(screen.getByTestId('kpi-open-cases'));
-    await waitFor(() =>
-      expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'open-cases'),
-    );
+    await switchMetric('open-cases');
     expect(screen.getAllByTestId('kpi-drilldown')).toHaveLength(1);
-    // The previous trigger no longer claims to be expanded.
-    expect(screen.getByTestId('kpi-total-cases')).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('kpi-open-cases')).toHaveAttribute('aria-expanded', 'true');
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    // The tiles carry no per-tile "which one is open" signal any more — `aria-expanded`
+    // is a disclosure semantic and was removed with the docked contract. The switcher's
+    // `aria-pressed` is now the single visible statement of which metric is current, and
+    // the panel's `data-kpi` is the single source of truth behind it.
+    expect(screen.getByTestId('kpi-total-cases')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(screen.getByTestId('kpi-drilldown-metric-open-cases')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('kpi-drilldown-metric-total-cases')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
     // Focus follows the NEW panel's heading.
     await waitFor(() => expect(screen.getByTestId('kpi-drilldown-heading')).toHaveFocus());
   });
 
-  it('re-activating the same tile closes the panel again', async () => {
+  it('closes from the panel’s own Close button and returns focus to the tile', async () => {
+    // Re-activating the TRIGGER no longer closes the panel: a modal cannot be toggled off
+    // by a control the scrim covers. The panel's own labelled Close replaces it, and the
+    // focus return is the contract the removed `aria-expanded` assertion used to stand in
+    // for — the operator has to get their keyboard place back.
     renderOverview();
     await screen.findByTestId('page-hero');
     const tile = await openPanel('kpi-resolved-closed');
-    await userEvent.click(tile);
+    await userEvent.click(screen.getByTestId('kpi-drilldown-close'));
     await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
-    expect(tile).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(tile).toHaveFocus());
+    expect(tile.closest('[aria-hidden="true"]')).toBeNull();
   });
 
   it('lists each tile OWN population off the product vocabulary, not the whole page', async () => {
@@ -294,25 +358,25 @@ describe('Overview — KPI drill-down disclosure', () => {
     }
 
     // Open Cases — the non-terminal lifecycle set.
-    await userEvent.click(screen.getByTestId('kpi-open-cases'));
+    await switchMetric('open-cases');
     await waitFor(() => expect(rowText()).toHaveLength(2));
     expect(rowText().join(' ')).toContain('Unauthorized S3 access');
     expect(rowText().join(' ')).not.toContain('Contained malware drop');
 
     // Resolved / Closed — BOTH terminal statuses, which is exactly why a
     // single-status deep link could never back this tile.
-    await userEvent.click(screen.getByTestId('kpi-resolved-closed'));
+    await switchMetric('resolved-closed');
     await waitFor(() => expect(rowText()).toHaveLength(2));
     expect(rowText().join(' ')).toContain('Benign admin login'); // closed
     expect(rowText().join(' ')).toContain('Contained malware drop'); // resolved
 
     // Total Critical — the top band of the ONE severity ladder.
-    await userEvent.click(screen.getByTestId('kpi-total-critical'));
+    await switchMetric('total-critical');
     await waitFor(() => expect(rowText()).toHaveLength(2));
 
     // False Positive Rate — a rate has no list, so the panel lists its NUMERATOR and
     // says so rather than implying the rows add up to a percentage.
-    await userEvent.click(screen.getByTestId('kpi-false-positive-rate'));
+    await switchMetric('false-positive-rate');
     await waitFor(() => expect(rowText()).toHaveLength(1));
     expect(rowText()[0]).toContain('Benign admin login');
     expect(screen.getByTestId('kpi-drilldown')).toHaveTextContent(/numerator/i);
@@ -373,7 +437,12 @@ describe('Overview — KPI drill-down disclosure', () => {
     const arg = listCasesMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(arg).toMatchObject({ limit: 200 });
     expect(arg).not.toHaveProperty('from');
-    expect(screen.getByTestId('kpi-drilldown')).toHaveTextContent(/not filtered by the window/i);
+    // That sentence is ALSO the dialog's `aria-describedby` target, so the exemption is
+    // announced on open rather than only readable. Pin that it is the same node: a
+    // describedby pointing anywhere else would make the caveat sighted-only.
+    const population = screen.getByTestId('kpi-drilldown-population');
+    expect(population).toHaveTextContent(/not filtered by the window/i);
+    expect(openDialog().getAttribute('aria-describedby')).toBe(population.id);
   });
 
   it('states the page it read, and calls it a lower bound when the store did not prove it', async () => {
@@ -384,6 +453,14 @@ describe('Overview — KPI drill-down disclosure', () => {
     expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(
       'Showing 4 of 4 in this page · complete page of 4 cases',
     );
+    // The heading badge restates the SAME three-valued read, and nothing else pins that
+    // the two agree — two independently rendered answers to one question is exactly the
+    // "two numerals, two questions" failure this file exists to prevent. It is also a
+    // SIBLING of the footer sentence, never a child, so the negative `-scope` assertions
+    // below stay assertions about the footer's own wording.
+    const completeness = screen.getByTestId('kpi-drilldown-completeness');
+    expect(completeness).toHaveTextContent(/^Complete page$/);
+    expect(screen.getByTestId('kpi-drilldown-scope').contains(completeness)).toBe(false);
 
     // A store that could not prove it (absent flag / a wider corpus) must NOT be read
     // as complete — absence means the store answered a different question.
@@ -395,6 +472,9 @@ describe('Overview — KPI drill-down disclosure', () => {
     );
     expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(
       'first 4 of 4,821 in this order',
+    );
+    expect(screen.getByTestId('kpi-drilldown-completeness')).toHaveTextContent(
+      /^Bounded page · lower bound$/,
     );
   });
 
@@ -423,6 +503,8 @@ describe('Overview — KPI drill-down disclosure', () => {
       ),
     );
     expect(screen.getByTestId('kpi-drilldown-scope')).not.toHaveTextContent(/lower bound/i);
+    // The badge says the same thing, from the same read.
+    expect(screen.getByTestId('kpi-drilldown-completeness')).toHaveTextContent(/^Complete page$/);
   });
 
   it('still calls a WINDOWED page with no flag a lower bound, even when it is complete', async () => {
@@ -436,6 +518,7 @@ describe('Overview — KPI drill-down disclosure', () => {
     await waitFor(() =>
       expect(screen.getByTestId('kpi-drilldown-scope')).toHaveTextContent(/lower bound/i),
     );
+    expect(screen.getByTestId('kpi-drilldown-completeness')).toHaveTextContent(/lower bound/i);
   });
 
   it('announces open and close through the ONE app live region, as plain text', async () => {
@@ -443,6 +526,10 @@ describe('Overview — KPI drill-down disclosure', () => {
     await screen.findByTestId('page-hero');
     const tile = await openPanel('kpi-total-critical');
 
+    // Deliberately scoped to `container`, not `document.body`: this asserts the app's OWN
+    // live region carried the announcement. It survives the modal because `hideOthers`
+    // exempts `[aria-live]` nodes and keeps their ancestor chain unhidden — widening the
+    // query to the body would quietly stop proving the region is the app's.
     const regions = () =>
       Array.from(container.querySelectorAll('[aria-live]'))
         .map((n) => n.textContent ?? '')
@@ -464,7 +551,10 @@ describe('Overview — KPI drill-down disclosure', () => {
     await openPanel('kpi-open-cases');
     // Scoped to the panel: the instrument band's "Latest cases" queue offers the same
     // accessible name for the same case, and this assertion is about the PANEL's row.
+    // Doubly true now — that queue is `aria-hidden` behind the scrim, so an unscoped
+    // role query would be resolving against a surface the operator cannot reach.
     const panel = screen.getByTestId('kpi-drilldown');
+    expect(screen.getByTestId('kpi-strip').closest('[aria-hidden="true"]')).not.toBeNull();
     await userEvent.click(
       within(panel).getByRole('button', { name: /Open case Unauthorized S3 access/i }),
     );
@@ -486,5 +576,12 @@ describe('Overview — KPI drill-down disclosure', () => {
     const panel = await screen.findByTestId('kpi-drilldown');
     await waitFor(() => expect(screen.queryByTestId('kpi-drilldown-rows')).toBeNull());
     expect(within(panel).getByText(/No cases in this range/i)).toBeInTheDocument();
+    // The scroll port is the SHELL, not the rows: it survives an empty page, which is
+    // what keeps the fixed-height panel from collapsing around an empty state.
+    expect(within(panel).getAllByTestId('kpi-drilldown-scroll')).toHaveLength(1);
+    // …and the completeness badge is withheld until a page has actually been read, so an
+    // error or a load in flight cannot be reported as a bounded page. Here a page WAS
+    // read — an empty one — so it renders and states what that read proved.
+    expect(within(panel).getByTestId('kpi-drilldown-completeness')).toBeInTheDocument();
   });
 });

@@ -9,12 +9,16 @@
  * KPI tiles. We render <WidgetGrid editing={false}/> inside DashboardDataProvider with
  * offline data mocks, wait for a widget body, and assert no axe violations.
  *
- * It also holds the OTHER half of the KPI drill-down's ARIA contract. `KpiTile` gained
- * optional `aria-expanded` / `aria-controls` for the landing strip's disclosure; every
- * other consumer — the custom-dashboard widgets here among them — must be byte-identical
- * to before, i.e. emit NEITHER. A tile that navigates or merely reports would be lying
- * to assistive tech if it announced a collapsed state it can never expand, and a
- * dangling `aria-controls` would be an outright invalid attribute value.
+ * It also holds the OTHER half of the KPI drill-down's ARIA contract. The landing strip's
+ * tile is a DIALOG TRIGGER: it opts into `aria-haspopup="dialog"` (`KpiTile`'s
+ * `ariaHasPopup`) and deliberately carries neither `aria-expanded` nor `aria-controls` —
+ * those are DISCLOSURE semantics, wrong on a dialog trigger, and a portalled panel that
+ * does not exist while it is closed can never be a valid `aria-controls` target.
+ *
+ * Every OTHER consumer — the custom-dashboard widgets here among them — must emit NONE of
+ * the three. A tile that navigates or merely reports would be lying to assistive tech if
+ * it promised a dialog it can never open, exactly as it used to be lying if it announced a
+ * collapsed state it can never expand.
  *
  * Offline: no network, no #3 / runtime behaviour touched.
  */
@@ -103,7 +107,7 @@ describe('Custom dashboard (WidgetGrid view) — a11y smoke (jest-axe)', () => {
     expect(rglEvaluated.count).toBe(0);
   });
 
-  it('leaves widget KPI tiles free of the disclosure ARIA the landing strip opts into', async () => {
+  it('leaves widget KPI tiles free of the dialog-trigger ARIA the landing strip opts into', async () => {
     const { container } = render(
       <DashboardDataProvider>
         <WidgetGrid widgets={WIDGETS} editing={false} />
@@ -116,12 +120,21 @@ describe('Custom dashboard (WidgetGrid view) — a11y smoke (jest-axe)', () => {
     const tiles = container.querySelectorAll('[data-testid^="kpi-"]');
     expect(tiles.length).toBeGreaterThan(0);
     for (const tile of Array.from(tiles)) {
-      // Absent, not "false": both props default to `undefined` on `KpiTile`, so they
-      // are never rendered for a consumer that did not ask for them.
+      // `aria-haspopup` is the LIVE half: it is the one prop `KpiTile` still exposes for
+      // the landing strip, so it is the one a copy-paste could actually spread onto a
+      // widget. Absent, not "false" — it defaults to `undefined` and is then not rendered
+      // at all, so a widget tile makes no popup claim it cannot honour.
+      expect(tile).not.toHaveAttribute('aria-haspopup');
+      // The two retired disclosure attributes, kept as regression guards: `KpiTile` no
+      // longer accepts them from ANY consumer, and a tile that re-grew either would be
+      // announcing a state it cannot enter and a target that does not exist.
       expect(tile).not.toHaveAttribute('aria-expanded');
       expect(tile).not.toHaveAttribute('aria-controls');
     }
-    // And no drill-down panel exists to be controlled from here.
-    expect(container.querySelector('[data-testid="kpi-drilldown"]')).toBeNull();
+    // And no drill-down panel exists to be opened from here. `document`, NOT the render
+    // container: the panel is a Radix Dialog portalled to `document.body`, so a
+    // container-scoped query could not see one even if a widget tile grew a drill-down —
+    // which is exactly the regression this line is here to catch.
+    expect(document.querySelector('[data-testid="kpi-drilldown"]')).toBeNull();
   });
 });
