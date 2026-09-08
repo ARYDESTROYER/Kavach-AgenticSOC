@@ -11110,3 +11110,90 @@
   accepting that Deeper analytics scrolls. Separately, `docs/analyst/overview.md` is stale from
   #111/#112 — it still names Active Risk Index, "Escalated to Human" and "Auto-resolved" tiles
   that no longer exist; only the one sentence this change invalidated was corrected here.
+
+### 2026-09-08 18:31Z — orchestrator (Opus) — Overview strip: sixth tile, prose off the face, hero numerals, taller flow
+
+- Context: operator ask in five parts — remove standing descriptive copy from the landing
+  tiles (1), enlarge the numerals (2), give the diagrams the reclaimed height (3), add a
+  sixth **Auto Closed** KPI (4), widen the page (5) — plus "make the dashboard read like a
+  competitor's". Base `f96fb51` (#113).
+- **This sandbox HAS a browser.** Chromium is preinstalled at `/opt/pw-browsers`, so the
+  work was driven against the real app (`scripts/run-demo.sh`, Demo Mode, auth on) with
+  `playwright-core` installed OUTSIDE the repo — no new webui dependency, no change to
+  `package.json`. That moved most of what the brief called unverifiable into things
+  actually measured here, and it twice overturned reasoning that had looked sound on paper.
+- Did:
+  - `KpiTile`: new `bound` — ONE grammar, two states: a `≥` FLOOR mark on a published
+    numeral, and the em dash ITSELF as the WITHHELD mark when a value is refused. The
+    sentence rides as `sr-only` text content (never `aria-label` on a bare span, which is
+    prohibited on the generic role; never `title` alone, which the UI standard bans as a
+    sole carrier). New opt-in `numeral="hero"` (24→30px with a length ladder) and
+    `formatCompact` (abbreviated numeral `aria-hidden`, exact value `sr-only`). Plus a real
+    clipping fix: the numeral had neither `min-w-0` nor `truncate`, so `overflow-hidden`
+    hard-clipped "543,210" to "543,21" — a readable WRONG number.
+  - `Overview`: `cohortSub()` split into `sub = postureSub` (STATE disclosures only) and
+    `boundSub()` (the conditional bound → the mark). Descriptive captions folded into each
+    tile's help; `scaleAside()` appends the live scale context to the same help from ONE
+    derivation. Sixth tile from `quality.auto_closed_cases` + `automation_rate`, adjacent to
+    Resolved / Closed and sharing its accent, with the containment sentence in its
+    accessible name, help and drill-down population; deliberately NO `populationResolvedBy`,
+    so the panel's TRUE `rows-read` caveat survives. Grid → `xl:grid-cols-6` with a
+    rewritten divider string. Both `PageContainer`s → `fluid` + `sm:-mx-2` (+16px).
+  - `HumanVsAiCard`: subtitle → `sr-only` + `aria-describedby`; "Share of closed cases ·"
+    and the alerts disclaimer → `HUMAN_VS_AI_HELP` (they were NOT already there — deleting
+    without adding would have lost them outright); `{windowLabel}` STAYS, it is the chart's
+    only axis caption.
+  - `NoiseFunnel`: inline band 184 → 216 (constant AND wrapper class together — the height
+    flows into a `preserveAspectRatio` viewBox, so moving one alone letterboxes the drawing
+    and drifts the percentage-positioned label overlay). Deleted the in-SVG "FULL
+    ALERT-TO-CASE FLOW" caption: `aria-hidden` so never announced, it restated the `h2`
+    above it, and it rendered unconditionally while the nodes it captions are gated — on a
+    warming deployment it asserted "FULL" directly under a banner saying otherwise. The
+    √-scale sentence moved to the popover, but a persistent `√ scale` chip keeps the
+    ENCODING disclosure on the face.
+- Measured in a real browser, not asserted:
+  - Divider math matches the geometric oracle (`right = i mod cols ≠ 0 ∧ i ≠ n`,
+    `bottom = i ≤ n − cols`) at 420/700/900/1400px, both in the running app and in a
+    synthetic harness compiled with this repo's own Tailwind. The shipped five-cell string
+    fails at exactly two cells once a sixth tile exists (`sm` bottom cell 5, `xl` right cell
+    6). The `:not()`s are load-bearing: at `md` the old rule won only by emission order at
+    equal (0,2,0) specificity. The harness also showed the FIVE-cell layout drawing a
+    hairline into empty space at 2 and 3 columns — six divides every breakpoint, so that
+    goes away rather than being inherited.
+  - Numeral baselines were staggered 26/40/26/**54**/40/26px at 1280, because labels wrap to
+    one, two and three lines. Hero tiles now bottom-align (`flex h-full flex-col` +
+    `mt-auto`) and all six sit at y=50 — length- and locale-independent, where a reserved
+    label height would not be.
+  - **`secondary` cannot ride beside a 30px numeral at six columns.** Both are shrinkable and
+    flex shrinks the NUMERAL first: restored and rendered, "72%" came out "7…" and "44" came
+    out "4.". My arithmetic had said it fit; the browser said otherwise. It is off the face,
+    and — because the drill-down switcher carries only `{key,label,value}` — `scaleAside()`
+    puts it in each tile's help, verified live ("Right now: 44 of 60 verdicted.").
+  - Strip height 94→82px at 1440, 94→68px at 1920, 94→96px at 1280. Strip width +16px.
+  - Keyboard: all six reachable, `aria-haspopup="dialog"`, Enter opens, Escape closes, focus
+    returns to the originating tile. No clipped numerals, no page errors, no horizontal
+    overflow at 390/1280/1440/1920. `overview.a11y` axe passes with six tiles.
+- Also fixed while here, both found only by looking: the LIVE refresh captioned every numeral
+  `Loading …` on each tick while a real measurement was on screen — false about the numbers,
+  and once it was the only caption a tile carried it reflowed the strip ~18px every few
+  seconds. It now fires only on a first load. And `docs/analyst/overview.md` still named tiles
+  retired in #111/#112; the enumeration, the trendline sentence and the `Loading …` sentence
+  this change invalidated were corrected.
+- **Honest cost:** #113 chased a one-page fit and this spends some of it back. Measured page
+  scroll overflow: 1280×800 **247px** (was ~245), 1440×900 **133px** (was ~113), 1920×1080
+  **0**. The flow band costs +32px; the strip's freed caption row returns 12–26px depending
+  on width. The operator asked for the bigger diagram, so the trade is deliberate, not a
+  regression that slipped through.
+- Tests: `npm run test:strict` **327 files / 2372 passed**, exit 0, zero stderr and zero
+  captured stdout (baseline at `f96fb51` was 326 / 2345 passed + 9 skipped). `npm run build`
+  (docs bundle + `tsc --noEmit` + Vite) clean — entry chunk 396.08 kB against the 400 kB
+  first-paint ceiling, `motion` still lazy at 83.85 kB off the entry path. `npm run gates`
+  all six ✓. `npm run lint -- --max-warnings=0` clean. Backend untouched.
+- Status: done and committed on `Testing`. `decide()` untouched; no backend change; no new
+  npm dependency (`playwright-core` lives in the session scratchpad, outside the repo).
+- Next: **browser acceptance across the full matrix is still owed** — I verified 390 / 1280 /
+  1440 / 1920 in both themes plus keyboard and axe, but not a real trackpad/touch device, not
+  Safari or Firefox, and not the bound/withheld marks against a genuinely truncated window
+  (they are pinned by jsdom specs, not seen). Two judgement calls are one-line reversible if
+  the operator disagrees: the scale context living in help rather than on the tile face, and
+  the funnel's +32px against #113's one-page goal.

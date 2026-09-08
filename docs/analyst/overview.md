@@ -16,18 +16,37 @@ changing any case or detection policy.
    refreshes every five seconds while the browser tab is visible and pauses while it
    is hidden. Choose Off, 5 seconds, 30 seconds, 1 minute, or 5 minutes when a
    different operating cadence is more appropriate.
-2. **Read the five operational KPIs** — Open Cases, Critical / High, Escalated to
-   Human, False Positive Rate, and Auto-resolved. The Open total includes every
-   non-terminal lifecycle (`new`, `open`, `needs_human`, `investigating`,
-   `escalated`, and `on_hold`). Critical / High covers both open and resolved cases
-   in the selected window and states that split explicitly. False Positive Rate
-   shows the rate for the selected window only; it no longer carries a
-   period-over-period percentage chip. Hover or keyboard-focus a metric to reveal
+2. **Read the six operational KPIs** — Total Cases, Total Critical, Open Cases,
+   False Positive Rate, Resolved / Closed, and Auto Closed. The Open total includes
+   every non-terminal lifecycle (`new`, `open`, `needs_human`, `investigating`,
+   `escalated`, and `on_hold`) and is a **stock** read at the rollup's own timestamp,
+   so it is deliberately not filtered by the selected window. Total Critical counts
+   the top band the severity ladder declares, over the whole window, from the server
+   rollup. False Positive Rate shows the rate for the selected window only; it no
+   longer carries a period-over-period percentage chip.
+
+   **Auto Closed is a SUBSET of Resolved / Closed, not a sixth independent total.**
+   The row does not sum: `auto closed + human closed + system closed` equals
+   Resolved / Closed exactly, and Open Cases sits outside the window altogether. Auto
+   Closed is counted over the agent-worked population only — cases an operator closed
+   under a "declared benign" rule policy are excluded — which is why its share names
+   its own denominator ("of agent-worked closes") rather than borrowing the tile
+   beside it.
+
+   The tiles carry a **numeral and a label, and no standing caption**. What a numeral
+   counts, and the "out of what" behind it, live in the tile's help — the `?` beside
+   the label, which opens on click and is reachable by keyboard and touch — and in the
+   drill-down that opens when you select the tile. A caption appears only when
+   something is wrong with the measurement (see below). Where a numeral is a **lower
+   bound** rather than a fact, the tile marks the number itself with a `≥`, and the
+   full sentence is announced to screen readers; where a value is **withheld** because
+   the window was not fully covered, the em dash carries that explanation instead.
+   Hover or keyboard-focus a metric to reveal
    its recent trendline for the same window — the card names the exact series it
    draws, states the bucketing (for example `last 24 hours · 1h buckets`), and shows
    a quiet "No trend data yet" line instead of inventing a trend when the series has
-   no measured buckets. The combined Critical / High tile deliberately has no
-   trendline because no per-severity series exists for it.
+   no measured buckets. Total Critical deliberately has no trendline, because no
+   per-severity bucket series exists for it.
 3. **Use the instrument rows** — Human vs AI attributes the window's closes to the
    agent, an analyst, or system routing; the stacked Open and Resolved composition
    rings show severity mix; MTTD / response pairs detection with the first human
@@ -53,11 +72,14 @@ changing any case or detection policy.
    signatures, and top entities. For opened-versus-resolved backlog growth, open
    **Metrics → Posture** and read **Closure vs arrival**.
 
-False Positive Rate and Auto-resolved come from the server posture rollup rather
-than the bounded case list. They are keyed to the selected window and comparison
-mode. When the range changes, the Console keeps the last successful posture snapshot
-visible instead of blanking the tiles, and marks it explicitly with the tiles'
-`Loading …` sub-line until the new window's response lands. The superseded request
+False Positive Rate, Resolved / Closed and Auto Closed come from the server posture
+rollup rather than the bounded case list. They are keyed to the selected window and
+comparison mode. When the range changes, the Console keeps the last successful posture
+snapshot visible instead of blanking the tiles. It no longer captions those numerals
+`Loading …` while a refresh is in flight: on a LIVE dashboard that fired on every tick,
+and the numbers being captioned were a real measurement, not a placeholder — the
+refresh control is where a request in flight is reported. A **first** load, with nothing
+yet to show, still says so on the tiles. The superseded request
 is cancelled, and a response is published only if its echoed `window_hours` still
 matches the active selector, so a slower earlier request can never repaint either
 tile beneath a newer range — the retained snapshot is always labelled as refreshing,

@@ -222,7 +222,13 @@ describe('NoiseFunnel', () => {
     expect(screen.queryByTestId('noise-reduction-summary')).toBeNull();
 
     const svg = graph(view.container);
-    expect(svg).toHaveAttribute('viewBox', '0 0 800 184');
+    // 216, moved together with the wrapper's `h-[216px]`. The two MUST agree: the height
+    // flows into this viewBox and the drawing is fitted with `preserveAspectRatio`, so a
+    // class-only change letterboxes the band (dead space top and bottom) and drifts the
+    // percentage-positioned HTML label overlay off the nodes it labels, while a
+    // constant-only change overflows the SVG past its box. The line below is therefore not
+    // decoration — the pair is the only guard against a silent letterbox regression.
+    expect(svg).toHaveAttribute('viewBox', '0 0 800 216');
     expect(svg).toHaveAttribute('preserveAspectRatio', 'xMidYMid meet');
     expect(svg.querySelector('[data-context-node-key="ingested"]')).toHaveAttribute('x', '10');
     expect(svg.querySelector('[data-node-key="closed"]')).toHaveAttribute('x', '788');
@@ -935,6 +941,16 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
     expect(disclosure.querySelector('[data-disclosure-surface="rail"]')).toBeNull();
     // The surface sentence stays inline, and it still NAMES the scale: a "compressed"
     // scale the reader cannot identify is not a disclosure. The rest is one click away.
+    //
+    // It now rides a persistent `√ scale` CHIP rather than a paragraph of face prose, so
+    // both halves are pinned: the chip itself (the mark a sighted reader sees on an
+    // unlabelled non-linear axis) and the full sentence it carries as its accessible name
+    // — as real text content, which is why the disclosure still reads it. Asserting the
+    // sentence alone would pass off any incidental text; asserting the chip alone would
+    // let the sentence be dropped to a mouse-only `title`.
+    const chip = within(disclosure).getByTestId('noise-scale-chip');
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveTextContent(/Filled ribbons show the alert .+ compressed \(√\) display scale\./i);
     expect(disclosure).toHaveTextContent(/Filled ribbons show the alert .+ compressed \(√\) display scale\./i);
     expect(await openShareRule()).toHaveTextContent(/Labels are the exact counts/i);
   });
@@ -959,7 +975,13 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
       '@[38rem]/noise:hidden',
     );
     expect(disclosure).not.toHaveTextContent(/Filled ribbons/i);
-    expect(disclosure).toHaveTextContent(/stage rail lists this window's stages in flow order\./i);
+    // The rail surface's sentence was shortened to the label it always was — "Stage rail ·
+    // flow order" — when the ribbon prose became a chip. It is asserted verbatim rather
+    // than by a loose /rail/ so a future edit that deletes the surface entirely (the thing
+    // the `data-disclosure-surface` class assertions above exist to prevent) still fails.
+    expect(disclosure).toHaveTextContent(/Stage rail · flow order/i);
+    // …and the ribbon chip is absent WITH the ribbons: there is no graph to explain.
+    expect(within(disclosure).queryByTestId('noise-scale-chip')).toBeNull();
     expect(await openShareRule()).toHaveTextContent(/Labels are the exact counts/i);
     // The rail still obeys the stated rule, baseline em dash included.
     expect(

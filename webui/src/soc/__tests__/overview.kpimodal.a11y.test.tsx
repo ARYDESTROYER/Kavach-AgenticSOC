@@ -17,10 +17,10 @@
  *      closing it"). The budget is DERIVED from the stops the fixture actually produces,
  *      with a vacuity guard, because a literal budget would silently stop proving anything
  *      the day a control is added.
- *   3. FOCUS RETURN, per tile and per close affordance. `it.each` over all five tiles is not
+ *   3. FOCUS RETURN, per tile and per close affordance. `it.each` over all six tiles is not
  *      ceremony: `Overview` keeps a ref MAP, so a bug that always returned focus to tile one
  *      would pass a single-tile test.
- *   4. THE SWITCHER, which is load-bearing rather than chrome. Behind a scrim the four
+ *   4. THE SWITCHER, which is load-bearing rather than chrome. Behind a scrim the other
  *      neighbouring tiles are `aria-hidden` and unclickable, so this is the ONLY surviving
  *      way to compare populations — it is the answer to the strongest objection the
  *      non-modal contract raised, and it must keep working at every width.
@@ -207,10 +207,15 @@ const TILES = [
   'kpi-open-cases',
   'kpi-false-positive-rate',
   'kpi-resolved-closed',
+  // The Auto Closed subset tile. It is listed here, not skipped as "just a subset": the
+  // focus-return cases below are per-tile precisely because `Overview` keeps a ref MAP,
+  // and a new tile is exactly the kind of entry that gets added to the strip and forgotten
+  // in the map.
+  'kpi-auto-closed',
 ] as const;
 
 /**
- * A tile that HAS a trend series. Only three of the five do, and the reopen regression can
+ * A tile that HAS a trend series. Only three of the six do, and the reopen regression can
  * only be observed on one that does.
  */
 const TILE_WITH_TREND = 'kpi-total-cases';
@@ -439,7 +444,7 @@ describe('KPI deep-inspection modal', () => {
     ],
   ])('does not let the focus return pop the trend card back open after %s', async (_name, close) => {
     const user = makeUser();
-    // A tile that HAS a series — only three of the five do, and the regression is invisible
+    // A tile that HAS a series — only three of the six do, and the regression is invisible
     // on a tile with no card to reopen.
     await openPanel(user, TILE_WITH_TREND);
 

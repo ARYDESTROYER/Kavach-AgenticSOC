@@ -8,7 +8,7 @@
  *      of the plain header, never nested inside it;
  *   3. the Noise-Reduction instrument renders mixed-unit conversion context followed by
  *      a conserved case flow, plus real selected-window Open-case context;
- *   4. the KPI micro-strip is 5 alert/case tiles (LLM spend is not a hero tile).
+ *   4. the KPI micro-strip is 6 alert/case tiles (LLM spend is not a hero tile).
  *
  * Offline — the api + posture fetch are mocked; no auth, no #3 behaviour touched.
  */
@@ -364,7 +364,7 @@ describe('Overview — Cyber Defence Center', () => {
     );
   });
 
-  it('renders a KPI micro-strip of 5 alert/case tiles (LLM spend not a hero tile)', async () => {
+  it('renders a KPI micro-strip of 6 alert/case tiles (LLM spend not a hero tile)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
@@ -372,18 +372,23 @@ describe('Overview — Cyber Defence Center', () => {
     // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile also carries a
     // decorative affordance mark (`kpi-<id>-affordance`), so a bare prefix count answers a
     // different question than the one this test asks — and answering it by loosening the
-    // number would have stopped proving there are exactly five tiles at all. (A tile could
+    // number would have stopped proving there are exactly six tiles at all. (A tile could
     // once also carry a `kpi-<id>-breakdown` partition; that anchor retired to the
-    // drill-down, so the selector no longer excludes it.)
+    // drill-down, so the selector no longer excludes it. A bounded tile also carries a
+    // `kpi-<id>-bound` mark, which this fixture's fully covered window does not raise.)
     expect(
       strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"])'),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
     for (const id of [
       'kpi-total-cases',
       'kpi-total-critical',
       'kpi-open-cases',
       'kpi-false-positive-rate',
       'kpi-resolved-closed',
+      // The sixth tile is a SUBSET of the fifth, not a new independent total, which is
+      // carried by adjacency, a shared accent and its containment copy — never by a
+      // different chrome. So it takes the same borderless strip treatment as the rest.
+      'kpi-auto-closed',
     ]) {
       expect(within(strip).getByTestId(id)).toHaveClass('bg-transparent');
     }

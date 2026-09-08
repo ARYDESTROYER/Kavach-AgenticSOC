@@ -4,10 +4,12 @@
  * `severity_counts` is keyed by the backend's closed `SEVERITY_BANDS` vocabulary, and
  * the tile's population sentence, drill-down predicate and Cases deep link all derive
  * `TOP_SEVERITY_BAND` from `SEVERITY_BAND_ORDER` (badges.tsx, the ONE band authority).
- * The numeral, its share and its sub used to index that payload with the client-side
- * literal `critical` instead — directly under a comment claiming they never did — so a
- * renamed top band would have left the tile reading an em dash and captioned "Critical
- * band" while the panel it opens listed the renamed band's cases correctly.
+ * The numeral, its share and its band name used to index that payload with the
+ * client-side literal `critical` instead — directly under a comment claiming they never
+ * did — so a renamed top band would have left the tile reading an em dash and naming the
+ * "Critical band" while the panel it opens listed the renamed band's cases correctly. The
+ * share and the band name are now stated in the tile's help popover rather than on its
+ * face; the derivation they must not regress to is unchanged.
  *
  * This file mocks ONLY `SEVERITY_BAND_ORDER`, moving the ladder's top entry to an
  * existing real band, and asserts the numeral and the panel still name ONE band.
@@ -83,7 +85,7 @@ describe('Overview — Total Critical follows the ladder, not a literal', () => 
     usageMock.mockReset().mockResolvedValue({ total_cost: 0, total_tokens: 0, call_count: 0, currency: 'USD' });
   });
 
-  it('numeral, sub, panel population and deep link all name ONE band', async () => {
+  it('numeral, help, panel population and deep link all name ONE band', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
@@ -92,12 +94,20 @@ describe('Overview — Total Critical follows the ladder, not a literal', () => 
     // 9, the ladder's own top band — not the 2 the retired `critical` literal held.
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
     expect(within(tile).queryByText('2')).toBeNull();
-    expect(within(tile).getByText('82% of 11')).toBeInTheDocument();
-    // `· counted server-side` moved to the tile's help popover. The BAND NAME must stay
-    // inline and must stay a template literal: the label says "Total Critical" while the
-    // ladder's real top band here is High, and the two are designed to be able to disagree.
-    expect(within(tile).getByText('High band')).toBeInTheDocument();
-    expect(within(tile).queryByText(/Critical band/)).toBeNull();
+    // The strip's numeral now stands alone on the face: at six columns the scale context
+    // and a 30px numeral shared one `items-end` row and the context would have silently
+    // ellipsized. Both the BAND NAME and the share moved into the tile's help popover —
+    // which is reachable by click, Enter, Space and tap, so this asserts them THERE rather
+    // than accepting their deletion. The band name must stay a template literal: the label
+    // says "Total Critical" while the ladder's real top band here is High, and the two are
+    // designed to be able to disagree.
+    await userEvent.click(screen.getByRole('button', { name: 'About Total Critical' }));
+    const help = await screen.findByText(/^The High band\./);
+    expect(help).toHaveTextContent(/The High band\. Counted SERVER-SIDE/);
+    expect(help).toHaveTextContent('Right now: 82% of 11.');
+    expect(help).not.toHaveTextContent(/The Critical band\./);
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByText(/^The High band\./)).toBeNull());
 
     // The panel the tile discloses, and the list it deep-links to, agree with it.
     await userEvent.click(tile);

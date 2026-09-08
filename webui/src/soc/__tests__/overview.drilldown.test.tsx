@@ -9,8 +9,8 @@
  *   1. PLACEMENT — the panel is PORTALLED to `document.body`, so it is not a child or a
  *      sibling of the KPI grid at all. That permanently settles the hazard the docked
  *      contract had to be tested for: the grid carries hand-tuned `nth-child` divider
- *      math for exactly five cells, and a sixth child would silently redraw every
- *      hairline on the strip.
+ *      math for exactly the cells it holds, and one extra child would silently redraw
+ *      every hairline on the strip.
  *   2. ONE AT A TIME — re-pointing the panel at another metric swaps it rather than
  *      stacking. Behind the scrim the neighbouring TILES are `aria-hidden` and
  *      unclickable, so that is done through the panel's own metric switcher — which is
@@ -271,7 +271,7 @@ describe('Overview — KPI drill-down', () => {
     });
   });
 
-  it('keeps the KPI grid at five cells and renders the panel outside the page', async () => {
+  it('keeps the KPI grid at six cells and renders the panel outside the page', async () => {
     renderOverview();
     await screen.findByTestId('page-hero');
     await openPanel('kpi-total-cases');
@@ -279,11 +279,13 @@ describe('Overview — KPI drill-down', () => {
     const strip = screen.getByTestId('kpi-strip');
     const panel = screen.getByTestId('kpi-drilldown');
 
-    // A sixth child would silently break the strip's five-cell `nth-child` divider math.
-    // That can no longer happen by accident — but the five-cell count is still the reason
-    // the panel is not rendered inline, so it stays pinned.
+    // A SEVENTH child would silently break the strip's six-cell `nth-child` divider math.
+    // That can no longer happen by accident — but the exact cell count is still the reason
+    // the panel is not rendered inline, so it stays pinned. Six is also the count the
+    // `:nth-child(3n)/(6n)` rules in `Overview`'s `itemClassName` are written against, so
+    // this number and that string move together or the hairlines go wrong.
     expect(strip.contains(panel)).toBe(false);
-    expect(strip.children).toHaveLength(5);
+    expect(strip.children).toHaveLength(6);
     // …because it is portalled OUT of the page entirely, which is the real contract now.
     // The old assertions here — same parent, DOCUMENT_POSITION_FOLLOWING after the grid
     // and after the trend caption — were retired rather than repaired: a portal div is

@@ -76,6 +76,42 @@ export interface KpiDelta {
   label?: string;
 }
 
+/**
+ * The hero ladder's two cut points, in CHARACTERS of the final formatted string.
+ *
+ * Derived from the tightest supported layout, not from taste. MEASURED in a browser: a
+ * six-cell strip on a 1280px viewport with the rail pinned gives each cell 143px of
+ * content. Inter's tabular figures at 600 weight run ~0.647 em, so at 30px that is
+ * ~19.4px a character (this half is a type-metric estimate, not a measurement): six
+ * characters plus the bound mark come to ~136px and fit, seven do not. The 24px step
+ * buys back roughly two more characters. Past that no step is legible at a glance, so
+ * the value abbreviates instead of shrinking further.
+ */
+const HERO_SHRINK_AT = 6;
+const HERO_ABBREVIATE_AT = 8;
+
+/**
+ * The FLOOR mark. `≥` and not a dagger: `†` (U+2020) is absent from the self-hosted
+ * `inter-latin-wght-normal.woff2` subset and would render from a fallback face at a
+ * different weight. This is the same mark the noise funnel already puts on a bounded
+ * open-cases count, so the console has one bound vocabulary rather than two.
+ */
+const BOUND_MARK = '≥';
+
+/** `format ?? String`, matching CountUp's historical default. */
+const rollFormatOf = (format: ((n: number) => string) | undefined, n: number): string =>
+  format ? format(n) : String(n);
+
+/**
+ * The hero numeral's size class for a given final formatted string. Pure and exported
+ * so the ladder's cut points are unit-testable without rendering a tile.
+ */
+export function numeralSize(text: string): string {
+  if (text.length <= HERO_SHRINK_AT) return 'text-4xl';
+  if (text.length <= HERO_ABBREVIATE_AT) return 'text-3xl';
+  return 'text-2xl';
+}
+
 export interface KpiTileProps {
   /** Metric label (plain text). */
   label: string;
@@ -83,6 +119,29 @@ export interface KpiTileProps {
   value: React.ReactNode;
   /** Optional sub-line under the value (plain text). */
   sub?: string;
+  /**
+   * A CONDITIONAL BOUND on this numeral, as a full sentence.
+   *
+   * Descriptive copy may be relocated to a help surface; a bound may not. It is
+   * visible exactly when it is true, so a reader who never opens the help would
+   * otherwise read a floor as a fact. This prop is the non-prose carrier that
+   * stays ON the numeral once the caption under it is gone, in ONE grammar with
+   * two states, chosen by whether there is a number to qualify at all:
+   *
+   *   FLOOR    (`countTo` is a number) — a `≥` mark immediately before the value.
+   *   WITHHELD (no number)             — the em dash itself becomes the mark, so a
+   *                                      rate that refuses to publish is not just a
+   *                                      bare dash with nothing to explain it.
+   *
+   * Both states carry the sentence to assistive tech as real text content in an
+   * `sr-only` sibling — never as an `aria-label` on a bare span (prohibited on the
+   * generic role) and never as a `title` alone (mouse-only, and banned as the sole
+   * carrier of a load-bearing caveat by the UI standard).
+   *
+   * The mark takes NO colour of its own: it inherits the numeral's already-gated
+   * accent, so it cannot become a second, ungated colour signal.
+   */
+  bound?: string;
   /** Optional leading icon. */
   icon?: LucideIcon;
   /** Colored accent — a soft icon chip (default variant) or the left bar (`bar`). */
@@ -117,6 +176,16 @@ export interface KpiTileProps {
   variant?: 'default' | 'bar' | 'strip';
   /** Compact command-surface rhythm for embedded telemetry bands. */
   density?: 'default' | 'compact';
+  /**
+   * Numeral weight WITHIN the compact rhythm.
+   *
+   * `density="compact"` is a shared console rhythm passed at nine call sites across
+   * six other pages, so enlarging its numeral wholesale would change all of them.
+   * `'hero'` is the opt-in for a landing strip that has given its caption row back
+   * to the number: it steps 24px → 30px (`text-4xl`, an existing token) and then
+   * steps DOWN again for a value too long to fit, rather than truncating one.
+   */
+  numeral?: 'default' | 'hero';
   /** When provided the tile becomes a keyboard-accessible button. */
   onClick?: () => void;
   /**
@@ -149,6 +218,17 @@ export interface KpiTileProps {
   countTo?: number;
   /** Formatter for `countTo` (default `String`). e.g. `(n) => n.toLocaleString()`. */
   format?: (n: number) => string;
+  /**
+   * ABBREVIATING formatter, used only when the fully formatted value is too long to
+   * survive at any step of the hero ladder (see `numeral`). The exact value then moves
+   * to the numeral's `title` and to its accessible name, so nothing is lost — the tile
+   * shows `5.4k`, the reader can still get `5,423,100`.
+   *
+   * Deliberately a PROP rather than a hardcoded `fmtTokens` call: that helper is shared
+   * with money and percentages and rounds to whole units above 10,000, which is a
+   * caller's decision to make about its own metric, not this component's.
+   */
+  formatCompact?: (n: number) => string;
   /**
    * Round-7 W0.1 — an optional decorative trend sparkline under the value. Rendered
    * ONLY when at least 5 real points are supplied (fewer reads as noise) and always
@@ -303,6 +383,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       label,
       value,
       sub,
+      bound,
       icon: Icon,
       accent = 'primary',
       delta,
@@ -310,11 +391,13 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       goodDirection = 'up',
       variant = 'default',
       density = 'default',
+      numeral = 'default',
       onClick,
       ariaHasPopup,
       testId,
       countTo,
       format,
+      formatCompact,
       spark,
       sparkMinPoints = 5,
       help,
@@ -330,8 +413,45 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     const bar = variant === 'bar';
     const strip = variant === 'strip';
     const compact = density === 'compact';
+    const hero = numeral === 'hero';
 
     const deltaFacts = delta ? resolveDelta(delta, goodDirection) : null;
+
+    /*
+     * HERO LADDER — pick the numeral size from the FINAL formatted string, then fall
+     * back to abbreviating rather than shrinking past legibility.
+     *
+     * A grouped integer offers no min-content break (UAX #14), so at 30px a long value
+     * is not wrapped, it is CLIPPED by the tile's `overflow-hidden` — and a clipped
+     * "543,210" reads as "543,21", a plausible WRONG number rather than an obvious
+     * failure. The ladder keeps the common case big and the rare case honest. It keys on
+     * string LENGTH, never on the metric's meaning, so it stays portable across deployments.
+     */
+    const heroText =
+      typeof countTo === 'number' && Number.isFinite(countTo)
+        ? rollFormatOf(format, countTo)
+        : typeof value === 'string'
+          ? value
+          : typeof value === 'number'
+            ? String(value)
+            : '';
+    const heroCompact =
+      hero &&
+      heroText.length > HERO_ABBREVIATE_AT &&
+      typeof formatCompact === 'function' &&
+      typeof countTo === 'number' &&
+      Number.isFinite(countTo);
+    const heroDisplayText = heroCompact ? formatCompact(countTo as number) : heroText;
+
+    /*
+     * Which of the bound grammar's two states applies. A bound qualifies a NUMBER, so
+     * the floor mark only appears where a number was actually published; where the value
+     * is withheld (an em dash) the dash carries the mark instead. Callers therefore never
+     * have to choose the state — the presence of a numeral decides it, and the two can
+     * never disagree with what is on screen.
+     */
+    const boundIsFloor =
+      Boolean(bound) && typeof countTo === 'number' && Number.isFinite(countTo);
 
     // The rendered numeral: roll to `countTo` when it's a finite integer, else the
     // caller-supplied `value` (string or node) unchanged. The roll is the lazy motion.dev
@@ -339,10 +459,14 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     // LazyAnimatedNumber above). Both are handed the SAME formatter (`format ?? String`,
     // matching CountUp's historical `String` default) so the fallback→spring upgrade never
     // changes the displayed text. Both honour reduced motion by snapping to the target.
-    const rollFormat = format ?? ((n: number) => String(n));
+    // When the hero ladder has decided to abbreviate, BOTH the spring and its fallback
+    // are handed the abbreviating formatter, so the upgrade still never changes the text.
+    const rollFormat = heroCompact
+      ? (formatCompact as (n: number) => string)
+      : (format ?? ((n: number) => String(n)));
     const valueNode =
       typeof countTo === 'number' && Number.isFinite(countTo) ? (
-        <React.Suspense fallback={<CountUp value={countTo} format={format} as="span" />}>
+        <React.Suspense fallback={<CountUp value={countTo} format={rollFormat} as="span" />}>
           <LazyAnimatedNumber value={countTo} format={rollFormat} />
         </React.Suspense>
       ) : (
@@ -531,19 +655,49 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           className={cn(
             'flex min-w-0 items-end gap-2',
             strip ? (compact ? 'mt-1' : 'mt-2') : 'mt-3',
+            // …and the layout half: with the trigger a full-height flex column, `mt-auto`
+            // drops this row to the bottom of every cell, so the numerals share a baseline
+            // no matter how far the label above them wrapped.
+            hero && 'mt-auto',
           )}
         >
           <span
             className={cn(
               'font-semibold leading-none tracking-tight tabular-nums',
-              strip ? (compact ? 'text-2xl' : 'text-4xl') : 'text-3xl',
+              // `min-w-0` and `truncate` TOGETHER, never either alone: without `min-w-0`
+              // a flex item refuses to shrink below its content and the tile's
+              // `overflow-hidden` clips the numeral with no ellipsis; without `truncate`
+              // the shrunk box lets the text paint over its own row-mates.
+              'min-w-0 truncate',
+              strip
+                ? compact
+                  ? hero
+                    ? numeralSize(heroDisplayText)
+                    : 'text-2xl'
+                  : 'text-4xl'
+                : 'text-3xl',
               strip && (accent === 'critical' || accent === 'success')
                 ? ACCENT_TEXT[accent]
                 : 'text-foreground',
             )}
+            // WITHHELD arm of the bound grammar: there is no numeral to prefix, so the
+            // em dash itself is the mark. The exact sentence is still announced by the
+            // `sr-only` sibling below — `title` is the mouse affordance, never the only one.
+            data-bound={bound ? (boundIsFloor ? 'floor' : 'withheld') : undefined}
+            title={bound && !boundIsFloor ? bound : heroCompact ? heroText : undefined}
           >
-            {valueNode}
+            {boundIsFloor ? (
+              <span aria-hidden className="mr-0.5" data-testid={`${kpiTestId}-bound`}>
+                {BOUND_MARK}
+              </span>
+            ) : null}
+            {/* An abbreviated numeral is hidden from assistive tech and replaced by the
+                EXACT value below, so "5.4k" is a display decision and never a loss of
+                precision for a screen-reader user. */}
+            {heroCompact ? <span aria-hidden>{valueNode}</span> : valueNode}
           </span>
+          {heroCompact ? <span className="sr-only">{heroText}</span> : null}
+          {bound ? <span className="sr-only">{bound}</span> : null}
           {secondaryNode}
           {deltaNode}
         </div>
@@ -635,6 +789,18 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           className={cn(
             base,
             'block w-full transition-colors hover:bg-accent/30',
+            /*
+             * HERO tiles BOTTOM-ALIGN their numeral, and this is the structural half of it.
+             *
+             * MEASURED in a browser at a 1280px viewport, six cells: the labels wrap to one,
+             * two and even three lines ("False Positive Rate"), which put the six numerals at
+             * y = 26 / 40 / 26 / 54 / 40 / 26 — a 28px stagger across a row the eye reads as
+             * one instrument. Reserving a fixed label height would have to reserve the WORST
+             * case on every tile and would still break on a longer label or another locale.
+             * Growing the labels upward from a common numeral baseline is length-independent,
+             * and it is what the row wanted anyway: the number is the thing being compared.
+             */
+            hero && 'flex h-full flex-col',
             !strip && !breakdownIsSibling && 'hover:border-primary/40',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
             needsCellRoot ? null : className,

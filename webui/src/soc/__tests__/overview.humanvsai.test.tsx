@@ -202,8 +202,16 @@ describe('Overview — Human vs AI card', () => {
     const pcts = ['ai', 'human', 'system'].map(sharePct);
     expect(pcts).toEqual([60, 30, 10]);
     expect(pcts.reduce((a, b) => a + b, 0)).toBe(100);
-    // The denominator is named, so the reader knows what the shares are shares OF.
-    expect(within(card).getByText(/Share of closed cases/i)).toBeInTheDocument();
+    // The denominator is still NAMED, so the reader knows what the shares are shares OF —
+    // it moved off the card face (two static lines above a chart that had no room) into
+    // the help popover, and is asserted against the exported constant for the same reason
+    // the §3 advisory below it is: Radix portals the popover to <body> and unmounts it
+    // while closed, and driving it open inside a full Overview render is a live act()
+    // hazard that `npm run test:strict` treats as a failure. Its reachability by
+    // click/Enter/Space and the `sr-only` description that replaced the face line are
+    // proved against the real component in HumanVsAiCard's own suite.
+    expect(HUMAN_VS_AI_HELP).toMatch(/as a share of closed cases/i);
+    expect(HUMAN_VS_AI_HELP).toMatch(/Shares are of closed cases in this window/i);
   });
 
   it('charts the agent and human series together and names the window', async () => {
@@ -241,9 +249,14 @@ describe('Overview — Human vs AI card', () => {
     render(<Overview onNavigate={vi.fn()} />);
     const card = await screen.findByTestId('human-vs-ai');
     const alerts = await within(card).findByTestId('human-vs-ai-alerts');
-    // 40 + 30 + 55 ingested, stated as CONTEXT with its population named.
+    // 40 + 30 + 55 ingested, stated as CONTEXT with its population named. The numeral and
+    // the population WORD stay on the face — a bare count beside a case cohort would be
+    // read as part of it — while the clause that says which population it is moved to the
+    // help popover, asserted against the exported constant (see the note on the share
+    // denominator above for why the popover itself is not driven open here).
     expect(alerts).toHaveTextContent('125 alerts ingested');
-    expect(alerts).toHaveTextContent(/not this case cohort/i);
+    expect(alerts).not.toHaveTextContent(/ingest-hour tally/i);
+    expect(HUMAN_VS_AI_HELP).toMatch(/ingest-hour tally, not this case cohort/i);
   });
 
   it('omits the alert context entirely when any bucket did not report its counters', async () => {
@@ -328,18 +341,33 @@ describe('Overview — Human vs AI card', () => {
     expect(within(card).getByText(/bounded sample, shares unavailable/i)).toBeInTheDocument();
 
     // Resolved / Closed: the COUNT is still a count, but its share is withheld.
-    const resolved = within(screen.getByTestId('kpi-resolved-closed'));
+    //
+    // The scale-context slot that used to print an em dash here is off the tile FACE — at
+    // six columns it shared one `items-end` row with a 30px numeral and would ellipsize —
+    // so the withholding is now asserted where it is stated: no share anywhere on the
+    // face, and the numeral itself marked as a FLOOR carrying the bound sentence. Those
+    // two together are the same claim the em dash made, and the marker is the part that
+    // could not be relocated to a help surface.
+    const resolvedTile = screen.getByTestId('kpi-resolved-closed');
+    const resolved = within(resolvedTile);
     await waitFor(() => expect(resolved.getByText('10')).toBeInTheDocument());
-    expect(resolved.getByText('—')).toBeInTheDocument();
     expect(resolved.queryByText(/% of/)).toBeNull();
+    expect(resolvedTile.querySelector('[data-bound="floor"]')).not.toBeNull();
+    expect(resolved.getByTestId('kpi-resolved-closed-bound')).toHaveTextContent('≥');
     expect(resolved.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
 
     // False Positive Rate: the rate's own denominator (verdicted_cases) is bounded
     // too, so the rate AND the sample size behind it are withheld.
-    const fp = within(screen.getByTestId('kpi-false-positive-rate'));
+    const fpTile = screen.getByTestId('kpi-false-positive-rate');
+    const fp = within(fpTile);
     expect(fp.queryByText('50%')).toBeNull();
     expect(fp.queryByText('4 of 8 verdicted')).toBeNull();
     expect(fp.getAllByText('—').length).toBeGreaterThan(0);
+    // This tile publishes no bounded RATIO at all, so its bound is the WITHHELD arm of the
+    // grammar rather than a floor: the mark lands on the em dash and explains why there is
+    // no number, which is the one thing a bare dash cannot do for itself.
+    expect(fpTile.querySelector('[data-bound="withheld"]')).not.toBeNull();
+    expect(fp.queryByTestId('kpi-false-positive-rate-bound')).toBeNull();
     expect(fp.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
   });
 
@@ -381,8 +409,11 @@ describe('Overview — Human vs AI card', () => {
     // Regression: `usePosture` is stale-while-revalidate and Overview deliberately
     // accepts the stale snapshot, but `trends` is REJECTED on a window mismatch — so
     // the card's footer label fell back to the NEWLY selected window while the counts
-    // were still the previous one's. The KPI tiles mark that state with a
-    // "Loading 7 days" sub; the card had no marker at all.
+    // were still the previous one's. The card marks that state with its own
+    // `human-vs-ai-stale` node, asserted below; the KPI tiles deliberately do NOT caption
+    // a stale snapshot (they keep the previous measurement on screen, and captioning a
+    // measurement "Loading" says something false about it), so the card's marker is the
+    // only one and this test is where it is pinned.
     const pending: Array<(value: PostureResponse) => void> = [];
     fetchPostureMock.mockImplementation(
       () => new Promise<PostureResponse>((resolve) => pending.push(resolve)),

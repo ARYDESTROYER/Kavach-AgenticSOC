@@ -12,6 +12,70 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**A KPI strip whose captions outweighed its numbers.** Each landing tile carried a two-line
+mono caption under a 24px numeral, so the sentence about the metric was visually heavier than
+the metric, and the row's six-to-eight words of standing prose were read once and then became
+furniture. The captions are gone from the face and the numerals step to 30px. What a numeral
+counts, and the "out of what" behind it, now live in the tile's help — which opens on click
+and is reachable by keyboard and touch — and in its drill-down.
+
+Two things deliberately did NOT move, because they are not prose. A **conditional bound** is
+visible exactly when it is true, so relocating it to a help surface a reader may never open
+would turn a floor into a fact: the tile now marks the NUMBER itself with `≥` and announces
+the full sentence to assistive technology. A **withheld** value takes the same grammar from
+the other side — the em dash carries the explanation, so False Positive Rate no longer shows a
+bare dash with nothing to account for it once its caption is gone. And a **degradation notice**
+("Posture unavailable", or the server's own account of a window it could not measure) still
+takes the face unconditionally: it is the one caption worth the strip's height.
+
+A sixth tile, **Auto Closed**, states the agent's own share of the work from the server's
+`auto_closed_cases` and `automation_rate` — never a client tally over a bounded page, and never
+divided by the neighbouring numeral, which counts a policy-INCLUSIVE population the rate itself
+strips. It is a SUBSET of Resolved / Closed rather than a sixth independent total, and the row
+must not read as a set that sums; it says so by sitting immediately beside that tile, sharing
+its accent against five otherwise-distinct ones, naming its own denominator, and carrying the
+containment sentence in its accessible name, its help and its drill-down population. Its
+drill-down deliberately declares `rows-read` rather than a store-resolved population, because
+there is no server-side attribution filter and the caveat that follows from that is TRUE.
+
+The tiles' numerals are now **bottom-aligned**. Measured in a browser at 1280px, six labels
+wrapped to one, two and three lines and put the six numbers at y = 26/40/26/54/40/26 — a 28px
+stagger across a row the eye reads as one instrument. Growing labels upward from a shared
+baseline is length- and locale-independent where a reserved label height is not. The scale
+context ("43 of 59 verdicted") stays OFF that row for a measured reason too: both it and the
+numeral are shrinkable, and flex shrinks the numeral first — restored beside a 30px numeral at
+six columns, "72%" rendered as "7…" and "44" as "4.". It is in the help instead.
+
+A real clipping defect went with them: the numeral had neither `min-w-0` nor `truncate`, and a
+grouped integer offers no min-content break, so an oversize value was hard-clipped by the
+tile's `overflow-hidden` with no ellipsis — "543,210" rendered as "543,21", a readable WRONG
+number. It now shrinks, then abbreviates through a caller-supplied formatter with the exact
+value kept in the accessible name.
+
+**The flow diagram grew, and stopped mislabelling itself.** The inline band goes 184 → 216px
+(+28% of drawable pipeline), which separates the conversion labels that overlapped on the
+right-hand side at 1280 and 1440. The constant and its wrapper class move together, because
+the height flows into a `preserveAspectRatio` viewBox: changing one alone letterboxes the
+drawing and drifts the percentage-positioned label overlay off its nodes. The in-SVG
+"FULL ALERT-TO-CASE FLOW" caption is deleted — it was inside an `aria-hidden` element so it
+was never announced, it restated the heading directly above it, and it rendered
+unconditionally while the nodes it captioned are gated, so a deployment with warming counters
+read "FULL" over a flow that starts at cases opened, directly under a banner saying the
+opposite. The √-scale sentence beside it moved to the popover that already restates it, but a
+persistent `√ scale` chip stays on the face carrying the sentence as its accessible name: an
+unlabelled non-linear axis is a misleading chart, not a tidy one.
+
+**Human vs AI** dropped a subtitle and a share-line prefix that its help now carries, giving
+its chart ~38px it did not have; the bucket-granularity label stays, because it is the only
+axis caption the series has. The dashboard's own containers reclaim 8px a side (+16px at every
+width) — the page cap does not bind below roughly 2218px, so the real reclaim was the caption
+row, not the container.
+
+**A caption that fired on every refresh tick.** The dashboard defaults to LIVE, and posture
+reloads while the previous rollup stays on screen; captioning those numerals `Loading …` said
+something false about them and, once it was the only caption a tile carried, made the strip
+grow and shrink by ~18px on every tick. A first load with nothing to show still says so.
+
 **A drill-down that had to be read past, and a warning that only one page could show.**
 The KPI deep-inspection panel docked below the landing strip and pushed the instrument band
 down the page; its row table was capped at a 320px window whatever the screen; and the

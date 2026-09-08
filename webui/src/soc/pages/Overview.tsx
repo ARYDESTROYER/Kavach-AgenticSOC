@@ -162,6 +162,7 @@ import { DonutChart, TrendArea, type DonutSegment } from '@/soc/components/chart
 import { token, VERDICT_COLOR, type VerdictKey } from '@/soc/components/palette';
 import {
   SEVERITY_BAND_ORDER,
+  isAutoClosedByAI,
   severityBand,
   severityBandFromNumber,
 } from '@/soc/components/badges';
@@ -251,6 +252,17 @@ const TERMINAL_CASES_FILTER = '__terminal__';
  */
 const ACTIVE_STATUS_GROUP = 'active';
 const TERMINAL_STATUS_GROUP = 'terminal';
+
+/**
+ * ONE containment sentence, used verbatim as the Auto Closed tile's accessible help, its
+ * drill-down population, and — through both — the thing a reader arrives at from either
+ * direction. It is a single constant precisely so the three can never drift into saying
+ * different things about the same numeral.
+ */
+const AUTO_CLOSED_POPULATION =
+  'A SUBSET of Resolved / Closed, not a sixth independent total. Counted over the ' +
+  'agent-worked population only — cases an operator closed under a "declared benign" ' +
+  'rule policy are excluded, exactly as the automation rate beside it excludes them.';
 
 /**
  * `constants.DecisionBy.ANALYST_POLICY` — an operator's audited per-rule declaration,
@@ -545,19 +557,32 @@ interface KpiItem {
    */
   testId: string;
   value: React.ReactNode;
+  /**
+   * STATE disclosures only — "Loading 24h", "Posture unavailable", or the server's own
+   * account of a window it could not measure. Descriptive captions moved to `help` and a
+   * conditional bound moved to `bound`; what is left is the one kind of sentence worth
+   * the strip's height, because it says the numeral above it cannot be trusted yet.
+   */
   sub?: string;
   /**
-   * The tile's longer explanation, relocated OUT of the always-visible sub-line and into a
-   * keyboard- and touch-reachable help popover on the tile. A sub-line has room for a
-   * qualifier, not for a paragraph; what lives here is the sentence an operator needs the
-   * first few times and never again. Conditional bounds NEVER move here — they are visible
-   * exactly when they are true, which is the whole of their value.
+   * The conditional BOUND on this numeral, when one is in force. Rendered as a mark ON
+   * the number rather than as a caption under it — see `KpiTileProps.bound`. Never
+   * populated in the same render as an outage `sub`: a window that measured nothing has
+   * no floor to state, and calling its structural zeros a lower bound would be a lie.
+   */
+  bound?: string;
+  /**
+   * The tile's longer explanation, on a keyboard- and touch-reachable help popover. This
+   * is where a descriptive caption lives once it is off the face: the sentence an
+   * operator needs the first few times and never again. Conditional bounds NEVER move
+   * here — they are visible exactly when they are true, which is the whole of their value.
    */
   help?: string;
   /**
-   * Scale context beside the numeral ("N (P%)"-style): the denominator this count is
-   * a share of, or `DASH` when that denominator is missing/bounded. Never a `delta`
-   * — see `KpiTileProps.secondary`.
+   * Scale context ("N (P%)"-style): the denominator this count is a share of, or `DASH`
+   * when that denominator is missing/bounded. Never a `delta` — see
+   * `KpiTileProps.secondary`. Built for the drill-down panel's metric switcher; the
+   * landing strip no longer renders it on the tile face (see the `<KpiTile>` call site).
    */
   secondary?: React.ReactNode;
   icon: LucideIcon;
@@ -1826,6 +1851,35 @@ export default function Overview({ onNavigate }: OverviewProps) {
       strippedTerminal === undefined
         ? undefined
         : strippedTerminal + (policyClosedReported ? (policyClosed as number) : 0);
+
+    /**
+     * --- Auto Closed: the agent's own share of the work, straight off the server. ---
+     *
+     * `quality.auto_closed_cases` is the LAST-WRITER `decision_by === AGENT` count, and
+     * it is REQUIRED on the wire, so there is no legacy branch to write. Three tempting
+     * alternatives are all wrong:
+     *
+     *   - `/api/metrics/auto-close-health/recorded` anchors on the FIRST RECORDED
+     *     DECISION, a different clock from this window, and this page never fetches it;
+     *   - a client tally over `list_cases` is a bounded page with no attribution filter,
+     *     so it would report a SAMPLE as a total;
+     *   - `humanVsAi.totals.ai` falls back to SUMMING TREND BUCKETS when the partition
+     *     does not reconcile, which is a repair, not a measurement.
+     *
+     * The SHARE comes from the server too, and deliberately not from
+     * `shareContext(autoClosed, terminalCases)`. `quality_metrics` strips policy closes
+     * BEFORE counting `auto_closed_cases`, while the Resolved / Closed numeral beside it
+     * is policy-INCLUSIVE; dividing one by the other is exactly the cross-population
+     * defect the comment above exists to kill. `automation_rate` is the server's own
+     * ratio over its own denominator, so the caption names that denominator out loud
+     * rather than borrowing the neighbouring tile's.
+     */
+    const autoClosedCases = measured(quality?.auto_closed_cases);
+    const automationRate = quality?.automation_rate;
+    const automationPercent =
+      !unmeasured && covered && typeof automationRate === 'number'
+        ? Math.round(automationRate * 100)
+        : undefined;
     /**
      * The close breakdown is THREE numbers, never two. `engine/metrics.py` is explicit
      * that human work is NOT `terminal - auto_closed`: that difference over-states the
@@ -1873,26 +1927,90 @@ export default function Overview({ onNavigate }: OverviewProps) {
           ]
         : undefined;
 
-    const postureSub = postureLoading
-      ? `Loading ${windowLabel(hours)}`
-      : postureError
-        ? 'Posture unavailable'
-        : // A successful read of an unreadable store: say so on every tile it feeds,
-          // in the server's own words, instead of captioning zeros as a lower bound.
-          (unmeasured ?? undefined);
-    const bucketLabel = bucketTrends?.label ?? trendFallbackLabel;
-    /**
-     * A cohort sub: the honest caption when covered, the named bound when not.
+    /*
+     * The loading arm fires only on a FIRST load — when there is no measurement on screen
+     * to caption.
      *
-     * `caption` may be `undefined` — that means "the label already says it", and the tile
-     * then shows NO sub-line at all rather than an empty one. The BOUNDED arm is never
-     * optional: a conditional bound is visible exactly when it is true, so it can never be
-     * relocated to a help surface the way a static caption can.
+     * This page defaults to a LIVE refresh, and posture reloads on every tick while the
+     * previous rollup stays rendered. Captioning those numerals "Loading 24h" said something
+     * false about them (they are a measurement, not a placeholder), and now that it is the
+     * only caption a tile carries it also made the whole strip grow and shrink by ~18px on
+     * every tick, shoving the lattice below it. The refresh control already shows LIVE and
+     * spins, which is the honest place for "a request is in flight".
+     *
+     * A real DEGRADATION still takes the face, unconditionally: an error, or a successful
+     * read of a store the server could not measure, in the server's own words. Those are
+     * worth a reflow, and they are the reason this slot survives at all.
      */
-    const cohortSub = (
-      caption: string | undefined,
-      bounded = PARTIAL_WINDOW_SUB,
-    ): string | undefined => postureSub ?? (covered ? caption : bounded);
+    const postureSub =
+      postureLoading && !posture
+        ? `Loading ${windowLabel(hours)}`
+        : postureError
+          ? 'Posture unavailable'
+          : (unmeasured ?? undefined);
+    const bucketLabel = bucketTrends?.label ?? trendFallbackLabel;
+    /*
+     * `sub` used to carry THREE different kinds of sentence at once, and only one of them
+     * belongs on the face of a landing strip:
+     *
+     *   (a) a descriptive caption  — "Window arrivals · policy-closed included"
+     *   (b) a conditional BOUND    — "Partial window · lower bound"
+     *   (c) a STATE disclosure     — "Loading 24h" / "Posture unavailable" / the server's
+     *                                own account of a window it could not measure
+     *
+     * (a) is prose about a numeral that has not changed; read once, it becomes furniture,
+     * and at two mono lines it outweighed the number it qualified. It now lives in the
+     * tile's help and in its drill-down's population sentence — surfaces the operator
+     * opens deliberately.
+     *
+     * (b) may NOT be relocated the same way: it is visible exactly when it is true, so a
+     * reader who never opens the help would read a floor as a fact. It becomes the tile's
+     * `bound` mark, which stays ON the numeral and carries this same sentence as its
+     * accessible name.
+     *
+     * (c) stays on the face verbatim. A degradation notice is the one caption worth the
+     * strip's height, and hiding it behind a popover would be strictly worse than the
+     * prose it replaced. So `sub` is now EXACTLY `postureSub`: undefined on a healthy
+     * window, which is what gives the numeral its room back.
+     */
+    const boundSub = (bounded = PARTIAL_WINDOW_SUB): string | undefined =>
+      postureSub == null && !covered ? bounded : undefined;
+
+    /**
+     * Append the tile's live SCALE CONTEXT to its help.
+     *
+     * The context ("43 of 59 verdicted", "22% of 59") cannot ride beside the numeral on a
+     * six-column strip — flex shrinks the NUMERAL first and turns "72%" into "7…" — and the
+     * drill-down's metric switcher shows values only. So it goes here, where it is one
+     * click, Enter, Space or tap away, and it is still the same string the tile computed,
+     * not a second derivation that could disagree with it.
+     *
+     * An em dash is dropped rather than appended: "Right now: —." is not a disclosure, and
+     * the surrounding help already says why the denominator is missing.
+     */
+    const scaleAside = (help: string, context: React.ReactNode): string =>
+      typeof context === 'string' && context && context !== DASH
+        ? `${help} Right now: ${context}.`
+        : help;
+
+    /*
+     * The four scale contexts, each computed ONCE and then read by both the tile's
+     * `secondary` (which the drill-down and any non-hero consumer still use) and its help.
+     * One derivation, so the two can never state different denominators for one numeral.
+     */
+    const criticalShare = (covered ? shareContext(criticalCount, caseCount) : undefined) ?? DASH;
+    const fpSample =
+      covered &&
+      typeof quality?.false_positive_cases === 'number' &&
+      typeof quality?.verdicted_cases === 'number' &&
+      quality.verdicted_cases > 0
+        ? `${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`
+        : DASH;
+    const terminalShare = (covered ? shareContext(terminalCases, caseCount) : undefined) ?? DASH;
+    const automationShare =
+      typeof automationPercent === 'number'
+        ? `${automationPercent}% of agent-worked closes`
+        : DASH;
 
     return [
       {
@@ -1908,11 +2026,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // No `secondary`: this IS the denominator the cohort tiles are shares of, so
         // it has none of its own. An em dash here would read as "a denominator we
         // could not measure", which is the opposite of true.
-        sub: cohortSub('Window arrivals · policy-closed included'),
+        sub: postureSub,
+        bound: boundSub(),
         help:
-          'Every case that ARRIVED in this window, keyed on case-arrival time. Cases an ' +
-          'operator closed under a "declared benign" rule policy are included in the count, ' +
-          'so this is the denominator the cohort tiles beside it are shares of.',
+          'Window arrivals, policy-closed included. Every case that ARRIVED in this window, ' +
+          'keyed on case-arrival time. Cases an operator closed under a "declared benign" ' +
+          'rule policy are included in the count, so this is the denominator the cohort ' +
+          'tiles beside it are shares of.',
         icon: Inbox,
         accent: 'primary',
         goodDirection: 'down',
@@ -1960,15 +2080,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
         format: fmtInt,
         // `severity_counts` partitions `case_count` exactly, so numerator and
         // denominator come off ONE payload and describe one population.
-        secondary: (covered ? shareContext(criticalCount, caseCount) : undefined) ?? DASH,
+        secondary: criticalShare,
+        sub: postureSub,
+        bound: boundSub(BOUNDED_SAMPLE_SUB),
         // NEVER flatten this template literal: `topBandLabel` is DERIVED from the severity
         // ladder and is designed to disagree with the tile's own literal label — the label
-        // says "Total Critical" while the band may honestly be "High".
-        sub: cohortSub(`${topBandLabel} band`, BOUNDED_SAMPLE_SUB),
-        help:
-          'Counted SERVER-SIDE over the whole window from the severity roll-up, not derived ' +
-          'from the rows any page of this console happened to read. The band name is the top ' +
-          'band the severity ladder actually declares, which is not always "Critical".',
+        // says "Total Critical" while the band may honestly be "High". It moved off the face
+        // with the rest of the captions, but it is still built, never written out.
+        help: scaleAside(
+          `The ${topBandLabel} band. Counted SERVER-SIDE over the whole window from the ` +
+            'severity roll-up, not derived from the rows any page of this console happened ' +
+            'to read. The band name is the top band the severity ladder actually declares, ' +
+            'which is not always "Critical".',
+          criticalShare,
+        ),
         icon: ShieldAlert,
         accent: 'critical',
         // No trend and no spark: there is no per-severity bucket series, and the Cases
@@ -2010,17 +2135,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // as a fifth summand of the cohort tiles. The em dash plus the sub below say
         // exactly why there is none.
         secondary: DASH,
-        sub:
-          // `postureSub` already carries loading / error / NOT-MEASURED; only a real
-          // measurement reaches the truncation wording below.
-          postureSub ??
-          (openNowComplete
-            ? 'Open now · not window-filtered'
-            : 'Open now · not window-filtered · lower bound'),
+        sub: postureSub,
+        // This tile's completeness has its OWN predicate: `open_now.complete`, not the
+        // window coverage every other tile is gated on. A stock is read at `generated_at`
+        // and can be a lower bound while the window itself was fully covered, so the
+        // bound is derived here rather than from `boundSub`.
+        bound:
+          postureSub == null && !openNowComplete
+            ? 'Open now · not window-filtered · lower bound'
+            : undefined,
         help:
-          'A STOCK, not a flow: the cases open right now, whenever they arrived. Every other ' +
-          'tile on this strip counts arrivals inside the selected window, which is why this ' +
-          'one has no window denominator and why its drill-down opens on an all-time page.',
+          'Open now, and not window-filtered. A STOCK, not a flow: the cases open right now, ' +
+          'whenever they arrived. Every other tile on this strip counts arrivals inside the ' +
+          'selected window, which is why this one has no window denominator and why its ' +
+          'drill-down opens on an all-time page.',
         icon: Workflow,
         accent: 'low',
         goodDirection: 'down',
@@ -2068,20 +2196,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // size: the server's exact fp / verdicted counts behind the rate. Both halves
         // — and the rate above them — come off the same scan, so an uncovered window
         // withholds all of them rather than quoting a bounded ratio as fact.
-        secondary:
-          covered &&
-          typeof quality?.false_positive_cases === 'number' &&
-          typeof quality?.verdicted_cases === 'number' &&
-          quality.verdicted_cases > 0
-            ? `${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`
-            : DASH,
-        // No caption: "Closed as false positive" only restated the label. The share's real
-        // subtlety — its denominator — is in the help, and the bound still shows when true.
-        sub: cohortSub(undefined, BOUNDED_SAMPLE_SUB),
-        help:
-          'The share of VERDICTED cases the agent closed as a false positive. The denominator ' +
-          'is verdicted cases, not every case in the window, so a window with few verdicts ' +
-          'moves this number a long way on very little evidence.',
+        secondary: fpSample,
+        sub: postureSub,
+        // This tile never publishes a bounded RATIO — `fpPercent` is withheld entirely
+        // unless the window is covered — so its bound is the WITHHELD arm of the grammar,
+        // not a floor: the mark lands on the em dash and explains why there is no number,
+        // which is the one thing a bare dash cannot do for itself.
+        bound: boundSub(BOUNDED_SAMPLE_SUB),
+        help: scaleAside(
+          'The share of VERDICTED cases the agent closed as a false positive. The ' +
+            'denominator is verdicted cases, not every case in the window, so a window with ' +
+            'few verdicts moves this number a long way on very little evidence.',
+          fpSample,
+        ),
         icon: Percent,
         accent: 'medium',
         // The former two-point prev→cur spark drew a straight line that read as a
@@ -2137,34 +2264,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
         value: typeof terminalCases === 'number' ? fmtNumber(terminalCases) : DASH,
         countTo: terminalCases,
         format: fmtInt,
-        secondary: (covered ? shareContext(terminalCases, caseCount) : undefined) ?? DASH,
-        /*
-         * The caption is the RECONCILIATION between this numeral and the Human-vs-AI card
-         * a few hundred pixels below it, and it is conditional for the same reason the
-         * bounded arm is: it is visible exactly when it is true.
-         *
-         * This numeral is policy-INCLUSIVE; the card's denominator is `terminal_cases`,
-         * which `quality_metrics` strips policy closes out of. So on a backend that
-         * separates them the page states 10 here and three bands summing to 5 there, with
-         * nothing on either face to explain the gap — the partition's `Declared benign`
-         * row used to be that explanation, and it now lives one level down in the
-         * drill-down. Naming the count here restores the bridge at zero height cost (this
-         * tile is not the strip's tallest), and it says nothing at all when the server
-         * reports no policy closes, because then there is no gap to explain.
-         *
-         * "Reached a terminal state" is still NOT the caption: it only restated the label.
-         */
-        sub: cohortSub(
-          policyClosedReported && (policyClosed as number) > 0
-            ? `Incl. ${fmtNumber(policyClosed as number)} declared benign`
-            : undefined,
-          BOUNDED_SAMPLE_SUB,
-        ),
-        help:
+        secondary: terminalShare,
+        sub: postureSub,
+        bound: boundSub(BOUNDED_SAMPLE_SUB),
+        help: scaleAside(
           'Cases from this window that reached a terminal state, including the ones an ' +
           'operator closed under a "declared benign" rule policy. Where the server reports ' +
           'a reconciling split, this tile’s drill-down names who closed them — the ' +
-          'agent, an analyst, system routing, or that policy.',
+          'agent, an analyst, system routing, or that policy.' +
+          // The RECONCILIATION between this numeral and the Human-vs-AI card below it.
+          // This numeral is policy-INCLUSIVE; the card's denominator is `terminal_cases`,
+          // which `quality_metrics` strips policy closes out of. On a backend that
+          // separates them the page states 10 here and three bands summing to 5 there, and
+          // without this sentence nothing explains the gap. It says nothing at all when
+          // the server reports no policy closes, because then there is no gap to explain.
+            (policyClosedReported && (policyClosed as number) > 0
+              ? ` This window includes ${fmtNumber(policyClosed as number)} declared benign.`
+              : ''),
+          terminalShare,
+        ),
         icon: ShieldCheck,
         accent: 'success',
         goodDirection: 'up',
@@ -2203,6 +2321,70 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 // the `__terminal__` virtual facet Cases gained alongside this panel —
                 // the same set `CLOSED_STATUSES` names here — unless the operator has
                 // already narrowed to one of those two, which travels with them.
+                onSelect: (ctx) =>
+                  navigate('cases', {
+                    status: ctx.status ?? TERMINAL_CASES_FILTER,
+                    ...(ctx.band ? { severity: ctx.band } : {}),
+                    ...(ctx.windowHours != null ? { window: ctx.windowHours } : {}),
+                  }),
+              }
+            : undefined,
+        },
+      },
+      /*
+       * --- Auto Closed --------------------------------------------------------
+       *
+       * The one tile on this strip that is NOT an independent total, and the whole of its
+       * design is making that impossible to misread. Five tiles with five distinct accents
+       * teach the eye that a new accent means a new population; this tile therefore sits
+       * IMMEDIATELY after Resolved / Closed and carries that tile's `success` accent
+       * unchanged, so adjacency plus a shared accent read as "belongs to its neighbour".
+       * The containment sentence then says so in words, in all three places a reader can
+       * arrive from: the accessible name, the help popover and the drill-down's population.
+       *
+       * That is weaker than an explicit indent or a nested rule would be, and it is the
+       * strongest cue available without abandoning the flat grid the divider math is
+       * written for. The row must never read as a set that SUMS: `auto_closed +
+       * human_closed + system_closed === terminal` exactly, so Auto Closed is a SUBSET of
+       * its neighbour, and Open Cases beside them is a window-EXEMPT stock. The fix for
+       * that is this copy, never a perturbation of the borders.
+       */
+      {
+        label: 'Auto Closed',
+        testId: 'auto-closed',
+        value: typeof autoClosedCases === 'number' ? fmtNumber(autoClosedCases) : DASH,
+        countTo: autoClosedCases,
+        format: fmtInt,
+        // Names its OWN denominator. "% of Resolved / Closed" would be false: this
+        // numerator is counted over the policy-STRIPPED terminal set while that numeral
+        // is policy-INCLUSIVE.
+        secondary: automationShare,
+        sub: postureSub,
+        bound: boundSub(BOUNDED_SAMPLE_SUB),
+        help: scaleAside(AUTO_CLOSED_POPULATION, automationShare),
+        icon: ShieldCheck,
+        accent: 'success',
+        goodDirection: 'up',
+        drilldown: {
+          key: 'auto-closed',
+          title: 'Auto Closed',
+          population: AUTO_CLOSED_POPULATION,
+          match: (c) => isAutoClosedByAI(c.status, c.decision_by),
+          statusGroup: TERMINAL_STATUS_GROUP,
+          // Deliberately NO `populationResolvedBy`. There is no server-side `decision_by`
+          // filter, so this population really IS resolved in the browser over the rows the
+          // request read; the panel's `'rows-read'` default is therefore the truth, and it
+          // surfaces that in its own caveat. Copying `'store'` from the tile above would
+          // suppress a disclosure that is CORRECT.
+          defaultRange: 'window',
+          severityHistogram: bandHistogram,
+          target: navigate
+            ? {
+                label: 'Open in Cases',
+                // The deep link can only carry the terminal STATUS set; `decision_by` is
+                // not a Cases facet, so the landing list is deliberately WIDER than this
+                // tile's population. `honours` says exactly which narrowings survive.
+                honours: ['band', 'status', 'windowHours'],
                 onSelect: (ctx) =>
                   navigate('cases', {
                     status: ctx.status ?? TERMINAL_CASES_FILTER,
@@ -2422,7 +2604,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // ----- Blocking load uses the Console's one centered motion grammar. ---- //
   if (loading && !cases.length && !metrics) {
     return (
-      <PageContainer variant="wide">
+      <PageContainer variant="fluid" className="w-auto sm:-mx-2">
         <LoadingState label="Loading dashboard" layout="page" shape="page" />
       </PageContainer>
     );
@@ -2437,7 +2619,23 @@ export default function Overview({ onNavigate }: OverviewProps) {
     : 'Retry spend telemetry';
 
   return (
-    <PageContainer variant="wide" className="space-y-4">
+    /*
+     * `fluid` + a bounded negative gutter, not a wider `wide`.
+     *
+     * The page cap is `max-w-[1760px] 2xl:max-w-[1920px]`, and it does not BIND until a
+     * viewport around 2218px: below that the limit is the shell (a 240px rail plus a 48px
+     * inset), so raising the cap would move nothing at 1440 or 1920 and would regress the
+     * 21 prose-heavy pages that share it. This reclaims the inset itself, 8px a side, on
+     * THIS page only. `w-auto` is load-bearing: `cn` is `twMerge`, so without it the
+     * container's base `w-full` survives and the margin shifts the box left instead of
+     * widening it. Both containers take it, or the page changes width when data lands.
+     *
+     * 24px a side is the hard ceiling: the shell's scroll containers are
+     * `overflow-x-hidden`, so a bigger bleed would clip silently — no scrollbar, no
+     * failing test. The honest gain is +16px; the real reclaim on this page is the
+     * caption row the strip gave back to its numerals.
+     */
+    <PageContainer variant="fluid" className="w-auto space-y-4 sm:-mx-2">
       {/* ---- MASTHEAD: a PLAIN, dense header (the big title sits flush on the page
              background, like the Sources page) with the time-range + refresh controls in
              its `meta` slot — BESIDE the title, not opposite it.
@@ -2510,24 +2708,42 @@ export default function Overview({ onNavigate }: OverviewProps) {
           <div className="space-y-1.5">
             <Stagger
               data-testid="kpi-strip"
-              className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5"
+              className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6"
               /*
-               * Exact divider math for FIVE tiles at 1 / 2 / 3 / 5 columns. A cell may
+               * Exact divider math for SIX tiles at 1 / 2 / 3 / 6 columns. A cell may
                * never draw a hairline into empty space or lose the rule that separates
                * it from the next row (ui-standard, operational metric surfaces):
-               *   - column rule: on for every cell that HAS a right-hand neighbour, so
-               *     it is off at 1 column, off for cells 2·4 at 2 columns, off for
-               *     cell 3 at 3 columns, and always off for the last cell;
-               *   - row rule: off for the cells in the final row — cell 5 at 1/2
-               *     columns, cells 4·5 at 3 columns, all of them at 5 columns.
-               * `:last-child` / `:nth-child()` outrank the plain utilities, so the
-               * per-breakpoint overrides resolve deterministically.
+               *   - column rule: on for every cell that HAS a right-hand neighbour;
+               *   - row rule: off for every cell in the final row.
+               *
+               * SIX is easier than five, not harder: 6 % {1,2,3,6} === 0, so every
+               * breakpoint fills whole rows and "last column" coincides with "last child"
+               * at each of them. Five left orphans — a cell whose row simply stops — which
+               * is why the old string drew a bottom rule under cell 4 at two columns and
+               * under cell 3 at three, in both cases into empty space.
+               *
+               * VERIFIED, not reasoned: these classes were compiled with this repo's own
+               * Tailwind 3.4.19 and the resulting borders read back from computed styles in
+               * a real browser at 500 / 700 / 900 / 1400px, against the geometric oracle
+               * (`right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`). All four
+               * breakpoints match. The same harness shows the FIVE-cell string failing at
+               * exactly two cells once a sixth tile is added — `sm` bottom on cell 5 and
+               * `xl` right on cell 6 — which is what the two new rules below fix.
+               *
+               * ⚠️ Do not "simplify" the `:not()`s away. Tailwind emits arbitrary-variant
+               * rules in ONE trailing block whose internal order is not by breakpoint, so
+               * at `md` the `2n` ON rule beat the `3n` OFF rule on cell 6 only by emission
+               * order, at equal (0,2,0) specificity. `:not()` lifts it to (0,3,0) and makes
+               * the outcome a property of the selectors rather than of the build. At `xl`,
+               * `:not(:nth-child(6n))` is strictly required. (jsdom's nwsapi THROWS on
+               * `:not(:nth-child(3n))` — harmless here, but a future test that queries with
+               * that selector will error rather than fail.)
                */
               itemClassName={cn(
                 'h-full min-w-0 border-b border-r-0 border-border/70 last:border-b-0 last:border-r-0',
-                'sm:border-r sm:[&:nth-child(2n)]:border-r-0',
-                'md:[&:nth-child(2n)]:border-r md:[&:nth-child(3n)]:border-r-0 md:[&:nth-child(n+4)]:border-b-0',
-                'xl:border-b-0 xl:[&:nth-child(2n)]:border-r xl:[&:nth-child(3n)]:border-r',
+                'sm:border-r sm:[&:nth-child(2n)]:border-r-0 sm:[&:nth-child(n+5)]:border-b-0',
+                'md:[&:nth-child(2n):not(:nth-child(3n))]:border-r md:[&:nth-child(3n)]:border-r-0 md:[&:nth-child(n+4)]:border-b-0',
+                'xl:border-b-0 xl:[&:nth-child(3n):not(:nth-child(6n))]:border-r',
               )}
             >
               {kpis.map((kpi) => {
@@ -2537,8 +2753,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     label={kpi.label}
                     testId={kpi.testId}
                     value={kpi.value}
-                    secondary={kpi.secondary}
+                    /*
+                     * NO `secondary` on the face, and the reason is MEASURED, not assumed.
+                     *
+                     * The scale context shares one `items-end` flex row with the numeral,
+                     * and both are shrinkable (the numeral must be, or a long value is
+                     * hard-clipped by the tile's `overflow-hidden` with no ellipsis). At six
+                     * columns on a 1280px viewport — 143px of cell content — flex shrinks
+                     * the numeral FIRST, because it has the larger basis: rendered in a
+                     * browser, "72%" came out as "7…" and "44" as "4.". A truncated NUMERAL
+                     * is the exact defect the truncate fix exists to prevent, so the context
+                     * cannot sit beside it here.
+                     *
+                     * It is not deleted. `scaleAside()` appends the same live string to each
+                     * tile's help, which opens on click and is reachable by keyboard and
+                     * touch — the drill-down's metric switcher shows values only, so help is
+                     * the honest home for it.
+                     */
                     sub={kpi.sub}
+                    bound={kpi.bound}
                     help={kpi.help}
                     onHelpOpenChange={onHelpOpenChange(kpi.testId)}
                     icon={kpi.icon}
@@ -2546,14 +2779,21 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     variant="strip"
                     // The strip HEADS this page rather than being all of it: a flow
                     // diagram, a case queue and a timing pair have to sit below it in the
-                    // same view. Compact swaps the tile's existing padding/numeral tokens
-                    // (min-h-28→min-h-0, px-4 py-5→px-3 py-2, text-4xl→text-2xl); it does
-                    // not touch the cell COUNT, which the grid's nth-child divider math is
-                    // hand-tuned to. See ui-standard, "Operational summaries".
+                    // same view. Compact swaps the tile's existing padding tokens
+                    // (min-h-28→min-h-0, px-4 py-5→px-3 py-2); it does not touch the cell
+                    // COUNT, which the grid's nth-child divider math is hand-tuned to.
+                    // See ui-standard, "Operational summaries".
                     density="compact"
+                    // …and `hero` buys the numeral back the 24px→30px step that compact
+                    // otherwise spends, because this strip has given up its caption row for
+                    // it. Opt-in, never blanket: `density="compact"` is a shared console
+                    // rhythm passed at nine other call sites across six other pages, and
+                    // enlarging their numerals is not this page's decision to make.
+                    numeral="hero"
                     goodDirection={kpi.goodDirection}
                     countTo={kpi.countTo}
                     format={kpi.format}
+                    formatCompact={fmtSnapshotCenter}
                     onClick={() => toggleKpiPanel(kpi.testId)}
                     // The tile opens a MODAL, so it announces a popup — not an expanded
                     // state. `aria-expanded` is a disclosure semantic and would be wrong
@@ -2605,19 +2845,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 `KpiTile` from the same `ariaHasPopup` prop that carries the claim to
                 assistive tech — so the visible promise and the announced one can never
                 disagree, and the promise is now ON the control instead of in a caption
-                under a five-tile row that is read once and then becomes furniture.
+                under a metric row that is read once and then becomes furniture.
 
                 The TREND half was device-honest copy ("hover or focus" / "tap") for a card
-                only three of the five tiles have. It is redundant with the mark: every tile
-                is selectable, the panel restates the same series, and the copy could not be
-                made true of all five without saying "some of these". */}
+                only some of the tiles have. It is redundant with the mark: every tile is
+                selectable, the panel restates the same series, and the copy could not be
+                made true of all of them without saying "some of these". */}
 
             {/* The drill-down. It PORTALS to `document.body` (Radix Dialog), so it is no
-                longer a sibling of the grid in the rendered DOM at all — which also
-                permanently settles the old hazard that it might become a sixth child of a
-                strip whose hand-tuned `nth-child` divider math expects exactly five. It is
-                still mounted from here, and only while open, so the fetch it owns starts
-                and stops with the operator's intent. */}
+                longer a sibling of the grid in the rendered DOM at all — which permanently
+                settles the old hazard that it might become an extra child of a strip whose
+                hand-tuned `nth-child` divider math counts its cells. It is still mounted
+                from here, and only while open, so the fetch it owns starts and stops with
+                the operator's intent. */}
             {openKpiSpec ? (
               <KpiDrilldownPanel
                 spec={openKpiSpec}

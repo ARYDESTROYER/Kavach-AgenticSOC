@@ -64,7 +64,13 @@ describe('HumanVsAiCard', () => {
     //   `relative`        — the positioned ancestor `inset-0` resolves against;
     //   `min-h-[122px]`   — the floor, without which a flex item with no free space
     //                       collapses to zero (the real case on every load tick where
-    //                       this card is the row's only child, and below `xl`).
+    //                       this card is the row's only child, and below `xl`);
+    //   `xl:min-h-[160px]` — the raised floor the two relocated prose lines paid for. It
+    //                       binds only where nothing stretches the card, and `xl` is
+    //                       exactly where this card is one narrow column beside the flow
+    //                       diagram — the width at which the chart was starved. Asserted
+    //                       WITH the base floor, never instead of it: dropping either one
+    //                       collapses a different case.
     const { rerender } = render(
       <HumanVsAiCard
         totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
@@ -73,7 +79,7 @@ describe('HumanVsAiCard', () => {
       />,
     );
     const chart = screen.getByTestId('human-vs-ai-chart');
-    expect(chart).toHaveClass('relative', 'min-h-[122px]', 'flex-1');
+    expect(chart).toHaveClass('relative', 'min-h-[122px]', 'xl:min-h-[160px]', 'flex-1');
 
     // …and the chart INSIDE it is really in fill mode. jsdom cannot measure the resulting
     // height — `src/test/setup.ts` says so, and that is honest — but the MODE is fully
@@ -208,6 +214,45 @@ describe('HumanVsAiCard', () => {
       /Loading this window/i,
     );
     expect(within(card).queryByTestId('human-vs-ai-unavailable')).toBeNull();
+  });
+
+  it('RELOCATES the two face prose lines rather than deleting them', () => {
+    // Two static lines came off the face to give the chart its height back. Neither may
+    // simply vanish, and this is the guard that says so — the card's own suite, because
+    // the page-level file cannot open the popover the copy landed in.
+    render(
+      <HumanVsAiCard
+        totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+        series={SERIES}
+        windowLabel="last 24 hours · 1h buckets"
+        alertsIngested={125}
+      />,
+    );
+    const card = screen.getByTestId('human-vs-ai');
+
+    // 1. The subtitle. Off the visible face, but STILL describing the region to assistive
+    //    tech from an `sr-only` node INSIDE the section — never an IDREF at the popover,
+    //    which Radix portals with no `forceMount` and would dangle while closed.
+    const describedBy = card.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const description = card.querySelector(`#${CSS.escape(describedBy!)}`);
+    expect(description).not.toBeNull();
+    expect(description).toHaveClass('sr-only');
+    expect(description).toHaveTextContent(/How this window’s cases were closed\./i);
+    // …and its full form, with the denominator it names, is in the help.
+    expect(HUMAN_VS_AI_HELP).toMatch(/How this window’s cases were closed, as a share of closed cases\./i);
+
+    // 2. The alerts caveat. The numeral keeps a POPULATION word on the face, because a
+    //    bare count beside a case cohort reads as part of it; the clause that says which
+    //    population moved to the help.
+    const alerts = within(card).getByTestId('human-vs-ai-alerts');
+    expect(alerts).toHaveTextContent('125 alerts ingested');
+    expect(alerts).not.toHaveTextContent(/ingest-hour tally/i);
+    expect(HUMAN_VS_AI_HELP).toMatch(/ingest-hour tally, not this case cohort/i);
+
+    // 3. The chart's ONLY axis caption stays on the face, bare. It is stated nowhere else
+    //    and cannot be inferred from the bars, so it did not travel with the prose.
+    expect(within(card).getByText('last 24 hours · 1h buckets')).toBeInTheDocument();
   });
 
   it('keeps the counts but drops the shares on a bounded sample', () => {

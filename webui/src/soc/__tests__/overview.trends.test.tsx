@@ -149,11 +149,15 @@ describe('Overview — hover trendlines', () => {
       'kpi-open-cases',
       'kpi-false-positive-rate',
       'kpi-resolved-closed',
+      // The Auto Closed subset tile. It carries no trend series, which makes it exactly
+      // the tile the affordance mark exists for: the strip-level sentence could only ever
+      // promise "some of these are selectable", while the mark is on every one of them.
+      'kpi-auto-closed',
     ]) {
       expect(await screen.findByTestId(`${id}-affordance`)).toBeInTheDocument();
     }
-    // The TREND half was device-honest copy for a card only three of the five tiles have.
-    // It is redundant with the mark and could not be made true of all five.
+    // The TREND half was device-honest copy for a card only three of the six tiles have.
+    // It is redundant with the mark and could not be made true of all six.
     expect(screen.queryByText(/Hover or focus one for its/i)).toBeNull();
     expect(screen.queryByText(/Tap one for its/i)).toBeNull();
   });

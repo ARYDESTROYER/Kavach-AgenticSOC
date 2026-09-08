@@ -4,11 +4,17 @@
  * Pins the load-bearing dashboard contract:
  *   1. the PLAIN header (page-hero, no hero card chrome, exactly one h1, PAGE_TITLE,
  *      and NO subtitle line);
- *   2. the un-nested KPI micro-strip of 5 SERVER-FED tiles (Total Cases / Total
- *      Critical / Open Cases / False-Positive-Rate / Resolved-Closed); LLM spend is
- *      NOT a hero tile; every tile pairs its numeral with the honest denominator it is
- *      a share of, and the two that HAVE no denominator (the cohort total itself, and
+ *   2. the un-nested KPI micro-strip of 6 SERVER-FED tiles (Total Cases / Total
+ *      Critical / Open Cases / False-Positive-Rate / Resolved-Closed / Auto Closed, the
+ *      last a SUBSET of the one before it rather than a sixth independent total); LLM
+ *      spend is NOT a hero tile; every tile pairs its numeral with the honest denominator
+ *      it is a share of — in the tile's help, since the strip gave the caption row back to
+ *      a 30px numeral — and the two that HAVE no denominator (the cohort total itself, and
  *      the window-exempt open stock) say so instead of inventing one;
+ *  2d. the strip's `sub` carries STATE DISCLOSURES only. Descriptive captions moved to
+ *      each tile's help; a conditional BOUND could not move, and became a marker ON the
+ *      numeral (`data-bound`, a `≥` floor mark or a withheld em dash, plus the sentence as
+ *      `sr-only` text) which never fires on an outage's structural zeros;
  *  2b. the tile ANCHORS were re-keyed with the labels — `kpi-open-cases` names the
  *      open stock, not the cohort total, and the retired anchors are gone;
  *  2c. the posture-fed tiles gate on `window_covered`, not on `truncated`;
@@ -21,8 +27,10 @@
  *      deliberately removed — its baseline was not explainable at a glance);
  *   7. tiles + snapshot CTAs deep-link to the filtered case list carrying the window;
  *   8. blocking load uses the shared centered Console loading grammar;
- *   9. a window change keeps the last posture snapshot visible (stale-while-revalidate,
- *      labelled by the "Loading Nh" sub) and still discards late cross-window payloads.
+ *   9. a window change keeps the last posture snapshot visible (stale-while-revalidate)
+ *      and still discards late cross-window payloads. The "Loading N" sub is reserved for
+ *      a FIRST load — a measurement already on screen is not a placeholder — and both arms
+ *      of that gate are pinned together.
  *
  * Fully offline. `noiseReduction` is intentionally omitted so the funnel band self-omits.
  */
@@ -267,7 +275,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(manualRefresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
   });
 
-  it('renders the KPI micro-strip: 5 server-fed tiles (LLM spend NOT a hero tile)', async () => {
+  it('renders the KPI micro-strip: 6 server-fed tiles (LLM spend NOT a hero tile)', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
@@ -278,6 +286,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       'kpi-open-cases',
       'kpi-false-positive-rate',
       'kpi-resolved-closed',
+      'kpi-auto-closed',
     ]) {
       expect(within(strip).getByTestId(id)).toBeInTheDocument();
     }
@@ -292,38 +301,48 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     ]) {
       expect(within(strip).queryByTestId(retired)).toBeNull();
     }
-    // EXACTLY 5 hero tiles.
+    // EXACTLY 6 hero tiles.
     // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile also carries a
     // decorative affordance mark (`kpi-<id>-affordance`), so a bare prefix count answers a
     // different question than the one this test asks — and answering it by loosening the
-    // number would have stopped proving there are exactly five tiles at all. (A tile could
+    // number would have stopped proving there are exactly six tiles at all. (A tile could
     // once also carry a `kpi-<id>-breakdown` partition; that anchor retired to the
-    // drill-down, so the selector no longer excludes it.)
+    // drill-down, so the selector no longer excludes it. A tile under a conditional bound
+    // also carries a `kpi-<id>-bound` mark; this fixture's window is fully covered, so no
+    // tile raises one here — the bounded arm counts them out explicitly instead.)
     expect(
-      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"])'),
-    ).toHaveLength(5);
+      strip.querySelectorAll(
+        '[data-testid^="kpi-"]:not([data-testid*="-affordance"]):not([data-testid$="-bound"])',
+      ),
+    ).toHaveLength(6);
     // Spend is not on the strip.
     expect(within(strip).queryByTestId('kpi-llm-spend')).toBeNull();
 
+    /*
+     * The DESCRIPTIVE captions are off the face — every one of them, deliberately. They
+     * were prose about numerals that had not changed, read once and then furniture, and at
+     * two mono lines they outweighed the number they qualified. They are asserted VERBATIM,
+     * in the help popover they moved to, by "relocates every strip caption…" below; here
+     * they are counted OUT, so a caption cannot quietly come back and re-take the row the
+     * 30px numeral was given. What is NOT relocatable — a conditional bound, and a state
+     * disclosure — has its own arms further down this file.
+     */
     // Total Cases = the posture window's ARRIVAL COHORT (4), NOT the policy-stripped
     // `quality.total_cases` (3) and NOT the bounded case page (3 rows).
     const totalCases = within(screen.getByTestId('kpi-total-cases'));
     expect(totalCases.getByText('4')).toBeInTheDocument();
-    expect(totalCases.getByText('Window arrivals · policy-closed included')).toBeInTheDocument();
+    expect(totalCases.queryByText('Window arrivals · policy-closed included')).toBeNull();
     // Total Critical = the SERVER band tally, not a band counted over the page.
     expect(within(screen.getByTestId('kpi-total-critical')).getByText('1')).toBeInTheDocument();
-    // `· counted server-side` moved to the tile's help popover; the BAND NAME stays inline,
-    // because it is derived from the severity ladder and is designed to be able to disagree
-    // with the tile's literal label.
-    expect(
-      within(screen.getByTestId('kpi-total-critical')).getByText('Critical band'),
-    ).toBeInTheDocument();
+    // The BAND NAME travelled with the rest of the captions. It is still DERIVED from the
+    // severity ladder rather than written out — `overview.topband.test.tsx` moves the
+    // ladder's top entry and reads the tile's help back to prove it.
+    expect(within(screen.getByTestId('kpi-total-critical')).queryByText('Critical band')).toBeNull();
     // Open Cases = the window-EXEMPT stock (5), which is deliberately LARGER than the
-    // 4-case window cohort — proof it is not being window-filtered — and its sub says
-    // so, so it can never be read as summing with the four cohort tiles.
+    // 4-case window cohort — proof it is not being window-filtered.
     const openCases = within(screen.getByTestId('kpi-open-cases'));
     expect(openCases.getByText('5')).toBeInTheDocument();
-    expect(openCases.getByText('Open now · not window-filtered')).toBeInTheDocument();
+    expect(openCases.queryByText('Open now · not window-filtered')).toBeNull();
     // False-positive rate reads the server quality rate (0.5 → "50%").
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('50%')).toBeInTheDocument();
     // The sub is GONE, not moved: "Closed as false positive" only restated the label. What
@@ -337,6 +356,22 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(resolved.getByText('1')).toBeInTheDocument();
     // Likewise a tautology of the label, and likewise deleted rather than shortened.
     expect(resolved.queryByText('Reached a terminal state')).toBeNull();
+    // Auto Closed = `quality.auto_closed_cases` (1) straight off the server. It sits
+    // IMMEDIATELY after Resolved / Closed and shares that tile's `success` accent, which
+    // is half of how the row says "subset, not a sixth total" (the copy is the other half,
+    // asserted in its own case below). Adjacency is a DOM-order fact, so it is asserted as
+    // one rather than left to the array literal.
+    const autoClosed = within(screen.getByTestId('kpi-auto-closed'));
+    expect(autoClosed.getByText('1')).toBeInTheDocument();
+    const cells = Array.from(strip.children);
+    const cellOf = (id: string) =>
+      cells.findIndex((cell) => cell.querySelector(`[data-testid="${id}"]`));
+    expect(cellOf('kpi-auto-closed')).toBe(cellOf('kpi-resolved-closed') + 1);
+    // The shared accent, on the numeral itself. `success` is what Resolved / Closed wears;
+    // any OTHER accent here would teach the eye that a new accent means a new population.
+    expect(
+      screen.getByTestId('kpi-auto-closed').querySelector('.items-end > span'),
+    ).toHaveClass('text-success-text');
     // DENSITY REGRESSION GUARD. The landing strip runs `density="compact"` because it
     // heads a page that must also seat the flow diagram, the case queue and the timing
     // pair. `px-3 py-2` is what compact swaps on a strip tile's trigger.
@@ -349,42 +384,202 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const totalCasesTrigger = screen.getByTestId('kpi-total-cases');
     expect(totalCasesTrigger).toHaveClass('px-3', 'py-2');
     expect(totalCasesTrigger.parentElement).toHaveClass('min-h-0');
-    // BOTH halves of the compact density, not just the padding. The label→numeral gap is
-    // the other 4px, and it was the one token in this change that no gate could see:
-    // reverting it to `mt-2` left the whole suite green while quietly re-growing the strip.
-    expect(totalCasesTrigger.querySelector(':scope > div.items-end')).toHaveClass('mt-1');
+    // BOTH halves of the strip's rhythm, not just the padding. The second half used to be
+    // compact's fixed 4px label→numeral gap (`mt-1`), the one token no gate could see;
+    // under `numeral="hero"` that gap is SUPERSEDED — `cn` is `twMerge`, so `mt-auto`
+    // replaces `mt-1` outright — because the six numerals now share a baseline instead of
+    // sitting a fixed distance under labels that wrap to one, two or three lines. So the
+    // guard moves to the two classes that produce it, and it is the same kind of guard:
+    // drop either one and the row silently re-staggers with every suite still green. (The
+    // compact `mt-1` a non-hero caller still gets is pinned in KpiTile.hero-bound.)
+    expect(totalCasesTrigger).toHaveClass('flex', 'h-full', 'flex-col');
+    expect(totalCasesTrigger.querySelector(':scope > div.items-end')).toHaveClass('mt-auto');
   });
+
+  it('draws the six-cell divider math exactly, at every breakpoint', async () => {
+    /*
+     * The strip's hairlines are hand-tuned `nth-child` arbitrary variants, and the ONLY
+     * thing a change to them can break is invisible in jsdom: a cell drawing a rule into
+     * empty space, or losing the rule that separates it from the next row. The geometric
+     * oracle is `right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`; the classes
+     * below were compiled with this repo's Tailwind and read back from computed styles in
+     * a real browser at 500 / 700 / 900 / 1400px against it. jsdom performs no layout and
+     * no cascade, so what CAN be pinned here — and what actually regresses — is the class
+     * string itself, per breakpoint, character for character.
+     *
+     * ⚠️ Asserted on the className STRING, never by QUERYING with these selectors: jsdom's
+     * nwsapi THROWS on `:not(:nth-child(3n))`, so a `querySelector` written against the
+     * same rule would error rather than fail, which is a strictly worse signal.
+     *
+     * The `:not()`s are load-bearing and must not be "simplified" away. Tailwind emits
+     * arbitrary-variant rules in ONE trailing block whose internal order is not by
+     * breakpoint, so at `md` the `2n` ON rule beat the `3n` OFF rule on cell 6 only by
+     * emission order at equal (0,2,0) specificity; `:not()` lifts it to (0,3,0). At `xl`,
+     * `:not(:nth-child(6n))` is strictly required.
+     */
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
+    const strip = screen.getByTestId('kpi-strip');
+
+    // Six columns at `xl` — the count the whole rule set is written against. 6 % {1,2,3,6}
+    // is 0, so every breakpoint fills whole rows and "last column" coincides with "last
+    // child"; five left orphans, which is what the two new rules below repair.
+    expect(strip).toHaveClass('grid-cols-1', 'sm:grid-cols-2', 'md:grid-cols-3', 'xl:grid-cols-6');
+    expect(strip).not.toHaveClass('xl:grid-cols-5');
+    expect(strip.children).toHaveLength(6);
+
+    const cells = Array.from(strip.children) as HTMLElement[];
+    for (const [i, cell] of cells.entries()) {
+      const cls = cell.className;
+      // 1 COLUMN — every cell rules below it, and `last:` lifts it off the final one.
+      expect(cls, `cell ${i + 1}`).toContain('border-b');
+      expect(cls, `cell ${i + 1}`).toContain('border-r-0');
+      expect(cls, `cell ${i + 1}`).toContain('last:border-b-0');
+      expect(cls, `cell ${i + 1}`).toContain('last:border-r-0');
+      // 2 COLUMNS — rule on the left cell of each pair, and no bottom rule under the final
+      // row, which at six cells starts at cell 5. (`n+5` is the half the five-cell string
+      // did not have, and the half a sixth tile broke.)
+      expect(cls, `cell ${i + 1}`).toContain('sm:border-r');
+      expect(cls, `cell ${i + 1}`).toContain('sm:[&:nth-child(2n)]:border-r-0');
+      expect(cls, `cell ${i + 1}`).toContain('sm:[&:nth-child(n+5)]:border-b-0');
+      // 3 COLUMNS — rule after cells 2 and 5 (`2n` MINUS the column ends), off after every
+      // 3rd, and no bottom rule under the final row, which starts at cell 4.
+      expect(cls, `cell ${i + 1}`).toContain('md:[&:nth-child(2n):not(:nth-child(3n))]:border-r');
+      expect(cls, `cell ${i + 1}`).toContain('md:[&:nth-child(3n)]:border-r-0');
+      expect(cls, `cell ${i + 1}`).toContain('md:[&:nth-child(n+4)]:border-b-0');
+      // 6 COLUMNS — one row, so no bottom rule anywhere; the only interior rule is after
+      // cell 3, and `:not(:nth-child(6n))` is what keeps it off cell 6, the row's end.
+      expect(cls, `cell ${i + 1}`).toContain('xl:border-b-0');
+      expect(cls, `cell ${i + 1}`).toContain('xl:[&:nth-child(3n):not(:nth-child(6n))]:border-r');
+      // The five-cell rules this replaced, counted OUT: at six cells `xl:[2n]:border-r`
+      // ruled cells 2 and 4 mid-row and `xl:[3n]` ruled cell 6 into empty space.
+      expect(cls, `cell ${i + 1}`).not.toContain('xl:[&:nth-child(2n)]:border-r');
+      expect(cls, `cell ${i + 1}`).not.toContain('xl:[&:nth-child(3n)]:border-r ');
+    }
+    // Every cell carries the IDENTICAL string: the grid supplies the hairlines through
+    // `nth-child`, so a per-cell divergence would mean someone hand-tuned one tile and the
+    // oracle above no longer describes the row.
+    expect(new Set(cells.map((cell) => cell.className)).size).toBe(1);
+  });
+
+  /**
+   * Open ONE tile's help popover, hand back its text, and close it again.
+   *
+   * The strip's descriptive copy and its scale contexts BOTH live here now. Radix portals
+   * the popover to `<body>` and unmounts it while closed, so the text is only readable
+   * with the popover open — hence the open/close round trip, which also keeps each tile's
+   * assertions independent of the last one's.
+   *
+   * The text is returned as a STRING and asserted with `toContain`, i.e. exact substrings:
+   * these sentences are the relocated copy, and a re-point that matched them loosely would
+   * be indistinguishable from having deleted them.
+   */
+  async function readTileHelp(label: string): Promise<string> {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: `About ${label}` }));
+    const content = await screen.findByRole('dialog');
+    const text = content.textContent ?? '';
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    return text;
+  }
 
   it('pairs every KPI numeral with the honest denominator it is a share of', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
+    /*
+     * The scale context is no longer BESIDE the numeral: at six columns it and a 30px
+     * numeral share one `items-end` row against ~141px of cell content on the tightest
+     * supported desktop, so "12,345 of 48,901 verdicted" would ellipsize to nothing
+     * useful. It is not deleted — the tile's help states the same string, from the SAME
+     * derivation the tile computes (`scaleAside`), so the two can never name different
+     * denominators for one numeral. This case therefore reads the help, and asserts on the
+     * face only that no share was left there to go stale.
+     */
     // Total Critical + Resolved / Closed are both shares of the SAME `case_count` (4),
     // and both come off the one posture payload, so numerator and denominator always
     // describe the same population.
-    expect(
-      within(screen.getByTestId('kpi-total-critical')).getByText('25% of 4'),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId('kpi-resolved-closed')).getByText('25% of 4'),
-    ).toBeInTheDocument();
+    expect(await readTileHelp('Total Critical')).toContain('Right now: 25% of 4.');
+    expect(await readTileHelp('Resolved / Closed')).toContain('Right now: 25% of 4.');
+    expect(within(screen.getByTestId('kpi-total-critical')).queryByText(/% of/)).toBeNull();
+    expect(within(screen.getByTestId('kpi-resolved-closed')).queryByText(/% of/)).toBeNull();
     // Total Cases IS that denominator, so it carries no share of its own — and no em
-    // dash either, which would read as "a denominator we could not measure".
+    // dash either, which would read as "a denominator we could not measure". With no
+    // context to state, the help says so in words and appends no "Right now" aside: an
+    // aside reading "Right now: —." is not a disclosure.
     const totalCases = within(screen.getByTestId('kpi-total-cases'));
     expect(totalCases.queryByText(/% of/)).toBeNull();
     expect(totalCases.queryByText('—')).toBeNull();
-    // Open Cases is a window-EXEMPT stock: no window population reconciles with it, so
-    // it shows an em dash and NAMES why in its sub rather than inventing a share.
+    const totalCasesHelp = await readTileHelp('Total Cases');
+    expect(totalCasesHelp).toContain('this is the denominator the cohort tiles beside it are shares of');
+    expect(totalCasesHelp).not.toContain('Right now:');
+    // Open Cases is a window-EXEMPT stock: no window population reconciles with it, so it
+    // claims no share at all and NAMES why, rather than inventing one.
     const openCases = within(screen.getByTestId('kpi-open-cases'));
     await waitFor(() => expect(openCases.getByText('5')).toBeInTheDocument());
-    expect(openCases.getByText('—')).toBeInTheDocument();
     expect(openCases.queryByText(/% of/)).toBeNull();
-    expect(openCases.getByText('Open now · not window-filtered')).toBeInTheDocument();
+    const openCasesHelp = await readTileHelp('Open Cases');
+    expect(openCasesHelp).toContain('Open now, and not window-filtered.');
+    expect(openCasesHelp).toContain('this one has no window denominator');
+    expect(openCasesHelp).not.toContain('Right now:');
     // FP rate is ALREADY a percent, so its context is the sample size behind it.
+    expect(await readTileHelp('False Positive Rate')).toContain('Right now: 1 of 2 verdicted.');
     expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).getByText('1 of 2 verdicted'),
-    ).toBeInTheDocument();
+      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('1 of 2 verdicted'),
+    ).toBeNull();
+  });
+
+  it('relocates every strip caption into the tile help — verbatim, never deleted', async () => {
+    // The counterpart to the negatives in the micro-strip case above. Each caption that
+    // came off the face is read back HERE, in the surface it moved to, so "relocated" is a
+    // proven statement rather than a comment beside a deletion. The help popover is
+    // reachable by click, Enter, Space AND tap (`alwaysPopover`), which is the whole reason
+    // a caption was allowed to move into it at all.
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
+
+    expect(await readTileHelp('Total Cases')).toContain(
+      'Window arrivals, policy-closed included.',
+    );
+    // The band NAME, still derived from the severity ladder rather than written out —
+    // `overview.topband.test.tsx` moves the ladder's top entry and reads this same string
+    // back as "The High band." to prove the derivation survived the move.
+    expect(await readTileHelp('Total Critical')).toContain('The Critical band.');
+    expect(await readTileHelp('Open Cases')).toContain('Open now, and not window-filtered.');
+  });
+
+  it('states the sixth tile’s CONTAINMENT wherever a reader can arrive at it', async () => {
+    // Auto Closed is the one tile on this strip that is not an independent total, and the
+    // row must never read as a set that SUMS. Adjacency and the shared `success` accent
+    // (asserted in the micro-strip case) are the visual half; this is the half that says
+    // it in words, and it must say it in EVERY surface a reader can reach — the help they
+    // open on the tile, and the population sentence of the panel they drill into. One
+    // constant feeds both in `Overview`, and asserting both is what keeps it that way.
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(screen.getByTestId('kpi-auto-closed')).toBeInTheDocument());
+
+    const CONTAINMENT = 'A SUBSET of Resolved / Closed, not a sixth independent total.';
+    const EXCLUSION =
+      'Counted over the agent-worked population only — cases an operator closed under a ' +
+      '"declared benign" rule policy are excluded';
+
+    const help = await readTileHelp('Auto Closed');
+    expect(help).toContain(CONTAINMENT);
+    expect(help).toContain(EXCLUSION);
+    // Its share names its OWN denominator. "% of Resolved / Closed" would be false: this
+    // numerator is counted over the policy-STRIPPED terminal set while that numeral is
+    // policy-INCLUSIVE, which is the cross-population defect the tile exists not to repeat.
+    expect(help).toContain('Right now: 50% of agent-worked closes.');
+
+    await openDrilldown('kpi-auto-closed');
+    const panel = screen.getByTestId('kpi-drilldown');
+    expect(panel).toHaveTextContent(CONTAINMENT);
+    expect(panel).toHaveTextContent(EXCLUSION);
   });
 
   const STRIP_IDS = [
@@ -393,6 +588,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     'kpi-open-cases',
     'kpi-false-positive-rate',
     'kpi-resolved-closed',
+    // Auto Closed is posture-fed like the rest — `quality.auto_closed_cases` is REQUIRED
+    // on the wire — so it inherits every arm below: the em dash on a failed rollup, the
+    // "not measured" wording on an unreadable store, and the no-delta-chip rule.
+    'kpi-auto-closed',
   ] as const;
 
   it('renders an em dash — never 0% — on every tile when the posture rollup is missing', async () => {
@@ -442,26 +641,58 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
 
-    const totalCases = within(await screen.findByTestId('kpi-total-cases'));
+    /*
+     * The bound sentence is still `getByText`-able, but it is no longer a CAPTION — it is
+     * the accessible half of a marker ON the numeral, and the two are asserted TOGETHER
+     * throughout this arm. On its own the text would go on passing off any caption that
+     * happened to carry the same words, which is exactly the surface this change removed;
+     * the `data-bound` attribute is what pins it to the number it qualifies.
+     */
+    const totalCasesTile = await screen.findByTestId('kpi-total-cases');
+    const totalCases = within(totalCasesTile);
     await waitFor(() => expect(totalCases.getByText('4')).toBeInTheDocument());
     expect(totalCases.getByText('Partial window · lower bound')).toBeInTheDocument();
+    // FLOOR: there IS a number, so the mark is a `≥` immediately before it.
+    expect(totalCasesTile.querySelector('[data-bound="floor"]')).not.toBeNull();
+    expect(totalCases.getByTestId('kpi-total-cases-bound')).toHaveTextContent('≥');
 
-    const critical = within(screen.getByTestId('kpi-total-critical'));
+    const criticalTile = screen.getByTestId('kpi-total-critical');
+    const critical = within(criticalTile);
     expect(critical.getByText('1')).toBeInTheDocument();
-    expect(critical.getByText('—')).toBeInTheDocument();
+    // The share itself is withheld — and with the scale context off the face there is no
+    // em-dash slot left to withhold it IN, so the absence is asserted as an absence and
+    // the marker below is what says why.
     expect(critical.queryByText(/% of/)).toBeNull();
     expect(critical.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
+    expect(criticalTile.querySelector('[data-bound="floor"]')).not.toBeNull();
+    expect(critical.getByTestId('kpi-total-critical-bound')).toHaveTextContent('≥');
 
     // The FP RATE is itself a share of a bounded denominator, so the rate AND the
-    // sample size behind it are both withheld.
-    const fp = within(screen.getByTestId('kpi-false-positive-rate'));
+    // sample size behind it are both withheld. It therefore takes the WITHHELD arm of the
+    // grammar rather than a floor: no `≥`, because there is no number to qualify — the em
+    // dash itself carries the mark.
+    const fpTile = screen.getByTestId('kpi-false-positive-rate');
+    const fp = within(fpTile);
     expect(fp.queryByText('50%')).toBeNull();
     expect(fp.queryByText('1 of 2 verdicted')).toBeNull();
     expect(fp.getAllByText('—').length).toBeGreaterThan(0);
+    expect(fpTile.querySelector('[data-bound="withheld"]')).not.toBeNull();
+    expect(fp.queryByTestId('kpi-false-positive-rate-bound')).toBeNull();
+    expect(fp.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
 
-    const resolved = within(screen.getByTestId('kpi-resolved-closed'));
+    const resolvedTile = screen.getByTestId('kpi-resolved-closed');
+    const resolved = within(resolvedTile);
     expect(resolved.getByText('1')).toBeInTheDocument();
     expect(resolved.queryByText(/% of/)).toBeNull();
+    expect(resolvedTile.querySelector('[data-bound="floor"]')).not.toBeNull();
+
+    // …and the subset tile beside it is bounded on the same evidence. A tile that inherits
+    // its neighbour's accent must also inherit its neighbour's caveats.
+    const autoClosedTile = screen.getByTestId('kpi-auto-closed');
+    expect(within(autoClosedTile).getByText('1')).toBeInTheDocument();
+    expect(within(autoClosedTile).queryByText(/% of agent-worked/)).toBeNull();
+    expect(autoClosedTile.querySelector('[data-bound="floor"]')).not.toBeNull();
+    expect(within(autoClosedTile).getByText('Bounded sample · share unavailable')).toBeInTheDocument();
   });
 
   it('publishes the shares when window_covered rescues a truncated fetch', async () => {
@@ -479,12 +710,25 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const critical = within(await screen.findByTestId('kpi-total-critical'));
-    await waitFor(() => expect(critical.getByText('25% of 4')).toBeInTheDocument());
+    const criticalTile = await screen.findByTestId('kpi-total-critical');
+    const critical = within(criticalTile);
+    await waitFor(() => expect(critical.getByText('1')).toBeInTheDocument());
+    // The share is published — in the tile's help, which is where the scale context lives
+    // now (see "pairs every KPI numeral…"). Reaching it proves the covered window really
+    // did release the share, which a pair of absent captions on the face could not.
+    expect(await readTileHelp('Total Critical')).toContain('Right now: 25% of 4.');
+    // …and the UNBOUNDED arm of the bound grammar: no sentence, and no marker EITHER. The
+    // sentence alone would keep passing if the mark were left on the numeral with an empty
+    // string, so both halves are counted out.
     expect(critical.queryByText('Bounded sample · share unavailable')).toBeNull();
+    expect(criticalTile.querySelector('[data-bound]')).toBeNull();
+    expect(critical.queryByTestId('kpi-total-critical-bound')).toBeNull();
     expect(
       within(screen.getByTestId('kpi-false-positive-rate')).getByText('50%'),
     ).toBeInTheDocument();
+    for (const id of STRIP_IDS) {
+      expect(screen.getByTestId(id).querySelector('[data-bound]')).toBeNull();
+    }
   });
 
   it('falls back to the truncation flag when the server predates window_covered', async () => {
@@ -494,10 +738,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     fetchPostureMock.mockResolvedValue({ ...legacy, truncated: true, store_total: 999 });
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const critical = within(await screen.findByTestId('kpi-total-critical'));
+    const criticalTile = await screen.findByTestId('kpi-total-critical');
+    const critical = within(criticalTile);
     await waitFor(() =>
       expect(critical.getByText('Bounded sample · share unavailable')).toBeInTheDocument(),
     );
+    // The sentence AND the mark it belongs to — see the note in "keeps the COUNTS…" for
+    // why the text alone is not enough to pin a marker that lives on the numeral.
+    expect(criticalTile.querySelector('[data-bound="floor"]')).not.toBeNull();
     expect(critical.queryByText(/% of/)).toBeNull();
   });
 
@@ -534,10 +782,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     const tile = within(await screen.findByTestId('kpi-total-critical'));
-    await waitFor(() => expect(tile.getByText('<1% of 5,000')).toBeInTheDocument());
-    expect(tile.queryByText('0% of 5,000')).toBeNull();
+    await waitFor(() => expect(tile.getByText('1')).toBeInTheDocument());
+    // Read from the tile's help, which is where the scale context moved — the FLOOR RULE
+    // travelled with the string it applies to, so this is where it has to be proven now.
+    const help = await readTileHelp('Total Critical');
+    expect(help).toContain('Right now: <1% of 5,000.');
+    expect(help).not.toContain('0% of 5,000');
     // A genuine zero still reads "0%" — the floor applies only to a non-zero count.
-    expect(tile.queryByText(/^0%/)).toBeNull();
+    expect(help).not.toMatch(/Right now: 0%/);
   });
 
   it('states the close partition in the Resolved / Closed DRILL-DOWN as three rows, never two', async () => {
@@ -602,16 +854,20 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-resolved-closed');
     // 5 agent-worked terminal + 5 declared benign === 10 of 10 arrivals.
     await waitFor(() => expect(within(tile).getByText('10')).toBeInTheDocument());
-    expect(within(tile).getByText('100% of 10')).toBeInTheDocument();
-    expect(within(tile).queryByText('50% of 10')).toBeNull();
+    const help = await readTileHelp('Resolved / Closed');
+    expect(help).toContain('Right now: 100% of 10.');
+    expect(help).not.toContain('50% of 10');
 
-    // …and the tile FACE names the policy closes, because this numeral is
+    // …and the tile's help NAMES the policy closes, because this numeral is
     // policy-INCLUSIVE while the Human-vs-AI card below it publishes bands over the
-    // policy-EXCLUSIVE `terminal_cases`. Without this line the page states 10 here and
-    // three bands summing to 5 there, with nothing on either face bridging them — the
-    // partition's `Declared benign` row used to be that bridge and now lives one level
-    // down. It is conditional, exactly like the bounded-sample caption: visible when true.
-    expect(within(tile).getByText('Incl. 5 declared benign')).toBeInTheDocument();
+    // policy-EXCLUSIVE `terminal_cases`. Without this sentence the page states 10 here and
+    // three bands summing to 5 there, with nothing bridging them — the partition's
+    // `Declared benign` row used to be that bridge and now lives one level down. It is
+    // still CONDITIONAL: it appears only where the server reports a gap to explain, which
+    // the sibling case below pins by its absence.
+    expect(help).toContain('This window includes 5 declared benign.');
+    // Nothing about the reconciliation was left on the face to go stale beside it.
+    expect(within(tile).queryByText(/declared benign/i)).toBeNull();
 
     // The partition still sums to the numeral above it — now with a fourth band. It is
     // the drill-down that states it; the tile face carries none.
@@ -632,9 +888,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
     // No band to state, and therefore no gap between this numeral and the card's
-    // denominator — so the reconciling caption stays off the face too. A conditional
-    // disclosure that shows when it is false is noise, not honesty.
+    // denominator — so the reconciling sentence stays out of the help as well as off the
+    // face. A conditional disclosure that shows when it is false is noise, not honesty.
     expect(within(tile).queryByText(/declared benign/i)).toBeNull();
+    expect(await readTileHelp('Resolved / Closed')).not.toContain('This window includes');
     await openDrilldown('kpi-resolved-closed');
     expect(drilldownBands()?.labels).toEqual(['AI agent', 'Human', 'System']);
   });
@@ -671,13 +928,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const strip = await screen.findByTestId('kpi-strip');
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
-    for (const id of [
-      'kpi-total-cases',
-      'kpi-total-critical',
-      'kpi-open-cases',
-      'kpi-false-positive-rate',
-      'kpi-resolved-closed',
-    ]) {
+    for (const id of STRIP_IDS) {
       const tile = within(screen.getByTestId(id));
       await waitFor(() => expect(tile.getAllByText('—').length).toBeGreaterThan(0));
       expect(tile.queryByText('0'), `${id} published a zero it never measured`).toBeNull();
@@ -685,8 +936,18 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     }
     // No tile may caption its blank as a lower bound of anything.
     expect(within(strip).queryByText(/lower bound/)).toBeNull();
+    // …and the bound MARKER is absent with the sentence. This is the outage arm's own
+    // guard on the marker grammar: `boundSub` returns undefined whenever `postureSub` is
+    // set, so a window that measured nothing has no floor to state and its structural
+    // zeros are never dressed as one. Asserting only the sentence would leave a mark that
+    // said "≥ —" passing.
+    expect(strip.querySelector('[data-bound]')).toBeNull();
+    for (const id of STRIP_IDS) {
+      expect(screen.getByTestId(id).querySelector('[data-bound]')).toBeNull();
+      expect(within(screen.getByTestId(id)).queryByTestId(`${id}-bound`)).toBeNull();
+    }
     // Every posture-fed tile states the server's OWN account of the gap.
-    expect(within(strip).getAllByText(REASON).length).toBe(5);
+    expect(within(strip).getAllByText(REASON).length).toBe(6);
     // …and the close partition is withheld with them, on BOTH surfaces that read it:
     // 0 + 0 + 0 === 0 passes the reconciliation guard, so an outage would otherwise
     // publish a three-band partition of a window nothing was read from. The partition
@@ -748,7 +1009,59 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
   });
 
-  it('keeps the last posture snapshot visible (labelled stale) across a window change, then swaps atomically', async () => {
+  it('captions a FIRST load, and never a refresh that still has a measurement on screen', async () => {
+    /*
+     * The two arms of the loading disclosure, in one case, because they are one decision:
+     * `postureLoading && !posture`.
+     *
+     * A caption is worth the strip's height only when it says the numeral above it cannot
+     * be trusted yet. On a FIRST load there is no numeral — an em dash and "Loading 1 day"
+     * is the whole of what the page honestly knows. On a REFRESH the numerals are a real
+     * measurement, and this page defaults to a LIVE refresh, so captioning them "Loading"
+     * would both say something false about them and (now that it is the only sub a tile
+     * carries) grow and shrink the entire strip on every tick.
+     */
+    const requests: Array<(value: PostureResponse) => void> = [];
+    fetchPostureMock.mockImplementation(
+      () => new Promise<PostureResponse>((resolve) => requests.push(resolve)),
+    );
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    await waitFor(() => expect(requests).toHaveLength(1));
+
+    // FIRST LOAD — nothing measured is on screen, so every posture-fed tile names what it
+    // is waiting for and shows an em dash rather than an unqualified blank.
+    for (const id of STRIP_IDS) {
+      const tile = within(await screen.findByTestId(id));
+      expect(tile.getByText('Loading 1 day')).toBeInTheDocument();
+      expect(tile.getAllByText('—').length).toBeGreaterThan(0);
+    }
+    // …and never as a lower bound: a window that has measured nothing has no floor to
+    // state, so `boundSub` stays silent for exactly as long as `postureSub` speaks.
+    expect(screen.getByTestId('kpi-strip').querySelector('[data-bound]')).toBeNull();
+
+    // The measurement lands and the caption goes with it.
+    requests[0](POSTURE);
+    await waitFor(() =>
+      expect(within(screen.getByTestId('kpi-total-cases')).getByText('4')).toBeInTheDocument(),
+    );
+    for (const id of STRIP_IDS) {
+      expect(within(screen.getByTestId(id)).queryByText('Loading 1 day')).toBeNull();
+    }
+
+    // REFRESH — a second request is in flight with the previous rollup still rendered. The
+    // numerals stay, and NO tile is re-captioned.
+    await user.click(screen.getByRole('button', { name: 'Refresh dashboard' }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(within(screen.getByTestId('kpi-total-cases')).getByText('4')).toBeInTheDocument();
+    expect(within(screen.getByTestId('kpi-open-cases')).getByText('5')).toBeInTheDocument();
+    for (const id of STRIP_IDS) {
+      expect(within(screen.getByTestId(id)).queryByText('Loading 1 day')).toBeNull();
+    }
+  });
+
+  it('keeps the last posture snapshot visible, UNCAPTIONED, across a window change, then swaps atomically', async () => {
     const requests: Array<{
       hours: number;
       signal: AbortSignal;
@@ -786,18 +1099,32 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       ),
     );
 
-    // STALE-WHILE-REVALIDATE: the previous snapshot's numbers stay mounted while
-    // 168h is in flight — no perceived blanking — and the "Loading 7 days" sub is
-    // the explicit stale/refresh indicator on the posture tiles.
+    /*
+     * STALE-WHILE-REVALIDATE: the previous snapshot's numbers stay mounted while 168h is
+     * in flight — no perceived blanking.
+     *
+     * They are NOT captioned "Loading 7 days" any more, and that is the point of the
+     * assertions below rather than an omission. This page defaults to a LIVE refresh, so
+     * posture reloads on every tick with the previous rollup still on screen: captioning
+     * those numerals "Loading" said something false about them — they are a measurement,
+     * not a placeholder — and, now that the caption is the ONLY sub a tile carries, it also
+     * grew and shrank the whole strip by ~18px on every tick, shoving the lattice below it.
+     * The loading arm is therefore gated on there being nothing on screen to caption; the
+     * FIRST-LOAD half of that gate is pinned by "captions a FIRST load…" below, so the two
+     * arms are proven together and the caption cannot simply be deleted.
+     *
+     * The refresh control still shows LIVE and spins, which is the honest place for "a
+     * request is in flight".
+     */
     expect(screen.getByRole('button', { name: /Time range: Last 7 days/i })).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-resolved-closed')).getByText('25')).toBeInTheDocument();
     expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).getByText('Loading 7 days'),
-    ).toBeInTheDocument();
+      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('Loading 7 days'),
+    ).toBeNull();
     expect(
-      within(screen.getByTestId('kpi-resolved-closed')).getByText('Loading 7 days'),
-    ).toBeInTheDocument();
+      within(screen.getByTestId('kpi-resolved-closed')).queryByText('Loading 7 days'),
+    ).toBeNull();
 
     await waitFor(() => expect(requests).toHaveLength(3));
     expect(requests[1].signal.aborted).toBe(true);
@@ -827,17 +1154,20 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // The fresh 168h payload replaces the stale snapshot atomically...
     const timingRegion = screen.getByRole('region', { name: /Mean time to detect/i });
     await waitFor(() => expect(within(timingRegion).getByText('4h')).toBeInTheDocument());
-    // ...and the stale indicator clears with it (the subs return to their captions).
-    expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('Loading 7 days'),
-    ).toBeNull();
-    // Both tiles' captions were retired as tautologies, so "the subs return to their
-    // captions" is now proven by the LOADING caption clearing rather than by a caption
-    // reappearing. The line above already asserts that; these two assert the tiles are
-    // rendering their real numerals again, which is the same claim without the dead copy.
-    expect(
-      within(screen.getByTestId('kpi-resolved-closed')).queryByText('Loading 7 days'),
-    ).toBeNull();
+    // ...and the swap leaves the tiles carrying no sub at all — a healthy window is the
+    // one state the `sub` slot has nothing to say about, which is exactly what gives the
+    // numeral its room. Every descriptive caption moved to the tile's help; only a
+    // DEGRADATION (loading-with-nothing-to-show, an error, or the server's own
+    // not-measured reason) may take this row now.
+    for (const id of STRIP_IDS) {
+      const tile = within(screen.getByTestId(id));
+      expect(tile.queryByText('Loading 7 days')).toBeNull();
+      expect(tile.queryByText('Loading 24h')).toBeNull();
+      expect(tile.queryByText('Posture unavailable')).toBeNull();
+    }
+    // (The numerals themselves are NOT re-read here: they roll via the motion spring, so
+    // the plain-text timing stat above is the reliable fresh-payload witness — which is why
+    // this case has always used it.)
     // Queried from `screen`, not from within the tile: the mark is a SIBLING of the
     // trigger button (it sits in the cell's corner overlay), not a descendant of it.
     expect(screen.getByTestId('kpi-resolved-closed-affordance')).toBeInTheDocument();
@@ -1194,11 +1524,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-total-critical');
 
     await waitFor(() => expect(within(tile).getByText('37')).toBeInTheDocument());
-    // …and the share is of the server's own `case_count`, the population the tally
-    // partitions — never "of 5", the page it was rendered beside.
-    expect(within(tile).getByText('31% of 120')).toBeInTheDocument();
     expect(within(tile).queryByText('2')).toBeNull();
-    expect(within(tile).queryByText(/of 5$/)).toBeNull();
+    // …and the share is of the server's own `case_count`, the population the tally
+    // partitions — never "of 5", the page it was rendered beside. It is stated in the
+    // tile's help now rather than beside the numeral, and it is the SAME derivation the
+    // tile computes, so this still catches a share silently re-based on the case page.
+    const help = await readTileHelp('Total Critical');
+    expect(help).toContain('Right now: 31% of 120.');
+    expect(help).not.toMatch(/of 5\./);
 
     // The severity DONUTS keep describing the page they are drawn from — a per-band
     // split of the rows this dashboard holds — which is a different, honest job.
