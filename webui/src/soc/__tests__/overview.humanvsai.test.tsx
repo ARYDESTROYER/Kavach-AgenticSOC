@@ -343,7 +343,7 @@ describe('Overview — Human vs AI card', () => {
     expect(fp.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
   });
 
-  it('states the partition ONCE — the card and the tile drill-down read one memo', async () => {
+  it('states the partition on the card and in the drill-down, from ONE memo', async () => {
     // The landing page told this story twice before (a removed "Autonomous vs human"
     // fold-out). The card states the three bands on the page; the Resolved / Closed
     // tile's DRILL-DOWN states the reconciled set again one level down. Both read the

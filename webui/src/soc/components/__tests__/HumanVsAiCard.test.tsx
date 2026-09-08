@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { checkContrast } from '../../../../scripts/gate-contrast.mjs';
@@ -75,6 +75,19 @@ describe('HumanVsAiCard', () => {
     const chart = screen.getByTestId('human-vs-ai-chart');
     expect(chart).toHaveClass('relative', 'min-h-[122px]', 'flex-1');
 
+    // …and the chart INSIDE it is really in fill mode. jsdom cannot measure the resulting
+    // height — `src/test/setup.ts` says so, and that is honest — but the MODE is fully
+    // assertable, and the mode is the whole change: `fill` renders the chart box as
+    // `absolute inset-0` with NO inline height, which is the difference between sizing to
+    // this cell and sizing to a constant. Without this pair, reverting `fill` back to
+    // `height={122}` — the exact dead-space regression this card exists to fix — passes
+    // every gate in the repo.
+    const box = within(chart).getByRole('img', {
+      name: /closed by the agent versus by a human/i,
+    });
+    expect(box).toHaveClass('absolute', 'inset-0');
+    expect(box.style.height).toBe('');
+
     // …and the empty arm does NOT take `flex-1`: one line of text stretched to fill the
     // cell opened a gap three times the size of the one the chart used to leave.
     rerender(
@@ -124,9 +137,11 @@ describe('HumanVsAiCard', () => {
     // The always-visible "Advisory only — the agent recommends; the deterministic case
     // manager decides" paragraph was removed from the card at the operator's request. It
     // is a RELOCATION, not a deletion, and this is the spec that says so: the sentence
-    // survives verbatim in HUMAN_VS_AI_HELP, and `alwaysPopover` makes the (?) a real
-    // <button> — so click, Enter, Space and touch all reach it. A Radix TOOLTIP would
-    // never open on touch, which is why the length heuristic is not relied on.
+    // survives verbatim in HUMAN_VS_AI_HELP, and `alwaysPopover` makes the (?) a POPOVER
+    // trigger — reached below by click and by Enter. A Radix tooltip never opens on touch,
+    // which is why the length heuristic is not relied on; that the flag (and not the
+    // heuristic) is what forces the popover is pinned separately, with short text where the
+    // two disagree, in `HelpTip.test.tsx`.
     render(
       <HumanVsAiCard
         totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
@@ -143,6 +158,14 @@ describe('HumanVsAiCard', () => {
       /the agent recommends; the deterministic case manager decides/i,
     );
     expect(screen.getByRole('dialog')).toHaveTextContent(/never influences that/i);
+
+    // KEYBOARD too, not just pointer — the comment above claims Enter reaches it, so prove
+    // it rather than asserting a click and describing four input methods.
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    trigger.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog')).toHaveTextContent(/never influences that/i);
   });
 
   it('shows the caller-supplied reason (and em dashes) when attribution is unavailable', () => {

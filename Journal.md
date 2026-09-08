@@ -11024,7 +11024,7 @@
   divide utilities write different edges and do not cancel. Confirmed in the browser: 2 columns
   and a `border-b` at 1100px and 820px. Two of its other findings were rejected against
   measurement rather than argument (`pr-10` clears; the fill chain resolves).
-- Tests: **325 files / 2,340 passed**, zero stderr and zero captured console output
+- Tests: **326 files / 2,353 passed**, zero stderr and zero captured console output
   (`test:strict`). `gates` 6/6. `lint` 0/0. `build` clean, entry **396.08 kB** against the
   400 kB ceiling. Every touched assertion was RE-POINTED, never deleted — including the four
   that would otherwise have gone vacuous once `kpi-resolved-closed-breakdown` stopped existing.
@@ -11068,9 +11068,37 @@
     `docs/getting-started/demo.md`. Two dead test selectors (`:not([data-testid*="-breakdown"])`)
     and a `KpiTile.secondary.test.tsx` block that passed `ariaExpanded`, a prop removed in
     #112 and invisible because tsconfig excludes tests from `tsc`.
+- Third pass — the mutation reviewer. It did not read the diff and argue; it INJECTED each
+  regression into a sandboxed `git archive` and watched. Every relocated contract came back
+  live (12 of 12: bands and values, the zero residual, declared-benign-only-when-reported,
+  both withholdings, the `<dl>` axe shape, advisory reachability, DOM order, the donut
+  tokens, the five-row queue, `py-2`, and "the face carries no partition"). What it found
+  instead were the NEW tokens, which nothing guarded:
+  - `mt-1` could be reverted to `mt-2` with the whole suite green — the strip would quietly
+    re-grow. Now asserted beside `py-2` in the density guard.
+  - **The chart actually FILLING had no guard at its call site.** Reverting `fill` to
+    `height={122}` — the precise dead-space regression this change exists to fix — passed
+    every gate. The height is genuinely unassertable in jsdom, but the MODE is not: the card
+    spec now pins `absolute inset-0` and an empty inline height on the chart box.
+  - `alwaysPopover` was inert (the help text is already over the 80-char threshold) and
+    absent from every assertion in the repo, so deleting it as "unused" was invisible —
+    which is exactly the trap its own comment describes. `HelpTip` had NO test file at all;
+    it has one now, pinning the switch where the flag and the heuristic disagree (short
+    text): tooltip without it, popover with it, by click, Enter and Space.
+  Both new guards were mutation-tested here before committing: each fails on its injected
+  regression and passes on revert. Also removed one assertion that could not fail (a
+  `queryByText('4')` sitting after an exact band-by-band `toEqual`) rather than leaving it
+  as decoration, restored a live anchor guard the partial-partition spec had lost, tied the
+  donut-abbreviation spec to the ring size its own title cites, and corrected two test
+  titles/comments that claimed more than their bodies did.
 - Rejected against measurement rather than argument: that `pr-10` under-clears by 6px (it
   clears, but is unnecessary); that the `fill` chain would not resolve; that the timing
   restack needed `xl:order-*`.
+- **Pre-existing flake, NOT from this change, worth knowing:**
+  `spec-independent-drilldown.test.tsx > B30 (status options accumulate across pages and
+  reset on a metric swap)` failed 2 of 4 full-suite runs for the reviewer, on two different
+  trees, and passed every isolated re-run; all six of my own full-suite runs were green. It
+  is load-sensitive, not caused by anything here.
 - Status: done. Committed on `claude/overview-one-page-fit` and pushed — `Testing` is a
   PROTECTED branch requiring the `CI passed` aggregate, so a direct push is rejected by the
   remote and the only route in is a pull request. Screenshots went to the operator first, per

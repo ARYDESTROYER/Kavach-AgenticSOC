@@ -343,13 +343,16 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     //
     // `min-h-0` is asserted on the CELL ROOT rather than the trigger. Every strip tile now
     // has one: the trigger is a <button>, so anything that must sit beside it rather than
-    // inside it — the help popover trigger (a nested button is invalid DOM) and the
-    // partition (ARIA discards list semantics inside a button) — forces a wrapper, and the
-    // wrapper is then the cell and owns the cell's height. Update these tokens if density
-    // changes; never delete them.
+    // inside it — the help popover trigger (a nested button is invalid DOM) — forces a
+    // wrapper, and the wrapper is then the cell and owns the cell's height. Update these
+    // tokens if density changes; never delete them.
     const totalCasesTrigger = screen.getByTestId('kpi-total-cases');
     expect(totalCasesTrigger).toHaveClass('px-3', 'py-2');
     expect(totalCasesTrigger.parentElement).toHaveClass('min-h-0');
+    // BOTH halves of the compact density, not just the padding. The label→numeral gap is
+    // the other 4px, and it was the one token in this change that no gate could see:
+    // reverting it to `mt-2` left the whole suite green while quietly re-growing the strip.
+    expect(totalCasesTrigger.querySelector(':scope > div.items-end')).toHaveClass('mt-1');
   });
 
   it('pairs every KPI numeral with the honest denominator it is a share of', async () => {
@@ -567,9 +570,11 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       labels: ['AI agent', 'Human', 'System'],
       values: ['5', '3', '1'],
     });
-    // The three bands reconcile with the numeral they sit under — 5 + 3 + 1 === 9 — so the
-    // "Human" row can never be the 4 that `terminal − auto` would have printed.
-    expect(within(screen.getByTestId('kpi-drilldown-partition')).queryByText('4')).toBeNull();
+    // The `toEqual` above IS the reconciliation guard: 5 + 3 + 1 === 9, the numeral the
+    // panel partitions, so the "Human" row can never be the 4 that `terminal − auto` would
+    // have printed. A separate `queryByText('4')` used to sit here; against an exact
+    // band-by-band comparison it could not fail, so it is gone rather than kept as
+    // decoration.
   });
 
   it('counts a POLICY-CLOSED case in Resolved / Closed, and names it in the partition', async () => {
@@ -707,7 +712,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await screen.findByTestId('page-hero');
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
+    // `tile.querySelector('dl')` alone would NOT catch a face partition — KpiTile renders
+    // it as a SIBLING of the button — so the anchor check beside it is the live guard.
     expect(tile.querySelector('dl')).toBeNull();
+    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
     // Scoped to the strip: the instrument card below legitimately names the same band.
     expect(within(screen.getByTestId('kpi-strip')).queryByText('AI agent')).toBeNull();
     // …and the drill-down, which is where a partition WOULD be stated, states none.
@@ -966,6 +974,11 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     const resolvedRing = await screen.findByRole('img', { name: /Resolved cases by severity/i });
+
+    // The ring size is asserted HERE too, not only in the mount test: this case's whole
+    // premise is "the hole is ~58px", and a hole is 0.52 × the ring. Without this line the
+    // title's number could go stale against a resized ring and nothing here would notice.
+    expect(resolvedRing).toHaveStyle({ height: '112px' });
 
     // The center count-up shows the ABBREVIATED form, never the raw grouped digits.
     expect(within(resolvedRing).getByText('1.2K')).toBeInTheDocument();
