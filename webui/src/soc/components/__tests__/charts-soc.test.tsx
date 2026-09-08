@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { render, within } from '@testing-library/react';
-import { MitreHeatmap, type MitreTacticColumn } from '../charts-soc';
+import { MitreHeatmap, MultiSeriesTrend, type MitreTacticColumn } from '../charts-soc';
 
 /** A deliberately jagged fixture: Execution has 2 techniques, Persistence has 1. */
 const COLUMNS: MitreTacticColumn[] = [
@@ -95,5 +95,63 @@ describe('MitreHeatmap — viridis magnitude ramp, never a severity hue (round-6
     );
     expect(bgs.some((b) => b.startsWith('rgb('))).toBe(true);
     expect(bgs.every((b) => !b.includes('--critical'))).toBe(true);
+  });
+});
+
+/**
+ * `MultiSeriesTrend fill` — the escape from a pinned pixel height.
+ *
+ * `height` renders as an inline style, and the `<ResponsiveContainer height="100%">`
+ * inside it can only ever be 100% of that constant — so a chart in a stretched flex cell
+ * leaves every spare pixel as dead space below itself. `fill` makes the chart
+ * `absolute inset-0` with NO inline height, so it takes the size of the box it is given.
+ *
+ * jsdom performs no layout, so the resulting height is unassertable here by construction.
+ * What IS assertable, and what actually regresses, is the contract: which classes are
+ * emitted, that no inline height survives, that BOTH render arms honour it (a caller that
+ * stops passing `height` must not get the 240px default back on the no-data box), and
+ * that the default stays byte-identical for the existing callers.
+ */
+describe('MultiSeriesTrend — fill vs a pinned height', () => {
+  const SERIES = [{ key: 'a', label: 'A' }];
+  const ROWS = [
+    { x: '1', a: 1 },
+    { x: '2', a: 2 },
+  ];
+
+  it('pins an inline height by default, for every existing caller', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={ROWS} series={SERIES} height={132} ariaLabel="Trend" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box.style.height).toBe('132px');
+    expect(box.className).not.toMatch(/absolute/);
+  });
+
+  it('fills its positioned ancestor instead, with no inline height, when fill is set', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={ROWS} series={SERIES} fill ariaLabel="Trend" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box).toHaveClass('absolute', 'inset-0');
+    expect(box.style.height).toBe('');
+  });
+
+  it('honours fill on the NO-DATA arm too, so an empty series cannot fall back to 240px', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={[]} series={SERIES} fill ariaLabel="Trend" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box).toHaveTextContent('No data');
+    expect(box).toHaveClass('absolute', 'inset-0');
+    expect(box.style.height).toBe('');
+  });
+
+  it('merges the caller className rather than replacing it', () => {
+    const { container } = render(
+      <MultiSeriesTrend data={ROWS} series={SERIES} fill className="rounded-md" ariaLabel="T" />,
+    );
+    const box = container.querySelector('[role="img"]') as HTMLElement;
+    expect(box).toHaveClass('absolute', 'inset-0', 'rounded-md');
   });
 });

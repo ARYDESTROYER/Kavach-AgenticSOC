@@ -465,6 +465,23 @@ export interface MultiSeriesTrendProps {
   /** Property name for the X axis category (default 'x'). */
   xKey?: string;
   height?: number;
+  /**
+   * FILL the nearest positioned ancestor instead of taking a fixed pixel height.
+   *
+   * `height` renders as an inline `style`, and `<ResponsiveContainer height="100%">`
+   * inside it can only ever be 100% of that constant — so a chart in a stretched flex
+   * cell leaves every spare pixel as dead space below itself. With `fill`, the chart is
+   * `absolute inset-0` and sizes to the box it is given, which is what lets a caller hand
+   * it `flex-1`.
+   *
+   * The caller then owns two things: a `relative` wrapper (there must be a positioned
+   * ancestor) and a `min-h-*` floor (a flex item with no free space would otherwise
+   * collapse to zero — which happens on every load tick where the cell is the row's only
+   * child, and at widths where the row stacks).
+   *
+   * Default `false`, so every existing call site renders byte-identically.
+   */
+  fill?: boolean;
   format?: (v: number) => string;
   showXAxis?: boolean;
   showYAxis?: boolean;
@@ -507,6 +524,7 @@ export const MultiSeriesTrend = React.forwardRef<HTMLDivElement, MultiSeriesTren
       series,
       xKey = 'x',
       height = 240,
+      fill = false,
       format,
       showXAxis = true,
       showYAxis = true,
@@ -531,8 +549,12 @@ export const MultiSeriesTrend = React.forwardRef<HTMLDivElement, MultiSeriesTren
           ref={ref}
           role="img"
           aria-label={`${label} (no data)`}
-          className={cn('flex items-center justify-center text-sm text-muted-foreground', className)}
-          style={{ height }}
+          className={cn(
+            'flex items-center justify-center text-sm text-muted-foreground',
+            fill && 'absolute inset-0',
+            className,
+          )}
+          style={fill ? undefined : { height }}
         >
           No data
         </div>
@@ -540,7 +562,13 @@ export const MultiSeriesTrend = React.forwardRef<HTMLDivElement, MultiSeriesTren
     }
 
     return (
-      <div ref={ref} role="img" aria-label={label} className={className} style={{ height }}>
+      <div
+        ref={ref}
+        role="img"
+        aria-label={label}
+        className={cn(fill && 'absolute inset-0', className)}
+        style={fill ? undefined : { height }}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />

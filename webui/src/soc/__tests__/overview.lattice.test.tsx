@@ -6,9 +6,9 @@
  *
  *   A. READING ORDER. The lattice is one band read top-to-bottom: the KPI strip heads the
  *      page, the noise-reduction flow explains how the alert stream became those numerals,
- *      the close-attribution card says who closed what, and only then do the two case
- *      surfaces (the resolved/open snapshots and the live queue) and the timing pair
- *      follow. Order is asserted in the DOM, never by geometry — jsdom performs no layout,
+ *      the close-attribution card says who closed what, and only then does row 2 follow:
+ *      the resolved/open snapshots, the detect/respond timing pair, and the live queue,
+ *      left to right. Order is asserted in the DOM, never by geometry — jsdom performs no layout,
  *      so a class-derived column span proves nothing here and a measured rectangle would be
  *      a fiction. The retired Cases-burndown rail must not have crept back.
  *
@@ -367,7 +367,7 @@ describe('Overview — the command lattice', () => {
   });
 
   // ---------------------------------------------------------------- GROUP A --
-  it('reads top-to-bottom: strip → flow → attribution → case surfaces → timing', async () => {
+  it('reads top-to-bottom: strip → flow → attribution → snapshots → timing → queue', async () => {
     renderOverview();
     await screen.findByTestId('page-hero');
     // The flow band is the only one that arrives on its own request, so it gates the
@@ -382,7 +382,12 @@ describe('Overview — the command lattice', () => {
 
     // One chain, each link strictly after the one before it. Chaining is what makes the
     // assertion an ORDER rather than six independent presence checks.
-    const band = [strip, funnel, attribution, snapshots, queue, timing];
+    //
+    // The timing pair sits BETWEEN the two case surfaces because it is the middle cell of
+    // row 2 (snapshots · timing · queue) rather than a full-width row below them. DOM
+    // order still equals visual order — the grid lays the three cells out left to right
+    // and no `order-*` utility is used — so reading and focus order stay truthful.
+    const band = [strip, funnel, attribution, snapshots, timing, queue];
     for (let i = 0; i < band.length - 1; i += 1) {
       expect(follows(band[i], band[i + 1])).toBe(true);
     }

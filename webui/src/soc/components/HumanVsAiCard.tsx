@@ -107,9 +107,11 @@ export const HUMAN_VS_AI_HELP =
   'Shares are of closed cases in this window and always add up to 100%. ' +
   // Relocated from the share line, where it was competing with the bucket granularity.
   'Trend buckets are keyed by case ARRIVAL time, not close time. ' +
-  // ALSO kept inline below, deliberately. This is the AGENTS.md §3 separation of
-  // recommendation from close authority, and it has already been relocated once; a
-  // reader who never opens this popover still has to see it.
+  // POPOVER-ONLY since the operator asked (twice) for the face copy to go. This is the
+  // AGENTS.md §3 separation of recommendation from the deterministic close authority, so
+  // it must stay reachable by click/Enter/Space/tap — which is exactly what the
+  // `alwaysPopover` on the call site below guarantees, rather than relying on this string
+  // happening to stay over HelpTip's 80-character tooltip/popover threshold.
   'Advisory only — the agent recommends; the deterministic case manager decides. This ' +
   'dashboard never influences that.';
 
@@ -141,7 +143,7 @@ const BANDS: BandDef[] = [
 
 /**
  * The close-attribution partition's BAND IDENTITY, exported so any other surface that
- * states the same partition (the Resolved / Closed KPI tile's in-place breakdown)
+ * states the same partition (the Resolved / Closed KPI tile's drill-down partition)
  * borrows these labels instead of minting its own. Two surfaces naming the same three
  * server keys differently is how a page ends up telling two stories about one number.
  * Order is fixed: agent, analyst, then the residual — which is always present.
@@ -232,6 +234,11 @@ export function HumanVsAiCard({
         <HelpTip
           text={HUMAN_VS_AI_HELP}
           label="About Human vs AI attribution"
+          // The §3 advisory now lives ONLY here, so the popover presentation is a
+          // requirement rather than a side effect of the help text's current length: a
+          // Radix tooltip never opens on touch, and a later copy trim under 80 characters
+          // would silently demote this to one a tablet operator could not reach.
+          alwaysPopover
           className="-my-1 shrink-0 text-muted-foreground/70"
         />
       </div>
@@ -264,12 +271,22 @@ export function HumanVsAiCard({
       </ul>
 
       {series && series.length ? (
-        <div className="mt-2 min-w-0 flex-1" data-testid="human-vs-ai-chart">
+        /*
+         * `relative` and the `min-h-` floor are BOTH required by `fill` and neither is
+         * decorative. The chart is `absolute inset-0`, so it needs this box as its
+         * positioned ancestor; and a flex item with no free space to take would collapse
+         * to zero height without a floor — which is the real case on every load tick where
+         * this card is the row's only child, when the funnel is unsupported and the card
+         * takes the whole row, and at every width below `xl` where the row stacks. The
+         * floor is the height the chart used to be pinned to, so it can only ever GROW
+         * into space that was previously dead.
+         */
+        <div className="relative mt-2 min-h-[122px] min-w-0 flex-1" data-testid="human-vs-ai-chart">
           <MultiSeriesTrend
             data={series}
             series={CHART_SERIES}
             xKey="x"
-            height={122}
+            fill
             showYAxis={false}
             showLegend={false}
             format={fmtNumber}
@@ -277,10 +294,10 @@ export function HumanVsAiCard({
           />
         </div>
       ) : (
-        <p
-          className="mt-2 flex-1 text-2xs text-muted-foreground"
-          data-testid="human-vs-ai-no-series"
-        >
+        /* No `flex-1` here: one line of text stretched to fill the cell opened a gap three
+           times the size of the one the chart used to leave. The footer below closes the
+           card instead. */
+        <p className="mt-2 text-2xs text-muted-foreground" data-testid="human-vs-ai-no-series">
           No close-attribution trend for this window yet.
         </p>
       )}
@@ -308,10 +325,10 @@ export function HumanVsAiCard({
             cohort.
           </p>
         ) : null}
-        <p className="text-2xs text-muted-foreground">
-          Advisory only — the agent recommends; the deterministic case manager decides. This
-          dashboard never influences that.
-        </p>
+        {/* The §3 advisory line that used to sit here was removed at the operator's
+            request. It is not gone: it is the closing sentence of HUMAN_VS_AI_HELP, on the
+            (?) above, which `alwaysPopover` keeps reachable by click, Enter, Space and
+            tap. Do not restate it here — that duplication is what was removed. */}
       </div>
     </section>
   );

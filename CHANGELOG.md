@@ -52,8 +52,8 @@ same 96-axis WCAG gate and the three-dichromacy chart-separation gate as before.
 widest instrument — the noise-reduction flow — below the fold in a second grid, kept its
 time controls at the far right of the masthead away from the title they qualify, and stacked
 the open and resolved snapshots so half the page's horizontal space went unused. The two
-bands are now ONE twelve-column band of three rows, led by the flow: flow and close
-attribution, then the case snapshots side by side and the live queue, then the timing pair.
+bands are now ONE twelve-column band, led by the flow: flow and close attribution, then the
+case snapshots, the timing pair and the live queue.
 The masthead's controls moved into the header's `meta` slot, which renders inside the title
 row, so title and controls read as one cluster; the strip runs at the shipped compact
 density.
@@ -62,7 +62,7 @@ The grid is `xl`, never `lg`, and the reason is measurable rather than aesthetic
 diagram hides its graph below 608px of container width and falls back to a text rail, and at
 the tightest supported desktop an eight-of-twelve cell clears that by a margin thin enough
 that the document scrollbar decides it. The horizontal padding is `px-3` for exactly that
-reason, which also puts all five cells of the band on one 12px rail.
+reason, which also puts every cell of the band on one 12px rail.
 
 Opening a case from the queue or a drill-down row no longer navigates away from the numerals
 that prompted the click — it mounts the shared case surface over the page. Closing it now
@@ -79,6 +79,36 @@ carries, a detection-source facet, and a CSV export of the listed rows that neut
 spreadsheet formula prefixes on log-derived text. The Cases-burndown chart left the dashboard
 for Metrics → Posture, where it already renders as "Closure vs arrival"; the chart, its wire
 field and its backend are untouched.
+
+**A one-stop dashboard that still asked to be scrolled.** Measured in a real browser rather
+than derived from class tokens, the Cyber Defence Center fitted on no screen: 1,149px of
+content in a 1,080px viewport, 1,181px at 1280×800 — and most of the excess was empty. One of
+the five KPI tiles carried a four-row close-attribution partition the other four did not, so a
+single tile set the height of the whole strip (144px, of which 82 was that partition). The
+attribution card's trend was pinned at `height={122}` inside a stretched flex cell, so every
+spare pixel of the row became dead space beneath it. And the timing pair was a full-width row
+of its own, holding two small stats across the entire console, directly below a snapshot cell
+that was already 65px shorter than the row it sat in.
+
+The partition moved into that tile's own drill-down, first inside the scroller so it and the
+numeral it partitions are both on screen — the same reconciled memo, so the panel, the tile
+and the instrument card still cannot disagree, and a withheld partition (an outage, a partial
+one, a stale window) is withheld there too. The trend chart gained a fill mode that sizes to
+the box it is given instead of to a constant, with a floor at the height it used to be pinned
+to, so it can only grow into space that was already dead. The two case snapshots stack inside
+four columns instead of sitting side by side across eight, which is what their own
+`last:border-b-0` rule was written for and lets the severity legend use the full cell width;
+the timing pair became the middle cell of that row, its two stats stacked at `xl` only — below
+it they keep the two columns they had, because there the cell is the full page wide. The strip
+runs one step tighter (`py-2`, and the value row `mt-1` with a gutter that clears the corner
+overlay), a change every compact strip on the console takes deliberately.
+
+The result is 998px of content at 1920×1080: the page no longer scrolls there, with 81px of
+slack — enough to absorb the partial-coverage warning, which the measurement already included.
+At 900px-tall viewports it is still 113–145px over. Closing that would mean cutting the
+noise-reduction flow band or retiring a whole band from the landing surface, which is a product
+decision rather than a layout one, and it is stated here rather than engineered around
+silently.
 
 **Repairing a corpus that could only be repaired forward.** The precedent projection is a
 bounded window, so a change to the chunk TEXT repaired only what the window happened to

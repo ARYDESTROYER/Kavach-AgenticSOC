@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { checkContrast } from '../../../../scripts/gate-contrast.mjs';
 import { HumanVsAiCard, HUMAN_VS_AI_HELP, type HumanVsAiPoint } from '../HumanVsAiCard';
@@ -54,6 +55,38 @@ describe('HumanVsAiCard', () => {
     expect(pcts.reduce((a, b) => a + b, 0)).toBe(100);
   });
 
+  it('gives the trend a fill box with a floor, and never stretches the no-series line', () => {
+    // The chart used to be pinned at `height={122}` inside a stretched flex column, so
+    // every spare pixel of the cell became dead space under it. It now FILLS
+    // (`MultiSeriesTrend fill` → `absolute inset-0`), which needs exactly two things from
+    // this wrapper and both are asserted here because jsdom has no layout engine and the
+    // resulting HEIGHT is therefore not assertable at all:
+    //   `relative`        — the positioned ancestor `inset-0` resolves against;
+    //   `min-h-[122px]`   — the floor, without which a flex item with no free space
+    //                       collapses to zero (the real case on every load tick where
+    //                       this card is the row's only child, and below `xl`).
+    const { rerender } = render(
+      <HumanVsAiCard
+        totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+        series={SERIES}
+        windowLabel="last 24 hours · 1h buckets"
+      />,
+    );
+    const chart = screen.getByTestId('human-vs-ai-chart');
+    expect(chart).toHaveClass('relative', 'min-h-[122px]', 'flex-1');
+
+    // …and the empty arm does NOT take `flex-1`: one line of text stretched to fill the
+    // cell opened a gap three times the size of the one the chart used to leave.
+    rerender(
+      <HumanVsAiCard
+        totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+        series={null}
+        windowLabel="last 24 hours · 1h buckets"
+      />,
+    );
+    expect(screen.getByTestId('human-vs-ai-no-series')).not.toHaveClass('flex-1');
+  });
+
   it('passes an unmeasured bucket through as a GAP, never as a zero', () => {
     const { container } = render(
       <HumanVsAiCard
@@ -85,6 +118,31 @@ describe('HumanVsAiCard', () => {
       /records the LAST decider on a case, not proof of who did the work/i,
     );
     expect(HUMAN_VS_AI_HELP).toMatch(/acknowledges or re-tags moves into the human share/i);
+  });
+
+  it('keeps the #3 advisory reachable after it left the card face', async () => {
+    // The always-visible "Advisory only — the agent recommends; the deterministic case
+    // manager decides" paragraph was removed from the card at the operator's request. It
+    // is a RELOCATION, not a deletion, and this is the spec that says so: the sentence
+    // survives verbatim in HUMAN_VS_AI_HELP, and `alwaysPopover` makes the (?) a real
+    // <button> — so click, Enter, Space and touch all reach it. A Radix TOOLTIP would
+    // never open on touch, which is why the length heuristic is not relied on.
+    render(
+      <HumanVsAiCard
+        totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+        series={SERIES}
+        windowLabel="last 24 hours · 1h buckets"
+      />,
+    );
+    const card = screen.getByTestId('human-vs-ai');
+    expect(within(card).queryByText(/never influences that/i)).toBeNull();
+
+    const trigger = screen.getByRole('button', { name: 'About Human vs AI attribution' });
+    await userEvent.click(trigger);
+    expect(await screen.findByRole('dialog')).toHaveTextContent(
+      /the agent recommends; the deterministic case manager decides/i,
+    );
+    expect(screen.getByRole('dialog')).toHaveTextContent(/never influences that/i);
   });
 
   it('shows the caller-supplied reason (and em dashes) when attribution is unavailable', () => {

@@ -30,7 +30,7 @@ changing any case or detection policy.
    trendline because no per-severity series exists for it.
 3. **Use the instrument row** — Active Risk Index summarizes pressure across the
    entire open queue; the Open and Resolved composition rings show severity mix;
-   Latest Cases shows exactly four recent records and reveals bounded detail on
+   Latest Cases shows exactly five recent records and reveals bounded detail on
    hover or keyboard focus.
 4. **Inspect Noise Reduction** — follow the horizontal ribbon from alerts ingested
    through clustering and cases opened. Opened cases then split into

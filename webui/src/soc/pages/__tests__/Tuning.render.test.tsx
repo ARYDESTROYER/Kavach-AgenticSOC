@@ -285,7 +285,11 @@ describe('Tuning page', () => {
     expect(cells).toHaveLength(3);
     expect(cells[1]).toHaveClass('border-t', 'sm:border-l', 'sm:border-t-0');
     expect(cells[2]).toHaveClass('border-t', 'sm:border-l', 'sm:border-t-0');
-    expect(screen.getByTestId('kpi-needs-attention')).toHaveClass('min-h-0', 'py-3');
+    // `density="compact"` is a SHARED token: it tightened from `py-3` to `py-2` when the
+    // landing dashboard had to seat its flow diagram, case queue and timing pair in one
+    // screen, and every compact strip on the console — this one included — takes the same
+    // rhythm deliberately. Update it here too if the density changes again; never delete it.
+    expect(screen.getByTestId('kpi-needs-attention')).toHaveClass('min-h-0', 'py-2');
   });
 
   it('uses task-focused workspace tabs and opens on Operations', async () => {

@@ -104,8 +104,11 @@ const POSTURE: PostureResponse = {
   quality: {
     total_cases: 3, verdicted_cases: 2, true_positive_cases: 1, false_positive_cases: 1,
     needs_human_cases: 1, escalated_cases: 0, terminal_cases: 4, auto_closed_cases: 2,
-    // The complete three-way partition, so the Resolved / Closed tile's in-place
-    // breakdown <dl> is part of what axe inspects.
+    // The complete three-way partition. It no longer renders on the tile FACE — it moved
+    // into the tile's drill-down modal — so the <dl> axe used to inspect here is audited
+    // in `overview.kpimodal.a11y.test.tsx` instead. The payload stays complete so the
+    // Human-vs-AI instrument on this page still publishes its reconciling bands, which
+    // this file's runs DO cover.
     human_closed_cases: 1, system_closed_cases: 1,
     alert_to_incident_ratio: 0.33, false_positive_rate: 0.5, escalation_rate: 0.33,
     containment_rate: 0.5, automation_rate: 0.5,

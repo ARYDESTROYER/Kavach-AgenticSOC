@@ -44,9 +44,16 @@ if (typeof Element !== 'undefined') {
 
 // jsdom has no layout engine, so Recharts' ResponsiveContainer would otherwise
 // measure 0x0 and emit a warning for every chart render. Model only the chart
-// wrapper: inherit an explicit pixel dimension from its ancestors (all shared
-// chart components set a truthful inline height) and use a stable desktop canvas
-// width when CSS layout would ordinarily provide the remaining dimension.
+// wrapper: inherit an explicit pixel dimension from its ancestors (nearly every
+// shared chart component sets a truthful inline height) and use a stable desktop
+// canvas width when CSS layout would ordinarily provide the remaining dimension.
+//
+// ONE documented exception: `MultiSeriesTrend fill` deliberately sets no inline
+// height — it is `absolute inset-0` and takes the size of a flex cell, which only a
+// real layout engine can resolve. The walk below then finds nothing and falls back
+// to TEST_CHART_HEIGHT, which is still non-zero, so Recharts stays quiet and
+// `npm run test:strict` stays clean. A `fill` chart's HEIGHT is therefore not
+// assertable in jsdom at all; assert the wrapper's classes instead.
 if (typeof Element !== 'undefined') {
   const nativeGetBoundingClientRect = Element.prototype.getBoundingClientRect;
   const TEST_CHART_WIDTH = 800;

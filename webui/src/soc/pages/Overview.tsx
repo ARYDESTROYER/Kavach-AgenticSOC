@@ -15,10 +15,9 @@
  *   │             selected window; "Open Cases" is a window-EXEMPT stock and says so, so
  *   │             it is never read as a fifth summand. Each cell DISCLOSES its own
  *   │             drill-down panel below the strip (see "Drill-down" further down).
- *   ├ LATTICE ──── ONE twelve-column `xl` band, three rows (see the block comment on it):
- *   │               row 1  Noise-Reduction flow (8)      · Human-vs-AI attribution (4)
- *   │               row 2  open + resolved snapshots (8) · latest-case queue (4)
- *   │               row 3  MTTD / response                        (full width)
+ *   ├ LATTICE ──── ONE twelve-column `xl` band, two rows (see the block comment on it):
+ *   │               row 1  Noise-Reduction flow (8)  · Human-vs-AI attribution (4)
+ *   │               row 2  case snapshots (4) · MTTD / response (4) · live queue (4)
  *   │             The flow leads because it is the page's widest instrument and its own
  *   │             container query needs 608px of cell width to draw a graph at all.
  *   └ DEEPER ───── a COLLAPSED "Deeper analytics" group folding the secondary bands
@@ -370,12 +369,17 @@ const fmtInt = (n: number): string => fmtNumber(n);
 
 /**
  * Format the SnapshotCard donut CENTER number only. The center hole is pinned to
- * ~71px (innerPct=52% of the 136px ring) with `overflow-hidden` as a
+ * ~58px (innerPct=52% of the 112px ring) with `overflow-hidden` as a
  * deliberate anti-overlap guardrail — a 4+ digit total in `fmtInt`'s
  * thousands-separated form (e.g. "1,234") is wider than the hole and gets
  * clipped rather than overlapping the ring. Abbreviate >=1000 (e.g. "1.2K") so
  * the center always fits; the legend rows beside it keep their exact,
  * unabbreviated counts via `fmtNumber`.
+ *
+ * The ring was 136px while the two cards sat SIDE BY SIDE across eight columns. Stacked
+ * in four they cost twice their own height, so the ring is 112: the widest string this
+ * formatter can emit is four characters ("1.2K") at `text-2xl`, ~48px of JetBrains Mono,
+ * which still clears the 58px hole. Below ~104 it would not.
  */
 const fmtSnapshotCenter = (n: number): string => fmtTokens(n);
 
@@ -542,11 +546,6 @@ interface KpiItem {
    * — see `KpiTileProps.secondary`.
    */
   secondary?: React.ReactNode;
-  /**
-   * An in-place PARTITION of the numeral (the "of which" rows). Whole partition or
-   * none — see `KpiTileProps.breakdown`.
-   */
-  breakdown?: KpiBreakdownRow[];
   icon: LucideIcon;
   accent: KpiAccent;
   goodDirection: 'up' | 'down' | 'none';
@@ -639,14 +638,16 @@ function SnapshotCard({
   /** Optional honest hover trendline for the snapshot total. */
   trend?: MetricTrendSeries;
   /**
-   * Layout-only overrides for the card's own root.
+   * Layout-only overrides for the card's own root. NO caller passes one today, and that
+   * is the point: the root's `border-b … last:border-b-0` is STACKING logic expressed as
+   * a DOM-order selector, and the cards are stacked at every width now that their column
+   * is four wide rather than eight.
    *
-   * The root's `border-b … last:border-b-0` is STACKING logic expressed as a DOM-order
-   * selector, so it is right only while the cards are stacked. When the parent lays them
-   * out side by side, the first card keeps a hairline under it that separates nothing —
-   * hence a caller-supplied `xl:border-b-0`. Always suppress with a BREAKPOINT-PREFIXED
-   * utility: `cn` is `twMerge`, and a bare `border-b-0` would delete the base `border-b`
-   * outright, taking the stacked rule with it.
+   * If a future layout ever lays them out side by side again, the first card would keep a
+   * hairline under it that separates nothing, and the fix is a BREAKPOINT-PREFIXED
+   * `xl:border-b-0` from the caller — never a bare `border-b-0`, which `cn` (twMerge)
+   * would resolve by deleting the base `border-b` outright, taking the stacked rule with
+   * it at every other width.
    */
   className?: string;
 }) {
@@ -657,10 +658,10 @@ function SnapshotCard({
       {segments.length ? (
         <DonutChart
           segments={segments}
-          height={136}
+          height={112}
           thickness={0.26}
           showTooltip={false}
-          className="w-36 shrink-0"
+          className="w-28 shrink-0"
           ariaLabel={ariaLabel}
           center={
             <CountUp
@@ -678,7 +679,7 @@ function SnapshotCard({
         <div
           role="img"
           aria-label={`${ariaLabel} (none)`}
-          className="flex h-[136px] w-36 shrink-0 items-center justify-center"
+          className="flex h-[112px] w-28 shrink-0 items-center justify-center"
         >
           <span className="font-mono text-2xl font-semibold tabular-nums text-muted-foreground">
             0
@@ -1387,7 +1388,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * page now states close attribution ONCE, in the Human-vs-AI instrument, over the
    * server's reconciling agent/human/system partition. The card told a third,
    * differently-denominated version of the same story. The Resolved / Closed KPI
-   * tile's in-place breakdown reads that SAME `humanVsAi` partition rather than
+   * tile's DRILL-DOWN partition reads that SAME `humanVsAi` partition rather than
    * re-deriving it — see the `kpis` memo.)
    *
    * (The bounded-sample "Escalated to human" fallback was removed with the tile it
@@ -1433,7 +1434,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const mttdBlock = posture?.lifecycle?.mttd_minutes;
   const respondBlock = posture?.lifecycle?.mtta_minutes;
 
-  // ----- Exactly four most-recent cases — compact live instrument queue ----- //
+  /*
+   * The five most-recent cases — the compact live instrument queue.
+   *
+   * It was four while the queue shared a row with a pair of side-by-side snapshot cards
+   * and matched their height. With the snapshots stacked into four columns the row is
+   * taller, and a fourth row left ~85px of the cell empty. A fifth row is real content in
+   * space that was blank, and it is FREE: five rows measure ~316px against a row the
+   * stacked snapshots already set to ~349px, so the queue still does not drive the row.
+   * Do not raise it further without re-measuring — six would.
+   */
   const latestCases = React.useMemo(
     () =>
       [...cases]
@@ -1442,7 +1452,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           const aTime = Date.parse(a.updated_at || a.created_at || '') || 0;
           return bTime - aTime || (b.risk_score ?? 0) - (a.risk_score ?? 0);
         })
-        .slice(0, 4),
+        .slice(0, 5),
     [cases],
   );
 
@@ -1814,6 +1824,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
      * partition). It is additionally required to reconcile with the numeral printed
      * ABOVE it, and is withheld while the totals are the previous window's — the card
      * withholds then too.
+     *
+     * It is handed to the tile's DRILL-DOWN (`drilldown.partition`) rather than rendered
+     * on the tile face. On the face it was four rows the other four tiles did not have,
+     * so one tile set the height of the whole strip; in the panel it sits directly under
+     * the numeral it partitions, with more room to name each band. Nothing about the
+     * numbers or the guards above changes — only where they are read.
      */
     const closeTotals = humanVsAi.stale ? null : humanVsAi.totals;
     const closeBreakdown: KpiBreakdownRow[] | undefined =
@@ -2110,9 +2126,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
         sub: cohortSub(undefined, BOUNDED_SAMPLE_SUB),
         help:
           'Cases from this window that reached a terminal state, including the ones an ' +
-          'operator closed under a "declared benign" rule policy. The partition below the ' +
-          'numeral names who closed them: the agent, an analyst, or system routing.',
-        breakdown: closeBreakdown,
+          'operator closed under a "declared benign" rule policy. Select this tile for the ' +
+          'partition of who closed them: the agent, an analyst, or system routing.',
         icon: ShieldCheck,
         accent: 'success',
         goodDirection: 'up',
@@ -2136,6 +2151,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
           populationResolvedBy: 'store',
           defaultRange: 'window',
           severityHistogram: bandHistogram,
+          // The close attribution used to sit under the numeral on the tile FACE, where it
+          // set the height of the whole strip for the four tiles that carry no partition.
+          // It is the same memo either way, so this panel, the tile it opened from and the
+          // instrument card below still read ONE reconciled partition and cannot drift.
+          partition: closeBreakdown,
           target: navigate
             ? {
                 label: 'Open in Cases',
@@ -2489,14 +2509,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     // The strip HEADS this page rather than being all of it: a flow
                     // diagram, a case queue and a timing pair have to sit below it in the
                     // same view. Compact swaps the tile's existing padding/numeral tokens
-                    // (min-h-28→min-h-0, px-4 py-5→px-3 py-3, text-4xl→text-2xl); it does
+                    // (min-h-28→min-h-0, px-4 py-5→px-3 py-2, text-4xl→text-2xl); it does
                     // not touch the cell COUNT, which the grid's nth-child divider math is
                     // hand-tuned to. See ui-standard, "Operational summaries".
                     density="compact"
                     goodDirection={kpi.goodDirection}
                     countTo={kpi.countTo}
                     format={kpi.format}
-                    breakdown={kpi.breakdown}
                     onClick={() => toggleKpiPanel(kpi.testId)}
                     // The tile opens a MODAL, so it announces a popup — not an expanded
                     // state. `aria-expanded` is a disclosure semantic and would be wrong
@@ -2581,11 +2600,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
           </div>
 
           {/* ---- THE COMMAND LATTICE ----------------------------------------------
-               ONE band, three rows, all on the SAME twelve-column xl grid:
+               ONE band, two rows, all on the SAME twelve-column xl grid:
 
-                 row 1  noise-reduction flow (8)          · close attribution (4)
-                 row 2  open + resolved snapshots (8)     · latest-case queue (4)
-                 row 3  MTTD / response                            (full width)
+                 row 1  noise-reduction flow (8)  · close attribution (4)
+                 row 2  case snapshots (4) · MTTD / response (4) · live queue (4)
+
+               Row 2 used to be snapshots (8) + queue (4) with the timing pair below it as
+               a third, FULL-WIDTH row. That row was two small stats spread across the whole
+               console, and the snapshot cell's own dead space sat beside it; folding the
+               timing pair into row 2 as its middle cell spends both at once and retires a
+               row of the lattice. The snapshots stack VERTICALLY inside their four columns —
+               which is also what the operator asked for — so the cell reads as one
+               open/resolved instrument rather than two half-width ones.
 
                This used to be two sibling bands — an INSTRUMENT grid at `lg:` and an
                OPERATIONS grid at `xl:` — which cost a duplicated `border-y` pair and a
@@ -2611,7 +2637,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                it (~625px) even on a UA that ignores both scrollbar rules and draws a
                classic 17px bar. The horizontal padding is still `px-3` rather than `p-4`:
                the 8px it returns was most of the safety margin before the reclaim, and it
-               also puts all three rows of this band on ONE 12px left rail, matching the
+               also puts both rows of this band on ONE 12px left rail, matching the
                4-column cells beside them.
 
                On an `lg:` grid the same cell at a 1024px viewport would be ~459px and the
@@ -2625,10 +2651,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
             data-testid="hero-row"
             className="min-w-0 border-y border-border"
           >
-            {/* ---- ROW 1 — the flow, and who closed what ---- */}
+            {/* ---- ROW 1 — the flow, and who closed what ----
+                The flow cell is `py-3`, not `py-4`: it governs this row's height, and its
+                sibling card is `p-3`, so the extra 4px both cost the page 8px and started
+                the two cells' headings 4px apart. ---- */}
             <div className="grid min-w-0 items-stretch border-b border-border/70 xl:grid-cols-12">
               {noiseCellVisible ? (
-                <div className="min-w-0 border-b border-border/70 px-3 py-4 xl:col-span-8 xl:border-b-0 xl:border-r">
+                <div className="min-w-0 border-b border-border/70 px-3 py-3 xl:col-span-8 xl:border-b-0 xl:border-r">
                   {noiseUnavailable ? (
                     <EmptyState
                       data-testid="noise-reduction-unavailable"
@@ -2706,18 +2735,21 @@ export default function Overview({ onNavigate }: OverviewProps) {
               </div>
             </div>
 
-            {/* ---- ROW 2 — case state, and the live queue ---- */}
-            <div className="grid min-w-0 items-stretch border-b border-border/70 xl:grid-cols-12">
-              {/* ONE labelled region holding both snapshots, split into two cells at `xl`.
+            {/* ---- ROW 2 — case state, timing, and the live queue ----
+                No `border-b` of its own: this is the LAST row of the lattice now, and the
+                band's `border-y` already closes it. Keeping one would paint a second
+                hairline 0px above that one. */}
+            <div className="grid min-w-0 items-stretch xl:grid-cols-12">
+              {/* ONE labelled region holding both snapshots, STACKED at every width.
                   Promoting the cards to independent grid children would delete this
-                  landmark and the h2 order that is read from it. The split is gated at
-                  `xl:` rather than `sm:` on purpose: below it the cards are already
-                  full-width, and halving them earlier would make each narrower than it is
-                  today between 640 and 1024px, where the severity legend starts
-                  truncating band labels. */}
+                  landmark and the h2 order that is read from it. They used to sit side by
+                  side across eight columns; at four they stack, which is what the card's
+                  own `border-b … last:border-b-0` was written for — so neither card carries
+                  a layout override any more, and the severity legend gets the full cell
+                  width instead of half of it. */}
               <section
                 aria-label="Resolved and open cases"
-                className="min-w-0 border-b border-border/70 px-3 xl:col-span-8 xl:grid xl:grid-cols-2 xl:divide-x xl:divide-border/70 xl:border-b-0 xl:border-r"
+                className="min-w-0 border-b border-border/70 px-3 xl:col-span-4 xl:border-b-0 xl:border-r"
               >
                 <SnapshotCard
                   title="Open cases"
@@ -2728,10 +2760,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   counts={derived.openSev}
                   ariaLabel="Open cases by severity"
                   ctaLabel="View open cases"
-                  // Side by side at `xl` the card is no longer ABOVE its sibling, so the
-                  // stacked rule under it separates nothing; the parent's `xl:divide-x`
-                  // draws the rule that does. Prefixed, so the stacked rule survives.
-                  className="xl:border-b-0 xl:pr-4"
                   trend={{
                     metric: 'New cases opened',
                     points: bucketTrends?.newCases,
@@ -2753,7 +2781,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   counts={derived.resolvedSev}
                   ariaLabel="Resolved cases by severity"
                   ctaLabel="View resolved cases"
-                  className="xl:pl-4"
                   trend={{
                     metric: 'Cases now closed',
                     points: bucketTrends?.closed,
@@ -2776,6 +2803,87 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 />
               </section>
 
+              {/* The timing pair, now the MIDDLE cell of row 2 rather than a full-width
+                  row of its own. `py-3` (not `py-4`) because the cell beside it has no
+                  vertical padding of its own — SnapshotCard supplies `py-3` — so anything
+                  taller would start the two adjacent h2s at different heights.
+
+                  The two stats stack ONLY at `xl`, where this cell is four columns (~302px
+                  of content at the tightest supported desktop) and two columns of ~143px
+                  would wrap "First human action e.g. assignment / ack" onto three or four
+                  lines. BELOW `xl` every cell is full width — stacking there would cost
+                  ~107px in the regime that is already the tallest — so the pair keeps its
+                  two columns. `divide-x-0` is mandatory in the `xl` arm: `divide-x` and
+                  `divide-y` write different border edges and do not cancel each other, so
+                  without the reset the rows would carry an L-shaped hairline. */}
+              <section
+                aria-label="Mean time to detect / respond"
+                className="min-w-0 border-b border-border/70 px-3 py-3 xl:col-span-4 xl:border-b-0 xl:border-r"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
+                      MTTD / response
+                    </h2>
+                    <p className="mt-0.5 text-2xs text-muted-foreground">p50 · server-computed</p>
+                  </div>
+                  {navigate ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-2xs"
+                      onClick={() => navigate('metrics', { tab: 'posture' })}
+                    >
+                      Detail →
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="mt-3 grid grid-cols-2 divide-x divide-border/70 xl:grid-cols-1 xl:divide-x-0 xl:divide-y">
+                  <div className="pr-4 xl:pb-3 xl:pr-0">
+                    <MetricHoverTrend
+                      metric="MTTD · daily mean"
+                      points={timingTrends?.mttd}
+                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                      format={humanizeMins}
+                      colorToken="info"
+                      side="top"
+                    >
+                      <TimingStat
+                        label="MTTD"
+                        sub="Detect · log arrival → case"
+                        block={mttdBlock}
+                        dotClass="bg-info"
+                        compact
+                        help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                      />
+                    </MetricHoverTrend>
+                  </div>
+                  <div className="pl-4 xl:pl-0 xl:pt-3">
+                    <MetricHoverTrend
+                      metric="Respond · daily mean"
+                      points={timingTrends?.respond}
+                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                      format={humanizeMins}
+                      colorToken="success"
+                      side="top"
+                    >
+                      {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes` —
+                          see the derivation above. The label stays "Respond" deliberately:
+                          calling it MTTR would present time-to-first-human-action as
+                          time-to-resolve. True MTTR is in Deeper analytics. */}
+                      <TimingStat
+                        label="Respond"
+                        sub="First human action e.g. assignment / ack"
+                        block={respondBlock}
+                        dotClass="bg-success"
+                        compact
+                        help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
+                      />
+                    </MetricHoverTrend>
+                  </div>
+                </div>
+              </section>
+
               <div className="min-w-0 xl:col-span-4">
                 <TopCasesPanel
                   cases={latestCases}
@@ -2786,73 +2894,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 />
               </div>
             </div>
-
-            {/* ---- ROW 3 — the timing pair, full width ----
-                It used to share a rail with a Cases-burndown chart; that chart now lives on
-                Metrics → Posture as "Closure vs arrival", beside the aging series it is
-                actually read against. With the rail retired and the flow promoted to row 1,
-                this section is a full-width row of the lattice. Its top rule is the row-2
-                wrapper's `border-b`, and the lattice's own `border-y` closes it below. */}
-            <section aria-label="Mean time to detect / respond" className="min-w-0 px-3 py-4">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
-                    MTTD / response
-                  </h2>
-                  <p className="mt-0.5 text-2xs text-muted-foreground">p50 · server-computed</p>
-                </div>
-                {navigate ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-2xs"
-                    onClick={() => navigate('metrics', { tab: 'posture' })}
-                  >
-                    Detail →
-                  </Button>
-                ) : null}
-              </div>
-              <div className="mt-3 grid grid-cols-2 divide-x divide-border/70">
-                <div className="pr-4">
-                  <MetricHoverTrend
-                    metric="MTTD · daily mean"
-                    points={timingTrends?.mttd}
-                    windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                    format={humanizeMins}
-                    colorToken="info"
-                    side="top"
-                  >
-                    <TimingStat
-                      label="MTTD"
-                      sub="Detect · log arrival → case"
-                      block={mttdBlock}
-                      dotClass="bg-info"
-                      compact
-                      help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
-                    />
-                  </MetricHoverTrend>
-                </div>
-                <div className="pl-4">
-                  <MetricHoverTrend
-                    metric="Respond · daily mean"
-                    points={timingTrends?.respond}
-                    windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                    format={humanizeMins}
-                    colorToken="success"
-                    side="top"
-                  >
-                    <TimingStat
-                      label="Respond"
-                      sub="First human action e.g. assignment / ack"
-                      block={respondBlock}
-                      dotClass="bg-success"
-                      compact
-                      help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
-                    />
-                  </MetricHoverTrend>
-                </div>
-              </div>
-            </section>
           </Reveal>
 
           {/* ---- DEEPER ANALYTICS (collapsed by default) ---- */}

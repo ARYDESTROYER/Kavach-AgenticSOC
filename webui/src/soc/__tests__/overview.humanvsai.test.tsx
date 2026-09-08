@@ -47,7 +47,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 import Overview from '../pages/Overview';
-import { reconcilingShares } from '../components/HumanVsAiCard';
+import { HUMAN_VS_AI_HELP, reconcilingShares } from '../components/HumanVsAiCard';
 import type { PostureResponse, PostureQuality } from '../pages/Metrics.posture.api';
 import type { Case, Metrics, MetricsTrends, MetricsTrendBucket } from '@/lib/types';
 
@@ -227,8 +227,14 @@ describe('Overview — Human vs AI card', () => {
     expect(
       within(card).getByRole('button', { name: /About Human vs AI attribution/i }),
     ).toBeInTheDocument();
-    // …and the advisory (#3) line the removed autonomy card used to carry lives here now.
-    expect(within(card).getByText(/never influences that/i)).toBeInTheDocument();
+    // …and the advisory (#3) line the removed autonomy card used to carry is IN that
+    // disclosure. It was removed from the card face at the operator's request, so it is
+    // asserted against the exported constant rather than the DOM: Radix portals the
+    // popover to <body> and unmounts it while closed, and driving it open inside a full
+    // Overview render is a live act() hazard that `npm run test:strict` treats as a
+    // failure. Its reachability by click/Enter/Space is proved against the real component
+    // in HumanVsAiCard's own suite.
+    expect(HUMAN_VS_AI_HELP).toMatch(/never influences that/i);
   });
 
   it('labels raw alert volume as a different population and never divides it into cases', async () => {
@@ -337,37 +343,38 @@ describe('Overview — Human vs AI card', () => {
     expect(fp.getByText('Bounded sample · share unavailable')).toBeInTheDocument();
   });
 
-  it('states the partition ONCE — the tile breakdown and the card read one memo', async () => {
+  it('states the partition ONCE — the card and the tile drill-down read one memo', async () => {
     // The landing page told this story twice before (a removed "Autonomous vs human"
-    // fold-out). The Resolved / Closed tile now carries the partition in place, but it
-    // reads the SAME reconciled totals the card does, so the two can never disagree.
+    // fold-out). The card states the three bands on the page; the Resolved / Closed
+    // tile's DRILL-DOWN states the reconciled set again one level down. Both read the
+    // SAME memo, so the two can never disagree — and the tile FACE now carries nothing,
+    // which is what stopped one tile setting the height of the whole strip.
     fetchPostureMock.mockResolvedValue(posture(QUALITY));
     render(<Overview onNavigate={vi.fn()} />);
     const card = await screen.findByTestId('human-vs-ai');
     await waitFor(() =>
       expect(within(within(card).getByTestId('human-vs-ai-ai')).getByText('6')).toBeInTheDocument(),
     );
-    // The partition renders BESIDE the tile button (a <dl> inside a `role=button` is
-    // children-presentational and would be flattened into the trigger's name).
     const tile = screen.getByTestId('kpi-resolved-closed');
-    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
     expect(tile.querySelector('dl')).toBeNull();
-    expect(Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent)).toEqual([
+    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
+    // 6 + 3 + 1 === 10, the terminal count the tile prints — so the analyst band is
+    // never the 4 that a `terminal − auto_closed` shortcut would have produced.
+    expect(within(tile).getByText('10')).toBeInTheDocument();
+
+    // Open the drill-down and read the partition where it lives now.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    await user.click(tile);
+    const dl = await screen.findByTestId('kpi-drilldown-partition');
+    expect(Array.from(dl.querySelectorAll('dt')).map((n) => n.textContent)).toEqual([
       'AI agent',
       'Human',
       'System',
     ]);
-    expect(Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent)).toEqual([
-      '6',
-      '3',
-      '1',
-    ]);
-    // 6 + 3 + 1 === 10, the terminal count printed above them — so the analyst band is
-    // never the 4 that a `terminal − auto_closed` shortcut would have produced.
-    expect(within(tile).getByText('10')).toBeInTheDocument();
-    expect(
-      Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent),
-    ).not.toContain('4');
+    const values = Array.from(dl.querySelectorAll('dd')).map((n) => n.textContent);
+    expect(values).toEqual(['6', '3', '1']);
+    expect(values).not.toContain('4');
   });
 
   it('withholds the previous window\u2019s partition while the new window is in flight', async () => {

@@ -166,7 +166,11 @@ const POSTURE: PostureResponse = {
     terminal_cases: 200,
     auto_closed_cases: 150,
     human_closed_cases: 40,
+    // The COMPLETE four-way close partition, so the Resolved / Closed panel renders its
+    // `<dl>` and the axe run below has the real thing to inspect. It moved here off the
+    // tile face, where `overview.a11y.test.tsx` used to seed it for the same reason.
     system_closed_cases: 10,
+    policy_closed_cases: 25,
     alert_to_incident_ratio: 0.2,
     false_positive_rate: 0.25,
     escalation_rate: 0.01,
@@ -550,6 +554,28 @@ describe('KPI deep-inspection modal', () => {
     // container, so a container-scoped audit would be green while auditing nothing.
     // The probe is the non-vacuity guard.
     expect(document.body.querySelector('[data-testid="kpi-drilldown"]')).not.toBeNull();
+    expect(await axe(document.body)).toHaveNoViolations();
+  });
+
+  it('audits the close-attribution partition, which is a real <dl> inside the panel', async () => {
+    // The partition used to sit on the Resolved / Closed tile FACE, where
+    // `overview.a11y.test.tsx` seeded a complete quality payload precisely so axe would
+    // inspect its <dl>. That coverage would have vanished silently with the move, so it
+    // is re-made here — on the surface that carries the list now, and with the four-band
+    // shape (the fixture reports `policy_closed_cases`) rather than the three-band one.
+    const user = makeUser();
+    await openPanel(user, 'kpi-resolved-closed');
+
+    const partition = document.body.querySelector('[data-testid="kpi-drilldown-partition"]');
+    expect(partition).not.toBeNull();
+    // A <dl> may contain only <dt>/<dd> (and <div> wrappers around pairs). React.Fragment
+    // emits nothing, so these are direct children — the arrangement axe's
+    // `definition-list` rule checks.
+    expect(Array.from(partition!.querySelectorAll(':scope > dt')).map((n) => n.textContent)).toEqual(
+      ['AI agent', 'Human', 'System', 'Declared benign'],
+    );
+    expect(partition!.querySelectorAll(':scope > dd')).toHaveLength(4);
+
     expect(await axe(document.body)).toHaveNoViolations();
   });
 });

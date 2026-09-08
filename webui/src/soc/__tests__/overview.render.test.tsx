@@ -12,8 +12,8 @@
  *  2b. the tile ANCHORS were re-keyed with the labels — `kpi-open-cases` names the
  *      open stock, not the cohort total, and the retired anchors are gone;
  *  2c. the posture-fed tiles gate on `window_covered`, not on `truncated`;
- *   3. the ONE integrated 12-column lattice, three rows — Noise-Reduction flow + Human
- *      vs AI, then resolved/open snapshots + latest cases, then the timing pair;
+ *   3. the ONE integrated 12-column lattice, TWO rows — Noise-Reduction flow + Human vs
+ *      AI, then the stacked resolved/open snapshots + the timing pair + latest cases;
  *   4. the Cases-burndown chart is NOT on this page (it lives on Metrics → Posture as
  *      "Closure vs arrival"); reading ORDER within the lattice is asserted, not presence;
  *   5. timing reads the SERVER posture (honest DASH / "not measured" for missing samples);
@@ -188,6 +188,41 @@ const POSTURE_CMP: PostureResponse = {
   },
 };
 
+/**
+ * Open one KPI tile's drill-down MODAL, and settle it.
+ *
+ * The close-attribution partition moved OFF the tile face into this panel (it was four
+ * rows the other four tiles did not have, so one tile set the height of the whole strip),
+ * so every partition contract below is asserted through here rather than on the strip.
+ *
+ * `pointerEventsCheck: 0` because an open Radix modal sets `pointer-events: none` on
+ * <body>, and user-event cannot tell that from a genuinely inert control — it would report
+ * a failure that names user-event rather than the modal.
+ */
+async function openDrilldown(testId: string): Promise<void> {
+  const user = userEvent.setup({ pointerEventsCheck: 0 });
+  // Opening from the STRIP is only reachable while nothing is open: behind an open panel
+  // the strip is `aria-hidden` and `pointer-events: none`.
+  expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  await user.click(await screen.findByTestId(testId));
+  await screen.findByTestId('kpi-drilldown');
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId('kpi-drilldown-rows') ?? screen.getByTestId('kpi-drilldown-scope'),
+    ).toBeInTheDocument(),
+  );
+}
+
+/** The band labels the OPEN drill-down states, in order. `null` when it states none. */
+function drilldownBands(): { labels: string[]; values: string[] } | null {
+  const dl = screen.queryByTestId('kpi-drilldown-partition');
+  if (!dl) return null;
+  return {
+    labels: Array.from(dl.querySelectorAll('dt')).map((n) => n.textContent ?? ''),
+    values: Array.from(dl.querySelectorAll('dd')).map((n) => n.textContent ?? ''),
+  };
+}
+
 describe('Overview — Cyber Defence Center (rebuild)', () => {
   beforeEach(() => {
     fetchPostureMock.mockReset();
@@ -302,7 +337,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(resolved.queryByText('Reached a terminal state')).toBeNull();
     // DENSITY REGRESSION GUARD. The landing strip runs `density="compact"` because it
     // heads a page that must also seat the flow diagram, the case queue and the timing
-    // pair. `px-3 py-3` is what compact swaps on a strip tile's trigger.
+    // pair. `px-3 py-2` is what compact swaps on a strip tile's trigger.
     //
     // `min-h-0` is asserted on the CELL ROOT rather than the trigger. Every strip tile now
     // has one: the trigger is a <button>, so anything that must sit beside it rather than
@@ -311,7 +346,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // wrapper is then the cell and owns the cell's height. Update these tokens if density
     // changes; never delete them.
     const totalCasesTrigger = screen.getByTestId('kpi-total-cases');
-    expect(totalCasesTrigger).toHaveClass('px-3', 'py-3');
+    expect(totalCasesTrigger).toHaveClass('px-3', 'py-2');
     expect(totalCasesTrigger.parentElement).toHaveClass('min-h-0');
   });
 
@@ -500,9 +535,9 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(tile.queryByText(/^0%/)).toBeNull();
   });
 
-  it('states the close partition INSIDE the Resolved / Closed tile as three rows, never two', async () => {
+  it('states the close partition in the Resolved / Closed DRILL-DOWN as three rows, never two', async () => {
     // `engine/metrics.py` forbids `human = terminal - auto_closed`: that difference
-    // absorbs the SYSTEM/legacy residual into the analyst band. The tile therefore
+    // absorbs the SYSTEM/legacy residual into the analyst band. The partition therefore
     // renders all three server keys, and the residual stays visible.
     fetchPostureMock.mockResolvedValue({ ...POSTURE, quality: QUALITY_ATTRIBUTED });
     render(<Overview onNavigate={vi.fn()} />);
@@ -510,23 +545,29 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
 
-    // The list is a SIBLING of the trigger, not a child of it: `role=button` is
-    // children-presentational, so a <dl> inside the tile button would be flattened
-    // into the disclosure's accessible name and lose every dt/dd relationship.
+    // The tile FACE carries no partition at all any more — it is four rows the other four
+    // tiles do not have, so it set the height of the whole strip. Nothing on the strip
+    // states a band either (the instrument card below legitimately does).
     expect(tile.querySelector('dl')).toBeNull();
-    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
-    const rows = partition.querySelectorAll('dl > dt');
-    expect(Array.from(rows).map((r) => r.textContent)).toEqual(['AI agent', 'Human', 'System']);
-    const values = partition.querySelectorAll('dl > dd');
-    expect(Array.from(values).map((v) => v.textContent)).toEqual(['5', '3', '1']);
-    // The three bands reconcile with the numeral above them — 5 + 3 + 1 === 9 — so the
-    // "Human" row can never be the 4 that `terminal − auto` would have printed.
-    expect(within(tile).queryByText('4')).toBeNull();
-    // …and the SAME partition is stated once more by the instrument card below, from
-    // the same memo, so the two surfaces cannot disagree.
+    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
+    expect(within(screen.getByTestId('kpi-strip')).queryByText('AI agent')).toBeNull();
+
+    // The SAME partition is stated by the instrument card below, from the same memo, so
+    // the two surfaces cannot disagree.
     const card = within(screen.getByTestId('human-vs-ai'));
     expect(within(card.getByTestId('human-vs-ai-human')).getByText('3')).toBeInTheDocument();
     expect(within(card.getByTestId('human-vs-ai-system')).getByText('1')).toBeInTheDocument();
+
+    // …and in full, with its band values, one level down — directly under the numeral it
+    // partitions.
+    await openDrilldown('kpi-resolved-closed');
+    expect(drilldownBands()).toEqual({
+      labels: ['AI agent', 'Human', 'System'],
+      values: ['5', '3', '1'],
+    });
+    // The three bands reconcile with the numeral they sit under — 5 + 3 + 1 === 9 — so the
+    // "Human" row can never be the 4 that `terminal − auto` would have printed.
+    expect(within(screen.getByTestId('kpi-drilldown-partition')).queryByText('4')).toBeNull();
   });
 
   it('counts a POLICY-CLOSED case in Resolved / Closed, and names it in the partition', async () => {
@@ -557,20 +598,13 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(tile).getByText('100% of 10')).toBeInTheDocument();
     expect(within(tile).queryByText('50% of 10')).toBeNull();
 
-    // The partition still sums to the numeral above it — now with a fourth band.
-    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
-    expect(Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent)).toEqual([
-      'AI agent',
-      'Human',
-      'System',
-      'Declared benign',
-    ]);
-    expect(Array.from(partition.querySelectorAll('dl > dd')).map((n) => n.textContent)).toEqual([
-      '3',
-      '1',
-      '1',
-      '5',
-    ]);
+    // The partition still sums to the numeral above it — now with a fourth band. It is
+    // the drill-down that states it; the tile face carries none.
+    await openDrilldown('kpi-resolved-closed');
+    expect(drilldownBands()).toEqual({
+      labels: ['AI agent', 'Human', 'System', 'Declared benign'],
+      values: ['3', '1', '1', '5'],
+    });
   });
 
   it('omits the declared-benign band when the backend does not report it', async () => {
@@ -582,12 +616,8 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await screen.findByTestId('page-hero');
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
-    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
-    expect(Array.from(partition.querySelectorAll('dl > dt')).map((n) => n.textContent)).toEqual([
-      'AI agent',
-      'Human',
-      'System',
-    ]);
+    await openDrilldown('kpi-resolved-closed');
+    expect(drilldownBands()?.labels).toEqual(['AI agent', 'Human', 'System']);
   });
 
   it('renders an unreadable case store as NOT MEASURED, never as four zeros', async () => {
@@ -640,13 +670,16 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(strip).getAllByText(REASON).length).toBe(5);
     // …and the close partition is withheld with them, on BOTH surfaces that read it:
     // 0 + 0 + 0 === 0 passes the reconciliation guard, so an outage would otherwise
-    // publish a three-band partition of a window nothing was read from.
-    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
+    // publish a three-band partition of a window nothing was read from. The partition
+    // now lives in the tile's DRILL-DOWN, so the withholding is asserted THERE — the
+    // strip anchor is gone, and a `queryByTestId` on it could no longer fail.
     const card = within(screen.getByTestId('human-vs-ai'));
     expect(within(card.getByTestId('human-vs-ai-ai')).queryByText('0')).toBeNull();
     expect(within(card.getByTestId('human-vs-ai-human')).queryByText('0')).toBeNull();
     expect(within(card.getByTestId('human-vs-ai-system')).queryByText('0')).toBeNull();
     expect(screen.getByTestId('human-vs-ai')).toHaveTextContent(REASON);
+    await openDrilldown('kpi-resolved-closed');
+    expect(drilldownBands()).toBeNull();
   });
 
   it('renders NO close breakdown when the server reports only part of the partition', async () => {
@@ -661,9 +694,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
     expect(tile.querySelector('dl')).toBeNull();
-    expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
     // Scoped to the strip: the instrument card below legitimately names the same band.
     expect(within(screen.getByTestId('kpi-strip')).queryByText('AI agent')).toBeNull();
+    // …and the drill-down, which is where a partition WOULD be stated, states none.
+    await openDrilldown('kpi-resolved-closed');
+    expect(drilldownBands()).toBeNull();
+    expect(within(screen.getByTestId('kpi-drilldown')).queryByText('AI agent')).toBeNull();
   });
 
   it('keeps a ZERO residual visible in the close breakdown', async () => {
@@ -683,14 +719,11 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await waitFor(() => expect(within(tile).getByText('8')).toBeInTheDocument());
     // Folding a zero band away would leave a two-row split that reads as the whole
     // story; the row stays, showing 0.
-    const partition = screen.getByTestId('kpi-resolved-closed-breakdown');
-    const rows = Array.from(partition.querySelectorAll('dl > dt')).map((r) => r.textContent);
-    expect(rows).toEqual(['AI agent', 'Human', 'System']);
-    expect(Array.from(partition.querySelectorAll('dl > dd')).map((v) => v.textContent)).toEqual([
-      '6',
-      '2',
-      '0',
-    ]);
+    await openDrilldown('kpi-resolved-closed');
+    expect(drilldownBands()).toEqual({
+      labels: ['AI agent', 'Human', 'System'],
+      values: ['6', '2', '0'],
+    });
   });
 
   it('keeps the last posture snapshot visible (labelled stale) across a window change, then swaps atomically', async () => {
@@ -825,10 +858,15 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const openRing = screen.getByRole('img', { name: /Open cases by severity/i });
     expect(resolvedRing).toBeInTheDocument();
     expect(openRing).toBeInTheDocument();
-    expect(resolvedRing).toHaveClass('w-36');
-    expect(resolvedRing).toHaveStyle({ height: '136px' });
-    expect(openRing).toHaveClass('w-36');
-    expect(openRing).toHaveStyle({ height: '136px' });
+    // The ring is 112, not the 136 it was while the two cards sat SIDE BY SIDE across
+    // eight columns. Stacked in four they cost twice their own height, so the ring pays
+    // for the stack; the ~58px hole still clears the widest string the centre formatter
+    // can emit ("1.2K"). Update these two tokens together with `fmtSnapshotCenter`'s
+    // doc — never delete them.
+    expect(resolvedRing).toHaveClass('w-28');
+    expect(resolvedRing).toHaveStyle({ height: '112px' });
+    expect(openRing).toHaveClass('w-28');
+    expect(openRing).toHaveStyle({ height: '112px' });
 
     // The parent panel no longer repeats what each snapshot already says.
     expect(screen.queryByText('Resolved & open cases', { exact: true })).toBeNull();
@@ -866,38 +904,41 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(screen.getByTestId('page-hero')).queryByText(/^SLA\s/i)).toBeNull();
   });
 
-  it('shows only the four newest cases and reveals richer case context on hover', async () => {
-    const five: Case[] = Array.from({ length: 5 }, (_, i) => ({
+  it('shows only the five newest cases and reveals richer case context on hover', async () => {
+    // Five, not four: the snapshots stacking into four columns made row 2 taller, and a
+    // fourth row left the queue cell visibly short of it. Five rows still measure under
+    // the stacked snapshots, so the queue fills its cell without governing the row.
+    const six: Case[] = Array.from({ length: 6 }, (_, i) => ({
       case_id: `latest-${i + 1}`,
       case_number: `#CS-${9001 + i}`,
       title: `Latest case ${i + 1}`,
-      summary: i === 4 ? 'Rich hover-only investigation summary.' : `Summary ${i + 1}`,
-      status: i === 4 ? 'investigating' : 'open',
+      summary: i === 5 ? 'Rich hover-only investigation summary.' : `Summary ${i + 1}`,
+      status: i === 5 ? 'investigating' : 'open',
       risk_score: 40 + i,
       created_at: `2026-07-01T0${i + 1}:00:00Z`,
       updated_at: `2026-07-01T0${i + 1}:30:00Z`,
       source_name: 'Demo SIEM',
       entity: { type: 'host', value: `host-${i + 1}` },
     })) as unknown as Case[];
-    listCasesMock.mockResolvedValue({ cases: five, total: five.length });
+    listCasesMock.mockResolvedValue({ cases: six, total: six.length });
 
     render(<Overview onNavigate={vi.fn()} />);
     const latest = await screen.findByRole('region', { name: /Latest cases/i });
     const caseRows = within(latest).getAllByRole('button', { name: /^Open case /i });
-    expect(caseRows).toHaveLength(4);
-    expect(within(latest).getByText('Latest case 5')).toBeInTheDocument();
+    expect(caseRows).toHaveLength(5);
+    expect(within(latest).getByText('Latest case 6')).toBeInTheDocument();
     expect(within(latest).queryByText('Latest case 1')).toBeNull();
 
     await userEvent.hover(caseRows[0]);
     expect(await screen.findByText('Rich hover-only investigation summary.')).toBeInTheDocument();
-    expect(screen.getByText('host-5')).toBeInTheDocument();
+    expect(screen.getByText('host-6')).toBeInTheDocument();
     expect(screen.getByText('Demo SIEM')).toBeInTheDocument();
   });
 
-  it('abbreviates a 4+ digit SnapshotCard center total so it never clips the ~71px donut hole (#minor)', async () => {
-    // 1,234 closed cases -> `derived.resolved` = 1234. At the pinned 136px donut
+  it('abbreviates a 4+ digit SnapshotCard center total so it never clips the ~58px donut hole (#minor)', async () => {
+    // 1,234 closed cases -> `derived.resolved` = 1234. At the pinned 112px donut
     // (innerPct=52%, overflow-hidden), the raw thousands-separated "1,234" (fmtInt)
-    // risks crowding the ~71px hole. The center must instead show
+    // risks crowding the ~58px hole. The center must instead show
     // the compact form ("1.2K"); the legend row beside it keeps the exact count.
     const many: Case[] = Array.from({ length: 1234 }, (_, i) => ({
       case_id: `bulk-${i}`,
@@ -922,7 +963,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(legendRow).getByText('1,234')).toBeInTheDocument();
   });
 
-  it('orders the live queue ahead of the detect/respond pair', async () => {
+  it('orders the detect/respond pair ahead of the live queue', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
 
@@ -931,11 +972,17 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // the aging series it is read against. Only these two regions remain, and the
     // presence loop this replaced could never have caught them swapping — so assert
     // the ORDER, which is the actual contract.
+    //
+    // The pair used to be a full-width row BELOW the queue. It is now the MIDDLE cell of
+    // row 2 (snapshots · timing · queue), so it reads before the queue. DOM order still
+    // equals visual order — the cells are laid out left to right by the grid, with no
+    // `order-*` utility anywhere — so this is a reading-order change, not a WCAG 1.3.2
+    // regression, and it must never be "fixed" with `xl:order-*`.
     const queue = screen.getByRole('region', { name: /Latest cases/i });
     const timing = screen.getByRole('region', { name: /Mean time to detect \/ respond/i });
 
     expect(screen.queryByRole('region', { name: /Cases burndown/i })).toBeNull();
-    expect(queue.compareDocumentPosition(timing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(timing.compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('reads timing from the SERVER posture, honoring the honest "not measured" DASH', async () => {
@@ -1204,11 +1251,18 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // Folded away by default.
     expect(screen.queryByRole('region', { name: /Ingest coverage/i })).toBeNull();
     // The duplicate "Autonomous vs human" fold-out is GONE: the landing page states
-    // close attribution once, in the Human-vs-AI instrument, and that instrument now
-    // carries the #3 advisory the removed card used to.
+    // close attribution once, in the Human-vs-AI instrument, and that instrument still
+    // carries the #3 advisory the removed card used to — now in its (?) rather than as a
+    // second copy of the help text on the card face. Radix portals the popover to
+    // <body> and unmounts it while closed, so what is asserted here is the always-present
+    // TRIGGER; the string itself is pinned against the exported constant in
+    // overview.humanvsai.test.tsx, and its reachability by click/Enter/Space is proved
+    // against the real component in HumanVsAiCard's own suite.
     expect(screen.queryByRole('region', { name: /Autonomous vs human/i })).toBeNull();
     expect(
-      within(screen.getByTestId('human-vs-ai')).getByText(/never influences that/i),
+      within(screen.getByTestId('human-vs-ai')).getByRole('button', {
+        name: /About Human vs AI attribution/i,
+      }),
     ).toBeInTheDocument();
     // Expand.
     const deeper = await screen.findByRole('button', { name: /Deeper analytics/i });

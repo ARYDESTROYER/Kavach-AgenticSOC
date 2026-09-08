@@ -501,7 +501,25 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
         </div>
-        <div className={cn('flex min-w-0 items-end gap-2', strip ? 'mt-2' : 'mt-3')}>
+        <div
+          className={cn(
+            'flex min-w-0 items-end gap-2',
+            strip ? (compact ? 'mt-1' : 'mt-2') : 'mt-3',
+            // The corner overlay is 24px tall and sits 8px down, so on the COMPACT strip —
+            // where the trigger's top padding is only 8px — the value row starts UNDER it
+            // (measured: the row's box overlaps the overlay's last 6px) and a long scale
+            // context would slide beneath the help button.
+            //
+            // `pr-10` REPLACES `px-3`'s right padding rather than adding to it — same
+            // group, later utility wins — so the content stops 40px short of the cell's
+            // right edge, against an overlay whose left edge is 8 + 24 + 2 + 12 = 46px
+            // short of it. That is 6px of clearance, the same margin the label row's own
+            // `pr-10` above has been shipping. Scoped to this one case: the roomier arms
+            // clear the overlay without a gutter, and the sub-line must never pay for one
+            // (see the note above the label row).
+            cellOverlay && strip && compact && 'pr-10',
+          )}
+        >
           <span
             className={cn(
               'font-semibold leading-none tracking-tight tabular-nums',
@@ -562,7 +580,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
      */
     const needsCellRoot = breakdownIsSibling || cellOverlay !== null;
     const padX = strip ? (compact ? 'px-3' : 'px-4') : 'px-4';
-    const padBottom = strip ? (compact ? 'pb-3' : 'pb-5') : 'pb-4';
+    const padBottom = strip ? (compact ? 'pb-2' : 'pb-5') : 'pb-4';
     // The cell's minimum height belongs to whichever element IS the cell root, so a
     // wrapped tile does not add the partition's height on top of the tile floor.
     const minH = strip ? (compact ? 'min-h-0' : 'min-h-28') : null;
@@ -577,7 +595,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       breakdownIsSibling && !strip && 'rounded-t-lg',
       strip
         ? compact
-          ? 'bg-transparent px-3 py-3'
+          ? 'bg-transparent px-3 py-2'
           : 'bg-transparent px-4 py-5'
         : 'p-4',
       // The sibling below carries the tile's bottom padding instead.
