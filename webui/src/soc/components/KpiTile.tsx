@@ -53,8 +53,12 @@ export type KpiAccent =
 export type KpiGoodDirection = 'up' | 'down' | 'none';
 
 /**
- * One row of a tile's in-place partition (see `KpiTileProps.breakdown`). Plain text
- * on both halves (#9) — the caller formats the number.
+ * One row of a labelled numeral partition (a `dt`/`dd` pair). Plain text on both halves
+ * (#9) — the caller formats the number.
+ *
+ * Consumed in the product by `KpiDrilldownSpec.partition` (KpiDrilldownPanel); also
+ * accepted by `KpiTileProps.breakdown` below, which currently has no caller. Do not
+ * delete this type with that prop.
  */
 export interface KpiBreakdownRow {
   /** Short band label (plain text). */
@@ -176,8 +180,14 @@ export interface KpiTileProps {
   onHelpOpenChange?: (open: boolean) => void;
   /**
    * Optional PARTITION of the numeral, rendered inside the tile as labelled rows —
-   * the "of which" detail behind a total (e.g. the three-way close attribution behind
-   * a terminal-case count).
+   * the "of which" detail behind a total.
+   *
+   * NO CALLER PASSES THIS TODAY. Its one consumer was the landing strip's Resolved /
+   * Closed tile, whose close attribution moved to `KpiDrilldownSpec.partition`: on the
+   * strip face it was the only tile with a partition, so it set the height of all five
+   * cells. The slot is kept for a future in-place partition on a surface where one tile
+   * carrying extra rows costs nothing — if you add one, re-read the ARIA note below, and
+   * note that `padX`/`padBottom`/`breakdownIsSibling` exist only to serve this path.
    *
    * Supply the WHOLE partition or none. A partition rendered minus one band silently
    * folds that band's rows into a neighbour and over-states it; the residual therefore
@@ -363,7 +373,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
      * tile it cannot: a `<button>` inside a `<button>` is invalid DOM (React logs a
      * `validateDOMNesting` warning, which `npm run test:strict` treats as a failure), and
      * ARIA would swallow it into the trigger's name anyway. So it renders as a SIBLING of
-     * the trigger in the same cell — exactly the arrangement `breakdown` already uses.
+     * the trigger in the same cell — the same arrangement the (currently callerless)
+     * `breakdown` slot is built for.
      *
      * `alwaysPopover` because this is where always-visible disclosure copy was RELOCATED
      * to: a tooltip never opens on touch, and a disclosure a tablet operator cannot reach
@@ -501,23 +512,25 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
         </div>
+        {/* NO corner gutter here, deliberately — see the note above the label row for why
+            reserving one is expensive.
+
+            All offsets below are from the CELL's top and were measured in a browser, not
+            derived. On the compact strip this row's BOX does start under the corner overlay
+            (the trigger's top padding is 8px; the overlay spans y 8→32). But the row is
+            `items-end`, so the only child that ever reaches the overlay's x-range — the
+            scale context, with its `mb-0.5` — sits at y 36→50: 4px BELOW the overlay, at
+            every strip width. A `pr-10` here therefore bought nothing, and cost the context
+            40px — enough to ellipsize "54 of 80 verdicted" at 1440px, recoverable only by
+            mouse-hovering the `title`, which is no recovery at all for touch or keyboard.
+
+            The one child that WOULD collide is a `delta` chip: its border box runs y 22→46
+            and, unlike text, it is visibly bordered. No `density="compact"` caller passes
+            one today. Re-measure before adding the first. */}
         <div
           className={cn(
             'flex min-w-0 items-end gap-2',
             strip ? (compact ? 'mt-1' : 'mt-2') : 'mt-3',
-            // The corner overlay is 24px tall and sits 8px down, so on the COMPACT strip —
-            // where the trigger's top padding is only 8px — the value row starts UNDER it
-            // (measured: the row's box overlaps the overlay's last 6px) and a long scale
-            // context would slide beneath the help button.
-            //
-            // `pr-10` REPLACES `px-3`'s right padding rather than adding to it — same
-            // group, later utility wins — so the content stops 40px short of the cell's
-            // right edge, against an overlay whose left edge is 8 + 24 + 2 + 12 = 46px
-            // short of it. That is 6px of clearance, the same margin the label row's own
-            // `pr-10` above has been shipping. Scoped to this one case: the roomier arms
-            // clear the overlay without a gutter, and the sub-line must never pay for one
-            // (see the note above the label row).
-            cellOverlay && strip && compact && 'pr-10',
           )}
         >
           <span
@@ -579,6 +592,10 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
      * partition's height on top of the tile floor.
      */
     const needsCellRoot = breakdownIsSibling || cellOverlay !== null;
+    // `padX`/`padBottom` are read ONLY by the breakdown sibling below, so they are inert
+    // until something passes `breakdown` again. The compact strip's live density is the
+    // `px-3 py-2` on `base` plus the value row's `mt-1`; these two are kept in step with
+    // it so the partition path does not come back with a mismatched rhythm.
     const padX = strip ? (compact ? 'px-3' : 'px-4') : 'px-4';
     const padBottom = strip ? (compact ? 'pb-2' : 'pb-5') : 'pb-4';
     // The cell's minimum height belongs to whichever element IS the cell root, so a

@@ -102,8 +102,8 @@ is cancelled and the new window loads, so the dashboard never blanks. Only a
 response whose echoed window still matches the selector is accepted; a slower
 earlier request cannot repaint those tiles beneath a new range.
 
-The next row uses the available height for a current-open-queue **Active Risk
-Index**, Open-above-Resolved severity rings, and exactly four **Latest Cases**.
+The next row uses the available height for the stacked open/resolved severity
+rings, the MTTD / first-human-response pair, and exactly five **Latest Cases**.
 Hovering or keyboard-focusing a latest row reveals bounded case detail without
 changing the selection. Open/Resolved controls drill into their lifecycle scopes;
 the combined Critical/High tile opens the selected-window case list without applying

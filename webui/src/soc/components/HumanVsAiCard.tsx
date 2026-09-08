@@ -98,7 +98,13 @@ export interface HumanVsAiCardProps {
   className?: string;
 }
 
-/** The (?) disclosure. Long enough that HelpTip renders it as a focusable popover. */
+/**
+ * The (?) disclosure. Rendered as a POPOVER unconditionally — the call site passes
+ * `alwaysPopover`, so this string's length is not what decides the presentation. That
+ * matters because the closing sentence is the AGENTS.md §3 advisory and no longer appears
+ * anywhere on the card face: trimming this text under HelpTip's 80-character threshold
+ * must not silently demote a §3 statement to a tooltip a touch operator cannot open.
+ */
 export const HUMAN_VS_AI_HELP =
   'Attribution records the LAST decider on a case, not proof of who did the work: an ' +
   'agent-closed case that a human later acknowledges or re-tags moves into the human ' +

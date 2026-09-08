@@ -28,10 +28,11 @@ changing any case or detection policy.
    a quiet "No trend data yet" line instead of inventing a trend when the series has
    no measured buckets. The combined Critical / High tile deliberately has no
    trendline because no per-severity series exists for it.
-3. **Use the instrument row** — Active Risk Index summarizes pressure across the
-   entire open queue; the Open and Resolved composition rings show severity mix;
-   Latest Cases shows exactly five recent records and reveals bounded detail on
-   hover or keyboard focus.
+3. **Use the instrument rows** — Human vs AI attributes the window's closes to the
+   agent, an analyst, or system routing; the stacked Open and Resolved composition
+   rings show severity mix; MTTD / response pairs detection with the first human
+   action; and Latest Cases shows exactly five recent records and reveals bounded
+   detail on hover or keyboard focus.
 4. **Inspect Noise Reduction** — follow the horizontal ribbon from alerts ingested
    through clustering and cases opened. Opened cases then split into
    AI auto-cleared and escalated work; human closure is an overlapping analyst-owned

@@ -441,8 +441,9 @@ cursors. It is **fully reversible in one click**.
     selected-window trendline). Four are the selected window's arrival cohort;
     **Open Cases** is deliberately the open-case count *right now* — it is not
     window-filtered and never sums with the other four, and its sub says so.
-    **Resolved / Closed** carries the three-way close attribution (AI agent /
-    Human / System) inside the tile, reconciling with the Human-vs-AI instrument.
+    **Resolved / Closed** reconciles with the Human-vs-AI instrument; select the
+    tile and its drill-down opens with the close attribution (AI agent / Human /
+    System, plus Declared benign where the backend reports it) at the top.
   - **KPI drill-down** — click (or press Enter/Space on) any tile: a detail panel
     docks *under* the strip without leaving the page, so the other four numerals
     stay in view for comparison. It lists that tile's own population with a
@@ -461,12 +462,13 @@ cursors. It is **fully reversible in one click**.
     *cases* → *auto_cleared* / *escalated* / *closed-by-human*. Hover a stage for
     its exact count, share, and a per-severity/per-disposition breakdown; point
     out the "noise reduced by X%" figure.
-  - **Third row** — a cases **burndown** (opened vs. resolved), a card showing
-    real **MTTD** (mean time-to-detect, measured from the cluster's first event to
-    case creation) alongside **first-response time** (the ACK clock — a talking
-    point: this was deliberately renamed *away* from "MTTR" mid-round because it
-    measures first human response, not full dwell/resolution time), and a
-    **top-open-cases** work list.
+  - **Second lattice row** — three cells: the stacked open/resolved severity
+    rings, then real **MTTD** (mean time-to-detect, measured from the cluster's
+    first event to case creation) alongside **first-response time** (the ACK
+    clock — a talking point: this was deliberately labelled *away* from "MTTR"
+    because it measures first human response, not full dwell/resolution time),
+    then the live **Latest cases** queue. There is no third row: the cases
+    burndown moved to Metrics → Posture as "Closure vs arrival".
   - **Deeper analytics** (collapsed by default) — the LLM spend tripwire, full
     response-timing detail, the autonomy split, connector health, case volume,
     workload, and top signatures/entities.

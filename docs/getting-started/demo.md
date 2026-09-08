@@ -47,8 +47,8 @@ human.
 
 ## Suggested tour
 
-1. Open **Overview** and inspect source coverage, the Active Risk Index, and the
-   Noise-Reduction flow.
+1. Open **Overview** and inspect source coverage, the Human-vs-AI close
+   attribution, and the Noise-Reduction flow.
 2. Open **Case Manager**, compare the Overview, Timeline, Investigation, Threat,
    Collaboration, and Chat tabs, then try queue selection. The legacy **Cases**
    table remains available for comparison.

@@ -369,13 +369,14 @@ describe('Overview — Cyber Defence Center', () => {
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
     const strip = screen.getByTestId('kpi-strip');
-    // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile now also
-    // carries a decorative affordance mark (`kpi-<id>-affordance`) and may carry a
-    // partition (`kpi-<id>-breakdown`), so a prefix count answers a different question
-    // than the one this test asks — and answering it by loosening the number would have
-    // stopped proving there are exactly five tiles at all.
+    // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile also carries a
+    // decorative affordance mark (`kpi-<id>-affordance`), so a bare prefix count answers a
+    // different question than the one this test asks — and answering it by loosening the
+    // number would have stopped proving there are exactly five tiles at all. (A tile could
+    // once also carry a `kpi-<id>-breakdown` partition; that anchor retired to the
+    // drill-down, so the selector no longer excludes it.)
     expect(
-      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"]):not([data-testid*="-breakdown"])'),
+      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"])'),
     ).toHaveLength(5);
     for (const id of [
       'kpi-total-cases',

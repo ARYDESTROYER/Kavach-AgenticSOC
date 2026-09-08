@@ -191,9 +191,10 @@ const POSTURE_CMP: PostureResponse = {
 /**
  * Open one KPI tile's drill-down MODAL, and settle it.
  *
- * The close-attribution partition moved OFF the tile face into this panel (it was four
- * rows the other four tiles did not have, so one tile set the height of the whole strip),
- * so every partition contract below is asserted through here rather than on the strip.
+ * The close-attribution partition moved OFF the tile face into this panel (three rows —
+ * four where the backend reports declared-benign policy closes — that the other four tiles
+ * did not have, so one tile set the height of the whole strip), so every partition contract
+ * below is asserted through here rather than on the strip.
  *
  * `pointerEventsCheck: 0` because an open Radix modal sets `pointer-events: none` on
  * <body>, and user-event cannot tell that from a genuinely inert control — it would report
@@ -292,13 +293,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       expect(within(strip).queryByTestId(retired)).toBeNull();
     }
     // EXACTLY 5 hero tiles.
-    // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile now also
-    // carries a decorative affordance mark (`kpi-<id>-affordance`) and may carry a
-    // partition (`kpi-<id>-breakdown`), so a prefix count answers a different question
-    // than the one this test asks — and answering it by loosening the number would have
-    // stopped proving there are exactly five tiles at all.
+    // Count the TILES, not every `kpi-*` anchor inside the strip. Each tile also carries a
+    // decorative affordance mark (`kpi-<id>-affordance`), so a bare prefix count answers a
+    // different question than the one this test asks — and answering it by loosening the
+    // number would have stopped proving there are exactly five tiles at all. (A tile could
+    // once also carry a `kpi-<id>-breakdown` partition; that anchor retired to the
+    // drill-down, so the selector no longer excludes it.)
     expect(
-      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"]):not([data-testid*="-breakdown"])'),
+      strip.querySelectorAll('[data-testid^="kpi-"]:not([data-testid*="-affordance"])'),
     ).toHaveLength(5);
     // Spend is not on the strip.
     expect(within(strip).queryByTestId('kpi-llm-spend')).toBeNull();
@@ -545,9 +547,9 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
 
-    // The tile FACE carries no partition at all any more — it is four rows the other four
-    // tiles do not have, so it set the height of the whole strip. Nothing on the strip
-    // states a band either (the instrument card below legitimately does).
+    // The tile FACE carries no partition at all any more — three or four rows the other
+    // four tiles do not have, so it set the height of the whole strip. Nothing on the
+    // strip states a band either (the instrument card below legitimately does).
     expect(tile.querySelector('dl')).toBeNull();
     expect(screen.queryByTestId('kpi-resolved-closed-breakdown')).toBeNull();
     expect(within(screen.getByTestId('kpi-strip')).queryByText('AI agent')).toBeNull();
@@ -598,6 +600,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(within(tile).getByText('100% of 10')).toBeInTheDocument();
     expect(within(tile).queryByText('50% of 10')).toBeNull();
 
+    // …and the tile FACE names the policy closes, because this numeral is
+    // policy-INCLUSIVE while the Human-vs-AI card below it publishes bands over the
+    // policy-EXCLUSIVE `terminal_cases`. Without this line the page states 10 here and
+    // three bands summing to 5 there, with nothing on either face bridging them — the
+    // partition's `Declared benign` row used to be that bridge and now lives one level
+    // down. It is conditional, exactly like the bounded-sample caption: visible when true.
+    expect(within(tile).getByText('Incl. 5 declared benign')).toBeInTheDocument();
+
     // The partition still sums to the numeral above it — now with a fourth band. It is
     // the drill-down that states it; the tile face carries none.
     await openDrilldown('kpi-resolved-closed');
@@ -616,6 +626,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await screen.findByTestId('page-hero');
     const tile = await screen.findByTestId('kpi-resolved-closed');
     await waitFor(() => expect(within(tile).getByText('9')).toBeInTheDocument());
+    // No band to state, and therefore no gap between this numeral and the card's
+    // denominator — so the reconciling caption stays off the face too. A conditional
+    // disclosure that shows when it is false is noise, not honesty.
+    expect(within(tile).queryByText(/declared benign/i)).toBeNull();
     await openDrilldown('kpi-resolved-closed');
     expect(drilldownBands()?.labels).toEqual(['AI agent', 'Human', 'System']);
   });

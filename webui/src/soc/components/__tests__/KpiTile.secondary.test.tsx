@@ -1,6 +1,12 @@
 /**
  * KpiTile — the `secondary` SCALE-CONTEXT slot and the `breakdown` PARTITION slot.
  *
+ * `breakdown` has NO product caller: the landing strip's close attribution moved to
+ * `KpiDrilldownSpec.partition` (it was the only tile with a partition, so it set the
+ * height of all five cells). The slot is kept for a future in-place partition, and these
+ * cases are what keep it honest in the meantime — in particular the ARIA rule that sends
+ * it beside the trigger rather than inside it.
+ *
  * A bare count answers "how many" but never "out of what". `secondary` supplies the
  * denominator beside the numeral ("13% of 154", "1 of 2 verdicted", or an em dash when
  * the honest denominator is missing).
@@ -109,7 +115,7 @@ describe('KpiTile — secondary scale context', () => {
   });
 });
 
-describe('KpiTile — breakdown partition rows', () => {
+describe('KpiTile — the callerless breakdown partition slot', () => {
   it('renders the partition as a real <dl>, in order, with no role or judgement colour', () => {
     render(
       <KpiTile
@@ -147,11 +153,11 @@ describe('KpiTile — breakdown partition rows', () => {
   });
 
   it('keeps the partition OUT of a clickable tile\u2019s accessible name', () => {
-    // The landing strip's tiles are disclosure TRIGGERS. ARIA gives `role=button`
-    // "children presentational", so a <dl> rendered inside one is stripped of its
-    // dt/dd relationships (and of each dt's `title`) and flattened into the trigger's
-    // name — a 13-word run-on that also changes every time a band's count changes.
-    // The partition therefore renders as a SIBLING of the button.
+    // ARIA gives `role=button` "children presentational", so a <dl> rendered inside a
+    // clickable tile is stripped of its dt/dd relationships (and of each dt's `title`)
+    // and flattened into the trigger's name — a 13-word run-on that also changes every
+    // time a band's count changes. The partition therefore renders as a SIBLING of the
+    // button. This is the rule a future in-place partition has to keep.
     render(
       <KpiTile
         label="Resolved / Closed"
@@ -161,7 +167,6 @@ describe('KpiTile — breakdown partition rows', () => {
         sub="Reached a terminal state"
         variant="strip"
         onClick={vi.fn()}
-        ariaExpanded={false}
         breakdown={[
           { label: 'AI agent', value: '5', title: 'Closed by the agent' },
           { label: 'Human', value: '3', title: 'Closed by an analyst' },

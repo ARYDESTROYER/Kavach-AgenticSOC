@@ -83,8 +83,9 @@ field and its backend are untouched.
 **A one-stop dashboard that still asked to be scrolled.** Measured in a real browser rather
 than derived from class tokens, the Cyber Defence Center fitted on no screen: 1,149px of
 content in a 1,080px viewport, 1,181px at 1280×800 — and most of the excess was empty. One of
-the five KPI tiles carried a four-row close-attribution partition the other four did not, so a
-single tile set the height of the whole strip (144px, of which 82 was that partition). The
+the five KPI tiles carried a three-row close-attribution partition — four where the backend
+separates declared-benign policy closes — that the other four did not, so a single tile set the
+height of the whole strip (144px, of which 82 was that partition). The
 attribution card's trend was pinned at `height={122}` inside a stretched flex cell, so every
 spare pixel of the row became dead space beneath it. And the timing pair was a full-width row
 of its own, holding two small stats across the entire console, directly below a snapshot cell

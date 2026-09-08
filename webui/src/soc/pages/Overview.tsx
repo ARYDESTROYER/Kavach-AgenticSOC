@@ -13,8 +13,8 @@
  *   │             Resolved / Closed, at `density="compact"` because the strip HEADS this
  *   │             page rather than being all of it. Four are cohort numbers scoped to the
  *   │             selected window; "Open Cases" is a window-EXEMPT stock and says so, so
- *   │             it is never read as a fifth summand. Each cell DISCLOSES its own
- *   │             drill-down panel below the strip (see "Drill-down" further down).
+ *   │             it is never read as a fifth summand. Each cell OPENS its own drill-down
+ *   │             modal (see "Drill-down" further down).
  *   ├ LATTICE ──── ONE twelve-column `xl` band, two rows (see the block comment on it):
  *   │               row 1  Noise-Reduction flow (8)  · Human-vs-AI attribution (4)
  *   │               row 2  case snapshots (4) · MTTD / response (4) · live queue (4)
@@ -42,14 +42,15 @@
  * Retry. `noiseReduction`/`sourcesCoverage`/`metricsTrends` are typeof-guarded so a
  * minimal test/mock surface can still omit the optional contracts.
  *
- * Drill-down: every strip tile is a WAI DISCLOSURE trigger. Activating one opens a
- * docked, non-modal `<section>` under the strip — a sibling of the grid, never a sixth
- * child of it — carrying that tile's own population with filtering, sorting and its own
- * time range, so the detail is read ALONGSIDE the five numerals instead of replacing
- * them. The full-list deep link survives as the panel's drill-through, and the panel is
- * where a touch device now reaches the tile's trend, since the hover card is force-closed
- * for as long as the panel is up. One panel at a time; Escape closes it and returns focus
- * to the tile.
+ * Drill-down: every strip tile is a DIALOG trigger (`aria-haspopup="dialog"`). Activating
+ * one opens a portalled MODAL over the page, carrying that tile's own population with
+ * filtering, sorting and its own time range — plus, for Resolved / Closed, the
+ * whole-window close-attribution partition that used to sit on the tile face. Reading it
+ * alongside the other four numerals is what the panel's own metric switcher answers, not
+ * the page behind the scrim. The full-list deep link survives as the panel's
+ * drill-through, and the panel is where a touch device reaches the tile's trend, since the
+ * hover card is force-closed for as long as the panel is up. One panel at a time; Escape
+ * closes it and this page returns focus to the tile that opened it.
  *
  * Hover trendlines: every landing metric with an HONEST server series reveals it on
  * hover/focus via `MetricHoverTrend` (metrics/trends buckets, `timing_trend`, or the
@@ -377,9 +378,22 @@ const fmtInt = (n: number): string => fmtNumber(n);
  * unabbreviated counts via `fmtNumber`.
  *
  * The ring was 136px while the two cards sat SIDE BY SIDE across eight columns. Stacked
- * in four they cost twice their own height, so the ring is 112: the widest string this
- * formatter can emit is four characters ("1.2K") at `text-2xl`, ~48px of JetBrains Mono,
- * which still clears the 58px hole. Below ~104 it would not.
+ * in four they cost twice their own height, so the ring is 112 and the hole 0.52 × 112 =
+ * 58px. The widest string REACHABLE here is four characters ("1.2K") at `text-2xl` —
+ * ~48px of JetBrains Mono — so the hard floor is ~93px (48 / 0.52) and 112 keeps a
+ * deliberate margin above it.
+ *
+ * Two things that margin is carrying, so do not spend it:
+ *   - `fmtTokens` itself is not bounded at four characters: at >= 10,000 it drops the
+ *     decimal, so 1,000,000 would be "1000K" (5ch) and 12,345,678 "12346K". Those are
+ *     unreachable only because `derived.open`/`derived.resolved` count a `limit: 200`
+ *     page — an unrelated fetch cap, not a property of this formatter.
+ *   - the hole is a PX literal (`DonutChart height`), while the numeral is sized in rem.
+ *     A reader at a 150% root font scales the text and not the ring, so the margin is
+ *     also the accessibility headroom (WCAG 1.4.4). The legend beside the ring always
+ *     carries the exact, unabbreviated count, so a clipped centre is never the only
+ *     statement of the number — but it would still be a plausible-looking wrong one,
+ *     since the centre is `overflow-hidden` and centred.
  */
 const fmtSnapshotCenter = (n: number): string => fmtTokens(n);
 
@@ -1426,7 +1440,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
     ];
   }, [posture]);
 
-  // Detect / first-response headline stat blocks (the compact operations timing rail).
+  // Detect / first-response headline stat blocks (the compact detect/respond cell, the
+  // middle four columns of lattice row 2).
   // "Respond" = the first HUMAN response, so it reads the ACK clock (mtta_minutes) — NOT
   // dwell_minutes, whose _RESPONSE_STATUSES includes RESOLVED/CLOSED and would count an AI
   // auto-close as a human response (the dashboard must stay honest). The `respond` trend
@@ -1826,10 +1841,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
      * withholds then too.
      *
      * It is handed to the tile's DRILL-DOWN (`drilldown.partition`) rather than rendered
-     * on the tile face. On the face it was four rows the other four tiles did not have,
-     * so one tile set the height of the whole strip; in the panel it sits directly under
-     * the numeral it partitions, with more room to name each band. Nothing about the
-     * numbers or the guards above changes — only where they are read.
+     * on the tile face. On the face it was three rows — four where the backend reports
+     * `policy_closed_cases` — that the other four tiles did not have, so one tile set the
+     * height of the whole strip; in the panel it sits under the numeral it partitions,
+     * with room to name each band. Nothing about the numbers or the guards above changes
+     * — only where they are read.
      */
     const closeTotals = humanVsAi.stale ? null : humanVsAi.totals;
     const closeBreakdown: KpiBreakdownRow[] | undefined =
@@ -2122,12 +2138,33 @@ export default function Overview({ onNavigate }: OverviewProps) {
         countTo: terminalCases,
         format: fmtInt,
         secondary: (covered ? shareContext(terminalCases, caseCount) : undefined) ?? DASH,
-        // No caption: "Reached a terminal state" only restated the label.
-        sub: cohortSub(undefined, BOUNDED_SAMPLE_SUB),
+        /*
+         * The caption is the RECONCILIATION between this numeral and the Human-vs-AI card
+         * a few hundred pixels below it, and it is conditional for the same reason the
+         * bounded arm is: it is visible exactly when it is true.
+         *
+         * This numeral is policy-INCLUSIVE; the card's denominator is `terminal_cases`,
+         * which `quality_metrics` strips policy closes out of. So on a backend that
+         * separates them the page states 10 here and three bands summing to 5 there, with
+         * nothing on either face to explain the gap — the partition's `Declared benign`
+         * row used to be that explanation, and it now lives one level down in the
+         * drill-down. Naming the count here restores the bridge at zero height cost (this
+         * tile is not the strip's tallest), and it says nothing at all when the server
+         * reports no policy closes, because then there is no gap to explain.
+         *
+         * "Reached a terminal state" is still NOT the caption: it only restated the label.
+         */
+        sub: cohortSub(
+          policyClosedReported && (policyClosed as number) > 0
+            ? `Incl. ${fmtNumber(policyClosed as number)} declared benign`
+            : undefined,
+          BOUNDED_SAMPLE_SUB,
+        ),
         help:
           'Cases from this window that reached a terminal state, including the ones an ' +
-          'operator closed under a "declared benign" rule policy. Select this tile for the ' +
-          'partition of who closed them: the agent, an analyst, or system routing.',
+          'operator closed under a "declared benign" rule policy. Where the server reports ' +
+          'a reconciling split, this tile’s drill-down names who closed them — the ' +
+          'agent, an analyst, system routing, or that policy.',
         icon: ShieldCheck,
         accent: 'success',
         goodDirection: 'up',
@@ -2154,7 +2191,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
           // The close attribution used to sit under the numeral on the tile FACE, where it
           // set the height of the whole strip for the four tiles that carry no partition.
           // It is the same memo either way, so this panel, the tile it opened from and the
-          // instrument card below still read ONE reconciled partition and cannot drift.
+          // instrument card below still read ONE reconciled partition and cannot drift —
+          // including when it is `undefined`, which withholds it on all three at once.
           partition: closeBreakdown,
           target: navigate
             ? {

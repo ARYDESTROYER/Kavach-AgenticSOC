@@ -11037,8 +11037,44 @@
 - Measured result (Chromium, demo data, sidebar pinned, partial-coverage warning present):
   1920×1080 **1,149px → 999px, no scrolling, 81px of slack**; 1600×900 1,149 → 1,013;
   1440×900 and 1280×800 1,181 → 1,045. KPI strip 144 → 80; lattice 794.5 → 708.5.
-- Status: done, uncommitted at time of writing — screenshots go to the operator before any
-  commit, push or PR, per instruction.
+- Second pass, after the adversarial fleet reported (all fixed, all free — the measured
+  heights are byte-identical before and after):
+  - **`pr-10` REMOVED.** Two reviewers disagreed about it, so it was settled in the browser
+    rather than by argument. `px-3` is on the trigger and `pr-10` was on the value row —
+    different elements, so they ADD to a 52px inset, not 40. But the row is `items-end`, and
+    the only child that reaches the overlay's x-range (the scale context, `mb-0.5`) measures
+    at y 36→50 from the cell top against an overlay ending at 32: **4px of clearance with no
+    gutter at all**. The gutter bought nothing and cost the context 40px, which ellipsized
+    "54 of 80 verdicted" at 1440px — recoverable only by mouse-hovering the `title`, i.e. not
+    at all for touch or keyboard. Item 4's live density is therefore `py-2` + `mt-1` only.
+  - **The reconciliation the move broke, restored on the face.** The Resolved / Closed numeral
+    is policy-INCLUSIVE; the Human-vs-AI card publishes bands over the policy-EXCLUSIVE
+    `terminal_cases`. The partition's `Declared benign` row was the only on-page bridge, and
+    it went one level down with the rest. The tile's sub now reads `Incl. N declared benign`
+    when the server reports a non-zero count and says nothing when it does not — conditional
+    exactly like the bounded-sample caption, and free (this tile is not the strip's tallest).
+    Guarded both ways.
+  - Comment/doc corrections, all caused or worsened by this change: the `(?)` doc that still
+    claimed HelpTip's LENGTH heuristic decides the presentation; `KpiTileProps.breakdown` and
+    `KpiBreakdownRow` naming the caller that just left (the prop is kept, and now says it has
+    none); the drill-down block comment, which asserted a co-visibility reason that does not
+    hold (the numeral is in a PINNED band, not co-scrolled), claimed markup parity that the
+    `max-w-sm` cap had already broken, and described the two surfaces as having coexisted;
+    "four rows" where the partition is three unless the backend separates policy closes;
+    "rail" for a cell that is no longer one; the donut floor arithmetic (~93px, not ~104) plus
+    the two things that margin is really carrying (`fmtTokens` is not bounded at 4 chars, and
+    a px hole against a rem numeral is WCAG 1.4.4 headroom); `DEMO.md`'s "Third row" and
+    in-tile partition; `docs/USAGE.md`, `docs/analyst/overview.md` and
+    `docs/getting-started/demo.md`. Two dead test selectors (`:not([data-testid*="-breakdown"])`)
+    and a `KpiTile.secondary.test.tsx` block that passed `ariaExpanded`, a prop removed in
+    #112 and invisible because tsconfig excludes tests from `tsc`.
+- Rejected against measurement rather than argument: that `pr-10` under-clears by 6px (it
+  clears, but is unnecessary); that the `fill` chain would not resolve; that the timing
+  restack needed `xl:order-*`.
+- Status: done. Committed on `claude/overview-one-page-fit` and pushed — `Testing` is a
+  PROTECTED branch requiring the `CI passed` aggregate, so a direct push is rejected by the
+  remote and the only route in is a pull request. Screenshots went to the operator first, per
+  instruction; the PR is deliberately NOT raised and awaits their word.
 - Next: **1440×900 and below still scroll by 113–245px, and that is a product decision, not a
   layout one.** The two remaining consumers are the noise-reduction flow band
   (`NoiseFunnel.tsx` `h-[184px]`, row 1 = 357.5px) and the stacked snapshots (349px); closing
