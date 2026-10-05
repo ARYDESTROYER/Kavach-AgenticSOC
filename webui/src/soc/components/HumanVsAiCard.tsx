@@ -10,8 +10,11 @@
  *   - Three headline counts + three RECONCILING percentages: agent-closed,
  *     analyst-closed, and the system/unattributed RESIDUAL. The denominator is the
  *     window's CLOSED (terminal) cases, so the three shares sum to exactly 100% and
- *     the residual is visible instead of being folded into either side.
- *   - A two/three-series trendline over the same window's buckets.
+ *     the residual is visible instead of being folded into either side. The three
+ *     totals double as the chart's legend (square swatches, matching the bars).
+ *   - Stacked columns (`CloseAttributionChart`), one per case-ARRIVAL bucket: AI agent
+ *     on the baseline, Human above it, System on top. Hovering or focusing a column
+ *     opens its full breakdown.
  *
  * HONESTY CONTRACT
  *   - `decision_by` is LAST-WRITER, not proof of authorship: an agent-closed case a
@@ -27,8 +30,8 @@
  *   - A STALE partition (the previous window's payload, while the newly selected
  *     window is still in flight) is withheld entirely: `windowLabel` already names the
  *     new window, so printing last window's counts beneath it would be a mislabel.
- *   - A bucket with no measurement is a GAP in the line (MultiSeriesTrend renders
- *     `null` as a gap), never a fabricated zero.
+ *   - A bucket with no measurement is a hatched "not measured" column, never a
+ *     fabricated zero-height bar (a recharts stack would have coerced its `null` to 0).
  *   - Alert volume, when shown, is a plainly LABELLED ingest-hour tally. It is a
  *     different population from the case cohort (many alerts collapse into one case
  *     by cluster signature), so it is never divided into a case count.
@@ -42,8 +45,16 @@ import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { DASH, fmtNumber } from '@/lib/format';
 import { HelpTip } from './HelpTip';
-import { MultiSeriesTrend, type MultiSeries } from './charts-soc';
+import {
+  CloseAttributionChart,
+  reconcilingShares,
+  type CloseAttributionBand,
+} from './CloseAttributionChart';
 import { token } from './palette';
+
+// The partition helper lives with the chart (which needs it per bucket); re-exported here
+// so the card stays the one import for its own contract.
+export { reconcilingShares };
 
 /** The three-way close-attribution partition for the selected window. */
 export interface HumanVsAiTotals {
@@ -58,18 +69,37 @@ export interface HumanVsAiTotals {
 }
 
 /**
- * One bucket of the close-attribution trend. `null` renders as a GAP in that line,
- * never a fabricated 0. Declared as a type alias (not an interface) so it carries an
- * implicit index signature and drops straight into `MultiSeriesTrend`'s row shape
- * without a cast.
+ * One case-ARRIVAL bucket of the close-attribution chart. A `null` band marks the whole
+ * column "not measured" (hatched), never a fabricated 0.
+ *
+ * Everything past the three bands feeds the column's hover/focus breakdown and the
+ * screen-reader table. Those fields are optional so a caller that only has the partition
+ * still renders; a missing field reads "not reported", while an explicit `null` keeps the
+ * payload's own meaning ("no verdicted case", "not recorded").
  */
-export type HumanVsAiPoint = {
-  /** Short plain-text bucket label for the X axis. */
+export interface HumanVsAiPoint {
+  /** Short plain-text UTC bucket label for the X axis. */
   x: string;
   ai: number | null;
   human: number | null;
   system: number | null;
-};
+  /** Bucket start, UTC ISO-8601 (the payload's `t`). */
+  start?: string | null;
+  /** Bucket end, UTC ISO-8601 (`t` + `bucket_minutes`); the payload has no end field. */
+  end?: string | null;
+  /** Terminal cases of this arrival cohort (policy closes excluded). */
+  closed?: number | null;
+  /** Every case created in the bucket — policy-closed cases INCLUDED. */
+  newCases?: number | null;
+  /** Once-counted cases that reached a human (NEEDS_HUMAN or escalated). */
+  sentToHuman?: number | null;
+  /** False-positive rate 0–100, or null when the bucket has no verdicted case. */
+  fpRate?: number | null;
+  /** Raw alerts ingested (a different population), or null when not recorded. */
+  alerts?: number | null;
+  /** The newest bucket is still filling: drawn lighter, labelled "In progress". */
+  inProgress?: boolean;
+}
 
 export interface HumanVsAiCardProps {
   /**
@@ -118,6 +148,9 @@ export const HUMAN_VS_AI_HELP =
   'Shares are of closed cases in this window and always add up to 100%. ' +
   // Relocated from the share line, where it was competing with the bucket granularity.
   'Trend buckets are keyed by case ARRIVAL time, not close time. ' +
+  // How to read the columns — the face has no room for it, and the hover is not obvious.
+  'Each column stacks one bucket’s closed cases by closer (AI agent at the base, then ' +
+  'Human, then System); hover or focus a column to see its breakdown. ' +
   // Relocated from under the alerts numeral, which keeps only its population word.
   'The alerts-ingested figure is an ingest-hour tally, not this case cohort. ' +
   // POPOVER-ONLY since the operator asked (twice) for the face copy to go. This is the
@@ -128,13 +161,10 @@ export const HUMAN_VS_AI_HELP =
   'Advisory only — the agent recommends; the deterministic case manager decides. This ' +
   'dashboard never influences that.';
 
-/** Band identity: key, short label, and the series colour it shares with the chart. */
-interface BandDef {
-  key: 'ai' | 'human' | 'system';
-  label: string;
+/** Band identity: key, short label, and the mark colour it shares with the chart. */
+interface BandDef extends CloseAttributionBand {
   /** Full plain-text meaning (tooltip/title) for the truncated short label. */
   title: string;
-  color: string;
 }
 
 /**
@@ -167,43 +197,9 @@ export const CLOSE_ATTRIBUTION_BANDS: ReadonlyArray<{
   title: string;
 }> = BANDS.map(({ key, label, title }) => ({ key, label, title }));
 
-const CHART_SERIES: MultiSeries[] = BANDS.map((b) => ({
-  key: b.key,
-  label: b.label,
-  color: b.color,
-}));
-
 /**
- * Split `parts` into whole percentages of `total` that sum to EXACTLY 100 (largest
- * remainder), or `null` when the split cannot be trusted.
- *
- * Returns null unless every part is a finite non-negative number, `total` is a
- * positive finite number, AND the parts sum to `total` — i.e. the partition actually
- * reconciles. A set of shares that does not reconcile must render as em dashes, not
- * as three numbers massaged up to 100%.
- */
-export function reconcilingShares(parts: number[], total: number): number[] | null {
-  if (!Number.isFinite(total) || total <= 0) return null;
-  if (!parts.length) return null;
-  if (parts.some((p) => typeof p !== 'number' || !Number.isFinite(p) || p < 0)) return null;
-  const sum = parts.reduce((a, b) => a + b, 0);
-  if (sum !== total) return null;
-  const exact = parts.map((p) => (p / total) * 100);
-  const out = exact.map((v) => Math.floor(v));
-  let remainder = 100 - out.reduce((a, b) => a + b, 0);
-  const byFraction = exact
-    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-    .sort((a, b) => b.frac - a.frac || a.i - b.i);
-  for (let k = 0; k < byFraction.length && remainder > 0; k += 1) {
-    out[byFraction[k].i] += 1;
-    remainder -= 1;
-  }
-  return out;
-}
-
-/**
- * Close-attribution instrument: three reconciling headline shares over one
- * two/three-series trendline. Flat (no card chrome) so it reads as one cell of the
+ * Close-attribution instrument: three reconciling headline shares over one stacked
+ * column per arrival bucket. Flat (no card chrome) so it reads as one cell of the
  * dashboard's instrument band, matching its sibling cells.
  */
 export function HumanVsAiCard({
@@ -230,6 +226,7 @@ export function HumanVsAiCard({
   );
 
   const describedById = React.useId();
+  const hasChart = Boolean(series && series.length);
 
   return (
     <section
@@ -246,9 +243,9 @@ export function HumanVsAiCard({
       </p>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
-            Human vs AI
-          </h2>
+          {/* Sentence case at the section-title size (spec principle 2): the tracked
+              capitals read as chrome and competed with the numbers below. */}
+          <h2 className="text-sm font-semibold text-foreground">Human vs AI</h2>
         </div>
         <HelpTip
           text={HUMAN_VS_AI_HELP}
@@ -269,8 +266,10 @@ export function HumanVsAiCard({
           return (
             <li key={band.key} className="min-w-0" data-testid={`human-vs-ai-${band.key}`}>
               <div className="flex items-center gap-1.5">
+                {/* A SQUARE swatch: these totals are the chart's legend, and the legend
+                    mark matches the bar mark it keys. */}
                 <span
-                  className="h-2 w-2 shrink-0 rounded-full"
+                  className="h-2 w-2 shrink-0 rounded-[1px]"
                   style={{ backgroundColor: band.color }}
                   aria-hidden
                 />
@@ -289,7 +288,7 @@ export function HumanVsAiCard({
         })}
       </ul>
 
-      {series && series.length ? (
+      {series && hasChart ? (
         /*
          * `relative` and the `min-h-` floor are BOTH required by `fill` and neither is
          * decorative. The chart is `absolute inset-0`, so it needs this box as its
@@ -312,14 +311,11 @@ export function HumanVsAiCard({
           className="relative mt-2 min-h-[122px] min-w-0 flex-1 xl:min-h-[160px]"
           data-testid="human-vs-ai-chart"
         >
-          <MultiSeriesTrend
-            data={series}
-            series={CHART_SERIES}
-            xKey="x"
-            fill
-            showYAxis={false}
-            showLegend={false}
-            format={fmtNumber}
+          <CloseAttributionChart
+            points={series}
+            bands={BANDS}
+            truncated={truncated}
+            stale={stale}
             ariaLabel="Cases closed by the agent versus by a human, per case-arrival bucket"
           />
         </div>
@@ -351,9 +347,13 @@ export function HumanVsAiCard({
             The truncation clause stays on the FACE too, and is not prose: it is a
             conditional bound, true exactly when it renders. The band COUNTS above still
             print while it is up — only the shares read `—` — so without it those counts
-            would be read as totals when they are lower bounds. */}
+            would be read as totals when they are lower bounds.
+
+            The bucket times on the axis and in the hover are UTC, said ONCE here. The
+            label keeps its own node so it still reads as exactly the window it names. */}
         <p className="text-2xs text-muted-foreground">
-          {windowLabel}
+          <span>{windowLabel}</span>
+          {hasChart ? ' · times in UTC' : ''}
           {truncated && !stale ? ' · bounded sample, shares unavailable' : ''}
         </p>
         {typeof alertsIngested === 'number' && Number.isFinite(alertsIngested) ? (

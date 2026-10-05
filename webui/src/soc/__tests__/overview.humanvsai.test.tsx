@@ -19,7 +19,7 @@
  * Offline: api + posture fetch mocked. Advisory only — no #3 behaviour touched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { fetchPostureMock } = vi.hoisted(() => ({ fetchPostureMock: vi.fn() }));
@@ -218,12 +218,18 @@ describe('Overview — Human vs AI card', () => {
     render(<Overview onNavigate={vi.fn()} />);
     const card = await screen.findByTestId('human-vs-ai');
     const chart = await within(card).findByTestId('human-vs-ai-chart');
-    // Both series are plotted in ONE labelled figure (recharts renders a line per key).
-    const figure = within(chart).getByRole('img', {
+    // All three series are plotted in ONE labelled figure. The figure is a keyboard-
+    // navigable `group` since the stacked-column rebuild (an `img` would make its arrow-key
+    // navigation presentational), and each series is a stacked segment keyed by band —
+    // BUCKETS[2] (2/1/1) carries all three, so all three must be drawn.
+    const figure = within(chart).getByRole('group', {
       name: /closed by the agent versus by a human/i,
     });
     expect(figure).toBeInTheDocument();
-    expect(chart.querySelectorAll('.recharts-line').length).toBe(3);
+    const plotted = new Set(
+      Array.from(chart.querySelectorAll('[data-segment]')).map((n) => n.getAttribute('data-segment')),
+    );
+    expect(plotted).toEqual(new Set(['ai', 'human', 'system']));
     expect(within(card).getByText(/last 24 hours · 1h buckets/i)).toBeInTheDocument();
     expect(within(card).queryByTestId('human-vs-ai-no-series')).toBeNull();
   });
@@ -479,8 +485,12 @@ describe('Overview — Human vs AI card', () => {
     const card = await screen.findByTestId('human-vs-ai');
     await within(card).findByTestId('human-vs-ai-chart');
 
+    // The close-attribution chart is hand-built SVG now (stacked columns), so its x labels
+    // are read from its own tick nodes rather than recharts' axis class. The intent is
+    // unchanged: every label this chart prints is HH:mm on a 24h window and dated on a
+    // multi-day one.
     const ticks = () =>
-      Array.from(container.querySelectorAll('.recharts-cartesian-axis-tick-value')).map(
+      Array.from(container.querySelectorAll('[data-testid="human-vs-ai-x-tick"]')).map(
         (n) => n.textContent ?? '',
       );
     // A 24h window fits inside one day: a bare HH:mm tick is unambiguous there.
@@ -501,6 +511,53 @@ describe('Overview — Human vs AI card', () => {
     // Two calendar days are distinguishable, which is the whole point.
     expect(new Set(dated.map((t) => t.slice(0, 5))).size).toBeGreaterThan(1);
     expect(new Set(dated).size).toBe(dated.length);
+  });
+
+  it('hands each column its OWN bucket’s payload, and marks only the still-filling bucket', async () => {
+    // generated_at 07:30 → the 07:00–08:00 bucket ends after it: that one is in progress.
+    trendsMock.mockResolvedValue({ ...TRENDS, generated_at: '2026-07-01T07:30:00Z' });
+    render(<Overview onNavigate={vi.fn()} />);
+    const card = await screen.findByTestId('human-vs-ai');
+    const chart = await within(card).findByTestId('human-vs-ai-chart');
+    const slots = within(chart).getAllByTestId('human-vs-ai-slot');
+    expect(slots.map((s) => s.getAttribute('data-in-progress'))).toEqual([null, null, 'true']);
+
+    const fig = within(chart).getByRole('group', { name: /closed by the agent versus by a human/i });
+    act(() => fig.focus());
+    const tip = () => screen.getByTestId('human-vs-ai-tooltip');
+    const read = (id: string) => within(tip()).getByTestId(`human-vs-ai-tooltip-${id}`).textContent;
+    // The newest bucket (BUCKETS[2]): its end is t + bucket_minutes, stated in UTC.
+    expect(read('range')).toBe('Jul 1, 07:00–08:00 UTC');
+    expect(read('progress')).toBe('In progress');
+    expect(read('closed-value')).toBe('4');
+    expect([read('system-value'), read('human-value'), read('ai-value')]).toEqual(['1', '1', '2']);
+    expect([read('system-share'), read('human-share'), read('ai-share')]).toEqual(['25%', '25%', '50%']);
+    expect(read('arrived-value')).toBe('5'); // new_cases
+    expect(read('sent-value')).toBe('1'); // sent_to_human, not needs_human + escalated (= 2)
+    expect(read('fp-value')).toBe('50%');
+    expect(read('alerts-value')).toBe('55');
+
+    fireEvent.keyDown(fig, { key: 'Home' });
+    expect(read('range')).toBe('Jul 1, 05:00–06:00 UTC');
+    expect(within(tip()).queryByTestId('human-vs-ai-tooltip-progress')).toBeNull();
+    expect([read('closed-value'), read('arrived-value'), read('fp-value'), read('alerts-value')]).toEqual([
+      '4',
+      '4',
+      '25%',
+      '40',
+    ]);
+    act(() => fig.blur());
+    expect(screen.queryByTestId('human-vs-ai-tooltip')).toBeNull();
+  });
+
+  it('does not call a bucket in progress once the payload says it has ended', async () => {
+    // TRENDS.generated_at is 08:00, exactly when the last (07:00) bucket ends.
+    render(<Overview onNavigate={vi.fn()} />);
+    const card = await screen.findByTestId('human-vs-ai');
+    const chart = await within(card).findByTestId('human-vs-ai-chart');
+    for (const slot of within(chart).getAllByTestId('human-vs-ai-slot')) {
+      expect(slot).not.toHaveAttribute('data-in-progress');
+    }
   });
 
   it('reports unavailable when the partition does not add up to the closed total', async () => {

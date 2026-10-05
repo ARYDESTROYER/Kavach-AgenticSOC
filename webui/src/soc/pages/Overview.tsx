@@ -1667,13 +1667,36 @@ export default function Overview({ onNavigate }: OverviewProps) {
           typeof b.system_closed === 'number' &&
           Number.isFinite(b.system_closed),
       );
+    // Each column also carries its bucket's own context for the hover breakdown. The
+    // payload has no end field, so the end is `t + bucket_minutes` (the backend's own
+    // arithmetic). The newest bucket is the server's PARTIAL one: it is "in progress"
+    // while it ends after `generated_at`, and — when either instant is unreadable — the
+    // last bucket is still the partial one by contract.
+    const bucketMs = (finiteOrNull(trendsForWindow?.bucket_minutes) ?? 0) * 60_000;
+    const generatedMs = Date.parse(String(trendsForWindow?.generated_at ?? ''));
     const series: HumanVsAiPoint[] | null = supported
-      ? buckets.map((b) => ({
-          x: bucketAxisLabel(b.t, trendsForWindow?.bucket_minutes, trendsForWindow?.window_hours),
-          ai: finiteOrNull(b.auto_closed),
-          human: finiteOrNull(b.human_closed),
-          system: finiteOrNull(b.system_closed),
-        }))
+      ? buckets.map((b, i) => {
+          const startMs = Date.parse(String(b.t ?? ''));
+          const endMs = Number.isFinite(startMs) && bucketMs > 0 ? startMs + bucketMs : Number.NaN;
+          const inProgress =
+            Number.isFinite(endMs) && Number.isFinite(generatedMs)
+              ? endMs > generatedMs
+              : i === buckets.length - 1;
+          return {
+            x: bucketAxisLabel(b.t, trendsForWindow?.bucket_minutes, trendsForWindow?.window_hours),
+            ai: finiteOrNull(b.auto_closed),
+            human: finiteOrNull(b.human_closed),
+            system: finiteOrNull(b.system_closed),
+            start: Number.isFinite(startMs) ? new Date(startMs).toISOString() : null,
+            end: Number.isFinite(endMs) ? new Date(endMs).toISOString() : null,
+            closed: finiteOrNull(b.closed),
+            newCases: finiteOrNull(b.new_cases),
+            sentToHuman: finiteOrNull(b.sent_to_human),
+            fpRate: finiteOrNull(b.fp_rate),
+            alerts: finiteOrNull(b.alerts),
+            inProgress,
+          };
+        })
       : null;
 
     const q = posture?.quality;
