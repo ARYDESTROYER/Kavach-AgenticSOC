@@ -189,10 +189,13 @@ describe('KpiTile — the bound marker', () => {
     expect(span.contains(mark)).toBe(true);
     expect(mark).toHaveTextContent('≥');
     expect(mark).toHaveAttribute('aria-hidden', 'true');
-    // The sentence is REAL TEXT in an `sr-only` sibling — never an `aria-label` on a bare
-    // span (prohibited on the generic role) and never a `title` alone (mouse-only).
+    // The sentence is REAL, VISIBLE text on the hero tile's one line under the numeral —
+    // never an `aria-label` on a bare span (prohibited on the generic role) and never a
+    // `title` alone (mouse-only). `getByText` also proves it is stated exactly ONCE: the
+    // `sr-only` twin is dropped when the line already shows it.
     const sentence = within(tile).getByText(BOUND);
-    expect(sentence).toHaveClass('sr-only');
+    expect(sentence).not.toHaveClass('sr-only');
+    expect(sentence).toHaveAttribute('data-kpi-line', 'bound');
     expect(span.contains(sentence)).toBe(false);
     expect(span).not.toHaveAttribute('title');
   });
@@ -217,9 +220,16 @@ describe('KpiTile — the bound marker', () => {
     expect(span).toHaveAttribute('title', 'Bounded sample · share unavailable');
     expect(within(tile).queryByTestId('kpi-false-positive-rate-bound')).toBeNull();
     expect(span).not.toHaveTextContent('≥');
-    // `title` is the mouse affordance, never the only carrier: the sentence is still text.
+    // `title` is the mouse affordance, never the only carrier: the sentence is still text,
+    // visible on the hero line.
     const sentence = within(tile).getByText('Bounded sample · share unavailable');
-    expect(sentence).toHaveClass('sr-only');
+    expect(sentence).not.toHaveClass('sr-only');
+    expect(sentence).toHaveAttribute('data-kpi-line', 'bound');
+  });
+
+  it('keeps the bound sr-only on a non-hero tile, which has no context line to show it', () => {
+    render(<KpiTile label="Open Cases" value="12" countTo={12} bound={BOUND} variant="strip" />);
+    expect(within(screen.getByTestId('kpi-open-cases')).getByText(BOUND)).toHaveClass('sr-only');
   });
 
   it('UNBOUNDED: no marker of any kind when no bound is in force', () => {
@@ -244,5 +254,50 @@ describe('KpiTile — the bound marker', () => {
     const tile = screen.getByTestId('kpi-open-cases');
     expect(numeral(tile)).toHaveAttribute('data-bound', 'floor');
     expect(within(tile).getByTestId('kpi-open-cases-bound')).toHaveTextContent('≥');
+  });
+});
+
+describe('KpiTile — the hero context line', () => {
+  const hero = { variant: 'strip', density: 'compact', numeral: 'hero' } as const;
+
+  it('shows the scale context on ONE line under the numeral, never beside it', () => {
+    render(<KpiTile label="Total Critical" value="8" countTo={8} context="17% of 47 cases" {...hero} />);
+    const tile = screen.getByTestId('kpi-total-critical');
+    const line = within(tile).getByText('17% of 47 cases');
+    expect(line).toHaveAttribute('data-kpi-line', 'context');
+    expect(line).toHaveClass('truncate');
+    expect(line).toHaveAttribute('title', '17% of 47 cases');
+    // Not in the numeral's flex row, so it can never take width from the number.
+    expect(numeral(tile).parentElement!.contains(line)).toBe(false);
+  });
+
+  it('gives the line to exactly one thing: state, then bound, then context', () => {
+    const { rerender } = render(
+      <KpiTile label="Total Cases" value="4" countTo={4} context="arrivals, last 24h" bound="Partial window · lower bound" {...hero} />,
+    );
+    let tile = screen.getByTestId('kpi-total-cases');
+    expect(tile.querySelectorAll('[data-kpi-line]')).toHaveLength(1);
+    expect(within(tile).getByText('Partial window · lower bound')).toHaveAttribute('data-kpi-line', 'bound');
+    expect(within(tile).queryByText('arrivals, last 24h')).toBeNull();
+
+    rerender(
+      <KpiTile label="Total Cases" value="4" countTo={4} context="arrivals, last 24h" bound="Partial window · lower bound" sub="Unavailable" {...hero} />,
+    );
+    tile = screen.getByTestId('kpi-total-cases');
+    expect(tile.querySelectorAll('[data-kpi-line]')).toHaveLength(1);
+    expect(within(tile).getByText('Unavailable')).toHaveAttribute('data-kpi-line', 'state');
+    // The bound is not on the line now, so its sentence is still announced, sr-only.
+    expect(within(tile).getByText('Partial window · lower bound')).toHaveClass('sr-only');
+  });
+
+  it('keeps hero numerals in ink: only a critical tile with a count turns red', () => {
+    const { rerender } = render(
+      <KpiTile label="Total Critical" value="8" countTo={8} accent="critical" {...hero} />,
+    );
+    expect(numeral(screen.getByTestId('kpi-total-critical'))).toHaveClass('text-critical-text');
+    rerender(<KpiTile label="Total Critical" value="0" countTo={0} accent="critical" {...hero} />);
+    expect(numeral(screen.getByTestId('kpi-total-critical'))).toHaveClass('text-foreground');
+    rerender(<KpiTile label="Auto Closed" value="3" countTo={3} accent="success" {...hero} />);
+    expect(numeral(screen.getByTestId('kpi-auto-closed'))).toHaveClass('text-foreground');
   });
 });

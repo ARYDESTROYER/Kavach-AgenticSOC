@@ -329,7 +329,7 @@ authority. Rule preview sends the same single authoritative predicate that Save 
 Operational summaries use one continuous strip rather than a row of independent
 cards. The strip owns its outer hairlines; each metric supplies only the responsive
 internal divider needed for the current column count. At every column count a strip
-uses — they differ per surface, and the primary dashboard runs one, two, three and five
+uses — they differ per surface, and the primary dashboard runs one, two, three and six
 — no cell may acquire both a left and top divider or lose the line that separates it
 from the preceding row. Use the compact `KpiTile` density whenever the
 strip is one band among several rather than the surface's only content — including the
@@ -337,6 +337,27 @@ primary dashboard, where the strip heads a page that must also seat a flow diagr
 case queue and a timing pair. Reserve the default density for a strip that stands alone.
 Density changes padding and numeral scale only; it must never alter the cell count or the
 per-breakpoint divider rules above, which are tuned to an exact number of cells.
+
+A hero strip (`numeral="hero"`, the primary dashboard) reads top to bottom as a quiet
+sentence-case label, the numeral, and exactly one muted **context line** that answers
+"compared to what?" ("17% of 47 cases", "36 of 47 verdicted"). The line is data, never a
+sentence about the metric; that belongs in help. A state disclosure (loading,
+unavailable) takes the line first, then a conditional bound, then the context, so the
+row's rhythm never changes with state. Never put context beside the numeral: at six
+columns flex shrinks the numeral first. Hero numerals are neutral ink; only a non-zero
+critical count is red. Hero tiles carry no icon, and their help and drill-down marks
+appear on hover or focus beside the numeral (always shown on devices without hover).
+When a strip heads a band of instruments, the strip's bottom rule is that band's top
+edge: no vertical gap and no second hairline between them.
+
+Dashboard section titles are sentence case, `text-sm font-semibold`, with an optional
+`text-xs` muted caption. Tracked uppercase is for compact data labels inside a
+visualization, not for section titles. Period-over-period chips on small counts state the
+absolute difference ("+8"), not a percentage of a tiny base; percentages are for bases of
+20 or more and moves under 100%, and the chip's title names both counts. Hover trends draw
+one column per bucket in its real time slot (unmeasured buckets as a muted floor tick,
+never as zero) with a readout of the pointed bucket; never a smoothed line over measured
+points only.
 
 Observed-outcome metrics embedded in another operational page use the integrated
 `ComparisonMetric` variant. Keep the shared reporting window, evidence state, and

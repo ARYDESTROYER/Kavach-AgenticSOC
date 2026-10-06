@@ -124,7 +124,7 @@ export function DashboardGroup({
                     isOpen ? 'rotate-0' : '-rotate-90',
                   )}
                 />
-                <span className="truncate text-sm font-semibold uppercase tracking-wide text-foreground">
+                <span className="truncate text-sm font-semibold text-foreground">
                   {title}
                 </span>
                 {count != null ? (

@@ -470,14 +470,29 @@ function windowLabel(hours: number): string {
   return `${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
-/** A period-over-period percent delta from two raw counts, or null when there is no
- *  honest baseline (no previous window, prev == 0, or an exactly-flat move). */
-function countDelta(cur: number, prev: number | null): { value: number; label: string } | null {
+/**
+ * Period-over-period change of a COUNT, stated the way an operator can check it, or null
+ * when there is no honest baseline (no previous window, prev == 0, or an exactly-flat move).
+ *
+ * A percentage is only honest on a base big enough to carry one: 2 → 10 open cases is
+ * "+400%", which reads as an emergency and says less than "+8". So below a base of 20, or
+ * whenever the move is 100% or more, the chip states the absolute difference; otherwise
+ * it keeps the percentage. Either way `detail` spells out both counts for the tooltip.
+ */
+function countDelta(
+  cur: number,
+  prev: number | null,
+): { value: number; label: string; detail: string } | null {
   if (prev == null || prev <= 0) return null;
-  const rounded = Math.round(((cur - prev) / prev) * 1000) / 10;
-  if (rounded === 0) return null;
-  const sign = rounded > 0 ? '+' : '';
-  return { value: rounded, label: `${sign}${rounded}%` };
+  const diff = cur - prev;
+  if (diff === 0) return null;
+  const sign = diff > 0 ? '+' : '';
+  const detail = `${fmtNumber(prev)} → ${fmtNumber(cur)} vs the previous window`;
+  const pct = Math.round((diff / prev) * 1000) / 10;
+  if (prev < 20 || Math.abs(pct) >= 100) {
+    return { value: diff, label: `${sign}${fmtNumber(diff)}`, detail };
+  }
+  return { value: pct, label: `${sign}${pct}%`, detail };
 }
 
 function formatWholePercent(value: number): string {
@@ -579,12 +594,12 @@ interface KpiItem {
    */
   help?: string;
   /**
-   * Scale context ("N (P%)"-style): the denominator this count is a share of, or `DASH`
-   * when that denominator is missing/bounded. Never a `delta` — see
-   * `KpiTileProps.secondary`. Built for the drill-down panel's metric switcher; the
-   * landing strip no longer renders it on the tile face (see the `<KpiTile>` call site).
+   * The numeral's "compared to what?", shown on its own line under it ("18% of 43 cases",
+   * "33 of 44 verdicted"). `undefined` when there is no honest denominator to state —
+   * a window that was not fully covered withholds it, and then the line carries the
+   * tile's `bound` instead. Never a `delta`, and never a sentence about the metric.
    */
-  secondary?: React.ReactNode;
+  context?: string;
   icon: LucideIcon;
   accent: KpiAccent;
   goodDirection: 'up' | 'down' | 'none';
@@ -621,7 +636,7 @@ function TrendChip({
   delta,
   goodDirection,
 }: {
-  delta: { value: number; label: string } | null;
+  delta: { value: number; label: string; detail?: string } | null;
   goodDirection: 'up' | 'down';
 }) {
   if (!delta) return null;
@@ -634,6 +649,7 @@ function TrendChip({
       aria-label={`changed ${rising ? 'up' : 'down'} by ${delta.label}, ${
         improved ? 'improved' : 'worse'
       }`}
+      title={delta.detail}
       className={cn(
         'inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-2xs font-semibold tabular-nums',
         improved
@@ -773,8 +789,8 @@ function SnapshotCard({
     <section className={cn('min-w-0 border-b border-border/70 py-3 last:border-b-0', className)}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">{title}</h2>
-          <p className="text-2xs text-muted-foreground">{caption}</p>
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          <p className="text-xs text-muted-foreground">{caption}</p>
         </div>
         <TrendChip delta={delta} goodDirection={goodDirection} />
       </div>
@@ -819,7 +835,7 @@ function TimingStat({
       )}
       title={help}
     >
-      <div className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <span className={cn('h-1.5 w-1.5 rounded-full', dotClass)} aria-hidden />
         {label}
       </div>
@@ -885,15 +901,15 @@ function TopCasesPanel({
     <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
+          <h2 className="text-sm font-semibold text-foreground">
             Latest cases
           </h2>
-          <p className="mt-0.5 text-2xs text-muted-foreground">Real-time triage queue</p>
+          <p className="text-xs text-muted-foreground">Real-time triage queue</p>
         </div>
         {navigate ? (
           <button
             type="button"
-            className="shrink-0 rounded-sm px-1 py-0.5 text-2xs font-semibold uppercase tracking-widest text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="shrink-0 rounded-sm px-1 py-0.5 text-xs font-medium text-primary transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => navigate('cases', { window: navWindow })}
           >
             View all
@@ -902,7 +918,10 @@ function TopCasesPanel({
       </div>
 
       {cases.length ? (
-        <ul className="mt-2 flex min-h-0 flex-1 flex-col gap-1.5">
+        // A flat list with hairlines between rows, not five bordered boxes: the cell is
+        // already a bordered region, and a card per row inside it was the busiest texture
+        // on the page for the least information.
+        <ul className="-mx-2 mt-1 flex min-h-0 flex-1 flex-col divide-y divide-border/60">
           {cases.map((k) => {
             const displayId = (k.case_number || k.case_id || DASH).trim() || DASH;
             const displayTitle =
@@ -930,9 +949,9 @@ function TopCasesPanel({
                     onClick={onOpenCase ? () => onOpenCase(k.case_id) : undefined}
                     aria-disabled={!onOpenCase}
                     className={cn(
-                      'flex w-full items-center justify-between gap-3 rounded-sm border border-border/70 bg-card/30 px-2 py-1.5 text-left',
+                      'flex w-full items-center justify-between gap-3 rounded-sm px-2 py-2 text-left',
                       onOpenCase
-                        ? 'transition-colors hover:border-border hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                        ? 'transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
                         : 'cursor-default',
                     )}
                     // WCAG 2.5.3 (Label in Name): the row's visible label includes the
@@ -945,22 +964,24 @@ function TopCasesPanel({
                         : `Preview case ${displayTitle} (${displayId})`
                     }
                   >
+                    {/* The TITLE leads, in the reading face, because it is what the operator
+                        scans for; the identifier and age sit under it as metadata. The id
+                        keeps the mono face it has everywhere else in the console. */}
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="flex min-w-0 items-center gap-2 font-mono text-xs">
-                        <span className="max-w-28 shrink-0 truncate text-primary" title={displayId}>
+                      <span className="truncate text-sm text-foreground" title={displayTitle}>
+                        {displayTitle}
+                      </span>
+                      <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                        <span className="min-w-0 max-w-40 truncate font-mono text-primary" title={displayId}>
                           {displayId}
                         </span>
-                        <span className="truncate text-foreground" title={displayTitle}>
-                          {displayTitle}
-                        </span>
-                      </span>
-                      <span className="block font-mono text-2xs text-muted-foreground">
-                        {age || 'Just now'}
+                        <span aria-hidden>·</span>
+                        <span className="shrink-0 tabular-nums">{age || 'Just now'}</span>
                       </span>
                     </span>
                     <Badge
                       variant={status.variant}
-                      className="shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-2xs uppercase tracking-wide"
+                      className="shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium"
                     >
                       {status.label}
                     </Badge>
@@ -2017,9 +2038,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
         : help;
 
     /*
-     * The four scale contexts, each computed ONCE and then read by both the tile's
-     * `secondary` (which the drill-down and any non-hero consumer still use) and its help.
-     * One derivation, so the two can never state different denominators for one numeral.
+     * The four scale contexts, each computed ONCE and then read by both the tile's context
+     * line and its help. One derivation, so the two can never state different denominators
+     * for one numeral.
      */
     const criticalShare = (covered ? shareContext(criticalCount, caseCount) : undefined) ?? DASH;
     const fpSample =
@@ -2034,6 +2055,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
       typeof automationPercent === 'number'
         ? `${automationPercent}% of agent-worked closes`
         : DASH;
+    /** A share of the window's arrivals, named as cases on the face; nothing for a dash. */
+    const ofCases = (share: string): string | undefined =>
+      share === DASH ? undefined : `${share} cases`;
+    /** A context string as-is, or nothing when it is the "no honest denominator" dash. */
+    const orNone = (s: string): string | undefined => (s === DASH ? undefined : s);
 
     return [
       {
@@ -2046,9 +2072,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
         value: typeof caseCount === 'number' ? fmtNumber(caseCount) : DASH,
         countTo: caseCount,
         format: fmtInt,
-        // No `secondary`: this IS the denominator the cohort tiles are shares of, so
-        // it has none of its own. An em dash here would read as "a denominator we
-        // could not measure", which is the opposite of true.
+        // This IS the denominator the cohort tiles are shares of, so its context line
+        // names the window rather than a share: a dash here would read as "a
+        // denominator we could not measure", which is the opposite of true.
+        context: covered ? `arrivals, last ${hours < 48 ? `${hours}h` : windowLabel(hours)}` : undefined,
         sub: postureSub,
         bound: boundSub(),
         help:
@@ -2103,7 +2130,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         format: fmtInt,
         // `severity_counts` partitions `case_count` exactly, so numerator and
         // denominator come off ONE payload and describe one population.
-        secondary: criticalShare,
+        context: ofCases(criticalShare),
         sub: postureSub,
         bound: boundSub(BOUNDED_SAMPLE_SUB),
         // NEVER flatten this template literal: `topBandLabel` is DERIVED from the severity
@@ -2155,9 +2182,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
         countTo: openNowCount,
         format: fmtInt,
         // A stock has no window denominator, and inventing one would invite reading it
-        // as a fifth summand of the cohort tiles. The em dash plus the sub below say
-        // exactly why there is none.
-        secondary: DASH,
+        // as a fifth summand of the cohort tiles. The context line says what it IS
+        // instead, so nobody reads it as a share of Total Cases.
+        context: 'any arrival date',
         sub: postureSub,
         // This tile's completeness has its OWN predicate: `open_now.complete`, not the
         // window coverage every other tile is gated on. A stock is read at `generated_at`
@@ -2219,7 +2246,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // size: the server's exact fp / verdicted counts behind the rate. Both halves
         // — and the rate above them — come off the same scan, so an uncovered window
         // withholds all of them rather than quoting a bounded ratio as fact.
-        secondary: fpSample,
+        context: orNone(fpSample),
         sub: postureSub,
         // This tile never publishes a bounded RATIO — `fpPercent` is withheld entirely
         // unless the window is covered — so its bound is the WITHHELD arm of the grammar,
@@ -2287,7 +2314,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         value: typeof terminalCases === 'number' ? fmtNumber(terminalCases) : DASH,
         countTo: terminalCases,
         format: fmtInt,
-        secondary: terminalShare,
+        context: ofCases(terminalShare),
         sub: postureSub,
         bound: boundSub(BOUNDED_SAMPLE_SUB),
         help: scaleAside(
@@ -2381,7 +2408,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // Names its OWN denominator. "% of Resolved / Closed" would be false: this
         // numerator is counted over the policy-STRIPPED terminal set while that numeral
         // is policy-INCLUSIVE.
-        secondary: automationShare,
+        // The face says "worked closes" for the help's "agent-worked closes": the same
+        // server ratio over the same denominator, in 20 characters instead of 26, which is
+        // what fits a sixth of a 1280px strip without an ellipsis. Help keeps the long form.
+        context:
+          typeof automationPercent === 'number' ? `${automationPercent}% of worked closes` : undefined,
         sub: postureSub,
         bound: boundSub(BOUNDED_SAMPLE_SUB),
         help: scaleAside(AUTO_CLOSED_POPULATION, automationShare),
@@ -2726,9 +2757,17 @@ export default function Overview({ onNavigate }: OverviewProps) {
           }
         />
       ) : (
-        <div className="space-y-4">
+        /*
+         * NO vertical gap between the strip and the lattice, and no top rule on the
+         * lattice. They used to be separated by 16px of `space-y-4` with a hairline on
+         * each side of it: two rules framing empty space read as a seam between two
+         * unrelated widgets. Now the strip's own bottom rule IS the lattice's top edge,
+         * so the KPIs and the instruments read as one panel. The collapsed group below
+         * keeps its breathing room with an explicit `mt-4`.
+         */
+        <div>
           {/* ---- KPI STRIP — flat, un-nested, responsive by COLUMN COUNT ---- */}
-          <div className="space-y-1.5">
+          <div>
             <Stagger
               data-testid="kpi-strip"
               className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6"
@@ -2777,22 +2816,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     testId={kpi.testId}
                     value={kpi.value}
                     /*
-                     * NO `secondary` on the face, and the reason is MEASURED, not assumed.
-                     *
-                     * The scale context shares one `items-end` flex row with the numeral,
-                     * and both are shrinkable (the numeral must be, or a long value is
-                     * hard-clipped by the tile's `overflow-hidden` with no ellipsis). At six
-                     * columns on a 1280px viewport — 143px of cell content — flex shrinks
-                     * the numeral FIRST, because it has the larger basis: rendered in a
-                     * browser, "72%" came out as "7…" and "44" as "4.". A truncated NUMERAL
-                     * is the exact defect the truncate fix exists to prevent, so the context
-                     * cannot sit beside it here.
-                     *
-                     * It is not deleted. `scaleAside()` appends the same live string to each
-                     * tile's help, which opens on click and is reachable by keyboard and
-                     * touch — the drill-down's metric switcher shows values only, so help is
-                     * the honest home for it.
+                     * The scale context rides on its OWN line under the numeral, never
+                     * beside it. Beside it, both shared one shrinkable flex row and at six
+                     * columns on a 1280px viewport flex shrank the NUMERAL first ("72%"
+                     * rendered as "7…"). On its own line the numeral keeps its full width
+                     * and only the context truncates, with the whole string in `title` and
+                     * still appended to the tile's help by `scaleAside()`.
                      */
+                    context={kpi.context}
                     sub={kpi.sub}
                     bound={kpi.bound}
                     help={kpi.help}
@@ -2950,7 +2981,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
             variant="rise"
             delay={40}
             data-testid="hero-row"
-            className="min-w-0 border-y border-border"
+            className="min-w-0 border-b border-border"
           >
             {/* ---- ROW 1 — the flow, and who closed what ----
                 The flow cell is `py-3`, not `py-4`: it governs this row's height, and its
@@ -3119,28 +3150,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   without the reset the rows would carry an L-shaped hairline. */}
               <section
                 aria-label="Mean time to detect / respond"
-                className="min-w-0 border-b border-border/70 px-3 py-3 xl:col-span-4 xl:border-b-0 xl:border-r"
+                className="min-w-0 border-b border-border/70 px-3 py-3 xl:col-span-4 xl:flex xl:flex-col xl:border-b-0 xl:border-r"
               >
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
+                    <h2 className="text-sm font-semibold text-foreground">
                       MTTD / response
                     </h2>
-                    <p className="mt-0.5 text-2xs text-muted-foreground">p50 · server-computed</p>
+                    <p className="text-xs text-muted-foreground">p50 · server-computed</p>
                   </div>
                   {navigate ? (
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-2xs"
+                      className="h-7 px-2 text-xs font-medium text-primary hover:text-primary/80"
                       onClick={() => navigate('metrics', { tab: 'posture' })}
                     >
                       Detail →
                     </Button>
                   ) : null}
                 </div>
-                <div className="mt-3 grid grid-cols-2 divide-x divide-border/70 xl:grid-cols-1 xl:divide-x-0 xl:divide-y">
-                  <div className="pr-4 xl:pb-3 xl:pr-0">
+                {/* At `xl` the pair splits the cell's full height in two, each stat centred in
+                    its half: the snapshots beside it set the row's height, and two stats
+                    stacked at the top left the bottom third of this cell empty. */}
+                <div className="mt-3 grid grid-cols-2 divide-x divide-border/70 xl:flex-1 xl:grid-cols-1 xl:grid-rows-2 xl:divide-x-0 xl:divide-y">
+                  <div className="pr-4 xl:flex xl:flex-col xl:justify-center xl:pb-3 xl:pr-0">
                     <MetricHoverTrend
                       metric="MTTD · daily mean"
                       points={timingTrends?.mttd}
@@ -3159,7 +3193,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       />
                     </MetricHoverTrend>
                   </div>
-                  <div className="pl-4 xl:pl-0 xl:pt-3">
+                  <div className="pl-4 xl:flex xl:flex-col xl:justify-center xl:pl-0 xl:pt-3">
                     <MetricHoverTrend
                       metric="Respond · daily mean"
                       points={timingTrends?.respond}
@@ -3202,6 +3236,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
             title="Deeper analytics"
             defaultOpen={false}
             description="timing, autonomy, cost, volume, connectors & workload"
+            className="mt-4"
             contentClassName="space-y-4"
           >
             {/* Full response timing (MTTA · MTTR · Dwell) + spend tripwire */}

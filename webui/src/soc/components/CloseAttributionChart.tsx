@@ -670,9 +670,13 @@ export function CloseAttributionChart({
 
   const tooltipShown = interactive && open && activeIndex != null;
 
-  // Anchor the tooltip 8px ABOVE the plot, centred on the column — it never covers the
-  // column or the plot, so the pointer can scan along the bars and still move straight
-  // up into the tooltip. Clamped to the viewport; flips below the figure near the top.
+  // Anchor the tooltip BESIDE the column, its top on the plot's top edge: on the right of
+  // a column in the left half of the plot, on the left of one in the right half. It used
+  // to sit 8px ABOVE the plot, which on the Overview put it over the card's own title and
+  // legend and across the KPI strip, so hovering one column covered the numbers it was
+  // being read against. Beside the column it stays inside the card, and it starts flush
+  // with the hovered slot's edge, so the pointer moves from the column straight into it
+  // without crossing a neighbouring slot. Clamped to the viewport on every side.
   React.useLayoutEffect(() => {
     if (!tooltipShown || activeIndex == null) return undefined;
     const place = () => {
@@ -684,11 +688,16 @@ export function CloseAttributionChart({
       const th = tip.offsetHeight;
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-      const centre = r.left + geo.x0 + (activeIndex + 0.5) * geo.slot;
-      const left = Math.round(Math.max(8, Math.min(centre - tw / 2, vw - 8 - tw)));
-      let top = r.top + geo.plotTop - 8 - th;
-      if (top < 8) top = Math.min(r.bottom + 8, vh - 8 - th);
-      top = Math.round(Math.max(8, top));
+      const slotLeft = r.left + geo.x0 + activeIndex * geo.slot;
+      const slotRight = slotLeft + geo.slot;
+      const plotMid = r.left + geo.x0 + (points.length * geo.slot) / 2;
+      const preferRight = slotLeft + geo.slot / 2 <= plotMid;
+      const fitsRight = slotRight + tw <= vw - 8;
+      const fitsLeft = slotLeft - tw >= 8;
+      const onRight = preferRight ? fitsRight || !fitsLeft : !fitsLeft && fitsRight;
+      const rawLeft = onRight ? slotRight : slotLeft - tw;
+      const left = Math.round(Math.max(8, Math.min(rawLeft, vw - 8 - tw)));
+      const top = Math.round(Math.max(8, Math.min(r.top + geo.plotTop, vh - 8 - th)));
       setTipPos((p) => (p && p.left === left && p.top === top ? p : { left, top }));
     };
     place();
@@ -698,7 +707,7 @@ export function CloseAttributionChart({
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
     };
-  }, [tooltipShown, activeIndex, geo]);
+  }, [tooltipShown, activeIndex, geo, points.length]);
 
   const activePoint = activeIndex != null ? points[activeIndex] : null;
   const activeSlot = activeIndex != null ? geo.slots[activeIndex] : null;
