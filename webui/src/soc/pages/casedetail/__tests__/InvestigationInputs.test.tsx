@@ -76,6 +76,29 @@ describe('InvestigationInputs', () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
+  it('titles the section and labels each input in sentence case, not tracked capitals', () => {
+    const { container } = render(<InvestigationInputs rationale={RATIONALE} />);
+
+    const heading = screen.getByRole('heading', { level: 3, name: 'Investigation inputs' });
+    expect(heading).toHaveClass('text-sm', 'font-semibold', 'text-foreground');
+    expect(heading).not.toHaveClass('uppercase');
+
+    const labels = screen.getAllByTestId('investigation-input-label');
+    expect(labels.map((label) => label.textContent)).toEqual([
+      'Memory',
+      'Knowledge',
+      'Runbook',
+      'Persona',
+      'Playbook',
+      'Threshold tuning',
+    ]);
+    for (const label of labels) {
+      expect(label).toHaveClass('text-xs', 'font-medium', 'text-muted-foreground');
+      expect(label.className).not.toMatch(/uppercase|tracking-wide/);
+    }
+    expect(container.querySelectorAll('.uppercase')).toHaveLength(0);
+  });
+
   it('does not claim that a merely selected playbook was consulted', () => {
     render(
       <InvestigationInputs

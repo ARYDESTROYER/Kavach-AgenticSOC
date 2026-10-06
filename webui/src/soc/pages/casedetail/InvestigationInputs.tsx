@@ -212,11 +212,11 @@ export const InvestigationInputs: React.FC<{
         <div>
           <h3
             id="investigation-inputs-heading"
-            className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
+            className="text-sm font-semibold text-foreground"
           >
             Investigation inputs
           </h3>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {showSelectionStatus
               ? 'Latest-run selections and the inputs actually consulted.'
               : 'Only latest-run inputs actually consulted or applied to this case path.'}
@@ -267,7 +267,10 @@ export const InvestigationInputs: React.FC<{
                           aria-hidden
                         />
                         <div className="min-w-0">
-                          <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                          <div
+                            data-testid="investigation-input-label"
+                            className="text-xs font-medium text-muted-foreground"
+                          >
                             {item.label}
                           </div>
                           <div className="mt-0.5 break-words text-sm font-medium text-foreground">

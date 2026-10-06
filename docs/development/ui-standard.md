@@ -117,8 +117,19 @@ viewport edge. Inside the detail pane, header, tabs, and every tab panel share o
 responsive 16–24px content rail. Do not stack page, pane, and panel padding into
 separate 32px gutters; the resizable detail pane must spend its width on evidence.
 
+Queue rows are a divided list, not boxed cards. A row has two lines: the title and its
+relative age, then the severity word, risk score, display id, a secondary fact only
+when it adds to the title, and the status as sentence-case text with its glyph. The
+word carries severity; a left rail only reinforces it (solid for critical and high,
+dashed for medium, none below). Hover, keyboard focus, selected (checked box and a
+light tint) and open (a stronger tint, a primary edge rail and `aria-current`) never
+look alike. Labels and titles are sentence case, never tracked capitals. Panels inside a
+resizable pane lay out against the pane width with container queries, not the viewport.
+
 Row selection is independent of row navigation. “Select visible” means the filtered
-rows in the loaded client window and never implies every server match. Mixed bulk
+rows in the loaded client window and never implies every server match. A row checkbox is
+a sibling of the row's open control, never nested in it; it may appear on hover or
+focus, but stays visible on touch screens and once anything is selected. Mixed bulk
 operations expose progress and per-record partial failures; successful records leave
 the selection while failures remain retryable. Permission hiding in the Console is
 guidance—the API must recheck every action.

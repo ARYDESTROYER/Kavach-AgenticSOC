@@ -504,13 +504,19 @@ export const HeadlinePanel: React.FC<{
 
 /* ------------------------------------------------------------- meta item --- */
 
-/** One quiet label/value pair for the run-meta strip. `value` is UNTRUSTED. */
-export const MetaItem: React.FC<{ label: string; value: string }> = ({ label, value }) => (
+/**
+ * One quiet label/value pair: a sentence-case muted caption over its value. `value` is
+ * UNTRUSTED (plain text node). Names such as a source ("IBM QRadar SIEM") read in the
+ * sans face; pass `mono` only for a true identifier.
+ */
+export const MetaItem: React.FC<{ label: string; value: string; mono?: boolean }> = ({
+  label,
+  value,
+  mono = false,
+}) => (
   <div className="flex flex-col gap-0.5">
-    <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-      {label}
-    </span>
-    <span className="font-mono text-xs text-foreground">{value}</span>
+    <span className="text-xs font-medium text-muted-foreground">{label}</span>
+    <span className={cn('text-sm text-foreground', mono && 'font-mono')}>{value}</span>
   </div>
 );
 
