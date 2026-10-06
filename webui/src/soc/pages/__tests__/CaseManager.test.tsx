@@ -363,6 +363,26 @@ describe('CaseManager', () => {
     );
   });
 
+  it('falls through a redundant entity to the source name instead of dropping the fact', async () => {
+    const NAMED: Case = {
+      case_id: 'case-named',
+      case_number: 'CASE-2026-0101',
+      title: 'ip:203.0.113.77 — AUTH-ANOMALY',
+      status: 'open',
+      severity_band: 'high',
+      risk_score: 70,
+      updated_at: '2026-07-20T10:30:00Z',
+      source_name: 'IBM QRadar SIEM',
+      entity: { type: 'ip', value: '203.0.113.77' },
+    };
+    mocks.listCases.mockResolvedValue({ cases: [NAMED], total: 1 });
+    render(<CaseManager />);
+    await screen.findByText('ip:203.0.113.77 — AUTH-ANOMALY');
+    const row = screen.getAllByTestId('case-queue-row')[0];
+    expect(within(row).queryByText('IP 203.0.113.77')).not.toBeInTheDocument();
+    expect(within(row).getByText('IBM QRadar SIEM')).toBeInTheDocument();
+  });
+
   it('keeps open, selected, hovered and focused rows visually distinct', async () => {
     render(<CaseManager />);
     await screen.findByTestId('embedded-case-detail');

@@ -433,6 +433,22 @@ describe('CloseAttributionChart — stacked columns', () => {
     }
   });
 
+  it('never calls a partly unmeasured window empty, even when every measured bucket is zero', () => {
+    render(
+      <HumanVsAiCard
+        totals={{ ai: 0, human: 0, system: 0, closed: 0 }}
+        series={RICH.map((p, i) =>
+          i === 1
+            ? { ...p, ai: null, human: null, system: null, closed: null, inProgress: false }
+            : { ...p, ai: 0, human: 0, system: 0, closed: 0, inProgress: false },
+        )}
+        windowLabel="last 24 hours · 1h buckets"
+      />,
+    );
+    expect(screen.queryByTestId('human-vs-ai-all-zero')).toBeNull();
+    expect(document.querySelector('[data-state="unmeasured"]')).not.toBeNull();
+  });
+
   it('says so in words when nothing closed in the whole window', () => {
     render(
       <HumanVsAiCard

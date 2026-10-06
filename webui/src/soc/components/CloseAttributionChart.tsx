@@ -291,7 +291,10 @@ function buildGeometry(
   );
   const measuredTotals = totals.filter((t): t is number => t != null);
   const maxTotal = measuredTotals.length ? Math.max(...measuredTotals) : 0;
-  const allZero = measuredTotals.length > 0 && maxTotal === 0;
+  // "Nothing closed in this window" is a claim about EVERY bucket, so it needs every
+  // bucket measured. Zeros beside a hatched unmeasured bucket are not an empty window:
+  // missing evidence is never read as zero.
+  const allZero = totals.length > 0 && totals.every((t) => t === 0);
   const step = maxTotal > 0 ? niceStep(maxTotal) : null;
   const yMax = step != null ? step * 2 : null;
 

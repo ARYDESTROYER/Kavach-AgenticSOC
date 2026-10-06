@@ -190,19 +190,20 @@ function entityTypeLabel(type: string): string {
 
 /**
  * The row's secondary fact — the same chain the card always used (primary entity →
- * source name → summary), minus repetition: the entity is shown only when it adds
- * information beyond the title (demo and correlated titles usually lead with it), and
- * nothing is shown rather than placeholder copy when there is nothing new to say.
+ * source name → summary), minus repetition: each candidate is shown only when it adds
+ * information beyond the title (demo and correlated titles usually lead with the
+ * entity), and a redundant one FALLS THROUGH to the next rather than ending the chain,
+ * so a row whose title names its entity still states its source. Nothing is shown,
+ * rather than placeholder copy, only when no candidate has anything new to say.
  */
 function primaryFact(c: Case): string | null {
   const title = caseTitle(c).toLowerCase();
   const value = c.entity?.value ? String(c.entity.value) : '';
-  if (value) {
-    if (title.includes(value.toLowerCase())) return null;
+  if (value && !title.includes(value.toLowerCase())) {
     const type = c.entity?.type || c.entity_type;
     return type ? `${entityTypeLabel(type)} ${value}` : value;
   }
-  if (c.source_name) return title.includes(c.source_name.toLowerCase()) ? null : c.source_name;
+  if (c.source_name && !title.includes(c.source_name.toLowerCase())) return c.source_name;
   const summary = (c.summary || '').trim();
   return summary && summary.toLowerCase() !== title ? summary : null;
 }
