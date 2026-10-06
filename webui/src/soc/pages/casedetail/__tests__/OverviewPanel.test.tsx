@@ -301,7 +301,7 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(screen.queryByTestId('decision-card')).toBeNull();
     expect(within(panel as HTMLElement).queryByText('Decision brief')).toBeNull();
     expect(screen.getByRole('heading', { level: 2 })).toHaveClass(
-      'text-3xl',
+      'text-lg',
       'text-foreground',
     );
 
@@ -351,14 +351,14 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(screen.getAllByText('90%')).toHaveLength(1);
   });
 
-  it('keeps the larger embedded decision heading neutral across verdict outcomes', () => {
+  it('keeps the embedded decision heading neutral, and below the case title, across verdict outcomes', () => {
     const { unmount } = renderCaseManager({
       ...CASE,
       verdict: 'false_positive',
       status: 'resolved',
     } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveClass(
-      'text-3xl',
+      'text-lg',
       'text-foreground',
     );
     expect(screen.getByRole('heading', { level: 2 })).not.toHaveClass('text-info-text');
@@ -366,7 +366,7 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
 
     renderCaseManager({ ...CASE, verdict: 'needs_human', status: 'needs_human' } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveClass(
-      'text-3xl',
+      'text-lg',
       'text-foreground',
     );
     expect(screen.getByRole('heading', { level: 2 })).not.toHaveClass('text-warning-text');
@@ -576,7 +576,9 @@ describe('OverviewPanel — detection-rule chip wraps instead of overflowing (bu
     // exact regression bug #2 fixes (a long rule name overflowing the card).
     expect(chip).not.toHaveClass('whitespace-nowrap');
     expect(chip).toHaveClass('whitespace-normal');
-    expect(chip).toHaveClass('break-all');
+    // Breaks at spaces first; never `break-all`, which split readable names mid-word.
+    expect(chip).toHaveClass('[overflow-wrap:anywhere]');
+    expect(chip).not.toHaveClass('break-all');
   });
 
   it('still renders a short detection-rule id as a normal single-line chip (no regression)', () => {
@@ -586,18 +588,18 @@ describe('OverviewPanel — detection-rule chip wraps instead of overflowing (bu
     expect(chip).toHaveClass('whitespace-normal');
   });
 
-  it('wraps a SPACE-LESS/hyphen-less long rule id (no soft-wrap points) via min-w-0 + break-all, not just break-words', () => {
-    // `break-words` (overflow-wrap) only wraps at existing soft-wrap opportunities
-    // (spaces/hyphens); an id like this has none, so overflow-wrap never kicks in
-    // and the flex item's automatic min-content width keeps forcing the card
-    // wider UNLESS the item itself also has `min-w-0` and uses `break-all`
-    // (word-break), which forces a break anywhere and actually reduces the
-    // item's min-content contribution per spec.
+  it('wraps a SPACE-LESS/hyphen-less long rule id (no soft-wrap points) via min-w-0 + overflow-wrap:anywhere, not just break-words', () => {
+    // `break-words` (overflow-wrap: break-word) only wraps at existing soft-wrap
+    // opportunities (spaces/hyphens) and never lowers min-content, so an id like this
+    // keeps forcing the card wider UNLESS the item itself also has `min-w-0` and uses
+    // `overflow-wrap: anywhere`, which may break inside the word AND reduces the item's
+    // min-content contribution per spec — without `break-all`'s mid-word splits of
+    // names that do have spaces.
     const longId = 'Trojan_Generic_Suspicious_PowerShell_EncodedCommand_Execution_Detected';
     renderOverview({ ...CASE, rule_ids: [longId] } as unknown as Case);
     const chip = getRuleChip(longId);
     expect(chip).toHaveClass('min-w-0');
-    expect(chip).toHaveClass('break-all');
+    expect(chip).toHaveClass('[overflow-wrap:anywhere]');
     expect(chip).not.toHaveClass('whitespace-nowrap');
     expect(chip).not.toHaveClass('break-words');
   });

@@ -1209,8 +1209,11 @@ export const OverviewPanel: React.FC<{
         {isCaseManager ? (
           <div className="grid gap-6 @[44rem]/overview:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)]">
             <div className="min-w-0">
-              {/* Verdict headline — our own controlled copy. */}
-              <h2 className="text-3xl font-semibold leading-tight tracking-tight text-foreground">
+              {/* Verdict headline — our own controlled copy. `text-lg`, below the case
+                  title's `text-xl` in the header: the title names WHICH case this is and
+                  must lead; at `text-3xl` the verdict outranked it and read as the page
+                  title. */}
+              <h2 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
                 {headline}
               </h2>
               {summarySentence ? (
@@ -1442,23 +1445,24 @@ export const OverviewPanel: React.FC<{
                     <div className="flex min-w-0 flex-wrap gap-1.5">
                       {/* UNTRUSTED rule ids — plain text nodes, mono. Long rule names
                           must wrap inside the chip, never force the card wider
-                          (`whitespace-normal break-all` overrides the Badge's
-                          default `whitespace-nowrap` — both are in tailwind-merge's
+                          (`whitespace-normal` overrides the Badge's default
+                          `whitespace-nowrap` — both are in tailwind-merge's
                           `whitespace` class group so the override wins). `min-w-0`
                           must live on the Badge ITSELF — that's the flex item whose
                           automatic min-width needs zeroing; a space-less/hyphen-less
                           id (e.g. "demo_rdp_bruteforce" or a long
                           Trojan_Generic_..._Detected style id) has no soft-wrap
-                          points, so `break-words` (overflow-wrap) never kicks in and
-                          the item keeps overflowing — `break-all` (word-break) DOES
-                          reduce min-content size per spec and matches this file's
-                          own convention for other UNTRUSTED long strings (see the
-                          InlineCode `break-all` usage above). */}
+                          points, so `break-words` (overflow-wrap: break-word) never
+                          reduces min-content and the item keeps overflowing.
+                          `overflow-wrap: anywhere` DOES reduce min-content per spec,
+                          like `break-all`, but it breaks at spaces FIRST and splits a
+                          word only when that word cannot fit on a line of its own —
+                          `break-all` split readable names mid-word ("foll owed"). */}
                       {ruleIds.map((r, i) => (
                         <Badge
                           key={`${r}-${i}`}
                           variant="outline"
-                          className="min-w-0 max-w-full whitespace-normal break-all font-mono"
+                          className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
                         >
                           {r}
                         </Badge>
