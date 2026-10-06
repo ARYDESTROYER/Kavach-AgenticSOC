@@ -1285,10 +1285,7 @@ function Header({
             component. It sits directly under the page h1, and since the flow became the
             lattice's leading cell an h3 here would skip a level in the landing state. */}
         <h2
-          className={cn(
-            'font-semibold text-foreground',
-            flat ? 'text-2xs uppercase tracking-widest' : 'text-sm',
-          )}
+          className="text-sm font-semibold text-foreground"
         >
           {flat ? 'Noise reduction flow' : 'Noise reduction'}
         </h2>
@@ -2194,8 +2191,6 @@ export function NoiseFunnel({
                   const stageKey = node.rowKey ?? node.key;
                   const labelX =
                     node.labelSide === 'after' ? node.x + node.w + 8 : node.x - 8;
-                  const translateX =
-                    node.labelSide === 'after' ? '' : '-translate-x-full';
                   const relationship =
                     node.key === 'escalated_remaining'
                       ? ', equal to Escalated minus Closed by human; this is not the Open cases count'
@@ -2214,10 +2209,19 @@ export function NoiseFunnel({
                     node.labelSide === 'after' ? 'text-left' : 'justify-end text-right',
                     node.total === 0 && 'text-muted-foreground',
                     wideInspection ? 'text-sm' : 'text-xs',
-                    translateX,
                   );
                   const labelStyle: React.CSSProperties = {
-                    left: `${leftPct}%`,
+                    /*
+                     * A label that sits BEFORE its node is anchored by its RIGHT edge, never
+                     * by `left` plus `-translate-x-full`. An absolute box shrinks to fit the
+                     * space between its `left` and the container's right edge, and a node on
+                     * the plot's far right left that at ~3%: "Closed by human · 2 · 17%" fell
+                     * to min-content and wrapped under itself, with the share clipped behind
+                     * the label below it. Anchored on the right, it has the whole plot.
+                     */
+                    ...(node.labelSide === 'after'
+                      ? { left: `${leftPct}%` }
+                      : { right: `${100 - leftPct}%` }),
                     top: `${(node.labelY / simpleLayout.height) * 100}%`,
                     // Never let a label (now count + share) run past the plot edge: the
                     // share wraps under the count instead of forcing horizontal scroll.

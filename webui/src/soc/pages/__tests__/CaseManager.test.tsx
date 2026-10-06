@@ -226,7 +226,7 @@ describe('CaseManager', () => {
   it('opens on the newest active case and embeds the complete shared workspace', async () => {
     render(<CaseManager />);
 
-    expect(await screen.findByRole('heading', { name: 'Active Cases' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Active cases' })).toBeInTheDocument();
     expect(screen.getByText('2 shown · 2 active / 3 loaded')).toBeInTheDocument();
     expect(screen.queryByText('Benign health check')).not.toBeInTheDocument();
 
@@ -276,6 +276,185 @@ describe('CaseManager', () => {
     expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
   });
 
+  it('titles the queue in sentence case without a generated eyebrow', async () => {
+    render(<CaseManager />);
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Active cases' });
+    expect(heading).not.toHaveClass('uppercase');
+    // The old tracked "CASE MANAGER" eyebrow above the h1 is gone; the h1 names the queue.
+    expect(screen.queryByText(/^case manager$/i)).not.toBeInTheDocument();
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    expect(queue.querySelectorAll('.uppercase')).toHaveLength(0);
+  });
+
+  it('renders each case as a divided two-line row that shows severity, risk, id and status', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+
+    // A divided list rather than boxed cards: hairlines between rows, no card chrome.
+    const list = screen.getByRole('list', { name: 'Cases' });
+    expect(list).toHaveClass('divide-y');
+    const rows = within(list).getAllByTestId('case-queue-row');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.className).not.toMatch(/\brounded|\bborder\b|\bshadow/);
+    }
+
+    const critical = rows.find((row) =>
+      within(row).queryByText('Suspicious S3 bucket exfiltration'),
+    ) as HTMLElement;
+    // Line 2: the severity WORD (never colour alone), the loaded risk score that the card
+    // never showed, the display id and the sentence-case status with its glyph.
+    expect(within(critical).getByTestId('case-queue-severity')).toHaveTextContent('Critical');
+    expect(within(critical).getByTestId('case-queue-severity')).toHaveClass('text-critical-text');
+    expect(within(critical).getByText('Risk 92')).toBeInTheDocument();
+    expect(within(critical).getByText('CASE-2026-0092')).toHaveClass('font-mono');
+    expect(within(critical).getByTestId('case-queue-status')).toHaveTextContent(/^Investigating$/);
+    expect(within(critical).getByTestId('case-queue-status').querySelector('svg')).not.toBeNull();
+    // The entity is not in this title, so it is kept as the row's secondary fact.
+    expect(within(critical).getByText('IP 198.51.100.45')).toBeInTheDocument();
+    // The severity rail reinforces the word: solid for critical.
+    expect(within(critical).getByTestId('case-queue-severity-rail')).toHaveClass('bg-critical');
+
+    const high = rows.find((row) => within(row).queryByText('Multiple failed logins')) as HTMLElement;
+    expect(within(high).getByTestId('case-queue-severity')).toHaveTextContent('High');
+    expect(within(high).getByText('Risk 68')).toBeInTheDocument();
+    expect(within(high).getByText('CASE-2026-0091')).toBeInTheDocument();
+    expect(within(high).getByTestId('case-queue-status')).toHaveTextContent(
+      /^Open · awaiting analyst$/,
+    );
+    expect(within(high).getByText('User admin_svc')).toBeInTheDocument();
+
+    // No tracked capitals anywhere in a row.
+    for (const row of rows) expect(row.querySelectorAll('.uppercase')).toHaveLength(0);
+  });
+
+  it('omits an entity the title already names, and falls back to the source name', async () => {
+    const REPEATED: Case = {
+      case_id: 'case-repeated',
+      case_number: 'CASE-2026-0100',
+      title: 'user:pnair — impossible travel',
+      status: 'open',
+      severity_band: 'medium',
+      risk_score: 40,
+      updated_at: '2026-07-20T10:30:00Z',
+      entity: { type: 'user', value: 'pnair' },
+    };
+    mocks.listCases.mockResolvedValue({ cases: [REPEATED, RESOLVED_LOW], total: 2 });
+    render(<CaseManager />);
+    await screen.findByText('user:pnair — impossible travel');
+    const row = screen.getAllByTestId('case-queue-row')[0];
+    expect(within(row).queryByText('User pnair')).not.toBeInTheDocument();
+    expect(within(row).getByText('CASE-2026-0100')).toBeInTheDocument();
+    // Medium is reinforced by a dashed (gradient) rail, not a solid one.
+    expect(within(row).getByTestId('case-queue-severity-rail').className).toMatch(
+      /repeating-linear-gradient/,
+    );
+
+    fireEvent.click(screen.getByRole('radio', { name: 'All' }));
+    const resolved = screen
+      .getAllByTestId('case-queue-row')
+      .find((candidate) => within(candidate).queryByText('Benign health check')) as HTMLElement;
+    // No entity recorded: the source name is the secondary fact, exactly as before.
+    expect(within(resolved).getByText('Wazuh Manager')).toBeInTheDocument();
+    expect(within(resolved).getByTestId('case-queue-status')).toHaveTextContent(/^Resolved$/);
+    // Low severity carries no rail colour: colour appears only where it flags something.
+    expect(within(resolved).getByTestId('case-queue-severity-rail').className).not.toMatch(
+      /\bbg-/,
+    );
+  });
+
+  it('falls through a redundant entity to the source name instead of dropping the fact', async () => {
+    const NAMED: Case = {
+      case_id: 'case-named',
+      case_number: 'CASE-2026-0101',
+      title: 'ip:203.0.113.77 — AUTH-ANOMALY',
+      status: 'open',
+      severity_band: 'high',
+      risk_score: 70,
+      updated_at: '2026-07-20T10:30:00Z',
+      source_name: 'IBM QRadar SIEM',
+      entity: { type: 'ip', value: '203.0.113.77' },
+    };
+    mocks.listCases.mockResolvedValue({ cases: [NAMED], total: 1 });
+    render(<CaseManager />);
+    await screen.findByText('ip:203.0.113.77 — AUTH-ANOMALY');
+    const row = screen.getAllByTestId('case-queue-row')[0];
+    expect(within(row).queryByText('IP 203.0.113.77')).not.toBeInTheDocument();
+    expect(within(row).getByText('IBM QRadar SIEM')).toBeInTheDocument();
+  });
+
+  it('keeps open, selected, hovered and focused rows visually distinct', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+
+    const rowFor = (title: string) =>
+      screen
+        .getAllByTestId('case-queue-row')
+        .find((row) => within(row).queryByText(title)) as HTMLElement;
+    const openRow = rowFor('Suspicious S3 bucket exfiltration');
+    const otherRow = rowFor('Multiple failed logins');
+    const openButton = within(openRow).getByRole('button');
+    const otherButton = within(otherRow).getByRole('button');
+
+    // OPEN: aria-current, the stronger primary tint and a primary edge rail.
+    expect(openButton).toHaveAttribute('aria-current', 'true');
+    expect(openRow).toHaveAttribute('data-row-state', 'open');
+    expect(openRow).toHaveClass('bg-primary/[0.09]');
+    expect(within(openRow).getByTestId('case-queue-open-rail')).toHaveClass('bg-primary');
+
+    // IDLE: no aria-current, no rail, only a neutral hover wash.
+    expect(otherButton).not.toHaveAttribute('aria-current');
+    expect(otherRow).toHaveAttribute('data-row-state', 'idle');
+    expect(otherRow).toHaveClass('hover:bg-muted/70');
+    expect(within(otherRow).queryByTestId('case-queue-open-rail')).toBeNull();
+
+    // FOCUS: every row's open button draws an inset keyboard ring.
+    for (const button of [openButton, otherButton]) {
+      expect(button).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-inset', 'focus-visible:ring-ring');
+    }
+
+    // Checkboxes are revealed on hover/focus (and always on touch) until something is selected.
+    const otherCheckbox = within(otherRow).getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+    expect(otherCheckbox).toHaveClass(
+      'opacity-0',
+      'group-hover/row:opacity-100',
+      'focus-visible:opacity-100',
+      '[@media(hover:none)]:opacity-100',
+    );
+    otherCheckbox.focus();
+    expect(otherCheckbox).toHaveFocus();
+
+    // SELECTED: checked box + a lighter tint than the open row, never the open treatment.
+    fireEvent.click(otherCheckbox);
+    expect(otherCheckbox).toHaveAttribute('aria-checked', 'true');
+    expect(otherRow).toHaveAttribute('data-row-state', 'selected');
+    expect(otherRow).toHaveClass('bg-primary/[0.04]');
+    expect(otherRow).not.toHaveClass('bg-primary/[0.09]');
+    expect(otherButton).not.toHaveAttribute('aria-current');
+    expect(within(otherRow).queryByTestId('case-queue-open-rail')).toBeNull();
+    expect(openRow.className).not.toBe(otherRow.className);
+
+    // Once anything is selected every row keeps its checkbox visible.
+    for (const checkbox of screen
+      .getAllByTestId('case-queue-row')
+      .map((row) => within(row).getByRole('checkbox'))) {
+      expect(checkbox).not.toHaveClass('opacity-0');
+    }
+  });
+
+  it('keeps each row checkbox a sibling of its open button, never nested inside it', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+
+    for (const row of screen.getAllByTestId('case-queue-row')) {
+      const checkbox = within(row).getByRole('checkbox');
+      const [openButton] = within(row).getAllByRole('button');
+      expect(openButton.contains(checkbox)).toBe(false);
+      expect(checkbox.parentElement).toBe(openButton.parentElement);
+      expect(checkbox.closest('button:not([role="checkbox"])')).toBeNull();
+    }
+  });
+
   it('exposes a persisted keyboard and pointer adjustable split separator', async () => {
     render(<CaseManager />);
     await screen.findByTestId('embedded-case-detail');
@@ -317,7 +496,7 @@ describe('CaseManager', () => {
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
     fireEvent.click(screen.getByRole('radio', { name: 'All' }));
-    expect(screen.getByRole('heading', { name: 'All Cases' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'All cases' })).toBeInTheDocument();
     expect(screen.getByText('3 shown · 3 loaded')).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search case queue' }), {
@@ -572,7 +751,7 @@ describe('CaseManager', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Back to case queue' })[0]);
 
     expect(screen.queryByTestId('embedded-case-detail')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Active Cases' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Active cases' })).toBeInTheDocument();
     expect(mocks.navigate).toHaveBeenLastCalledWith('case_manager');
   });
 

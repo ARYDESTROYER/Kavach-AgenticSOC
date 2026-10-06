@@ -142,6 +142,17 @@ export interface KpiTileProps {
    * accent, so it cannot become a second, ungated colour signal.
    */
   bound?: string;
+  /**
+   * HERO ONLY — the numeral's "compared to what?", on its own line under it.
+   *
+   * A short DATA line ("18% of 43 cases", "33 of 44 verdicted"), never a sentence about
+   * the metric: that belongs in `help`. It used to sit BESIDE the numeral as `secondary`,
+   * where flex shrank the numeral first and turned "72%" into "7…"; on its own line it can
+   * never take width from the number. The same line is where a state disclosure (`sub`)
+   * or a conditional bound (`bound`) is shown, in that order of precedence — exactly one
+   * of the three ever renders, so the strip's rhythm never changes with the state.
+   */
+  context?: string;
   /** Optional leading icon. */
   icon?: LucideIcon;
   /** Colored accent — a soft icon chip (default variant) or the left bar (`bar`). */
@@ -384,6 +395,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       value,
       sub,
       bound,
+      context,
       icon: Icon,
       accent = 'primary',
       delta,
@@ -542,11 +554,45 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       helpIsSibling || (clickable && affordanceNode) ? (
         // `pointer-events-none` on the cluster so the decorative mark never steals a click
         // from the trigger underneath it; the help button re-enables them for itself.
-        <div className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-0.5">
+        <div
+          className={cn(
+            'pointer-events-none absolute right-2 z-10 flex items-center gap-0.5',
+            /*
+             * HERO tiles carry the cluster on the NUMERAL row (32px up from the cell's
+             * bottom: the 8px padding, the 16px context line and its 6px gap, centred on the
+             * 30px numeral), not in the label's corner. The numeral is short and leaves the
+             * right of its row empty at every strip width; the label is the widest thing in
+             * the cell, and reserving 40px beside it wrapped "False Positive Rate" onto two
+             * lines at 1280px.
+             */
+            hero ? 'bottom-8' : 'top-2',
+            /*
+             * HERO tiles keep their chrome out of sight until it is wanted. A (?) and a ↗ on
+             * every tile at rest is the most recognisable "generated dashboard" pattern — six
+             * identical icon pairs competing with six numbers. Here they appear when the cell
+             * is hovered or anything inside it has focus, so a keyboard user still lands on a
+             * VISIBLE help button; they stay visible while that help popover is open (Radix
+             * marks its trigger `data-state="open"`, and the popover itself is portalled out of
+             * the cell); and on devices with no hover at all they never hide, so touch users
+             * keep both marks.
+             */
+            hero &&
+              'opacity-0 transition-opacity duration-fast group-hover/kpi:opacity-100 group-focus-within/kpi:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100 motion-reduce:transition-none',
+          )}
+        >
           {helpIsSibling ? <span className="pointer-events-auto">{helpNode}</span> : null}
           {affordanceNode}
         </div>
       ) : null;
+
+    /*
+     * HERO context line: one line under the numeral, with a fixed precedence so exactly one
+     * thing ever occupies it — a STATE disclosure (`sub`: loading, unavailable, not
+     * measured) beats a conditional BOUND, which beats the plain scale CONTEXT. A bound
+     * shown here is visible text, so it no longer needs its `sr-only` twin below.
+     */
+    const heroLine = hero ? (sub ?? bound ?? context ?? null) : null;
+    const boundShownInLine = hero && !sub && Boolean(bound);
 
     // Scale context ("N of M" / "P% of N" / an em dash). Muted, tabular, plain text —
     // no role, no accessible name, no judgement colour: it explains the numeral's
@@ -610,14 +656,23 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         {/* The corner overlay sits at the TOP-RIGHT, so only this row reserves space for
             it. Reserving it on the whole trigger instead cost every sub-line ~40px and
             ellipsized load-bearing captions such as the degraded open-stock line. */}
-        <div className={cn('flex items-start justify-between gap-3', cellOverlay && 'pr-10')}>
+        <div className={cn('flex items-start justify-between gap-3', cellOverlay && !hero && 'pr-10')}>
           <span
             className={cn(
-              'inline-flex items-center gap-1 font-semibold uppercase tracking-wide',
-              strip ? 'text-2xs text-muted-foreground' : 'text-xs text-muted-foreground',
+              'inline-flex items-center gap-1',
+              hero
+                ? // A quiet label ABOVE the number, in the case it was written: tracked
+                  // capitals at 11px read as decoration and outweighed the data they named.
+                  'text-xs font-medium text-muted-foreground'
+                : cn(
+                    'font-semibold uppercase tracking-wide',
+                    strip ? 'text-2xs text-muted-foreground' : 'text-xs text-muted-foreground',
+                  ),
             )}
           >
-            {Icon && strip ? (
+            {/* No icon on a hero tile: six coloured glyphs carried no information the label
+                did not, and they were the loudest marks in the row after the numbers. */}
+            {Icon && strip && !hero ? (
               <Icon className={cn('h-3.5 w-3.5 shrink-0', ACCENT_TEXT[accent])} aria-hidden />
             ) : null}
             {label}
@@ -676,9 +731,16 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
                     : 'text-2xl'
                   : 'text-4xl'
                 : 'text-3xl',
-              strip && (accent === 'critical' || accent === 'success')
-                ? ACCENT_TEXT[accent]
-                : 'text-foreground',
+              hero
+                ? // HERO numerals are ink, and colour is a FLAG: only a critical tile that
+                  // actually counts something turns red. A green "resolved" or a red zero
+                  // would be colour saying nothing the number does not.
+                  accent === 'critical' && typeof countTo === 'number' && countTo > 0
+                  ? ACCENT_TEXT.critical
+                  : 'text-foreground'
+                : strip && (accent === 'critical' || accent === 'success')
+                  ? ACCENT_TEXT[accent]
+                  : 'text-foreground',
             )}
             // WITHHELD arm of the bound grammar: there is no numeral to prefix, so the
             // em dash itself is the mark. The exact sentence is still announced by the
@@ -697,12 +759,27 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             {heroCompact ? <span aria-hidden>{valueNode}</span> : valueNode}
           </span>
           {heroCompact ? <span className="sr-only">{heroText}</span> : null}
-          {bound ? <span className="sr-only">{bound}</span> : null}
+          {bound && !boundShownInLine ? <span className="sr-only">{bound}</span> : null}
           {secondaryNode}
           {deltaNode}
         </div>
         {sparkNode}
-        {sub ? (
+        {hero ? (
+          heroLine ? (
+            <span
+              // One line, ellipsized, with the full text reachable: as the trigger's text
+              // content it is part of the button's accessible name, and `title` serves the
+              // mouse. `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
+              className="mt-1.5 block min-w-0 truncate text-xs tabular-nums text-muted-foreground"
+              title={heroLine}
+              // A data attribute, not a `kpi-*` test id: the strip's specs count every
+              // `kpi-*` id inside it to pin the cell count at exactly six.
+              data-kpi-line={sub ? 'state' : boundShownInLine ? 'bound' : 'context'}
+            >
+              {heroLine}
+            </span>
+          ) : null
+        ) : sub ? (
           <span
             className={cn(
               'block text-muted-foreground',
@@ -819,6 +896,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         <div
           className={cn(
             'relative flex h-full min-w-0 flex-col overflow-hidden',
+            // The named group the hero overlay reveals itself on (hover or focus anywhere
+            // in the cell, including the help button that sits beside the trigger).
+            hero && 'group/kpi',
             minH,
             chrome,
             className,

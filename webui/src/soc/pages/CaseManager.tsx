@@ -15,6 +15,7 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
+  Circle,
   CircleSlash,
   Columns3,
   Eye,
@@ -32,7 +33,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
-import { humanizeAge, humanizeToken } from '@/lib/format';
+import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
 import type { BackgroundJobKind, Case } from '@/lib/types';
 
 import { Button } from '@/ui/button';
@@ -69,7 +70,8 @@ import { PageContainer } from '@/soc/components/PageContainer';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
-import { SeverityBadge, StatusBadge, severityBand } from '@/soc/components/badges';
+import { severityBand } from '@/soc/components/badges';
+import { semanticIcon } from '@/soc/components/palette';
 import { useAuth } from '@/soc/auth';
 import { useRoute } from '@/soc/router';
 import {
@@ -111,12 +113,28 @@ const BULK_DISPOSITIONS = [
   { value: 'duplicate', label: 'Duplicate' },
 ] as const;
 
-const SEVERITY_BAR: Record<string, string> = {
+/**
+ * The queue's left-edge severity rail. It REINFORCES the visible severity word (never
+ * the only channel, WCAG 1.4.1): solid for the two bands that demand attention, a
+ * dashed rail for medium (line style carries meaning, after Sentinel's solid/dotted
+ * band), and no rail for low/info so colour appears only where it flags something.
+ */
+const SEVERITY_RAIL: Record<string, string> = {
   critical: 'bg-critical',
   high: 'bg-high',
-  medium: 'bg-medium',
-  low: 'bg-low',
-  info: 'bg-info',
+  medium:
+    'bg-[repeating-linear-gradient(to_bottom,hsl(var(--medium))_0_4px,transparent_4px_7px)]',
+  low: '',
+  info: '',
+};
+
+/** Severity word tone on the row's meta line: tinted text only for critical/high. */
+const SEVERITY_WORD: Record<string, string> = {
+  critical: 'font-medium text-critical-text',
+  high: 'font-medium text-high-text',
+  medium: 'text-muted-foreground',
+  low: 'text-muted-foreground',
+  info: 'text-muted-foreground',
 };
 
 function clampQueueWidth(value: number, maximum = SPLIT_MAX_QUEUE_PX): number {
@@ -161,14 +179,46 @@ function caseTitle(c: Case): string {
   return c.title || c.summary || c.case_number || c.case_id;
 }
 
-function primaryFact(c: Case): string {
-  const value = c.entity?.value;
-  if (value) {
-    const type = c.entity?.type || c.entity_type;
-    return type ? `${humanizeToken(type)}: ${String(value)}` : String(value);
+/** Entity-type label in sentence case that keeps well-known acronyms intact. */
+function entityTypeLabel(type: string): string {
+  const t = type.trim().toLowerCase();
+  if (t === 'ip' || t === 'url' || t === 'asn' || t === 'md5' || t === 'sha1' || t === 'sha256') {
+    return t.toUpperCase();
   }
-  if (c.source_name) return c.source_name;
-  return c.summary || 'No primary entity recorded';
+  return humanizeToken(type);
+}
+
+/**
+ * The row's secondary fact — the same chain the card always used (primary entity →
+ * source name → summary), minus repetition: each candidate is shown only when it adds
+ * information beyond the title (demo and correlated titles usually lead with the
+ * entity), and a redundant one FALLS THROUGH to the next rather than ending the chain,
+ * so a row whose title names its entity still states its source. Nothing is shown,
+ * rather than placeholder copy, only when no candidate has anything new to say.
+ */
+function primaryFact(c: Case): string | null {
+  const title = caseTitle(c).toLowerCase();
+  const value = c.entity?.value ? String(c.entity.value) : '';
+  if (value && !title.includes(value.toLowerCase())) {
+    const type = c.entity?.type || c.entity_type;
+    return type ? `${entityTypeLabel(type)} ${value}` : value;
+  }
+  if (c.source_name && !title.includes(c.source_name.toLowerCase())) return c.source_name;
+  const summary = (c.summary || '').trim();
+  return summary && summary.toLowerCase() !== title ? summary : null;
+}
+
+/** Sentence-case status label (the legacy NEEDS_HUMAN alias reads as the F8 taxonomy). */
+function queueStatusLabel(status: string): string {
+  const t = status.trim().toLowerCase();
+  if (t === 'needs_human') return 'Open · awaiting analyst';
+  return humanizeToken(status);
+}
+
+/** The beside-text status glyph from the ONE semantic icon map (reopened → investigating). */
+function queueStatusIcon(status: string) {
+  const t = status.trim().toLowerCase();
+  return semanticIcon(t === 'reopened' ? 'investigating' : t) ?? Circle;
 }
 
 function sortCases(rows: Case[], sort: QueueSort): Case[] {
@@ -186,44 +236,85 @@ function sortCases(rows: Case[], sort: QueueSort): Case[] {
   });
 }
 
+/** A quiet separator between meta facts; decorative, so screen readers skip it. */
+const MetaDot = () => (
+  <span aria-hidden className="shrink-0 text-muted-foreground/60">
+    ·
+  </span>
+);
+
+/**
+ * One queue row: a divided, two-line list item rather than a boxed card.
+ *
+ *   line 1  title (truncates) ······························ relative age
+ *   line 2  severity word · risk · case id · fact ··········· status + glyph
+ *
+ * Four states never look alike: hover (neutral wash), keyboard focus (inset ring),
+ * selected (checked box + light tint) and open (stronger tint + a primary edge rail +
+ * `aria-current`). The left rail reinforces severity; the word carries it.
+ */
 const QueueRow: React.FC<{
   item: Case;
   active: boolean;
   checked: boolean;
+  /** Something in the queue is selected, so every row keeps its checkbox visible. */
+  selecting: boolean;
   selectionDisabled: boolean;
   onOpen: () => void;
   onCheckedChange: (checked: boolean) => void;
-}> = ({ item, active, checked, selectionDisabled, onOpen, onCheckedChange }) => {
+}> = ({ item, active, checked, selecting, selectionDisabled, onOpen, onCheckedChange }) => {
   const severity = caseSeverity(item);
   const displayId = item.case_number || item.case_id;
+  const title = caseTitle(item);
   const fact = primaryFact(item);
+  const risk =
+    typeof item.risk_score === 'number' && Number.isFinite(item.risk_score)
+      ? Math.round(Math.max(0, Math.min(100, item.risk_score)))
+      : null;
+  const SeverityGlyph = semanticIcon(severity);
+  const StatusGlyph = item.status ? queueStatusIcon(item.status) : null;
 
   return (
     <div
+      data-testid="case-queue-row"
+      data-row-state={active ? 'open' : checked ? 'selected' : 'idle'}
       className={cn(
-        'group relative w-full overflow-hidden rounded-[4px] border bg-card/35 text-left',
-        'transition-colors hover:border-border-strong hover:bg-accent/25',
-        active && 'border-primary/50 bg-primary/[0.07]',
-        checked && !active && 'border-primary/35 bg-primary/[0.04]',
+        'group/row relative transition-colors duration-fast',
+        active
+          ? 'bg-primary/[0.09] dark:bg-primary/[0.12]'
+          : checked
+            ? 'bg-primary/[0.04] hover:bg-primary/[0.06] dark:bg-primary/[0.06]'
+            : 'hover:bg-muted/70',
       )}
     >
       <span
-        className={cn(
-          'absolute inset-y-0 left-0 w-[3px] opacity-60 transition-opacity group-hover:opacity-100',
-          SEVERITY_BAR[severity],
-          active && 'opacity-100',
-        )}
+        data-testid="case-queue-severity-rail"
+        className={cn('pointer-events-none absolute inset-y-0 left-0 w-[3px]', SEVERITY_RAIL[severity])}
         aria-hidden
       />
+      {active ? (
+        <span
+          data-testid="case-queue-open-rail"
+          className="pointer-events-none absolute inset-y-0 right-0 w-0.5 bg-primary"
+          aria-hidden
+        />
+      ) : null}
 
       {/* The checkbox is a sibling of the row-open button, never a nested button.
-          Toggling selection therefore cannot trigger case navigation. */}
+          Toggling selection therefore cannot trigger case navigation. It is revealed
+          on row hover or its own keyboard focus, always shown on touch (no hover) and
+          once anything is selected; the before: pseudo widens the target to 24px. */}
       <Checkbox
         checked={checked}
         disabled={selectionDisabled}
         onCheckedChange={(next) => onCheckedChange(next === true)}
         aria-label={`Select ${displayId}`}
-        className="absolute left-2.5 top-2.5 z-10 rounded-[3px] bg-background"
+        className={cn(
+          'absolute left-3 top-[0.6875rem] z-10 rounded-[3px] bg-background transition-opacity duration-fast',
+          "before:absolute before:-inset-1 before:content-['']",
+          !selecting &&
+            'opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100',
+        )}
       />
 
       <button
@@ -231,35 +322,60 @@ const QueueRow: React.FC<{
         onClick={onOpen}
         aria-current={active ? 'true' : undefined}
         className={cn(
-          'block w-full px-3 py-2.5 pl-9 text-left',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
+          'block w-full py-2.5 pl-10 pr-3 text-left',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
       >
-        <span className="flex min-w-0 items-start justify-between gap-2">
-          <span className="truncate font-mono text-2xs font-semibold uppercase tracking-wide text-primary">
-            {displayId}
+        <span className="flex min-w-0 items-baseline gap-3">
+          <span
+            className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+            title={title}
+          >
+            {title}
           </span>
-          <SeverityBadge
-            severity={severity}
-            icon={false}
-            className="h-5 shrink-0 rounded-[3px] px-1.5 text-2xs uppercase tracking-wide"
-          />
-        </span>
-
-        <span className="mt-1.5 block truncate text-sm font-semibold text-foreground">
-          {caseTitle(item)}
-        </span>
-        <span className="mt-1 block truncate font-mono text-2xs text-muted-foreground">
-          {fact}
-        </span>
-
-        <span className="mt-2 flex min-w-0 items-center justify-between gap-2">
-          <StatusBadge
-            status={item.status}
-            className="h-5 max-w-[72%] truncate rounded-[3px] px-1.5 text-2xs"
-          />
-          <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {humanizeAge(updatedAt(item))}
+          </span>
+        </span>
+
+        <span className="mt-1 flex min-w-0 items-center gap-3 text-xs text-muted-foreground">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span
+              data-testid="case-queue-severity"
+              className={cn('inline-flex shrink-0 items-center gap-1', SEVERITY_WORD[severity])}
+            >
+              {SeverityGlyph ? <SeverityGlyph className="size-3 shrink-0" aria-hidden /> : null}
+              {humanizeToken(severity)}
+            </span>
+            {risk !== null ? (
+              <>
+                <MetaDot />
+                <span className="shrink-0 tabular-nums">Risk {risk}</span>
+              </>
+            ) : null}
+            <MetaDot />
+            <span className="min-w-0 truncate font-mono" title={displayId}>
+              {displayId}
+            </span>
+            {fact ? (
+              <>
+                <MetaDot />
+                <span className="min-w-0 truncate">{fact}</span>
+              </>
+            ) : null}
+          </span>
+          <span
+            data-testid="case-queue-status"
+            className="inline-flex max-w-[45%] shrink-0 items-center gap-1 text-foreground/80"
+          >
+            {item.status && StatusGlyph ? (
+              <>
+                <StatusGlyph className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="truncate">{queueStatusLabel(item.status)}</span>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{DASH}</span>
+            )}
           </span>
         </span>
       </button>
@@ -781,23 +897,33 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
               selectedCaseId ? 'hidden xl:flex' : 'flex',
             )}
           >
-            <header className="shrink-0 border-b border-border px-3 pb-2.5 pt-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-2xs font-semibold uppercase tracking-[0.16em] text-primary">
-                    Case Manager
-                  </p>
-                  <h1 className="mt-1 text-lg font-semibold tracking-tight text-foreground">
-                    {queueMode === 'active' ? 'Active Cases' : 'All Cases'}
+            {/* One quiet band: title + scope + refresh, then search and filters. No
+                eyebrow — the h1 already names the queue. */}
+            <header className="shrink-0 space-y-2 border-b border-border px-3 pb-3 pt-3">
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
+                    {queueMode === 'active' ? 'Active cases' : 'All cases'}
                   </h1>
-                  <p className="mt-0.5 text-xs text-muted-foreground" aria-live="polite">
+                  <p className="text-xs tabular-nums text-muted-foreground" aria-live="polite">
                     {scopeSummary}
                   </p>
                 </div>
+                <SegmentedControl<QueueMode>
+                  aria-label="Case queue scope"
+                  size="sm"
+                  className="shrink-0"
+                  value={queueMode}
+                  onValueChange={setQueueMode}
+                  options={[
+                    { value: 'active', label: 'Active' },
+                    { value: 'all', label: 'All' },
+                  ]}
+                />
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 rounded-[4px]"
+                  className="h-8 w-8 shrink-0 rounded-[4px]"
                   onClick={() => void loadCases()}
                   disabled={loading}
                   aria-label="Refresh case queue"
@@ -806,21 +932,6 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                 </Button>
               </div>
 
-              <SegmentedControl<QueueMode>
-                aria-label="Case queue scope"
-                size="sm"
-                fitted
-                className="mt-2.5"
-                value={queueMode}
-                onValueChange={setQueueMode}
-                options={[
-                  { value: 'active', label: 'Active' },
-                  { value: 'all', label: 'All' },
-                ]}
-              />
-            </header>
-
-            <div className="shrink-0 space-y-1.5 border-b border-border p-2.5">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
                 <Input
@@ -834,7 +945,6 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
               <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6.25rem] gap-2">
                 <Select value={severity} onValueChange={setSeverity}>
                   <SelectTrigger className="h-8 min-w-0 rounded-[4px] px-2 text-xs" aria-label="Severity filter">
-                    <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -870,15 +980,17 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                   </SelectContent>
                 </Select>
               </div>
-            </div>
+            </header>
 
+            {/* The list's column header: its checkbox sits on the same x as every row
+                checkbox, so selection reads as one column. */}
             <div
               role="region"
               aria-label="Case selection and bulk actions"
               aria-busy={bulkBusy}
-              className="shrink-0 border-b border-border bg-card/25 px-2.5 py-1.5"
+              className="shrink-0 border-b border-border px-3 py-1"
             >
-              <div className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1.5">
+              <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
                 <Checkbox
                   id="case-manager-select-visible"
                   checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
@@ -890,13 +1002,13 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                 <label
                   htmlFor="case-manager-select-visible"
                   className={cn(
-                    'cursor-pointer text-xs font-medium text-foreground',
+                    'ml-1 cursor-pointer text-xs font-medium text-foreground',
                     (bulkBusy || visibleCases.length === 0) && 'cursor-not-allowed opacity-50',
                   )}
                 >
                   Select visible
                 </label>
-                <span className="text-2xs tabular-nums text-muted-foreground" aria-live="polite">
+                <span className="text-xs tabular-nums text-muted-foreground" aria-live="polite">
                   {selectedCaseIds.size > 0
                     ? `${selectedCaseIds.size} selected`
                     : `${visibleCases.length} visible`}
@@ -1037,13 +1149,18 @@ export default function CaseManager({ initialCaseId }: CaseManagerProps) {
                   }
                 />
               ) : (
-                <div className="space-y-1.5 p-2.5" role="list" aria-label="Cases">
+                <div
+                  className="divide-y divide-border/70 border-b border-border/70"
+                  role="list"
+                  aria-label="Cases"
+                >
                   {visibleCases.map((item) => (
                     <div role="listitem" key={item.case_id}>
                       <QueueRow
                         item={item}
                         active={selectedCaseId === item.case_id}
                         checked={selectedCaseIds.has(item.case_id)}
+                        selecting={selectedCaseIds.size > 0}
                         selectionDisabled={bulkBusy}
                         onOpen={() => selectCase(item.case_id)}
                         onCheckedChange={(checked) => toggleCaseSelection(item.case_id, checked)}

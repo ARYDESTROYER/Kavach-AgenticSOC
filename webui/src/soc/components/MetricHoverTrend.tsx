@@ -3,15 +3,23 @@
  *
  * Wraps any metric presentation (a KPI tile, a timing stat, a snapshot total) in a
  * Radix HoverCard whose content is the metric's honest recent trend: the metric name,
- * a compact axis-less sparkline, the measured window disclosure ("last 24 hours ·
- * 1h buckets"), and the first/latest measured values as plain text. Composes the
- * existing `ui/hover-card` primitives + the LAZY `Sparkline` from `charts.tsx`
- * (recharts stays off the static import graph exactly like `KpiTile`'s spark).
+ * the measured window disclosure ("last 24 hours · 1h buckets"), one small COLUMN per
+ * bucket with a readout of whichever bucket the pointer is over (the latest by
+ * default), and the first / peak / latest measured values as plain text. The columns
+ * are a hand-built SVG, so this card pulls no chart library at all.
+ *
+ * Why columns and not the sparkline it used to draw: the sparkline plotted MEASURED
+ * points only, evenly spaced and smoothed, so four measured buckets out of twenty-five
+ * became one swooping curve that dipped to the floor and back — time compressed away
+ * and a shape the data never had. A column per bucket keeps every bucket in its real
+ * slot, draws an unmeasured one as a faint floor tick, and lets the reader point at
+ * any one of them for its exact value.
  *
  * Honesty rules:
- *   - `points` preserve nulls as NOT-MEASURED buckets. They are never drawn as zeros;
- *     the sparkline renders measured points only and, when some buckets are missing,
- *     the card discloses "N of M buckets measured".
+ *   - `points` preserve nulls as NOT-MEASURED buckets. They are never drawn as zeros
+ *     (a measured zero is a hairline at the floor in the series colour; an unmeasured
+ *     bucket is a muted tick and reads "not measured"), and when some buckets are
+ *     missing the card discloses "N of M buckets measured".
  *   - Fewer than two measured points → the trend content is OMITTED and a quiet
  *     "No trend data yet." line renders instead (never a decorative invented trend).
  *   - Every value is a formatted number / fixed label rendered as plain text (#9).
@@ -20,7 +28,7 @@
  * child is itself focusable — pass `focusable={false}` — or the wrapper takes
  * `tabIndex=0`, mirroring `CaseHoverCard`), Radix opens the card on focus as well as
  * hover (focus events bubble, so a focusable CHILD reaching focus opens it too), the
- * content itself is hoverable, and the sparkline carries a text summary via its
+ * content itself is hoverable, and the columns carry a text summary via their
  * `role="img"` label. Colors come from the token palette only.
  *
  * Touch access: hover cannot open the card on touch-only devices (Radix ignores
@@ -50,11 +58,7 @@ import * as React from 'react';
 
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/ui/hover-card';
 import { cn } from '@/lib/cn';
-
-/** Lazy sparkline — keeps recharts out of this component's static import graph. */
-const LazySparkline = React.lazy(() =>
-  import('./charts').then((m) => ({ default: m.Sparkline })),
-);
+import { token } from './palette';
 
 /** One honest trend point: a bucket label plus its measured value (null = not measured). */
 export interface MetricTrendPoint {
@@ -94,6 +98,37 @@ export interface MetricTrendSeries {
  * series stays reachable by pointer, keyboard AND touch. One implementation, so the
  * two surfaces can never disagree about what is measured.
  */
+/**
+ * A bucket identity, stated for a reader. Bucket labels are plain text off the wire: an
+ * ISO instant ("2026-10-06T05:00:00Z") becomes "Oct 6, 05:00 UTC", a calendar date
+ * ("2026-10-05") becomes "Oct 5", and anything else is shown exactly as it came.
+ */
+export function bucketWhen(label: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+    const ms = Date.parse(`${label}T00:00:00Z`);
+    return Number.isFinite(ms)
+      ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+      : label;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(label)) return label;
+  const ms = Date.parse(label);
+  if (!Number.isFinite(ms)) return label;
+  const when = new Date(ms).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    timeZone: 'UTC',
+  });
+  return `${when} UTC`;
+}
+
+/** Plot geometry, in viewBox units: one 10-unit slot per bucket, a 7-unit column. */
+const SLOT = 10;
+const BAR = 7;
+const PLOT_H = 48;
+
 export function MetricTrendBody({
   metric,
   points,
@@ -111,31 +146,116 @@ export function MetricTrendBody({
   const hasTrend = measured.length >= 2;
   const first = measured[0]?.value;
   const latest = measured[measured.length - 1]?.value;
+  const peak = measured.reduce((m, p) => Math.max(m, p.value), Number.NEGATIVE_INFINITY);
+  // The latest MEASURED bucket is the default readout: the trailing bucket is often still
+  // filling, or unmeasured, and an empty readout would say nothing on first sight.
+  let latestIndex = -1;
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const v = all[i]?.value;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      latestIndex = i;
+      break;
+    }
+  }
+  const [pointed, setPointed] = React.useState<number | null>(null);
+  const shown = pointed ?? latestIndex;
+  const shownPoint = shown >= 0 ? all[shown] : undefined;
+  const shownValue =
+    shownPoint && typeof shownPoint.value === 'number' && Number.isFinite(shownPoint.value)
+      ? shownPoint.value
+      : null;
+
+  const width = Math.max(all.length, 1) * SLOT;
+  // A peak of zero (every measured bucket is 0) still gets a scale, so zeros draw as the
+  // floor hairline rather than dividing by nothing.
+  const scaleMax = peak > 0 ? peak : 1;
+  const color = token(colorToken);
+  const muted = token('muted-foreground', 0.35);
+
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const i = Math.floor(((e.clientX - r.left) / r.width) * all.length);
+    if (!Number.isFinite(i)) return;
+    setPointed(Math.max(0, Math.min(all.length - 1, i)));
+  };
 
   return (
     <>
       <div className="flex items-baseline justify-between gap-3">
-        <span className="min-w-0 truncate text-2xs font-semibold uppercase tracking-widest text-foreground">
-          {metric}
-        </span>
-        <span className="shrink-0 font-mono text-2xs text-muted-foreground">{windowLabel}</span>
+        {/* Sentence case and allowed to wrap: a truncated metric name ("FALSE PO…") is
+            the one thing this card must never lose. */}
+        <span className="min-w-0 text-xs font-semibold text-foreground">{metric}</span>
+        <span className="shrink-0 text-2xs text-muted-foreground">{windowLabel}</span>
       </div>
       {caption ? <p className="mt-0.5 text-2xs text-muted-foreground">{caption}</p> : null}
       {hasTrend ? (
         <>
-          <div className="mt-2 h-12">
-            <React.Suspense fallback={<div className="h-12" aria-hidden />}>
-              <LazySparkline
-                data={measured.map((p) => p.value)}
-                height={48}
-                colorToken={colorToken}
-                ariaLabel={`${metric} trend: first ${fmt(first!)}, latest ${fmt(latest!)}`}
-              />
-            </React.Suspense>
+          <div
+            className="mt-2 flex items-baseline justify-between gap-3 text-2xs tabular-nums"
+            data-testid="metric-trend-readout"
+          >
+            <span className="min-w-0 truncate text-muted-foreground">
+              {shownPoint ? bucketWhen(shownPoint.label) : null}
+            </span>
+            <span
+              className={cn(
+                'shrink-0 font-semibold',
+                shownValue == null ? 'text-muted-foreground' : 'text-foreground',
+              )}
+            >
+              {shownValue == null ? 'not measured' : fmt(shownValue)}
+            </span>
           </div>
-          <div className="mt-2 flex items-center justify-between gap-3 font-mono text-2xs tabular-nums text-muted-foreground">
+          <svg
+            role="img"
+            aria-label={`${metric} trend: first ${fmt(first!)}, latest ${fmt(latest!)}`}
+            data-testid="metric-trend-columns"
+            viewBox={`0 0 ${width} ${PLOT_H}`}
+            preserveAspectRatio="none"
+            className="mt-1 block h-12 w-full touch-none"
+            onPointerMove={onMove}
+            onPointerLeave={() => setPointed(null)}
+          >
+            {/* The floor, so a run of short columns still reads as standing on zero. */}
+            <rect x={0} y={PLOT_H - 0.5} width={width} height={0.5} fill={muted} />
+            {all.map((p, i) => {
+              const x = i * SLOT + (SLOT - BAR) / 2;
+              const isShown = i === shown;
+              if (typeof p.value !== 'number' || !Number.isFinite(p.value)) {
+                return (
+                  <rect
+                    key={i}
+                    data-state="unmeasured"
+                    x={x}
+                    y={PLOT_H - 2}
+                    width={BAR}
+                    height={2}
+                    fill={muted}
+                  />
+                );
+              }
+              // A measured zero is still a mark — a 1-unit hairline in the series colour —
+              // so "measured, nothing happened" never looks like "not measured".
+              const h = Math.max(1, (p.value / scaleMax) * (PLOT_H - 2));
+              return (
+                <rect
+                  key={i}
+                  data-state={p.value === 0 ? 'zero' : 'measured'}
+                  x={x}
+                  y={PLOT_H - h}
+                  width={BAR}
+                  height={h}
+                  fill={color}
+                  opacity={pointed == null || isShown ? 1 : 0.45}
+                />
+              );
+            })}
+          </svg>
+          <div className="mt-2 flex items-center justify-between gap-3 text-2xs tabular-nums text-muted-foreground">
             <span>first {fmt(first!)}</span>
-            <span className="text-foreground">latest {fmt(latest!)}</span>
+            <span>peak {fmt(peak)}</span>
+            <span className="font-medium text-foreground">latest {fmt(latest!)}</span>
           </div>
           {measured.length < all.length ? (
             <p className="mt-1 text-2xs text-muted-foreground">
@@ -354,7 +474,7 @@ export function MetricHoverTrend({
         {preview?.eyebrow || preview?.population ? (
           <div className="mb-2 min-w-0 border-b border-border/70 pb-2">
             {preview.eyebrow ? (
-              <p className="truncate text-2xs uppercase tracking-widest text-muted-foreground">
+              <p className="truncate text-2xs font-medium text-muted-foreground">
                 {preview.eyebrow}
               </p>
             ) : null}

@@ -765,7 +765,9 @@ def test_the_health_snapshot_keeps_its_historical_shape() -> None:
 def test_the_key_registry_is_bounded_but_never_evicts_a_live_key() -> None:
     """The model-test surface accepts an arbitrary operator-typed model id, so the key
     space is not bounded by configuration alone."""
-    tracker = ph.ProviderHealth(policy=_fast())
+    # A long wait so wall-clock time spent filling the registry cannot age the breaker
+    # OPEN -> HALF_OPEN; the assertion is about eviction, not the wait.
+    tracker = ph.ProviderHealth(policy=_fast(wait_seconds=600.0, max_wait_seconds=600.0))
     for _ in range(4):
         tracker.record_failure("openai", "unavailable", "critical", "completion",
                                role="router")

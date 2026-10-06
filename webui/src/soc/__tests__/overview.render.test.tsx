@@ -367,11 +367,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const cellOf = (id: string) =>
       cells.findIndex((cell) => cell.querySelector(`[data-testid="${id}"]`));
     expect(cellOf('kpi-auto-closed')).toBe(cellOf('kpi-resolved-closed') + 1);
-    // The shared accent, on the numeral itself. `success` is what Resolved / Closed wears;
-    // any OTHER accent here would teach the eye that a new accent means a new population.
-    expect(
-      screen.getByTestId('kpi-auto-closed').querySelector('.items-end > span'),
-    ).toHaveClass('text-success-text');
+    // The shared INK, on the numeral itself. Hero numerals are neutral and colour is a
+    // flag reserved for a non-zero critical count, so Auto Closed wears exactly what
+    // Resolved / Closed wears; any accent of its own would teach the eye that a new colour
+    // means a new population.
+    const inkOf = (id: string) => screen.getByTestId(id).querySelector('.items-end > span');
+    expect(inkOf('kpi-auto-closed')).toHaveClass('text-foreground');
+    expect(inkOf('kpi-resolved-closed')).toHaveClass('text-foreground');
+    expect(inkOf('kpi-auto-closed')).not.toHaveClass('text-success-text');
     // DENSITY REGRESSION GUARD. The landing strip runs `density="compact"` because it
     // heads a page that must also seat the flow diagram, the case queue and the timing
     // pair. `px-3 py-2` is what compact swaps on a strip tile's trigger.
@@ -491,45 +494,47 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
     /*
-     * The scale context is no longer BESIDE the numeral: at six columns it and a 30px
-     * numeral share one `items-end` row against ~141px of cell content on the tightest
-     * supported desktop, so "12,345 of 48,901 verdicted" would ellipsize to nothing
-     * useful. It is not deleted — the tile's help states the same string, from the SAME
-     * derivation the tile computes (`scaleAside`), so the two can never name different
-     * denominators for one numeral. This case therefore reads the help, and asserts on the
-     * face only that no share was left there to go stale.
+     * The scale context sits on its OWN line under the numeral (`data-kpi-line="context"`),
+     * never beside it: at six columns a context and a 30px numeral sharing one row made
+     * flex shrink the NUMERAL first. The help still states the same string, from the SAME
+     * derivation the tile computes (`scaleAside`), so the face and the help can never name
+     * different denominators for one numeral. Both are asserted.
      */
+    const lineOf = (id: string) =>
+      screen.getByTestId(id).querySelector<HTMLElement>('[data-kpi-line="context"]');
     // Total Critical + Resolved / Closed are both shares of the SAME `case_count` (4),
     // and both come off the one posture payload, so numerator and denominator always
     // describe the same population.
     expect(await readTileHelp('Total Critical')).toContain('Right now: 25% of 4.');
     expect(await readTileHelp('Resolved / Closed')).toContain('Right now: 25% of 4.');
-    expect(within(screen.getByTestId('kpi-total-critical')).queryByText(/% of/)).toBeNull();
-    expect(within(screen.getByTestId('kpi-resolved-closed')).queryByText(/% of/)).toBeNull();
+    expect(lineOf('kpi-total-critical')).toHaveTextContent(/^25% of 4 cases$/);
+    expect(lineOf('kpi-resolved-closed')).toHaveTextContent(/^25% of 4 cases$/);
     // Total Cases IS that denominator, so it carries no share of its own — and no em
-    // dash either, which would read as "a denominator we could not measure". With no
-    // context to state, the help says so in words and appends no "Right now" aside: an
-    // aside reading "Right now: —." is not a disclosure.
+    // dash either, which would read as "a denominator we could not measure". Its line
+    // names the window instead, and the help says so in words with no "Right now" aside:
+    // an aside reading "Right now: —." is not a disclosure.
     const totalCases = within(screen.getByTestId('kpi-total-cases'));
     expect(totalCases.queryByText(/% of/)).toBeNull();
     expect(totalCases.queryByText('—')).toBeNull();
+    expect(lineOf('kpi-total-cases')).toHaveTextContent(/^arrivals, last /);
     const totalCasesHelp = await readTileHelp('Total Cases');
     expect(totalCasesHelp).toContain('this is the denominator the cohort tiles beside it are shares of');
     expect(totalCasesHelp).not.toContain('Right now:');
     // Open Cases is a window-EXEMPT stock: no window population reconciles with it, so it
-    // claims no share at all and NAMES why, rather than inventing one.
+    // claims no share at all and says what it IS, rather than inventing one.
     const openCases = within(screen.getByTestId('kpi-open-cases'));
     await waitFor(() => expect(openCases.getByText('5')).toBeInTheDocument());
     expect(openCases.queryByText(/% of/)).toBeNull();
+    expect(lineOf('kpi-open-cases')).toHaveTextContent(/^any arrival date$/);
     const openCasesHelp = await readTileHelp('Open Cases');
     expect(openCasesHelp).toContain('Open now, and not window-filtered.');
     expect(openCasesHelp).toContain('this one has no window denominator');
     expect(openCasesHelp).not.toContain('Right now:');
     // FP rate is ALREADY a percent, so its context is the sample size behind it.
     expect(await readTileHelp('False Positive Rate')).toContain('Right now: 1 of 2 verdicted.');
-    expect(
-      within(screen.getByTestId('kpi-false-positive-rate')).queryByText('1 of 2 verdicted'),
-    ).toBeNull();
+    expect(lineOf('kpi-false-positive-rate')).toHaveTextContent(/^1 of 2 verdicted$/);
+    // Auto Closed names its OWN denominator on the face too (shortened, same ratio).
+    expect(lineOf('kpi-auto-closed')).toHaveTextContent(/^50% of worked closes$/);
   });
 
   it('relocates every strip caption into the tile help — verbatim, never deleted', async () => {
@@ -1549,6 +1554,28 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       from: 'now-48h',
       to: 'now-24h',
     });
+  });
+
+  it('states a small-base snapshot change as a COUNT, never an alarming percentage', async () => {
+    // 1 open case last window → 4 now is "+300%" as a ratio, which reads as an emergency
+    // and says less than "+3". Below a base of 20 the chip states the difference, and its
+    // title spells out both counts so the reader can check it.
+    const now = [
+      { case_id: 'n1', status: 'open', risk_score: 88 },
+      { case_id: 'n2', status: 'open', risk_score: 65 },
+      { case_id: 'n3', status: 'open', risk_score: 30 },
+      { case_id: 'n4', status: 'open', risk_score: 20 },
+    ] as unknown as Case[];
+    const before = [{ case_id: 'p1', status: 'open', risk_score: 40 }] as unknown as Case[];
+    listCasesMock.mockImplementation(async (q: { to?: string }) =>
+      q?.to ? { cases: before, total: before.length } : { cases: now, total: now.length },
+    );
+    render(<Overview onNavigate={vi.fn()} />);
+    const lifecycle = await screen.findByRole('region', { name: 'Resolved and open cases' });
+    const chip = await within(lifecycle).findByRole('img', { name: /^changed up by \+3, worse$/ });
+    expect(chip).toHaveTextContent('+3');
+    expect(chip).not.toHaveTextContent('%');
+    expect(chip).toHaveAttribute('title', '1 → 4 vs the previous window');
   });
 
   // The severity banding folds onto the ONE severity authority (badges.ts

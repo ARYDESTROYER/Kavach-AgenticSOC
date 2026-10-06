@@ -301,7 +301,7 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(screen.queryByTestId('decision-card')).toBeNull();
     expect(within(panel as HTMLElement).queryByText('Decision brief')).toBeNull();
     expect(screen.getByRole('heading', { level: 2 })).toHaveClass(
-      'text-3xl',
+      'text-lg',
       'text-foreground',
     );
 
@@ -351,14 +351,14 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(screen.getAllByText('90%')).toHaveLength(1);
   });
 
-  it('keeps the larger embedded decision heading neutral across verdict outcomes', () => {
+  it('keeps the embedded decision heading neutral, and below the case title, across verdict outcomes', () => {
     const { unmount } = renderCaseManager({
       ...CASE,
       verdict: 'false_positive',
       status: 'resolved',
     } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveClass(
-      'text-3xl',
+      'text-lg',
       'text-foreground',
     );
     expect(screen.getByRole('heading', { level: 2 })).not.toHaveClass('text-info-text');
@@ -366,7 +366,7 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
 
     renderCaseManager({ ...CASE, verdict: 'needs_human', status: 'needs_human' } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveClass(
-      'text-3xl',
+      'text-lg',
       'text-foreground',
     );
     expect(screen.getByRole('heading', { level: 2 })).not.toHaveClass('text-warning-text');
@@ -375,7 +375,11 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
   it('renders honest, text-equivalent risk and confidence visuals from existing case data', () => {
     renderCaseManager();
     const profile = screen.getByRole('complementary', { name: 'Case signal profile' });
-    expect(profile).toHaveClass('border-t', 'xl:border-l', 'xl:border-t-0');
+    expect(profile).toHaveClass(
+      'border-t',
+      '@[44rem]/overview:border-l',
+      '@[44rem]/overview:border-t-0',
+    );
     expect(profile).not.toHaveClass('bg-muted/20', 'rounded-sm');
 
     const risk = within(profile).getByRole('progressbar', { name: 'Risk score: 40/100' });
@@ -469,6 +473,74 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(container.querySelector('[data-overview-surface]')).toBeNull();
   });
 
+  it('labels the embedded overview in sentence case, without tracked capitals', () => {
+    const { container } = renderCaseManager({
+      ...CASE,
+      entity: { type: 'ip', value: '10.0.0.5' },
+      severity_band: 'high',
+      severity_source: 'source_asserted',
+      rule_ids: ['demo_rule'],
+      source_name: 'IBM QRadar SIEM',
+      trigger_reason: { sentence: 'Five failed logons in a minute.' },
+      enrichment: { country: 'US', asn: 'AS64500' },
+      decision_by: 'system',
+    } as unknown as Case);
+    const panel = container.querySelector(
+      '[data-case-panel="overview"][data-presentation="case-manager"]',
+    ) as HTMLElement;
+
+    // No element in the Case Manager overview uses CSS capitals or wide tracking.
+    const tracked = Array.from(panel.querySelectorAll('*')).filter((el) =>
+      /(^|\s)(uppercase|tracking-wide|tracking-wider|tracking-widest|tracking-\[[^\]]*\])(\s|$)/.test(
+        el.getAttribute('class') || '',
+      ),
+    );
+    expect(tracked).toEqual([]);
+
+    // Section and column titles read in the foreground; field labels are quiet captions.
+    within(panel)
+      .getAllByTestId('overview-section-label')
+      .forEach((label) => expect(label).toHaveClass('text-sm', 'font-semibold', 'text-foreground'));
+    for (const title of ['Source says', 'Agent found', 'Code decided']) {
+      expect(within(panel).getByRole('heading', { level: 3, name: title })).toHaveClass(
+        'text-sm',
+        'font-semibold',
+        'text-foreground',
+      );
+    }
+    for (const label of [
+      'Impact',
+      'Priority',
+      'Recorded risk factors',
+      'Reported severity',
+      'Detection rule',
+      'Why it fired',
+      'Source',
+      'Authority',
+      'Country',
+      'ASN',
+    ]) {
+      expect(within(panel).getByText(label)).toHaveClass(
+        'text-xs',
+        'font-medium',
+        'text-muted-foreground',
+      );
+    }
+    // The signal labels are sentence case, and the score itself is not set in code type.
+    expect(within(panel).getByText('Risk score')).not.toHaveClass('uppercase');
+    expect(within(panel).getByText('40/100')).not.toHaveClass('font-mono');
+
+    // A product/source NAME reads in the sans face; true identifiers stay mono.
+    for (const name of within(panel).getAllByText('IBM QRadar SIEM')) {
+      expect(name).not.toHaveClass('font-mono');
+    }
+    expect(within(panel).getByText('US')).not.toHaveClass('font-mono');
+    expect(within(panel).getByText('AS64500')).toHaveClass('font-mono');
+    // An acronym entity type is not humanized into "Ip".
+    expect(within(panel).queryByText('Ip')).toBeNull();
+    expect(within(panel).getAllByText('IP').length).toBeGreaterThanOrEqual(1);
+  });
+
   it('has no automated accessibility violations in the embedded overview', async () => {
     const { container } = renderCaseManager({
       ...CASE,
@@ -504,7 +576,9 @@ describe('OverviewPanel — detection-rule chip wraps instead of overflowing (bu
     // exact regression bug #2 fixes (a long rule name overflowing the card).
     expect(chip).not.toHaveClass('whitespace-nowrap');
     expect(chip).toHaveClass('whitespace-normal');
-    expect(chip).toHaveClass('break-all');
+    // Breaks at spaces first; never `break-all`, which split readable names mid-word.
+    expect(chip).toHaveClass('[overflow-wrap:anywhere]');
+    expect(chip).not.toHaveClass('break-all');
   });
 
   it('still renders a short detection-rule id as a normal single-line chip (no regression)', () => {
@@ -514,18 +588,18 @@ describe('OverviewPanel — detection-rule chip wraps instead of overflowing (bu
     expect(chip).toHaveClass('whitespace-normal');
   });
 
-  it('wraps a SPACE-LESS/hyphen-less long rule id (no soft-wrap points) via min-w-0 + break-all, not just break-words', () => {
-    // `break-words` (overflow-wrap) only wraps at existing soft-wrap opportunities
-    // (spaces/hyphens); an id like this has none, so overflow-wrap never kicks in
-    // and the flex item's automatic min-content width keeps forcing the card
-    // wider UNLESS the item itself also has `min-w-0` and uses `break-all`
-    // (word-break), which forces a break anywhere and actually reduces the
-    // item's min-content contribution per spec.
+  it('wraps a SPACE-LESS/hyphen-less long rule id (no soft-wrap points) via min-w-0 + overflow-wrap:anywhere, not just break-words', () => {
+    // `break-words` (overflow-wrap: break-word) only wraps at existing soft-wrap
+    // opportunities (spaces/hyphens) and never lowers min-content, so an id like this
+    // keeps forcing the card wider UNLESS the item itself also has `min-w-0` and uses
+    // `overflow-wrap: anywhere`, which may break inside the word AND reduces the item's
+    // min-content contribution per spec — without `break-all`'s mid-word splits of
+    // names that do have spaces.
     const longId = 'Trojan_Generic_Suspicious_PowerShell_EncodedCommand_Execution_Detected';
     renderOverview({ ...CASE, rule_ids: [longId] } as unknown as Case);
     const chip = getRuleChip(longId);
     expect(chip).toHaveClass('min-w-0');
-    expect(chip).toHaveClass('break-all');
+    expect(chip).toHaveClass('[overflow-wrap:anywhere]');
     expect(chip).not.toHaveClass('whitespace-nowrap');
     expect(chip).not.toHaveClass('break-words');
   });

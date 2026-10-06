@@ -213,7 +213,7 @@ function autoCloseSummary(
 
 /* ------------------------------------------------------------- small pieces -- */
 
-/** An uppercase section label + optional provenance legend + a quiet divider. */
+/** A sentence-case section title + optional provenance legend + a quiet divider. */
 const SectionLabel: React.FC<{
   children: React.ReactNode;
   provenance?: React.ReactNode;
@@ -221,10 +221,7 @@ const SectionLabel: React.FC<{
   quiet?: boolean;
 }> = ({ children, provenance, testId, quiet = false }) => (
   <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-    <span
-      data-testid={testId}
-      className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
-    >
+    <span data-testid={testId} className={SECTION_TITLE}>
       {children}
     </span>
     {provenance ? <span className="flex items-center gap-1">{provenance}</span> : null}
@@ -244,13 +241,35 @@ const EMBEDDED_FLAT_COLUMN =
   'rounded-none border-0 bg-transparent p-0 shadow-none';
 const EMBEDDED_MAJOR_SECTION = 'border-t border-border/60 pt-6';
 
+/**
+ * Case Manager lays its three-lane rows out against the PANE width (the queue split is
+ * resizable), not the viewport: lanes sit side by side only when each has room, and
+ * stack otherwise. The `@container/overview` lives on the panel root.
+ */
+const CM_THREE_LANES = 'gap-6 @[42rem]/overview:grid-cols-3 @[56rem]/overview:gap-8';
+
+/**
+ * The two label tiers of the Overview, in sentence case (no tracked capitals): a
+ * section title reads in the foreground; a field label is a quiet muted caption so
+ * the value beside or beneath it stays the loudest thing.
+ */
+const SECTION_TITLE = 'text-sm font-semibold text-foreground';
+const FIELD_LABEL = 'text-xs font-medium text-muted-foreground';
+
+/** Entity-type label in sentence case that keeps well-known acronyms intact. */
+function entityTypeLabel(type: string): string {
+  const t = type.trim().toLowerCase();
+  if (t === 'ip' || t === 'url' || t === 'asn' || t === 'md5' || t === 'sha1' || t === 'sha256') {
+    return t.toUpperCase();
+  }
+  return humanizeToken(type);
+}
+
 /** One compact chip in the DECISION BRIEF strip: a small label over a bold value. */
 const BriefChip: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div className="flex flex-col gap-0.5">
-    <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-      {label}
-    </span>
-    <span className="text-sm font-semibold tracking-tight text-foreground">{value}</span>
+    <span className={FIELD_LABEL}>{label}</span>
+    <span className="text-sm font-semibold text-foreground">{value}</span>
   </div>
 );
 
@@ -283,12 +302,10 @@ const SignalMeter: React.FC<{
     <div className="space-y-1.5">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-            {label}
-          </div>
+          <div className="text-sm font-medium text-foreground">{label}</div>
           <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
         </div>
-        <span className="shrink-0 font-mono text-lg font-semibold tabular-nums text-foreground">
+        <span className="shrink-0 text-lg font-semibold tabular-nums text-foreground">
           {display}
         </span>
       </div>
@@ -354,9 +371,7 @@ const ProvenanceColumn: React.FC<{
   >
     <div className="mb-3 flex items-center gap-2">
       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-      <h3 className="flex-1 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-        {title}
-      </h3>
+      <h3 className={cn('flex-1', SECTION_TITLE)}>{title}</h3>
       <ProvenanceTag kind={kind} />
     </div>
     <div className="space-y-3">{children}</div>
@@ -406,9 +421,7 @@ const CollapsibleSection: React.FC<{
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-          {label}
-        </span>
+        <span className={SECTION_TITLE}>{label}</span>
         <span aria-hidden="true" className="h-px flex-1 bg-border" />
         <ChevronDown
           className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')}
@@ -806,9 +819,7 @@ const RiskFactorProfile: React.FC<{ factors: RiskFactor[] }> = ({ factors }) => 
         aria-label="Recorded risk factors"
       >
         <div className="mb-2">
-          <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Recorded risk factors
-          </span>
+          <span className={FIELD_LABEL}>Recorded risk factors</span>
         </div>
         <div
           data-testid="risk-factor-grid"
@@ -824,7 +835,7 @@ const RiskFactorProfile: React.FC<{ factors: RiskFactor[] }> = ({ factors }) => 
                     <button
                       type="button"
                       aria-label={`Explain ${factor.label} risk factor, recorded ${rounded} out of 100`}
-                      className="inline-flex items-center gap-1 whitespace-nowrap text-left text-2xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-sm text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {factor.label}
                       <Info className="h-3 w-3 shrink-0" aria-hidden />
@@ -855,7 +866,7 @@ const RiskFactorProfile: React.FC<{ factors: RiskFactor[] }> = ({ factors }) => 
                     style={{ width: `${value}%` }}
                   />
                 </div>
-                <span className="text-right font-mono text-2xs tabular-nums text-foreground">
+                <span className="text-right text-xs tabular-nums text-foreground">
                   {rounded}
                 </span>
               </React.Fragment>
@@ -1080,20 +1091,20 @@ export const OverviewPanel: React.FC<{
   })();
 
   // Enrichment KV rows for the PRIMARY ENTITY card (known scalar keys only).
-  const ENTITY_ENRICH_KEYS: Array<{ key: string; label: string }> = [
+  const ENTITY_ENRICH_KEYS: Array<{ key: string; label: string; mono?: boolean }> = [
     { key: 'reputation_score', label: 'Reputation' },
     { key: 'country', label: 'Country' },
-    { key: 'asn', label: 'ASN' },
+    { key: 'asn', label: 'ASN', mono: true },
     { key: 'org', label: 'Org' },
     { key: 'first_seen', label: 'First seen' },
     { key: 'last_seen', label: 'Last seen' },
   ];
-  const entityEnrichRows: Array<{ k: string; v: string }> = [];
+  const entityEnrichRows: Array<{ k: string; v: string; mono: boolean }> = [];
   if (caseEnrichment) {
-    for (const { key, label } of ENTITY_ENRICH_KEYS) {
+    for (const { key, label, mono = false } of ENTITY_ENRICH_KEYS) {
       const v = caseEnrichment[key];
       if (v === null || v === undefined || typeof v === 'object') continue;
-      entityEnrichRows.push({ k: label, v: String(v) });
+      entityEnrichRows.push({ k: label, v: String(v), mono });
     }
   }
 
@@ -1133,9 +1144,14 @@ export const OverviewPanel: React.FC<{
 
   // Entity-relationship flow: entity → rule → surface.
   const relationshipFlow = [
-    { label: entityType ? humanizeToken(entityType) : 'Entity', value: entityValue || DASH },
-    { label: 'Detection', value: ruleIds[0] || 'Rule' },
-    { label: 'Surface', value: c.source_name || c.source_surface || 'Log surface' },
+    {
+      label: entityType ? entityTypeLabel(entityType) : 'Entity',
+      value: entityValue || DASH,
+      mono: Boolean(entityValue),
+    },
+    { label: 'Detection', value: ruleIds[0] || 'Rule', mono: Boolean(ruleIds[0]) },
+    // A source/surface NAME ("IBM QRadar SIEM") is prose, not an identifier.
+    { label: 'Surface', value: c.source_name || c.source_surface || 'Log surface', mono: false },
   ];
 
   // Evidence checklist rows (positive findings + ruled-out/clean checks).
@@ -1166,7 +1182,9 @@ export const OverviewPanel: React.FC<{
   return (
     <div
       className={cn(
-        isCaseManager ? cn('space-y-4', CASE_MANAGER_PANEL_PADDING) : 'space-y-6 p-6',
+        isCaseManager
+          ? cn('@container/overview space-y-6', CASE_MANAGER_PANEL_PADDING)
+          : 'space-y-6 p-6',
       )}
       data-case-panel={isCaseManager ? 'overview' : undefined}
       data-presentation={isCaseManager ? 'case-manager' : undefined}
@@ -1189,10 +1207,13 @@ export const OverviewPanel: React.FC<{
         )}
       >
         {isCaseManager ? (
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)]">
+          <div className="grid gap-6 @[44rem]/overview:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)]">
             <div className="min-w-0">
-              {/* Verdict headline — our own controlled copy. */}
-              <h2 className="text-3xl font-semibold leading-tight tracking-tight text-foreground">
+              {/* Verdict headline — our own controlled copy. `text-lg`, below the case
+                  title's `text-xl` in the header: the title names WHICH case this is and
+                  must lead; at `text-3xl` the verdict outranked it and read as the page
+                  title. */}
+              <h2 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
                 {headline}
               </h2>
               {summarySentence ? (
@@ -1223,15 +1244,15 @@ export const OverviewPanel: React.FC<{
               </div>
 
               {/* Advisory ordering fields remain visible without repeating route/risk. */}
-              <div className="mt-5 grid max-w-sm grid-cols-2 gap-5">
+              <div className="mt-6 grid max-w-sm grid-cols-2 gap-6">
                 <BriefChip label="Impact" value={chipLabel(impactLevel)} />
                 <BriefChip label="Priority" value={chipLabel(priorityLevel)} />
               </div>
 
               {/* The action is prominent without introducing another bordered card. */}
-              <div className="mt-5 border-l-2 border-primary/40 py-1 pl-4">
+              <div className="mt-6 border-l-2 border-border py-1 pl-4">
                 <div className="mb-2 flex items-center gap-2">
-                  <Activity className="h-4 w-4 text-primary" aria-hidden />
+                  <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
                   <h3 className="text-sm font-semibold tracking-tight text-foreground">
                     Recommended action
                   </h3>
@@ -1255,10 +1276,10 @@ export const OverviewPanel: React.FC<{
 
             <aside
               aria-label="Case signal profile"
-              className="space-y-4 border-t border-border/60 pt-5 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0"
+              className="space-y-4 border-t border-border/60 pt-5 @[44rem]/overview:border-l @[44rem]/overview:border-t-0 @[44rem]/overview:pl-6 @[44rem]/overview:pt-0"
             >
               <div className="flex items-center gap-2">
-                <Gauge className="h-4 w-4 text-primary" aria-hidden />
+                <Gauge className="h-4 w-4 text-muted-foreground" aria-hidden />
                 <h3 className="text-sm font-semibold tracking-tight text-foreground">
                   Signal profile
                 </h3>
@@ -1289,9 +1310,7 @@ export const OverviewPanel: React.FC<{
           </div>
         ) : (
           <>
-            <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-              Decision brief
-            </span>
+            <span className={FIELD_LABEL}>Decision brief</span>
             {/* Verdict headline — our own controlled copy. */}
             <h2 className="mt-1 text-2xl font-bold leading-tight tracking-tight text-foreground">
               {headline}
@@ -1396,7 +1415,7 @@ export const OverviewPanel: React.FC<{
           </div>
         ) : null}
 
-        <div className={cn('grid lg:grid-cols-3', isCaseManager ? 'gap-6 xl:gap-8' : 'gap-4')}>
+        <div className={cn('grid', isCaseManager ? CM_THREE_LANES : 'gap-4 lg:grid-cols-3')}>
           {/* SOURCE SAYS */}
           <ProvenanceColumn
             title="Source says"
@@ -1409,9 +1428,7 @@ export const OverviewPanel: React.FC<{
                 {isSourceAsserted && sevBandRaw ? (
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                        Reported severity
-                      </span>
+                      <span className={FIELD_LABEL}>Reported severity</span>
                       <SeverityBadge severity={sevBandRaw} />
                       <ProvenanceTag kind={severityProvenance(sevSource)} />
                     </div>
@@ -1422,29 +1439,30 @@ export const OverviewPanel: React.FC<{
                 ) : null}
                 {ruleIds.length ? (
                   <div className="space-y-1.5">
-                    <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                    <span className={cn('block', FIELD_LABEL)}>
                       Detection rule{ruleIds.length === 1 ? '' : 's'}
                     </span>
                     <div className="flex min-w-0 flex-wrap gap-1.5">
                       {/* UNTRUSTED rule ids — plain text nodes, mono. Long rule names
                           must wrap inside the chip, never force the card wider
-                          (`whitespace-normal break-all` overrides the Badge's
-                          default `whitespace-nowrap` — both are in tailwind-merge's
+                          (`whitespace-normal` overrides the Badge's default
+                          `whitespace-nowrap` — both are in tailwind-merge's
                           `whitespace` class group so the override wins). `min-w-0`
                           must live on the Badge ITSELF — that's the flex item whose
                           automatic min-width needs zeroing; a space-less/hyphen-less
                           id (e.g. "demo_rdp_bruteforce" or a long
                           Trojan_Generic_..._Detected style id) has no soft-wrap
-                          points, so `break-words` (overflow-wrap) never kicks in and
-                          the item keeps overflowing — `break-all` (word-break) DOES
-                          reduce min-content size per spec and matches this file's
-                          own convention for other UNTRUSTED long strings (see the
-                          InlineCode `break-all` usage above). */}
+                          points, so `break-words` (overflow-wrap: break-word) never
+                          reduces min-content and the item keeps overflowing.
+                          `overflow-wrap: anywhere` DOES reduce min-content per spec,
+                          like `break-all`, but it breaks at spaces FIRST and splits a
+                          word only when that word cannot fit on a line of its own —
+                          `break-all` split readable names mid-word ("foll owed"). */}
                       {ruleIds.map((r, i) => (
                         <Badge
                           key={`${r}-${i}`}
                           variant="outline"
-                          className="min-w-0 max-w-full whitespace-normal break-all font-mono"
+                          className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
                         >
                           {r}
                         </Badge>
@@ -1455,9 +1473,7 @@ export const OverviewPanel: React.FC<{
                 {c.source_name ? <MetaItem label="Source" value={c.source_name} /> : null}
                 {triggerSentence ? (
                   <div className="space-y-1">
-                    <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                      Why it fired
-                    </span>
+                    <span className={cn('block', FIELD_LABEL)}>Why it fired</span>
                     {/* UNTRUSTED — plain text. */}
                     <p className="text-sm leading-relaxed text-foreground/90">{triggerSentence}</p>
                   </div>
@@ -1620,9 +1636,7 @@ export const OverviewPanel: React.FC<{
                 </div>
                 <dl className="space-y-2.5 text-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Authority
-                    </dt>
+                    <dt className={FIELD_LABEL}>Authority</dt>
                     <dd className="text-right text-foreground">
                       {/* UNTRUSTED decider token — plain text. */}
                       {c.decision_by ? humanizeToken(c.decision_by) : 'Deterministic code'}
@@ -1630,9 +1644,7 @@ export const OverviewPanel: React.FC<{
                   </div>
                   {autoClose ? (
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                        Auto-close
-                      </dt>
+                      <dt className={FIELD_LABEL}>Auto-close</dt>
                       <dd className="text-right text-xs text-foreground/90">{autoClose.tag}</dd>
                     </div>
                   ) : null}
@@ -1652,25 +1664,19 @@ export const OverviewPanel: React.FC<{
               <>
                 <dl className="space-y-2.5 text-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Risk score
-                    </dt>
+                    <dt className={FIELD_LABEL}>Risk score</dt>
                     <dd className="font-mono text-foreground tabular-nums">
                       {typeof riskVal === 'number' ? `${Math.round(riskVal)}/100` : DASH}
                     </dd>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Final route
-                    </dt>
+                    <dt className={FIELD_LABEL}>Final route</dt>
                     <dd>
                       <StatusBadge status={c.status} />
                     </dd>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Authority
-                    </dt>
+                    <dt className={FIELD_LABEL}>Authority</dt>
                     <dd className="text-right text-foreground">
                       {/* UNTRUSTED decider token — plain text. */}
                       {c.decision_by ? humanizeToken(c.decision_by) : 'Deterministic code'}
@@ -1678,9 +1684,7 @@ export const OverviewPanel: React.FC<{
                   </div>
                   {autoClose ? (
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                        Auto-close
-                      </dt>
+                      <dt className={FIELD_LABEL}>Auto-close</dt>
                       <dd className="text-right text-xs text-foreground/90">{autoClose.tag}</dd>
                     </div>
                   ) : null}
@@ -1709,7 +1713,7 @@ export const OverviewPanel: React.FC<{
         <SectionLabel testId="overview-section-label" quiet={isCaseManager}>
           Entity &amp; story
         </SectionLabel>
-        <div className={cn('grid lg:grid-cols-3', isCaseManager ? 'gap-6 xl:gap-8' : 'gap-4')}>
+        <div className={cn('grid', isCaseManager ? CM_THREE_LANES : 'gap-4 lg:grid-cols-3')}>
           {/* PRIMARY ENTITY */}
           <PanelCard
             data-overview-surface={isCaseManager ? 'flat-column' : undefined}
@@ -1727,7 +1731,7 @@ export const OverviewPanel: React.FC<{
                     </Badge>
                   ) : null}
                   <Badge variant="outline">
-                    {entityType ? humanizeToken(entityType) : 'Entity'}
+                    {entityType ? entityTypeLabel(entityType) : 'Entity'}
                   </Badge>
                 </div>
                 {entityEnrichRows.length ? (
@@ -1737,11 +1741,15 @@ export const OverviewPanel: React.FC<{
                         key={`${row.k}-${i}`}
                         className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
                       >
-                        <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                          {row.k}
-                        </dt>
-                        {/* UNTRUSTED enrichment value — plain text, mono. */}
-                        <dd className="min-w-0 truncate text-right font-mono text-sm text-foreground">
+                        <dt className={FIELD_LABEL}>{row.k}</dt>
+                        {/* UNTRUSTED enrichment value — plain text; only a true
+                            identifier (the ASN) keeps the mono face. */}
+                        <dd
+                          className={cn(
+                            'min-w-0 truncate text-right text-sm tabular-nums text-foreground',
+                            row.mono && 'font-mono',
+                          )}
+                        >
                           {row.v}
                         </dd>
                       </div>
@@ -1801,11 +1809,15 @@ export const OverviewPanel: React.FC<{
                       isCaseManager ? 'bg-muted/25' : 'border border-border bg-muted/30',
                     )}
                   >
-                    <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                      {node.label}
-                    </div>
-                    {/* UNTRUSTED value — plain text, mono, wrapping. */}
-                    <div className="mt-0.5 break-all font-mono text-sm text-foreground">
+                    <div className={FIELD_LABEL}>{node.label}</div>
+                    {/* UNTRUSTED value — plain text that wraps at spaces first and only
+                        splits a space-less id when it must; identifiers stay mono. */}
+                    <div
+                      className={cn(
+                        'mt-0.5 text-sm text-foreground [overflow-wrap:anywhere]',
+                        node.mono && 'font-mono',
+                      )}
+                    >
                       {node.value}
                     </div>
                   </div>
@@ -1833,11 +1845,14 @@ export const OverviewPanel: React.FC<{
         <SectionLabel testId="overview-section-label" quiet={isCaseManager}>
           Evidence
         </SectionLabel>
-        <div className={cn('grid lg:grid-cols-3', isCaseManager ? 'gap-6 xl:gap-8' : 'gap-4')}>
+        <div className={cn('grid', isCaseManager ? CM_THREE_LANES : 'gap-4 lg:grid-cols-3')}>
           {/* EVIDENCE CHECKLIST */}
           <PanelCard
             data-overview-surface={isCaseManager ? 'flat-column' : undefined}
-            className={cn('lg:col-span-2', isCaseManager && EMBEDDED_FLAT_COLUMN)}
+            className={cn(
+              isCaseManager ? '@[42rem]/overview:col-span-2' : 'lg:col-span-2',
+              isCaseManager && EMBEDDED_FLAT_COLUMN,
+            )}
           >
             <SectionHeading icon={Search}>Evidence checklist</SectionHeading>
             {checklistRows.length ? (
@@ -1847,25 +1862,25 @@ export const OverviewPanel: React.FC<{
                     <tr className="border-b border-border text-left">
                       <th
                         scope="col"
-                        className="pb-2 pr-3 text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
+                        className={cn('pb-2 pr-3', FIELD_LABEL)}
                       >
                         Check
                       </th>
                       <th
                         scope="col"
-                        className="pb-2 pr-3 text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
+                        className={cn('pb-2 pr-3', FIELD_LABEL)}
                       >
                         Result
                       </th>
                       <th
                         scope="col"
-                        className="pb-2 pr-3 text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
+                        className={cn('pb-2 pr-3', FIELD_LABEL)}
                       >
                         Evidence
                       </th>
                       <th
                         scope="col"
-                        className="pb-2 text-2xs font-semibold uppercase tracking-widest text-muted-foreground"
+                        className={cn('pb-2', FIELD_LABEL)}
                       >
                         Confidence impact
                       </th>
@@ -1915,18 +1930,14 @@ export const OverviewPanel: React.FC<{
               <div className="space-y-3">
                 {reproduceQueries.map((e, i) => (
                   <div key={i} className="space-y-1.5">
-                    <Badge variant="outline" className="font-mono">
-                      Search query
-                    </Badge>
+                    <span className={cn('block', FIELD_LABEL)}>Search query</span>
                     {/* UNTRUSTED query — inside a CodeBlock fence, copyable. */}
                     <CodeBlock value={e.query} copyable wrap maxHeightClassName="max-h-40" />
                   </div>
                 ))}
                 {c.reproduce_query ? (
                   <div className="space-y-1.5">
-                    <Badge variant="outline" className="font-mono">
-                      Reproduce query
-                    </Badge>
+                    <span className={cn('block', FIELD_LABEL)}>Reproduce query</span>
                     <CodeBlock
                       value={c.reproduce_query}
                       caption="read-only"

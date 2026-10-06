@@ -12,6 +12,28 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**A dashboard that reads as one instrument panel.** The Human vs AI chart is rebuilt as
+stacked columns (AI agent, Human, System) on a labelled y axis with solid gridlines and UTC
+time labels. Hovering or arrowing to a column shows that bucket's full breakdown: the UTC
+range, closes by each closer with shares, arrivals, cases sent to a human, the false
+positive rate and alerts ingested. Unmeasured buckets are hatched, the still-filling bucket
+is dimmed, and the tooltip sits beside the column inside the card instead of over the KPI
+strip. The smoothed spline it replaced invented "humps" between zero-filled hours.
+
+The KPI strip keeps its six tiles and gains one muted **context line** under each numeral
+("17% of 47 cases", "36 of 47 verdicted", "arrivals, last 24h"), so each number answers
+"compared to what?" on its face. Labels are quiet sentence case, icons are gone, numerals
+are neutral ink with red reserved for a non-zero critical count, and the help and
+drill-down marks appear on hover or focus. The 16px gap and doubled hairline between the
+strip and the noise-reduction flow are gone: the strip's bottom rule is the flow's top
+edge. Section titles are sentence case. The flow's right-hand labels no longer wrap into
+each other. The open and resolved snapshot chips state small changes as counts ("+8")
+instead of percentages of a tiny base ("+400%"). Latest cases lead with the case title,
+with the id and age beneath, in a flat divided list. The KPI hover cards draw one column
+per bucket in its real time slot, with a dated readout for the bucket under the pointer
+and first, peak and latest values, instead of a curve through measured points only. No
+data was removed from either page.
+
 **A KPI strip whose captions outweighed its numbers.** Each landing tile carried a two-line
 mono caption under a 24px numeral, so the sentence about the metric was visually heavier than
 the metric, and the row's six-to-eight words of standing prose were read once and then became
