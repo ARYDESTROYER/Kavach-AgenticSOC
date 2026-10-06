@@ -41,6 +41,7 @@ import {
   BookOpen,
   Bot,
   Check,
+  Copy,
   Download,
   ExternalLink,
   FileText,
@@ -186,6 +187,62 @@ import {
 
 // Re-export the co-located API types so existing importers keep working.
 export type { ThreadMessage };
+
+/**
+ * Copy the case's display id. Icon-only, so it carries an explicit accessible name and
+ * a tooltip; it confirms in place (check glyph + renamed control) and via a toast. The
+ * value is a plain string handed to the clipboard helper (#9).
+ */
+const CopyCaseIdButton: React.FC<{ value: string }> = ({ value }) => {
+  const [copied, setCopied] = React.useState(false);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const onCopy = React.useCallback(async () => {
+    const ok = await copyText(value);
+    if (!ok) {
+      toast.error('Could not copy the case ID.');
+      return;
+    }
+    setCopied(true);
+    toast.success('Case ID copied.');
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 1500);
+  }, [value]);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 shrink-0 rounded-[3px] text-muted-foreground hover:text-foreground"
+          aria-label={copied ? 'Case ID copied' : 'Copy case ID'}
+          onClick={() => void onCopy()}
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />
+          ) : (
+            <Copy className="h-3.5 w-3.5" aria-hidden />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{copied ? 'Copied' : 'Copy case ID'}</TooltipContent>
+    </Tooltip>
+  );
+};
+
+/**
+ * Embedded (Case Manager) tab trigger: a calm, text-only underline tab. The active tab
+ * reads in the foreground colour over a primary underline; the rest stay muted.
+ */
+const EMBEDDED_TAB_TRIGGER =
+  'rounded-none border-b-2 border-transparent px-0 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground ' +
+  'data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none';
 
 /* --------------------------------------------------------------- component -- */
 
@@ -1240,71 +1297,72 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 presentation === 'sheet' &&
                   'border-b border-border bg-card px-6 py-4',
                 presentation === 'embedded' &&
-                  'flex-col bg-background px-4 pb-3 pt-4 sm:flex-row sm:flex-wrap sm:px-5 lg:px-6',
+                  '@container/case-header flex-col gap-3 bg-background px-4 pb-3 pt-4 sm:flex-row sm:flex-wrap sm:px-5 lg:px-6',
               )}
             >
               <div
                 className={cn(
                   presentation === 'sheet' && 'contents',
                   presentation === 'embedded' &&
-                    'flex min-w-0 w-full flex-1 items-start gap-3 sm:w-auto sm:min-w-[26rem]',
+                    'flex min-w-0 w-full flex-1 items-start sm:w-auto sm:min-w-[16rem]',
                 )}
               >
-              <div
-                className={cn(
-                  'mt-0.5 flex shrink-0 items-center justify-center',
-                  presentation === 'sheet' &&
-                    'h-9 w-9 rounded-md bg-primary/10 text-primary',
-                  presentation === 'embedded' &&
-                    'h-9 w-9 rounded-[3px] border border-critical/30 bg-critical/10',
-                )}
-              >
-                {presentation === 'embedded' && headerSeverity === 'critical' ? (
-                  <AlertTriangle className="h-5 w-5 text-critical-text" />
-                ) : (
+              {/* The sheet keeps its identity tile; the embedded header lets the title
+                  lead instead of a tile that encoded nothing. */}
+              {presentation === 'sheet' ? (
+                <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
                   <Shield className="h-5 w-5 text-primary" />
-                )}
-              </div>
+                </div>
+              ) : null}
               <div className="min-w-0 flex-1">
                 {loading || !c ? (
                   <Skeleton className="h-6 w-72" />
-                ) : (
+                ) : presentation === 'embedded' ? (
                   <>
+                    {/* The human title is the heading; the machine id is its quiet,
+                        copyable secondary line. UNTRUSTED title — plain text node. */}
+                    <h2 className="line-clamp-2 text-xl font-semibold leading-snug tracking-tight text-foreground">
+                      {c.title || c.case_id}
+                    </h2>
                     <div
-                      className={cn(
-                        'flex items-center gap-2',
-                        presentation === 'sheet' ? 'flex-wrap' : 'min-w-0 flex-nowrap',
-                      )}
+                      data-testid="case-detail-meta"
+                      className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
                     >
-                      {/* Human-facing display id (F7) — falls back to case_id. */}
-                      <span
-                        title={presentation === 'embedded' ? c.case_number || c.case_id : undefined}
-                        className={cn(
-                          'font-mono font-semibold',
-                          presentation === 'sheet' && 'shrink-0 text-xs text-primary',
-                          presentation === 'embedded' &&
-                            'block min-w-0 flex-1 truncate text-xl uppercase tracking-tight text-foreground',
-                        )}
-                      >
-                        {c.case_number || c.case_id}
+                      <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
+                        {/* Human-facing display id (F7) — falls back to case_id; wraps
+                            rather than truncating so the whole identifier stays legible. */}
+                        <span
+                          data-testid="case-detail-id"
+                          className="min-w-0 break-all font-mono text-xs text-muted-foreground"
+                        >
+                          {c.case_number || c.case_id}
+                        </span>
+                        <CopyCaseIdButton value={c.case_number || c.case_id} />
                       </span>
-                      {presentation === 'embedded' ? (
+                      {/* The two flags wrap together, so a long id never orphans one. */}
+                      <span className="inline-flex shrink-0 items-center gap-2">
                         <SeverityBadge
                           severity={headerSeverity}
                           labelSuffix="severity"
-                          className="h-5 shrink-0 rounded-[3px] px-2 text-2xs uppercase tracking-wider"
+                          className="h-5 shrink-0 rounded-[3px] px-1.5"
                         />
-                      ) : null}
+                        <DemoBadge
+                          show={isDemoCase(c)}
+                          className="h-5 rounded-[3px] px-1.5 text-2xs"
+                        />
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Human-facing display id (F7) — falls back to case_id. */}
+                      <span className="shrink-0 font-mono text-xs font-semibold text-primary">
+                        {c.case_number || c.case_id}
+                      </span>
                       <DemoBadge show={isDemoCase(c)} className="text-2xs" />
                     </div>
-                    <h2
-                      className={cn(
-                        'font-semibold tracking-tight text-foreground',
-                        presentation === 'sheet' && 'mt-0.5 truncate text-lg',
-                        presentation === 'embedded' &&
-                          'mt-1.5 line-clamp-2 text-lg text-muted-foreground',
-                      )}
-                    >
+                    <h2 className="mt-0.5 truncate text-lg font-semibold tracking-tight text-foreground">
                       {/* UNTRUSTED title — plain text node. */}
                       {c.title || c.case_id}
                     </h2>
@@ -1357,21 +1415,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
               >
                 {presentation === 'embedded' ? (
                   <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 rounded-[3px] px-3"
-                      onClick={() => void shareCase()}
-                    >
-                      <Share2 className="h-4 w-4" />
-                      Share
-                    </Button>
+                    {/* In a narrow pane (the 1280px split) Share folds to its icon so
+                        the actions stay beside the title; its name stays "Share". */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 rounded-[3px] px-2 @[40rem]/case-header:px-3"
+                          aria-label="Share"
+                          onClick={() => void shareCase()}
+                        >
+                          <Share2 className="h-4 w-4" aria-hidden />
+                          <span className="hidden @[40rem]/case-header:inline">Share</span>
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Copy a link to this case</TooltipContent>
+                    </Tooltip>
 
                     <DropdownMenu open={takeActionOpen} onOpenChange={setTakeActionOpen}>
                       <DropdownMenuTrigger asChild>
                         <Button
                           size="sm"
-                          className="h-8 rounded-[3px] px-3 shadow-elev1"
+                          className="h-8 rounded-[3px] px-3"
                           disabled={loading || acting}
                         >
                           <Zap className="h-4 w-4" />
@@ -1383,7 +1449,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         sideOffset={8}
                         className="w-72 rounded-[3px]"
                       >
-                        <DropdownMenuLabel className="text-2xs uppercase tracking-wider">
+                        <DropdownMenuLabel>
                           Case actions
                         </DropdownMenuLabel>
                         {permittedLifecycleActions.map((action) => {
@@ -1401,7 +1467,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         })}
 
                         <DropdownMenuSeparator />
-                        <DropdownMenuLabel className="text-2xs uppercase tracking-wider">
+                        <DropdownMenuLabel>
                           Investigation
                         </DropdownMenuLabel>
                         <DropdownMenuItem
@@ -1449,7 +1515,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         </DropdownMenuItem>
 
                         <DropdownMenuSeparator />
-                        <DropdownMenuLabel className="text-2xs uppercase tracking-wider">
+                        <DropdownMenuLabel>
                           Share &amp; export
                         </DropdownMenuLabel>
                         <DropdownMenuItem
@@ -1511,7 +1577,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     <Button
                       variant="outline"
                       size="icon"
-                      className="hidden h-9 w-9 rounded-[3px] xl:inline-flex"
+                      className="hidden h-8 w-8 rounded-[3px] xl:inline-flex"
                       aria-label="Back to case queue"
                       onClick={onClose}
                     >
@@ -1890,8 +1956,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         className={cn(
                           'gap-1.5',
                           'text-xs',
-                          presentation === 'embedded' &&
-                            'rounded-none border-b-2 border-transparent px-0 py-2.5 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none',
+                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
                         )}
                       >
                         {presentation === 'sheet' ? <FileText className="h-3.5 w-3.5" /> : null}
@@ -1902,30 +1967,29 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         className={cn(
                           'gap-1.5',
                           'text-xs',
-                          presentation === 'embedded' &&
-                            'rounded-none border-b-2 border-transparent px-0 py-2.5 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none',
+                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
                         )}
                       >
-                        <History className="h-3.5 w-3.5" /> Timeline
+                        {presentation === 'sheet' ? <History className="h-3.5 w-3.5" /> : null}
+                        Timeline
                       </TabsTrigger>
                       <TabsTrigger
                         value="investigation"
                         className={cn(
                           'gap-1.5',
                           'text-xs',
-                          presentation === 'embedded' &&
-                            'rounded-none border-b-2 border-transparent px-0 py-2.5 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none',
+                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
                         )}
                       >
-                        <Bot className="h-3.5 w-3.5" /> Investigation
+                        {presentation === 'sheet' ? <Bot className="h-3.5 w-3.5" /> : null}
+                        Investigation
                       </TabsTrigger>
                       <TabsTrigger
                         value="threat"
                         className={cn(
                           'gap-1.5',
                           'text-xs',
-                          presentation === 'embedded' &&
-                            'rounded-none border-b-2 border-transparent px-0 py-2.5 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none',
+                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
                         )}
                       >
                         {presentation === 'sheet' ? <Globe className="h-3.5 w-3.5" /> : null}
@@ -1936,22 +2000,22 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         className={cn(
                           'gap-1.5',
                           'text-xs',
-                          presentation === 'embedded' &&
-                            'rounded-none border-b-2 border-transparent px-0 py-2.5 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none',
+                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
                         )}
                       >
-                        <Users className="h-3.5 w-3.5" /> Collaboration
+                        {presentation === 'sheet' ? <Users className="h-3.5 w-3.5" /> : null}
+                        Collaboration
                       </TabsTrigger>
                       <TabsTrigger
                         value="chat"
                         className={cn(
                           'gap-1.5',
                           'text-xs',
-                          presentation === 'embedded' &&
-                            'rounded-none border-b-2 border-transparent px-0 py-2.5 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none',
+                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
                         )}
                       >
-                        <MessageSquare className="h-3.5 w-3.5" /> Chat
+                        {presentation === 'sheet' ? <MessageSquare className="h-3.5 w-3.5" /> : null}
+                        Chat
                       </TabsTrigger>
                     </TabsList>
                   </div>

@@ -176,6 +176,34 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     ).toBeInTheDocument();
   });
 
+  it('leads the embedded header with the human title and a quiet, copyable case id', async () => {
+    renderWithProviders(
+      <CaseDetail caseId="case-001" presentation="embedded" onClose={vi.fn()} />,
+    );
+
+    // The human title is the heading, in the foreground (no longer a muted subtitle).
+    const title = await screen.findByRole('heading', { level: 2, name: 'Suspicious login burst' });
+    expect(title).toHaveClass('text-xl', 'font-semibold', 'text-foreground');
+    expect(title).not.toHaveClass('text-muted-foreground');
+
+    // The machine id is a secondary mono line AFTER the title: muted, small, untruncated.
+    const id = screen.getByTestId('case-detail-id');
+    expect(id).toHaveTextContent(/^TLSOC-001$/);
+    expect(id).toHaveClass('font-mono', 'text-xs', 'text-muted-foreground', 'break-all');
+    expect(id).not.toHaveClass('truncate');
+    expect(id).not.toHaveClass('uppercase');
+    expect(title.compareDocumentPosition(id) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Severity sits on that meta line in sentence case.
+    const meta = screen.getByTestId('case-detail-meta');
+    expect(within(meta).getByText('High severity')).not.toHaveClass('uppercase');
+
+    // The copy control has an accessible name and copies exactly the display id.
+    fireEvent.click(within(meta).getByRole('button', { name: 'Copy case ID' }));
+    await waitFor(() => expect(clipboardMocks.copyText).toHaveBeenCalledWith('TLSOC-001'));
+    expect(await within(meta).findByRole('button', { name: 'Case ID copied' })).toBeInTheDocument();
+  });
+
   it('shares the canonical Case Manager deep link from the separate top-right control', async () => {
     renderWithProviders(
       <CaseDetail caseId="case-001" presentation="embedded" onClose={vi.fn()} />,
