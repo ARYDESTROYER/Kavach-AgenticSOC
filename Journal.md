@@ -11221,3 +11221,9 @@
 - Visual verification: real Chromium on the demo stack at 1280/1440 light and dark plus 390, hover states for the chart, the KPI tiles and the hover trend; no horizontal overflow anywhere.
 - Status: done on `claude/dashboard-casemanager-redesign`; backend untouched, no new dependencies, `decide()` untouched.
 - Next: the entry chunk has ~3.6 kB of headroom left, so the next shared-primitive addition should be checked against `bundle-first-paint`. Below `sm` the strip is still one column (six tall cells); a two-column phone layout needs new divider math and its pinned class tests. Queue ids truncate at the default 400px pane (full id in tooltip, checkbox label and detail header).
+
+### 2026-10-07 11:40Z — orchestrator — Chat page revamp: session start
+- Context: Operator asked for a from-scratch rework of the Chat page: professional and practically useful, multiple lookups per question, query anything, a live token count, basic reports in the chat with interactive graphs and infographics, chat history, and answers about the app itself; neat and space-efficient (current page judged cluttered). Research the UI standard first, then build with sub-agents.
+- Did: Branch `claude/chat-revamp` cut from `origin/Testing` at 05a40d1 (PR #126 merged). Launching research: backend chat/gateway/tools maps, frontend chat map, docs corpus, chart infrastructure, and external UI/UX research.
+- Status: in-progress.
+- Next: research synthesis → design spec → implementation agents → adversarial review → screenshots.
