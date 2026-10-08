@@ -21,28 +21,39 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
 
+const { authState, savePromptMock } = vi.hoisted(() => ({
+  authState: { denied: new Set<string>() },
+  savePromptMock: vi.fn(),
+}));
 vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({ username: 'analyst', hasPermission: () => true }),
+  useAuth: () => ({
+    username: 'analyst',
+    hasPermission: (resource: string, action: string) => !authState.denied.has(`${resource}:${action}`),
+  }),
 }));
 
 vi.mock('@/soc/chat/composer/Composer', async () => {
   const React = await import('react');
   type Engine = import('@/soc/chat/useChatEngine').ChatEngine;
   const Composer = React.forwardRef(function ComposerDouble(
-    props: { engine: Engine; variant?: string; disabledReason?: string | null; contextError?: string | null },
+    props: { engine: Engine; variant?: string; disabledReason?: string | null; contextError?: string | null; canChooseModel?: boolean },
     ref: React.Ref<{ focus: () => void; setText: (text: string) => void; savePrompt: (text: string) => void }>,
   ) {
     const area = React.useRef<HTMLTextAreaElement>(null);
     React.useImperativeHandle(ref, () => ({
       focus: () => area.current?.focus(),
-      setText: (text: string) => props.engine.setDraft(text),
-      savePrompt: () => undefined,
+      setText: (text: string) => {
+        props.engine.setDraft(text);
+        area.current?.focus();
+      },
+      savePrompt: (text: string) => savePromptMock(text),
     }));
     return React.createElement(
       'form',
       {
         'data-testid': 'composer',
         'data-variant': props.variant,
+        'data-can-choose-model': String(props.canChooseModel),
         'data-disabled-reason': props.disabledReason ?? '',
         'data-context-error': props.contextError ?? '',
         onSubmit: (event: React.FormEvent) => {
@@ -210,6 +221,8 @@ beforeEach(() => {
   streamFailures = 0;
   contextFailures = 0;
   exportConversationMock.mockReset().mockResolvedValue({ ok: true, message: 'Conversation exported as Markdown' });
+  savePromptMock.mockReset();
+  authState.denied = new Set();
   toastMock.mockReset();
   toastMock.error.mockReset();
   rows = [OLDER, NEWEST];
@@ -440,8 +453,54 @@ describe('Workspace Chat page', () => {
     renderChat({ opts: { topic: 'kpi:mttd' } });
     await waitFor(() => expect(streamCalls()).toHaveLength(1));
     expect(calls.some((call) => call.url === '/api/chat/topics/kpi%3Amttd')).toBe(true);
-    expect(streamCalls()[0].body).toMatchObject({ message: 'What does MTTD measure here?', origin: 'starter' });
+    expect(streamCalls()[0].body).toMatchObject({ message: 'What does MTTD measure here?', origin: 'starter', topic: 'kpi:mttd' });
     expect(streamCalls()[0].body).not.toHaveProperty('conversation_id');
+  });
+
+  it("prefills the palette's Ask AI text into a new chat's composer and focuses it, without sending", async () => {
+    renderChat({ opts: { newChat: true, ask: 'Which hosts failed logins most today?' } });
+    const box = await screen.findByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(box).toHaveValue('Which hosts failed logins most today?'));
+    expect(document.activeElement).toBe(box);
+    await settle();
+    expect(streamCalls()).toHaveLength(0);
+    expect(calls.some((call) => call.url.startsWith('/api/chat/topics/'))).toBe(false);
+    // Sending is the analyst's own act, so the turn is origin user.
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await settle();
+    expect(streamCalls()[0].body).toMatchObject({ message: 'Which hosts failed logins most today?' });
+    expect(streamCalls()[0].body).not.toHaveProperty('origin');
+  });
+
+  it('offers the model picker only with models:read and saves the exact prompt of a turn', async () => {
+    authState.denied = new Set(['models:read']);
+    const lookalike = 'Logins for ad\u200bmin';
+    details[NEWEST.id] = {
+      ...detailOf(NEWEST),
+      messages: [{ id: 'u-1', role: 'user', content: lookalike, created_at: NEWEST.created_at }, ...detailOf(NEWEST).messages.slice(1)],
+    };
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    expect(screen.getByTestId('composer')).toHaveAttribute('data-can-choose-model', 'false');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save prompt' })[0]);
+    expect(savePromptMock).toHaveBeenCalledWith(lookalike);
+  });
+
+  it('keeps a thread that was only shortened in place quiet, and names the cause of removed turns', async () => {
+    rows = [summary('c-big', 'Large answer', '2026-10-08T09:30:00Z', { history_truncated: true, message_count: 2, total_message_count: 2 })];
+    details = { 'c-big': detailOf(rows[0]) };
+    const { unmount } = renderChat();
+    await screen.findByText('Large answer answer');
+    expect(screen.getByTestId('thread-trimmed-hint')).toHaveTextContent('trimmed to fit storage');
+    expect(screen.queryByText(/Older turns were removed/)).toBeNull();
+    unmount();
+
+    rows = [summary('c-long', 'Long thread', '2026-10-08T09:30:00Z', { history_truncated: true, message_count: 40, total_message_count: 64 })];
+    details = { 'c-long': detailOf(rows[0]) };
+    renderChat();
+    await screen.findByText('Long thread answer');
+    expect(screen.getByText('Showing the latest 40 of 64 messages. Older turns were removed to stay within the storage limit.')).toBeInTheDocument();
+    expect(screen.queryByTestId('thread-trimmed-hint')).toBeNull();
   });
 
   it('highlights a deep-linked message and clears the link once the selection moves on', async () => {

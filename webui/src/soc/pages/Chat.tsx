@@ -11,8 +11,10 @@
  *  - `ChatWorkspace` renders the three zones.
  *
  * "Ask about this" (`NavOpts.topic`): the page resolves the topic to its server-side
- * templated question and sends THAT (origin `starter`) in a fresh chat; it never sends
- * free text from a link. A deep-linked `#/chat?conversationId=` is cleared from the
+ * templated question and sends THAT (origin `starter`, with the topic id) in a fresh
+ * chat; it never sends free text from a link. The palette's "Ask AI: <text>"
+ * (`NavOpts.ask`) only PREFILLS a fresh chat's composer (the workspace focuses it); the
+ * analyst sends it, so it is never sent on their behalf. A deep-linked `#/chat?conversationId=` is cleared from the
  * hash as soon as the selection moves elsewhere, so a refresh does not reopen it.
  *
  * With `caseId` (Case Chat → "Open full chat") the page is case-scoped: no history,
@@ -152,8 +154,10 @@ export default function Chat({ caseId, opts }: ChatProps = {}) {
     if (!topic || conv.activeId !== null || engine.busy) return;
     clearTopic();
     getChatTopic(topic)
-      .then(({ question }) => {
-        if (mountedRef.current) send(question, { origin: 'starter' });
+      .then(({ question, topic: resolved }) => {
+        // The topic id travels with its question so retrieval can pin that topic's
+        // sections (SPEC A7); the server ignores it if it does not know the id.
+        if (mountedRef.current) send(question, { origin: 'starter', topic: resolved || topic });
       })
       .catch(() => {
         if (mountedRef.current) toast.error('That topic is not available to ask about.');

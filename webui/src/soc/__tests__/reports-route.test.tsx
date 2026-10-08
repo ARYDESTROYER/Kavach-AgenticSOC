@@ -47,6 +47,11 @@ describe('reports route', () => {
     expect(NAV_CHILDREN.some((c) => c.id === 'reports' && c.icon)).toBe(true);
   });
 
+  it('is gated on cases:read in the rail and the palette, like the reports API (SPEC §9.2)', () => {
+    const workspace = FEATURES.find((f) => f.id === 'chat' && !f.hidden)!;
+    expect(workspace.children?.find((c) => c.id === 'reports')?.perm).toEqual({ resource: 'cases', action: 'read' });
+  });
+
   it('renders its own lazy page (not a Workspace tab)', () => {
     const el = ROUTES.reports.element as unknown as { $$typeof?: symbol };
     expect(el.$$typeof).toBe(Symbol.for('react.lazy'));

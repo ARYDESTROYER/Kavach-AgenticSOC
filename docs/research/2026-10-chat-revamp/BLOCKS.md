@@ -72,6 +72,26 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
 15. **Report envelopes are clipped (SPEC A3).** Over-limit sections and leaves are removed and
     counted in the notice line, never a rejection of the whole brief; `subtitle`, a section
     `summary` and `blocks` (alias of `items`) are accepted.
+    A blank, whitespace-only or explicit `null` `subtitle` or section `summary` is treated as
+    absent, so it can no longer cost the whole envelope or the section.
+
+### Wave-4 amendments (integration decisions; SPEC §13 has the full text)
+
+16. **Stored size is escaped bytes (SPEC A22).** The ≤ 16 kB storage bound of amendment 7 is
+    measured on the presentation's stored, string-escaped bytes; a near-bound answer is tightened
+    at storage and its `history_truncated` flag says only that something was shortened.
+17. **Report snapshots (SPEC A23 (a), (k), (l)).** A block or whole answer is added only when its
+    stored presentation still validates; an answer with any expired or unreadable block is
+    refused whole. The summary digest keeps every item at reduced fidelity (per-item block caps,
+    then skeleton blocks with type, view, title, provenance, total, truncated and expired but no
+    figures) before it drops trailing items, and says what it left out (`omitted.items`,
+    `omitted.blocks`, `omitted.sections`, `columns_total`).
+18. **Add to report on a full report (SPEC §10.6, A25).** The toggles never unmount: an answer or
+    block already in the report stays removable, and a new add on a full report is
+    `aria-disabled` with the reason "Report is full (40 items)" in its tooltip.
+19. **Tool-call headers list only honest views (SPEC A15).** `Artifact.views()` delegates to
+    `blocks.artifact_views`, so the header a model reads never offers `stacked_bar`, `sparkline`
+    or `donut` where materialisation would fall back to the default view.
 
 ---
 

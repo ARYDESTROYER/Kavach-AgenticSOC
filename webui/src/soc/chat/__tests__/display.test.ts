@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  calibrationFactor,
   defangUrl,
   estimateNextRequest,
   estimateTokens,
@@ -103,8 +104,22 @@ describe('token estimates (SPEC §8)', () => {
   it('adds system + history + draft for the next request', () => {
     expect(
       estimateNextRequest({ staticPromptTokens: 1000, historyTokens: 200, draft: 'x'.repeat(40), calibration: null }),
-    ).toEqual({ system: 1000, history: 200, draft: 10, total: 1210 });
+    ).toEqual({ system: 1000, history: 200, draft: 10, total: 1210, factor: 1 });
     expect(estimateNextRequest({ staticPromptTokens: -5, historyTokens: Number.NaN, draft: '' }).total).toBe(0);
+  });
+
+  it('applies the clamped calibration to system, history AND draft (the server factor covers the whole prompt)', () => {
+    expect(
+      estimateNextRequest({ staticPromptTokens: 1000, historyTokens: 200, draft: 'x'.repeat(40), calibration: 1.5 }),
+    ).toEqual({ system: 1500, history: 300, draft: 15, total: 1815, factor: 1.5 });
+    // Out-of-range factors are clamped to 0.25–4, never trusted raw and never dropped.
+    expect(estimateNextRequest({ staticPromptTokens: 1000, historyTokens: 0, draft: '', calibration: 40 })).toMatchObject({
+      system: 4000,
+      factor: 4,
+    });
+    expect(estimateNextRequest({ staticPromptTokens: 1000, historyTokens: 0, draft: '', calibration: 0.01 }).system).toBe(250);
+    expect(calibrationFactor(Number.NaN)).toBe(1);
+    expect(calibrationFactor(-2)).toBe(1);
   });
 
   it('projects the whole-turn bound and clamps it to the ceiling', () => {

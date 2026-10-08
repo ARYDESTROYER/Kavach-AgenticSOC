@@ -33,6 +33,7 @@ const EXPECTED_IDS = [
   'customization',
   'general',
   'models',
+  'chat_agent', // NEW (chat revamp: the curated Chat assistant editor)
   'keys',
   'detection',
   'detection_rules', // NEW (Round-5 G6 R2: unified "Detection & rules" home)
@@ -109,6 +110,7 @@ describe('grouped rail derivation (Round-5 Sett-B: 5 groups, Security promoted)'
     expect(general.sections.map((s) => s.id)).toEqual([
       'general',
       'models',
+      'chat_agent',
       'detection',
       'detection_rules',
       'cases',
@@ -172,6 +174,7 @@ describe('SECTION_KEYS is derived from ownedKeys (kills the 3-file hand-sync)', 
     expect(SECTION_KEYS.advanced).toContain('rag');
     expect(SECTION_KEYS.storage).toEqual(['storage_lifecycle']);
     expect(SECTION_KEYS.release_updates).toEqual(['release_updates']);
+    expect(SECTION_KEYS.chat_agent).toEqual(['chat_agent']);
   });
 
   it('leaves the embedded / self-saving sections out of the dirty map', () => {
@@ -229,7 +232,7 @@ describe('GRID_SECTIONS (full-width, no outer Card)', () => {
   it('excludes the single-card sections (incl. automation after Round-6 de-dup)', () => {
     // Round-6: with the embedded rule cards gone, automation is a simple single-card
     // section again (master toggle + link card) — no longer a grid section.
-    for (const id of ['models', 'keys', 'cases', 'standup', 'enrichment', 'security', 'automation']) {
+    for (const id of ['models', 'chat_agent', 'keys', 'cases', 'standup', 'enrichment', 'security', 'automation']) {
       expect(GRID_SECTIONS.has(id)).toBe(false);
     }
   });

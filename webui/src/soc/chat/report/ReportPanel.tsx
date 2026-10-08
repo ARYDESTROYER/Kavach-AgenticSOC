@@ -302,6 +302,29 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     if (mode === 'overlay') headingRef.current?.focus({ preventScroll: true });
   }, [mode]);
 
+  // The host's Sheet focuses its own content on open, which can land after the mount
+  // effect above, and a report still loading settles later still. So once the first load
+  // has settled the heading is claimed again (now and on the next frame, after any focus
+  // scope) — but only from the dialog itself or <body>: never from a control the analyst
+  // moved to meanwhile.
+  React.useEffect(() => {
+    if (mode !== 'overlay' || pendingFirstLoad) return undefined;
+    const claim = () => {
+      const heading = headingRef.current;
+      if (!heading || !alive.current) return;
+      const active = document.activeElement;
+      if (active === heading) return;
+      const unclaimed =
+        !active ||
+        active === document.body ||
+        (active instanceof HTMLElement && active.getAttribute('role') === 'dialog' && active.contains(heading));
+      if (unclaimed) heading.focus({ preventScroll: true });
+    };
+    claim();
+    const frame = window.requestAnimationFrame(claim);
+    return () => window.cancelAnimationFrame(frame);
+  }, [mode, pendingFirstLoad]);
+
   /* ---------------------------------------------------------- mutations -- */
   /**
    * Apply one PATCH with the latest version. Serialised: each write waits for the one

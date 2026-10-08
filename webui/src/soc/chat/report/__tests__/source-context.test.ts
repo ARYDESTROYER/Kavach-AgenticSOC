@@ -97,4 +97,13 @@ describe('reportErrorMessage', () => {
     expect(reportErrorMessage(err(422, 'report_item_order_invalid'))).toMatch(/Reload it/);
     expect(reportErrorMessage(err(500, 'something_new'), 'Fallback')).toBe('Fallback');
   });
+
+  it('tells a full report by items from one at its storage size bound', () => {
+    const full = (reason?: string) =>
+      new ApiError(409, 'full', { detail: { code: 'report_full', message: 'server text', ...(reason ? { reason } : {}) } });
+    expect(reportErrorMessage(full('items'))).toBe('Report is full (40 items)');
+    expect(reportErrorMessage(full())).toBe('Report is full (40 items)');
+    expect(reportErrorMessage(full('size'))).toMatch(/storage size limit/);
+    expect(reportErrorMessage(err(409, 'block_unavailable'))).toMatch(/Ask again to refresh it/);
+  });
 });

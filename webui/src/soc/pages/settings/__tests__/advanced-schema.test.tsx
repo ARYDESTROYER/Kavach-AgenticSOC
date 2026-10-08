@@ -126,6 +126,27 @@ describe('AdvancedSchemaSection (schema-driven generic renderer)', () => {
     expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
   });
 
+  it('hides chat_agent: the Chat assistant section is its one editor', async () => {
+    schemaMock.mockResolvedValueOnce({
+      sections: [
+        ...SCHEMA.sections,
+        {
+          key: 'chat_agent',
+          title: 'Chat assistant',
+          kind: 'object' as const,
+          model: 'ChatAgentConfig',
+          fields: [
+            { name: 'max_tool_calls', type: 'integer' as const, default: 10, required: false, choices: null, description: 'Lookups (tool calls) per chat turn.' },
+          ],
+        },
+      ],
+    });
+    renderSection({ baseline: { enabled: false } });
+    await waitFor(() => expect(screen.getByLabelText('Data view pattern')).toBeInTheDocument());
+    expect(screen.queryByText('Chat assistant')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Max tool calls')).not.toBeInTheDocument();
+  });
+
   it('special-cases read_only_settings_mode (field) as read-only (managed elsewhere)', async () => {
     renderSection({ baseline: { enabled: false } });
     await waitFor(() => expect(screen.getByLabelText('Data view pattern')).toBeInTheDocument());

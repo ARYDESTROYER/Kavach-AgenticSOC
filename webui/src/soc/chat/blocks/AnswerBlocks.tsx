@@ -38,6 +38,8 @@ export interface AnswerBlocksProps {
   onAddToReport?: (blockId: string) => void;
   /** Show the Add to report control (false for case scope, a full report, a viewer). */
   canAddToReport?: boolean;
+  /** Why adding is refused (a full report): the toggles stay, `aria-disabled` with it. */
+  addDisabledReason?: string | null;
   /** Navigation for validated refs; defaults to the shell router. */
   onNavigate?: (ref: InternalRef) => void;
   /** Renderer for `markdown` blocks (WP-I's ChatMarkdown); a safe built-in otherwise. */
@@ -94,6 +96,7 @@ export function AnswerBlocks({
   inReport,
   onAddToReport,
   canAddToReport = false,
+  addDisabledReason = null,
   onNavigate,
   renderMarkdown,
   queryForStep,
@@ -120,6 +123,7 @@ export function AnswerBlocks({
         inReport={inReport?.has(b.id) ?? false}
         canAddToReport={canAddToReport && b.type !== 'callout' && b.type !== 'markdown'}
         onAddToReport={onAddToReport ? () => onAddToReport(b.id) : undefined}
+        addDisabledReason={addDisabledReason}
       />
     </BlockBoundary>
   );

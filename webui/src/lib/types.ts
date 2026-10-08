@@ -3015,6 +3015,11 @@ export interface ChatRequest {
   origin?: ChatOrigin;
   /** The assistant message id this turn continues (after a `cap` notice). */
   continue_of?: string | null;
+  /**
+   * "Ask about this" (SPEC A7): the `console_map` topic the turn was started from
+   * (`^[a-z0-9_:.-]{1,64}$`). Retrieval pins that topic's sections; never prompt text.
+   */
+  topic?: string | null;
 }
 
 /** Usage of one model call (or one query-embedding call on a tool step). */

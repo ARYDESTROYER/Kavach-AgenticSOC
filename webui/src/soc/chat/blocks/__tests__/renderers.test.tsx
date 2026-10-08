@@ -78,9 +78,12 @@ describe('case list', () => {
     await act(async () => {
       fireEvent.pointerEnter(list.parentElement!);
     });
-    // The link survives the lazy swap and is still a single link per case.
-    expect(await screen.findByRole('link', { name: 'Brute force against vpn-gw-2' })).toBeInTheDocument();
-  });
+    // The link survives the lazy swap and is still a single link per case. The hover
+    // card is a lazy import: under a loaded full-suite run its first transform can take
+    // longer than findBy's default 1 s, so the wait is generous (it returns as soon as
+    // the link is there).
+    expect(await screen.findByRole('link', { name: 'Brute force against vpn-gw-2' }, { timeout: 10_000 })).toBeInTheDocument();
+  }, 15_000);
 });
 
 describe('kpi group', () => {

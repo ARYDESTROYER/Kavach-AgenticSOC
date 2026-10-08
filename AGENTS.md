@@ -260,6 +260,10 @@ backend/app/
                      mitre (bundled ATT&CK technique lookup) ·
                      demo_generator (seeded OCSF org+baseline+MITRE storylines) ·
                      demo_runtime (deterministic mock LLM + sandboxed policy — Demo Mode) ·
+                     demo_chat (pure Demo chat planner: plays the model for chat turns
+                     and report summaries from the real prompts, $0, deterministic) ·
+                     report_digest (bounded, deterministic, fenced digest a report
+                     summary reads; aggregates only, never raw logs #7) ·
                      threshold_tuner (Round-4: nightly deterministic tuning observer —
                      per-rule FP uses independent analyst-confirmed outcomes only, with
                      Wilson-LB + min-samples + EWMA + shadow-eval; bounded +1
@@ -320,6 +324,10 @@ backend/app/
                      worker restart rather than spend a second ceiling)
   threat/            mitre_techniques.json (bundled ATT&CK, 697 techniques) +
                      refresh_mitre.py + SOURCE.md (data corpus, not live fetch)
+  knowledge/         generated Help Center corpus for chat's product answers
+                     (app_docs/aliases/console_map/manifest .json — regenerate with
+                     `npm run gen:console-map` then scripts/build_app_knowledge.py) +
+                     manifest-verified fail-closed loader, BM25F index, $0 answer
   runbooks/          protected bundled Markdown runbooks (RAG knowledge corpus;
                      operator-authored documents are durable StateStore records)
   playbooks/         Markdown PLAYBOOK engine: manifest · loader · registry
@@ -336,7 +344,15 @@ backend/app/
                      templates (stdlib mustache-subset renderer + 5 preloaded,
                      overridable templates; header_safe/text_safe)
   middleware/        security_headers · csrf · rate_limit (Starlette middleware)
-  agents/            prompts · router · investigator · formatter · chat · standup ·
+  agents/            prompts · router · investigator · formatter · chat (ONE engine #5:
+                     bounded read-only agent loop + byte-identical compatibility mode) ·
+                     chat_protocol (final-header parser, live-text state machine, notices,
+                     replay digest, observation shrink) · chat_events (NDJSON stream
+                     events + protocol constants) · blocks (answer-block schema,
+                     validation, artifact → block materialisation, honest views) ·
+                     chat_tools/ (read-only tool registry: logs · cases · metrics ·
+                     intel · ops · app_help/app_status; per-tool RBAC, whitelisted
+                     aggregate observations #7, indicator taint ledger #9) · standup ·
                      graph (LangGraph) · pipeline · common · personas (multi-agent roster)
   stores/            base (abstract repositories — backend-agnostic StateStore) ·
                      cases · usage · ledger_claims (ES keyed Audit/Usage first-writer
@@ -350,7 +366,10 @@ backend/app/
                      approved/pending review state; only approved entries are trusted;
                      EsKVStore/SqlKVStore adapters, no new index) · chat_conversations
                      (bounded per-user Workspace transcripts; server history is
-                     authoritative on resume; no new index/table) · proposals ·
+                     authoritative on resume; no new index/table) · reports (owner-
+                     scoped chat reports: one strict-CAS KV doc per report + a per-user
+                     index, opaque report_-prefixed fields; no new index/table) ·
+                     proposals ·
                      runbooks (strict-CAS operator Markdown catalog layered over
                      protected bundled runbooks; no new index/table) · playbooks
                      (strict-CAS durable operator procedure catalog layered over
@@ -383,7 +402,7 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **29 `routes_*.py` feature routers**, ALL
+                     + /sources/health) + **33 `routes_*.py` feature routers**, ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
@@ -445,6 +464,11 @@ backend/app/
                      new local Batch rows freeze a strict,
                      generation-bound effective-`models:read` Inbox audience (max 200),
                      while legacy/unselected rows remain list-only] ·
+                     routes_chat [`POST /api/chat/stream` NDJSON, `GET /api/chat/context`,
+                     `POST /api/chat/turns/{id}/cancel`, `GET /api/chat/topics/{id}`; the
+                     turn registry + per-user/global concurrency; `/api/chat` delegates
+                     here] · routes_reports [`/api/reports*` owner-scoped reports,
+                     server-resolved add, one-call AI summary with dry-run estimate] ·
                      mounted in main.py · deps (require_auth + require_permission +
                      require_fresh_auth + custom-role union enforcement + session check) ·
                      state.py (DI hub; exposes enrichment_registry + event_bus) · main.py
@@ -479,7 +503,11 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      hands an opened row to the exact Case Manager record) + Chat
                      (searchable 264px desktop history rail/mobile Sheet, newest-first
                      durable per-user transcripts, one docked composer; Case Manager
-                     chat stays separate and case-scoped) +
+                     chat stays separate and case-scoped) + Reports.tsx (the Reports
+                     library route) + chat/** (the lazy chat package: chat-api/ndjson/
+                     stream-events, useChatEngine/useChatConversations/useChatContext,
+                     composer/, message/, workspace/, empty/, shortcuts/, blocks/ [answer
+                     renderers + chart kit], report/ [panel, library, exports]) +
                      Docs (same-origin, version-matched Help Center discovery hub) +
                      Round-5 Dashboards.tsx + settings/* data-driven section files [was a
                      2673-line god-file, now a section registry; includes Organization

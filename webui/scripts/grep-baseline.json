@@ -3,10 +3,7 @@
   "arbitrary-text-size": {
     "src/soc/AppShell.tsx": 4,
     "src/soc/components/BaselineGauge.tsx": 9,
-    "src/soc/components/CaseActivityFeed.tsx": 2,
     "src/soc/components/CaseHoverCard.tsx": 1,
-    "src/soc/components/CaseTasks.tsx": 2,
-    "src/soc/components/CaseThread.tsx": 2,
     "src/soc/components/CaseTriageHeader.tsx": 5,
     "src/soc/components/ColumnsMenu.tsx": 2,
     "src/soc/components/ConnectorPicker.tsx": 1,
@@ -21,7 +18,7 @@
     "src/soc/components/SavedViewsBar.tsx": 2,
     "src/soc/components/TraceTimeline.tsx": 3,
     "src/soc/components/__tests__/CustomizationSection.savedviews.test.tsx": 3,
-    "src/soc/components/charts-soc.tsx": 4,
+    "src/soc/components/charts-soc.tsx": 1,
     "src/soc/pages/Scans.tsx": 1,
     "src/ui/avatar.tsx": 1,
     "src/ui/table.tsx": 1

@@ -24,6 +24,7 @@ import type { ChatConversationSummary, ChatStarter } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { LoadingState } from '@/design-system/loading';
+import { useAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { getConversation } from '../chat-api';
 import { BudgetAlert } from '../composer/BudgetAlert';
@@ -72,6 +73,9 @@ export interface ChatWorkspaceProps {
 export function ChatWorkspace({ conv, engine, context, caseId = null, author = null }: ChatWorkspaceProps) {
   const caseScoped = !!caseId;
   const announce = useAnnouncer();
+  const { hasPermission } = useAuth();
+  // The model picker lists `/api/models`, which needs models:read (SPEC §10.4).
+  const canChooseModel = hasPermission('models', 'read');
   const composerRef = React.useRef<ComposerHandle>(null);
   const [panelOpen, setPanelOpen] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
@@ -198,10 +202,23 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     !caseScoped,
   );
 
-  const onSavePrompt = React.useCallback((item: ChatUserItem) => composerRef.current?.savePrompt(item.content), []);
+  // The EXACT prompt (`prompt`, not its display form `content`): a saved prompt must
+  // send what was sent, including a lookalike character the display strips (SPEC §7.6).
+  const onSavePrompt = React.useCallback((item: ChatUserItem) => composerRef.current?.savePrompt(item.prompt), []);
+
+  // The palette's "Ask AI: <text>" (SPEC §10.4a): once the fresh draft is in place,
+  // prefill the composer with the analyst's words and focus it. Never sent here: the
+  // analyst reviews and sends, so the turn is honestly `origin: user`.
+  const { ask, clearAsk } = conv;
+  React.useEffect(() => {
+    if (!ask || conv.activeId !== null || busy) return;
+    clearAsk();
+    composerRef.current?.setText(ask);
+  }, [ask, busy, clearAsk, conv.activeId]);
 
   /* -------------------------------------------------------------- derived -- */
 
+  // Calibrated on every part, exactly like the composer meter (display.estimateNextRequest).
   const continueEstimate = React.useMemo(() => {
     if (!ctx) return null;
     return estimateNextRequest({
@@ -246,10 +263,15 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
         <p className="border-l-2 border-warning px-3 py-1 text-xs leading-relaxed text-muted-foreground" role="note">
           {conv.threadRetention.note}
         </p>
+      ) : conv.threadRetention.trimmedHint ? (
+        // Shortened in place only (no turn missing): a quiet line, not a warning.
+        <p className="text-xs text-muted-foreground" role="note" data-testid="thread-trimmed-hint">
+          {conv.threadRetention.trimmedHint}
+        </p>
       ) : null}
     </>
   );
-  const hasHeader = conv.requestedUnavailable || !!conv.threadRetention.note;
+  const hasHeader = conv.requestedUnavailable || !!conv.threadRetention.note || !!conv.threadRetention.trimmedHint;
 
   const replace = conv.restoring && !engine.items.length ? (
     <LoadingState label="Restoring conversation" description="Loading the saved answers and their evidence." layout="panel" />
@@ -411,7 +433,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onSavePrompt={caseScoped ? undefined : onSavePrompt}
         />
 
-        <div className="shrink-0 px-4 pb-4 pt-1 sm:px-6">
+        {/* The transcript reserves a scrollbar gutter on both edges; the composer area
+            reserves the same one (an overflow box with no overflow), so the composer's
+            edges line up with the bubbles and prose above at every width. Its menus and
+            popovers are portalled, so nothing here is clipped. */}
+        <div className="shrink-0 overflow-hidden px-4 pb-4 pt-1 [scrollbar-gutter:stable_both-edges] sm:px-6">
           <div className={LANE_GRID}>
             <div className={`${CONTENT_COL} space-y-2`}>
               <BudgetAlert context={ctx} />
@@ -425,6 +451,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
                 onComposerFocus={context.revalidate}
                 contextError={context.error}
                 onRetryContext={context.refresh}
+                canChooseModel={canChooseModel}
                 conversationTotals={summary ? { tokens: summary.total_tokens ?? null, cost: summary.total_cost ?? null } : null}
               />
             </div>

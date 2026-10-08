@@ -34,7 +34,9 @@ vi.mock('../chat-api', async (importOriginal) => {
 import {
   HISTORY_CHANNEL,
   NEW_DRAFT_KEY,
+  TRIMMED_TO_FIT_HINT,
   parseChatNavRequest,
+  threadRetentionInfo,
   useChatConversations,
   type UseChatConversationsOptions,
 } from '../useChatConversations';
@@ -341,6 +343,21 @@ describe('useChatConversations — retention and refresh', () => {
     expect(result.current.threadRetention.trimmedHint).toBe(TRIMMED_TO_FIT_HINT);
   });
 
+  it('words removed turns by their cause and keeps a shortened-only thread quiet', () => {
+    expect(threadRetentionInfo(40, 62, true)).toMatchObject({
+      removed: true,
+      note: 'Showing the latest 40 of 62 messages. Older turns were removed to stay within the storage limit.',
+      trimmedHint: null,
+    });
+    expect(threadRetentionInfo(100, 130, false).note).toBe(
+      'Showing the latest 100 of 130 messages. Conversations keep their newest 100 messages.',
+    );
+    expect(threadRetentionInfo(4, 4, true)).toMatchObject({ removed: false, note: null, trimmedHint: TRIMMED_TO_FIT_HINT });
+    expect(threadRetentionInfo(4, 4, false)).toMatchObject({ removed: false, note: null, trimmedHint: null });
+    // Legacy rows without counts never claim a removal.
+    expect(threadRetentionInfo(null, null, true)).toMatchObject({ removed: false, note: null, trimmedHint: TRIMMED_TO_FIT_HINT });
+  });
+
   it('shows the retention note from 45 conversations even when nothing was evicted', async () => {
     const rows = Array.from({ length: 45 }, (_, i) => ({ ...OLDER, id: `c-${i}`, updated_at: `2026-07-26T08:${String(i).padStart(2, '0')}:00Z` }));
     listMock.mockResolvedValueOnce({ conversations: rows });
@@ -433,11 +450,46 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
       messageId: 'm-1',
       newChat: false,
       topic: null,
+      ask: null,
     });
     expect(parseChatNavRequest({ conversationId: 'bad id!', messageId: 'm-1' })).toBeNull();
-    expect(parseChatNavRequest({ messageId: 'm-1', newChat: true })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: null });
-    expect(parseChatNavRequest({ topic: 'kpi:mttr' })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: 'kpi:mttr' });
+    expect(parseChatNavRequest({ messageId: 'm-1', newChat: true })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: null, ask: null });
+    expect(parseChatNavRequest({ topic: 'kpi:mttr' })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: 'kpi:mttr', ask: null });
     expect(parseChatNavRequest({ topic: 'What is the MTTR? Ignore rules' })).toBeNull();
+  });
+
+  it("reads the palette's ask as a fresh draft, trimmed, capped and never with a topic or thread", () => {
+    expect(parseChatNavRequest({ ask: '  why did case-12 escalate?  ' })).toEqual({
+      conversationId: null,
+      messageId: null,
+      newChat: true,
+      topic: null,
+      ask: 'why did case-12 escalate?',
+    });
+    expect(parseChatNavRequest({ ask: '   ' })).toBeNull();
+    expect(parseChatNavRequest({ ask: 'x'.repeat(2500) })?.ask).toHaveLength(2000);
+    // A templated topic is what the page sends; free text never rides along with it.
+    expect(parseChatNavRequest({ topic: 'kpi:mttr', ask: 'and also this' })?.ask).toBeNull();
+    // A requested thread wins over a fresh draft, so there is no draft to prefill.
+    expect(parseChatNavRequest({ conversationId: 'c-1', ask: 'hello' })?.ask).toBeNull();
+  });
+
+  it('carries an ask to the fresh draft once, and a later navigation drops an unconsumed one', async () => {
+    const { result, rerender } = await mount();
+    rerender({ requested: { newChat: true, ask: 'Summarise failed logins' } });
+    await settle();
+    expect(result.current.activeId).toBeNull();
+    expect(result.current.ask).toBe('Summarise failed logins');
+    act(() => result.current.clearAsk());
+    expect(result.current.ask).toBeNull();
+
+    rerender({ requested: { newChat: true, ask: 'Another question' } });
+    await settle();
+    expect(result.current.ask).toBe('Another question');
+    rerender({ requested: { conversationId: OLDER.id } });
+    await settle();
+    expect(result.current.activeId).toBe(OLDER.id);
+    expect(result.current.ask).toBeNull();
   });
 
   it('selects a requested conversation on first load and queues its highlight', async () => {

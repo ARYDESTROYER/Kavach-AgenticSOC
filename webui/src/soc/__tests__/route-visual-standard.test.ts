@@ -168,9 +168,11 @@ describe("Console route visual standard", () => {
    *
    * So the enforced grammar removes the tie instead of describing it: every declared
    * column count owns a MUTUALLY EXCLUSIVE breakpoint range containing exactly one
-   * ENABLE (`[&>*]:border-l`, specificity (0,1,0)) and one ROW-START RESET
-   * (`[&>*:nth-child(Nn+1)]:border-l-0`, (0,2,0)) whose N is that range's own
-   * `grid-cols-N`. The reset then wins on specificity alone, so the rendered result is
+   * ENABLE (`[&>*]:border-l`, specificity (0,1,0)) and one ROW-START RESET (the
+   * `nth-child` arbitrary variant stepping by N from 1, applying `border-l-0`; (0,2,0))
+   * whose N is that range's own `grid-cols-N`. (The reset is described rather than
+   * spelled out here: Tailwind scans this file, and a literal class with a placeholder
+   * N makes Vite's CSS minifier warn about an invalid selector.) The reset then wins on specificity alone, so the rendered result is
    * independent of emission order, and a strip that grows a tile changes only its
    * column count.
    */
@@ -240,7 +242,7 @@ describe("Console route visual standard", () => {
       }
 
       // Order-dependent forms, banned outright: `:first-child` states the contract only
-      // for a strip that never wraps, and an `odd`/`Nn+1` pair is a (0,2,0) tie whose
+      // for a strip that never wraps, and an odd / every-Nth-from-1 pair is a (0,2,0) tie whose
       // winner is decided by Tailwind's emission order rather than by this grammar.
       expect(chunk, `${file} strip must not gate a divider on :first-child`).not.toMatch(
         /\[&>\*:first-child\]:border-l/,

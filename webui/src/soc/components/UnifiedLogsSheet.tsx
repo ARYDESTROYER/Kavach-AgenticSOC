@@ -21,6 +21,11 @@
  * "Logs" page under the Triage nav group) and `UnifiedLogsSheet` (the same content in a
  * right Sheet, for an inline "browse everything" affordance). The default export is the
  * page view.
+ *
+ * `UnifiedLogsBody` also takes a STARTING query, window and source plus a header slot:
+ * the Logs page's chat deep link ("Open in Logs", SPEC §10.7) opens this same browser
+ * already set to the answer's exact filter, with its summary above the controls, so
+ * there is one log table, not a second copy for linked queries.
  */
 import * as React from 'react';
 import {
@@ -180,13 +185,60 @@ const SourceStatusStrip: React.FC<{ sources: UnifiedLogSourceStatus[] }> = ({ so
 /* Shared body — the controls + status strip + rows table                     */
 /* -------------------------------------------------------------------------- */
 
-export const UnifiedLogsBody: React.FC = () => {
-  const [query, setQuery] = React.useState('');
+/** The time-range control's value for a starting window that is not a preset. */
+const LINKED_WINDOW = 'linked';
+
+export interface UnifiedLogsBodyProps {
+  /** The search to start with (a linked query); it stays editable. */
+  initialQuery?: string;
+  /**
+   * The window to start with (a linked query's exact bounds): `now`, `now-<n><unit>` or
+   * ISO-8601. A preset with no explicit end selects that preset; anything else becomes a
+   * one-off entry in the time-range control until another range is chosen.
+   */
+  initialFrom?: string;
+  initialTo?: string;
+  /** How that one-off window reads in the control (e.g. a readable UTC range). */
+  initialWindowLabel?: string;
+  /** Read only this source (a linked query's source). */
+  sourceId?: string;
+  /** Rendered above the controls (e.g. the linked query's summary). */
+  header?: React.ReactNode;
+}
+
+interface StartWindow {
+  /** A preset value, or {@link LINKED_WINDOW} for the starting one-off window. */
+  start: string;
+  linked: { from: string | null; to: string | null; label: string } | null;
+}
+
+function startWindow(from?: string, to?: string, label?: string): StartWindow {
+  if (!from && !to) return { start: 'now-1h', linked: null };
+  if (from && (!to || to === 'now') && TIME_RANGES.some((r) => r.value === from)) return { start: from, linked: null };
+  return {
+    start: LINKED_WINDOW,
+    linked: { from: from ?? null, to: to ?? null, label: label || `${from ?? '…'} → ${to ?? 'now'}` },
+  };
+}
+
+export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
+  initialQuery = '',
+  initialFrom,
+  initialTo,
+  initialWindowLabel,
+  sourceId,
+  header = null,
+}) => {
+  const [query, setQuery] = React.useState(initialQuery);
   // The COMMITTED search term the fetch actually uses. Kept separate from the live
   // `query` input so typing does not refetch/skeleton-flash on every keystroke — the
   // search is manual (Enter / Refresh), matching the button contract below.
-  const [submittedQuery, setSubmittedQuery] = React.useState('');
-  const [start, setStart] = React.useState('now-1h');
+  const [submittedQuery, setSubmittedQuery] = React.useState(initialQuery);
+  // The starting window is read once: a host that links somewhere else remounts the
+  // body (keyed), so a later prop change never silently swaps the analyst's range.
+  const [initialWindow] = React.useState(() => startWindow(initialFrom, initialTo, initialWindowLabel));
+  const [start, setStart] = React.useState(initialWindow.start);
+  const linkedWindow = start === LINKED_WINDOW ? initialWindow.linked : null;
   const [liveTail, setLiveTail] = React.useState(false);
 
   const [rows, setRows] = React.useState<UnifiedLogRow[]>([]);
@@ -216,8 +268,10 @@ export const UnifiedLogsBody: React.FC = () => {
         const res = await fetchUnifiedLogs({
           limit: ROW_LIMIT,
           query: submittedQuery.trim() || undefined,
-          from: start || undefined,
-          to: 'now',
+          // A linked window keeps its exact bounds; an open-ended one runs to now.
+          from: linkedWindow ? (linkedWindow.from ?? undefined) : start || undefined,
+          to: linkedWindow ? (linkedWindow.to ?? (linkedWindow.from ? 'now' : undefined)) : 'now',
+          ...(sourceId ? { source_id: sourceId } : {}),
         });
         if (seq !== seqRef.current) return; // superseded by a newer request
         const logs = res.logs || [];
@@ -242,7 +296,7 @@ export const UnifiedLogsBody: React.FC = () => {
         if (showSkeleton && seq === seqRef.current) setLoading(false);
       }
     },
-    [submittedQuery, start],
+    [submittedQuery, start, linkedWindow, sourceId],
   );
 
   // Manual search: commit the live input. If the term is unchanged the load effect
@@ -290,6 +344,7 @@ export const UnifiedLogsBody: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4">
+      {header}
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-2.5">
         <div className="relative min-w-[14rem] flex-1">
@@ -309,10 +364,11 @@ export const UnifiedLogsBody: React.FC = () => {
           />
         </div>
         <Select value={start} onValueChange={setStart}>
-          <SelectTrigger className="h-9 w-[11rem]" aria-label="Time range">
+          <SelectTrigger className={cn('h-9', initialWindow.linked ? 'w-auto min-w-[11rem] max-w-full' : 'w-[11rem]')} aria-label="Time range">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            {initialWindow.linked ? <SelectItem value={LINKED_WINDOW}>{initialWindow.linked.label}</SelectItem> : null}
             {TIME_RANGES.map((r) => (
               <SelectItem key={r.value} value={r.value}>
                 {r.label}
@@ -338,7 +394,7 @@ export const UnifiedLogsBody: React.FC = () => {
           disabled={loading}
           aria-label="Refresh log events"
         >
-          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden /> Refresh
+          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin motion-reduce:animate-none')} aria-hidden /> Refresh
         </Button>
       </div>
 

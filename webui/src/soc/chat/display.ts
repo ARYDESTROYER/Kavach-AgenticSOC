@@ -112,6 +112,18 @@ export function estimateTokens(chars: number, charsPerToken = DEFAULT_CHARS_PER_
   return Math.ceil((chars / ratio) * factor);
 }
 
+/** The server's calibration bounds (`CALIBRATION_BOUNDS` in routes_chat.py). */
+export const CALIBRATION_RANGE = [0.25, 4] as const;
+
+/**
+ * The usable calibration factor: clamped to 0.25–4; 1 when absent, non-positive or not
+ * a number. The ONE implementation: the composer meter (`composer/format`) re-exports it.
+ */
+export function calibrationFactor(calibration: number | null | undefined): number {
+  if (typeof calibration !== 'number' || !Number.isFinite(calibration) || calibration <= 0) return 1;
+  return Math.min(CALIBRATION_RANGE[1], Math.max(CALIBRATION_RANGE[0], calibration));
+}
+
 /** Inputs for {@link estimateNextRequest} (all from `GET /api/chat/context`). */
 export interface NextRequestEstimateInput {
   staticPromptTokens: number;
@@ -127,19 +139,24 @@ export interface NextRequestEstimate {
   history: number;
   draft: number;
   total: number;
+  /** The clamped factor applied to every part (1 = uncalibrated). */
+  factor: number;
 }
 
 /**
  * Next-request estimate: system (static prompt + the caller's tool signatures) +
- * history + the draft, with the calibration applied to the draft only (the server
- * already calibrates its own figures). Never negative, never NaN.
+ * history + the draft, each × the clamped calibration. The server's calibration is
+ * actual ÷ estimate for the WHOLE first prompt of the conversation's last turn, and
+ * `static_prompt_tokens` / `history_tokens` are plain chars ÷ 4 estimates, so the
+ * factor belongs on every part, not just the draft. Never negative, never NaN.
  */
 export function estimateNextRequest(input: NextRequestEstimateInput): NextRequestEstimate {
-  const safe = (n: number) => (Number.isFinite(n) && n > 0 ? Math.round(n) : 0);
-  const system = safe(input.staticPromptTokens);
-  const history = safe(input.historyTokens);
-  const draft = estimateTokens(Array.from(input.draft).length, input.charsPerToken, input.calibration);
-  return { system, history, draft, total: system + history + draft };
+  const factor = calibrationFactor(input.calibration);
+  const safe = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
+  const system = Math.round(safe(input.staticPromptTokens) * factor);
+  const history = Math.round(safe(input.historyTokens) * factor);
+  const draft = estimateTokens(Array.from(input.draft).length, input.charsPerToken, factor);
+  return { system, history, draft, total: system + history + draft, factor };
 }
 
 /**

@@ -43,11 +43,21 @@ pipeline is broken.
 Use the command palette to find:
 
 - cases by ID, title, entity, tag, or source;
-- configured sources by name, type, or ID; and
-- navigation and Settings destinations.
+- configured sources by name, type, or ID;
+- navigation and Settings destinations; and
+- your saved chat conversations by their content.
+
+The palette also offers **New chat**, **Open Reports**, and **Ask AI**, which opens a new
+Workspace Chat with what you typed in the composer, ready to review and send. Chat
+entries are listed after pages and settings, so pressing Enter on a page name still
+opens that page.
 
 Global search is bounded and requires `cases:read`. It is a navigation aid, not an
 unbounded raw-event search engine.
+
+**Open in Logs** on a Workspace Chat result opens this page with the exact query,
+source, and absolute time window behind that result, so you can inspect the events
+yourself. It is offered only when the Logs page can apply the same filter.
 
 ## Treat log content as data
 

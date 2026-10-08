@@ -7,8 +7,8 @@ description: Exact definitions of the Overview and Analytics KPIs, including the
 
 This page is the single reference for the numbers on **Overview → Dashboard** and
 **Analytics → Metrics**. Each definition matches the help (`?`) text beside the KPI
-in the Console. Workspace Chat answers "what does this KPI mean?" from this page, and
-the **Ask about this** action on a KPI opens a chat with that question.
+in the Console. Workspace Chat answers questions such as "What does MTTA measure?" from
+this page and cites the matching section.
 
 Every KPI is advisory. A metric describes stored cases, ingest counters, or the usage
 ledger; none of them feeds the deterministic close or escalate decision.

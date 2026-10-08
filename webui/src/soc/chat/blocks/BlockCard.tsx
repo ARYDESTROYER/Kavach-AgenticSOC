@@ -49,6 +49,7 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/ui/sheet';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
 import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { isSafeCaseId } from '@/soc/case-result-route';
@@ -275,6 +276,12 @@ export interface BlockCardProps {
   inReport?: boolean;
   canAddToReport?: boolean;
   onAddToReport?: () => void;
+  /**
+   * Why adding is refused right now (e.g. "Report is full (40 items)"). The toggle stays
+   * visible and focusable (a block already in the report must stay removable), turns
+   * `aria-disabled` when the block is not in the report, and says why in its tooltip.
+   */
+  addDisabledReason?: string | null;
   /** Report leaf position (`"<section>-<leaf>"`). */
   leafKey?: string;
   /** Print / static rendering (see {@link BlockBodyProps.staticMode}). */
@@ -282,6 +289,65 @@ export interface BlockCardProps {
 }
 
 const HEADINGS = { 4: 'h4', 5: 'h5', 6: 'h6' } as const;
+
+/**
+ * A block's Add to report toggle. ONE stable name (an APG toggle must not also flip its
+ * name); `aria-pressed` says whether the block is in the report. When adding is refused
+ * (a full report) and the block is not in it, the toggle is `aria-disabled`, never
+ * `disabled`: it stays focusable so the tooltip can say why on hover AND focus, and the
+ * reason is its accessible description. A click still reaches the host, which answers a
+ * refused add with the same reason. Its own provider keeps the card renderable outside
+ * the app shell (reports, tests); nesting one is supported.
+ */
+function BlockReportToggle({
+  title,
+  inReport,
+  disabledReason,
+  onToggle,
+}: {
+  title: string;
+  inReport: boolean;
+  disabledReason: string | null;
+  onToggle: () => void;
+}) {
+  const reasonId = `${React.useId().replace(/[^a-zA-Z0-9_-]/g, '')}-why`;
+  const unavailable = !inReport && !!disabledReason;
+  const hint = inReport ? 'In report ✓ (click to remove)' : unavailable ? disabledReason : 'Add to report';
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-pressed={inReport}
+            aria-label={`Add ${title} to report`}
+            aria-disabled={unavailable || undefined}
+            aria-describedby={unavailable ? reasonId : undefined}
+            onClick={onToggle}
+            data-testid="block-add-to-report"
+            className={cn(
+              'inline-flex size-7 items-center justify-center rounded-md',
+              inReport
+                ? 'text-primary hover:bg-muted'
+                : unavailable
+                  ? 'cursor-not-allowed text-muted-foreground opacity-50'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              focusRing,
+            )}
+          >
+            {inReport ? <FileCheck2 className="size-4" aria-hidden /> : <FilePlus2 className="size-4" aria-hidden />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{hint}</TooltipContent>
+      </Tooltip>
+      {unavailable ? (
+        <span id={reasonId} className="sr-only">
+          {disabledReason}
+        </span>
+      ) : null}
+    </TooltipProvider>
+  );
+}
 
 export function BlockCard({
   block,
@@ -291,6 +357,7 @@ export function BlockCard({
   inReport = false,
   canAddToReport = false,
   onAddToReport,
+  addDisabledReason = null,
   leafKey,
   staticMode = false,
 }: BlockCardProps) {
@@ -470,24 +537,8 @@ export function BlockCard({
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <ProvenanceTag kind={block.provenance} variant="icon" className="px-1" />
-          {showAddToReport ? (
-            <button
-              type="button"
-              aria-pressed={inReport}
-              // ONE stable name; the pressed state says whether it is in the report (an
-              // APG toggle must not also flip its name, or it reads "remove…, pressed").
-              aria-label={`Add ${title} to report`}
-              title={inReport ? 'In report ✓ (click to remove)' : 'Add to report'}
-              onClick={onAddToReport}
-              data-testid="block-add-to-report"
-              className={cn(
-                'inline-flex size-7 items-center justify-center rounded-md hover:bg-muted',
-                inReport ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
-                focusRing,
-              )}
-            >
-              {inReport ? <FileCheck2 className="size-4" aria-hidden /> : <FilePlus2 className="size-4" aria-hidden />}
-            </button>
+          {showAddToReport && onAddToReport ? (
+            <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
           ) : null}
           {staticMode ? null : menu}
         </div>

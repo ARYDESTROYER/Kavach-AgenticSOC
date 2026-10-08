@@ -544,7 +544,10 @@ export function HistoryRail({
                                   onFocus={() => setFocusIndex(index)}
                                   onClick={() => actions.onSelect(conversation)}
                                   className={cn(
-                                    'flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
+                                    // No reserved gutter: the ⋯ menu takes the time's place on
+                                    // hover/focus (the time keeps a 28 px box for it), so titles use
+                                    // the full row at rest.
+                                    'flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
                                     'hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                                     'disabled:cursor-not-allowed disabled:opacity-60',
                                     active ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground',
@@ -552,7 +555,7 @@ export function HistoryRail({
                                 >
                                   <span className="min-w-0 flex-1 truncate">{conversation.title || UNTITLED_CONVERSATION}</span>
                                   <span
-                                    className="shrink-0 text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible"
+                                    className="min-w-7 shrink-0 text-right text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible"
                                     aria-hidden
                                   >
                                     {shortAge(conversation.updated_at)}

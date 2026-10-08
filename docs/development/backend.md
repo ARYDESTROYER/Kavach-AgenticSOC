@@ -47,9 +47,10 @@ api routes
 | `connectors/` | Pull and receiver SPIs, manifests, registry, and built-ins |
 | `ocsf/` | OCSF event model plus generic/ECS normalization |
 | `engine/` | Deterministic correlation, risk, decision, polling, tuning, campaigns, baselines, budgets, and reports |
-| `agents/` | Router, investigator, formatter, chat, standup, prompts, and pipeline |
+| `agents/` | Router, investigator, formatter, chat (the agent loop, its protocol parser, stream events, answer blocks, and the `chat_tools/` read-only tool registry), standup, prompts, and pipeline |
 | `llm/` | Provider adapters, retry behavior, batching, pricing, and the single gateway |
 | `tools/` | MCP-shaped read-only investigation tools |
+| `knowledge/` | The generated Help Center corpus and console map, verified by a manifest, plus the dependency-free search behind chat's product answers |
 | `stores/` | Repository interfaces plus Elasticsearch, SQL, and KV-backed implementations |
 | `auth/`, `rbac/` | Password/JWT/MFA/OIDC services and permission policy |
 | `notifications/`, `enrichment/` | Pluggable outbound channels and threat-intelligence providers |

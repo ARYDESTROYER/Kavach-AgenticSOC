@@ -101,6 +101,29 @@ describe('add to report', () => {
     expect(add).toHaveBeenCalledWith('top-hosts');
   });
 
+  it('turns aria-disabled with its reason on a full report, but keeps in-report blocks removable', async () => {
+    const user = userEvent.setup();
+    const add = vi.fn();
+    show([galleryBlock('top-hosts'), galleryBlock('kpis')], {
+      canAddToReport: true,
+      onAddToReport: add,
+      inReport: new Set(['kpis']),
+      addDisabledReason: 'Report is full (40 items)',
+    });
+    const [hosts, kpis] = screen.getAllByTestId('block-add-to-report');
+    // Not in the report: refused, focusable, and it says why.
+    expect(hosts).toHaveAttribute('aria-disabled', 'true');
+    expect(hosts).not.toBeDisabled();
+    expect(hosts).toHaveAccessibleDescription('Report is full (40 items)');
+    act(() => hosts.focus());
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Report is full (40 items)');
+    // In the report: still a working remove toggle.
+    expect(kpis).not.toHaveAttribute('aria-disabled');
+    expect(kpis).toHaveAttribute('aria-pressed', 'true');
+    await user.click(kpis);
+    expect(add).toHaveBeenCalledWith('kpis');
+  });
+
   it('is absent without the capability and on prose/notes', () => {
     show([galleryBlock('top-hosts')]);
     expect(screen.queryByTestId('block-add-to-report')).toBeNull();

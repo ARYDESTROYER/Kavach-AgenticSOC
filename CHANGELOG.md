@@ -12,6 +12,49 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**Workspace Chat, rebuilt as a read-only analyst assistant with reports.** One question can
+now run several read-only lookups (log search and statistics, cases and case decisions,
+metrics, the shift report, campaigns, indicator reputation, ATT&CK, the knowledge corpus,
+cost, source health, automation status, the audit log and the bundled Help Center), and
+the page shows each lookup as it runs with its parameters, row counts, sampling basis and
+exact query, plus a live token and cost counter. Answers lead with the direct answer and
+carry charts, tables, case lists, timelines and entity cards whose numbers come only from
+lookup results, never from model text; each block switches between the views its data
+honestly supports, copies or downloads its data, and opens **Open in Logs** or **Open in
+Cases** on exactly the same filter. Citations link the version-matched Help Center, and
+product questions are answered at no cost from the Help Center when no model can run.
+The page has three calm zones: searchable, pinnable history (50 conversations, 10 pins,
+Markdown/HTML/PDF export), the conversation with a one-row composer (scope chip, `@`
+scopes, `/` commands, saved prompts, a calibrated next-request estimate and today's budget
+ring, an opt-in **Type out answers** mode, server-side **Stop**), and an on-demand report
+panel. **Reports** collect blocks or whole answers with notes, an AI summary (one metered
+call, estimate first, 10 an hour) and Markdown, HTML, print, CSV and JSON exports with
+indicators defanged by default; the new **Triage → Workspace → Reports** library lists
+them. Case Manager's **Chat** tab uses the same engine, compact and case-scoped. Demo Mode
+demos all of it deterministically at $0. Administrators bound it under the new
+**Settings → General → Chat assistant** (live mode, per-question limits, indicator-lookup
+policy). The Help Center chat page, API, permissions and configuration references are
+rewritten to match.
+
+Security and RBAC: chat stays read-only by construction, and every lookup needs the same
+grant as its console page, checked without audit noise (a refused request writes one
+ACCESS_DENIED row). Logs reach the model only as aggregates; every log-, case- and
+document-derived string is fenced as untrusted, and forged fence markers are neutralised
+everywhere. An indicator is sent to an enrichment provider only when it came from the
+analyst's own words or this question's results; private, reserved and internal values are
+never sent, and policy refusals are reported as such rather than as missing permissions.
+Memory changes are only proposed and need a `memory:manage` confirmation; money figures
+need `models:read`; case-thread saves need `cases:comment`; reports and conversations are
+owner-scoped, server-resolved from saved answers (case content is unaddable), audited and
+stored in mapping-safe documents on every state backend. Every model call, including
+streamed, cancelled and summary calls, records exactly one usage row.
+
+Also in this change: the ATT&CK heatmap's tactic and cell labels move from 10 px to the
+11 px `text-2xs` token when the heatmap became its own module, and the flaky
+`test_batch_submission_lease_converges_across_independent_sql_stores` now races its two
+stores on a file-backed SQLite engine, because the shared in-memory engine served both
+through one connection (a test isolation fix; product behaviour is unchanged).
+
 **A dashboard that reads as one instrument panel.** The Human vs AI chart is rebuilt as
 stacked columns (AI agent, Human, System) on a labelled y axis with solid gridlines and UTC
 time labels. Hovering or arrowing to a column shows that bucket's full breakdown: the UTC

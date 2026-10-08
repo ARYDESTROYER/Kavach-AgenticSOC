@@ -73,6 +73,8 @@ export const MAX_REPORTS = 100;
 export const REPORT_FULL_MESSAGE = `Report is full (${MAX_REPORT_ITEMS} items)`;
 export const REPORT_LIMIT_MESSAGE = 'Delete a report in Reports to start another';
 export const REPORT_CONFLICT_MESSAGE = 'This report changed elsewhere — Reload';
+/** 409 `report_full` with `reason: "size"`: the document bound, not the item count. */
+export const REPORT_SIZE_MESSAGE = 'This report is at its storage size limit. Shorten a note or remove an item';
 
 function codeOf(error: unknown): string | null {
   if (!(error instanceof ApiError) || !error.body || typeof error.body !== 'object') return null;
@@ -82,6 +84,15 @@ function codeOf(error: unknown): string | null {
     return (detail as Record<string, string>).code;
   }
   return typeof body.code === 'string' ? body.code : null;
+}
+
+/** A `detail.reason` string (409 `report_full`: `items` or `size`), else null. */
+function reasonOf(error: unknown): string | null {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== 'object') return null;
+  const detail = (error.body as Record<string, unknown>).detail;
+  if (!detail || typeof detail !== 'object') return null;
+  const reason = (detail as Record<string, unknown>).reason;
+  return typeof reason === 'string' ? reason : null;
 }
 
 /** The server's error code (`report_version_conflict`, `report_full`, …) or null. */
@@ -100,11 +111,13 @@ export function reportErrorMessage(error: unknown, fallback = 'The report could 
     case 'report_version_conflict':
       return REPORT_CONFLICT_MESSAGE;
     case 'report_full':
-      return REPORT_FULL_MESSAGE;
+      // A note or title that would grow the document past its bound is not "40 items".
+      return reasonOf(error) === 'size' ? REPORT_SIZE_MESSAGE : REPORT_FULL_MESSAGE;
     case 'report_limit':
       return REPORT_LIMIT_MESSAGE;
     case 'block_unavailable':
-      return 'That block expired from saved history and can no longer be added';
+      // Expired from saved history, or its saved presentation could not be read back.
+      return 'That result is no longer readable in saved history. Ask again to refresh it';
     case 'report_not_found':
       return 'This report no longer exists';
     case 'report_summary_in_progress':

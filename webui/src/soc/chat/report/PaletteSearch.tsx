@@ -1,13 +1,14 @@
 /**
  * The command palette's chat entries (chat revamp SPEC §10.4a): "Search chats" and
- * "Open Reports", plus the chat search results themselves (saved conversations matching
- * the term — the server's `?q=` content search, with the matched snippet — and reports
- * whose title matches). The palette renders this group LAST, so it never takes the
- * default Enter from a page or action the query names.
+ * "Open Reports", the chat search results themselves (saved conversations matching the
+ * term — the server's `?q=` content search, with the matched snippet — and reports
+ * whose title matches), and finally "Ask AI: <text>". The palette renders this group
+ * LAST, and "Ask AI" is the last item in it, so it never takes the default Enter from a
+ * page, action or setting the query names.
  *
- * "Ask AI: <text>" is not offered yet: nothing reads a palette question on the chat page
- * (`NavOpts` has no `ask`, and the page only resolves `topic` ids), so the entry would
- * open an empty chat and drop the analyst's words. It returns with its consumer.
+ * "Ask AI" opens a NEW chat with the typed text prefilled in the composer (`NavOpts.ask`,
+ * in memory only, at most 2,000 characters: `ask.ts`); the chat page focuses it and
+ * never sends on the analyst's behalf.
  *
  * Loaded LAZILY by the always-on palette (`React.lazy`), so this module never reaches the
  * entry chunk (SPEC §10.10's +1 kB budget), and the chat data client loads only when the
@@ -16,12 +17,13 @@
  * text (cmdk renders children as text; #9).
  */
 import * as React from 'react';
-import { FileText, MessageSquare, Search } from 'lucide-react';
+import { FileText, MessageSquare, Search, Sparkles } from 'lucide-react';
 
 import type { ChatConversationSearchHit, NavOpts, ReportListEntry } from '@/lib/types';
 import { CommandGroup, CommandItem } from '@/ui/command';
 import { useAuth } from '@/soc/auth';
 import type { PageId } from '@/soc/nav';
+import { clampAsk } from '../ask';
 
 /** The palette's own jump helper (records a recent target, navigates, closes). */
 export type PaletteGo = (page: PageId, label: string, opts?: NavOpts) => void;
@@ -79,6 +81,8 @@ export default function PaletteSearch({ query, go }: PaletteSearchProps) {
   // The rail's "Reports" page already answers a query that names it (its palette target
   // matches "page reports"); "Open Reports" covers the blank state and other wording.
   const navReportsShown = !!q && 'page reports'.includes(q);
+  // A one-character query is a keystroke, not a question.
+  const ask = term.length >= 2 ? clampAsk(term) : null;
 
   return (
     <>
@@ -127,6 +131,15 @@ export default function PaletteSearch({ query, go }: PaletteSearchProps) {
               <span className="truncate">{r.title}</span>
             </CommandItem>
           ))}
+        </CommandGroup>
+      ) : null}
+      {ask ? (
+        // Last of all, so a page, action, setting or search hit keeps the default Enter.
+        <CommandGroup heading="Assistant">
+          <CommandItem value="action-ask-ai" onSelect={() => go('chat', 'Workspace', { newChat: true, ask })}>
+            <Sparkles aria-hidden />
+            <span className="min-w-0 truncate">Ask AI: “{ask}”</span>
+          </CommandItem>
         </CommandGroup>
       ) : null}
     </>

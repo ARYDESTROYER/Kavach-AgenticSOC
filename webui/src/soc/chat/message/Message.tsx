@@ -129,6 +129,9 @@ function CopyAnswer({ text }: { text: string }) {
   );
 }
 
+/** The fallback reason when a binding refuses adds without saying why. */
+const REPORT_REFUSED = 'The report cannot take more items';
+
 /**
  * The answer's report toggle. ONE stable name (an APG toggle must not also flip its
  * name); `aria-pressed` says whether the answer is in the report, and the tooltip uses
@@ -141,7 +144,7 @@ function AnswerReportToggle({ report }: { report: MessageReportBinding }) {
   const hint = report.answerInReport
     ? 'In report ✓ (click to remove)'
     : unavailable
-      ? (report.disabledReason ?? 'The report cannot take more items')
+      ? (report.disabledReason ?? REPORT_REFUSED)
       : 'Add answer to report';
   return (
     <Tooltip>
@@ -340,6 +343,7 @@ function MessageView({
               // a full report must stay removable, and the clicked toggle must keep focus.
               canAddToReport={!!report && !!persistedMessageId}
               onAddToReport={report && persistedMessageId ? report.onToggleBlock : undefined}
+              addDisabledReason={report && !report.canAdd ? (report.disabledReason ?? REPORT_REFUSED) : null}
               renderMarkdown={renderMarkdown}
               queryForStep={queryForStep}
             />

@@ -17,6 +17,7 @@ import {
   boundHistory,
   isUnsavedTurn,
   recoveryDelayMs,
+  retriesWithSameKey,
   recoveryWindowMs,
   useChatEngine,
   type ChatAssistantItem,
@@ -469,6 +470,109 @@ describe('useChatEngine — transports, retries and origins', () => {
     await settle();
     expect(streams[1].body.idempotency_key).toBe(streams[0].body.idempotency_key);
     expect(streams[1].body.history).toEqual([]);
+  });
+
+  it('a case answer whose save failed retryably is retried with the SAME key (thread append deduplicated)', async () => {
+    const { result } = await mountEngine({ caseId: 'case-7' });
+    act(() => {
+      result.current.send('Summarise this case');
+    });
+    await settle();
+    await push(
+      streams[0],
+      start(),
+      done({
+        answer: 'Two hosts touched.',
+        message_id: null,
+        usage: { calls: 1, total_tokens: 900, cost: 0.002 },
+        notice: { kind: 'not_saved', message: 'The answer could not be saved to the case.', retryable: true },
+      }),
+    );
+    const unsaved = assistant(result.current);
+    expect(retriesWithSameKey(unsaved)).toBe(true);
+    act(() => {
+      expect(result.current.retry(unsaved.key)).toBe(true);
+    });
+    await settle();
+    expect(streams[1].body.idempotency_key).toBe(streams[0].body.idempotency_key);
+    expect(streams[1].body).toMatchObject({ case_id: 'case-7', message: 'Summarise this case' });
+    // The pair is replaced, not appended.
+    expect(result.current.items).toHaveLength(2);
+  });
+
+  it('a non-retryable not_saved answer is asked again with a NEW key', async () => {
+    const { result } = await mountEngine({ caseId: 'case-7' });
+    act(() => {
+      result.current.send('Summarise this case');
+    });
+    await settle();
+    await push(
+      streams[0],
+      start(),
+      done({
+        answer: 'Two hosts touched.',
+        message_id: null,
+        usage: { calls: 1, total_tokens: 900, cost: 0.002 },
+        notice: { kind: 'not_saved', message: 'Not saved.', retryable: false },
+      }),
+    );
+    expect(retriesWithSameKey(assistant(result.current))).toBe(false);
+    act(() => {
+      result.current.retry(assistant(result.current).key);
+    });
+    await settle();
+    expect(streams[1].body.idempotency_key).not.toBe(streams[0].body.idempotency_key);
+  });
+
+  it('never adopts the turn.start conversation of an answer delivered as not saved', async () => {
+    const persisted = vi.fn();
+    const { result } = await mountEngine({ onConversationPersisted: persisted });
+    act(() => {
+      result.current.send('First question');
+    });
+    await settle();
+    await push(
+      streams[0],
+      start('t1', { conversation_id: 'c-never-created' }),
+      done({
+        answer: 'A billed answer that could not be saved.',
+        message_id: null,
+        conversation_id: null,
+        usage: { calls: 1, total_tokens: 900, cost: 0.002 },
+        notice: { kind: 'not_saved', message: 'Not saved.', retryable: false },
+      }),
+    );
+    expect(assistant(result.current).response?.answer).toBe('A billed answer that could not be saved.');
+    expect(result.current.conversationId).toBeNull();
+    expect(persisted).not.toHaveBeenCalled();
+    // The next turn starts its own thread instead of naming the one that never existed.
+    act(() => {
+      result.current.send('Second question');
+    });
+    await settle();
+    expect(streams[1].body).not.toHaveProperty('conversation_id');
+  });
+
+  it('sends an "Ask about this" topic id with its question, and drops one the server would refuse', async () => {
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('What does MTTD measure here?', { origin: 'starter', topic: 'kpi:mttd' });
+    });
+    await settle();
+    expect(streams[0].body).toMatchObject({ message: 'What does MTTD measure here?', origin: 'starter', topic: 'kpi:mttd' });
+    await push(streams[0], start(), done({ answer: 'Time to detect.', message_id: 'm1', conversation_id: 'c1' }));
+    act(() => {
+      result.current.send('Another', { topic: `Bad Topic ${'x'.repeat(70)}` });
+    });
+    await settle();
+    expect(streams[1].body).not.toHaveProperty('topic');
+    // A plain send never carries a topic.
+    await push(streams[1], start('t2'), done({ answer: 'ok', message_id: 'm2', conversation_id: 'c1' }));
+    act(() => {
+      result.current.send('Plain');
+    });
+    await settle();
+    expect(streams[2].body).not.toHaveProperty('topic');
   });
 
   it('Continue sends origin continue with continue_of', async () => {

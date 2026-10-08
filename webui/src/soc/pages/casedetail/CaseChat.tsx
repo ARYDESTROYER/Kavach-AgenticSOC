@@ -35,16 +35,18 @@ const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> 
 };
 
 /**
- * The signed-in principal when an AuthProvider is mounted (the app always has one; a
- * standalone render does not). It keys the shared `/chat/context` cache, so opening
- * another case reuses a fresh context instead of refetching. `useAuth` reads the
- * context before it throws, so the hook order is the same either way.
+ * The signed-in principal and the model-picker grant when an AuthProvider is mounted
+ * (the app always has one; a standalone render does not). The principal keys the shared
+ * `/chat/context` cache, so opening another case reuses a fresh context instead of
+ * refetching; the model picker lists `/api/models`, which needs models:read. `useAuth`
+ * reads the context before it throws, so the hook order is the same either way.
  */
-function useOptionalPrincipal(): string | null {
+function useOptionalAuth(): { principal: string | null; canChooseModel: boolean | undefined } {
   try {
-    return useAuth().username ?? null;
+    const auth = useAuth();
+    return { principal: auth.username ?? null, canChooseModel: auth.hasPermission('models', 'read') };
   } catch {
-    return null;
+    return { principal: null, canChooseModel: undefined };
   }
 }
 
@@ -60,7 +62,7 @@ export interface CaseChatProps {
 export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
   const [model, setModel] = React.useState<string | null>(null);
   const [busyMirror, setBusyMirror] = React.useState(false);
-  const principal = useOptionalPrincipal();
+  const { principal, canChooseModel } = useOptionalAuth();
   const context = useChatContext({ conversationId: null, model, caseId, principal, busy: busyMirror });
   const ctx = context.context;
   const engine = useChatEngine({
@@ -116,7 +118,10 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
         }
       />
 
-      <div className="shrink-0 space-y-2 pt-2">
+      {/* Same edges as the compact transcript above: its px-1 and its scrollbar gutter
+          (reserved here by an overflow box with no overflow; popovers are portalled).
+          The 2 px bottom inset keeps the composer's focus ring inside the frame. */}
+      <div className="shrink-0 space-y-2 overflow-hidden px-1 pb-0.5 pt-2 [scrollbar-gutter:stable_both-edges]">
         <div className={LANE_GRID}>
           <div className={cn(CONTENT_COL, 'space-y-2')}>
             <div
@@ -150,6 +155,7 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
               onComposerFocus={context.revalidate}
               contextError={context.error}
               onRetryContext={context.refresh}
+              canChooseModel={canChooseModel}
             />
           </div>
         </div>

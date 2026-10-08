@@ -51,11 +51,32 @@ export interface HarnessProps extends Omit<ComposerProps, 'engine' | 'context'> 
   handleRef?: React.Ref<ComposerHandle>;
   /** Whether `send` reports success (the engine refuses while blocked). */
   sendResult?: boolean;
+  /**
+   * A HOST-controlled draft (the Workspace's per-thread drafts): when set, the engine's
+   * draft is this value and edits are reported through `onDraftChange` only.
+   */
+  controlledDraft?: string;
+  onDraftChange?: (value: string) => void;
 }
 
 export function Harness(props: HarnessProps) {
-  const { spies, context = null, busy = false, canStop = true, handleRef, sendResult = true, ...rest } = props;
-  const [draft, setDraft] = React.useState(props.draft ?? '');
+  const {
+    spies,
+    context = null,
+    busy = false,
+    canStop = true,
+    handleRef,
+    sendResult = true,
+    controlledDraft,
+    onDraftChange,
+    ...rest
+  } = props;
+  const [localDraft, setLocalDraft] = React.useState(props.draft ?? '');
+  const draft = controlledDraft ?? localDraft;
+  const setDraft = (value: string) => {
+    if (controlledDraft === undefined) setLocalDraft(value);
+    onDraftChange?.(value);
+  };
   const [scopes, setScopes] = React.useState<ChatScope[]>(props.scopes ?? []);
   const [model, setModel] = React.useState<string | null>(props.model ?? null);
   const [sourceId, setSourceId] = React.useState<string | null>(null);

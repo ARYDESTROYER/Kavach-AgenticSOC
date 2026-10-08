@@ -29,7 +29,7 @@ Most readers should begin here.
 | Trace one alert through triage | [Work your first case](getting-started/first-case.md) |
 | Work the split-pane queue or select cases in bulk | [Case Manager](analyst/case-manager.md) |
 | Understand a case assessment and decision | [Investigation](analyst/investigation.md) |
-| Ask a read-only question or resume a saved analyst conversation | [Workspace Chat](analyst/chat.md) |
+| Ask a read-only question, resume a saved conversation, or build a report from answers | [Workspace Chat](analyst/chat.md) |
 | Find source evidence | [Logs and search](analyst/logs-search.md) |
 | Coordinate analyst work | [Collaboration](analyst/collaboration.md) |
 | Build or update a response procedure | [Playbooks and approvals](automation/playbooks-approvals.md) |

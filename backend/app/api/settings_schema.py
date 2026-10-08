@@ -100,6 +100,9 @@ _SECTION_TITLES: dict[str, str] = {
     "campaign": "Campaign Clustering",
     # Rule-identity precedent (promotion / window fairness / futility reporting).
     "precedent": "Analyst Precedent",
+    # Chat revamp (SPEC §4.2). Sentence case on purpose: it is the same name the
+    # curated Settings section and the Help Center use.
+    "chat_agent": "Chat assistant",
 }
 
 

@@ -1,8 +1,10 @@
 /**
  * Logs route deep links (SPEC §10.7): `#/logs?logQuery=…&from=…&to=…&sourceId=…` opens
- * the LINKED QUERY with exactly those bounds; a malformed link is ignored whole (never
- * half-applied); "Browse all logs" drops it; without a link the page is the shared
- * unified browser. Row values stay plain text (#9).
+ * the ONE shared browser on the LINKED QUERY with exactly those bounds (absolute instants
+ * read as a UTC range) and a summary above its controls — one table, never a second
+ * copy; a malformed link is ignored whole (never half-applied); "Browse all logs" drops
+ * it; without a link the page is the shared unified browser. Row values stay plain text
+ * (#9).
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -90,7 +92,18 @@ describe('parseLogsDeepLink', () => {
     expect(boundMs('now-2h', NOW)).toBe(NOW - 7_200_000);
     expect(boundMs('garbage', NOW)).toBeNull();
     expect(windowLabel('now-24h', null)).toBe('last 24h');
-    expect(windowLabel('2026-10-07T00:00:00Z', '2026-10-08T00:00:00Z')).toBe('2026-10-07T00:00:00Z → 2026-10-08T00:00:00Z');
+    expect(windowLabel(null, null)).toBe('the default window');
+  });
+
+  it('reads absolute open_in bounds as one readable UTC range', () => {
+    expect(windowLabel('2026-10-07T00:00:00Z', '2026-10-08T00:00:00Z')).toBe('2026-10-07 00:00 → 2026-10-08 00:00 UTC');
+    // The date is written once on the same day; an offset is converted to UTC.
+    expect(windowLabel('2026-10-08T09:00:00Z', '2026-10-08T12:30:00+02:00')).toBe('2026-10-08 09:00 → 10:30 UTC');
+    // Sub-minute bounds keep their seconds (never the raw millisecond ISO text).
+    expect(windowLabel('2026-10-01T12:00:00.250Z', '2026-10-08T12:00:00.250Z')).toBe('2026-10-01 12:00:00 → 2026-10-08 12:00:00 UTC');
+    expect(windowLabel('2026-10-01T12:00:00Z', null)).toBe('2026-10-01 12:00 UTC → now');
+    expect(windowLabel('now-6h', '2026-10-08T12:00:00Z')).toBe('now-6h → 2026-10-08 12:00 UTC');
+    expect(windowLabel(null, '2026-10-08T12:00:00Z')).toBe('until 2026-10-08 12:00 UTC');
   });
 });
 
@@ -109,9 +122,29 @@ describe('Logs page', () => {
     );
     expect(screen.getByText('source.ip:203.0.113.14')).toBeInTheDocument();
     expect(screen.getByText('last 24h')).toBeInTheDocument();
+    // The shared browser starts on the linked query: its search box carries it.
+    expect(screen.getByRole('textbox', { name: 'Search log events' })).toHaveValue('source.ip:203.0.113.14');
     // Untrusted message text is plain text, never markup.
     expect(await screen.findByText('<img src=x onerror=alert(1)> Failed password for root')).toBeInTheDocument();
     expect(document.querySelector('img')).toBeNull();
+    // ONE table: the linked view is the shared browser, not a second copy of it.
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+  });
+
+  it('opens an absolute chat window with its exact bounds and a readable UTC range', async () => {
+    show('#/logs?logQuery=failed&from=2026-10-01T12%3A00%3A00Z&to=2026-10-08T12%3A00%3A00.250Z');
+    await waitFor(() =>
+      expect(fetchUnifiedLogs).toHaveBeenCalledWith({
+        limit: 150,
+        query: 'failed',
+        from: '2026-10-01T12:00:00Z',
+        to: '2026-10-08T12:00:00.250Z',
+      }),
+    );
+    // The summary and the time-range control both read the UTC range, not raw ISO text.
+    expect(await screen.findAllByText('2026-10-01 12:00:00 → 2026-10-08 12:00:00 UTC')).not.toHaveLength(0);
+    expect(screen.queryByText(/T12:00:00/)).toBeNull();
+    expect(screen.getAllByRole('table')).toHaveLength(1);
   });
 
   it('drops the link on "Browse all logs"', async () => {
@@ -134,6 +167,8 @@ describe('Logs page', () => {
   it('reports a failed linked query without crashing', async () => {
     fetchUnifiedLogs.mockRejectedValue(new Error('Source not browsable'));
     show('#/logs?logQuery=x&sourceId=push-1');
-    expect(await screen.findByText('Could not run the linked query')).toBeInTheDocument();
+    expect(await screen.findByText('Could not load logs')).toBeInTheDocument();
+    // The summary of what was asked stays, so the analyst can see what failed.
+    expect(screen.getByText('Opened from a linked query')).toBeInTheDocument();
   });
 });

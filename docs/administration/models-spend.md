@@ -136,6 +136,13 @@ The budget check is a preflight comparison rather than an atomic reservation. Ca
 already in flight may complete slightly beyond the configured limit. Configure
 provider-side budgets and alerts as the final financial backstop.
 
+Workspace and Case Manager chat share this budget. At the soft limit the chat composer
+shows one alert; at a blocking limit **Send** is disabled, and product questions are
+still answered at no cost from the Help Center. Each chat question is also bounded by
+its own per-question limits (model calls, lookups, tokens, and time) under
+**Settings → General → Chat assistant**; report summaries are one metered call each and
+limited to 10 an hour per user.
+
 ## Change procedure
 
 - Test a provider before routing production work to it.

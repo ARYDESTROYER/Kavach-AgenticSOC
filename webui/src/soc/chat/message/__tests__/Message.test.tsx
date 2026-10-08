@@ -443,8 +443,27 @@ describe('Message — answer blocks', () => {
     const blocks = await screen.findByTestId('answer-blocks', {}, { timeout: 15000 });
     const toggle = within(blocks).getByTestId('block-add-to-report');
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).not.toHaveAttribute('aria-disabled');
     fireEvent.click(toggle);
     expect(onToggleBlock).toHaveBeenCalledWith('kpis');
+  });
+
+  it("passes a full report's reason to a block that is not in it (aria-disabled + description)", async () => {
+    renderMessage({
+      item: assistantItem({ response: response({ blocks: [GALLERY_RAW[1]] }) }),
+      report: {
+        blocks: new Set<string>(),
+        answerInReport: false,
+        canAdd: false,
+        disabledReason: 'Report is full (40 items)',
+        onToggleAnswer: vi.fn(),
+        onToggleBlock: vi.fn(),
+      },
+    });
+    const blocks = await screen.findByTestId('answer-blocks', {}, { timeout: 15000 });
+    const toggle = within(blocks).getByTestId('block-add-to-report');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAccessibleDescription('Report is full (40 items)');
   });
 
   it('renders a pre-revamp table through the same block path', async () => {

@@ -4,7 +4,8 @@
  * reports, and "Open Reports" jumps to the library. The chat entries are a LAZY chunk
  * rendered after every page/action match (Enter on a typed page name still opens the
  * page); the chat data client loads only when the operator chooses to search. "Ask AI:
- * <text>" stays off until the chat page reads a palette question.
+ * <text>" is the very last item: it opens a new chat with the text PREFILLED (`ask`,
+ * capped at 2,000 characters), never first while a page or action matches.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
@@ -110,12 +111,42 @@ describe('CommandPalette — chat entries', () => {
     expect(chatApi.listConversations).not.toHaveBeenCalled();
   });
 
-  it('does not offer "Ask AI" while nothing on the chat page reads the question', async () => {
-    renderPalette();
+  it('offers "Ask AI: <text>" last and opens a new chat with the question to prefill', async () => {
+    const { onNavigate } = renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
-    fireEvent.change(input, { target: { value: 'who logged in from 203.0.113.14?' } });
+    fireEvent.change(input, { target: { value: '  who logged in from 203.0.113.14?  ' } });
+    await waitFor(() => expect(item('action-ask-ai')).toBeTruthy());
+    expect(item('action-ask-ai')).toHaveTextContent('Ask AI: “who logged in from 203.0.113.14?”');
+    const values = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.getAttribute('data-value'));
+    expect(values[values.length - 1]).toBe('action-ask-ai');
+    fireEvent.click(item('action-ask-ai')!);
+    expect(onNavigate).toHaveBeenCalledWith('chat', { newChat: true, ask: 'who logged in from 203.0.113.14?' });
+  });
+
+  it('caps the Ask AI question at 2,000 characters and ignores a one-character query', async () => {
+    const { onNavigate } = renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'x' } });
     await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
     expect(item('action-ask-ai')).toBeNull();
+    fireEvent.change(input, { target: { value: 'q'.repeat(2500) } });
+    await waitFor(() => expect(item('action-ask-ai')).toBeTruthy());
+    fireEvent.click(item('action-ask-ai')!);
+    const opts = onNavigate.mock.calls.at(-1)?.[1] as { ask: string };
+    expect(opts.ask).toHaveLength(2000);
+  });
+
+  it('never makes "Ask AI" the default Enter when a page matches', async () => {
+    const user = userEvent.setup();
+    const { onNavigate } = renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    await user.type(input, 'approvals');
+    await waitFor(() => expect(item('action-ask-ai')).toBeTruthy());
+    const values = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.getAttribute('data-value'));
+    expect(values.indexOf('action-ask-ai')).toBeGreaterThan(values.indexOf('nav-approvals'));
+    await user.keyboard('{Enter}');
+    expect(onNavigate).toHaveBeenCalledWith('approvals');
+    expect(onNavigate).not.toHaveBeenCalledWith('chat', expect.anything());
   });
 
   it('keeps Enter on a typed page name going to that page, with the chat entries last', async () => {

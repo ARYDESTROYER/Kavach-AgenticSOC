@@ -70,7 +70,7 @@ using either the archive or internal segmented walk,
 but it is a support/analysis artifact, not a whole-application
 backup. Its Knowledge scope preserves sanitized authoritative operator runbook and
 playbook documents plus safe bundled manifests/references, but it omits credentials,
-users/sessions, chat/collaboration state, raw upstream logs, and raw knowledge chunks,
+users/sessions, chat history, chat reports, collaboration state, raw upstream logs, and raw knowledge chunks,
 and has no matching import/restore endpoint. The ZIP manifest proves that the server
 emitted each scope's starting count and verified the prepared artifact, not that the
 client received it or that it is recoverable. Only exact Elasticsearch scopes are fixed

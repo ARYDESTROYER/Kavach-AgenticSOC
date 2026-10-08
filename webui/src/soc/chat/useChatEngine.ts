@@ -497,6 +497,31 @@ export interface ChatSendOptions {
   origin?: ChatOrigin;
   /** The assistant message id a Continue turn resumes. */
   continueOf?: string | null;
+  /**
+   * The `console_map` topic an "Ask about this" turn was started from (SPEC A7,
+   * `ChatRequest.topic`): retrieval pins that topic's glossary sections. Never prompt
+   * text; a value outside the server grammar is dropped rather than sent (it would 422).
+   */
+  topic?: string | null;
+}
+
+/** The server's `CHAT_TOPIC_PATTERN` (models.py): a malformed topic would fail the turn. */
+const REQUEST_TOPIC_RE = /^[a-z0-9_:.-]{1,64}$/;
+
+/**
+ * Whether Retry may resend a SETTLED turn with its same key: a D1 unsaved failure
+ * (nothing billed or saved), or an answer whose save failed with a retryable
+ * `not_saved` notice. The second matters for case chat: the server deduplicates the
+ * case-thread append by the request key (SPEC A4), so a fresh key could append the
+ * same answer twice. The model still runs again (the UI says so).
+ */
+export function retriesWithSameKey(item: Pick<ChatAssistantItem, 'status' | 'response' | 'request'>): boolean {
+  if (!item.request) return false;
+  if (item.status === 'error') return true;
+  if (item.status !== 'done' || !item.response) return false;
+  if (isUnsavedTurn(item.response)) return true;
+  const notice = item.response.notice;
+  return notice?.kind === 'not_saved' && notice.retryable === true;
 }
 
 export interface ChatEngine {
@@ -825,7 +850,11 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
           { role: 'user', content: userContent },
           { role: 'assistant', content: response.answer },
         ];
-        const savedId = settingsRef.current.persist
+        // An answer delivered with a `not_saved` notice and no message id was never
+        // stored: `turn.start` may have named a conversation that was never created (a
+        // new thread), and adopting it would make the next turn 404. Nothing is promoted.
+        const neverSaved = response.notice?.kind === 'not_saved' && !response.message_id;
+        const savedId = settingsRef.current.persist && !neverSaved
           ? response.conversation_id || (run.persisted ? run.conversationId : null)
           : null;
         if (savedId) {
@@ -1198,7 +1227,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     [cancelFrame, commitItems, runTurn, setBusyState],
   );
 
-  const buildRequest = React.useCallback((message: string, origin: ChatOrigin, continueOf: string | null): ChatRequest => {
+  const buildRequest = React.useCallback((message: string, origin: ChatOrigin, continueOf: string | null, topic: string | null): ChatRequest => {
     const s = settingsRef.current;
     const body: ChatRequest = {
       message,
@@ -1217,6 +1246,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     if (s.timeRange) body.time_range = { ...s.timeRange };
     if (origin !== 'user') body.origin = origin;
     if (continueOf) body.continue_of = continueOf;
+    if (topic && REQUEST_TOPIC_RE.test(topic)) body.topic = topic;
     return body;
   }, []);
 
@@ -1226,7 +1256,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       const message = (fromDraft ? draftRef.current : text).trim();
       if (!message || busyRef.current || runRef.current || settingsRef.current.blocked) return false;
       const origin = sendOptions.origin ?? 'user';
-      const request = buildRequest(message, origin, sendOptions.continueOf ?? null);
+      const request = buildRequest(message, origin, sendOptions.continueOf ?? null, sendOptions.topic ?? null);
       const started = startTurn(request, origin, null);
       // Only the composer's own text is consumed; a chip never wipes a typed draft.
       if (started && fromDraft) setDraft('');
@@ -1257,10 +1287,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       if (busyRef.current || settingsRef.current.blocked) return false;
       const item = findItem(itemsRef.current, itemKey);
       if (!item) return false;
-      const sameKey =
-        item.request &&
-        (item.status === 'error' || (item.status === 'done' && item.response !== null && isUnsavedTurn(item.response)));
-      if (sameKey && item.request) {
+      if (retriesWithSameKey(item) && item.request) {
         // Retry same request: the exact body and key; the failed pair is replaced.
         const { stream_mode: _mode, ...request } = item.request;
         void _mode;

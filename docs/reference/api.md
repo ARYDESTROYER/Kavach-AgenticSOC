@@ -102,7 +102,8 @@ the exact request model and every operation under a prefix.
 | Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/bulk` | List, filter, retrieve, export, and act on cases |
 | Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
-| Workspace | `POST /api/chat`, `/api/chat/conversations*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat with per-user history, entity investigation, cross-surface search, scan queues, and personas |
+| Workspace | `POST /api/chat`, `POST /api/chat/stream`, `GET /api/chat/context`, `POST /api/chat/turns/{turn_id}/cancel`, `GET /api/chat/topics/{topic_id}`, `/api/chat/conversations*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat (blocking and streamed) with per-user history, entity investigation, cross-surface search, scan queues, and personas |
+| Chat reports | `GET/POST /api/reports`, `GET/PATCH/DELETE /api/reports/{report_id}`, `POST /api/reports/add`, `POST /api/reports/{report_id}/summary` | Owner-scoped reports built from saved chat answers, with an optional AI summary |
 | Detection and automation | `/api/rules*` (including `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
 | Playbooks | `GET/POST /api/playbooks`, `GET/PUT /api/playbooks/{playbook_id}`, `POST /api/playbooks/reload`, `/dry-run`, `GET /coverage`, `/selection/{case_id}`, `POST /api/cases/{case_id}/run-playbook` | Durable catalog/open/edit, deterministic diagnostics and coverage, selection provenance, and case execution |
 | Knowledge and memory | `/api/rag/*` (including `/api/rag/precedent/composition` and `/api/rag/precedent/exclusions*`), `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, inspect precedent composition, evict individual precedent records durably, manage operator memory, and manage protected/owned runbooks |
@@ -429,6 +430,38 @@ Source and log browse limits are server-bounded. Treat every returned log field,
 raw record, case-derived string, and search result as untrusted data when presenting
 it in another system.
 
+## Workspace Chat streaming, context, and Stop
+
+`POST /api/chat/stream` takes the same body as `POST /api/chat` and answers with
+`application/x-ndjson`: one `ChatStreamEventModel` per line. The order is `turn.start`
+first, then `step.start`/`step.end` for each lookup, `usage` after each model call,
+`text.delta`/`text.reset` only when the turn types out its answer, and `ping` every 10
+seconds; the last line is always `turn.done` (the saved `ChatResponse`) or `turn.error`
+(`provider_unavailable`, `budget_blocked`, `breaker_open`, `history_unavailable`, or
+`internal`, with `retryable`). Every check that can fail before work starts (auth,
+permissions, concurrency, validation, conversation lookup, idempotency, source) fails as
+an ordinary HTTP error before the 200, never as a `turn.error`. A completed key replays
+as `turn.start {replayed: true}` followed by `turn.done`, with no model call.
+
+Additive request fields, all optional: `stream_mode` (`steps` or `text`; presentation
+only), `scopes` (`logs`, `cases`, `metrics`, `intel`, `docs`, `platform`), `time_range`
+(`{from, to}`, at most 90 days), `origin` (`user`, `follow_up`, `starter`, `command`,
+`continue`), `continue_of`, and `topic` (a console-map topic id). Only `origin: "user"`
+text counts as the analyst's own words for indicator lookups. Additive response fields
+include `blocks`, `steps`, `usage`, `citations`, `console_links`, `follow_ups`,
+`answer_kind`, `notice`, `turn_id`, `message_id`, and `memory_proposal`.
+
+| Operation | Contract |
+|---|---|
+| `POST /api/chat/turns/{turn_id}/cancel` | Stop a running turn you own. The in-flight model call finishes and is recorded, no new step starts, and the stream ends with `turn.done` carrying a `cancelled` notice. 404 when the turn is unknown, finished, or another user's |
+| `GET /api/chat/context` | The caller's effective model, context window, prompt estimates, tool catalogue with `allowed` per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows |
+| `GET /api/chat/topics/{topic_id}` | The fixed question for an "Ask about this" topic; 404 for an unknown topic |
+
+Concurrency is bounded per user and per process: a turn over either bound is
+`429 chat_busy` with `Retry-After` before any work. A non-default model without
+`models:read` is `403 chat_model_forbidden`; a model that is not an enabled chat model is
+`422 chat_model_unavailable`.
+
 ## Workspace Chat persistence and retry
 
 `POST /api/chat` remains compatible with stateless and Case Manager callers. Durable
@@ -466,9 +499,9 @@ History endpoints are newest-first and per authenticated user:
 
 | Operation | Contract |
 |---|---|
-| `GET /api/chat/conversations` | Retained summaries plus `total`, `history_truncated`, `total_conversation_count`, and `oldest_retained_at` |
+| `GET /api/chat/conversations` | Retained summaries, pinned first, plus `total`, `history_truncated`, `total_conversation_count`, and `oldest_retained_at`; `limit` up to 60, and `q` (≤ 200 characters) searches titles, questions, answers, and block titles and adds a `match {message_id, snippet}` to each hit |
 | `GET /api/chat/conversations/{conversation_id}` | Authoritative retained transcript and per-turn provenance |
-| `PATCH /api/chat/conversations/{conversation_id}` | Rename an owned conversation |
+| `PATCH /api/chat/conversations/{conversation_id}` | Rename (`title`, 1–80 characters) or pin (`pinned`) an owned conversation; an 11th pin is `409 chat_pin_limit` |
 | `DELETE /api/chat/conversations/{conversation_id}` | Delete an owned conversation; audit remains append-only |
 
 `total` and a conversation's `message_count` describe retained rows. The additive
@@ -483,6 +516,34 @@ the compatibility path can read and lazily migrate that user's entries from the 
 shared document; no reset or new index/table is required. A history read or commit that
 cannot be verified returns `503 chat_history_unavailable` instead of an empty list or a
 false saved result. Existing `404 conversation not found` behavior remains unchanged.
+
+Summaries also carry `pinned`, `report_id`, `time_range`, and cumulative `total_tokens`,
+`total_cost`, and `usage_turns` (null on conversations saved before they were recorded).
+Each stored assistant answer keeps its blocks, steps, citations, and usage as one opaque
+JSON string of at most 16 kB; when a conversation grows past its storage bound, the
+oldest answers' blocks become "Expired from saved history" stubs before any text is
+removed. A history save that fails after the model call was billed ends the turn with
+`history_unavailable` and `retryable: false`: the same key would only return `409
+chat_request_in_progress` until its lease expires, so send the question again with a new
+key.
+
+## Chat reports
+
+Reports are owner-scoped and need `cases:read`. All error details are
+`{code, message, ...}`.
+
+| Operation | Contract |
+|---|---|
+| `GET /api/reports` | `{reports, total, limit}`: the caller's reports, newest first (at most 100) |
+| `POST /api/reports` | Create a report (`title`, `template`, optional `conversation_id`); `409 report_conversation_draft_exists` carries the existing draft's `report_id`; `409 report_limit` at 100 reports |
+| `GET /api/reports/{report_id}` | The report, its items, and its summary |
+| `PATCH /api/reports/{report_id}` | Title, template, item order, notes, or removed items, with `expected_version`; `409 report_version_conflict` carries `current_version`; `409 report_full` (`reason: size`) when the change would outgrow the document |
+| `DELETE /api/reports/{report_id}` | Delete with `expected_version` (body or query) |
+| `POST /api/reports/add` | `{conversation_id, message_id, block_id?, report_id?}`. The server reads the block, or the whole answer when `block_id` is absent, from the caller's saved conversation and snapshots it; client block JSON is never accepted, so case-chat content cannot be added. The conversation's draft is created on first add. `409 block_unavailable` for expired or unreadable content; `409 report_full` (`reason: items` at 40 items, or `size`) |
+| `POST /api/reports/{report_id}/summary` | One metered model call over a bounded, fenced digest of the report (never raw logs); returns the report with its summary. `?dry_run=1` returns the token and cost estimate instead. Idempotent per key; `409 report_summary_in_progress` while another runs; `429 report_summary_rate_limited` (10 an hour per user, Demo exempt); `409 report_too_large_to_summarise` before any spend; `503`/`504` with summary-specific messages |
+
+Every report change writes an audit row with action `report`; a summary also writes one
+usage row like any other model call.
 
 ## Base metrics and retrieval-history evidence
 

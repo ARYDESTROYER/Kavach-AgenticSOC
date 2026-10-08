@@ -431,4 +431,44 @@ describe('ReportPanel', () => {
     show({ mode: 'overlay' });
     await waitFor(() => expect(document.activeElement?.tagName).toBe('H2'));
   });
+
+  it('claims its heading again once the report loads if the Sheet took focus meanwhile', async () => {
+    let release: (r: Report) => void = () => undefined;
+    api.getReport.mockImplementation(
+      () => new Promise<Report>((resolve) => {
+        release = resolve;
+      }),
+    );
+    // The host Sheet: its content is the dialog and focuses itself on open.
+    render(
+      <TooltipProvider>
+        <div role="dialog" aria-label="Report" tabIndex={-1} data-testid="sheet">
+          <ReportPanel conversationId="conv-1" reportId="rep-1" mode="overlay" onClose={vi.fn()} />
+        </div>
+      </TooltipProvider>,
+    );
+    act(() => screen.getByTestId('sheet').focus());
+    expect(document.activeElement).toBe(screen.getByTestId('sheet'));
+    await act(async () => release(sampleReport()));
+    await screen.findByTestId('report-count');
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('H2'));
+  });
+
+  it('never pulls focus back from a control the analyst moved to while it loaded', async () => {
+    let release: (r: Report) => void = () => undefined;
+    api.getReport.mockImplementation(
+      () => new Promise<Report>((resolve) => {
+        release = resolve;
+      }),
+    );
+    show({ mode: 'overlay' });
+    const close = screen.getByRole('button', { name: 'Close report panel' });
+    act(() => close.focus());
+    await act(async () => release(sampleReport()));
+    await screen.findByTestId('report-count');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(document.activeElement).toBe(close);
+  });
 });

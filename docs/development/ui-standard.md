@@ -263,6 +263,24 @@ A failed turn offers **Retry same request** (same idempotency key) or, when retr
 cannot help, **Ask again** (a new key). A locally stopped turn says "Stopped. The saved
 version appears after refresh." Budget state appears as one alert above the composer.
 
+**Composer.** A textarea over ONE 32 px control row of 28 px chips, about 86 px at rest and
+never more than 88 px; there is no permanent footer line. Left: the **Read-only** chip (it
+opens the access popover), the Scope chip (source and time range in one popover) and removable
+`@` scope chips; right: the token estimate with the budget ring, Options ⋯ (Model, Type out
+answers, Saved prompts, Keyboard shortcuts) and Send, which becomes Stop while a turn runs.
+Below 560 px of composer width the Scope and `@` chips merge into "Scope · n", the placeholder
+shortens to "Ask… / for commands, @ to scope" so it stays on one line, and a non-default model
+chip turns icon-only but stays visible and removable. The Case Manager composer has no menus and
+reads "Ask about this case". In the `/` and `@` menus only Enter chooses; Tab keeps its focus
+meaning and never sends a command or adds a scope, and the `@` menu waits for the tool
+catalogue. A command that takes a value fills the composer and selects its placeholder rather
+than sending, so the value goes out as the analyst's own text. A blocked Enter announces its
+reason and adds it to the field's description. Esc closes the topmost layer first and stops a
+running turn only from inside the composer with no layer open. The meter card is a Popover
+(mouse hover, click or tap; it never takes focus), because a HoverCard trigger cancels taps on
+touch screens. When the tool catalogue cannot load, one line, "Couldn't load what the assistant
+can access.", with **Retry** replaces the access list and the empty-state starters.
+
 **Scrolling and announcements.** On send, the user turn moves to the lane top with a
 48 px peek of the previous turn; the lane follows new content only while the reader is
 within 72 px of the bottom and only until that turn's top reaches the lane top, and

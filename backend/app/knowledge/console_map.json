@@ -264,7 +264,7 @@
       ],
       "page": "reports",
       "opts": {},
-      "requires": null,
+      "requires": "cases:read",
       "blurb": "",
       "keywords": [],
       "owned_keys": []
@@ -834,6 +834,34 @@
         "chat_model",
         "overview_model",
         "embedding_model"
+      ]
+    },
+    {
+      "id": "settings:chat_agent",
+      "kind": "settings",
+      "label": "Chat assistant",
+      "crumb": [
+        "Settings",
+        "General",
+        "Chat assistant"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "chat_agent"
+      },
+      "requires": null,
+      "blurb": "Live answer mode, per-question limits, and which indicators chat may send to enrichment.",
+      "keywords": [
+        "chat",
+        "assistant",
+        "lookups",
+        "tokens",
+        "type out answers",
+        "internal domains",
+        "email"
+      ],
+      "owned_keys": [
+        "chat_agent"
       ]
     },
     {
@@ -2404,6 +2432,14 @@
       "question": "What does Settings › General › Models control, and who can change it?",
       "docs": [],
       "console": "settings:models"
+    },
+    {
+      "id": "settings:chat_agent",
+      "kind": "settings",
+      "label": "Chat assistant",
+      "question": "What does Settings › General › Chat assistant control, and who can change it?",
+      "docs": [],
+      "console": "settings:chat_agent"
     },
     {
       "id": "settings:detection",

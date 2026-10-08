@@ -4,7 +4,7 @@
  * they can be unit-tested and shared by the chips, popovers and hover card.
  */
 import type { ChatContextInfo, ChatScope, ChatTimeRange, SourceInstance } from '@/lib/types';
-import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from '../display';
+import { estimateNextRequest } from '../display';
 import { compactTokens, formatCost } from '../message/format';
 import { displayText } from '../stream-events';
 
@@ -50,14 +50,9 @@ export function formatMoney(value: number | null | undefined): string {
 /* Next-request estimate (SPEC §8 item 1).                                     */
 /* -------------------------------------------------------------------------- */
 
-/** The server's calibration bounds (`CALIBRATION_BOUNDS` in routes_chat.py). */
-export const CALIBRATION_RANGE = [0.25, 4] as const;
-
-/** The usable calibration factor: clamped to 0.25–4; 1 when absent or not a number. */
-export function calibrationFactor(calibration: number | null | undefined): number {
-  if (typeof calibration !== 'number' || !Number.isFinite(calibration) || calibration <= 0) return 1;
-  return Math.min(CALIBRATION_RANGE[1], Math.max(CALIBRATION_RANGE[0], calibration));
-}
+// The calibration clamp lives with the estimate it feeds (display.ts), so the meter and
+// the "Continue (≈ +N tokens)" chip can never apply two different factors.
+export { CALIBRATION_RANGE, calibrationFactor } from '../display';
 
 /** "×1.5" for the meter card. */
 export function formatFactor(factor: number): string {
@@ -84,16 +79,13 @@ export function calibratedNextRequest(
   context: Pick<ChatContextInfo, 'static_prompt_tokens' | 'history_tokens' | 'chars_per_token' | 'calibration'>,
   draft: string,
 ): CalibratedEstimate {
-  const factor = calibrationFactor(context.calibration);
-  const safe = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
-  const cpt =
-    Number.isFinite(context.chars_per_token) && context.chars_per_token > 0
-      ? context.chars_per_token
-      : DEFAULT_CHARS_PER_TOKEN;
-  const system = Math.round(safe(context.static_prompt_tokens) * factor);
-  const history = Math.round(safe(context.history_tokens) * factor);
-  const draftTokens = estimateTokens(Array.from(draft).length, cpt, factor);
-  return { system, history, draft: draftTokens, total: system + history + draftTokens, factor };
+  return estimateNextRequest({
+    staticPromptTokens: context.static_prompt_tokens,
+    historyTokens: context.history_tokens,
+    draft,
+    charsPerToken: context.chars_per_token,
+    calibration: context.calibration,
+  });
 }
 
 /* -------------------------------------------------------------------------- */

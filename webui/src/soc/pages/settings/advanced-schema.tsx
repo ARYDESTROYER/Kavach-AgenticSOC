@@ -73,6 +73,9 @@ const CURATED_SECTIONS: ReadonlySet<string> = new Set([
   // keep a single authoritative editor per knob.
   'caps',
   'rag',
+  // The Chat assistant section (`chat-agent.tsx`) edits every `chat_agent` knob,
+  // including the long tail behind "More limits".
+  'chat_agent',
 ]);
 
 /**

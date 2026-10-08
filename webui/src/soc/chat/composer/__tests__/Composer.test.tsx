@@ -15,6 +15,7 @@ vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => announce }));
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
+import type { SourceInstance } from '@/lib/types';
 import type { ComposerHandle } from '../Composer';
 import {
   CASE_COMPOSER_PLACEHOLDER,
@@ -27,6 +28,9 @@ import { Harness, makeSpies, stubComposerWidth, stubServer, type EngineSpies, ty
 import { makeContext } from './fixtures';
 
 expect.extend(toHaveNoViolations);
+
+/** A source row as the server sends it (Demo Mode adds `demo`). */
+type HarnessSource = SourceInstance & { demo?: boolean };
 
 let spies: EngineSpies;
 beforeEach(() => {
@@ -106,6 +110,70 @@ describe('Composer — keyboard', () => {
     await user.type(textarea, 'draft');
     await user.keyboard('{ArrowUp}');
     expect(textarea.value).toBe('draft');
+  });
+});
+
+/*
+ * Ported from the pre-revamp ChatPanel suite (deleted with ChatPanel): the composer-level
+ * guarantees the Workspace and Case Manager hosts rely on.
+ */
+describe('Composer — pre-revamp guarantees', () => {
+  it('Shift+Enter never sends; plain Enter sends the exact text', async () => {
+    const { user, textarea } = setup();
+    await user.type(textarea, 'keyboard question');
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+    expect(spies.send).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(spies.send).toHaveBeenCalledTimes(1);
+    expect(spies.send).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('keeps the composed text through an IME Enter, then sends once composition ends', async () => {
+    const { textarea } = setup();
+    fireEvent.change(textarea, { target: { value: '正在调查' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(textarea, { key: 'Process', keyCode: 229 });
+    expect(spies.send).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('正在调查');
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: false });
+    expect(spies.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers only enabled, browsable sources and labels the default scope truthfully', async () => {
+    stubServer({
+      sources: [
+        { id: 'elastic-live', source_type: 'elasticsearch', display_name: 'Elastic live', enabled: true, can_browse: true },
+        { id: 'elastic-off', source_type: 'elasticsearch', display_name: 'Elastic disabled', enabled: false, can_browse: true },
+        { id: 'webhook', source_type: 'webhook', display_name: 'Webhook push', enabled: true, can_browse: false },
+        { id: 'demo-entra', source_type: 'entra_id', display_name: 'Microsoft Entra ID', enabled: true, can_browse: true, demo: true },
+      ] as HarnessSource[],
+    });
+    const user = userEvent.setup();
+    render(<Harness spies={spies} context={makeContext()} />);
+    await user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    await waitFor(() => expect(within(dialog).getByRole('radio', { name: /Elastic live/ })).toBeInTheDocument());
+    expect(within(dialog).getByRole('radio', { name: /All sources/ })).toBeChecked();
+    expect(within(dialog).getByRole('radio', { name: /Microsoft Entra ID/ })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('radio', { name: /Elastic disabled/ })).toBeNull();
+    expect(within(dialog).queryByRole('radio', { name: /Webhook push/ })).toBeNull();
+  });
+
+  it("shows each thread's own draft and reports edits to the host (never shared between threads)", async () => {
+    stubServer();
+    const onDraftChange = vi.fn();
+    const view = render(
+      <Harness spies={spies} context={makeContext()} controlledDraft="unfinished query" onDraftChange={onDraftChange} />,
+    );
+    const textarea = screen.getByRole('textbox', { name: 'Message the assistant' });
+    expect(textarea).toHaveValue('unfinished query');
+    fireEvent.change(textarea, { target: { value: 'updated query' } });
+    expect(onDraftChange).toHaveBeenLastCalledWith('updated query');
+    view.rerender(
+      <Harness spies={spies} context={makeContext()} controlledDraft="another thread draft" onDraftChange={onDraftChange} />,
+    );
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue('another thread draft');
+    await flush();
   });
 });
 
