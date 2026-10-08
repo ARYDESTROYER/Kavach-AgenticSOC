@@ -4,7 +4,12 @@
  * `GET /api/chat/context` is cached per principal for 30 s on the server; the client
  * mirrors that with a small module cache keyed by principal + case + conversation +
  * model, so remounting the chat page (or switching back to a thread) inside the
- * window costs no request. Fresh numbers are fetched:
+ * window costs no request. The cache is shared across mounts ONLY under a known
+ * principal: without one (`principal` omitted or null) the entries are private to
+ * this hook instance, so one user's catalogue, rates and `spent_today` can never be
+ * served to the next user signed in to the same tab (logout does not reload the
+ * page). Seeing a different principal also drops every cached entry. Fresh numbers
+ * are fetched:
  *
  * - when the conversation, the model override or the case changes (new key);
  * - after a turn settles (`busy` true → false), because the history estimate,
@@ -31,6 +36,7 @@ export interface UseChatContextArgs {
   /**
    * The signed-in principal (`useAuth().username`). Part of the cache key so one
    * user's catalogue and spend are never served to the next user in the same tab.
+   * Omitted or null: nothing is shared with other mounts (fail closed).
    */
   principal?: string | null;
   /**
@@ -60,14 +66,28 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+/** The last known principal any instance rendered with; a change drops the cache. */
+let lastPrincipal: string | null = null;
 
 /** Test hook: forget every cached context. */
 export function clearChatContextCache(): void {
   cache.clear();
+  lastPrincipal = null;
 }
 
-function cacheKey(principal: string | null, caseId: string | null, conversationId: string | null, model: string | null) {
-  return JSON.stringify([principal ?? '', caseId ?? '', conversationId ?? '', model ?? '']);
+/**
+ * Record the principal this render runs as; a different known principal clears the
+ * whole cache (defence in depth: the previous user's spend leaves memory, not just
+ * the lookup path). Idempotent, so a discarded concurrent render only costs a read.
+ */
+function notePrincipal(principal: string | null): void {
+  if (!principal || principal === lastPrincipal) return;
+  if (lastPrincipal !== null) cache.clear();
+  lastPrincipal = principal;
+}
+
+function cacheKey(namespace: string, caseId: string | null, conversationId: string | null, model: string | null) {
+  return JSON.stringify([namespace, caseId ?? '', conversationId ?? '', model ?? '']);
 }
 
 function remember(key: string, context: ChatContextInfo, at: number) {
@@ -88,8 +108,22 @@ function freshEntry(key: string, now: number): CacheEntry | null {
 
 export function useChatContext(args: UseChatContextArgs): ChatContextController {
   const { conversationId, model, caseId = null, enabled = true, principal = null, busy = false } = args;
-  const key = cacheKey(principal, caseId, conversationId, model);
-  const scopeKey = JSON.stringify([principal ?? '', caseId ?? '']);
+  // A known principal shares entries across mounts; otherwise they stay private to
+  // this instance (its useId), so an unidentified caller never reads another's data.
+  const instanceId = React.useId();
+  const known = typeof principal === 'string' && principal.length > 0;
+  const namespace = known ? `principal:${principal}` : `instance:${instanceId}`;
+  notePrincipal(known ? principal : null);
+  const key = cacheKey(namespace, caseId, conversationId, model);
+  const scopeKey = JSON.stringify([namespace, caseId ?? '']);
+
+  // Instance-private entries are unreachable once this instance unmounts: drop them.
+  React.useEffect(() => {
+    const prefix = JSON.stringify([`instance:${instanceId}`]).slice(0, -1);
+    return () => {
+      for (const entryKey of Array.from(cache.keys())) if (entryKey.startsWith(`${prefix},`)) cache.delete(entryKey);
+    };
+  }, [instanceId]);
 
   const [context, setContext] = React.useState<ChatContextInfo | null>(() => cache.get(key)?.context ?? null);
   const [loading, setLoading] = React.useState(false);

@@ -4,19 +4,29 @@
  * they can be unit-tested and shared by the chips, popovers and hover card.
  */
 import type { ChatContextInfo, ChatScope, ChatTimeRange, SourceInstance } from '@/lib/types';
+import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from '../display';
+import { compactTokens, formatCost } from '../message/format';
 import { displayText } from '../stream-events';
 
-/** Compact token count in the console's chat grammar: 820, 1.2k, 12k, 1.2M. */
+/**
+ * Compact token count in the chat grammar (SPEC §8): 820, 1.2k, 12.4k, 184k, 1.3M.
+ * The SAME function as the transcript's ({@link compactTokens}), so the meter card
+ * and the thread toolbar never show one conversation two ways.
+ */
 export function formatTokenCount(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—';
-  const n = Math.round(value);
-  if (n < 1000) return String(n);
-  if (n < 10_000) return `${trimZero((n / 1000).toFixed(1))}k`;
-  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
-  return `${trimZero((n / 1_000_000).toFixed(1))}M`;
+  return compactTokens(value);
 }
 
-const trimZero = (s: string) => s.replace(/\.0$/, '');
+/**
+ * A per-turn amount in the transcript's grammar ("$0.002", "$0.03", "<$0.001"): the
+ * projected cost and this conversation's total read exactly like the run log and
+ * the thread toolbar ({@link formatCost}).
+ */
+export function formatTurnCost(value: number | null | undefined): string {
+  return formatCost(value);
+}
+
+const trimZero = (s: string) => s.replace(/\.0+$|(\.\d*?)0+$/, '$1');
 
 /** Grouped integer ("12,345") for hover-card detail rows. */
 export function formatExactTokens(value: number | null | undefined): string {
@@ -25,14 +35,65 @@ export function formatExactTokens(value: number | null | undefined): string {
 }
 
 /**
- * Money in the console's grammar: four decimals below $1 (chat turns cost fractions of
- * a cent), two above. Zero reads "$0.00".
+ * A BUDGET amount ("$4.20 of $10.00"): always two decimals, like the budget settings.
+ * A non-zero spend under one cent uses the per-turn grammar ("$0.004") so it never
+ * reads as "$0.00". Per-turn figures use {@link formatTurnCost}.
  */
 export function formatMoney(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
   if (value === 0) return '$0.00';
-  const decimals = Math.abs(value) >= 1 ? 2 : 4;
-  return `$${value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
+  if (value > 0 && value < 0.01) return formatCost(value);
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Next-request estimate (SPEC §8 item 1).                                     */
+/* -------------------------------------------------------------------------- */
+
+/** The server's calibration bounds (`CALIBRATION_BOUNDS` in routes_chat.py). */
+export const CALIBRATION_RANGE = [0.25, 4] as const;
+
+/** The usable calibration factor: clamped to 0.25–4; 1 when absent or not a number. */
+export function calibrationFactor(calibration: number | null | undefined): number {
+  if (typeof calibration !== 'number' || !Number.isFinite(calibration) || calibration <= 0) return 1;
+  return Math.min(CALIBRATION_RANGE[1], Math.max(CALIBRATION_RANGE[0], calibration));
+}
+
+/** "×1.5" for the meter card. */
+export function formatFactor(factor: number): string {
+  return `×${trimZero(factor.toFixed(2))}`;
+}
+
+export interface CalibratedEstimate {
+  system: number;
+  history: number;
+  draft: number;
+  total: number;
+  /** The factor applied to every part (1 = uncalibrated). */
+  factor: number;
+}
+
+/**
+ * The composer's "≈ N" (SPEC §8): (system + history + draft) chars ÷ chars_per_token
+ * × calibration. The calibration is the server's actual ÷ estimate for the WHOLE first
+ * prompt of this conversation's last turn, and `static_prompt_tokens` and
+ * `history_tokens` are uncalibrated chars ÷ 4 estimates, so the factor applies to
+ * every part, not just the draft. Never negative, never NaN.
+ */
+export function calibratedNextRequest(
+  context: Pick<ChatContextInfo, 'static_prompt_tokens' | 'history_tokens' | 'chars_per_token' | 'calibration'>,
+  draft: string,
+): CalibratedEstimate {
+  const factor = calibrationFactor(context.calibration);
+  const safe = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
+  const cpt =
+    Number.isFinite(context.chars_per_token) && context.chars_per_token > 0
+      ? context.chars_per_token
+      : DEFAULT_CHARS_PER_TOKEN;
+  const system = Math.round(safe(context.static_prompt_tokens) * factor);
+  const history = Math.round(safe(context.history_tokens) * factor);
+  const draftTokens = estimateTokens(Array.from(draft).length, cpt, factor);
+  return { system, history, draft: draftTokens, total: system + history + draftTokens, factor };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -184,7 +245,7 @@ export function budgetSendBlockReason(context: ChatContextInfo | null | undefine
   return "Today's AI budget is used up.";
 }
 
-/** A cost range "≈ $0.0010–$0.0300" for the projected turn, or null without rates. */
+/** A cost range "≈ $0.003–$0.08" for the projected turn, or null without rates. */
 export function projectedCostRange(
   context: ChatContextInfo,
   nextRequestTokens: number,

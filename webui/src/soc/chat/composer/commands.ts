@@ -12,6 +12,7 @@
  */
 import type { ChatContextInfo, ChatPrompt, ChatScope, ChatToolInfo, ReportTemplateName } from '@/lib/types';
 import { CHAT_SCOPES } from '../stream-events';
+import { isKindGated } from './access-copy';
 import { SCOPE_DESCRIPTIONS, SCOPE_LABELS } from './format';
 
 /* -------------------------------------------------------------------------- */
@@ -24,10 +25,16 @@ export function toolsAllowed(context: ChatContextInfo | null | undefined, tools:
   return tools.every((name) => context.tools.some((tool) => tool.name === name && tool.allowed));
 }
 
-/** The first grant the caller lacks for a tool (for "Needs <perm>" copy). */
+/**
+ * The grants the caller lacks for a tool, as "Needs <…>" copy, or null when allowed.
+ * A kind-gated tool (no base grant) is unlocked by ANY one of its per-kind grants, so
+ * they are joined with "or"; ordinary required grants are all needed ("and").
+ */
 export function missingGrant(tool: ChatToolInfo): string | null {
   if (tool.allowed) return null;
-  return tool.missing?.[0] ?? tool.requires[0] ?? null;
+  const missing = tool.missing?.length ? tool.missing : tool.requires;
+  if (!missing.length) return null;
+  return missing.join(isKindGated(tool) ? ' or ' : ' and ');
 }
 
 export interface ScopeAccess {
@@ -287,8 +294,14 @@ export function slashMenuGroups(
     return groups;
   }
 
-  const commands = available
-    .filter((command) => command.id.startsWith(query.command) || (query.command.length > 1 && command.id.includes(query.command)))
+  // Prefix matches first; a word found inside a command ("/brief") only when no
+  // command starts with what was typed, so "/po" is posture, not also report.
+  const byPrefix = available.filter((command) => command.id.startsWith(query.command));
+  const matched =
+    byPrefix.length || query.command.length < 2
+      ? byPrefix
+      : available.filter((command) => command.id.includes(query.command));
+  const commands = matched
     .map<ComposerMenuItem>((command) => ({
       kind: 'command',
       value: `cmd:${command.id}`,

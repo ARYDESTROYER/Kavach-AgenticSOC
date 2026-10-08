@@ -2,7 +2,9 @@
  * useAutoGrow — grow a textarea with its content up to a maximum, then scroll
  * (SPEC §10.4). Chromium and Safari size the field natively through
  * `field-sizing: content` (the composer sets that class); Firefox and older engines
- * get this JS fallback, which measures `scrollHeight` after every value change.
+ * get this JS fallback, which measures `scrollHeight` after every value change and
+ * after every width change (the same text wraps to more or fewer lines when the lane
+ * reflows; without re-measuring, the fixed height would clip it with no scrollbar).
  *
  * The fallback sets an inline height only when the engine reports a real layout
  * (`scrollHeight > 0`), so jsdom and a hidden tab keep the CSS minimum instead of a
@@ -22,9 +24,9 @@ export function supportsFieldSizing(): boolean {
 export function useAutoGrow(
   ref: React.RefObject<HTMLTextAreaElement>,
   value: string,
-  options: { maxHeight: number; disabled?: boolean },
+  options: { maxHeight: number; disabled?: boolean; width?: number | null },
 ): void {
-  const { maxHeight, disabled = false } = options;
+  const { maxHeight, disabled = false, width = null } = options;
   const native = React.useMemo(supportsFieldSizing, []);
 
   React.useLayoutEffect(() => {
@@ -40,5 +42,5 @@ export function useAutoGrow(
     const next = Math.min(content, maxHeight);
     el.style.height = `${next}px`;
     el.style.overflowY = content > maxHeight ? 'auto' : 'hidden';
-  }, [ref, value, maxHeight, native, disabled]);
+  }, [ref, value, maxHeight, native, disabled, width]);
 }
