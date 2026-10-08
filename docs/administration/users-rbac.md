@@ -26,7 +26,7 @@ authorization boundary.
 
 ## Add a local user
 
-1. Open **Settings → Users**.
+1. Open **Settings → Security & access → Users**.
 2. Create a unique username and a strong initial password.
 3. Assign the smallest built-in or custom role that covers the user's duties.
 4. Require a password change when appropriate.

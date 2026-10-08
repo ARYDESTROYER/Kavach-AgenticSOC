@@ -1,0 +1,410 @@
+/**
+ * DEV-ONLY gallery: one realistic example of every answer-block type and chart kind, in
+ * the WIRE shape the server sends (`ChatResponse.blocks`). Used by the renderer tests,
+ * the axe gallery spec and visual QA (WP-I2). Never imported by production code.
+ *
+ * Values are synthetic and deliberately exercise the honesty rules: a `null` bucket in a
+ * stack and a line, a lower-bound KPI, a truncated table, an untrusted label set, a
+ * hatched heatmap cell, an in-progress bucket and a reference line.
+ */
+import { parseBlocks } from '../schema';
+import type { AnswerBlock } from '../schema';
+
+const HOUR = 3_600_000;
+const T0 = Date.UTC(2026, 9, 7, 0, 0, 0);
+const hours = (n: number, step = 1) =>
+  Array.from({ length: n }, (_, i) => new Date(T0 + i * step * HOUR).toISOString().replace('.000Z', 'Z'));
+
+// Twelve HOURLY buckets: the spacing must match the declared `bucket: '1h'`, or tooltips
+// and table rows would read "00:00–01:00 UTC" with unexplained gaps between them.
+const H12 = hours(12);
+
+export const GALLERY_RAW: unknown[] = [
+  {
+    id: 'note',
+    type: 'markdown',
+    provenance: 'ai',
+    artifact_kind: null,
+    text: 'Alert volume rose **18%** over the last 24 hours, driven by `web-01`.\n\n- Two hosts account for most failed logons\n- No new critical cases',
+  },
+  {
+    id: 'kpis',
+    type: 'kpi_group',
+    title: 'Posture now',
+    caption: 'Last 24h · all sources',
+    provenance: 'code',
+    artifact_kind: 'kpis',
+    allowed_views: ['kpi_group', 'table'],
+    as_of: '2026-10-08T09:12:00Z',
+    items: [
+      {
+        key: 'alerts',
+        label: 'Alerts ingested',
+        value: 12840,
+        unit: 'count',
+        delta: { value: 1960, period_label: 'vs prev 24h', good_direction: 'down' },
+        trend: { points: [420, 510, null, 560, 610, 590, 640, 700, 0, 520, 480, 530], window_label: 'last 24h, 2h buckets' },
+      },
+      { key: 'open', label: 'Open cases', value: 43, unit: 'count', bound: 'lower', context: 'scan bounded', semantic: 'high', ref: { page: 'cases', opts: { status: 'open' } } },
+      { key: 'fp', label: 'False positive rate', value: 18.4, unit: 'percent', context: 'of 112 verdicted' },
+      { key: 'mttr', label: 'MTTR', value: 5_400_000, unit: 'ms' },
+      { key: 'risk', label: 'Active risk index', value: 62, unit: 'score', display: 'gauge' },
+      { key: 'cost', label: 'AI spend today', value: null, unit: 'usd' },
+    ],
+  },
+  {
+    id: 'top-hosts',
+    type: 'chart',
+    kind: 'hbar',
+    title: 'Top hosts by failed logons',
+    caption: 'Top 8 of 1,240 hosts · last 24h',
+    provenance: 'source',
+    artifact_kind: 'categories',
+    allowed_views: ['hbar', 'bar', 'table'],
+    untrusted: true,
+    truncated: true,
+    total: 1240,
+    unit: 'count',
+    x: {
+      kind: 'category',
+      values: ['web-01.corp.example', 'db-03', 'vpn-gw-2', 'jump-host-11', 'mail-relay', 'ci-runner-7', 'dc-01', 'printer-4f'],
+      label: 'Host',
+    },
+    series: [{ key: 'failed', label: 'Failed logons', values: [1840, 1203, 655, 402, 310, 120, 88, 12] }],
+  },
+  {
+    id: 'severity-mix',
+    type: 'chart',
+    kind: 'bar',
+    title: 'Open cases by severity',
+    provenance: 'code',
+    artifact_kind: 'categories',
+    allowed_views: ['hbar', 'bar', 'donut', 'table'],
+    unit: 'count',
+    x: { kind: 'category', values: ['critical', 'high', 'medium', 'low', 'info'] },
+    series: [{ key: 'cases', label: 'Cases', values: [3, 11, 17, 9, 3] }],
+    drill: [
+      { page: 'cases', opts: { severity: 'critical' } },
+      { page: 'cases', opts: { severity: 'high' } },
+      { page: 'cases', opts: { severity: 'medium' } },
+      { page: 'cases', opts: { severity: 'low' } },
+      { page: 'cases', opts: { severity: 'info' } },
+    ],
+  },
+  {
+    id: 'alerts-by-source',
+    type: 'chart',
+    kind: 'stacked_bar',
+    title: 'Alerts by source',
+    caption: 'Last 12h · 1h buckets (UTC)',
+    provenance: 'source',
+    artifact_kind: 'series',
+    allowed_views: ['line', 'area', 'bar', 'stacked_bar', 'table'],
+    unit: 'count',
+    last_in_progress: true,
+    x: { kind: 'time', values: H12, bucket: '1h' },
+    series: [
+      { key: 'wazuh', label: 'Wazuh', values: [220, 260, 240, 300, 310, 280, null, 330, 360, 290, 270, 140] },
+      { key: 'elastic', label: 'Elastic', values: [120, 140, 150, 130, 170, 160, 150, 180, 175, 165, 150, 80] },
+      { key: 'other', label: 'Other', values: [30, 25, 40, 35, 30, 20, 25, 30, 40, 35, 30, 12] },
+    ],
+  },
+  {
+    id: 'mtta-trend',
+    type: 'chart',
+    kind: 'line',
+    title: 'Time to acknowledge',
+    caption: 'Per 1h bucket · last 12h',
+    provenance: 'code',
+    artifact_kind: 'series',
+    allowed_views: ['line', 'area', 'bar', 'stacked_bar', 'table'],
+    unit: 'minutes',
+    x: { kind: 'time', values: H12, bucket: '1h' },
+    series: [
+      { key: 'p50', label: 'Median', values: [12, 14, 11, null, null, 18, 16, 15, 13, 12, 14, 15] },
+      { key: 'p90', label: '90th percentile', values: [40, 45, 38, null, 52, 60, 55, 49, 47, 41, 44, 46] },
+    ],
+    reference: { axis: 'y', value: 30, label: 'SLA 30 min' },
+  },
+  {
+    id: 'tokens-area',
+    type: 'chart',
+    kind: 'area',
+    title: 'Model tokens used',
+    provenance: 'code',
+    artifact_kind: 'series',
+    allowed_views: ['line', 'area', 'bar', 'sparkline', 'table'],
+    unit: 'tokens',
+    x: { kind: 'time', values: H12, bucket: '1h' },
+    series: [{ key: 'tokens', label: 'Tokens', values: [8200, 9100, 7600, 12000, 15400, 9800, 8700, 9900, 11200, 10400, 9600, 4100] }],
+  },
+  {
+    id: 'verdicts',
+    type: 'chart',
+    kind: 'donut',
+    title: 'Verdict mix',
+    caption: 'Cases closed in the last 7 days',
+    provenance: 'code',
+    artifact_kind: 'categories',
+    allowed_views: ['hbar', 'bar', 'donut', 'table'],
+    unit: 'count',
+    x: { kind: 'category', values: ['true_positive', 'false_positive', 'benign', 'needs_human'] },
+    series: [{ key: 'cases', label: 'Cases', values: [14, 61, 22, 7] }],
+  },
+  {
+    id: 'ingest-spark',
+    type: 'chart',
+    kind: 'sparkline',
+    title: 'Events per hour',
+    provenance: 'source',
+    artifact_kind: 'series',
+    allowed_views: ['line', 'area', 'bar', 'sparkline', 'table'],
+    unit: 'count',
+    x: { kind: 'time', values: H12, bucket: '1h' },
+    series: [{ key: 'events', label: 'Events', values: [5100, 5300, 4800, null, 6100, 6400, 5900, 6600, 7000, 0, 6200, 5800] }],
+  },
+  {
+    id: 'triage-funnel',
+    type: 'chart',
+    kind: 'funnel',
+    title: 'Noise reduction',
+    caption: 'Last 24h',
+    provenance: 'code',
+    artifact_kind: 'funnel',
+    allowed_views: ['funnel', 'hbar', 'table'],
+    unit: 'count',
+    x: { kind: 'category', values: ['Raw alerts', 'Correlated clusters', 'Investigated', 'Escalated to a human'] },
+    series: [{ key: 'n', label: 'Alerts', values: [12840, 1420, 310, 22] }],
+  },
+  {
+    id: 'logon-heatmap',
+    type: 'heatmap',
+    title: 'Failed logons by hour',
+    caption: 'Last 7 days (UTC)',
+    provenance: 'source',
+    artifact_kind: 'heatmap',
+    allowed_views: ['heatmap', 'table'],
+    unit: 'count',
+    x: { values: ['00', '02', '04', '06', '08', '10', '12', '14', '16', '18', '20', '22'], label: 'Hour' },
+    y: { values: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], label: 'Day' },
+    cells: [
+      [2, 0, 1, 5, 40, 62, 55, 48, 39, 12, 6, 3],
+      [1, 0, 0, 4, 38, 70, 61, 52, 41, 10, 5, 2],
+      [3, 1, 0, 6, 45, null, 58, 50, 37, 14, 8, 4],
+      [2, 0, 1, 5, 41, 66, 57, 49, 36, 11, 7, 3],
+      [4, 2, 1, 7, 44, 59, 51, 43, 30, 16, 9, 6],
+      [0, 0, 0, 1, 3, 5, 6, 4, 3, 2, 1, 0],
+      [0, 0, 0, 0, 2, 4, 3, 3, 2, 1, 0, 0],
+    ],
+  },
+  {
+    id: 'signins',
+    type: 'table',
+    title: 'Recent sign-in failures',
+    caption: 'Newest 12 of 312 · Wazuh',
+    provenance: 'source',
+    artifact_kind: 'table',
+    allowed_views: ['table'],
+    truncated: true,
+    total: 312,
+    columns: [
+      { key: 'ts', label: 'Time', type: 'time' },
+      { key: 'user', label: 'User', type: 'entity', untrusted: true },
+      { key: 'src', label: 'Source IP', type: 'entity', untrusted: true },
+      { key: 'rule', label: 'Rule', type: 'text', untrusted: true },
+      { key: 'sev', label: 'Severity', type: 'severity' },
+      { key: 'n', label: 'Attempts', type: 'number', unit: 'count' },
+      { key: 'case', label: 'Case', type: 'case' },
+      { key: 'tech', label: 'Technique', type: 'mitre' },
+      { key: 'blank', label: 'Notes', type: 'text' },
+    ],
+    rows: Array.from({ length: 12 }, (_, i) => [
+      new Date(T0 + (24 - i) * HOUR).toISOString(),
+      i % 3 === 0 ? 'svc-backup' : `user${i}@corp.example`,
+      `203.0.113.${10 + i}`,
+      i === 4 ? '=HYPERLINK("http://evil.example","click")' : 'sshd: authentication failure',
+      ['critical', 'high', 'medium', 'low'][i % 4],
+      i === 7 ? null : 3 + ((i * 7) % 40),
+      i % 4 === 0 ? `case-${1040 + i}` : null,
+      i % 2 === 0 ? 'T1110.001' : 'T1078',
+      null,
+    ]),
+    sort: { key: 'n', dir: 'desc' },
+  },
+  {
+    id: 'open-cases',
+    type: 'case_list',
+    title: 'Newest open cases',
+    provenance: 'code',
+    artifact_kind: 'case_list',
+    allowed_views: ['case_list', 'table'],
+    items: [
+      { case_id: 'case-1052', title: 'Brute force against vpn-gw-2', severity: 'high', verdict: 'needs_human', status: 'investigating', risk: 71, created_at: '2026-10-08T07:40:00Z' },
+      { case_id: 'case-1049', title: 'Suspicious PowerShell on web-01', severity: 'critical', verdict: 'true_positive', status: 'escalated', risk: 88, created_at: '2026-10-08T03:05:00Z' },
+      { case_id: 'case-1047', title: 'Impossible travel for user7', severity: 'medium', status: 'new', risk: null, created_at: '2026-10-07T22:51:00Z' },
+    ],
+  },
+  {
+    id: 'incident-timeline',
+    type: 'timeline',
+    title: 'What happened',
+    provenance: 'source',
+    artifact_kind: 'timeline',
+    allowed_views: ['timeline', 'table'],
+    untrusted: true,
+    events: [
+      { at: '2026-10-07T23:58:00Z', label: 'First failed logon from 203.0.113.14', kind: 'alert', semantic: 'medium' },
+      { at: '2026-10-08T00:04:00Z', label: 'Brute-force rule fired', kind: 'detection', semantic: 'high', detail: 'rule 5712: sshd brute force (10 failures in 120s)' },
+      { at: '2026-10-08T00:06:00Z', label: 'Case opened', kind: 'case', ref: { page: 'case_manager', opts: { caseId: 'case-1052' } } },
+      { at: '2026-10-08T07:40:00Z', label: 'Routed to a human: risk 71 above the floor', kind: 'action' },
+    ],
+  },
+  {
+    id: 'ioc',
+    type: 'entity',
+    provenance: 'source',
+    artifact_kind: 'entity',
+    allowed_views: ['entity'],
+    entity: { kind: 'ip', value: '203.0.113.14' },
+    risk: 78,
+    verdict: 'suspicious',
+    facts: [
+      { label: 'ASN', value: 'AS64500 Example Hosting', untrusted: true },
+      { label: 'Country', value: 'NL' },
+      { label: 'Reverse DNS', value: 'scan-14.example.net', untrusted: true },
+    ],
+    reputation: [
+      { provider: 'AbuseIPDB', verdict: 'malicious', score: 92, detail: '314 reports in 30 days' },
+      { provider: 'GreyNoise', verdict: 'suspicious' },
+      { provider: 'Shodan InternetDB', verdict: 'unknown' },
+    ],
+    counts: [
+      { key: 'alerts', label: 'Alerts', value: 142, unit: 'count' },
+      { key: 'cases', label: 'Cases', value: 2, unit: 'count' },
+    ],
+    related_cases: [{ case_id: 'case-1052', title: 'Brute force against vpn-gw-2', severity: 'high' }],
+    first_seen: '2026-10-07T23:58:00Z',
+    last_seen: '2026-10-08T08:59:00Z',
+  },
+  {
+    id: 'attack-coverage',
+    type: 'mitre',
+    title: 'Techniques seen this week',
+    provenance: 'code',
+    artifact_kind: 'mitre',
+    allowed_views: ['mitre'],
+    techniques: [
+      { id: 'T1110.001', name: 'Password Guessing', tactic: 'Credential Access', count: 44 },
+      { id: 'T1078', name: 'Valid Accounts', tactic: 'Defense Evasion', count: 9 },
+      { id: 'T1059.001', name: 'PowerShell', tactic: 'Execution', count: 3 },
+      { id: 'T1021', name: 'Remote Services', tactic: 'Lateral Movement', count: null },
+    ],
+  },
+  {
+    id: 'attack-mapped',
+    type: 'mitre',
+    title: 'Techniques this rule maps to',
+    provenance: 'code',
+    artifact_kind: 'mitre',
+    allowed_views: ['mitre'],
+    techniques: [
+      { id: 'T1110.001', name: 'Password Guessing', tactic: 'Credential Access' },
+      { id: 'T1110.003', name: 'Password Spraying', tactic: 'Credential Access' },
+    ],
+  },
+  {
+    id: 'lookup-query',
+    type: 'query',
+    provenance: 'source',
+    artifact_kind: 'query',
+    allowed_views: ['query'],
+    language: 'esql',
+    query: 'FROM all-logs-* | WHERE event.outcome == "failure" | STATS c = COUNT(*) BY host.name | SORT c DESC | LIMIT 8',
+    source_name: 'Primary',
+    hits: 1240,
+  },
+  {
+    id: 'scan-bound',
+    type: 'callout',
+    provenance: 'code',
+    artifact_kind: null,
+    tone: 'warning',
+    text: 'Scan bounded at 5,000 cases: counts are lower bounds.',
+  },
+  {
+    id: 'sources',
+    type: 'citations',
+    provenance: 'code',
+    artifact_kind: null,
+    items: [
+      { n: 1, kind: 'docs', label: 'Chat in the Help Center', ref: { doc: '/docs/0.1/analyst/chat/' } },
+      { n: 2, kind: 'case', label: 'case-1052', ref: { page: 'case_manager', opts: { caseId: 'case-1052' } } },
+      { n: 3, kind: 'log', label: 'sshd auth log', snippet: 'Failed password for root from 203.0.113.14 port 52114 ssh2' },
+    ],
+  },
+  {
+    id: 'howto',
+    type: 'guide',
+    provenance: 'code',
+    artifact_kind: 'guide',
+    allowed_views: ['guide'],
+    title: 'Connect a new log source',
+    steps: [{ text: 'Open Settings › Sources.' }, { text: 'Choose a connector and paste its read-only key.' }, { text: 'Run the connection test, then enable polling.' }],
+    links: [
+      { label: 'Open Settings › Sources', ref: { page: 'settings', opts: { section: 'sources' } } },
+      { label: 'Sources in the Help Center', ref: { doc: '/docs/0.1/admin/sources/' } },
+    ],
+  },
+  {
+    id: 'shift-brief',
+    type: 'report',
+    provenance: 'ai',
+    artifact_kind: null,
+    title: 'Shift brief',
+    subtitle: 'Night shift handover, 7–8 October',
+    template: 'shift',
+    scope: { window_label: 'last 12h', sources: ['Wazuh', 'Elastic'], generated_at: '2026-10-08T09:15:00Z' },
+    sections: [
+      {
+        id: 'summary',
+        heading: 'Summary',
+        blocks: [{ id: 'brief-md', type: 'markdown', provenance: 'ai', text: 'Quiet night apart from one brute-force burst against **vpn-gw-2**.' }],
+      },
+      {
+        id: 'numbers',
+        heading: 'Numbers',
+        summary: 'Alert volume and case backlog over the shift.',
+        blocks: [
+          {
+            id: 'brief-kpis',
+            type: 'kpi_group',
+            provenance: 'code',
+            artifact_kind: 'kpis',
+            allowed_views: ['kpi_group', 'table'],
+            items: [
+              { key: 'a', label: 'Alerts', value: 6400, unit: 'count' },
+              { key: 'c', label: 'New cases', value: 5, unit: 'count' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'watch',
+        heading: 'Watch next shift',
+        blocks: [{ id: 'brief-callout', type: 'callout', provenance: 'ai', tone: 'info', text: 'Keep an eye on 203.0.113.0/24.' }],
+      },
+    ],
+  },
+];
+
+/** Every gallery block, parsed exactly as the transcript would parse it. */
+export function galleryBlocks(): AnswerBlock[] {
+  return parseBlocks(GALLERY_RAW, { limit: GALLERY_RAW.length }).blocks;
+}
+
+/** One gallery block by id (throws in a test if the fixture drifted). */
+export function galleryBlock(id: string): AnswerBlock {
+  const b = galleryBlocks().find((x) => x.id === id);
+  if (!b) throw new Error(`gallery block ${id} missing`);
+  return b;
+}

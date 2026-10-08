@@ -6,7 +6,7 @@ description: Manage retrieved procedures and durable operator facts with explici
 # Knowledge and memory
 
 Open **Intelligence → Knowledge corpus** for the retrieval corpus and
-**Intelligence → Memory** for durable operator facts. Both can ground an
+**Intelligence → Operator memory** for durable operator facts. Both can ground an
 investigation, but they have different trust and lifecycle rules.
 
 ## Knowledge base
@@ -81,7 +81,7 @@ The window's ordering is always globally newest-first across the terminal case s
 independently of these settings.
 
 Retrieval surfaces resolved cases as fenced context. Enable optional precedent promotion
-under **Settings → Knowledge & threat context → Analyst-confirmed precedent promotion**;
+under **Settings → Integrations → Knowledge & threat context → Analyst-confirmed precedent promotion**;
 it additionally reports, as a computed count, how many analyst-confirmed benign and
 malicious outcomes exist for the exact rule identity under investigation. That count is
 evidence given to the investigator; the verdict remains the model's and the close

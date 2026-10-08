@@ -210,6 +210,10 @@ describe its real operating boundary. At minimum:
 
 - canonical version metadata, OpenAPI, TypeScript contracts, image defaults, and
   release notes agree;
+- the Workspace Chat Help Center corpus is regenerated for the candidate: after any
+  `VERSION`, documentation, or Console navigation change, run `npm run gen:console-map`
+  in `webui/` and then `python scripts/build_app_knowledge.py`. The corpus records the
+  product version, so the documentation lane's `--check` fails until it is rebuilt;
 - backend tests, web console lint/tests/build, and strict documentation build pass;
 - the supported PostgreSQL+pgvector/Redis state lane performs a real readiness
   write/read, and every shipping backend, Console, and updater image builds with the

@@ -172,4 +172,30 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': 'off',
     },
   },
+  {
+    // Chat revamp G1 (SPEC §7.1, BLOCKS.md §5.1): every chat and report string is a React
+    // text node. Model, log and source text reaches these surfaces, so raw HTML injection
+    // is banned outright here, in every spelling: the JSX attribute; the props-object key
+    // and member access (`{ dangerouslySetInnerHTML }`, `p.dangerouslySetInnerHTML`) as an
+    // Identifier; and the quoted / computed forms (`{ 'dangerouslySetInnerHTML': … }`,
+    // `p['dangerouslySetInnerHTML']`) as a string Literal. Comments are not AST nodes.
+    files: ['src/soc/chat/**/*.{ts,tsx}', 'src/soc/reports/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+          message: 'G1: chat and report strings render as React text nodes only; dangerouslySetInnerHTML is banned here.',
+        },
+        {
+          selector: "Identifier[name='dangerouslySetInnerHTML']",
+          message: 'G1: chat and report strings render as React text nodes only; dangerouslySetInnerHTML is banned here.',
+        },
+        {
+          selector: "Literal[value='dangerouslySetInnerHTML']",
+          message: 'G1: chat and report strings render as React text nodes only; dangerouslySetInnerHTML is banned here.',
+        },
+      ],
+    },
+  },
 );

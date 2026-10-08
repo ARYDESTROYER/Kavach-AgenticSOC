@@ -95,6 +95,10 @@ jobs:
           with ZipFile(wheels[0]) as archive:
               names = set(archive.namelist())
           required = {
+              "app/knowledge/aliases.json",
+              "app/knowledge/app_docs.json",
+              "app/knowledge/console_map.json",
+              "app/knowledge/manifest.json",
               "app/llm/model_registry.json",
               "app/threat/mitre_techniques.json",
               "app/threat/SOURCE.md",
@@ -492,6 +496,8 @@ jobs:
         run: |
           python scripts/test_build_docs_bundle.py
           python scripts/test_docs_theme.py
+      - name: Verify the chat app-knowledge corpus is current
+        run: python scripts/build_app_knowledge.py --check
       - name: Build and revalidate the versioned Help Center
         env:
           TLSOC_RELEASE_CHANNEL: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && 'stable' || 'testing' }}

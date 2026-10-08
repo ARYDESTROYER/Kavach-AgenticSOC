@@ -27,6 +27,22 @@ A connectivity test is not a quality, privacy, or capacity certification. Valida
 data-processing terms, regional routing, rate limits, context limits, and failure
 behavior independently.
 
+## Add or change a model
+
+1. Supply the provider's API key in **Settings → Security & access → Secret keys** or
+   through the deployment environment. The Console only shows whether a key is
+   configured, never its value.
+2. Open **Settings → General → Models** and choose the model for each role: router,
+   investigator, formatter, standup, chat, overview, and embedding.
+3. For a self-hosted or LiteLLM-style OpenAI-compatible endpoint, open
+   **Analytics → Models**, select **Add local model** on the **Catalog** tab, and enter
+   the endpoint and model name. Local models are priced at $0 unless you set a price
+   override. Adding one requires the `models:manage` permission.
+4. Test connectivity, then watch the first calls in **Analytics → Cost**.
+
+A model change applies to new calls only; the usage ledger keeps the model each
+earlier call used.
+
 ## Cost accounting
 
 Usage records include input/output tokens and supported cache or batch adjustments.

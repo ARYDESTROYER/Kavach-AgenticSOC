@@ -281,7 +281,7 @@ release is public, the workflow treats it as immutable. A missing, partial, dupl
 or unexpected published asset set is never repaired under that tag; publish a new patch
 release instead.
 
-Changing **Settings → Updates & releases** changes the public source observation;
+Changing **Settings → Organization → Updates & releases** changes the public source observation;
 it does not silently change the updater's trusted publisher. A fork must be
 explicitly bootstrapped with its own trusted repository and release-workflow
 identity on the host.

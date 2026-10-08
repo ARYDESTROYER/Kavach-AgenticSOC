@@ -36,7 +36,7 @@ script: another administrator may have changed a different section in the meanti
 
 The Console presents one searchable section rail, a single active-section heading,
 and flat divider-led setting groups. Theme selection is a compact **System / Light /
-Dark** control under **Account → Appearance & customization**. Personal theme changes
+Dark** control under **Settings → Account → Appearance & customization**. Personal theme changes
 apply immediately and follow the signed-in user; System follows the organization
 default when one is configured, otherwise the device preference.
 
