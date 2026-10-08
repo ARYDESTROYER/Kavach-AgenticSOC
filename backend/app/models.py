@@ -3013,8 +3013,36 @@ class ChatContextInfo(BaseModel):
     budget: ChatBudgetInfo | None = None
     spent_today: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     remaining: float | None = Field(default=None, allow_inf_nan=False)
+    # §10.5 empty-state starters, built server-side so Demo and production share one
+    # shape (Demo: engine.demo_chat.DEMO_STARTERS; production: templated from live
+    # context, never literal IOCs). The page shows a card only if all its tools are allowed.
+    starters: list[ChatStarter] = Field(default_factory=list)
 
     model_config = ConfigDict(protected_namespaces=())
+
+
+class ChatStarter(BaseModel):
+    """One empty-state starter card (SPEC §10.5)."""
+
+    # investigate | hunt | posture | shift_brief | explain_metric | learn_app
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=120)
+    prompt: str = Field(min_length=1, max_length=400)
+    # Every tool the starter's plan needs; the card is hidden unless all are allowed.
+    tools: list[str] = Field(default_factory=list, max_length=8)
+
+
+class ChatTopicQuestion(BaseModel):
+    """``GET /api/chat/topics/{topic_id}`` (SPEC §10.7 "Ask about this"): the
+    templated question for a console_map topic. The page sends this text with
+    ``origin="starter"``; it never sends free text of its own for a topic."""
+
+    topic: str
+    question: str
+
+
+ChatContextInfo.model_rebuild()
 
 
 # --- §9.1 reports ----------------------------------------------------------------- #

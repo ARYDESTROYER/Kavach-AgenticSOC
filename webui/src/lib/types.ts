@@ -3236,6 +3236,24 @@ export interface ChatContextInfo {
   budget?: ChatBudgetInfo | null;
   spent_today?: number | null;
   remaining?: number | null;
+  /** §10.5 empty-state starters (server-built; Demo and production share the shape). */
+  starters?: ChatStarter[];
+}
+
+/** One empty-state starter card. Shown only if every tool in `tools` is allowed. */
+export interface ChatStarter {
+  /** investigate | hunt | posture | shift_brief | explain_metric | learn_app */
+  id: string;
+  label: string;
+  description: string;
+  prompt: string;
+  tools: string[];
+}
+
+/** `GET /api/chat/topics/{topic_id}`: the templated "Ask about this" question. */
+export interface ChatTopicQuestion {
+  topic: string;
+  question: string;
 }
 
 /** `Preferences.chat_agent` (SPEC §4.2). Out-of-range stored values are clamped. */

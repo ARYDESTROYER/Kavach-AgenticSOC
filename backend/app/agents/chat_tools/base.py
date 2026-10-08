@@ -234,6 +234,14 @@ class ChatToolContext:
     source_health_rows: Callable[..., Any] | None = None
     scheduler_health: Callable[..., Any] | None = None
     cluster_for_case: Callable[..., Any] | None = None
+    # Boolean-only "is this secret configured" map (state.secrets.configured_status);
+    # app_status reports provider/credential readiness from it, never a value.
+    secrets_status: Callable[[], dict[str, bool]] | None = None
+    # Operator catalogues (demo-switchable). None = bundled-only runbooks/playbooks and
+    # no rule-version history; the tools say so rather than reading as empty.
+    runbooks: Any = None
+    playbooks: Any = None
+    rule_versions: Any = None
     # Request selection the tools must respect (never widen).
     scopes: frozenset[str] = frozenset()
     source_id: str | None = None
