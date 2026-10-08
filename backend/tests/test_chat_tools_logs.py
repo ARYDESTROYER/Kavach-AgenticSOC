@@ -347,20 +347,37 @@ async def test_log_stats_sample_path_treats_a_capped_total_as_a_lower_bound() ->
 async def test_toolbox_gives_exact_log_calls_an_open_in_logs_view() -> None:
     """WP-INT item 5: a successful search whose filter the Logs page can express
     gets ``open_in`` on every artifact (the materialiser copies it to the block);
-    any other filter gets none, so the block offers "Copy query" only."""
+    any other filter gets none, so the block offers "Copy query" only. The window
+    is the absolute one the call resolved when it started (SPEC A14)."""
+    from datetime import datetime, timedelta, timezone
+
     from app.agents.chat_tools.registry import build_toolbox
+
+    def span(opts: dict[str, Any]) -> tuple[datetime, datetime]:
+        start = datetime.fromisoformat(opts["from"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(opts["to"].replace("Z", "+00:00"))
+        return start, end
 
     targets = [_target("a", rows=3, total=3), _target("b", rows=2, total=2)]
     box = build_toolbox(make_ctx(browse_sources=lambda: targets))
+    before = datetime.now(timezone.utc)
     out = await box.execute("search_logs", {"contains": "login failed", "time_from": "now-7d"})
+    after = datetime.now(timezone.utc)
     assert out.ok and out.artifacts
-    expected = {"page": "logs", "opts": {"logQuery": "login failed", "from": "now-7d", "to": "now"}}
-    assert all(a.data.get("open_in") == expected for a in out.artifacts)
+    views = [a.data.get("open_in") for a in out.artifacts]
+    assert all(v == views[0] for v in views) and views[0]["page"] == "logs"
+    assert set(views[0]["opts"]) == {"logQuery", "from", "to"} and views[0]["opts"]["logQuery"] == "login failed"
+    start, end = span(views[0]["opts"])
+    # Rounded INTO the window at millisecond precision: never wider than 7 days.
+    assert timedelta(days=7) - timedelta(milliseconds=1) <= end - start <= timedelta(days=7)
+    assert before - timedelta(milliseconds=1) <= end <= after
     narrowed = await box.execute("search_logs", {"ip": "203.0.113.5"})
     assert narrowed.ok and all("open_in" not in a.data for a in narrowed.artifacts)
     stats = await box.execute("log_stats", {"group_by": ["ip"]})
     assert stats.ok and stats.artifacts
-    assert all(a.data["open_in"]["opts"] == {"from": "now-24h", "to": "now"} for a in stats.artifacts)
+    assert all(set(a.data["open_in"]["opts"]) == {"from", "to"} for a in stats.artifacts)
+    start, end = span(stats.artifacts[0].data["open_in"]["opts"])
+    assert timedelta(hours=24) - timedelta(milliseconds=1) <= end - start <= timedelta(hours=24)
     # One implicit source (the primary connector): its id is unknown here, so no view.
     single = build_toolbox(make_ctx(log_source=RecordingConnector()))
     implicit = await single.execute("search_logs", {})
@@ -369,3 +386,34 @@ async def test_toolbox_gives_exact_log_calls_an_open_in_logs_view() -> None:
     chosen = build_toolbox(make_ctx(log_source=RecordingConnector(), source_id="src-a"))
     selected = await chosen.execute("search_logs", {"contains": "x"})
     assert selected.artifacts[0].data["open_in"]["opts"]["sourceId"] == "src-a"
+
+
+async def test_toolbox_never_opens_logs_for_a_live_tail_source() -> None:
+    """Review finding (major): ``GET /api/logs`` ignores query/from/to for a push
+    source's live-tail ring, while the chat tools filter its rows themselves. A
+    call that read a ring — in a full fan-out, as the request's source or as the
+    call's named source — gets Copy query only, never a wider Logs view."""
+    from app.agents.chat_tools.registry import build_toolbox
+
+    def targets() -> list[BrowseTarget]:
+        return [_target("a", rows=3, total=3), _target("push", rows=5, mode="buffer")]
+
+    fanout = build_toolbox(make_ctx(browse_sources=targets))
+    out = await fanout.execute("search_logs", {"contains": "zzz-no-match"})
+    assert out.ok and out.artifacts
+    assert any(s["mode"] == "buffer" for s in out.observation["sources"])
+    assert all("open_in" not in a.data for a in out.artifacts)
+    stats = await fanout.execute("log_stats", {"group_by": ["ip"]})
+    assert stats.ok and stats.artifacts and all("open_in" not in a.data for a in stats.artifacts)
+    # The request's selected source is the ring (no query surface, so no connector).
+    selected = build_toolbox(make_ctx(browse_sources=targets, source_id="push"))
+    out = await selected.execute("search_logs", {"contains": "zzz-no-match"})
+    assert out.ok and [s["mode"] for s in out.observation["sources"]] == ["buffer"]
+    assert all("open_in" not in a.data for a in out.artifacts)
+    # The call names the ring (the resolver refuses a receiver-only source).
+    named = build_toolbox(make_ctx(browse_sources=targets, source_resolver=lambda sid: None))
+    out = await named.execute("search_logs", {"source_id": "push", "contains": "zzz-no-match"})
+    assert out.ok and all("open_in" not in a.data for a in out.artifacts)
+    # The search source alone still gets its exact view.
+    out = await named.execute("search_logs", {"source_id": "a", "contains": "zzz-no-match"})
+    assert out.ok and all(a.data["open_in"]["opts"]["sourceId"] == "a" for a in out.artifacts)

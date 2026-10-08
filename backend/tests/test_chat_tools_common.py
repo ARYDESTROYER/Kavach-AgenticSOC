@@ -121,7 +121,7 @@ def test_one_observation_shrinker_only() -> None:
 
 
 def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
-    """"Open in Logs" (SPEC §10.7): the exact view, or nothing — never a wider one."""
+    """"Open in Logs" (SPEC §10.7, A14): the exact view, or nothing — never a wider one."""
     from types import SimpleNamespace
 
     from app.agents.chat_tools.common import logs_console_view
@@ -133,25 +133,81 @@ def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
         base.update(kw)
         return SimpleNamespace(**base)
 
-    fanout = {"sources": [{"name": "A"}, {"name": "B"}]}
-    view = logs_console_view(make_ctx(), args(contains="failed password", time_from="now-7d"), fanout)
-    assert view == {"page": "logs", "opts": {"logQuery": "failed password", "from": "now-7d", "to": "now"}}
+    def view(ctx, a, observation):  # type: ignore[no-untyped-def]
+        return logs_console_view(ctx, a, observation, now=NOW)
+
+    fanout = {"sources": [{"name": "A", "mode": "search"}, {"name": "B", "mode": "search"}]}
+    # The window is written as the ABSOLUTE instants the call resolved, so a stored
+    # answer reopened later still opens the window its data came from.
+    got = view(make_ctx(), args(contains="failed password", time_from="now-7d"), fanout)
+    assert got == {"page": "logs", "opts": {"logQuery": "failed password",
+                                             "from": "2026-10-01T12:00:00Z", "to": "2026-10-08T12:00:00Z"}}
     # The request's source wins over the call's, exactly as the tool resolves it.
-    named = logs_console_view(make_ctx(source_id="wazuh-prod"), args(source_id="other"), {"source": "Wazuh"})
-    assert named == {"page": "logs", "opts": {"from": "now-24h", "to": "now", "sourceId": "wazuh-prod"}}
-    assert logs_console_view(make_ctx(), args(source_id="src-b"), {"source": "B"})["opts"]["sourceId"] == "src-b"
+    named = view(make_ctx(source_id="wazuh-prod"), args(source_id="other"), {"source": "Wazuh"})
+    assert named == {"page": "logs", "opts": {"from": "2026-10-07T12:00:00Z", "to": "2026-10-08T12:00:00Z",
+                                              "sourceId": "wazuh-prod"}}
+    assert view(make_ctx(), args(source_id="src-b"), {"source": "B"})["opts"]["sourceId"] == "src-b"
     # The request chip is the window when the call set none; a wider call is clamped.
     chip = make_ctx(time_range=TimeRange(**{"from": "now-6h"}))
-    assert logs_console_view(chip, args(), fanout)["opts"]["from"] == "now-6h"
-    assert logs_console_view(chip, args(time_from="now-30d"), fanout)["opts"]["from"] == "now-6h"
-    # Not expressible on the Logs page: a structured filter, ids, an implicit single
-    # source, unsafe or padded free text, a window outside the router grammar, a
-    # clock-dependent 90-day cap.
+    assert view(chip, args(), fanout)["opts"]["from"] == "2026-10-08T06:00:00Z"
+    assert view(chip, args(time_from="now-30d"), fanout)["opts"]["from"] == "2026-10-08T06:00:00Z"
+    # The 90-day cap is the window the tool searched too: exactly 90 days, which the
+    # Logs page accepts. An ISO window from the model is written in the same grammar.
+    capped = view(make_ctx(), args(time_from="now-120d"), fanout)["opts"]
+    assert (capped["from"], capped["to"]) == ("2026-07-10T12:00:00Z", "2026-10-08T12:00:00Z")
+    iso = view(make_ctx(), args(time_from="2026-10-01 00:00", time_to="2026-10-02T00:00:00+02:00"), fanout)
+    assert iso["opts"]["from"] == "2026-10-01T00:00:00Z" and iso["opts"]["to"] == "2026-10-01T22:00:00Z"
+    # Not expressible on the Logs page: a structured filter, ids, unsafe or padded
+    # free text, an id outside the router grammar.
     for refused in (args(ip="10.0.0.1"), args(user="alice"), args(host="web01"), args(rule="r1"),
-                    args(severity_gte=5.0), args(ids=["e1"]), args(contains="a​b"),
-                    args(contains=" padded"), args(time_from="2026-10-01 00:00")):
-        assert logs_console_view(make_ctx(), refused, fanout) is None, refused
-    assert logs_console_view(make_ctx(), args(), {"source": "Primary"}) is None
-    assert logs_console_view(make_ctx(), args(), None) is None
-    assert logs_console_view(make_ctx(), args(time_from="now-120d"), fanout) is None
-    assert logs_console_view(make_ctx(source_id="bad id"), args(), fanout) is None
+                    args(severity_gte=5.0), args(ids=["e1"]), args(contains="a\u200bb"),
+                    args(contains=" padded")):
+        assert view(make_ctx(), refused, fanout) is None, refused
+    assert view(make_ctx(source_id="bad id"), args(), fanout) is None
+    # The implicit primary source (id unknown), or no record of what ran: no view.
+    assert view(make_ctx(), args(), {"source": "Primary"}) is None
+    assert view(make_ctx(), args(), None) is None
+    assert view(make_ctx(source_id="src-a"), args(), None) is None
+    assert view(make_ctx(source_id="src-a"), args(), {"window": "last 24h"}) is None
+
+
+def test_logs_console_view_never_for_a_live_tail_source() -> None:
+    """Review finding (major): a push source's live-tail ring (mode ``buffer``)
+    ignores query/from/to on the Logs page, so a call that read one — in a fan-out
+    or as the named source — gets Copy query only, never a WIDER Logs view."""
+    from types import SimpleNamespace
+
+    from app.agents.chat_tools.common import logs_console_view
+
+    args = SimpleNamespace(ip=None, user=None, host=None, rule=None, severity_gte=None, ids=[],
+                           contains="zzz-no-match", time_from=None, time_to=None, source_id=None)
+    search = {"name": "A", "mode": "search"}
+    ring = {"name": "push", "mode": "buffer", "status": "ok"}
+    for observation in ({"sources": [search, ring]}, {"sources": [ring]}, {"sources": [search, {"name": "B"}]},
+                        {"sources": [search, {"name": "B", "mode": "tail"}]}, {"sources": []},
+                        {"sources": "A"}):
+        assert logs_console_view(make_ctx(), args, observation, now=NOW) is None, observation
+        assert logs_console_view(make_ctx(source_id="push"), args, observation, now=NOW) is None, observation
+    named = SimpleNamespace(**{**vars(args), "source_id": "push"})
+    assert logs_console_view(make_ctx(), named, {"sources": [ring]}, now=NOW) is None
+    # A failed search source is still a search source: the Logs page reports it too.
+    failed = {"sources": [search, {"name": "B", "mode": "search", "status": "error"}]}
+    assert logs_console_view(make_ctx(), args, failed, now=NOW) is not None
+
+
+def test_nav_instant_rounds_into_the_window_at_millisecond_precision() -> None:
+    from app.agents.chat_tools.common import nav_instant
+    from app.agents.blocks import NAV_TIME_PATTERN
+    import re
+
+    at = datetime(2026, 10, 8, 12, 0, 0, 250_400, tzinfo=timezone.utc)
+    assert nav_instant(at, round_up=True) == "2026-10-08T12:00:00.251Z"
+    assert nav_instant(at, round_up=False) == "2026-10-08T12:00:00.250Z"
+    assert nav_instant(NOW, round_up=True) == "2026-10-08T12:00:00Z"
+    ist = datetime(2026, 10, 8, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    assert nav_instant(ist, round_up=False) == "2026-10-08T12:00:00Z"
+    edge = datetime(2026, 10, 8, 23, 59, 59, 999_500, tzinfo=timezone.utc)
+    assert nav_instant(edge, round_up=True) == "2026-10-09T00:00:00Z"
+    for value in (at, NOW, ist, edge):
+        for up in (True, False):
+            assert re.fullmatch(NAV_TIME_PATTERN, nav_instant(value, round_up=up))

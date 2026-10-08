@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import contract from '@/soc/chat/chat-stream-events.contract.json';
+import blocksContract from '@/soc/chat/blocks/answer-blocks.contract.json';
 import {
   CHAT_ANSWER_KINDS,
   CHAT_BUDGET_STATES,
@@ -24,6 +25,7 @@ import {
   MAX_TEXT_DELTA_CHARS,
   MEMORY_PROPOSAL_OPS,
   NDJSON_CONTENT_TYPE,
+  normaliseCitation,
   PING_INTERVAL_S,
   REPORT_ITEM_KINDS,
   REPORT_TEMPLATES,
@@ -70,5 +72,29 @@ describe('chat stream-events contract', () => {
   it('pins the drift fallbacks and display limits', () => {
     expect(STREAM_FALLBACKS).toEqual(contract.fallbacks);
     expect(CHAT_LIMITS).toEqual(contract.limits);
+  });
+});
+
+describe('citation doc links use the shared Help Center grammar (SPEC A1)', () => {
+  const cite = (doc: string) => normaliseCitation({ id: 'D1', kind: 'doc', title: 'Help Center', doc });
+
+  /*
+   * KNOWN GAP, MERGE-BLOCKING (WP-L owns `stream-events.ts`): the server cites the Help
+   * Center home (`/docs/0.1/`) and dotted release pages (`/docs/0.1/releases/0.1.13/`)
+   * since SPEC A1, but `normaliseCitation` still checks the wave-1 `DOC_REF_RE`, so it
+   * drops those `[Dn]` citations (and keeps `/docs/0.1//x`). This is the strict-xfail
+   * twin: `it.fails` passes only while the gap exists. Replacing `DOC_REF_RE` with the
+   * shared grammar (the `doc_ref` pattern below) makes it pass, so `it.fails` turns RED:
+   * change it to `it` in the same change.
+   */
+  it.fails('keeps every valid doc link and drops every invalid one', () => {
+    for (const doc of blocksContract.doc_ref_examples.valid) expect(cite(doc)?.doc, doc).toBe(doc);
+    for (const doc of blocksContract.doc_ref_examples.invalid) expect(cite(doc), doc).toBeNull();
+  });
+
+  it('the shared pattern itself accepts and rejects the vectors', () => {
+    const re = new RegExp(blocksContract.patterns.doc_ref);
+    for (const doc of blocksContract.doc_ref_examples.valid) expect(re.test(doc), doc).toBe(true);
+    for (const doc of blocksContract.doc_ref_examples.invalid) expect(re.test(doc), doc).toBe(false);
   });
 });

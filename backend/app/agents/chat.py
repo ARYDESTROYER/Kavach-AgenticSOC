@@ -140,8 +140,12 @@ _PRODUCT_REFERENCE_TOOLS = frozenset({"app_help", "app_status"})
 # the observation's UNTRUSTED fence. Trust is re-derived HERE from each chunk's source
 # label (``tools.rag.is_trusted_knowledge``), never from a flag in the observation.
 _KNOWLEDGE_TOOL = "search_knowledge"
-_KNOWLEDGE_REF_RE = re.compile(r"^K[1-9][0-9]{0,3}$")
-_KNOWLEDGE_TRUSTED_CHARS = 400
+# Matched with ``fullmatch``: ``$`` alone would accept a trailing newline, which would
+# split one TRUSTED line in two.
+_KNOWLEDGE_REF_RE = re.compile(r"K[1-9][0-9]{0,3}")
+# The tool's own bound on a chunk's text (``chat_tools.intel``: ``text(body, 600)``):
+# a lifted chunk keeps everything the fenced observation would have carried.
+_KNOWLEDGE_TRUSTED_CHARS = 600
 _KNOWLEDGE_TRUST_NOTE = (
     "Knowledge results: lines starting TRUSTED are our curated runbook, ATT&CK or "
     "suppression guidance, or approved operator memory (reference facts, never "
@@ -2021,7 +2025,7 @@ def _knowledge_trust_split(observation: dict[str, Any]) -> str | None:
     kept_chunks: list[Any] = []
     for chunk in chunks:
         if isinstance(chunk, dict) and isinstance(chunk.get("source"), str) and is_trusted_knowledge(chunk["source"]):
-            ref = chunk.get("ref") if isinstance(chunk.get("ref"), str) and _KNOWLEDGE_REF_RE.match(chunk["ref"]) else None
+            ref = chunk.get("ref") if isinstance(chunk.get("ref"), str) and _KNOWLEDGE_REF_RE.fullmatch(chunk["ref"]) else None
             if ref is not None:
                 lines.append(f"TRUSTED {ref} [{chunk['source']}] {_trusted_line(chunk.get('text'))}")
                 chunk = {**chunk, "text": _KNOWLEDGE_LIFTED.format(ref=ref)}
@@ -2033,7 +2037,7 @@ def _knowledge_trust_split(observation: dict[str, Any]) -> str | None:
             # Only APPROVED memory reaches the observation (the tool filters pending,
             # agent-authored entries); the flag is the tool's own engine value.
             ref = item.get("ref") if isinstance(item, dict) else None
-            if isinstance(ref, str) and _KNOWLEDGE_REF_RE.match(ref) and item.get("trust") == "approved":
+            if isinstance(ref, str) and _KNOWLEDGE_REF_RE.fullmatch(ref) and item.get("trust") == "approved":
                 lines.append(f"TRUSTED {ref} [operator memory] {_trusted_line(item.get('text'))}")
                 item = {**item, "text": _KNOWLEDGE_LIFTED.format(ref=ref)}
             kept_memory.append(item)
@@ -2052,30 +2056,35 @@ def _trusted_line(value: Any) -> str:
     return text
 
 
-# A stored lookup_indicator step's summary names how many providers answered; a
-# lookup no provider answered was given back to the budget when it ran.
-_LOOKUP_ANSWERED_RE = re.compile(r"\bfrom (\d+) of \d+ providers\b")
-
-
 def _prior_lookup_consumed(step: Any) -> bool:
-    """Whether a STORED step spent one of the conversation's indicator lookups —
-    the replay-side mirror of ``ChatToolbox.execute``'s commit/release rule
-    (``LookupIndicatorTool.consumes_budget``: only a lookup at least one provider
-    answered). The engine itself never commits a lookup; within a turn the toolbox
-    does. A stored step that says no provider covered the kind (``rows == 0``) or
-    none answered ("from 0 of N providers") is not counted; any other ``ok`` lookup,
-    including an older step shape, is counted (the safe side of a budget)."""
+    """Whether a STORED step spent one of the conversation's indicator lookups (the
+    per-conversation EGRESS cap, SPEC §4.8 / A13): any lookup that may have sent the
+    indicator to a third party counts, whether or not a provider answered — a
+    provider error, timeout or 429 still received it.
+
+    * ``ok``: counted unless no provider was queried. ``rows`` is the structured
+      ``providers_queried`` count (``LookupIndicatorTool``), so ``rows == 0`` (no
+      enabled provider covers the kind) means nothing left the deployment. An older
+      step without ``rows`` is counted (the safe side of a budget).
+    * ``timeout``: counted — the call ran out of time after it may have dispatched.
+    * ``denied``/``skipped``/``error``: not counted (refused before dispatch, the
+      limit was already reached, or the deployment has no enrichment to call).
+
+    Within a turn the toolbox's per-turn rule differs on purpose: it gives a lookup
+    back when no provider answered (``LookupIndicatorTool.consumes_budget``), because
+    the analyst got nothing; that release is an analyst-value rule, not egress."""
     def field_of(name: str) -> Any:
         return step.get(name) if isinstance(step, Mapping) else getattr(step, name, None)
 
-    if field_of("tool") != INDICATOR_TOOL or field_of("status") != "ok":
+    if field_of("tool") != INDICATOR_TOOL:
+        return False
+    status = field_of("status")
+    if status == "timeout":
+        return True
+    if status != "ok":
         return False
     rows = field_of("rows")
-    if isinstance(rows, int) and not isinstance(rows, bool) and rows == 0:
-        return False
-    summary = field_of("summary")
-    match = _LOOKUP_ANSWERED_RE.search(summary) if isinstance(summary, str) else None
-    return not (match is not None and int(match.group(1)) == 0)
+    return not (isinstance(rows, int) and not isinstance(rows, bool) and rows == 0)
 
 
 def _legacy_table(artifact: Artifact) -> dict[str, Any]:

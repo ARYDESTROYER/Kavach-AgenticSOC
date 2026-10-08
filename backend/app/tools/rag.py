@@ -18,6 +18,7 @@ import asyncio
 import logging
 import math
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..config import Preferences
-from ..constants import CaseStatus, DecisionBy, Verdict
+from ..constants import INVISIBLE_TEXT_CLASS, CaseStatus, DecisionBy, Verdict
 from ..engine.analyst_outcomes import analyst_confirmed_outcome, is_classification_entry
 from ..engine.chunking import chunk_text
 from ..engine.precedent import (
@@ -637,6 +638,19 @@ def _shorthash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:8]
 
 
+_LABEL_INVISIBLE_RE = re.compile(f"[{INVISIBLE_TEXT_CLASS}]")
+
+
+def _label_lookalike_key(value: str) -> str:
+    """What a provenance label LOOKS like once displayed: compatibility-folded (NFKC:
+    full-width ``ａｐｐ＿ｄｏｃｓ`` is ``app_docs``), invisible characters removed (the
+    display sanitiser drops them, so ``app_docs`` + ZWSP reads as ``app_docs``),
+    whitespace collapsed and case-folded. Used ONLY to decide whether a label poses as
+    a reserved one; the stored label is otherwise unchanged."""
+    folded = unicodedata.normalize("NFKC", _LABEL_INVISIBLE_RE.sub("", value))
+    return " ".join(_LABEL_INVISIBLE_RE.sub("", folded).split()).casefold()
+
+
 def _sanitise_source_label(source: str | None) -> str:
     """Sanitise an imported document's ``source`` at write time (#9 defense-in-depth).
 
@@ -650,14 +664,16 @@ def _sanitise_source_label(source: str | None) -> str:
     value = s[:64].strip() or "imported"
     # A generic import can carry a useful display label, but provenance/trust is
     # server-assigned. Never let a caller mint a TRUSTED seed source by submitting
-    # source="runbook"/"mitre"/"suppression".
-    if value in TRUSTED_KNOWLEDGE_SOURCES:
-        return "imported"
+    # source="runbook"/"mitre"/"suppression" — nor one that merely LOOKS like it once
+    # displayed ("Runbook", "runbook" + ZWSP, full-width forms): trust checks compare
+    # exactly, but an analyst reading a provenance column must not be misled either.
     # Nor a label that names the bundled Help Center corpus (chat revamp SPEC §5.4
     # anti-minting): the app-knowledge corpus is trusted behind its own boundary, so an
-    # import claiming "app_docs" (in any case or padding) must not even LOOK like it in
-    # a provenance label or the chat's per-chunk trust split.
-    if value.strip().casefold() in RESERVED_SOURCE_LABELS:
+    # import claiming "app_docs" (in any case, padding, width or with invisible
+    # characters) must not even LOOK like it in a provenance label or the chat's
+    # per-chunk trust split.
+    key = _label_lookalike_key(value)
+    if key in TRUSTED_KNOWLEDGE_SOURCES or key in RESERVED_SOURCE_LABELS:
         return "imported"
     return value
 

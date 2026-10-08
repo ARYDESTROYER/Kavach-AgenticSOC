@@ -492,7 +492,7 @@
     ]
   },
   "chart_honesty": {
-    "_comment": "Totals (a stack height, a donut centre and shares) are drawn only where the values add up: additive units always; percent/ratio only when the parts of every complete group reconcile to 100/1 within share_tolerance percentage points (and at least one group is complete); never score or durations. A stack's groups are the series per x slot, a donut's the categories of its one series. Pinned for blocks.chart_kind_fits and views.chartKindFits; x values are generated (a, b, …, or hourly ISO timestamps for x_kind time).",
+    "_comment": "Totals (a stack height, a donut centre and shares) are drawn only where the values add up: additive units always; percent/ratio only when the parts of every complete group reconcile to 100/1 within share_tolerance percentage points (and at least one group is complete); never score or durations. A stack's groups are the series per x slot, a donut's the categories of its one series. A donut also needs a complete population: a truncated block (optional \"truncated\": true) never fits one. Pinned for blocks.chart_kind_fits and views.chartKindFits; x values are generated (a, b, …, or hourly ISO timestamps for x_kind time).",
     "additive_units": [
       "count",
       "tokens",
@@ -558,6 +558,39 @@
           [
             1024,
             2048
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "truncated count donut (a clipped top-N is not a whole)",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "category",
+        "truncated": true,
+        "series": [
+          [
+            5,
+            3,
+            2
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "truncated count stack (each slot still adds up)",
+        "kind": "stacked_bar",
+        "unit": "count",
+        "x_kind": "category",
+        "truncated": true,
+        "series": [
+          [
+            5,
+            3
+          ],
+          [
+            1,
+            2
           ]
         ],
         "fits": true

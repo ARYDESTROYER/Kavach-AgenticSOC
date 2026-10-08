@@ -419,10 +419,22 @@ def test_rag_import_cannot_mint_the_app_docs_label():
     never pose as the trusted Product reference."""
     for label in sorted(RESERVED_SOURCE_LABELS) + ["App_Docs", " app_docs ", "PRODUCT_DOCS", "\tapp_help\n"]:
         assert rag._sanitise_source_label(label) == "imported", label
+    # Nor a label that only LOOKS reserved or trusted once displayed: invisible
+    # characters (the display sanitiser drops them), full-width forms (NFKC) and case
+    # variants of the trusted seed labels.
+    lookalikes = [
+        "app_docs\u200b", "\u2060app_docs", "app_\u00addocs", "\ufeffapp_help", "app_docs\U000e0001",
+        "\uff41\uff50\uff50\uff3f\uff44\uff4f\uff43\uff53", "Runbook", "runbook\u200b", "MITRE",
+        " Suppression ", "run\u200dbook", "\uff52\uff55\uff4e\uff42\uff4f\uff4f\uff4b",
+    ]
+    for label in lookalikes:
+        assert rag._sanitise_source_label(label) == "imported", ascii(label)
     # Ordinary labels are unchanged, and a label that merely CONTAINS a reserved one is
     # an ordinary (untrusted) label.
     assert rag._sanitise_source_label("threat_intel") == "threat_intel"
     assert rag._sanitise_source_label("app_docs_mirror") == "app_docs_mirror"
+    assert rag._sanitise_source_label("runbooks-2026") == "runbooks-2026"
+    assert rag._sanitise_source_label("Threat Feed") == "Threat Feed"
 
 
 # --------------------------------------------------------------------------- #

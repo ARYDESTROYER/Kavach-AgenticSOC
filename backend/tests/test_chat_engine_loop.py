@@ -1207,6 +1207,23 @@ async def test_search_knowledge_curated_chunks_are_trusted_imported_ones_stay_fe
     assert fenced["chunks"][0]["text"].startswith("(trusted: see the TRUSTED K11 line")
 
 
+def test_trusted_knowledge_lines_keep_the_tools_bound_and_only_exact_refs() -> None:
+    """A lifted chunk keeps everything the tool sent (600 chars, the same bound the
+    fenced copy had), and a ref that is not EXACTLY ``K<n>`` (a trailing newline would
+    split the TRUSTED line) is never lifted."""
+    split = chat_module._knowledge_trust_split
+    full = split({"chunks": [{"ref": "K1", "source": "runbook", "text": "a" * 600}], "memory": []})
+    assert full is not None
+    assert "TRUSTED K1 [runbook] " + "a" * 600 in full.splitlines()
+    long = split({"chunks": [{"ref": "K1", "source": "mitre", "text": "b" * 700}], "memory": []})
+    line = next(x for x in long.splitlines() if x.startswith("TRUSTED K1 [mitre] "))
+    body = line.removeprefix("TRUSTED K1 [mitre] ")
+    assert len(body) == 600 and body.endswith("…")
+    for ref in ("K12\n", "K12 ", "k12", "K0", "K12345"):
+        assert split({"chunks": [{"ref": ref, "source": "runbook", "text": "t"}],
+                      "memory": [{"ref": ref, "trust": "approved", "text": "m"}]}) is None, repr(ref)
+
+
 async def test_search_knowledge_without_trusted_results_is_fenced_whole(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.agents.prompts import fence_block
 
@@ -1221,28 +1238,42 @@ async def test_search_knowledge_without_trusted_results_is_fenced_whole(monkeypa
     assert fence_block(observation, source="tool", tool="search_knowledge") in batch
 
 
-def test_prior_lookups_count_only_what_the_toolbox_committed() -> None:
+def test_prior_lookups_count_every_lookup_that_may_have_left_the_deployment() -> None:
+    """The per-conversation cap bounds EGRESS (SPEC §4.8, A13): a stored lookup counts
+    when the indicator may have reached a provider, whether or not one answered. The
+    rule reads the structured ``rows`` (= providers queried), never the summary text."""
     consumed = chat_module._prior_lookup_consumed
     ok = {"tool": "lookup_indicator", "status": "ok"}
     assert consumed({**ok, "rows": 3, "summary": "Reputation 80/100 (malicious) from 2 of 3 providers"})
-    assert not consumed({**ok, "rows": 3, "summary": "Reputation 0/100 (unknown) from 0 of 3 providers"})
+    # Every provider failed (error, timeout, 429): the indicator was still sent out.
+    assert consumed({**ok, "rows": 3, "summary": "Reputation 0/100 (unknown) from 0 of 3 providers"})
+    assert consumed({**ok, "rows": 3, "summary": "reworded template"})
+    # No provider covers the kind: nothing left the deployment.
     assert not consumed({**ok, "rows": 0, "summary": "No enabled provider covers this kind of indicator"})
     assert consumed({**ok})  # an older step shape counts: the safe side of a budget
-    assert not consumed({"tool": "lookup_indicator", "status": "denied", "rows": 3})
+    assert consumed({**ok, "rows": None})
+    assert consumed({"tool": "lookup_indicator", "status": "timeout"})  # may have dispatched
+    for status in ("denied", "skipped", "error"):
+        assert not consumed({"tool": "lookup_indicator", "status": status, "rows": 3}), status
     assert not consumed({"tool": "search_logs", "status": "ok", "rows": 3})
+    assert consumed({**ok, "rows": False})  # a bool is not a row count: treated as unknown, counted
 
 
-async def test_released_lookups_do_not_exhaust_the_conversation_budget() -> None:
-    """A lookup no provider answered was released when it ran (the toolbox's
-    ``consumes_budget`` hook), so a replayed conversation must not count it."""
+async def test_failed_lookups_still_count_toward_the_conversation_egress_cap() -> None:
+    """Ten stored lookups whose providers all failed still sent the indicator out ten
+    times, so the eleventh is refused; ten that no provider covered (``rows == 0``)
+    sent nothing and do not count."""
     def history(summary: str, rows: int) -> list[PriorExchange]:
         step = {"index": 1, "kind": "tool", "tool": "lookup_indicator", "label": "Looked up", "status": "ok",
                 "duration_ms": 1, "summary": summary, "rows": rows}
         return [PriorExchange(user=f"check 185.220.101.{i}", answer="done", steps=(step,)) for i in range(1, 11)]
 
-    released = await _lookup("is 185.220.101.4 bad?", "185.220.101.4",
-                             prior=history("Reputation 0/100 (unknown) from 0 of 2 providers", 2))
-    assert released.status == "ok"
+    failed = await _lookup("is 185.220.101.4 bad?", "185.220.101.4",
+                           prior=history("Reputation 0/100 (unknown) from 0 of 2 providers", 2))
+    assert failed.status == "skipped"
+    uncovered = await _lookup("is 185.220.101.4 bad?", "185.220.101.4",
+                              prior=history("No enabled provider covers this kind of indicator", 0))
+    assert uncovered.status == "ok"
     spent = await _lookup("is 185.220.101.4 bad?", "185.220.101.4",
                           prior=history("Reputation 90/100 (malicious) from 2 of 2 providers", 2))
     assert spent.status == "skipped"

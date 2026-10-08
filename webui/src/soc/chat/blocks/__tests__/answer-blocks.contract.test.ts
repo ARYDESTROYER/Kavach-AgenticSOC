@@ -198,11 +198,13 @@ describe('answer-blocks contract', () => {
           artifact_kind: 'series',
           allowed_views: ['line', 'area', 'bar', 'stacked_bar', 'sparkline', 'table'],
           unit: example.unit,
+          truncated: example.truncated === true,
           x: { kind: example.x_kind, values: x },
           series: example.series.map((values, i) => ({ key: `s${i + 1}`, label: `S${i + 1}`, values })),
         },
       ]).blocks[0] as ChartBlock;
       const block: ChartBlock = { ...parsed, unit: example.unit as ValueUnit };
+      expect(block.truncated, example.name).toBe(example.truncated === true);
       expect(chartKindFits(block, example.kind as ChartKind), example.name).toBe(example.fits);
     }
     // The view a server stops offering is also absent from the "Show as" menu.

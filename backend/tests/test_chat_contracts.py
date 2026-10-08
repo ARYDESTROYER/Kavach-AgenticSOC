@@ -1116,6 +1116,7 @@ def _honesty_block(example: dict[str, Any]) -> dict[str, Any]:
         x = [chr(ord("a") + i) for i in range(width)]
     return {
         "type": "chart", "kind": example["kind"], "unit": example["unit"],
+        "truncated": example.get("truncated") is True,
         "x": {"kind": example["x_kind"], "values": x},
         "series": [{"key": f"s{i + 1}", "label": f"S{i + 1}", "values": values}
                    for i, values in enumerate(example["series"])],
@@ -1133,6 +1134,8 @@ def test_chart_honesty_vectors_are_shared_with_the_webui() -> None:
     for example in honesty["examples"]:
         block = _honesty_block(example)
         assert B.chart_kind_fits(block, example["kind"]) is example["fits"], example["name"]
+    # The donut's complete-population rule is pinned on both sides (a truncated vector).
+    assert any(e.get("truncated") and e["kind"] == "donut" and not e["fits"] for e in honesty["examples"])
 
 
 def test_logs_nav_opts_are_shared_with_the_webui_router() -> None:

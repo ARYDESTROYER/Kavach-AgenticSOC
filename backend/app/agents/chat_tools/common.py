@@ -294,7 +294,46 @@ _NAV_TIME_RE = re.compile(NAV_TIME_PATTERN)
 LOGS_UNEXPRESSIBLE_FILTERS: tuple[str, ...] = ("ip", "user", "host", "rule", "severity_gte", "ids")
 
 
-def logs_console_view(ctx: ChatToolContext, args: Any, observation: Any = None) -> dict[str, Any] | None:
+def _to_millis(moment: datetime, *, round_up: bool) -> datetime:
+    """``moment`` in UTC at millisecond precision (the browser's Date precision),
+    the sub-millisecond rest rounded INTO the window (a start up, an end down)."""
+    moment = moment.astimezone(timezone.utc)
+    rest = moment.microsecond % 1000
+    if rest:
+        moment += timedelta(microseconds=(1000 - rest) if round_up else -rest)
+    return moment
+
+
+def nav_instant(moment: datetime, *, round_up: bool) -> str:
+    """``moment`` as a router-grammar UTC instant (``2026-10-08T12:00:00.250Z``;
+    whole seconds drop the fraction). Rounded INTO the window (:func:`_to_millis`),
+    so a link is never wider than the window it names and a 90-day span never grows
+    past the Logs page's 90-day bound."""
+    moment = _to_millis(moment, round_up=round_up)
+    millis = moment.microsecond // 1000
+    return moment.strftime("%Y-%m-%dT%H:%M:%S") + (f".{millis:03d}" if millis else "") + "Z"
+
+
+def _searched_every_source(observation: dict[str, Any]) -> bool | None:
+    """Whether the call's sources all applied its query (``True``), at least one
+    did not (``False``), or the observation lists none (``None``: one connector).
+
+    A push source's live-tail ring (mode ``buffer``) IGNORES query, from and to:
+    the log tools filter its rows themselves, but ``GET /api/logs`` returns the
+    whole ring, so the Logs view of such a call would be WIDER than its block.
+    Positive evidence only: a listed source whose mode is not ``search`` (missing,
+    unknown) counts as not searched."""
+    sources = observation.get("sources")
+    if sources is None:
+        return None
+    if not isinstance(sources, list) or not sources:
+        return False
+    return all(isinstance(s, dict) and s.get("mode") == "search" for s in sources)
+
+
+def logs_console_view(
+    ctx: ChatToolContext, args: Any, observation: Any = None, *, now: datetime | None = None,
+) -> dict[str, Any] | None:
     """``{"page": "logs", "opts": {logQuery?, from, to, sourceId?}}`` for a log tool
     call whose filter the Logs page can express EXACTLY, else ``None``.
 
@@ -304,27 +343,43 @@ def logs_console_view(ctx: ChatToolContext, args: Any, observation: Any = None) 
     * the call used no other filter (:data:`LOGS_UNEXPRESSIBLE_FILTERS`);
     * its free text is router-safe (single line, no control/format characters) and
       has no edge whitespace (the Logs page trims what it sends);
-    * the window is the one the tool resolved (:func:`resolve_window`, the same
-      precedence and request clamp) in the router's ``from``/``to`` grammar — the
-      same expressions the connector received;
+    * every source it read APPLIED that filter: the call's ``observation`` must say
+      what ran — one connector search (``observation["source"]``) or a fan-out
+      (``observation["sources"]``) whose every entry is mode ``search``. A live-tail
+      ring (mode ``buffer``) anywhere in the call means no view (the Logs page
+      would show the whole, unfiltered ring);
     * the source is NAMED (the request's selected source, else the call's
       ``source_id``), or the call fanned out over every browse-capable source
-      (``observation["sources"]``, which is what the Logs page reads without a
-      source). A call that read the one implicit primary source gets no view: its
-      id is not known here, and guessing would be fabricating a filter.
+      (what the Logs page reads without a source). A call that read the one
+      implicit primary source gets no view: its id is not known here, and guessing
+      would be fabricating a filter.
+
+    The window is the one the tool resolved (:func:`resolve_window`: the same
+    precedence, request clamp and 90-day cap) written as ABSOLUTE UTC instants
+    (:func:`nav_instant`), so a stored answer reopened next week still opens the
+    window its data came from rather than a relative ``now-24h`` re-evaluated
+    then. ``now`` is the instant the call started (``ChatToolbox.execute`` passes
+    it); a relative bound the connector evaluated on its own clock differs from it
+    only by the call's latency.
 
     ``args`` is the tool's parsed input (read with ``getattr``; this module cannot
-    import the log tools). Pure apart from reading the clock for the window."""
+    import the log tools). Pure apart from reading the clock when ``now`` is None."""
     if any(getattr(args, key, None) not in (None, [], ()) for key in LOGS_UNEXPRESSIBLE_FILTERS):
         return None
-    window = resolve_window(ctx, time_from=getattr(args, "time_from", None), time_to=getattr(args, "time_to", None))
+    if not isinstance(observation, dict):
+        return None  # nothing says what ran, so nothing says the view is exact
+    searched = _searched_every_source(observation)
+    if searched is False:
+        return None
+    window = resolve_window(
+        ctx, time_from=getattr(args, "time_from", None), time_to=getattr(args, "time_to", None), now=now,
+    )
     if isinstance(window, str):
         return None
-    if window.clamped and window.time_from == window.start.isoformat():
-        # The 90-day cap wrote a clock-dependent start: this resolution's instant is
-        # not the one the tool's own resolution handed the connector.
-        return None
-    if not (_NAV_TIME_RE.fullmatch(window.time_from) and _NAV_TIME_RE.fullmatch(window.time_to)):
+    if _to_millis(window.start, round_up=True) >= _to_millis(window.end, round_up=False):
+        return None  # a sub-millisecond window has no millisecond link
+    start, end = nav_instant(window.start, round_up=True), nav_instant(window.end, round_up=False)
+    if not (_NAV_TIME_RE.fullmatch(start) and _NAV_TIME_RE.fullmatch(end)):
         return None
     opts: dict[str, Any] = {}
     contains = getattr(args, "contains", None)
@@ -332,14 +387,16 @@ def logs_console_view(ctx: ChatToolContext, args: Any, observation: Any = None) 
         if not isinstance(contains, str) or contains != contains.strip() or not is_safe_log_query(contains):
             return None
         opts["logQuery"] = contains
-    opts["from"], opts["to"] = window.time_from, window.time_to
+    opts["from"], opts["to"] = start, end
     source = getattr(ctx, "source_id", None) or getattr(args, "source_id", None)
     if source:
         if not isinstance(source, str) or not _NAV_ID_RE.fullmatch(source):
             return None
+        if searched is None and not isinstance(observation.get("source"), str):
+            return None  # neither one connector search nor a listed fan-out ran
         opts["sourceId"] = source
-    elif not (isinstance(observation, dict) and isinstance(observation.get("sources"), list)):
-        return None
+    elif searched is None:
+        return None  # the implicit primary source: its id is not known here
     return {"page": "logs", "opts": opts}
 
 

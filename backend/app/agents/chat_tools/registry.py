@@ -17,7 +17,9 @@ builds ONE :class:`ChatToolbox` per turn with :func:`build_toolbox` and calls
    look up what this one found (§4.8.3);
 5. gives a successful log call's artifacts their EXACT "Open in Logs" view
    (``open_in``, see :func:`~app.agents.chat_tools.common.logs_console_view`), only
-   when the Logs page can express the filter the call ran with;
+   when the Logs page can express the filter the call ran with and every source it
+   read applied that filter (never a live-tail ring), over the absolute window the
+   call resolved when it started;
 6. writes the execution audit row (§5.2): ``ES_QUERY`` for log tools, ``TOOL_CALL``
    otherwise, ``actor`` = the username (``"default"`` when auth is off),
    ``surface="chat"``, ``tool_input`` = the whitelisted display params, the native
@@ -37,6 +39,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from ...constants import ActionType
@@ -300,6 +303,9 @@ class ChatToolbox:
                 status="skipped",
             )
         started = time.monotonic()
+        # The instant the call started: its "Open in Logs" link names the window the
+        # tool resolved now, as absolute instants (common.logs_console_view).
+        called_at = datetime.now(timezone.utc)
         try:
             with call_scope(call):
                 outcome = await asyncio.wait_for(tool.run(self.ctx, **clean), timeout=limit)
@@ -323,7 +329,7 @@ class ChatToolbox:
                 taint.release_lookup()
         duration_ms = int((time.monotonic() - started) * 1000)
         if outcome.ok and tool.name in LOG_TOOLS:
-            _attach_logs_view(tool.name, clean, outcome, self.ctx)
+            _attach_logs_view(tool.name, clean, outcome, self.ctx, now=called_at)
         if taint is not None and outcome.ok:
             try:
                 taint.observe(outcome.artifacts)
@@ -377,14 +383,18 @@ class ChatToolbox:
             logger.error("chat tool audit write failed (tool=%s): %s", tool.name, exc)
 
 
-def _attach_logs_view(name: str, inp: dict[str, Any], outcome: ToolOutcome, ctx: ChatToolContext) -> None:
+def _attach_logs_view(
+    name: str, inp: dict[str, Any], outcome: ToolOutcome, ctx: ChatToolContext, *, now: datetime | None = None,
+) -> None:
     """"Open in Logs" (SPEC §10.3/§10.7): give every artifact of a successful log
     call the EXACT Logs view of that call (``open_in``), which the materialiser copies
     onto the block. The view is derived by :func:`common.logs_console_view` from the
     call's own parsed input — the same model the tool validated — never from model
-    prose; a filter the Logs page cannot express yields no view, so the block offers
-    "Copy query" only. A tool that already set ``open_in`` keeps its own. Best-effort:
-    a failure here never touches the outcome."""
+    prose; a filter the Logs page cannot express, or a live-tail source that ignored
+    it, yields no view, so the block offers "Copy query" only. ``now`` is the instant
+    the call started (the link's window is written as absolute instants). A tool that
+    already set ``open_in`` keeps its own. Best-effort: a failure here never touches
+    the outcome."""
     try:
         from . import logs  # lazy: the log tools import this module's siblings
 
@@ -394,7 +404,7 @@ def _attach_logs_view(name: str, inp: dict[str, Any], outcome: ToolOutcome, ctx:
         args, error = parse_input(model, inp)
         if error is not None:
             return
-        view = logs_console_view(ctx, args, outcome.observation)
+        view = logs_console_view(ctx, args, outcome.observation, now=now)
         if view is None:
             return
         for artifact in outcome.artifacts:

@@ -109,7 +109,15 @@ export function chartKindFits(block: ChartBlock, kind: ChartKind): boolean {
   const single = block.series.length === 1;
   switch (kind) {
     case 'donut':
-      return single && block.x.values.length <= LIMITS.donut_segments && block.x.kind === 'category' && isAdditive(block, 'donut');
+      // A donut draws a WHOLE: a clipped (truncated) top-N is not one, so it never fits
+      // (the server's `chart_kind_fits` rule; contract `chart_honesty` vectors).
+      return (
+        single &&
+        !block.truncated &&
+        block.x.values.length <= LIMITS.donut_segments &&
+        block.x.kind === 'category' &&
+        isAdditive(block, 'donut')
+      );
     case 'stacked_bar':
       return isAdditive(block, 'stacked_bar');
     case 'sparkline':
