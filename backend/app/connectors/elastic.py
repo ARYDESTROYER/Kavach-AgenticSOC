@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,9 @@ from ..models import Cursor, RawEvent, make_cursor_event_key
 from ..ocsf import OCSFEvent, ecs_to_ocsf, score_to_severity_id
 from ..utils import dotted_get, parse_es_timestamp, relative_to_millis, to_millis
 from .base import (
+    AGGREGATE_INTERVALS,
+    AggregateBucket,
+    AggregateResult,
     AuthField,
     ConnectionTest,
     ConnectorManifest,
@@ -38,6 +42,7 @@ from .base import (
     QueryRendering,
     SearchResult,
     StructuredQuery,
+    aggregate_field,
 )
 
 # Parity constants with ``app/tools/es_query.py`` (keep these in lock-step).
@@ -89,6 +94,24 @@ def _http_status(exc: Exception) -> int | None:
         return int(status) if status is not None else None
     except (TypeError, ValueError):
         return None
+
+
+_BRACKETED_RE = re.compile(r"\[([^\[\]\s]{1,256})\]")
+
+
+def _fields_named_in(exc: Exception, fields: Any) -> set[str]:
+    """The given field names an ES 400 names in brackets ("fielddata is disabled on
+    [user.name]"), searched in the message and the structured error body."""
+    wanted = set(fields)
+    texts = [str(exc)]
+    for attr in ("info", "body"):
+        value = getattr(exc, attr, None)
+        if value is not None:
+            texts.append(str(value))
+    found: set[str] = set()
+    for blob in texts:
+        found.update(m for m in _BRACKETED_RE.findall(blob) if m in wanted)
+    return found
 
 
 class ElasticConnector(PullConnector):
@@ -981,6 +1004,235 @@ class ElasticConnector(PullConnector):
         kql = "_id in (%s)" % ", ".join(f'"{i}"' for i in ids)
         resp = await self._es.search_logs(prefs.data_view_pattern, body)
         return self._to_result(resp, prefs, kql, None, None)
+
+    # --------------------------------------------------------------------- #
+    # Exact aggregation (chat revamp SPEC §5.3; inherited by OpenSearch + Wazuh)
+    # --------------------------------------------------------------------- #
+    def _aggregate_filters(
+        self, prefs: Preferences, query: StructuredQuery
+    ) -> tuple[list[dict[str, Any]], str, str, str]:
+        """The filter list + KQL rendering for an aggregation over ``query``.
+
+        Deliberately the SAME clauses :meth:`search` builds (term filters on the
+        mapped fields, the ``severity_gte`` range, the lenient free-text
+        ``multi_match`` over ``prefs.free_text_search_fields()`` and the epoch-millis
+        time range), so an exact count and the events a search returns describe one
+        population. ``tests/test_chat_tools_aggregate.py`` pins the two against each
+        other; change them together."""
+        filters: list[dict[str, Any]] = []
+        kql_parts: list[str] = []
+        for val, fld in (
+            (query.ip, prefs.source_ip_field),
+            (query.user, prefs.user_field),
+            (query.host, prefs.host_field),
+            (query.rule, prefs.rule_field),
+        ):
+            if val not in (None, ""):
+                filters.append({"term": {fld: val}})
+                kql_parts.append(f'{fld} : "{val}"')
+        sev = query.severity_gte
+        if sev not in (None, ""):
+            filters.append({"range": {prefs.severity_field: {"gte": sev}}})
+            kql_parts.append(f"{prefs.severity_field} >= {sev}")
+        if query.contains:
+            searched = prefs.free_text_search_fields()
+            filters.append(
+                {"multi_match": {"query": query.contains, "fields": searched, "lenient": True}}
+            )
+            clause = " or ".join(f'{fld} : "{query.contains}"' for fld in searched)
+            kql_parts.append(f"({clause})" if len(searched) > 1 else clause)
+        time_from = query.time_from if query.time_from is not None else "now-24h"
+        time_to = query.time_to if query.time_to is not None else "now"
+        filters.append({
+            "range": {prefs.time_field: {
+                "gte": relative_to_millis(time_from),
+                "lte": relative_to_millis(time_to),
+                "format": "epoch_millis",
+            }}
+        })
+        kql = " and ".join(kql_parts) if kql_parts else "*"
+        return filters, kql, time_from, time_to
+
+    @staticmethod
+    def _aggregate_body(
+        filters: list[dict[str, Any]],
+        fields: dict[str, str],
+        *,
+        time_field: str,
+        interval: str | None,
+        top_n: int,
+    ) -> dict[str, Any]:
+        """``size: 0`` body: one ``terms`` + ``cardinality`` per group field, an
+        optional ``date_histogram``, and the over-time split of the FIRST group's top
+        values (the heatmap matrix) as a sub-aggregation."""
+        aggs: dict[str, Any] = {}
+        fixed = None
+        if interval:
+            # ES calls a week "7d" in fixed intervals.
+            fixed = "7d" if interval == "1w" else interval
+            aggs["over_time"] = {
+                "date_histogram": {"field": time_field, "fixed_interval": fixed, "min_doc_count": 0}
+            }
+        for index, (logical, physical) in enumerate(fields.items()):
+            terms: dict[str, Any] = {"terms": {"field": physical, "size": top_n}}
+            if index == 0 and fixed:
+                terms["aggs"] = {
+                    "over_time": {"date_histogram": {"field": time_field, "fixed_interval": fixed}}
+                }
+            aggs[f"g_{logical}"] = terms
+            aggs[f"d_{logical}"] = {"cardinality": {"field": physical}}
+        return {
+            "size": 0,
+            "track_total_hits": True,
+            "query": {"bool": {"filter": filters}},
+            "aggs": aggs,
+        }
+
+    @staticmethod
+    def _bucket_time(key: Any) -> str:
+        """A date_histogram key (epoch millis) as an ISO-8601 UTC string."""
+        import datetime as _dt
+
+        try:
+            millis = int(float(key))
+        except (TypeError, ValueError):
+            return str(key)
+        return _dt.datetime.fromtimestamp(millis / 1000, tz=_dt.timezone.utc).isoformat()
+
+    async def aggregate(
+        self,
+        prefs: Preferences,
+        query: StructuredQuery,
+        group_by: list[str] | tuple[str, ...] = (),
+        interval: str | None = None,
+        top_n: int = 10,
+    ) -> AggregateResult | None:
+        """Exact counts through ONE ``size: 0`` search on the read-only log key (#1).
+
+        Logical ``group_by`` names map through the source's effective field mapping
+        (:func:`app.connectors.base.aggregate_field`). A ``terms`` aggregation on an
+        analysed ``text`` field is a 400 on a real cluster ("fielddata is disabled"),
+        so a 400 is retried ONCE with ``<field>.keyword`` (the default dynamic
+        mapping's exact-value sub-field) on the fields the error names, or on every
+        string group field when it names none of them. A field that was already
+        ``keyword``/``ip`` typed has no ``.keyword`` sub-field and comes back as an
+        EMPTY group, which would read as "exact, no values"; when a retried group is
+        empty while events matched, the result is not trusted and ``None`` is
+        returned. Any other failure — or an id lookup, which is not a population —
+        returns ``None`` so the caller falls back to the newest-N sample path. Never
+        raises."""
+        if query.ids:
+            return None
+        try:
+            prefs = self._effective_prefs(prefs)
+            fields: dict[str, str] = {}
+            for logical in dict.fromkeys(group_by or ()):
+                physical = aggregate_field(prefs, str(logical))
+                if physical:
+                    fields[str(logical)] = physical
+            iv = interval if interval in AGGREGATE_INTERVALS else None
+            top = max(1, min(int(top_n or 10), 50))
+            filters, kql, time_from, time_to = self._aggregate_filters(prefs, query)
+            body = self._aggregate_body(
+                filters, fields, time_field=prefs.time_field, interval=iv, top_n=top,
+            )
+            retried: list[str] = []
+            try:
+                resp = await self._es.search_logs(prefs.data_view_pattern, body)
+            except Exception as exc:  # noqa: BLE001 — classified below
+                if _http_status(exc) != 400 or not fields:
+                    raise
+                candidates = {
+                    logical: physical for logical, physical in fields.items()
+                    if logical != "severity" and not physical.endswith(".keyword")
+                }
+                named = _fields_named_in(exc, candidates.values())
+                retried = [logical for logical, physical in candidates.items()
+                           if not named or physical in named]
+                keyword_fields = {
+                    logical: (f"{physical}.keyword" if logical in retried else physical)
+                    for logical, physical in fields.items()
+                }
+                body = self._aggregate_body(
+                    filters, keyword_fields, time_field=prefs.time_field, interval=iv, top_n=top,
+                )
+                resp = await self._es.search_logs(prefs.data_view_pattern, body)
+            result = self._aggregate_result(
+                resp, list(fields), interval=iv,
+                rendering=QueryRendering(
+                    # The same KQL rendering ``search`` reports (``_to_result``).
+                    query=kql, language="kuery",
+                    data_view=prefs.data_view_pattern,
+                    time_from=time_from, time_to=time_to,
+                ),
+            )
+            if result.total > 0 and any(not result.groups.get(logical) for logical in retried):
+                # A ``.keyword`` guess hit a field with no such sub-field: an empty
+                # group here is a mapping miss, not "no values" (G3).
+                logger.info("aggregate on %s: a .keyword retry found no buckets; sampling instead",
+                            self.connector_id)
+                return None
+            return result
+        except Exception as exc:  # noqa: BLE001 — degrade to the sample path
+            logger.warning("aggregate failed for %s: %s", self.connector_id, exc)
+            return None
+
+    def _aggregate_result(
+        self,
+        resp: dict[str, Any],
+        logical_fields: list[str],
+        *,
+        interval: str | None,
+        rendering: QueryRendering,
+    ) -> AggregateResult:
+        """Parse the aggregation response. A missing aggregation degrades to an empty
+        group rather than failing the whole result."""
+        hits_total = (resp.get("hits") or {}).get("total")
+        if isinstance(hits_total, dict):
+            total = int(hits_total.get("value") or 0)
+        else:
+            total = int(hits_total or 0)
+        aggs = resp.get("aggregations") or {}
+        groups: dict[str, list[AggregateBucket]] = {}
+        other: dict[str, int] = {}
+        distinct: dict[str, int] = {}
+        matrix: dict[str, list[AggregateBucket]] | None = None
+        for index, logical in enumerate(logical_fields):
+            terms = aggs.get(f"g_{logical}") or {}
+            buckets = [b for b in terms.get("buckets") or [] if isinstance(b, dict)]
+            groups[logical] = [
+                AggregateBucket(key=str(b.get("key")), count=int(b.get("doc_count") or 0))
+                for b in buckets
+            ]
+            if "sum_other_doc_count" in terms:
+                other[logical] = int(terms.get("sum_other_doc_count") or 0)
+            else:
+                # Backends (and the offline fake) that omit it: the remainder of the
+                # exact total. A multi-valued field can make this a lower bound only.
+                other[logical] = max(0, total - sum(g.count for g in groups[logical]))
+            card = (aggs.get(f"d_{logical}") or {}).get("value")
+            if isinstance(card, (int, float)):
+                distinct[logical] = int(card)
+            if index == 0:
+                sub = {
+                    str(b.get("key")): [
+                        AggregateBucket(key=self._bucket_time(t.get("key")), count=int(t.get("doc_count") or 0))
+                        for t in ((b.get("over_time") or {}).get("buckets") or [])
+                        if isinstance(t, dict)
+                    ]
+                    for b in buckets
+                    if isinstance(b.get("over_time"), dict)
+                }
+                matrix = sub or None
+        over_time = [
+            AggregateBucket(key=self._bucket_time(b.get("key")), count=int(b.get("doc_count") or 0))
+            for b in ((aggs.get("over_time") or {}).get("buckets") or [])
+            if isinstance(b, dict)
+        ]
+        return AggregateResult(
+            total=total, groups=groups, other=other, distinct=distinct,
+            over_time=over_time, interval=interval, matrix=matrix, rendering=rendering,
+        )
 
     # --------------------------------------------------------------------- #
     # Normalisation + helpers

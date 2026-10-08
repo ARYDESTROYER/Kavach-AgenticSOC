@@ -4606,28 +4606,49 @@ class RagService:
         return (await self.retrieve_observed(query, top_k=top_k)).chunks
 
     async def retrieve_observed(
-        self, query: str, top_k: int | None = None
+        self,
+        query: str,
+        top_k: int | None = None,
+        *,
+        allow_seed: bool = True,
+        allow_reseed: bool = True,
+        surface: str = "rag",
+        usage_receipt: Any = None,
     ) -> RagRetrievalObservation:
         """Return chunks plus whether a complete search actually ran.
 
         A successful search that produces no policy-eligible survivor is measured.
         Disabled RAG, failed seeding, an empty/unavailable corpus, a missing query
         embedding, or any store/search failure is explicitly unmeasured.
-        """
+
+        The keyword-only arguments exist for READ-ONLY callers (the chat
+        ``search_knowledge`` tool, SPEC §5.2), which must never build or rebuild the
+        corpus — seeding embeds the whole knowledge base through the gateway, a cost
+        and a write no chat lookup may cause. ``allow_seed=False`` skips seeding and
+        the empty-corpus self-heal and answers ``index_not_ready`` when the corpus
+        is empty; a populated corpus this process has not (re)verified is searched
+        but reported unmeasured with the same reason. ``allow_reseed=False`` answers
+        ``index_not_ready`` on an embedding-space mismatch instead of clearing and
+        re-embedding the store. ``surface`` labels the one query-embedding ledger row
+        (#6) and ``usage_receipt`` (a ``gateway.UsageReceipt``) receives its usage.
+        The defaults keep every existing caller byte-for-byte unchanged."""
         cfg = self._prefs.rag
         if not cfg.enabled:
             return RagRetrievalObservation([], False, "rag_disabled")
         try:
-            await self.ensure_seeded()
+            if allow_seed:
+                await self.ensure_seeded()
             # Seeding is intentionally fail-soft and preserves the last known-good
             # corpus. Keep using that corpus to ground the investigation, but never
             # label the resulting count measured when its projection is unverified.
             unavailable_reason = (
                 None
                 if self._seeded and self._seed_signature == self._source_signature()
-                else "seeding_failed"
+                else ("seeding_failed" if allow_seed else "index_not_ready")
             )
             store_count = await self._store.count()
+            if store_count == 0 and not allow_seed:
+                return RagRetrievalObservation([], False, "index_not_ready")
             if store_count == 0:
                 # SELF-HEAL. An empty corpus with a satisfied seed cache is the dead
                 # end this whole class of incident ends in: ``ensure_seeded`` believes
@@ -4668,8 +4689,11 @@ class RagService:
             # ever turning one retrieval into an unbounded full-corpus scan.
             pool_k = max(k * cfg.hybrid_overfetch, k) if cfg.hybrid else k
             pool_k = min(store_count, max(pool_k, k * 4))
+            embed_kwargs: dict[str, Any] = {"surface": surface}
+            if usage_receipt is not None:
+                embed_kwargs["usage_receipt"] = usage_receipt
             batch = await self._gateway.embed_with_provenance(
-                [query], self._prefs.model_for("embedding"), surface="rag"
+                [query], self._prefs.model_for("embedding"), **embed_kwargs
             )
             vectors = batch.vectors
             if not vectors:
@@ -4683,6 +4707,9 @@ class RagService:
                     )
                 results = await self._store.search(vectors[0], pool_k)
             except EmbeddingSpaceMismatch as exc:
+                if not allow_reseed:
+                    logger.info("Embedding-space mismatch (%s); read-only caller, no reseed", exc)
+                    return RagRetrievalObservation([], False, "index_not_ready")
                 logger.warning("Embedding-space mismatch (%s); clearing + reseeding", exc)
                 await self._reseed()
                 if await self._store.count() == 0:

@@ -99,6 +99,63 @@ def map_many(technique_ids: list[str] | None) -> list[dict[str, Any]]:
     return out
 
 
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def search(
+    query: str | None = None, *, tactic: str | None = None, limit: int = 8
+) -> list[dict[str, Any]]:
+    """Name/keyword (and optional tactic) search over the bundled corpus (chat
+    ``mitre_lookup``). Pure and deterministic; never raises.
+
+    A query that IS a technique id resolves like :func:`technique`. Otherwise each
+    query word scores 3 when it is a word of the technique name and 1 when it only
+    appears in the description; every word must match somewhere (AND), so "brute
+    force" does not return every technique that mentions "force". ``tactic`` keeps
+    techniques whose tactic list contains it (case-insensitive, substring, so
+    "credential" matches "Credential Access"). Ties break on the id so the order is
+    stable. With only a tactic, the tactic's techniques are returned in id order.
+    ``limit`` is clamped to 1..50."""
+    data = _load()
+    cap = max(1, min(int(limit or 8), 50))
+    text = str(query or "").strip()
+    tactic_text = str(tactic or "").strip().lower()
+
+    def tactic_ok(meta: dict[str, Any]) -> bool:
+        if not tactic_text:
+            return True
+        return any(tactic_text in str(t).lower() for t in meta.get("tactics") or [])
+
+    exact = technique(text) if text else None
+    if exact is not None:
+        return [exact] if tactic_ok(exact) else []
+    words = list(dict.fromkeys(_WORD_RE.findall(text.lower())))[:12]
+    if not words and not tactic_text:
+        return []
+    scored: list[tuple[int, str]] = []
+    for tid, meta in data.items():
+        if not tactic_ok(meta):
+            continue
+        if not words:
+            scored.append((0, tid))
+            continue
+        name_words = set(_WORD_RE.findall(str(meta.get("name") or "").lower()))
+        description = str(meta.get("description") or "").lower()
+        score = 0
+        for word in words:
+            if word in name_words:
+                score += 3
+            elif word in description:
+                score += 1
+            else:
+                score = -1
+                break
+        if score > 0:
+            scored.append((score, tid))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [{"id": tid, **data[tid]} for _score, tid in scored[:cap]]
+
+
 def loaded_count() -> int:
     """Number of techniques currently loaded (0 when the bundle is absent)."""
     return len(_load())

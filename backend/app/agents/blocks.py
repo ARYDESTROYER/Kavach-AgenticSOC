@@ -28,8 +28,10 @@ What this module owns:
   webui ``schema.ts`` by ``webui/src/soc/chat/blocks/answer-blocks.contract.json``.
 * :func:`display_text` — the server-side twin of the webui ``displayText()``.
 * The typed requests the model's ``final`` header may carry (``{"ref": "t2.a1", ...}``,
-  model-written ``callout``/``markdown``, the ``report`` envelope) and the
-  materialisation signature :func:`to_blocks`, which the engine package implements.
+  model-written ``callout``/``markdown``, the ``report`` envelope) and their
+  materialisation: :func:`to_blocks` (artifact → block in a view), :func:`revise_view`
+  (``mK.bJ``: a stored block in another view) and :func:`materialise_final_blocks`
+  (a whole final header, report envelopes included).
 
 Provenance rule (G5): numbers are materialised only from tool artifacts
 (``provenance: code|source``). A block whose provenance is ``ai`` may only be prose
@@ -1787,15 +1789,24 @@ class ModelMarkdownRequest(_Strict):
     title: OptTitle = None
 
 
+def _only(value: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
+    """The keys of ``value`` that ``model`` reads. Models add keys of their own (an
+    ``id``, a ``provenance`` claim, a ``type`` beside a ``ref``); dropping the WHOLE
+    request for that lost a valid callout or chart (a wave-1 strictness bug). The
+    claim itself is meaningless anyway: a ref's provenance comes from the artifact
+    and a model-written block is always ``ai``."""
+    return {k: v for k, v in value.items() if k in model.model_fields}
+
+
 def _leaf_request(value: Any) -> Any:
     if isinstance(value, (BlockRefRequest, ModelCalloutRequest, ModelMarkdownRequest)):
         return value
     if isinstance(value, dict) and "ref" in value:
-        return BlockRefRequest.model_validate(value)
+        return BlockRefRequest.model_validate(_only(value, BlockRefRequest))
     if isinstance(value, dict) and value.get("type") == "callout":
-        return ModelCalloutRequest.model_validate(value)
+        return ModelCalloutRequest.model_validate(_only(value, ModelCalloutRequest))
     if isinstance(value, dict) and value.get("type") == "markdown":
-        return ModelMarkdownRequest.model_validate(value)
+        return ModelMarkdownRequest.model_validate(_only(value, ModelMarkdownRequest))
     raise ValueError("a report leaf is a ref, a callout or markdown")
 
 
@@ -1806,35 +1817,99 @@ LeafRequest = Annotated[
 _LEAF_REQUEST = TypeAdapter(LeafRequest)
 
 
+def _count_valid(adapter: TypeAdapter, items: Any, limit: int) -> tuple[list[Any], int]:
+    """Like :func:`_filter_valid`, but returns how many entries were NOT kept
+    (invalid or over ``limit``) so the engine can say so in its one notice."""
+    if items is None:
+        return [], 0
+    if not isinstance(items, (list, tuple)):
+        return [], 1
+    out: list[Any] = []
+    lost = 0
+    for item in items:
+        if len(out) >= limit:
+            lost += 1
+            continue
+        try:
+            out.append(adapter.validate_python(item))
+        except Exception:  # noqa: BLE001 -- one bad leaf never sinks the section
+            lost += 1
+    return out, lost
+
+
 class ReportSectionRequest(_Strict):
+    """One model-written section. Tolerant like the leaves (wave-1 strictness fix):
+    keys it does not read (an ``id``) are ignored, ``blocks`` — the persisted
+    section's own key in BLOCKS.md — is accepted for ``items``, and a missing heading
+    gets a neutral one. ``invalid_items`` is ENGINE-SET (any model value is
+    overwritten): the leaves that could not be kept, for the turn's one notice."""
+
     heading: Title
+    summary: _opt_text_type(MAX_SECTION_SUMMARY, multiline=True) = None
     items: list[LeafRequest] = Field(default_factory=list, max_length=MAX_REPORT_LEAVES)
+    invalid_items: int = 0
 
     @model_validator(mode="before")
     @classmethod
     def _repair(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            data = dict(data)
-            data["items"], _ = _filter_valid(_LEAF_REQUEST, data.get("items"), MAX_REPORT_LEAVES)
+            raw = data.get("items")
+            if raw is None:
+                raw = data.get("blocks")
+            items, lost = _count_valid(_LEAF_REQUEST, raw, MAX_REPORT_LEAVES)
+            data = {**_only(data, cls), "items": items, "invalid_items": lost}
+            if not isinstance(data.get("heading"), str) or not data["heading"].strip():
+                data["heading"] = "Details"
         return data
 
 
+_SECTION_REQUEST = TypeAdapter(ReportSectionRequest)
+
+
 class ReportEnvelopeRequest(_Strict):
-    """The model-written ``report`` envelope; leaves only (no nested report)."""
+    """The model-written ``report`` envelope; leaves only (no nested report). Keys
+    it does not read are ignored rather than fatal (a whole brief was lost for an
+    ``id``), sections past the limit and leaves past the 40-leaf budget are clipped
+    instead of failing the envelope, and every leaf that was lost is counted in the
+    ENGINE-SET ``invalid_items`` so the answer says so."""
 
     type: Literal["report"]
     title: Title
+    subtitle: _opt_text_type(200) = None
     template: ReportTemplate = "custom"
     sections: list[ReportSectionRequest] = Field(min_length=1, max_length=MAX_REPORT_SECTIONS)
+    invalid_items: int = 0
 
     @model_validator(mode="before")
     @classmethod
     def _repair(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            data = dict(data)
+            data = _only(data, cls)
             data["template"] = _enum_or(data.get("template"), REPORT_TEMPLATES, "custom")
-            sections, _ = _clip(data.get("sections"), MAX_REPORT_SECTIONS)
+            if not isinstance(data.get("title"), str) or not data["title"].strip():
+                data["title"] = "Report"
+            raw_sections = data.get("sections")
+            raw_sections = list(raw_sections) if isinstance(raw_sections, (list, tuple)) else []
+            sections: list[ReportSectionRequest] = []
+            lost = 0
+            budget = MAX_REPORT_LEAVES
+            for raw in raw_sections:
+                if len(sections) >= MAX_REPORT_SECTIONS:
+                    lost += _raw_leaf_count(raw)
+                    continue
+                try:
+                    section = _SECTION_REQUEST.validate_python(raw)
+                except Exception:  # noqa: BLE001 -- one bad section never sinks the brief
+                    lost += _raw_leaf_count(raw)
+                    continue
+                lost += section.invalid_items
+                if len(section.items) > budget:
+                    lost += len(section.items) - budget
+                    section = section.model_copy(update={"items": section.items[:budget]})
+                budget -= len(section.items)
+                sections.append(section)
             data["sections"] = sections
+            data["invalid_items"] = lost
         return data
 
     @model_validator(mode="after")
@@ -1842,6 +1917,15 @@ class ReportEnvelopeRequest(_Strict):
         if sum(len(s.items) for s in self.sections) > MAX_REPORT_LEAVES:
             raise ValueError("a report holds at most 40 leaves")
         return self
+
+
+def _raw_leaf_count(raw: Any) -> int:
+    """How many leaves an unparsable/clipped raw section held (at least one)."""
+    if isinstance(raw, dict):
+        items = raw.get("items") if raw.get("items") is not None else raw.get("blocks")
+        if isinstance(items, (list, tuple)):
+            return max(1, len(items))
+    return 1
 
 
 def _final_request(value: Any) -> Any:
@@ -1866,20 +1950,40 @@ def parse_final_block_requests(raw: Any) -> tuple[list[Any], list[DroppedBlock]]
     if not isinstance(raw, (list, tuple)):
         return [], ([DroppedBlock("0", None, "not_a_list")] if raw is not None else [])
     out: list[Any] = []
+    seen: set[tuple[Any, ...]] = set()
     for index, item in enumerate(raw, start=1):
         if len(out) >= MAX_BLOCKS_PER_MESSAGE:
             dropped.append(DroppedBlock(str(index), _type_of(item), "block_limit"))
             continue
         try:
-            out.append(_FINAL_REQUEST.validate_python(item))
+            request = _FINAL_REQUEST.validate_python(item)
         except Exception as exc:  # noqa: BLE001
             dropped.append(DroppedBlock(str(index), _type_of(item), _reason(exc)))
+            continue
+        if isinstance(request, BlockRefRequest):
+            # An identical repeat adds nothing and must not use up the block limit.
+            key = (request.ref, request.view, request.top_n)
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(request)
     return out, dropped
 
 
 # --------------------------------------------------------------------------- #
-# Materialisation (SPEC §7.3). Implemented by the engine package (WP-F); the
-# signature is fixed here so tools, engine and tests agree on it.
+# Materialisation (SPEC §7.3): tool artifacts → answer blocks.
+#
+# A block is a PROJECTION of an artifact, never a computation: every number in a
+# block is a number the tool put in ``Artifact.data`` (G5), re-ordered or clipped but
+# never summed, averaged or folded. That is why a donut is offered only for a
+# COMPLETE category population (no "Other" slice has to be invented), why a time
+# series past the point limit keeps its newest points instead of being re-bucketed,
+# and why a view change of a STORED block (``mK.bJ``) first turns the block back into
+# the artifact data it came from and then re-runs the very same projection.
+#
+# Every table view has a canonical column layout (stable column keys per artifact
+# kind, below) so that projection is reversible: a stored table can become a chart
+# again without guessing which column held which number.
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class MaterialiseOptions:
@@ -1896,19 +2000,917 @@ class MaterialiseOptions:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+# The y-series label a chart shows when the artifact names none (one unit per chart, G6).
+_UNIT_LABELS: dict[str, str] = {
+    "count": "Count", "percent": "Percent", "ratio": "Ratio", "score": "Score",
+    "ms": "Milliseconds", "seconds": "Seconds", "minutes": "Minutes", "hours": "Hours",
+    "usd": "Cost (USD)", "tokens": "Tokens", "bytes": "Bytes",
+}
+_BASIS_CAPTIONS: dict[str, str] = {
+    "newest_n": "Sampled from the newest events",
+    "sample": "Sample",
+    "cached": "Cached result",
+}
+# Canonical table-view column keys per artifact kind (see the section note).
+_CATEGORY_COLUMNS = ("label", "value")
+_FUNNEL_COLUMNS = ("stage", "value")
+_KPI_COLUMNS = ("label", "value", "unit", "context")
+_HEATMAP_COLUMNS = ("y", "x", "value")
+_CASE_COLUMNS = ("case_id", "title", "severity", "verdict", "status", "risk", "created_at")
+_TIMELINE_COLUMNS = ("at", "label", "detail", "kind")
+_SERIES_X_COLUMN = "x"
+# Fields every block carries that are not artifact data (stripped when a stored
+# block is turned back into artifact data for a view change).
+_BASE_FIELDS = frozenset(_BlockBase.model_fields)
+
+
+def _unit(value: Any, fallback: str = "count") -> str:
+    return _enum_or(value, VALUE_UNITS, fallback)
+
+
+def _label_text(value: Any, limit: int = MAX_CATEGORY_CHARS) -> str:
+    """A category / axis / row label: text or a JS-formatted number, else ``""``."""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (str, int, float)):
+        return display_text(value, limit)
+    return ""
+
+
+def _fmt_count(value: int) -> str:
+    return f"{value:,}"
+
+
+def _caption(
+    artifact: Any, options: MaterialiseOptions, truncation: str | None,
+) -> str | None:
+    """The scope caption: truncation disclosure (G4), sample basis, effective window.
+    An explicit ``options.caption`` (a stored block's, on a view change) is kept, but
+    a truncation phrase it does not already state is put in front of it: a stored
+    caption can predate the clipping (storage compaction, a smaller view)."""
+    if options.caption:
+        explicit = display_text(options.caption, MAX_CAPTION)
+        if truncation and truncation not in explicit:
+            return display_text(f"{truncation} · {explicit}" if explicit else truncation, MAX_CAPTION) or None
+        return explicit or None
+    parts: list[str] = []
+    if truncation:
+        parts.append(truncation)
+    basis = _BASIS_CAPTIONS.get(str(getattr(artifact, "basis", None) or ""))
+    if basis:
+        parts.append(basis)
+    window = getattr(artifact, "window", None)
+    if isinstance(window, str) and window.strip():
+        parts.append(display_text(window, 80))
+    text = " · ".join(p for p in parts if p)
+    return display_text(text, MAX_CAPTION) or None
+
+
+def _views_of(artifact: Any) -> list[str]:
+    views = getattr(artifact, "views", None)
+    if callable(views):
+        try:
+            return [v for v in views() if v in BLOCK_VIEWS]
+        except Exception:  # noqa: BLE001 -- a duck-typed artifact falls back to the table
+            pass
+    return allowed_views_for(str(getattr(artifact, "kind", "")))
+
+
+def _top_n(options: MaterialiseOptions, available: int) -> int:
+    limit = options.top_n if isinstance(options.top_n, int) and options.top_n > 0 else available
+    return max(0, min(limit, available))
+
+
+def _sorted_categories(data: dict[str, Any]) -> tuple[list[str], list[int | float | None]]:
+    """Labels and values aligned, sorted by value descending (not measured last), ties
+    by label, so the order — and with it every colour — is deterministic."""
+    labels = data.get("labels") if isinstance(data.get("labels"), (list, tuple)) else []
+    values = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
+    pairs = [
+        (_label_text(label), finite_number(values[i]) if i < len(values) else None)
+        for i, label in enumerate(labels)
+    ]
+    pairs.sort(key=lambda p: (p[1] is None, -(p[1] or 0), p[0]))
+    return [p[0] for p in pairs], [p[1] for p in pairs]
+
+
+def _value_label(data: dict[str, Any], unit: str) -> str:
+    label = data.get("value_label")
+    return display_text(label, MAX_LABEL) if isinstance(label, str) and label.strip() else _UNIT_LABELS.get(unit, "Value")
+
+
+def _base_block(
+    artifact: Any, options: MaterialiseOptions, views: list[str],
+) -> dict[str, Any]:
+    title = options.title or getattr(artifact, "title", None)
+    out: dict[str, Any] = {
+        "id": options.block_id,
+        "provenance": getattr(artifact, "provenance", "code"),
+        "artifact_kind": getattr(artifact, "kind", None),
+        "allowed_views": views,
+        "untrusted": bool(getattr(artifact, "untrusted_labels", False)),
+        "as_of": getattr(artifact, "as_of", None),
+        "from_step": options.from_step,
+    }
+    if title:
+        out["title"] = title
+    return out
+
+
+def _with_truncation(
+    block: dict[str, Any], artifact: Any, options: MaterialiseOptions, *, shown: int,
+    available: int, noun: str | None = "Top",
+) -> dict[str, Any]:
+    """Set ``truncated``/``total`` and the caption from what is shown vs. what the
+    artifact (or the tool's population) holds."""
+    population = getattr(artifact, "total", None)
+    population = population if isinstance(population, int) and not isinstance(population, bool) and population >= 0 else None
+    clipped = shown < available
+    truncated = bool(block.get("truncated")) or bool(getattr(artifact, "truncated", False)) or clipped
+    phrase: str | None = None
+    if truncated:
+        whole = population if population is not None and population > shown else (available if clipped else None)
+        block["total"] = whole
+        if noun is None:
+            phrase = "Partial result"
+        elif noun == "Latest":
+            phrase = f"Latest {_fmt_count(shown)} of {_fmt_count(whole)}" if whole else f"Latest {_fmt_count(shown)}"
+        else:
+            phrase = f"{noun} {_fmt_count(shown)} of {_fmt_count(whole)}" if whole else f"{noun} {_fmt_count(shown)} shown"
+    block["truncated"] = truncated
+    caption = _caption(artifact, options, phrase)
+    if caption:
+        block["caption"] = caption
+    elif truncated:
+        block["caption"] = "Partial result"
+    return block
+
+
+def _number_column(key: str, label: str, unit: str | None) -> dict[str, Any]:
+    column: dict[str, Any] = {"key": key, "label": label, "type": "number", "align": "right"}
+    if unit:
+        column["unit"] = unit
+    return column
+
+
+def _text_column(key: str, label: str, *, untrusted: bool = False, ctype: str = "text") -> dict[str, Any]:
+    column: dict[str, Any] = {"key": key, "label": label, "type": ctype}
+    if untrusted:
+        column["untrusted"] = True
+    return column
+
+
+def _build_categories(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    data = artifact.data
+    labels, values = _sorted_categories(data)
+    unit = _unit(data.get("unit"))
+    other = finite_number(data.get("other"))
+    # A donut is a part-to-whole: only for a COMPLETE population that fits in six
+    # slices (an "Other" slice would be a number the tool never produced).
+    complete = not getattr(artifact, "truncated", False) and not other and len(labels) <= MAX_DONUT_SEGMENTS
+    if not complete:
+        views = [v for v in views if v != "donut"]
+        if view == "donut":
+            view = views[0] if views else "hbar"
+    n = _top_n(options, len(labels)) if view != "donut" else len(labels)
+    # The view's own limit is a clip like top_n, so it is disclosed the same way
+    # (``total`` + caption) instead of being cut later by validation.
+    n = min(n, MAX_TABLE_ROWS if view == "table" else MAX_POINTS)
+    block = _base_block(artifact, options, views)
+    dimension = _label_text(data.get("dimension"), MAX_LABEL) or None
+    if view == "table":
+        block.update({
+            "type": "table",
+            "columns": [
+                _text_column(_CATEGORY_COLUMNS[0], dimension or "Value", untrusted=block["untrusted"]),
+                _number_column(_CATEGORY_COLUMNS[1], _value_label(data, unit), unit),
+            ],
+            "rows": [[labels[i], values[i]] for i in range(n)],
+        })
+    else:
+        block.update({
+            "type": "chart", "kind": view, "unit": unit,
+            "x": {"kind": "category", "values": labels[:n], **({"label": dimension} if dimension else {})},
+            "series": [{"key": "value", "label": _value_label(data, unit), "values": values[:n]}],
+        })
+        drill = data.get("drill")
+        if isinstance(drill, (list, tuple)) and len(drill) == len(data.get("labels") or []):
+            # Re-align the drill refs with the sorted labels (by original label text).
+            by_label = {_label_text(lbl): ref for lbl, ref in zip(data.get("labels") or [], drill)}
+            block["drill"] = [by_label.get(lbl) for lbl in labels[:n]]
+    return _with_truncation(block, artifact, options, shown=n, available=len(labels))
+
+
+def _series_rows(data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]], bool]:
+    x_raw = data.get("x") if isinstance(data.get("x"), (list, tuple)) else []
+    x = [_label_text(v) for v in x_raw]
+    series: list[dict[str, Any]] = []
+    for index, item in enumerate(data.get("series") or []):
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("values") if isinstance(item.get("values"), (list, tuple)) else []
+        values = [finite_number(raw[i]) if i < len(raw) else None for i in range(len(x))]
+        key = item.get("key") if isinstance(item.get("key"), str) and _KEY_RE.match(item["key"]) else f"s{index + 1}"
+        entry: dict[str, Any] = {
+            "key": key,
+            "label": _label_text(item.get("label"), MAX_LABEL) or key,
+            "values": values,
+        }
+        semantic = _enum_or(item.get("semantic"), SEMANTIC_KEYS, None)
+        if semantic:
+            entry["semantic"] = semantic
+        series.append(entry)
+    x_kind = _enum_or(data.get("x_kind"), X_KINDS, None)
+    if x_kind is None:
+        x_kind = "time" if x and all(parse_timestamp(v) is not None for v in x) else "category"
+    return x, series, x_kind == "time"
+
+
+def _series_order(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Descending total (not-measured points count as nothing), ties by label; a
+    series named "Other" always goes last (``--chart-8``)."""
+    def key(item: dict[str, Any]) -> tuple[bool, float, str]:
+        other = str(item.get("key")).lower() == "other" or str(item.get("label")).lower() == "other"
+        total = sum(v for v in item["values"] if v is not None)
+        return (other, -total, str(item.get("label")))
+    return sorted(series, key=key)
+
+
+def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    data = artifact.data
+    x, series, is_time = _series_rows(data)
+    series = _series_order(series)
+    unit = _unit(data.get("unit"))
+    if len(series) > 1:
+        # A sparkline draws exactly one series; never pick one silently.
+        views = [v for v in views if v != "sparkline"]
+        if view == "sparkline":
+            view = views[0] if views else "line"
+    available = len(series)
+    keep = _top_n(options, available)
+    if keep > MAX_SERIES:
+        others = [s for s in series[:keep] if str(s["key"]).lower() == "other"]
+        keep_list = [s for s in series[:keep] if str(s["key"]).lower() != "other"][: MAX_SERIES - len(others)] + others
+    else:
+        keep_list = series[:keep]
+    points = len(x)
+    start = max(0, points - MAX_POINTS) if is_time else 0
+    stop = points if is_time else min(points, MAX_POINTS)
+    block = _base_block(artifact, options, views)
+    if view == "table":
+        columns = [_text_column(_SERIES_X_COLUMN, _label_text(data.get("x_label"), MAX_LABEL) or ("Time" if is_time else "Category"),
+                                ctype="time" if is_time else "text", untrusted=block["untrusted"] and not is_time)]
+        columns += [_number_column(s["key"], s["label"], unit) for s in keep_list[: MAX_TABLE_COLUMNS - 1]]
+        # A table holds fewer rows than a chart holds points: time keeps the newest.
+        if stop - start > MAX_TABLE_ROWS:
+            if is_time:
+                start = stop - MAX_TABLE_ROWS
+            else:
+                stop = start + MAX_TABLE_ROWS
+        rows = [
+            [x[i], *(s["values"][i] for s in keep_list[: MAX_TABLE_COLUMNS - 1])]
+            for i in range(start, stop)
+        ]
+        block.update({"type": "table", "columns": columns, "rows": rows})
+    else:
+        x_block: dict[str, Any] = {"kind": "time" if is_time else "category", "values": x[start:stop]}
+        x_label = _label_text(data.get("x_label"), MAX_LABEL)
+        if x_label:
+            x_block["label"] = x_label
+        bucket = _enum_or(data.get("bucket"), TIME_BUCKETS, None)
+        if bucket:
+            x_block["bucket"] = bucket
+        block.update({
+            "type": "chart", "kind": view, "unit": unit, "x": x_block,
+            "series": [{**s, "values": s["values"][start:stop]} for s in keep_list],
+        })
+        if data.get("last_in_progress") is True and is_time and stop == points:
+            block["last_in_progress"] = True
+        if isinstance(data.get("reference"), dict):
+            block["reference"] = data["reference"]
+    shown_points = stop - start
+    if shown_points < points:
+        return _with_truncation(block, artifact, options, shown=shown_points, available=points,
+                                noun="Latest" if is_time else "Top")
+    return _with_truncation(block, artifact, options, shown=len(keep_list), available=available)
+
+
+def _build_funnel(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    data = artifact.data
+    stages_raw = data.get("stages") if isinstance(data.get("stages"), (list, tuple)) else []
+    values_raw = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
+    stages = [_label_text(s) for s in stages_raw][:MAX_POINTS]
+    values = [finite_number(values_raw[i]) if i < len(values_raw) else None for i in range(len(stages))]
+    unit = _unit(data.get("unit"))
+    block = _base_block(artifact, options, views)
+    if view == "table":
+        block.update({
+            "type": "table",
+            "columns": [_text_column(_FUNNEL_COLUMNS[0], "Stage"),
+                        _number_column(_FUNNEL_COLUMNS[1], _value_label(data, unit), unit)],
+            "rows": [[stages[i], values[i]] for i in range(len(stages))],
+        })
+    else:
+        # Stages keep their order (a funnel is ordered by definition, never by size).
+        block.update({
+            "type": "chart", "kind": view, "unit": unit,
+            "x": {"kind": "category", "values": stages},
+            "series": [{"key": "value", "label": _value_label(data, unit), "values": values}],
+        })
+    return _with_truncation(block, artifact, options, shown=len(stages), available=len(stages))
+
+
+def _build_kpis(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    raw = [i for i in (artifact.data.get("items") or []) if isinstance(i, dict)]
+    items: list[dict[str, Any]] = []
+    for item in raw:
+        # An item the KPI schema rejects would be dropped silently by validation;
+        # leave it out here instead, where it still counts towards ``total``.
+        try:
+            _KPI_ITEM.validate_python(item)
+        except Exception:  # noqa: BLE001
+            continue
+        items.append(dict(item))
+    limit = MAX_KPI_ITEMS if view == "kpi_group" else MAX_TABLE_ROWS
+    n = min(_top_n(options, len(items)), limit)
+    block = _base_block(artifact, options, views)
+    if view == "table":
+        block.update({
+            "type": "table",
+            "columns": [_text_column("label", "Metric"), _number_column("value", "Value", None),
+                        _text_column("unit", "Unit"), _text_column("context", "Context")],
+            "rows": [
+                [_label_text(i.get("label"), MAX_LABEL), finite_number(i.get("value")),
+                 _unit(i.get("unit")), _label_text(i.get("context"), MAX_LABEL) or None]
+                for i in items[:n]
+            ],
+        })
+    else:
+        block.update({"type": "kpi_group", "items": items[:n]})
+    return _with_truncation(block, artifact, options, shown=n, available=len(raw), noun="Showing")
+
+
+def _build_table(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    data = artifact.data
+    all_columns = [dict(c) for c in (data.get("columns") or []) if isinstance(c, dict)]
+    columns = all_columns[:MAX_TABLE_COLUMNS]
+    if getattr(artifact, "untrusted_labels", False):
+        # Source rows are log-derived: every text-like column renders as untrusted (G7).
+        for column in columns:
+            if column.get("type", "text") in ("text", "entity", "code"):
+                column.setdefault("untrusted", True)
+    rows = [list(r)[: len(columns)] for r in (data.get("rows") or []) if isinstance(r, (list, tuple))]
+    n = min(_top_n(options, len(rows)), MAX_TABLE_ROWS)
+    block = _base_block(artifact, options, views)
+    block.update({"type": "table", "columns": columns, "rows": rows[:n]})
+    if isinstance(data.get("sort"), dict):
+        block["sort"] = data["sort"]
+    clipped_columns = len(all_columns) - len(columns)
+    if clipped_columns:
+        block["truncated"] = True  # hidden columns are a partial result too (G4)
+    out = _with_truncation(block, artifact, options, shown=n, available=len(rows))
+    if clipped_columns:
+        note = f"First {_fmt_count(len(columns))} of {_fmt_count(len(all_columns))} columns"
+        caption = out.get("caption")
+        out["caption"] = display_text(
+            note if caption in (None, "", "Partial result") else f"{caption} · {note}", MAX_CAPTION)
+    return out
+
+
+def _build_heatmap(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    data = artifact.data
+    x = [_label_text(v) for v in (data.get("x") or [])]
+    y = [_label_text(v) for v in (data.get("y") or [])]
+    raw_cells = data.get("cells") if isinstance(data.get("cells"), (list, tuple)) else []
+    unit = _unit(data.get("unit"))
+    block = _base_block(artifact, options, views)
+    x_label = _label_text(data.get("x_label"), MAX_LABEL) or None
+    y_label = _label_text(data.get("y_label"), MAX_LABEL) or None
+    rows_n = min(_top_n(options, len(y)), MAX_HEATMAP_Y)
+    cols_n = min(len(x), MAX_HEATMAP_X)
+
+    def cell(r: int, c: int) -> int | float | None:
+        row = raw_cells[r] if r < len(raw_cells) and isinstance(raw_cells[r], (list, tuple)) else []
+        return finite_number(row[c]) if c < len(row) else None
+
+    if view == "table":
+        # Long format (y, x, value): a 48-column grid cannot be a 12-column table.
+        # Measured cells only, largest first (ties keep grid order).
+        cells = [(y[r], x[c], cell(r, c)) for r in range(len(y)) for c in range(len(x)) if cell(r, c) is not None]
+        cells.sort(key=lambda t: -(t[2] or 0))
+        block.update({
+            "type": "table",
+            "columns": [_text_column("y", y_label or "Row", untrusted=block["untrusted"]),
+                        _text_column("x", x_label or "Column", untrusted=block["untrusted"]),
+                        _number_column("value", _value_label(data, unit), unit)],
+            "rows": [list(t) for t in cells[:MAX_TABLE_ROWS]],
+        })
+        return _with_truncation(block, artifact, options, shown=min(len(cells), MAX_TABLE_ROWS), available=len(cells))
+    block.update({
+        "type": "heatmap", "unit": unit,
+        "x": {"values": x[:cols_n], **({"label": x_label} if x_label else {})},
+        "y": {"values": y[:rows_n], **({"label": y_label} if y_label else {})},
+        "cells": [[cell(r, c) for c in range(cols_n)] for r in range(rows_n)],
+    })
+    if cols_n < len(x):
+        block["truncated"] = True
+    return _with_truncation(block, artifact, options, shown=rows_n, available=len(y))
+
+
+def _build_case_list(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    items = [dict(i) for i in (artifact.data.get("items") or []) if isinstance(i, dict)]
+    limit = MAX_CASE_LIST if view == "case_list" else MAX_TABLE_ROWS
+    n = min(_top_n(options, len(items)), limit)
+    block = _base_block(artifact, options, views)
+    if view == "table":
+        block.update({
+            "type": "table",
+            "columns": [
+                _text_column("case_id", "Case", ctype="case"), _text_column("title", "Title", untrusted=True),
+                _text_column("severity", "Severity", ctype="severity"),
+                _text_column("verdict", "Verdict", ctype="verdict"),
+                _text_column("status", "Status", ctype="status"),
+                {"key": "risk", "label": "Risk", "type": "risk", "unit": "score", "align": "right"},
+                _text_column("created_at", "Created", ctype="time"),
+            ],
+            "rows": [
+                [i.get("case_id"), i.get("title"), _enum_or(i.get("severity"), SEVERITY_KEYS, None),
+                 semantic_verdict(i.get("verdict")), semantic_status(i.get("status")),
+                 finite_number(i.get("risk")), _iso_or_none(i.get("created_at"))]
+                for i in items[:n]
+            ],
+        })
+    else:
+        block.update({"type": "case_list", "items": items[:n]})
+    return _with_truncation(block, artifact, options, shown=n, available=len(items))
+
+
+def _build_timeline(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    events = [dict(e) for e in (artifact.data.get("events") or []) if isinstance(e, dict)]
+    events.sort(key=lambda e: _sort_instant(e.get("at")) if isinstance(e.get("at"), str) else math.inf)
+    limit = MAX_TIMELINE if view == "timeline" else MAX_TABLE_ROWS
+    n = min(_top_n(options, len(events)), limit)
+    shown = events[-n:] if n else []   # the newest events, still ascending
+    block = _base_block(artifact, options, views)
+    if view == "table":
+        block.update({
+            "type": "table",
+            "columns": [_text_column("at", "Time", ctype="time"),
+                        _text_column("label", "Event", untrusted=block["untrusted"]),
+                        _text_column("detail", "Detail", untrusted=block["untrusted"]),
+                        _text_column("kind", "Kind")],
+            "rows": [[e.get("at"), e.get("label"), e.get("detail"),
+                      _enum_or(e.get("kind"), TIMELINE_KINDS, None)] for e in shown],
+        })
+    else:
+        block.update({"type": "timeline", "events": shown})
+    return _with_truncation(block, artifact, options, shown=len(shown), available=len(events), noun="Latest")
+
+
+def _build_passthrough(block_type: str, keys: tuple[str, ...]) -> Any:
+    """Single-view kinds whose artifact data already IS the block body."""
+    def build(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+        block = _base_block(artifact, options, views)
+        block["type"] = block_type
+        for key in keys:
+            if key in artifact.data:
+                block[key] = artifact.data[key]
+        return _with_truncation(block, artifact, options, shown=1, available=1, noun=None)
+    return build
+
+
+_BUILDERS: dict[str, Any] = {
+    "categories": _build_categories,
+    "series": _build_series,
+    "funnel": _build_funnel,
+    "kpis": _build_kpis,
+    "table": _build_table,
+    "heatmap": _build_heatmap,
+    "case_list": _build_case_list,
+    "timeline": _build_timeline,
+    "entity": _build_passthrough("entity", (
+        "entity", "risk", "verdict", "facts", "reputation", "counts", "related_cases",
+        "first_seen", "last_seen",
+    )),
+    "mitre": _build_passthrough("mitre", ("techniques",)),
+    "guide": _build_passthrough("guide", ("steps", "links")),
+    "query": _build_passthrough("query", ("language", "query", "source_name", "hits")),
+}
+
+
 def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[str, Any]]:
-    """Materialise ``artifact`` into validated block dicts (usually one) in the
-    requested view. Deterministic; never invents numbers; numbers come only from
-    ``artifact.data`` and carry ``artifact.provenance``. Implemented by WP-F."""
-    raise NotImplementedError("answer-block materialisation is implemented by the chat engine package")
+    """Materialise ``artifact`` into validated block dicts (one, or none when the
+    artifact cannot form a valid block) in the requested view.
+
+    Deterministic; never invents numbers: numbers come only from ``artifact.data``
+    and carry ``artifact.provenance`` (``code``/``source``, never ``ai``). A view the
+    artifact does not offer falls back to the kind's default view; ``top_n`` and
+    ``title`` arrive clamped and display-sanitised from :class:`BlockRefRequest`."""
+    kind = getattr(artifact, "kind", None)
+    builder = _BUILDERS.get(kind) if isinstance(kind, str) else None
+    data = getattr(artifact, "data", None)
+    if builder is None or not isinstance(data, dict):
+        return []
+    if getattr(artifact, "provenance", None) not in ("code", "source"):
+        return []  # G5: only a tool-produced artifact can carry numbers
+    views = _views_of(artifact)
+    view = options.view if options.view in views else DEFAULT_VIEW[kind]
+    try:
+        raw = builder(artifact, options, view, list(views))
+    except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
+        return []
+    block, _drop = _validate_one(raw, "1", allow_ai_data=False, adapter=_LEAF_BLOCK)
+    return [dump_block(block)] if block is not None else []
+
+
+# --- stored blocks back to artifact data (for ``mK.bJ`` view changes) ---------- #
+def _column_index(block: dict[str, Any], key: str) -> int | None:
+    for index, column in enumerate(block.get("columns") or []):
+        if isinstance(column, dict) and column.get("key") == key:
+            return index
+    return None
+
+
+def _table_column(block: dict[str, Any], key: str) -> list[Any] | None:
+    index = _column_index(block, key)
+    if index is None:
+        return None
+    return [row[index] if isinstance(row, list) and index < len(row) else None for row in block.get("rows") or []]
+
+
+def _column_unit(block: dict[str, Any], key: str) -> str:
+    index = _column_index(block, key)
+    column = (block.get("columns") or [])[index] if index is not None else {}
+    return _unit(column.get("unit") if isinstance(column, dict) else None)
+
+
+def artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    """The artifact data a STORED block was materialised from (the inverse of the
+    projection above), or ``None`` when the block cannot be read back (a stub, a
+    model-written block, or a table whose canonical columns are missing)."""
+    if not isinstance(block, dict) or is_expired_block(block):
+        return None
+    kind = block.get("artifact_kind")
+    btype = block.get("type")
+    if kind not in ARTIFACT_KINDS:
+        return None
+    if kind == "categories":
+        if btype == "chart":
+            series = (block.get("series") or [{}])[0]
+            x = block.get("x") or {}
+            return {"labels": list(x.get("values") or []), "values": list(series.get("values") or []),
+                    "unit": block.get("unit"), "dimension": x.get("label"), "value_label": series.get("label")}
+        labels, values = _table_column(block, "label"), _table_column(block, "value")
+        if labels is None or values is None:
+            return None
+        return {"labels": labels, "values": values, "unit": _column_unit(block, "value")}
+    if kind == "series":
+        if btype == "chart":
+            x = block.get("x") or {}
+            return {"x": list(x.get("values") or []), "series": list(block.get("series") or []),
+                    "unit": block.get("unit"), "x_kind": x.get("kind"), "bucket": x.get("bucket"),
+                    "x_label": x.get("label"), "last_in_progress": block.get("last_in_progress", False),
+                    "reference": block.get("reference")}
+        x_values = _table_column(block, _SERIES_X_COLUMN)
+        if x_values is None:
+            return None
+        series = []
+        unit = "count"
+        x_kind = "category"
+        for column in block.get("columns") or []:
+            if not isinstance(column, dict):
+                continue
+            if column.get("key") == _SERIES_X_COLUMN:
+                x_kind = "time" if column.get("type") == "time" else "category"
+                continue
+            unit = _unit(column.get("unit"), unit)
+            series.append({"key": column.get("key"), "label": column.get("label"),
+                           "values": _table_column(block, column.get("key")) or []})
+        return {"x": x_values, "series": series, "unit": unit, "x_kind": x_kind}
+    if kind == "funnel":
+        if btype == "chart":
+            series = (block.get("series") or [{}])[0]
+            return {"stages": list((block.get("x") or {}).get("values") or []),
+                    "values": list(series.get("values") or []), "unit": block.get("unit"),
+                    "value_label": series.get("label")}
+        stages, values = _table_column(block, "stage"), _table_column(block, "value")
+        if stages is None or values is None:
+            return None
+        return {"stages": stages, "values": values, "unit": _column_unit(block, "value")}
+    if kind == "kpis":
+        if btype == "kpi_group":
+            return {"items": list(block.get("items") or [])}
+        labels, values = _table_column(block, "label"), _table_column(block, "value")
+        if labels is None or values is None:
+            return None
+        units = _table_column(block, "unit") or []
+        contexts = _table_column(block, "context") or []
+        items = []
+        for i, label in enumerate(labels):
+            item = {"key": f"k{i + 1}", "label": label, "value": values[i],
+                    "unit": _unit(units[i] if i < len(units) else None)}
+            if i < len(contexts) and contexts[i]:
+                item["context"] = contexts[i]
+            items.append(item)
+        return {"items": items}
+    if kind == "heatmap":
+        if btype == "heatmap":
+            x, y = block.get("x") or {}, block.get("y") or {}
+            return {"x": list(x.get("values") or []), "y": list(y.get("values") or []),
+                    "cells": list(block.get("cells") or []), "unit": block.get("unit"),
+                    "x_label": x.get("label"), "y_label": y.get("label")}
+        ys, xs, values = _table_column(block, "y"), _table_column(block, "x"), _table_column(block, "value")
+        if ys is None or xs is None or values is None:
+            return None
+        y_axis = list(dict.fromkeys(ys))
+        x_axis = list(dict.fromkeys(xs))
+        grid: list[list[Any]] = [[None] * len(x_axis) for _ in y_axis]
+        for yv, xv, value in zip(ys, xs, values):
+            grid[y_axis.index(yv)][x_axis.index(xv)] = value
+        return {"x": x_axis, "y": y_axis, "cells": grid, "unit": _column_unit(block, "value")}
+    if kind == "case_list":
+        if btype == "case_list":
+            return {"items": list(block.get("items") or [])}
+        columns = {key: _table_column(block, key) for key in _CASE_COLUMNS}
+        if columns["case_id"] is None:
+            return None
+        rows = len(columns["case_id"])
+        return {"items": [
+            {key: (columns[key][i] if columns[key] is not None else None) for key in _CASE_COLUMNS}
+            for i in range(rows)
+        ]}
+    if kind == "timeline":
+        if btype == "timeline":
+            return {"events": list(block.get("events") or [])}
+        columns = {key: _table_column(block, key) for key in _TIMELINE_COLUMNS}
+        if columns["at"] is None or columns["label"] is None:
+            return None
+        return {"events": [
+            {key: columns[key][i] for key in _TIMELINE_COLUMNS if columns[key] is not None and columns[key][i] is not None}
+            for i in range(len(columns["at"]))
+        ]}
+    # Single-view kinds: the block body is the artifact data.
+    return {k: v for k, v in block.items() if k not in _BASE_FIELDS}
 
 
 def revise_view(block: dict[str, Any], view: str, *, block_id: str, title: str | None = None) -> dict[str, Any] | None:
     """``mK.bJ`` (SPEC §4.1): rebuild a STORED block of a retained earlier turn in
     another ``view`` from its ``allowed_views``, re-using only the numbers already in
     the stored block (never creating any). ``None`` when the view is not allowed or
-    the stored block is a retention stub. Implemented by WP-F."""
-    raise NotImplementedError("stored-block view changes are implemented by the chat engine package")
+    the stored block is a retention stub or cannot be read back."""
+    if not isinstance(block, dict) or is_expired_block(block):
+        return None
+    allowed = [v for v in (block.get("allowed_views") or []) if isinstance(v, str)]
+    current = block_view(block)
+    if current and current not in allowed:
+        allowed.insert(0, current)
+    if view not in allowed:
+        return None
+    data = artifact_data_from_block(block)
+    if data is None:
+        return None
+    from .chat_tools.base import Artifact  # lazy: the tool contract imports this module
+
+    provenance = block.get("provenance") if block.get("provenance") in ("code", "source") else None
+    if provenance is None:
+        return None
+    try:
+        artifact = Artifact(
+            id="a1", kind=block["artifact_kind"], title=str(block.get("title") or ""), data=data,
+            provenance=provenance, untrusted_labels=block.get("untrusted") is True,
+            total=block.get("total") if isinstance(block.get("total"), int) else None,
+            # A compacted or clipped stored block stays disclosed as partial (G4).
+            truncated=bool(block.get("truncated") or block.get("downsampled_for_storage")),
+            as_of=block.get("as_of") or iso_now_utc(),
+        )
+    except ValueError:
+        return None
+    revised = to_blocks(artifact, MaterialiseOptions(
+        block_id=block_id, view=view, title=title or block.get("title"),
+        caption=block.get("caption"), from_step=block.get("from_step"),
+    ))
+    if not revised:
+        return None
+    out = revised[0]
+    if block_view(out) != view:
+        return None  # the projection fell back to another view: not what was asked
+    # Offer only views both the stored list and the read-back data support.
+    out["allowed_views"] = [v for v in out.get("allowed_views") or [] if v in allowed] or [view]
+    return out
+
+
+def iso_now_utc() -> str:
+    """Now as an ISO-8601 UTC string inside the shared timestamp grammar."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# --- resolving a final header's block requests (SPEC §4.1) --------------------- #
+@dataclass(frozen=True)
+class TurnArtifact:
+    """An artifact produced by THIS turn, addressable as ``ref`` (``t3.a1``)."""
+
+    ref: str
+    artifact: Any
+    from_step: int | None = None
+
+
+@dataclass
+class MaterialisedFinal:
+    """The validated blocks of a final answer and what could not be resolved."""
+
+    blocks: list[dict[str, Any]] = field(default_factory=list)
+    dropped: list[DroppedBlock] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+    expired: list[str] = field(default_factory=list)
+    resolved_refs: list[str] = field(default_factory=list)
+
+
+UNAVAILABLE_NOTICE_ONE = "1 requested item was not available from this turn's results."
+UNAVAILABLE_NOTICE_MANY = "{n} requested items were not available from this turn's results."
+# Requests the parser could not keep at all (malformed ref, unknown block type, a
+# leaf past a limit): counted, never echoed (the reason codes stay in ``dropped``).
+UNUSABLE_NOTICE_ONE = "1 requested item could not be shown."
+UNUSABLE_NOTICE_MANY = "{n} requested items could not be shown."
+EXPIRED_NOTICE = "Some earlier results have expired from saved history; ask again to refresh them."
+REPORT_EMPTY_NOTICE = "The requested brief could not be built from this turn's results."
+
+
+def _stored_lookup(stored: Any, ref: str) -> tuple[str, dict[str, Any] | None]:
+    """``("ok"|"missing"|"expired", block)`` for an ``mK.bJ`` ref."""
+    match = STORED_REF_RE.match(ref)
+    if not match or not hasattr(stored, "get"):
+        return "missing", None
+    blocks = stored.get(f"m{match.group(1)}")
+    if not isinstance(blocks, (list, tuple)):
+        return "missing", None
+    index = int(match.group(2)) - 1
+    if index >= len(blocks) or not isinstance(blocks[index], dict):
+        return "missing", None
+    block = blocks[index]
+    if is_expired_block(block):
+        return "expired", None
+    return "ok", block
+
+
+def materialise_final_blocks(
+    requests: Iterable[Any],
+    *,
+    artifacts: dict[str, TurnArtifact] | None = None,
+    stored: dict[str, list[dict[str, Any]]] | None = None,
+    generated_at: str | None = None,
+    window_label: str | None = None,
+    sources: Iterable[str] = (),
+    dropped_requests: Iterable[DroppedBlock] = (),
+) -> MaterialisedFinal:
+    """Turn a final header's parsed requests (:func:`parse_final_block_requests`)
+    into validated blocks.
+
+    * ``tN.aK`` resolves against ``artifacts`` (this turn's) and materialises through
+      :func:`to_blocks`; ``mK.bJ`` resolves against ``stored`` (``{"m3": [block, …]}``,
+      positions as persisted) and allows a VIEW CHANGE only (:func:`revise_view`).
+    * Model-written ``callout``/``markdown`` become ``provenance: "ai"`` blocks.
+    * A ``report`` envelope's leaves are resolved the same way; an envelope with no
+      resolved leaf is dropped (the caller adds one notice line).
+    * Unknown or expired refs never produce numbers: they are counted and ONE quiet
+      engine callout says so. ``dropped_requests`` (the parser's drops from
+      :func:`parse_final_block_requests`) and the leaves an envelope could not keep
+      are counted in the same callout, so nothing the model asked for vanishes
+      silently; a dropped ``report`` request reads as the brief not being built.
+
+    Block ids are assigned in order (``b1``, ``b2``, … including report leaves);
+    everything passes :func:`validate_blocks` last."""
+    artifacts = artifacts or {}
+    stored = stored or {}
+    out = MaterialisedFinal()
+    counter = [0]
+
+    def next_id() -> str:
+        counter[0] += 1
+        return f"b{counter[0]}"
+
+    def duplicate(request: Any, seen: set[tuple[Any, ...]]) -> bool:
+        """The same ref in the same view again (in one container) adds nothing: a
+        model repeating ``t2.a1`` twelve times gets one block, not twelve."""
+        if not isinstance(request, BlockRefRequest):
+            return False
+        key = (request.ref, request.view, request.top_n)
+        if key in seen:
+            return True
+        seen.add(key)
+        return False
+
+    def resolve(request: Any) -> list[dict[str, Any]]:
+        if isinstance(request, BlockRefRequest):
+            if request.is_stored:
+                status, block = _stored_lookup(stored, request.ref)
+                if status == "expired":
+                    out.expired.append(request.ref)
+                    return []
+                if block is None:
+                    out.unresolved.append(request.ref)
+                    return []
+                block_id = next_id()
+                views = [request.view] if request.view else []
+                views.append(block_view(block) or "")
+                for view in views:
+                    revised = revise_view(block, view, block_id=block_id, title=request.title)
+                    if revised is not None:
+                        out.resolved_refs.append(request.ref)
+                        return [revised]
+                out.unresolved.append(request.ref)
+                return []
+            entry = artifacts.get(request.ref)
+            if entry is None:
+                out.unresolved.append(request.ref)
+                return []
+            made = to_blocks(entry.artifact, MaterialiseOptions(
+                block_id=next_id(), view=request.view, title=request.title,
+                top_n=request.top_n, from_step=entry.from_step,
+            ))
+            if not made:
+                out.unresolved.append(request.ref)
+            else:
+                out.resolved_refs.append(request.ref)
+            return made
+        if isinstance(request, ModelCalloutRequest):
+            block = {"type": "callout", "id": next_id(), "provenance": "ai",
+                     "tone": request.tone, "text": request.text}
+            if request.title:
+                block["title"] = request.title
+            return [block]
+        if isinstance(request, ModelMarkdownRequest):
+            block = {"type": "markdown", "id": next_id(), "provenance": "ai", "text": request.text}
+            if request.title:
+                block["title"] = request.title
+            return [block]
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    report_failed = 0
+    unusable = 0
+    for drop in dropped_requests:
+        if isinstance(drop, DroppedBlock) and drop.type == "report":
+            report_failed += 1
+        else:
+            unusable += 1
+    seen_top: set[tuple[Any, ...]] = set()
+    for request in requests:
+        if isinstance(request, ReportEnvelopeRequest):
+            report_id = next_id()
+            unusable += request.invalid_items
+            sections = []
+            seen_report: set[tuple[Any, ...]] = set()
+            for s_index, section in enumerate(request.sections, start=1):
+                leaves: list[dict[str, Any]] = []
+                for item in section.items:
+                    if not duplicate(item, seen_report):
+                        leaves.extend(resolve(item))
+                if leaves:
+                    entry: dict[str, Any] = {"id": f"s{s_index}", "heading": section.heading, "blocks": leaves}
+                    if section.summary:
+                        entry["summary"] = section.summary
+                    sections.append(entry)
+            if not any(s["blocks"] for s in sections):
+                out.unresolved.append("report")
+                continue
+            scope: dict[str, Any] = {
+                "generated_at": generated_at or iso_now_utc(),
+                "sources": [s for s in sources if isinstance(s, str) and s.strip()][:MAX_SOURCES],
+            }
+            if window_label:
+                scope["window_label"] = window_label
+            report: dict[str, Any] = {
+                "type": "report", "id": report_id, "provenance": "ai", "title": request.title,
+                "template": request.template, "scope": scope, "sections": sections,
+            }
+            if request.subtitle:
+                report["subtitle"] = request.subtitle
+            blocks.append(report)
+        elif not duplicate(request, seen_top):
+            blocks.extend(resolve(request))
+    notes: list[str] = []
+    missing = sum(1 for ref in out.unresolved if ref != "report")
+    report_failed += len(out.unresolved) - missing
+    if missing:
+        notes.append(UNAVAILABLE_NOTICE_ONE if missing == 1 else UNAVAILABLE_NOTICE_MANY.format(n=missing))
+    if unusable:
+        notes.append(UNUSABLE_NOTICE_ONE if unusable == 1 else UNUSABLE_NOTICE_MANY.format(n=unusable))
+    if report_failed:
+        notes.append(REPORT_EMPTY_NOTICE)
+    if out.expired:
+        notes.append(EXPIRED_NOTICE)
+    validated, dropped = validate_blocks(blocks)
+    if notes:
+        # The notice is engine text (``code``); it is appended after validation so a
+        # full answer cannot crowd it out silently: it replaces nothing and is simply
+        # skipped when the message is already at the block limit.
+        notice = {"type": "callout", "id": next_id(), "provenance": "code", "tone": "info",
+                  "text": " ".join(notes)}
+        more, more_dropped = validate_blocks([*validated, notice])
+        validated, dropped = more, dropped + more_dropped
+    out.blocks = validated
+    out.dropped = dropped
+    return out
 
 
 def iter_leaf_blocks(blocks: Iterable[dict[str, Any]]) -> Iterable[dict[str, Any]]:
