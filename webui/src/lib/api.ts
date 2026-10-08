@@ -646,8 +646,11 @@ interface RequestOptions {
  * Fetch one authenticated response and apply the shared error/session/step-up flow.
  * Keeping this below both JSON and Blob readers means binary downloads cannot bypass
  * the exactly-once re-auth retry or accidentally turn an error response into a file.
+ * Exported (with {@link request}) for lazy data layers such as the chat module, whose
+ * NDJSON stream reader needs the raw Response but must keep the same 401 / step-up /
+ * error contract as every other call; the eager `api` object gains no methods for it.
  */
-async function requestResponse(
+export async function requestResponse(
   method: string,
   path: string,
   opts: RequestOptions = {},
@@ -705,7 +708,7 @@ async function requestResponse(
   return res;
 }
 
-async function request<T>(
+export async function request<T>(
   method: string,
   path: string,
   opts: RequestOptions = {},

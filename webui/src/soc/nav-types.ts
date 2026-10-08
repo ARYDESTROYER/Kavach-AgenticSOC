@@ -41,4 +41,26 @@ export type NavOpts = {
   section?: string;
   /** In-section card anchor — serialized to `&a=<anchor>` for a scroll+highlight. */
   anchor?: string;
+  /*
+   * Chat revamp deep links (SPEC §10.7). Additive and validated: the router
+   * serialises only the durable ones for their own page (fail closed on anything
+   * else), and every consumer re-validates what it reads.
+   */
+  /** Chat: a REQUESTED saved conversation (`#/chat?conversationId=…`); never forced. */
+  conversationId?: string;
+  /** Chat: the message to scroll to and highlight; serialised only with `conversationId`. */
+  messageId?: string;
+  /** Chat: open on a fresh New-chat draft (in memory only, so a refresh never repeats it). */
+  newChat?: boolean;
+  /** Chat: a `console_map` topic id ("Ask about this"); never free text, in memory only. */
+  topic?: string;
+  /** Reports library: the report to open (`#/reports?reportId=…`). */
+  reportId?: string;
+  /** Logs: an exact query to pre-fill (untrusted text, bounded, control/bidi-free). */
+  logQuery?: string;
+  /** Logs: window bounds — `now`, `now-<n>[mhdw]` or an ISO-8601 timestamp. */
+  from?: string;
+  to?: string;
+  /** Logs: the source to browse. */
+  sourceId?: string;
 };

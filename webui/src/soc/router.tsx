@@ -115,10 +115,29 @@ export function settingsSectionHash(section: string, anchor?: string): string {
   return `#/settings?s=${s}${a}`;
 }
 
+/*
+ * Chat revamp deep links (SPEC §10.7): the durable keys each page owns in its hash.
+ * Ids use the backend's plain-id grammar; a log query is bounded text with no control,
+ * format (bidi, zero-width) or separator characters; time bounds are `now[-<n><unit>]`
+ * or an ISO-8601 shape (the Logs page re-validates the window). `newChat` and `topic`
+ * stay in memory so a refresh never starts another chat or asks again. Kept compact:
+ * this module ships in the entry chunk.
+ */
+const NAV_ID = /^[\w.:-]{1,128}$/;
+// No space: a hand-typed `+05:00` reaches URLSearchParams as a space and must fail
+// closed (pageHash writes `+` as `%2B`, which round-trips).
+const NAV_TIME = /^(now(-\d{1,5}[mhdw])?|\d{4}-\d\d-\d\d[\dTt:.Zz+-]{0,24})$/;
+const DEEP_LINK_KEYS: Readonly<Record<string, Readonly<Record<string, RegExp>>>> = {
+  chat: { conversationId: NAV_ID, messageId: NAV_ID },
+  reports: { reportId: NAV_ID },
+  logs: { logQuery: /^[^\p{C}\u2028\u2029]{1,512}$/u, from: NAV_TIME, to: NAV_TIME, sourceId: NAV_ID },
+};
+
 /**
  * Build a page hash while preserving the one operator context that must survive a
  * refresh: the exact case selected in Cases / Case Manager. Other transient list
- * filters remain in memory; Settings keeps its dedicated section hash above.
+ * filters remain in memory; Settings keeps its dedicated section hash above. Chat,
+ * Reports and Logs serialise their validated deep-link keys ({@link DEEP_LINK_KEYS}).
  */
 export function pageHash(page: PageId, opts?: NavOpts): string {
   const params = new URLSearchParams();
@@ -132,6 +151,13 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
   }
   if (page === 'metrics' && opts?.tab === 'effectiveness') {
     params.set('tab', opts.tab);
+  }
+  for (const [key, re] of Object.entries(DEEP_LINK_KEYS[page] ?? {})) {
+    const value = (opts as Record<string, unknown> | undefined)?.[key];
+    // A message anchor without its (valid) conversation would be unreadable on refresh.
+    if (typeof value === 'string' && re.test(value) && (key !== 'messageId' || NAV_ID.test(opts?.conversationId ?? ''))) {
+      params.set(key, value);
+    }
   }
   const query = params.toString().replace(/\+/g, '%20');
   return `#/${page}${query ? `?${query}` : ''}`;
@@ -168,6 +194,7 @@ export function optsFromHash(): NavOpts | undefined {
     const rawQuery = hash.slice(qi + 1);
     if (!hasValidRouteEncoding(rawQuery)) return undefined;
     const params = new URLSearchParams(rawQuery);
+    const deepLinkKeys = DEEP_LINK_KEYS[page];
     const allowed =
       page === 'cases'
         ? new Set(['caseId', 'status', 'assignee', 'tag'])
@@ -175,7 +202,7 @@ export function optsFromHash(): NavOpts | undefined {
           ? new Set(['caseId'])
           : page === 'metrics'
             ? new Set(['tab'])
-            : new Set<string>();
+            : new Set<string>(Object.keys(deepLinkKeys ?? {}));
     if (Array.from(params.keys()).some((key) => !allowed.has(key))) return undefined;
     if (Array.from(allowed).some((key) => params.getAll(key).length > 1)) return undefined;
     const read = (key: string, validator: (value: string) => boolean): string | undefined => {
@@ -184,6 +211,16 @@ export function optsFromHash(): NavOpts | undefined {
     };
     if (page === 'metrics') {
       return params.get('tab') === 'effectiveness' ? { tab: 'effectiveness' } : undefined;
+    }
+    if (deepLinkKeys) {
+      // Every key must validate exactly (a log query is never trimmed); one bad key, or
+      // a message anchor without its conversation, rejects the whole link.
+      const out: Record<string, string> = {};
+      for (const [key, value] of params) {
+        if (!deepLinkKeys[key].test(value)) return undefined;
+        out[key] = value;
+      }
+      return Object.keys(out).length && (!out.messageId || out.conversationId) ? (out as NavOpts) : undefined;
     }
     const caseId = read('caseId', isSafeCaseId);
     const status = read('status', isSafeCaseResultStatus);
