@@ -571,12 +571,28 @@ async def test_kv_put_if_is_a_real_compare_and_set(engine) -> None:
     assert (await kv.get("ns", "k"))["v"] == 2
 
 
+@pytest_asyncio.fixture
+async def file_engine(tmp_path):
+    """A file-backed SQLite engine whose sessions get SEPARATE connections.
+
+    The shared ``engine`` fixture is ``:memory:``, which SQLAlchemy serves through a
+    StaticPool: every session shares ONE connection, so one session's
+    rollback-on-return can undo another's uncommitted write. That is not how two
+    store instances meet in a deployment (a file database or Postgres gives each
+    session its own connection), and it made the lease race below fail about one run
+    in three under load. Concurrency tests use this fixture instead."""
+    eng = build_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
+    await create_all(eng)
+    yield eng
+    await eng.dispose()
+
+
 async def test_batch_submission_lease_converges_across_independent_sql_stores(
-    engine,
+    file_engine,
 ) -> None:
     """Two service/store instances may race, but SQL grants one durable claimant."""
-    first = BatchJobStore(SqlKVStore(engine))
-    second = BatchJobStore(SqlKVStore(engine))
+    first = BatchJobStore(SqlKVStore(file_engine))
+    second = BatchJobStore(SqlKVStore(file_engine))
     job = BatchJob(
         id="sql-submission-lease",
         provider="anthropic",
