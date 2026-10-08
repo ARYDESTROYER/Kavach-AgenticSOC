@@ -41,6 +41,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..config import CampaignConfig
 from ..constants import ActionType
+
+# ``_safe`` and ``_campaign_json`` moved to ``engine/views.py`` (chat revamp SPEC §5.3)
+# so the chat ``list_campaigns`` tool serialises campaigns the same way; re-exported
+# here under their historical names.
+from ..engine.views import campaign_json as _campaign_json
+from ..engine.views import safe_text as _safe
 from ..models import Campaign
 from ..state import AppState
 from .deps import current_username, get_state, require_admin, require_permission
@@ -53,13 +59,6 @@ router = APIRouter(prefix="/api")
 # --------------------------------------------------------------------------- #
 # Helpers — plain-data serialisation (#9)
 # --------------------------------------------------------------------------- #
-def _safe(value: Any) -> str:
-    """Return ``value`` as a plain, length-bounded string for the client (#9): the UI
-    renders it escaped and it is never fed back into a prompt. Bounds a runaway,
-    source-influenceable string so a hostile upstream can't blow up the response."""
-    return str(value)[:2000]
-
-
 def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     """In-place recursive merge of ``src`` INTO ``dst`` — a PUT deep-merges only the
     keys the caller sent (mirrors ``routes.py:_deep_update`` + the ``PUT /api/settings``
@@ -71,30 +70,6 @@ def _deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
         else:
             dst[key] = value
     return dst
-
-
-def _campaign_json(campaign: Campaign) -> dict[str, Any]:
-    """One campaign as a plain, #9-fenced dict.
-
-    Entity ``value``s + MITRE ids + the display name are source-derived — each is
-    coerced to a bounded plain string so nothing attacker-influenceable is echoed
-    raw. Numeric/id fields pass through; ``case_ids`` are plain ids."""
-    return {
-        "id": _safe(campaign.id),
-        "name": _safe(campaign.name),
-        "status": str(getattr(campaign.status, "value", campaign.status)),
-        "case_ids": [_safe(cid) for cid in campaign.case_ids],
-        "case_count": len(campaign.case_ids),
-        "entities": [
-            {"entity_type": _safe(e.entity_type), "value": _safe(e.value)}
-            for e in campaign.entities
-        ],
-        "mitre": [_safe(t) for t in campaign.mitre],
-        "severity_rollup": _safe(campaign.severity_rollup) if campaign.severity_rollup else None,
-        "first_seen": campaign.first_seen,
-        "last_seen": campaign.last_seen,
-        "created_at": campaign.created_at,
-    }
 
 
 # --------------------------------------------------------------------------- #

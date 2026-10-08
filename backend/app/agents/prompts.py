@@ -8,11 +8,14 @@ the seam a later hardening pass strengthens WITHOUT restructuring.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
-from typing import Any, Sequence
+import re
+import unicodedata
+from typing import Any, Callable, Sequence
 
-from ..constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+from ..constants import INVISIBLE_TEXT_CLASS, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from ..engine.precedent import PrecedentSignal
 from ..evidence_fields import (
     DEFAULT_EVIDENCE_FIELDS,
@@ -62,28 +65,165 @@ _INJECTION_NOTE = (
 )
 
 
-def _neutralise_markers(value: Any) -> str:
-    """Strip/neutralise any forged fence/PLAYBOOK/MEMORY delimiters from an
-    attacker-influenceable value so it can never close a block early and smuggle
-    instructions back into the TRUSTED context (#9)."""
-    return (
-        str(value)
-        .replace(UNTRUSTED_OPEN, "<fence>")
-        .replace(UNTRUSTED_CLOSE, "</fence>")
-        # Defense-in-depth: also neutralise forged PLAYBOOK delimiters so untrusted
-        # data can never impersonate the TRUSTED operator-procedure block.
-        .replace("<<<PLAYBOOK>>>", "<pb>")
-        .replace("<<<END_PLAYBOOK>>>", "</pb>")
-        # ...and forged MEMORY delimiters, so untrusted data can never impersonate
-        # the TRUSTED operator-MEMORY block (durable facts).
-        .replace(MEMORY_OPEN, "<mem>")
-        .replace(MEMORY_CLOSE, "</mem>")
-        # ...and forged PRECEDENT delimiters, so a log value (or a retrieved precedent
-        # chunk) can never impersonate the code-computed analyst-precedent summary and
-        # manufacture a benign history that does not exist.
-        .replace(PRECEDENT_OPEN, "<prec>")
-        .replace(PRECEDENT_CLOSE, "</prec>")
+# --------------------------------------------------------------------------- #
+# The ONE marker normaliser (chat revamp SPEC §7.6).
+#
+# Every TRUSTED/UNTRUSTED block boundary in a prompt is a ``<<<NAME>>>`` /
+# ``<<<END_NAME>>>`` pair: UNTRUSTED_LOG_DATA, PLAYBOOK, MEMORY, PRECEDENT, the chat
+# APP_DOCS product reference and the chat USER_TURN marker, plus any fence added
+# later. Instead of a per-marker ``.replace`` chain (which had to be extended — and
+# was once forgotten in ``render_memory`` — for every new fence type), ANY
+# marker-shaped token is neutralised, so a future fence is covered the day it ships.
+#
+# Markers are MATCHED on a folded view of the text and REPLACED in place:
+#
+# * the folded view drops every invisible/format/combining code point (the shared
+#   ``INVISIBLE_TEXT_RANGES`` plus the Cc/Cf/Mn/Me categories) and NFKC-folds each
+#   remaining character, so ``<<<END_<ZWSP>MEMORY>>>``, tag-character, variation-
+#   selector, combining-mark, fullwidth-letter and fullwidth-bracket forgeries all
+#   look like the marker they imitate;
+# * the pattern is case-insensitive and tolerates whitespace or hyphens between the
+#   letters, so ``<<< End Memory >>>`` is caught too;
+# * the WHOLE matched span of the original text (hidden characters included) is
+#   replaced by an inert ``<name>``/``</name>`` tag, and everything outside a match
+#   is left exactly as it was.
+#
+# Text outside markers is never folded, so evidence keeps its exact spelling: a
+# fullwidth or lookalike account name is still visibly what it is. Raw text bound
+# for a prompt then has its remaining invisible characters rendered as VISIBLE
+# ``\uXXXX`` escapes (``_neutralise_markers``) — never deleted, because a hidden
+# character in a log value is itself evidence ("admin" + ZWSP is not "admin") — and
+# a structured payload gets the same treatment from ``json.dumps(ensure_ascii=True)``.
+# Either way no invisible character reaches a prompt raw.
+# --------------------------------------------------------------------------- #
+_INVISIBLE_RE = re.compile(f"[{INVISIBLE_TEXT_CLASS}]")
+# What ``_neutralise_markers`` escapes: the shared invisible set plus lone surrogate
+# halves (a JSON ``"\ud800"`` escape decodes to one, and it cannot be encoded).
+_PROMPT_ESCAPE_RE = re.compile(f"[{INVISIBLE_TEXT_CLASS}\\ud800-\\udfff]")
+# Every code point whose NFKC form contains an angle bracket (pinned against the full
+# Unicode table by a test). Fewer than three of either means no marker is possible.
+_LT_CHARS = "<\ufe64\uff1c"
+_GT_CHARS = ">\ufe65\uff1e"
+# A marker name: 3-40 Unicode letters (or ``_``), optionally separated by whitespace
+# or hyphens, after an optional ``END`` + separator. Matched on the FOLDED view only.
+_LETTER = r"[^\W\d]"
+FENCE_MARKER_RE = re.compile(
+    rf"<<<\s*(END[\s_-]+)?({_LETTER}(?:[\s-]*{_LETTER}){{2,39}})\s*>>>", re.IGNORECASE
+)
+_NAME_SEPARATORS_RE = re.compile(r"[\s-]+")
+# The historical neutral spellings are kept so existing audits/tests read the same.
+_NEUTRAL_TAGS = {
+    "UNTRUSTED_LOG_DATA": "fence",
+    "PLAYBOOK": "pb",
+    "MEMORY": "mem",
+    "PRECEDENT": "prec",
+}
+# Each pass removes at least two brackets on each side, so nested forgeries such as
+# ``<<<<<<MEMORY>>>>>>`` converge in a pass or two; the cap only bounds a
+# deliberately pathological input, which then has its bracket runs collapsed.
+_MAX_MARKER_PASSES = 8
+_BRACKET_RUN_LT_RE = re.compile("<{3,}")
+_BRACKET_RUN_GT_RE = re.compile(">{3,}")
+# ASCII characters the folded view drops (C0 except TAB/LF/CR, and DEL).
+_ASCII_HIDDEN_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_FOLD_DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Mn", "Me"})
+
+
+@functools.lru_cache(maxsize=4096)
+def _fold_char(ch: str) -> str:
+    """One character of the MATCHING view: ``""`` for anything that renders as
+    nothing (or only decorates its neighbour), else its NFKC form."""
+    if ch in "\t\n\r":
+        return ch
+    if _INVISIBLE_RE.match(ch) or unicodedata.category(ch) in _FOLD_DROPPED_CATEGORIES:
+        return ""
+    if ch.isascii():
+        return ch
+    return "".join(
+        c for c in unicodedata.normalize("NFKC", ch)
+        if c in "\t\n\r" or unicodedata.category(c) not in _FOLD_DROPPED_CATEGORIES
     )
+
+
+def _may_hold_marker(text: str) -> bool:
+    return (
+        sum(text.count(c) for c in _LT_CHARS) >= 3
+        and sum(text.count(c) for c in _GT_CHARS) >= 3
+    )
+
+
+def _sub_folded(
+    text: str, pattern: "re.Pattern[str]", repl: "Callable[[re.Match[str]], str]"
+) -> str:
+    """``pattern.sub(repl, ...)`` evaluated on the folded view of ``text`` but applied
+    to ``text`` itself: each match replaces the original span it came from (hidden
+    characters inside it included), and nothing outside a match changes."""
+    if text.isascii() and _ASCII_HIDDEN_RE.search(text) is None:
+        return pattern.sub(repl, text)  # plain ASCII folds to itself
+    chars: list[str] = []
+    origin: list[int] = []
+    for index, ch in enumerate(text):
+        folded = _fold_char(ch)
+        if folded:
+            chars.append(folded)
+            origin.extend([index] * len(folded))
+    pieces: list[str] = []
+    last = 0
+    for match in pattern.finditer("".join(chars)):
+        start = max(origin[match.start()], last)
+        end = origin[match.end() - 1] + 1
+        pieces.append(text[last:start])
+        pieces.append(repl(match))
+        last = end
+    if not pieces:
+        return text
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
+def _neutral_tag(match: "re.Match[str]") -> str:
+    name = _NAME_SEPARATORS_RE.sub("_", match.group(2)).upper()
+    tag = _NEUTRAL_TAGS.get(name, name.lower())
+    return f"</{tag}>" if match.group(1) else f"<{tag}>"
+
+
+def _neutralise_marker_tokens(text: str) -> str:
+    """Rewrite every marker-shaped token in ``text`` (matched on the folded view) to
+    its inert tag, repeating until none remains; everything else is untouched."""
+    if not _may_hold_marker(text):
+        return text
+    for _ in range(_MAX_MARKER_PASSES):
+        replaced = _sub_folded(text, FENCE_MARKER_RE, _neutral_tag)
+        if replaced == text:
+            return text
+        text = replaced
+    if not _may_hold_marker(text) or _sub_folded(text, FENCE_MARKER_RE, _neutral_tag) == text:
+        return text
+    text = _sub_folded(text, _BRACKET_RUN_LT_RE, lambda _m: "<<")
+    return _sub_folded(text, _BRACKET_RUN_GT_RE, lambda _m: ">>")
+
+
+def _visible_escape(match: "re.Match[str]") -> str:
+    code_point = ord(match.group(0))
+    return f"\\u{code_point:04x}" if code_point <= 0xFFFF else f"\\U{code_point:08x}"
+
+
+def _neutralise_markers(value: Any) -> str:
+    """Neutralise every forged block marker in an attacker-influenceable value so it
+    can never close a block early and smuggle instructions back into the TRUSTED
+    context (#9), then render every remaining invisible/control character (TAB/LF/CR
+    excepted) as a visible ``\\uXXXX`` escape so nothing hidden reaches a prompt
+    while the evidence that it was there survives. Ordinary text — including
+    pre-serialised JSON — is returned byte-identical."""
+    text = _neutralise_marker_tokens(str(value))
+    if text.isascii() and _ASCII_HIDDEN_RE.search(text) is None:
+        return text
+    return _PROMPT_ESCAPE_RE.sub(_visible_escape, text)
+
+
+# Public name for other prompt builders (chat history replay, app-docs rendering,
+# report digests) — the same single normaliser, never a local copy.
+neutralise_markers = _neutralise_markers
 
 
 def _safe_label(value: Any, *, limit: int = 64) -> str:
@@ -114,16 +254,50 @@ def fence(value: Any, *, source: str = "log", tool: str | None = None) -> str:
 
 
 def _fence_leaves(value: Any) -> Any:
-    """Recursively neutralise forged fence/PLAYBOOK/MEMORY markers in every STRING leaf
-    of a system-built structure, leaving numbers/bools/None + the structure itself
-    intact (#9)."""
+    """Recursively neutralise forged block markers in every STRING leaf AND every
+    string KEY of a system-built structure, leaving numbers/bools/None + the structure
+    itself intact (#9).
+
+    Only marker TOKENS are rewritten here. Invisible characters are left for
+    ``json.dumps(ensure_ascii=True)`` in :func:`fence_block`, which renders each one
+    as visible ``\\uXXXX`` text — so evidence keeps its exact spelling, as it did
+    before the normaliser existed, and no two keys can collapse into one because a
+    hidden character was deleted. Keys still need the marker pass (a wildcard
+    evidence projection can carry attacker-NAMED fields); see :func:`_fence_mapping`
+    for how a rewritten key is kept from overwriting another."""
     if isinstance(value, str):
-        return _neutralise_markers(value)
+        return _neutralise_marker_tokens(value)
     if isinstance(value, dict):
-        return {k: _fence_leaves(v) for k, v in value.items()}
+        return _fence_mapping(value)
     if isinstance(value, (list, tuple)):
         return [_fence_leaves(v) for v in value]
     return value
+
+
+def _fence_mapping(value: dict[Any, Any]) -> dict[Any, Any]:
+    """Neutralise a mapping's keys without ever merging two of them.
+
+    A key the normaliser leaves unchanged keeps its name, whatever its position, so
+    a forged key can never take over a real one (the identity fields
+    ``project_evidence`` puts first, a code-computed ``severity``). A rewritten key
+    that would land on a name already present is suffixed `` [dup N]`` instead:
+    both values stay visible to the model and neither silently replaces the other."""
+    rewritten = [
+        (key, _neutralise_marker_tokens(key) if isinstance(key, str) else key, item)
+        for key, item in value.items()
+    ]
+    taken = {new for old, new, _ in rewritten if new == old}
+    out: dict[Any, Any] = {}
+    for old, new, item in rewritten:
+        if new != old:
+            if new in taken:
+                n = 2
+                while f"{new} [dup {n}]" in taken:
+                    n += 1
+                new = f"{new} [dup {n}]"
+            taken.add(new)
+        out[new] = _fence_leaves(item)
+    return out
 
 
 def fence_block(
@@ -144,9 +318,13 @@ def fence_block(
     if isinstance(value, str):
         body = _neutralise_markers(value)
     else:
-        body = json.dumps(_fence_leaves(value), default=str)
+        # ``ensure_ascii=True`` is load-bearing: every invisible or non-ASCII character
+        # left in a leaf or key becomes visible ``\uXXXX`` text, so the body is pure
+        # ASCII and a fullwidth or zero-width forgery cannot survive as a glyph.
+        body = json.dumps(_fence_leaves(value), default=str, ensure_ascii=True)
         # Defence in depth: scrub once more over the serialised form in case a marker
-        # straddled a key/value boundary after serialisation.
+        # straddled a key/value boundary after serialisation (or came from a
+        # ``default=str`` rendering of a non-JSON value).
         body = _neutralise_markers(body)
     if len(body) > max_chars:
         logger.warning(
@@ -180,13 +358,12 @@ def render_memory(entries: list[MemoryEntry] | None) -> str:
         if not text:
             continue
         # Neutralise any forged delimiters inside the (operator-authored, but still
-        # user-typed) fact text so it cannot impersonate a block boundary.
-        text = (
-            text.replace(MEMORY_OPEN, "<mem>").replace(MEMORY_CLOSE, "</mem>")
-            .replace("<<<PLAYBOOK>>>", "<pb>").replace("<<<END_PLAYBOOK>>>", "</pb>")
-            .replace(PRECEDENT_OPEN, "<prec>").replace(PRECEDENT_CLOSE, "</prec>")
-            .replace(UNTRUSTED_OPEN, "<fence>").replace(UNTRUSTED_CLOSE, "</fence>")
-        )
+        # user-typed) fact text so it cannot impersonate a block boundary. The SAME
+        # normaliser as every fence (SPEC §7.6), so a new fence type is covered here
+        # too instead of needing its own entry in a local replace chain.
+        text = _neutralise_markers(text).strip()
+        if not text:
+            continue
         prefix = f"[{e.category}] " if e.category else ""
         line = f"- {prefix}{text}"
         if used + len(line) > _MEMORY_MAX_CHARS:

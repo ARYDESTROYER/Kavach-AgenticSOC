@@ -738,8 +738,12 @@ segments; table ≤ 12 columns × ≤ 200 rows (≤ 10 rows inline, "View all" o
 ### 7.6 Marker neutralisation
 
 `_neutralise_markers` becomes a single normaliser used everywhere (`fence`, `fence_block`, labels,
-`render_memory`, which drops its own copy): strip zero-width, bidi and C0/C1 characters, then
-neutralise any `<{3}\s*(END_)?[A-Z_]{3,40}\s*>{3}` case-insensitively. Every current and future
+`render_memory`, which drops its own copy): match markers on a folded view of the text (invisible,
+format and combining characters dropped, NFKC-folded) and neutralise any
+`<{3}\s*(END_)?[A-Z_]{3,40}\s*>{3}` case-insensitively in place; remaining invisible characters in
+prompt-bound text are rendered as visible `\uXXXX` escapes rather than deleted, so lookalike evidence
+(a ZWSP inside an account name) stays visible to the model and fenced keys can never collide. The
+display side still strips them (G7). Every current and future
 fence type (UNTRUSTED, PLAYBOOK, MEMORY, PRECEDENT, APP_DOCS) is covered. Tests: forged
 `<<<APP_DOCS>>>` in a log value, an imported document, a memory text, a case comment and a report
 note never appear raw in any prompt.

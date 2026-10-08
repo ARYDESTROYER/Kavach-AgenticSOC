@@ -11227,3 +11227,104 @@
 - Did: Branch `claude/chat-revamp` cut from `origin/Testing` at 05a40d1 (PR #126 merged). Launching research: backend chat/gateway/tools maps, frontend chat map, docs corpus, chart infrastructure, and external UI/UX research.
 - Status: in-progress.
 - Next: research synthesis → design spec → implementation agents → adversarial review → screenshots.
+
+
+### 2026-10-08 08:45Z — WP-A Contracts sub-agent — Chat revamp shared contracts
+- Context: Chat revamp SPEC v2 wave 1, package WP-A: the shared wire, storage and protocol contracts every later package builds against (SPEC §3, §4.2, §4.5, §5.2, §6.2, §7, §7.6, §9.1; D2 prefs).
+- Did:
+  - models.py: ChatRequest additions (stream_mode, scopes with unknown values dropped, a validated TimeRange, origin, continue_of) and a fingerprint_payload() that keeps pre-revamp fingerprints byte-identical.
+  - models.py: ChatResponse additions that replay leniently, plus run-log steps, usage, citations, console links, memory proposals and turn notices; the /chat/context model; report models and request bodies; conversation pin/rename/search models.
+  - config.py: Preferences.chat_agent with a repairing clamp (a bad stored value never resets Preferences), plus saved chat prompts and the per-viewer stream mode on UserPrefs.
+  - constants.py: the reports KV namespace, the shared invisible-character ranges, ActionType.REPORT.
+  - chat_events.py: the NDJSON event union, encoder and parser, and the protocol markers and tool-call header grammar.
+  - blocks.py: block models, validate_blocks, the position-keeping replay parse, the §7.3 view table, display_text; stubs to_blocks/revise_view for WP-F.
+  - chat_tools/base.py: ChatTool, ToolOutcome, Artifact, ChatToolContext and the header/signature renderers.
+  - prompts.py: the single §7.6 marker normaliser, now also used by render_memory.
+  - Webui: types.ts mirror, stream-events.ts (parser, guards, normaliseChatResponse, displayText), blocks/schema.ts (parseBlocks), and two contract JSON files with paired tests on both sides.
+- Tests:
+  - New: 101 backend contract tests, 55 normaliser tests, 124 webui specs. Existing fencing/prompt/memory/RAG/chat tests (528) still pass.
+  - Full backend run: 3,834 collected, 23 failed. 18 pass on re-run; they failed while WP-C was editing the gateway and providers. 5 are caused by this sandbox: the live DShield network and an injected AWS key.
+  - Webui tsc, lint (0 warnings), gates and strict tests are clean.
+- Status: done.
+- Next:
+  - WP-H: switch _chat_request_fingerprint to body.fingerprint_payload(); declare response_model=ChatResponse; document /chat/stream; add chat_prompts to UserPrefsPatchBody.
+  - WP-F: implement blocks.to_blocks and revise_view against ARTIFACT_DATA_SHAPES.
+  - WP-I: render through parseBlocks and normaliseChatResponse; remove the deprecated types.ts fields together with ChatPanel.tsx.
+  - WP-I/WP-L: add chat_agent to the curated settings lists once its editor exists.
+  - WP-L: regenerate openapi.json and the generated types.
+
+### 2026-10-08 09:50Z — WP-A (contracts) — chat revamp review fix round
+- Context: Fix the independent reviewer's 1 blocker and 5 majors (plus 8 minors) in the WP-A contracts package.
+- Did:
+  - **Fenced keys never merge (#9, the blocker).** The prompt marker normaliser now matches markers on a folded view of the text (invisible, format and combining characters dropped, each character NFKC-folded) and replaces only the matched span. `fence_block` leaves invisible characters to `json.dumps(ensure_ascii=True)`, which prints them as visible escapes. Rewritten keys that collide get a ` [dup N]` suffix, so a forged `severity`+ZWSP can no longer overwrite the code-computed `severity`.
+  - **Visible escapes in raw prompt text.** Invisible characters in raw prompt-bound text are rendered as `\uXXXX` instead of being deleted, so they stay visible as evidence.
+  - **Invisible set completed.** INVISIBLE_TEXT_RANGES is now the full Default_Ignorable set, including the TAG block and the variation selectors. The Python and JS class generators are astral-safe.
+  - **G5 is now fixed by origin.** `validate_blocks(model_authored=True)` forces every block to provenance `ai`, so a model-written data block is always dropped.
+  - **Typed schemas.** TimeRange serialises through a TypedDict and always emits both bounds. The KPI null value is kept by `dump_block` instead of an untyped serializer.
+  - **Report sections.** A section snapshot holds 13 blocks (the answer plus a full turn) and says when it was clipped (`truncated`).
+  - **One timestamp grammar,** pinned in the answer-blocks contract with shared examples tested on both sides.
+  - **Client sanitisation.** The client sanitises every ChatResponse string, `answer` included, and checks console-link options against the router guards.
+  - **Smaller fixes.** `Artifact.title_trusted`; tools gated only by kind; tool-call headers inside fences are ignored; lone surrogates are stripped; `display_text` matches the JS `displayText`.
+- Tests:
+  - Backend full suite (offline): 3,993 passed, 4 skipped, 1 failed. The failure (test_round3_wave5_isolation stale-NRT) comes from the in-flight `llm/gateway.py`/`providers.py`, not WP-A.
+  - Webui: tsc clean; chat strict Vitest 135/135; eslint 0/0.
+- Status: done.
+- Next:
+  - Spec owner: amend SPEC §7.6 from "strip" to "escape visibly" for prompt-bound text.
+  - WP-F: send model-written blocks only through `parse_final_block_requests`/`to_blocks` or `validate_blocks(model_authored=True)`. Tools must set `title_trusted` only for fixed-template titles.
+  - Report UI: parse sections with `limit: LIMITS.section_blocks`.
+  - Gateway owner: fix the isolation test.
+
+### 2026-10-08 07:55Z — WP-B (implementation agent) — Chat revamp: route-helper extraction + resolve_grants
+- Context: SPEC §5.3 "Route-private helpers move first" and §5.1 `resolve_grants`, on `claude/chat-revamp`.
+- Did:
+  - Moved `_build_rationale`/`_audit_get` to `engine/case_rationale.py`.
+  - Moved `_cluster_for_case`, `_entity_events_widening`, `_reconstruct_cluster_from_case`, `_manual_trigger_reason` and the widen-ladder helpers to `engine/case_cluster.py`, now taking es/log_source/prefs/query_source explicitly; added `bind_cluster_for_case`.
+  - Moved `_sources_health_rows`, `_cursor_millis`, `_wallclock_last_event_millis` to `engine/source_health.py`.
+  - Moved `_log_row`, `_log_message`, `_browse_truncated`, `_source_can_browse` and the GET /api/logs scatter-gather to `engine/log_rows.py` as `BrowseTarget` readers plus `fan_out`.
+  - Moved `_proposal_public`, `_campaign_json`, `_safe` to `engine/views.py`.
+  - `routes.py` and `routes_campaigns.py` re-export every old name; the state-reading ones are thin wrappers with unchanged signatures. No route path, response shape, permission or behaviour changed.
+  - `api/deps.py`: new `AccessView` + `resolve_access`, the one non-auditing RBAC core now used by `_enforce`; `resolve_grants(request, pairs)` writes no audit rows; `record_chat_tool_denial(...)` writes one ACCESS_DENIED row with surface "chat".
+- Tests: new `test_engine_extractions.py` (39) and `test_resolve_grants.py` (11) pass. The 59 route test files covering the moved helpers pass. A scratchpad check against the pre-change `routes.py` gave 19/19 identical outputs, including Demo Mode. Full suite: 3,669 passed, 4 skipped, 5 failed; the 5 fail only because of sandbox-injected `AWS_ACCESS_KEY_ID` and HTTPS-proxy network access, and pass with those unset. Ruff fatal set clean.
+- Status: done.
+- Next: WP-D builds on `engine/log_rows`, `case_cluster`, `source_health`, `views` and `case_rationale`. WP-H wires `resolve_access`/`resolve_grants` and the bound engine callables into `build_chat_tool_context`. WP-F imports `record_chat_tool_denial` lazily (circular import via `app.state`).
+
+### 2026-10-08 — WP-B (extraction and grants) — fix round after independent review
+- Context: Chat revamp SPEC §5.1/§5.3. The reviewer found two major issues in record_chat_tool_denial and five minor ones in WP-B.
+- Did:
+  - deps.record_chat_tool_denial now writes the authenticated username as the actor (control characters removed, 160 cap, 'default' when empty) instead of cleaning it to identifier characters, so email and free-text usernames stay findable by records_for_actor and audit actor filters (#2).
+  - It accepts ChatToolContext.missing()-style 'r:a' strings as well as (r, a) pairs. The summary is built outside the guarded write and cannot raise. A step that cannot be converted drops only 'step='. A failed write logs a warning.
+  - engine/log_rows.fan_out clamps sq.size to 1..200 itself and gained raw_errors (False gives 'timeout' or 'error' and logs the detail, for chat). The route envelope is unchanged.
+  - New pure engine/source_health.coverage_rollup(rows, now_ms). GET /api/sources/coverage now calls it, with the same key order and values.
+  - Added a fan_out golden-envelope test, a resolve_grants test with global rbac.denies, and an email-actor round trip.
+  - The helper was not moved out of api/deps: every destination is outside WP-B's files. The lazy-import requirement is documented.
+- Tests: test_engine_extractions + test_resolve_grants 62 passed. Related route/RBAC suites 314 passed; the 1 failure is an existing get_event_loop ordering problem that reproduces on clean HEAD. Full suite 3881 passed, 6 failed, 4 skipped: 5 failures are from the sandbox (live network, AWS env var) and also fail on clean HEAD; 1 (wave5 isolation ledger cost) passes on HEAD plus the WP-B files and comes from another package's in-progress change. ruff clean on WP-B files.
+- Status: done.
+- Next: WP-F calls record_chat_tool_denial (imported lazily) with missing=ctx.missing(tool, kind), actor=ctx.user and step=n. WP-D calls fan_out(..., raw_errors=False) for search_logs, and sources_health_rows plus coverage_rollup for source_health. The orchestrator assigns the wave5 isolation regression to whoever owns gateway/providers.
+
+### 2026-10-08 08:35Z — WP-C implementation agent — Chat revamp: gateway streaming
+- Context: Chat revamp SPEC §6.3 and the gateway parts of §4.5 (package WP-C: llm/gateway.py, llm/providers.py, tests).
+- Did: `LLMGateway.complete(..., on_text=None)` now streams through `provider.complete_stream` while budget preflight, breaker, classification and the single `_record` stay in `complete()` (one UsageDoc per call on success, error and cancel, #6). Added real SSE streaming for OpenAI/OpenAI-compatible (`include_usage`; compatible 400 retries once without `stream_options`, then falls back to blocking; a plain-JSON reply is accepted) and Anthropic (`message_start`/`message_delta` usage). Everything else uses the one-shot default; Azure explicitly does not inherit OpenAI streaming. Retries happen only before the first delta; later failures raise `StreamInterrupted`, classified `stream_interrupted` (a provider class, not an immediate trip). Cancelled calls now record provider-reported input or chars/4 of the messages, plus chars/4 of received output, instead of 0/0. Added `CompletionResult.finish_reason` (normalised), `usage_estimated`, and gateway-stamped `pricing_source`/`latency_ms`; `BudgetBlocked(GatewayError)` (no ledger row, no health or breaker effect); Demo simulated streaming (`DEMO_STREAM_DELAY_S`) with WP-G hooks for the chat-agent and report-summary markers; `text_streaming_supported` and `provider_streams_text`.
+- Tests: new tests/test_gateway_streaming.py, 45 passed offline. Existing gateway/provider/budget/breaker/demo/chat/replay suites green; CI ruff gate clean. Full suite: 3,868 passed, 4 skipped, 6 failed. Five come from the sandbox (live network egress reaching dshield; AWS_ACCESS_KEY_ID set in the environment). One (test_round3_wave5_isolation stale-NRT cost bound) is caused by abandoned calls now carrying real cost; a validated test patch was handed to the orchestrator.
+- Status: done. Pending: the isolation-test patch and the `UsageDoc.usage_estimated` field (WP-A).
+- Next: WP-F passes `on_text` in Live text mode and maps BudgetBlocked, BreakerOpen and stream_interrupted to notices; WP-G fills the DemoMockProvider hooks and the `_resolve` TOOL_CALL_HEADER skip; WP-H builds `/chat/context.text_streaming` from `gateway.text_streaming_supported`.
+
+### 2026-10-08 10:30Z — WP-C implementation agent (fix round) — Gateway usage receipt + streaming hardening
+- Context: Reviewer findings on WP-C (chat revamp SPEC §6.3). Major: callers that stop waiting through `wait_for` never learned the abandoned row's estimated cost, so `Case.token_cost` sat ~300 µ$ below the ledger and test_stale_nrt_ledger_total_never_erases_current_run_cost was red. Minors: JSON-body validation, `"error": null` chunks, nested stream tracker, duck-typed usage report, attempts across fallback stages, brittle asyncio monkeypatch, `_resolve` header skip, `UsageDoc.usage_estimated`.
+- Did:
+  - Added the caller-owned `gateway.UsageReceipt` and the `usage_receipt=` argument on complete/embed/embed_with_provenance. It is filled in `_record` from the exact row before the write and maps onto StepUsage via `step_usage_fields()`.
+  - OpenAI-compatible JSON body: an `error` field or missing choices now raise instead of returning an empty answer. In-band `error` uses a truthy check.
+  - StreamProgress restores the outer tracker by ContextVar token. The duck-typed relay reports the plugin's usage first.
+  - `_then_stage` carries a running `attempts` total across Flex and compatible fallback stages.
+  - Added the `_retry_sleep` seam. `DemoMockProvider._resolve` skips messages whose first line is a TOOL_CALL_HEADER.
+  - Prepared but did not apply two patches outside WP-C ownership: investigator.py accounts receipt.cost on TimeoutError, CancelledError and GatewayError; test_round3_wave5_isolation.py bound becomes ±1 display µ$. Probes on pristine HEAD show that bound already failed for 2 of 5 clusters there.
+- Tests: test_gateway_streaming.py 67 passed. 8 of 8 fix mutations caught. ruff CI selection clean. Live tree (3998 collected): 6 failed = 5 environmental (also fail on pristine HEAD: live enrichment network, sandbox env) + the stale-NRT test pending the two patches. Patched mirror: the stale-NRT test passes.
+- Status: done for WP-C files. The suite turns green once the orchestrator applies scratchpad/investigator-usage-receipt.patch and scratchpad/isolation-tolerance.patch.
+- Next: orchestrator applies the two patches. WP-F builds StepUsage from UsageReceipt. WP-D uses the receipt on embed_with_provenance. WP-A adds UsageDoc.usage_estimated (+ types.ts). Follow-up: receipts for router/formatter calls cancelled by the pipeline's outer timeout.
+
+### 2026-10-08 11:00Z — orchestrator — Chat revamp wave 1 integrated
+- Context: SPEC v2 wave 1 (WP-A contracts, WP-B extraction + grants, WP-C gateway streaming), each implemented, independently reviewed and fixed by sub-agents.
+- Did: Applied WP-C's two validated patches that no package owned: `agents/investigator.py` now accounts an abandoned request's estimated cost from the gateway's usage receipt (so `Case.token_cost` keeps matching the ledger now that abandoned rows carry real cost), and `test_round3_wave5_isolation` compares within ±1 display micro-dollar (the one-sided bound already failed on clean HEAD for other cluster values). Added `UsageDoc.usage_estimated` (additive). Made `test_silence_can_never_shorten_the_open_wait` deterministic by pinning the breaker's full-jitter draw (about 1 run in 30 drew a wait shorter than the test's step). Amended SPEC §7.6: prompt-bound invisible characters are escaped visibly, display strips them. Removed a stray downloaded wheel an agent left in the repo root.
+- Tests: backend full suite exit 0 with the sandbox-injected AWS/proxy variables unset (5 tests read them: live keyless enrichment and secret-field env checks; they also fail on clean HEAD here). Webui `test:strict` 333 files / 2545 passed; tsc, lint (0 warnings) and gates clean.
+- Status: wave 1 done.
+- Next: wave 2 (WP-D tools, WP-E app knowledge, WP-F engine, WP-I1 web data layer, WP-J blocks kit).

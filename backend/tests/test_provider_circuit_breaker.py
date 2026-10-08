@@ -924,6 +924,11 @@ def test_silence_can_never_shorten_the_open_wait(monkeypatch) -> None:
     """``outcome_max_age_seconds`` may be configured BELOW ``wait_seconds``. Draining
     must not then flip an OPEN key closed before its jittered back-off has elapsed."""
     now = _clock(monkeypatch)
+    # Pin the jitter at its upper bound. The breaker draws its wait with "full jitter",
+    # uniform(0, wait), so about 1 run in 30 drew a wait under the 120 s step below and
+    # the key legitimately half-opened. That made this test flaky; the property under
+    # test is about draining, not about the draw.
+    monkeypatch.setattr(ph.random, "uniform", lambda lo, hi: hi)
     tracker = ph.ProviderHealth(
         policy=_fast(wait_seconds=3600.0, max_wait_seconds=3600.0,
                      outcome_max_age_seconds=60.0)

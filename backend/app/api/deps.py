@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
 
 from fastapi import HTTPException, Request
 
@@ -369,6 +372,236 @@ async def _assigned_custom_roles(state: AppState, username: str) -> list[str]:
     return out
 
 
+@dataclass(frozen=True, eq=False)
+class AccessView:
+    """The caller's RBAC view for ONE request, resolved once and queried many times.
+
+    ``unrestricted`` covers the two allow-everything modes (auth disabled; auth on with
+    RBAC off, where an authenticated caller is treated as super_admin). Otherwise
+    ``matrix`` is the effective matrix (operator overrides + stored custom-role
+    definitions folded in) and ``assigned`` the caller's assigned custom roles, exactly
+    as :func:`_enforce` has always resolved them. :meth:`allows` never writes anything:
+    auditing a denial is the caller's decision (``_enforce`` audits its 403; the chat
+    catalogue does not, SPEC §5.1)."""
+
+    user: Any
+    role: str
+    unrestricted: bool
+    matrix: dict[str, dict[str, list[str]]] | None = None
+    assigned: tuple[str, ...] = ()
+
+    def allows(self, resource: str, action: str) -> bool:
+        if self.unrestricted:
+            return True
+        from ..rbac.policy import can_for_roles
+
+        return can_for_roles(
+            self.role, list(self.assigned), resource, action, matrix=self.matrix
+        )
+
+
+async def resolve_access(request: Request) -> AccessView:
+    """Run the auth gate once and resolve the caller's RBAC view, writing NO audit row.
+
+    The single non-auditing core behind both :func:`_enforce` (and so every
+    ``require_permission`` / ``has_permission`` / ``require_admin``) and
+    :func:`resolve_grants`, so a route gate and a chat grant can never disagree. Three
+    modes (see rbac/policy.py):
+
+    * auth DISABLED        → unrestricted (the no-auth "old version" default).
+    * auth ON, rbac OFF    → authenticated users are treated as super_admin →
+                              unrestricted.
+    * auth ON, rbac ON     → ``rbac.policy.can_for_roles(base_role,
+                              assigned_custom_roles, resource, action)`` against the
+                              matrix resolved here.
+
+    The auth gate's own session bookkeeping (first-seen lazy registration of an unknown
+    sid) still happens, exactly as for any authenticated request; that is session
+    lifecycle, not an authorization decision. A 401 for an unauthenticated caller
+    propagates when auth is on."""
+    user = await require_auth(request)
+    state = get_state(request)
+    auth = getattr(state, "auth", None)
+    if auth is None or not auth.is_enabled:
+        return AccessView(user=user, role="", unrestricted=True)  # auth off → allow all
+    role = getattr(user, "role", "") or ""
+    if not _rbac_enabled(state):
+        # rbac off → authenticated == super_admin
+        return AccessView(user=user, role=role, unrestricted=True)
+    from ..rbac.policy import resolve_matrix
+
+    rbac_config = await _rbac_config_with_custom_roles(state)
+    # Resolve the effective matrix ONCE (folds operator overrides + stored custom-role
+    # definitions), then decide against the base role UNIONed with the user's assigned
+    # custom roles. Resolving the matrix here also lets the assigned-name fail-safe
+    # (drop unknown/deleted roles) key off the SAME matrix the grant union consults.
+    matrix = resolve_matrix(rbac_config)
+    assigned = await _assigned_custom_roles(state, getattr(user, "username", "") or "")
+    return AccessView(
+        user=user, role=role, unrestricted=False, matrix=matrix, assigned=tuple(assigned)
+    )
+
+
+async def resolve_grants(
+    request: Request, pairs: Iterable[tuple[str, str]]
+) -> frozenset[tuple[str, str]]:
+    """The subset of ``(resource, action)`` ``pairs`` the caller holds — WITHOUT auditing.
+
+    Chat revamp SPEC §5.1: the chat tool context, the ``/chat/context`` catalogue and
+    ``ConsoleLink.allowed`` need many permission answers per request. Probing them
+    through :func:`has_permission` would write one ``ACCESS_DENIED`` row per missing
+    grant on every page load; this runs the auth gate once, resolves the matrix and the
+    caller's custom roles once (deny-wins inside each custom role, union across roles,
+    super_admin lockout-proof — the exact ``_enforce`` semantics, through the same
+    :func:`resolve_access` core), evaluates every pair, and writes NOTHING. A refusal the
+    model actually triggers is audited separately, once, by
+    :func:`record_chat_tool_denial`. A 401 propagates when auth is on."""
+    view = await resolve_access(request)
+    return frozenset(
+        (str(resource), str(action))
+        for resource, action in pairs
+        if view.allows(str(resource), str(action))
+    )
+
+
+# Audit text is plain data, but a tool name in a refused call comes from MODEL output,
+# which injected log content can steer (#9). Keep only identifier characters and bound
+# the length so a forged "tool name" can never smuggle prose into the audit trail.
+_AUDIT_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.:\-]")
+
+# The actor is NOT model output: it is the authenticated principal's username, and
+# usernames are not identifier-shaped (an SSO account is keyed by its verified email,
+# an admin-created one is free text). It must be written exactly as ``_enforce`` and
+# every other audit writer write it, or ``records_for_actor``'s exact ``term`` query
+# (the account-activity feed) and the audit actor filter never find the row (#2). Only
+# control characters are removed, since an audit actor is a single-line field, and the
+# length gets the same bound as the other username-bearing audit fields (160).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_AUDIT_ACTOR_MAX = 160
+
+
+def _audit_token(value: Any, limit: int = 64) -> str:
+    return _AUDIT_TOKEN_RE.sub("?", str(value if value is not None else ""))[:limit]
+
+
+def _audit_actor(actor: Any) -> str:
+    """The audit ``actor`` for a chat row: the username as given, minus control
+    characters, bounded; ``"default"`` when there is none (auth off, §5.2)."""
+    text = _CONTROL_CHARS_RE.sub("", str(actor if actor is not None else ""))
+    return text[:_AUDIT_ACTOR_MAX] or "default"
+
+
+def _missing_pairs(missing: Any) -> list[tuple[str, str]]:
+    """Normalise the refused grants to ``(resource, action)`` pairs.
+
+    Accepts both shapes the chat layer produces: ``"resource:action"`` strings (what
+    ``ChatToolContext.missing`` / ``ChatToolInfo.missing`` return) and ``(resource,
+    action)`` pairs (``ChatTool.requires``). A bare string is one entry, not an iterable
+    of characters. An entry of neither shape is skipped, never raised on: a malformed
+    "requires" note must not cost the denial its audit row."""
+    if missing is None:
+        return []
+    if isinstance(missing, str):
+        missing = [missing]
+    pairs: list[tuple[str, str]] = []
+    try:
+        items = list(missing)
+    except TypeError:
+        return []
+    for item in items:
+        if isinstance(item, str):
+            resource, _, action = item.partition(":")
+        elif isinstance(item, (tuple, list)) and len(item) == 2:
+            resource, action = item
+        else:
+            continue
+        pairs.append((str(resource), str(action)))
+    return pairs
+
+
+def _chat_denial_summary(
+    tool: str,
+    missing: Any,
+    turn_id: str | None,
+    step: Any,
+) -> str:
+    """The ``result_summary`` of a chat ``ACCESS_DENIED`` row. Never raises: each part
+    that cannot be rendered is left out on its own (a non-integer ``step`` drops only
+    ``step=``), so a bad argument never drops the whole row."""
+    needs = ", ".join(
+        f"{_audit_token(resource, 32)}:{_audit_token(action, 32)}" if action
+        else _audit_token(resource, 32)
+        for resource, action in _missing_pairs(missing)
+    )
+    prefix: list[str] = []
+    if turn_id:
+        prefix.append(f"turn={_audit_token(turn_id)}")
+    if step is not None and not isinstance(step, bool):
+        try:
+            prefix.append(f"step={int(step)}")
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return " ".join(
+        prefix + [f"denied chat tool {tool}" + (f" (requires {needs})" if needs else "")]
+    )
+
+
+async def record_chat_tool_denial(
+    control_audit: Any,
+    *,
+    actor: str,
+    tool_name: str,
+    missing: Iterable[str | tuple[str, str]] = (),
+    turn_id: str | None = None,
+    step: int | None = None,
+    case_id: str | None = None,
+) -> bool:
+    """Write ONE ``ACCESS_DENIED`` control-audit row for a chat tool call the engine
+    refused because the caller lacks a grant (SPEC §5.1: one row per refused step, and
+    only for a call the model actually requested — catalogue resolution never audits).
+
+    ``surface="chat"``; ``actor`` is the caller's username written as given (only
+    control characters removed, 160-char bound; ``"default"`` when auth is off, matching
+    the chat execution audit, §5.2), so the row is attributed to the real account.
+    ``missing`` takes ``"resource:action"`` strings (``ChatToolContext.missing``) or
+    ``(resource, action)`` pairs. ``result_summary`` starts with the ``turn=<id>
+    step=<n>`` correlation prefix every chat audit row carries; the model-influenced
+    values in it (tool name, turn id, grants) are reduced to identifier characters and
+    bounded.
+
+    Takes the control audit logger rather than the request so the engine
+    (``agents/chat.py``, which only holds a ``ChatToolContext``) can call it. Import it
+    lazily there: ``app.api.deps`` imports ``app.state``, which imports the chat engine.
+    Best-effort (#2): returns True when the row was written, False when there is no
+    audit logger or the write raised (logged as a warning); it never raises into the
+    turn."""
+    if control_audit is None:
+        return False
+    from ..constants import ActionType
+
+    # Built outside the guarded write and non-raising by construction: argument shape
+    # can never be the reason a refusal goes unaudited.
+    tool = _audit_token(tool_name) or "?"
+    summary = _chat_denial_summary(tool, missing, turn_id, step)
+    try:
+        await control_audit.record(
+            action_type=ActionType.ACCESS_DENIED,
+            surface="chat",
+            actor=_audit_actor(actor),
+            case_id=case_id or None,
+            tool_name=tool,
+            result_summary=summary,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — a denial must never fail the turn
+        import logging
+
+        logging.getLogger("tlsoc.api.deps").warning(
+            "chat tool denial audit write failed (tool=%s): %s", tool, exc
+        )
+        return False
+
+
 async def _enforce(request: Request, resource: str, action: str):
     """Shared RBAC enforcement core. Three modes (see rbac/policy.py):
 
@@ -387,26 +620,15 @@ async def _enforce(request: Request, resource: str, action: str):
     unknown/deleted assigned role fails safe to the base role; and a user with NO
     assigned custom roles is byte-identical to the prior ``can(base_role, …)`` gate.
 
-    Always runs the auth gate first (401s an unauthenticated caller when auth is on)."""
-    user = await require_auth(request)
+    Always runs the auth gate first (401s an unauthenticated caller when auth is on).
+    The resolution itself is :func:`resolve_access` (shared with :func:`resolve_grants`
+    so the two cannot drift); only the 403 path below writes an audit row."""
+    view = await resolve_access(request)
+    if view.allows(resource, action):
+        return view.user
     state = get_state(request)
-    auth = getattr(state, "auth", None)
-    if auth is None or not auth.is_enabled:
-        return user  # auth off → everything allowed
-    if not _rbac_enabled(state):
-        return user  # rbac off → authenticated == super_admin
-    from ..rbac.policy import can_for_roles, resolve_matrix
-
-    role = getattr(user, "role", "") or ""
-    rbac_config = await _rbac_config_with_custom_roles(state)
-    # Resolve the effective matrix ONCE (folds operator overrides + stored custom-role
-    # definitions), then decide against the base role UNIONed with the user's assigned
-    # custom roles. Resolving the matrix here also lets the assigned-name fail-safe
-    # (drop unknown/deleted roles) key off the SAME matrix the grant union consults.
-    matrix = resolve_matrix(rbac_config)
-    assigned = await _assigned_custom_roles(state, getattr(user, "username", "") or "")
-    if can_for_roles(role, assigned, resource, action, matrix=matrix):
-        return user
+    user = view.user
+    role = view.role
     # Append-only audit of the denial (#2) — best-effort, never blocks the 403.
     try:
         from ..constants import ActionType

@@ -19,7 +19,7 @@ from ..config import Preferences
 from ..constants import ActionType, Role, ToolTier, Verdict
 from ..engine.cost_gate import CaseBudget
 from ..engine.precedent import PrecedentSignal
-from ..llm.gateway import GatewayError, LLMGateway
+from ..llm.gateway import GatewayError, LLMGateway, UsageReceipt
 from ..models import Cluster, EnrichmentResult, MemoryEntry, RagChunk, VerdictResult
 from ..tools.base import ToolRegistry
 from ..utils import extract_json, truncate
@@ -253,10 +253,15 @@ class Investigator:
                 # own timeout is then the only bound).
                 request_timeout = budget.request_timeout()
                 request_started = budget.request_started()
+                # Filled by the gateway with what it ledgers for THIS request — also
+                # when we stop waiting for it. An abandoned request carries a real
+                # estimated cost (SPEC §6.3) that ``wait_for`` never hands back, and
+                # without it ``Case.token_cost`` would sit below the ledger (#6).
+                receipt = UsageReceipt()
                 try:
                     call = self._gateway.complete(
                         Role.INVESTIGATOR, messages, model_cfg,
-                        surface=surface, case_id=case_id,
+                        surface=surface, case_id=case_id, usage_receipt=receipt,
                     )
                     if request_timeout is None:
                         res = await call
@@ -269,11 +274,23 @@ class Investigator:
                 except asyncio.TimeoutError:
                     # One request outran its slice of the case budget. Stop the loop the
                     # same cooperative way a cap does, so the partial reasoning survives.
+                    # Its abandoned ledger row is accounted like any other call.
+                    cost += receipt.cost
+                    _account(receipt.cost)
                     reasoning += (
                         f"\n[capped] model request exceeded its "
                         f"{round(request_timeout or 0.0, 3)}s slice of the case time budget"
                     )
                     break
+                except asyncio.CancelledError:
+                    # The pipeline's hard cap cancelled the whole flow mid-request. Put
+                    # the abandoned row's cost in the sink before unwinding, so the
+                    # pipeline's ``sum(cost_sink)`` still matches the ledger. A cancel
+                    # that lands while the gateway is still writing a SUCCESSFUL call's
+                    # row is covered too: the receipt is filled before that write and
+                    # ``res.cost`` below was never reached, so nothing counts twice.
+                    _account(receipt.cost)
+                    raise
                 except GatewayError as exc:
                     # Name the CLASS of provider fault (an expired key, an exhausted
                     # quota) rather than only the raw message, so the operator-visible
@@ -284,6 +301,10 @@ class Investigator:
                         failure_class or "unclassified", exc,
                     )
                     detail = f" [{failure_class}]" if failure_class else ""
+                    # A failed blocking call is ledgered at 0; account whatever the row
+                    # holds anyway, so this stays true if a failure ever carries spend.
+                    cost += receipt.cost
+                    _account(receipt.cost)
                     return (
                         _fail_to_human(
                             f"investigator model error{detail}: {exc}", cluster, prefs

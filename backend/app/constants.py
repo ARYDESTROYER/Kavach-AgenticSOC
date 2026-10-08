@@ -277,6 +277,97 @@ CUSTOM_MODELS_NS = "custom_models"
 CUSTOM_MODELS_KEY = "models"
 CUSTOM_MODELS_DOC_ID = "custom_models"  # ES doc id within CONFIG_INDEX
 
+# --------------------------------------------------------------------------- #
+# Chat REPORTS (chat revamp SPEC §9.1). Per-user report documents built from
+# Workspace chat answers. Same zero-migration KV pattern as every namespace above,
+# but ONE document per report plus ONE small per-user index document, so opening a
+# report never loads another user's (or another report's) items. With the ES
+# backend each (namespace, key) is the CONFIG_INDEX doc ``reports:<key>``; the
+# store composes ``key = "<user-hash>:<report-id>"`` for a report and
+# ``"<user-hash>:<REPORTS_INDEX_KEY>"`` for the index, so the ES doc id reads
+# ``reports:<user-hash>:<report-id>`` exactly as the spec names it. Raw usernames
+# never appear in a key (the hash is the chat-history partition hash). Report
+# content is presentation data only: it never feeds ``case_manager.decide()`` (#3).
+# --------------------------------------------------------------------------- #
+REPORTS_NS = "reports"
+REPORTS_INDEX_KEY = "index"
+REPORT_ID_PREFIX = "rpt-"
+REPORT_ITEM_ID_PREFIX = "rpti-"
+MAX_REPORTS_PER_USER = 100
+MAX_REPORT_ITEMS = 40
+MAX_REPORT_DOC_BYTES = 512_000
+MAX_REPORT_TITLE_CHARS = 120
+MAX_REPORT_NOTE_CHARS = 500
+MAX_REPORT_SUMMARY_CHARS = 1_200
+MAX_REPORT_NEXT_STEPS = 5
+
+# --------------------------------------------------------------------------- #
+# Invisible / reordering code points (chat revamp SPEC §7.6 + BLOCKS.md amendment 4).
+#
+# ONE code-point table shared by the prompt-side marker normaliser
+# (``agents/prompts._neutralise_markers``, which renders these as visible escapes)
+# and the display-side sanitiser (``agents/blocks.display_text``, which strips them),
+# and pinned to the webui ``displayText()`` through ``answer-blocks.contract.json``
+# ("invisible_ranges"). It is the Unicode Default_Ignorable_Code_Point set
+# (DerivedCoreProperties.txt) plus the controls and separators that render as
+# nothing or reorder text:
+#
+# * C0 EXCEPT TAB/LF/CR (ordinary whitespace that fenced payloads and Markdown must
+#   keep), DEL and C1;
+# * the soft hyphen, the combining grapheme joiner, the Arabic letter mark, the Hangul
+#   fillers (U+115F/1160, U+3164, U+FFA0 — "letters" that draw nothing), the Khmer
+#   inherent vowels and the Mongolian free variation selectors/vowel separator;
+# * the zero-width space/joiners, LRM/RLM, the line/paragraph separators, every bidi
+#   embedding/override/isolate, the word joiner and invisible operators;
+# * the variation selectors (U+FE00-FE0F; also used to smuggle bytes behind an
+#   emoji), the BOM, the reserved specials and interlinear-annotation controls;
+# * the shorthand-format and musical-symbol format controls, and the whole TAG
+#   block plus the variation-selector supplement (U+E0000-E0FFF: tag characters
+#   spell hidden ASCII that a model reads and a reviewer cannot see).
+#
+# These are exactly the code points that let a forged ``<<<END_...>>>`` marker hide
+# from a regex, smuggle text past a human reader, or render differently from what a
+# reviewer reads. Ranges are sorted and disjoint; three of them are astral, so every
+# generator of a regex class from this table must emit astral-safe escapes
+# (``\U%08x`` here, ``\u{...}`` with the ``u`` flag in JS).
+# --------------------------------------------------------------------------- #
+INVISIBLE_TEXT_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0000, 0x0008),
+    (0x000B, 0x000C),
+    (0x000E, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFFB),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _class_escape(code_point: int) -> str:
+    # ``\uXXXX`` only addresses the BMP: padding an astral code point to four digits
+    # would silently mean "U+E000 followed by '0'", so astral ones use ``\UXXXXXXXX``.
+    return f"\\u{code_point:04x}" if code_point <= 0xFFFF else f"\\U{code_point:08x}"
+
+
+# The same ranges as a regex character-class body (``f"[{INVISIBLE_TEXT_CLASS}]"``).
+INVISIBLE_TEXT_CLASS = "".join(
+    _class_escape(lo) if lo == hi else f"{_class_escape(lo)}-{_class_escape(hi)}"
+    for lo, hi in INVISIBLE_TEXT_RANGES
+)
+
 
 class Verdict(str, Enum):
     """LLM-produced verdict (Section 7.1). The verdict is a *recommendation*."""
@@ -441,6 +532,8 @@ class ActionType(str, Enum):
     DATA_EXPORT = "data_export"    # privileged, secret-free portable application-state export
     JOB = "job"                    # durable operator-job lifecycle transition
     SYSTEM_UPDATE = "system_update"  # operator-authorized supervised app update / rollback
+    # --- Chat revamp (additive; ADVISORY audit row — never feeds decide(), #3). ---
+    REPORT = "report"              # a chat report created / edited / summarised / deleted
 
 
 class UserRole(str, Enum):

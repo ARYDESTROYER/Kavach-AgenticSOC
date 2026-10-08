@@ -9,17 +9,40 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, ClassVar, Iterable, Literal, get_args
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from typing_extensions import TypedDict
 
+# The answer-block contract module depends only on constants + pydantic (never on
+# this module), so importing its sanitiser/validators here cannot form a cycle.
+from .agents.blocks import (
+    BLOCK_ID_PATTERN,
+    BLOCKS_VERSION,
+    CASE_ID_PATTERN,
+    DOC_REF_PATTERN,
+    MAX_SECTION_BLOCKS,
+    PAGE_PATTERN,
+    TECHNIQUE_PATTERN,
+    clean_nav_opts,
+    display_text,
+    parse_persisted_blocks,
+    parse_timestamp,
+    strip_lone_surrogates,
+)
 from .config import Preferences
 
 if TYPE_CHECKING:  # avoid an import cycle (ocsf imports config/constants, not models)
     from .ocsf import OCSFEvent
 from .constants import (
+    MAX_REPORT_ITEMS,
+    MAX_REPORT_NEXT_STEPS,
+    MAX_REPORT_NOTE_CHARS,
+    MAX_REPORT_SUMMARY_CHARS,
+    MAX_REPORT_TITLE_CHARS,
     ActionType,
     BatchJobState,
     CampaignStatus,
@@ -823,6 +846,52 @@ class DashboardLayout(BaseModel):
     updated_at: str = Field(default_factory=iso_now)
 
 
+MAX_CHAT_PROMPTS = 50
+MAX_CHAT_PROMPT_TITLE_CHARS = 60
+MAX_CHAT_PROMPT_TEXT_CHARS = 2_000
+CHAT_PROMPT_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,64}$"
+_CHAT_PROMPT_ID_RE = re.compile(CHAT_PROMPT_ID_PATTERN)
+
+
+class ChatPrompt(BaseModel):
+    """One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered
+    as text, sent as an ordinary user message (it is the user's own words)."""
+
+    id: str = Field(pattern=CHAT_PROMPT_ID_PATTERN)
+    title: str = Field(min_length=1, max_length=MAX_CHAT_PROMPT_TITLE_CHARS)
+    text: str = Field(min_length=1, max_length=MAX_CHAT_PROMPT_TEXT_CHARS)
+
+
+def _repair_chat_prompts(value: Any) -> list[dict[str, str]]:
+    """Lenient stored-prompt repair: sanitise + clamp, drop unusable or duplicate
+    entries, keep at most 50. A bad entry must never fail the WHOLE prefs bucket —
+    the store skips a bucket that fails validation, which would silently wipe the
+    user's saved views, dashboards and theme along with it."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, ChatPrompt):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            continue
+        prompt_id = item.get("id")
+        if not isinstance(prompt_id, str) or not _CHAT_PROMPT_ID_RE.match(prompt_id) or prompt_id in seen:
+            continue
+        text = display_text(item.get("text"), MAX_CHAT_PROMPT_TEXT_CHARS, multiline=True).strip()
+        if not text:
+            continue
+        title = display_text(item.get("title"), MAX_CHAT_PROMPT_TITLE_CHARS) or display_text(
+            text, MAX_CHAT_PROMPT_TITLE_CHARS
+        )
+        seen.add(prompt_id)
+        out.append({"id": prompt_id, "title": title, "text": text})
+        if len(out) >= MAX_CHAT_PROMPTS:
+            break
+    return out
+
+
 class UserPrefs(BaseModel):
     """One user's PERSONAL preferences bucket (Wave 7). Every field is additive +
     defaulted so an empty/legacy bucket loads unchanged. Distinct from the ORG
@@ -838,7 +907,10 @@ class UserPrefs(BaseModel):
     * ``dashboards`` — the user's custom dashboards (Round 5 / G7), keyed by dashboard
       id; each is a :class:`DashboardLayout`. Additive + defaulted ``{}`` (mirrors
       ``saved_views``) so a legacy bucket loads unchanged.
-    * ``misc`` — a small catch-all UI-prefs bag (density, etc.).
+    * ``misc`` — a small catch-all UI-prefs bag (density, etc.). ``misc.chat_stream_mode``
+      is the viewer's D2 chat mode (``"steps"``/``"text"``; normalised on load, an
+      invalid value is removed so the org default applies).
+    * ``chat_prompts`` — the user's saved chat prompts (chat revamp SPEC §10.4).
     """
 
     saved_views: list[SavedView] = Field(default_factory=list)
@@ -848,7 +920,33 @@ class UserPrefs(BaseModel):
     pinned_view_ids: list[str] = Field(default_factory=list)
     dashboards: dict[str, DashboardLayout] = Field(default_factory=dict)
     misc: dict[str, Any] = Field(default_factory=dict)
+    chat_prompts: list[ChatPrompt] = Field(default_factory=list, max_length=MAX_CHAT_PROMPTS)
     updated_at: str = Field(default_factory=iso_now)
+
+    @field_validator("chat_prompts", mode="before")
+    @classmethod
+    def _chat_prompts(cls, value: Any) -> list[dict[str, str]]:
+        return _repair_chat_prompts(value)
+
+    @field_validator("misc", mode="before")
+    @classmethod
+    def _misc_chat_stream_mode(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "chat_stream_mode" not in value:
+            return value
+        out = dict(value)
+        mode = out.get("chat_stream_mode")
+        normalised = mode.strip().lower() if isinstance(mode, str) else None
+        if normalised in ("steps", "text"):
+            out["chat_stream_mode"] = normalised
+        else:
+            out.pop("chat_stream_mode", None)
+        return out
+
+    @property
+    def chat_stream_mode(self) -> Literal["steps", "text"] | None:
+        """The viewer's D2 preference, or ``None`` (use ``chat_agent.default_stream_mode``)."""
+        mode = self.misc.get("chat_stream_mode")
+        return mode if mode in ("steps", "text") else None
 
 
 # --------------------------------------------------------------------------- #
@@ -1823,6 +1921,11 @@ class UsageDoc(BaseModel):
     # 1 means "answered, or failed, first time"; >1 means the retry budget was spent,
     # which is what separates an exhausted quota from a single rate-limit burst.
     attempts: int = 1
+    # True when the token counts on this row were ESTIMATED (chars/4) rather than read
+    # from provider usage: a provider that omitted usage, a stream interrupted after its
+    # first delta, or a request the caller abandoned (SPEC §6.3: billed input is never
+    # recorded as 0). Additive and defaulted, so every stored row loads unchanged.
+    usage_estimated: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -1897,6 +2000,246 @@ class ChatTurn(BaseModel):
     content: str
 
 
+# --------------------------------------------------------------------------- #
+# Chat revamp contracts (docs/research/2026-10-chat-revamp/SPEC.md §3, §4.5, §8,
+# §9.1). Mirrored in webui/src/lib/types.ts; the shared enums are pinned to
+# webui/src/soc/chat/chat-stream-events.contract.json by paired tests.
+#
+# Every PERSISTED field validates LENIENTLY: an unknown enum value coerces to its
+# fallback, an invalid sub-item is dropped, and an invalid optional sub-object
+# becomes ``None``. A stored answer replays even when one of its fields drifted
+# between releases; replay must never 503 because of presentation data. Every
+# string a client will display passes through ``display_text`` (strips C0/C1,
+# bidi and zero-width characters, bounds length; BLOCKS.md amendment 4).
+# --------------------------------------------------------------------------- #
+ChatStreamMode = Literal["steps", "text"]
+ChatScope = Literal["logs", "cases", "metrics", "intel", "docs", "platform"]
+ChatOrigin = Literal["user", "follow_up", "starter", "command", "continue"]
+ChatStepKind = Literal["tool", "model"]
+ChatStepStatus = Literal["ok", "error", "denied", "timeout", "skipped", "cancelled"]
+ChatStepBasis = Literal["exact", "newest_n", "sample", "cached"]
+ChatAnswerKind = Literal["data", "product_help", "mixed", "conversation"]
+TurnNoticeKind = Literal[
+    "partial", "cap", "budget", "provider", "breaker", "denied", "timeout", "cancelled",
+    "unsupported", "not_saved",
+]
+CitationKind = Literal["doc", "case", "knowledge", "mitre", "query"]
+MemoryProposalOp = Literal["add", "remove"]
+ChatBudgetState = Literal["ok", "approaching", "reached"]
+TextStreamingReason = Literal["disabled_by_admin", "model_does_not_stream"]
+ReportTemplateName = Literal["investigation", "hunt", "ioc", "shift", "posture", "custom"]
+ReportItemKind = Literal["block", "section"]
+
+CHAT_STREAM_MODES: tuple[str, ...] = get_args(ChatStreamMode)
+CHAT_SCOPES: tuple[str, ...] = get_args(ChatScope)
+CHAT_ORIGINS: tuple[str, ...] = get_args(ChatOrigin)
+CHAT_STEP_KINDS: tuple[str, ...] = get_args(ChatStepKind)
+CHAT_STEP_STATUSES: tuple[str, ...] = get_args(ChatStepStatus)
+CHAT_STEP_BASES: tuple[str, ...] = get_args(ChatStepBasis)
+CHAT_ANSWER_KINDS: tuple[str, ...] = get_args(ChatAnswerKind)
+TURN_NOTICE_KINDS: tuple[str, ...] = get_args(TurnNoticeKind)
+CITATION_KINDS: tuple[str, ...] = get_args(CitationKind)
+MEMORY_PROPOSAL_OPS: tuple[str, ...] = get_args(MemoryProposalOp)
+CHAT_BUDGET_STATES: tuple[str, ...] = get_args(ChatBudgetState)
+TEXT_STREAMING_REASONS: tuple[str, ...] = get_args(TextStreamingReason)
+REPORT_TEMPLATE_NAMES: tuple[str, ...] = get_args(ReportTemplateName)
+
+# Bounds on chat presentation strings (display chips, labels, summaries).
+_STEP_LABEL_CHARS = 120
+_STEP_SUMMARY_CHARS = 600
+_STEP_PARAM_CHARS = 120
+_STEP_UNTRUSTED_PARAM_CHARS = 200
+_STEP_QUERY_CHARS = 4_096           # live; the persisted form keeps <= 1 kB (§7.5)
+_STEP_COVERAGE_CHARS = 200
+_STEP_MAX_PARAMS = 12
+_STEP_MAX_SOURCES = 20
+_FOLLOW_UP_CHARS = 140
+_MAX_FOLLOW_UPS = 3
+_MAX_STEPS = 64
+_MAX_CITATIONS = 40
+_MAX_CONSOLE_LINKS = 12
+_NOTICE_MESSAGE_CHARS = 400
+_CITATION_TITLE_CHARS = 200
+_CITATION_SNIPPET_CHARS = 280
+_CONSOLE_LABEL_CHARS = 80
+_MEMORY_PROPOSAL_CHARS = 500
+_MEMORY_PROPOSAL_MAX_IDS = 20
+
+_PARAM_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
+_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SAFE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
+_SAFE_ID_RE = re.compile(_SAFE_ID_PATTERN)
+_CITATION_ID_PATTERN = r"^[A-Z][0-9]{1,3}$"
+_CONSOLE_LINK_ID_PATTERN = r"^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$"
+_GRANT_PATTERN = r"^[a-z_]{1,40}:[a-z_]{1,40}$"
+
+
+def _lenient_enum(value: Any, allowed: tuple[str, ...], fallback: Any) -> Any:
+    """Case-insensitive enum match; anything else takes ``fallback`` (persisted
+    enum fields never fail validation because a stored value drifted)."""
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in allowed:
+            return candidate
+    return fallback
+
+
+def _lenient_model(model: type[BaseModel], value: Any) -> Any:
+    """``model.model_validate(value)``, or ``None`` when it is invalid (dropped)."""
+    if value is None or isinstance(value, model):
+        return value
+    try:
+        return model.model_validate(value)
+    except Exception:  # noqa: BLE001 -- an invalid optional sub-object is dropped
+        return None
+
+
+def _lenient_models(model: type[BaseModel], value: Any, limit: int) -> list[Any]:
+    """Validate a list item by item, DROPPING invalid items; keep at most ``limit``."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[Any] = []
+    for item in value:
+        parsed = _lenient_model(model, item)
+        if parsed is None:
+            continue
+        out.append(parsed)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _display_list(value: Any, limit: int, chars: int) -> list[str]:
+    """A bounded list of display-sanitised, non-empty, single-line strings (non-string
+    items are dropped, never stringified)."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = display_text(item, chars)
+        if text:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+# --- §3.1 time window --------------------------------------------------------- #
+_RELATIVE_TIME_RE = re.compile(r"^now(?:-(\d{1,5})([mhdw]))?$")
+_RELATIVE_SECONDS = {"m": 60, "h": 3_600, "d": 86_400, "w": 604_800}
+_TIME_EXPR_HELP = "expected 'now', 'now-<n>[m|h|d|w]' or an ISO-8601 timestamp"
+
+
+def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None:
+    """Resolve one composer time expression to an aware UTC datetime, else ``None``.
+    The grammar is deliberately narrow (SPEC §3.1): ``now``, ``now-<n>[mhdw]`` or an
+    ISO-8601 timestamp (a naive one is read as UTC). No ``now+``, no epoch numbers."""
+    if not isinstance(expr, str):
+        return None
+    reference = now or datetime.now(timezone.utc)
+    text = expr.strip()
+    match = _RELATIVE_TIME_RE.match(text.lower())
+    if match:
+        if match.group(1) is None:
+            return reference
+        try:
+            return reference - timedelta(
+                seconds=int(match.group(1)) * _RELATIVE_SECONDS[match.group(2)]
+            )
+        except OverflowError:
+            return None
+    # The ONE timestamp grammar shared with answer blocks and the webui
+    # (``blocks.TIMESTAMP_PATTERN``, pinned by the answer-blocks contract).
+    return parse_timestamp(text)
+
+
+# The serialised form of :class:`TimeRange` (``from`` is a keyword, hence the
+# functional syntax). ``typing_extensions`` because pydantic needs it before 3.12.
+TimeRangeWire = TypedDict("TimeRangeWire", {"from": str, "to": str})
+
+
+class TimeRange(BaseModel):
+    """The composer time window ``{from, to}`` (SPEC §3.1).
+
+    Each bound is ``now``, ``now-<n>[mhdw]`` or ISO-8601; ``from`` must be strictly
+    before ``to`` and the window at most :attr:`MAX_SPAN_DAYS` days, else 422. It
+    applies to every windowed chat tool; precedence is the model's explicit window
+    from the user's words, then this, then ``context.time_range``, then 24 h.
+    Serialises as ``{"from", "to"}`` (both keys, always) regardless of ``by_alias``
+    or ``exclude_defaults``, so stored and wire shapes never diverge."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    MAX_SPAN_DAYS: ClassVar[int] = 90
+
+    from_: str = Field(alias="from", min_length=1, max_length=40)
+    to: str = Field(default="now", min_length=1, max_length=40)
+
+    @field_validator("from_", "to", mode="before")
+    @classmethod
+    def _normalise(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        # Relative expressions are canonicalised to lower case ("NOW-24H" → "now-24h").
+        return text.lower() if text.lower().startswith("now") else text
+
+    @field_validator("from_", "to")
+    @classmethod
+    def _grammar(cls, value: str) -> str:
+        if resolve_time_expr(value) is None:
+            raise ValueError(_TIME_EXPR_HELP)
+        return value
+
+    @model_validator(mode="after")
+    def _window(self) -> "TimeRange":
+        start, end = self.resolve()
+        if start >= end:
+            raise ValueError("time_range.from must be before time_range.to")
+        if end - start > timedelta(days=self.MAX_SPAN_DAYS):
+            raise ValueError(f"time_range spans at most {self.MAX_SPAN_DAYS} days")
+        return self
+
+    # ``plain`` + a TypedDict return: the wire shape is always both keys, and the
+    # annotation is what gives ``openapi.json`` a typed ``{from, to}`` output schema
+    # (an untyped ``Any`` serializer renders as an empty object).
+    @model_serializer(mode="plain")
+    def _serialise(self) -> TimeRangeWire:
+        return {"from": self.from_, "to": self.to}
+
+    def resolve(self, now: datetime | None = None) -> tuple[datetime, datetime]:
+        """``(from, to)`` as aware UTC datetimes against one shared ``now``."""
+        reference = now or datetime.now(timezone.utc)
+        start = resolve_time_expr(self.from_, reference)
+        end = resolve_time_expr(self.to, reference)
+        assert start is not None and end is not None  # guaranteed by _grammar
+        return start, end
+
+    def span_hours(self, now: datetime | None = None) -> float:
+        start, end = self.resolve(now)
+        return (end - start).total_seconds() / 3_600
+
+    def window_hours(self, *, lo: int = 1, hi: int = 720, now: datetime | None = None) -> int:
+        """The window as whole hours clamped to ``lo..hi`` (metrics, cases and cost
+        tools take ``window_hours``; SPEC §3.1 clamps it to 1..720)."""
+        hours = math.ceil(self.span_hours(now))
+        return min(max(hours, lo), hi)
+
+    def label(self) -> str:
+        """Short caption text: ``last 24h`` for a trailing window, else ``a → b``."""
+        if self.to == "now":
+            match = _RELATIVE_TIME_RE.match(self.from_)
+            if match and match.group(1):
+                return f"last {int(match.group(1))}{match.group(2)}"
+        return f"{self.from_} → {self.to}"
+
+
+def _lenient_time_range(value: Any) -> Any:
+    return _lenient_model(TimeRange, value)
+
+
 class ChatConversationMessage(BaseModel):
     """One durable Workspace-chat message.
 
@@ -1930,10 +2273,75 @@ class ChatConversationSummary(BaseModel):
     model: str | None = None
     source_id: str | None = None
     source_name: str | None = None
+    # --- Chat revamp (SPEC §7.5; additive, legacy rows load with these defaults). ---
+    # Pinned conversations (<= 10) are exempt from the 50-conversation eviction.
+    pinned: bool = False
+    # The conversation's draft report, when one exists (§9.1).
+    report_id: str | None = None
+    # The last composer window used in this conversation (the scope chip).
+    time_range: TimeRange | None = None
+    # Cumulative usage, incremented per completed exchange so it survives trimming.
+    # ``None`` on legacy rows: the UI shows "—", never 0.
+    total_tokens: int | None = Field(default=None, ge=0)
+    total_cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    usage_turns: int | None = Field(default=None, ge=0)
+
+    @field_validator("pinned", mode="before")
+    @classmethod
+    def _pinned(cls, value: Any) -> Any:
+        return value if isinstance(value, bool) else False
+
+    @field_validator("time_range", mode="before")
+    @classmethod
+    def _time_range(cls, value: Any) -> Any:
+        # A stored window that no longer validates (e.g. an absolute bound that has
+        # since aged past 90 days) is dropped, never fatal.
+        return _lenient_time_range(value)
+
+    @field_validator("total_tokens", "usage_turns", mode="before")
+    @classmethod
+    def _counter(cls, value: Any) -> Any:
+        if value is None or isinstance(value, bool):
+            return None
+        return value if isinstance(value, int) and value >= 0 else None
+
+    @field_validator("total_cost", mode="before")
+    @classmethod
+    def _cost(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if math.isfinite(value) and value >= 0 else None
 
 
 class ChatConversation(ChatConversationSummary):
     messages: list[ChatConversationMessage] = Field(default_factory=list)
+
+
+class ChatConversationMatch(BaseModel):
+    """Where a ``?q=`` search hit a conversation (SPEC §7.5 Search)."""
+
+    message_id: str | None = None
+    snippet: str = Field(default="", max_length=160)
+
+    @field_validator("snippet", mode="before")
+    @classmethod
+    def _snippet(cls, value: Any) -> str:
+        return display_text(value, 160)
+
+
+class ChatConversationSearchHit(ChatConversationSummary):
+    """A conversation summary returned by a content search (never persisted)."""
+
+    match: ChatConversationMatch | None = None
+
+
+def _clean_conversation_title(value: Any) -> str:
+    title = " ".join(str(value).split()).strip()
+    if not title:
+        raise ValueError("title is required")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
+        raise ValueError("title must be plain single-line text")
+    return title
 
 
 class ChatConversationRenameRequest(BaseModel):
@@ -1942,12 +2350,28 @@ class ChatConversationRenameRequest(BaseModel):
     @field_validator("title")
     @classmethod
     def clean_title(cls, value: str) -> str:
-        title = " ".join(str(value).split()).strip()
-        if not title:
-            raise ValueError("title is required")
-        if any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
-            raise ValueError("title must be plain single-line text")
-        return title
+        return _clean_conversation_title(value)
+
+
+class ChatConversationUpdateRequest(BaseModel):
+    """``PATCH /api/chat/conversations/{id}`` (SPEC §7.5 Pin): rename and/or pin.
+    At least one field is required; pinning never changes ``updated_at``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=80)
+    pinned: bool | None = None
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, value: str | None) -> str | None:
+        return None if value is None else _clean_conversation_title(value)
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "ChatConversationUpdateRequest":
+        if self.title is None and self.pinned is None:
+            raise ValueError("provide title and/or pinned")
+        return self
 
 
 class ChatContext(BaseModel):
@@ -1968,6 +2392,17 @@ class ChatContext(BaseModel):
     case_id: str | None = None
     selection: str | None = None
     search_session: str | None = None
+
+
+# The revamp request fields are fingerprinted with ``exclude_defaults`` so a
+# pre-revamp request body hashes byte-identically (SPEC §3.1); ``stream_mode`` is
+# presentation only and never part of the identity.
+CHAT_REQUEST_FINGERPRINT_EXCLUDE: frozenset[str] = frozenset(
+    {"idempotency_key", "persist_conversation", "stream_mode"}
+)
+CHAT_REQUEST_REVAMP_FIELDS: frozenset[str] = frozenset(
+    {"scopes", "time_range", "origin", "continue_of"}
+)
 
 
 class ChatRequest(BaseModel):
@@ -1998,6 +2433,50 @@ class ChatRequest(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+    # --- Chat revamp (SPEC §3.1; additive). ---
+    # D2 presentation mode for THIS turn: "steps" streams lookups + usage, "text" also
+    # streams the final answer word by word. Never part of the request identity.
+    stream_mode: ChatStreamMode = "steps"
+    # Composer @-scopes narrowing which tool families may run. Unknown values are
+    # DROPPED (an older/newer client never 422s on a scope it does not know).
+    scopes: list[ChatScope] = Field(default_factory=list, max_length=len(CHAT_SCOPES))
+    # The composer window chip (validated grammar, from < to, <= 90 days; else 422).
+    time_range: TimeRange | None = None
+    # Who authored the message text. Only "user" counts as user-authored for the
+    # indicator taint rule (§4.8): follow-up chips, starters and slash commands do not.
+    origin: ChatOrigin = "user"
+    # The assistant message id this turn continues after a cap notice.
+    continue_of: str | None = Field(default=None, max_length=128, pattern=_SAFE_ID_PATTERN)
+
+    @field_validator("scopes", mode="before")
+    @classmethod
+    def _known_scopes(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return []
+        out: list[str] = []
+        for item in value:
+            scope = _lenient_enum(item, CHAT_SCOPES, None)
+            if scope and scope not in out:
+                out.append(scope)
+        return out
+
+    def fingerprint_payload(self) -> dict[str, Any]:
+        """The JSON-able identity of this request for idempotency (SPEC §3.1).
+
+        Pre-revamp fields are dumped exactly as before (minus the excluded keys); the
+        revamp fields are added only when they differ from their defaults, so a body
+        that does not use them fingerprints byte-identically to a pre-revamp body. The
+        same key is therefore valid across ``/chat`` and ``/chat/stream``."""
+        payload = self.model_dump(
+            mode="json",
+            exclude=set(CHAT_REQUEST_FINGERPRINT_EXCLUDE | CHAT_REQUEST_REVAMP_FIELDS),
+        )
+        payload.update(self.model_dump(
+            mode="json", include=set(CHAT_REQUEST_REVAMP_FIELDS), exclude_defaults=True,
+        ))
+        return payload
 
 
 class DiscoverLink(BaseModel):
@@ -2017,6 +2496,310 @@ class MemorySuggestion(BaseModel):
 
     text: str = ""
     reason: str = ""
+
+
+# --- §3.4 usage --------------------------------------------------------------- #
+class StepUsage(BaseModel):
+    """Usage of ONE model call (or one query-embedding call on a tool step).
+    ``estimated`` marks a provider that omitted usage or a call cancelled mid-stream
+    (input = provider count or chars/4, output = chars/4 of what was received)."""
+
+    input_tokens: int = Field(default=0, ge=0)
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    latency_ms: int = Field(default=0, ge=0)
+    estimated: bool = False
+    embedding_calls: int = Field(default=0, ge=0)
+    embedding_tokens: int = Field(default=0, ge=0)
+    embedding_cost: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+    @property
+    def prompt_tokens(self) -> int:
+        """Everything sent (uncached + cache read + cache write; §3.4 definition)."""
+        return self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.output_tokens + self.embedding_tokens
+
+
+class TurnUsage(BaseModel):
+    """Running/final usage of one turn: the sum of its model calls plus any
+    query-embedding calls. ``cost`` includes embedding cost; ``simulated`` marks Demo
+    Mode synthetic pricing; ``estimated`` is true when any part was estimated."""
+
+    calls: int = Field(default=0, ge=0)
+    embedding_calls: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    # input + cache_read + cache_write + output (+ embedding tokens)
+    total_tokens: int = Field(default=0, ge=0)
+    cost: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    latency_ms: int = Field(default=0, ge=0)
+    model: str | None = None
+    pricing_source: str | None = None
+    simulated: bool = False
+    estimated: bool = False
+    context_window: int | None = Field(default=None, ge=0)
+    # The largest single prompt of the turn (hover-card detail only).
+    peak_prompt_tokens: int = Field(default=0, ge=0)
+
+    @classmethod
+    def from_steps(
+        cls,
+        model_calls: "Iterable[StepUsage]",
+        embeddings: "Iterable[StepUsage]" = (),
+        *,
+        model: str | None = None,
+        pricing_source: str | None = None,
+        simulated: bool = False,
+        context_window: int | None = None,
+        latency_ms: int | None = None,
+    ) -> "TurnUsage":
+        """Aggregate model-call usages and embedding usages into a turn total.
+        ``latency_ms`` defaults to the sum of the model calls' latencies."""
+        calls = list(model_calls)
+        embeds = list(embeddings)
+        input_tokens = sum(u.input_tokens for u in calls)
+        cache_read = sum(u.cache_read_tokens for u in calls)
+        cache_write = sum(u.cache_write_tokens for u in calls)
+        output = sum(u.output_tokens for u in calls)
+        embedding_tokens = sum(u.embedding_tokens for u in calls + embeds)
+        return cls(
+            calls=len(calls),
+            embedding_calls=sum(u.embedding_calls for u in calls + embeds),
+            input_tokens=input_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            output_tokens=output,
+            total_tokens=input_tokens + cache_read + cache_write + output + embedding_tokens,
+            cost=round(sum(u.cost + u.embedding_cost for u in calls)
+                       + sum(u.cost + u.embedding_cost for u in embeds), 10),
+            latency_ms=sum(u.latency_ms for u in calls) if latency_ms is None else max(0, latency_ms),
+            model=model,
+            pricing_source=pricing_source,
+            simulated=simulated,
+            estimated=any(u.estimated for u in calls + embeds),
+            context_window=context_window,
+            peak_prompt_tokens=max((u.prompt_tokens for u in calls), default=0),
+        )
+
+
+# --- §3.3 steps --------------------------------------------------------------- #
+def display_params(
+    value: Any, *, chars: int = _STEP_PARAM_CHARS, strings_only: bool = False
+) -> dict[str, Any]:
+    """Whitelist-shaped display chips: safe keys (``[A-Za-z0-9_.:-]{1,40}``), scalar
+    values, display-sanitised text, at most 12 entries. ``strings_only`` renders
+    numbers as text (``untrusted_params`` is ``dict[str, str]``). Never raises."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, raw in value.items():
+        if len(out) >= _STEP_MAX_PARAMS:
+            break
+        if not isinstance(key, str) or not _PARAM_KEY_RE.match(key):
+            continue
+        if isinstance(raw, str):
+            out[key] = display_text(raw, chars)
+        elif strings_only:
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw):
+                out[key] = display_text(str(raw), chars)
+        elif raw is None or isinstance(raw, bool) or isinstance(raw, int):
+            out[key] = raw
+        elif isinstance(raw, float) and math.isfinite(raw):
+            out[key] = raw
+    return out
+
+
+class ChatStep(BaseModel):
+    """One row of a turn's run log (SPEC §3.3). Every string is engine-authored or
+    display-sanitised; ``untrusted_params`` and ``query`` may carry model/log-derived
+    values, which the UI renders as untrusted text/code and prompts fence."""
+
+    index: int = Field(ge=0)                       # display order, 1-based
+    ordinal: int | None = Field(default=None, ge=1)  # tool-call ordinal N (tN refs)
+    kind: ChatStepKind = "tool"
+    tool: str | None = None
+    label: str = Field(default="", max_length=_STEP_LABEL_CHARS)
+    params: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    status: ChatStepStatus = "ok"
+    duration_ms: int = Field(default=0, ge=0)
+    summary: str = Field(default="", max_length=_STEP_SUMMARY_CHARS)
+    untrusted_params: dict[str, str] = Field(default_factory=dict)
+    query: str | None = Field(default=None, max_length=_STEP_QUERY_CHARS)
+    rows: int | None = Field(default=None, ge=0)
+    basis: ChatStepBasis | None = None
+    coverage: str | None = Field(default=None, max_length=_STEP_COVERAGE_CHARS)
+    sources: list[str] = Field(default_factory=list, max_length=_STEP_MAX_SOURCES)
+    usage: StepUsage | None = None
+    group: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["kind"] = _lenient_enum(out.get("kind"), CHAT_STEP_KINDS, "tool")
+        # An unknown stored status reads as a failure, never as a silent success.
+        out["status"] = _lenient_enum(out.get("status"), CHAT_STEP_STATUSES, "error")
+        out["basis"] = _lenient_enum(out.get("basis"), CHAT_STEP_BASES, None)
+        tool = out.get("tool")
+        out["tool"] = tool if isinstance(tool, str) and _TOOL_NAME_RE.match(tool) else None
+        out["label"] = display_text(out.get("label"), _STEP_LABEL_CHARS)
+        out["summary"] = display_text(out.get("summary"), _STEP_SUMMARY_CHARS)
+        out["params"] = display_params(out.get("params"), chars=_STEP_PARAM_CHARS, strings_only=False)
+        out["untrusted_params"] = display_params(
+            out.get("untrusted_params"), chars=_STEP_UNTRUSTED_PARAM_CHARS, strings_only=True,
+        )
+        query = out.get("query")
+        out["query"] = (
+            (display_text(query, _STEP_QUERY_CHARS, multiline=True) or None)
+            if isinstance(query, str) else None
+        )
+        coverage = out.get("coverage")
+        out["coverage"] = (
+            (display_text(coverage, _STEP_COVERAGE_CHARS) or None)
+            if isinstance(coverage, str) else None
+        )
+        out["sources"] = _display_list(out.get("sources"), _STEP_MAX_SOURCES, 120)
+        out["usage"] = _lenient_model(StepUsage, out.get("usage"))
+        for name in ("ordinal", "rows", "group"):
+            raw = out.get(name)
+            if raw is not None and (isinstance(raw, bool) or not isinstance(raw, int) or raw < (1 if name == "ordinal" else 0)):
+                out[name] = None
+        duration = out.get("duration_ms")
+        if isinstance(duration, float) and math.isfinite(duration):
+            duration = int(duration)
+        out["duration_ms"] = duration if isinstance(duration, int) and not isinstance(duration, bool) and duration >= 0 else 0
+        return out
+
+
+# --- §3.5 citations, console links, memory proposals --------------------------- #
+class Citation(BaseModel):
+    """A source the answer cites by id (``D1`` doc, ``C2`` case, ``K3`` knowledge,
+    ``M1`` ATT&CK, ``Q1`` query). The model references ids only; the server resolves
+    them; the client re-validates every target."""
+
+    id: str = Field(pattern=_CITATION_ID_PATTERN)
+    kind: CitationKind
+    title: str = Field(min_length=1, max_length=_CITATION_TITLE_CHARS)
+    untrusted: bool = False
+    doc: str | None = Field(default=None, pattern=DOC_REF_PATTERN)
+    case_id: str | None = Field(default=None, pattern=CASE_ID_PATTERN)
+    technique: str | None = Field(default=None, pattern=TECHNIQUE_PATTERN)
+    snippet: str | None = Field(default=None, max_length=_CITATION_SNIPPET_CHARS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitise(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if isinstance(out.get("kind"), str):
+            out["kind"] = out["kind"].strip().lower()
+        out["title"] = display_text(out.get("title"), _CITATION_TITLE_CHARS)
+        snippet = out.get("snippet")
+        out["snippet"] = (display_text(snippet, _CITATION_SNIPPET_CHARS, multiline=True) or None) if isinstance(snippet, str) else None
+        if isinstance(out.get("technique"), str):
+            out["technique"] = out["technique"].strip().upper()
+        if not isinstance(out.get("untrusted"), bool):
+            out["untrusted"] = True if "untrusted" in out else False
+        return out
+
+    @model_validator(mode="after")
+    def _target(self) -> "Citation":
+        # A citation is only useful with the target its kind names.
+        required = {"doc": self.doc, "case": self.case_id, "mitre": self.technique}
+        if self.kind in required and not required[self.kind]:
+            raise ValueError(f"a {self.kind} citation needs its target")
+        return self
+
+
+class ConsoleLink(BaseModel):
+    """A console destination resolved from ``console_map`` (never from model text).
+    ``allowed`` comes from the caller's grants; a disallowed link renders as plain
+    text naming the grant it ``requires``."""
+
+    id: str = Field(pattern=_CONSOLE_LINK_ID_PATTERN)
+    label: str = Field(min_length=1, max_length=_CONSOLE_LABEL_CHARS)
+    page: str = Field(pattern=PAGE_PATTERN)
+    opts: dict[str, str | int] = Field(default_factory=dict)
+    allowed: bool = False
+    requires: str | None = Field(default=None, pattern=_GRANT_PATTERN)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitise(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["label"] = display_text(out.get("label"), _CONSOLE_LABEL_CHARS)
+        out["opts"] = clean_nav_opts(out.get("opts"))
+        # Fail closed: only an explicit True grants navigation.
+        out["allowed"] = out.get("allowed") is True
+        return out
+
+
+class MemoryProposal(BaseModel):
+    """A memory change the MODEL proposed (§4.8). Never executed by the engine: the
+    UI confirms it through the existing memory routes under ``memory:manage``.
+    ``remove`` takes exact entry ids only (no text matching from chat)."""
+
+    op: MemoryProposalOp
+    text: str | None = Field(default=None, max_length=_MEMORY_PROPOSAL_CHARS)
+    ids: list[str] = Field(default_factory=list, max_length=_MEMORY_PROPOSAL_MAX_IDS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitise(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if isinstance(out.get("op"), str):
+            out["op"] = out["op"].strip().lower()
+        text = out.get("text")
+        out["text"] = (display_text(text, _MEMORY_PROPOSAL_CHARS) or None) if isinstance(text, str) else None
+        ids = out.get("ids")
+        out["ids"] = [
+            i for i in (ids if isinstance(ids, (list, tuple)) else [])
+            if isinstance(i, str) and _SAFE_ID_RE.match(i)
+        ][:_MEMORY_PROPOSAL_MAX_IDS]
+        return out
+
+    @model_validator(mode="after")
+    def _shape(self) -> "MemoryProposal":
+        if self.op == "add" and not self.text:
+            raise ValueError("an add proposal needs text")
+        if self.op == "remove" and not self.ids:
+            raise ValueError("a remove proposal needs exact entry ids")
+        return self
+
+
+# --- §4.5 notices -------------------------------------------------------------- #
+class TurnNotice(BaseModel):
+    """Why a turn is partial, stopped, refused or not saved. ``message`` is an engine
+    template; ``retryable`` decides whether the UI offers Retry."""
+
+    kind: TurnNoticeKind
+    message: str = Field(default="", max_length=_NOTICE_MESSAGE_CHARS)
+    retryable: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["kind"] = _lenient_enum(out.get("kind"), TURN_NOTICE_KINDS, "partial")
+        out["message"] = display_text(out.get("message"), _NOTICE_MESSAGE_CHARS)
+        out["retryable"] = out.get("retryable") is True
+        return out
 
 
 class ChatResponse(BaseModel):
@@ -2039,6 +2822,482 @@ class ChatResponse(BaseModel):
     effective_source_id: str | None = None
     effective_source_name: str | None = None
     truncated: bool = False
+    # --- Chat revamp (SPEC §3.2; additive and lenient — see the section note). ---
+    # Validated answer blocks (agents/blocks.py). Re-checked on every construction, so
+    # a drifted stored block becomes a quiet fallback callout instead of a replay 503.
+    blocks: list[dict[str, Any]] = Field(default_factory=list)
+    blocks_version: int = BLOCKS_VERSION
+    steps: list[ChatStep] = Field(default_factory=list)
+    # None on legacy replays and compatibility-mode turns that recorded no usage.
+    usage: TurnUsage | None = None
+    citations: list[Citation] = Field(default_factory=list)
+    console_links: list[ConsoleLink] = Field(default_factory=list)
+    follow_ups: list[str] = Field(default_factory=list, max_length=_MAX_FOLLOW_UPS)
+    answer_kind: ChatAnswerKind = "conversation"
+    notice: TurnNotice | None = None
+    # The D2 mode this answer ran with (None on legacy rows).
+    stream_mode: ChatStreamMode | None = None
+    turn_id: str | None = None
+    # The assistant message id when persisted (reports reference it).
+    message_id: str | None = None
+    # A model-proposed memory change awaiting human confirmation (§4.8).
+    memory_proposal: MemoryProposal | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_lone_surrogates(cls, data: Any) -> Any:
+        # Model text (``answer``) and log-derived values (table cells, a query) can
+        # carry a lone surrogate from a JSON ``\ud800`` escape. Pydantic would reject
+        # it and UTF-8 cannot encode it, which would abort ``turn.done`` or the
+        # history write of an otherwise good answer, so it is dropped everywhere.
+        return strip_lone_surrogates(data) if isinstance(data, dict) else data
+
+    @field_validator("blocks", mode="before")
+    @classmethod
+    def _blocks(cls, value: Any) -> list[dict[str, Any]]:
+        return parse_persisted_blocks(value)
+
+    @field_validator("blocks_version", mode="before")
+    @classmethod
+    def _blocks_version(cls, value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else BLOCKS_VERSION
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _steps(cls, value: Any) -> list[Any]:
+        return _lenient_models(ChatStep, value, _MAX_STEPS)
+
+    @field_validator("usage", mode="before")
+    @classmethod
+    def _usage(cls, value: Any) -> Any:
+        return _lenient_model(TurnUsage, value)
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _citations(cls, value: Any) -> list[Any]:
+        return _lenient_models(Citation, value, _MAX_CITATIONS)
+
+    @field_validator("console_links", mode="before")
+    @classmethod
+    def _console_links(cls, value: Any) -> list[Any]:
+        return _lenient_models(ConsoleLink, value, _MAX_CONSOLE_LINKS)
+
+    @field_validator("follow_ups", mode="before")
+    @classmethod
+    def _follow_ups(cls, value: Any) -> list[str]:
+        return _display_list(value, _MAX_FOLLOW_UPS, _FOLLOW_UP_CHARS)
+
+    @field_validator("answer_kind", mode="before")
+    @classmethod
+    def _answer_kind(cls, value: Any) -> str:
+        return _lenient_enum(value, CHAT_ANSWER_KINDS, "conversation")
+
+    @field_validator("notice", mode="before")
+    @classmethod
+    def _notice(cls, value: Any) -> Any:
+        return _lenient_model(TurnNotice, value)
+
+    @field_validator("stream_mode", mode="before")
+    @classmethod
+    def _stream_mode(cls, value: Any) -> Any:
+        return _lenient_enum(value, CHAT_STREAM_MODES, None)
+
+    @field_validator("memory_proposal", mode="before")
+    @classmethod
+    def _memory_proposal(cls, value: Any) -> Any:
+        return _lenient_model(MemoryProposal, value)
+
+    @model_validator(mode="after")
+    def _cost_matches_usage(self) -> "ChatResponse":
+        # SPEC §3.2: ``cost == usage.cost`` whenever usage is present.
+        if self.usage is not None:
+            self.cost = self.usage.cost
+        return self
+
+
+# --- §8 live token meter -------------------------------------------------------- #
+class ChatToolInfo(BaseModel):
+    """One row of the caller's tool catalogue ("What can the assistant access?")."""
+
+    name: str
+    label: str
+    scope: ChatScope
+    data_source: str = ""
+    requires: list[str] = Field(default_factory=list)   # "resource:action", all-of
+    # A kind-gated tool (no ``requires``, only per-kind grants) is allowed when at
+    # least one of its kinds is.
+    allowed: bool = False
+    # The grants the caller lacks (empty when allowed). For a kind-gated tool with no
+    # usable kind: every per-kind grant, any ONE of which unlocks it.
+    missing: list[str] = Field(default_factory=list)
+    # kind -> the extra "resource:action" that kind needs (empty for most tools).
+    kind_requires: dict[str, str] = Field(default_factory=dict)
+    # The kinds the caller may use (starters/popover show the rest as locked).
+    kinds_allowed: list[str] = Field(default_factory=list)
+
+
+class TextStreamingInfo(BaseModel):
+    """Whether "Type out answers" can work for the effective chat model (§6.3)."""
+
+    available: bool = False
+    reason: TextStreamingReason | None = None
+
+
+class ChatContextBounds(BaseModel):
+    """The §4.2 bounds the meter and the run log display (no internal_domains)."""
+
+    max_model_calls: int
+    max_tool_calls: int
+    max_parallel: int
+    tool_timeout_s: int
+    model_step_timeout_s: int
+    turn_timeout_s: int
+    turn_token_ceiling: int
+    final_reserve_tokens: int
+    observation_chars: int
+    final_max_tokens: int
+    max_indicator_lookups: int
+    default_stream_mode: ChatStreamMode = "steps"
+    allow_text_streaming: bool = True
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    @classmethod
+    def from_config(cls, config: Any) -> "ChatContextBounds":
+        """Project ``Preferences.chat_agent`` onto the public bounds."""
+        return cls.model_validate({
+            name: getattr(config, name) for name in cls.model_fields if hasattr(config, name)
+        })
+
+
+class ChatRates(BaseModel):
+    """Effective per-million-token rates (demo-aware). ``models:read`` only."""
+
+    input_per_million: float = Field(ge=0, allow_inf_nan=False)
+    output_per_million: float = Field(ge=0, allow_inf_nan=False)
+    cache_read_per_million: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class ChatBudgetInfo(BaseModel):
+    """The daily budget the meter's ring measures against. ``models:read`` only."""
+
+    enabled: bool = False
+    daily_limit: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    soft_warn_pct: float = Field(default=0.8, ge=0, le=1)
+    on_exceed: Literal["warn", "block"] = "block"
+
+
+class ChatContextInfo(BaseModel):
+    """``GET /api/chat/context`` (SPEC §8): everything the composer meter needs.
+    Money and budget fields are present only with ``models:read``; ``spent_today`` /
+    ``remaining`` additionally need ``cost:view``. Without them the meter shows
+    tokens only plus ``budget_state``."""
+
+    model: str | None = None
+    context_window: int | None = Field(default=None, ge=0)
+    max_output_tokens: int = Field(default=0, ge=0)
+    chars_per_token: int = Field(default=4, ge=1)
+    # System prompt + the caller's granted tool signatures.
+    static_prompt_tokens: int = Field(default=0, ge=0)
+    # Estimate for the selected conversation's replayed history (<= 12 exchanges).
+    history_tokens: int = Field(default=0, ge=0)
+    history_exchanges: int = Field(default=0, ge=0)
+    tools: list[ChatToolInfo] = Field(default_factory=list)
+    text_streaming: TextStreamingInfo = Field(default_factory=TextStreamingInfo)
+    bounds: ChatContextBounds
+    # actual ÷ estimate of the last turn in this conversation (None until measured).
+    calibration: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    budget_state: ChatBudgetState | None = None
+    rates: ChatRates | None = None
+    simulated: bool | None = None
+    budget: ChatBudgetInfo | None = None
+    spent_today: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    remaining: float | None = Field(default=None, allow_inf_nan=False)
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+# --- §9.1 reports ----------------------------------------------------------------- #
+def _report_title(value: Any) -> str:
+    return display_text(value, MAX_REPORT_TITLE_CHARS)
+
+
+class ReportItemSource(BaseModel):
+    """Where an item came from (a caller-owned persisted Workspace message)."""
+
+    conversation_id: str = Field(min_length=1, max_length=128)
+    message_id: str = Field(min_length=1, max_length=128)
+    block_id: str | None = Field(default=None, max_length=48)
+
+
+class ReportItemScope(BaseModel):
+    """Scope captured server-side at add time (never client-supplied)."""
+
+    window: str | None = Field(default=None, max_length=80)
+    sources: list[str] = Field(default_factory=list, max_length=20)
+    generated_by: str | None = Field(default=None, max_length=120)   # the model id
+    app_version: str | None = Field(default=None, max_length=40)
+    demo: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitise(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for name, limit in (("window", 80), ("generated_by", 120), ("app_version", 40)):
+            raw = out.get(name)
+            out[name] = (display_text(raw, limit) or None) if isinstance(raw, str) else None
+        out["sources"] = _display_list(out.get("sources"), 20, 120)
+        out["demo"] = out.get("demo") is True
+        return out
+
+
+class ReportSectionSnapshot(BaseModel):
+    """The ``block`` of a ``section`` item: a whole added answer, titled by the
+    user's question, holding the Markdown answer then that turn's blocks — up to
+    ``MAX_SECTION_BLOCKS`` (the answer plus a full turn's 12). Anything past that is
+    clipped and ``truncated`` says so (G4), never a silent loss."""
+
+    title: str = Field(default="", max_length=MAX_REPORT_TITLE_CHARS)
+    blocks: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_SECTION_BLOCKS)
+    truncated: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clip(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        blocks = out.get("blocks")
+        clipped = isinstance(blocks, (list, tuple)) and len(blocks) > MAX_SECTION_BLOCKS
+        out["truncated"] = out.get("truncated") is True or clipped
+        out["blocks"] = parse_persisted_blocks(blocks, limit=MAX_SECTION_BLOCKS)
+        return out
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _title(cls, value: Any) -> str:
+        return _report_title(value)
+
+
+class ReportItem(BaseModel):
+    """One report item: a validated block snapshot or a whole-answer section."""
+
+    id: str = Field(pattern=_SAFE_ID_PATTERN)
+    kind: ReportItemKind = "block"
+    # kind=block: one AnswerBlock dict; kind=section: a ReportSectionSnapshot dict.
+    block: dict[str, Any]
+    # User-authored; UNTRUSTED for any model call (fenced in the summary digest).
+    note: str | None = Field(default=None, max_length=MAX_REPORT_NOTE_CHARS)
+    source: ReportItemSource
+    scope: ReportItemScope = Field(default_factory=ReportItemScope)
+    added_at: str = Field(default_factory=iso_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["kind"] = _lenient_enum(out.get("kind"), ("block", "section"), "block")
+        note = out.get("note")
+        out["note"] = (display_text(note, MAX_REPORT_NOTE_CHARS, multiline=True) or None) if isinstance(note, str) else None
+        block = out.get("block")
+        if out["kind"] == "section":
+            snapshot = _lenient_model(ReportSectionSnapshot, block)
+            out["block"] = snapshot.model_dump(mode="json") if snapshot else {"title": "", "blocks": [], "truncated": False}
+        else:
+            parsed = parse_persisted_blocks([block] if isinstance(block, dict) else [])
+            out["block"] = parsed[0] if parsed else parse_persisted_blocks([{}])[0]
+        if not isinstance(out.get("scope"), (dict, ReportItemScope)):
+            out["scope"] = {}
+        return out
+
+
+class ReportSummary(BaseModel):
+    """The AI-written executive summary (one gateway call over the §9.4 digest).
+    Stale when ``based_on_version`` lags the report's ``version``."""
+
+    executive_summary: str = Field(default="", max_length=MAX_REPORT_SUMMARY_CHARS)
+    next_steps: list[str] = Field(default_factory=list, max_length=MAX_REPORT_NEXT_STEPS)
+    model: str | None = None
+    usage: TurnUsage = Field(default_factory=TurnUsage)
+    generated_at: str = Field(default_factory=iso_now)
+    based_on_version: int = Field(default=0, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["executive_summary"] = display_text(
+            out.get("executive_summary"), MAX_REPORT_SUMMARY_CHARS, multiline=True,
+        )
+        out["next_steps"] = _display_list(out.get("next_steps"), MAX_REPORT_NEXT_STEPS, 280)
+        out["usage"] = _lenient_model(TurnUsage, out.get("usage")) or TurnUsage()
+        return out
+
+
+class ReportSummaryEstimate(BaseModel):
+    """``POST /api/reports/{id}/summary?dry_run=1``: what generating would cost."""
+
+    prompt_tokens: int = Field(ge=0)
+    max_output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    # Present only with models:read (like the meter's money fields).
+    cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    simulated: bool = False
+    model: str | None = None
+
+
+class Report(BaseModel):
+    """A per-user report document (SPEC §9.1): <= 40 items, strict-CAS ``version``."""
+
+    id: str = Field(pattern=_SAFE_ID_PATTERN)
+    owner: str
+    title: str = Field(min_length=1, max_length=MAX_REPORT_TITLE_CHARS)
+    template: ReportTemplateName = "custom"
+    # The conversation whose draft this is (<= 1 draft per conversation).
+    conversation_id: str | None = None
+    items: list[ReportItem] = Field(default_factory=list, max_length=MAX_REPORT_ITEMS)
+    summary: ReportSummary | None = None
+    created_at: str = Field(default_factory=iso_now)
+    updated_at: str = Field(default_factory=iso_now)
+    version: int = Field(default=1, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["title"] = _report_title(out.get("title")) or "Untitled report"
+        out["template"] = _lenient_enum(out.get("template"), REPORT_TEMPLATE_NAMES, "custom")
+        out["items"] = _lenient_models(ReportItem, out.get("items"), MAX_REPORT_ITEMS)
+        out["summary"] = _lenient_model(ReportSummary, out.get("summary"))
+        return out
+
+    @property
+    def summary_stale(self) -> bool:
+        return self.summary is not None and self.summary.based_on_version < self.version
+
+
+class ReportListEntry(BaseModel):
+    """One row of the per-user report index (``GET /api/reports``)."""
+
+    id: str
+    title: str
+    template: ReportTemplateName = "custom"
+    conversation_id: str | None = None
+    item_count: int = Field(default=0, ge=0)
+    created_at: str | None = None
+    updated_at: str
+    version: int = Field(default=1, ge=0)
+    has_summary: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        out["title"] = _report_title(out.get("title")) or "Untitled report"
+        out["template"] = _lenient_enum(out.get("template"), REPORT_TEMPLATE_NAMES, "custom")
+        return out
+
+
+class ReportCreateRequest(BaseModel):
+    """``POST /api/reports``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(default="Untitled report", min_length=1, max_length=MAX_REPORT_TITLE_CHARS)
+    template: ReportTemplateName = "custom"
+    conversation_id: str | None = Field(default=None, max_length=128, pattern=_SAFE_ID_PATTERN)
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return _clean_conversation_title(value)
+
+
+class ReportPatchRequest(BaseModel):
+    """``PATCH /api/reports/{id}``: title, template, item order, notes, removals —
+    all under ``expected_version`` (409 ``report_version_conflict`` on mismatch).
+    ``item_order`` must be a permutation of the remaining item ids; ``notes`` maps
+    item id → note (``null`` clears it)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=0)
+    title: str | None = Field(default=None, min_length=1, max_length=MAX_REPORT_TITLE_CHARS)
+    template: ReportTemplateName | None = None
+    item_order: list[str] | None = Field(default=None, max_length=MAX_REPORT_ITEMS)
+    notes: dict[str, str | None] | None = Field(default=None, max_length=MAX_REPORT_ITEMS)
+    remove_items: list[str] | None = Field(default=None, max_length=MAX_REPORT_ITEMS)
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str | None) -> str | None:
+        return None if value is None else _clean_conversation_title(value)
+
+    @field_validator("item_order", "remove_items")
+    @classmethod
+    def _ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if any(not _SAFE_ID_RE.match(i) for i in value):
+            raise ValueError("item ids must be plain ids")
+        if len(set(value)) != len(value):
+            raise ValueError("item ids must be unique")
+        return value
+
+    @field_validator("notes")
+    @classmethod
+    def _notes(cls, value: dict[str, str | None] | None) -> dict[str, str | None] | None:
+        if value is None:
+            return None
+        out: dict[str, str | None] = {}
+        for item_id, note in value.items():
+            if not _SAFE_ID_RE.match(item_id):
+                raise ValueError("note keys must be item ids")
+            if note is not None and len(note) > MAX_REPORT_NOTE_CHARS:
+                raise ValueError(f"a note is at most {MAX_REPORT_NOTE_CHARS} characters")
+            out[item_id] = None if note is None else (display_text(note, MAX_REPORT_NOTE_CHARS, multiline=True) or None)
+        return out
+
+
+class ReportDeleteRequest(BaseModel):
+    """``DELETE /api/reports/{id}`` body (strict tombstone under ``expected_version``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=0)
+
+
+class ReportAddRequest(BaseModel):
+    """``POST /api/reports/add``: add BY REFERENCE. The server loads the block (or the
+    whole answer as a ``section`` when ``block_id`` is absent) from the caller-owned
+    persisted Workspace message and snapshots it; client-supplied block JSON is never
+    accepted, so case-scoped content cannot be added by construction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(min_length=1, max_length=128, pattern=_SAFE_ID_PATTERN)
+    message_id: str = Field(min_length=1, max_length=128, pattern=_SAFE_ID_PATTERN)
+    block_id: str | None = Field(default=None, max_length=48, pattern=BLOCK_ID_PATTERN)
+    report_id: str | None = Field(default=None, max_length=128, pattern=_SAFE_ID_PATTERN)
+
+
+class ReportSummaryRequest(BaseModel):
+    """``POST /api/reports/{id}/summary`` body (``?dry_run=1`` is a query flag)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class InvestigateRequest(BaseModel):

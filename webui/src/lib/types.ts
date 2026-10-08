@@ -2275,7 +2275,14 @@ export interface UserPrefs {
   theme_mode?: ThemeMode;
   last_list_state?: Record<string, Record<string, unknown>>;
   pinned_view_ids?: string[];
+  /**
+   * Small UI-prefs bag. `misc.chat_stream_mode` is the viewer's chat live mode
+   * (`'steps' | 'text'`, chat revamp D2); the backend normalises it and drops an
+   * invalid value so the org default (`chat_agent.default_stream_mode`) applies.
+   */
   misc?: Record<string, unknown>;
+  /** Saved chat prompts (≤ 50; title ≤ 60, text ≤ 2000). Plain user text (#9). */
+  chat_prompts?: ChatPrompt[];
   updated_at?: string;
 }
 
@@ -2839,6 +2846,16 @@ export interface ChatConversationSummary {
   /** True when older turns were removed from this bounded transcript. */
   history_truncated?: boolean;
   oldest_retained_at?: string | null;
+  // --- Chat revamp (SPEC §7.5; additive). Legacy rows: totals are null → show "—". ---
+  /** Pinned conversations (≤ 10) are exempt from the 50-conversation eviction. */
+  pinned?: boolean;
+  /** This conversation's draft report, when one exists. */
+  report_id?: string | null;
+  /** The last composer time window used in this conversation. */
+  time_range?: ChatTimeRange | null;
+  total_tokens?: number | null;
+  total_cost?: number | null;
+  usage_turns?: number | null;
 }
 
 /** Full per-user Workspace conversation returned when a rail row is opened. */
@@ -2884,6 +2901,7 @@ export interface ChatMemorySuggestion {
 }
 
 export interface ChatResponse {
+  /** The final answer prose (Markdown subset; render with the chat Markdown renderer). */
   answer: string;
   /** True only when an oversized response snapshot was compacted in saved history. */
   truncated?: boolean;
@@ -2906,16 +2924,509 @@ export interface ChatResponse {
   effective_model?: string | null;
   effective_source_id?: string | null;
   effective_source_name?: string | null;
+  // --- Chat revamp (SPEC §3.2; additive). Every field is optional so legacy saved
+  // turns keep rendering; persisted values were validated leniently server-side. ---
   /**
-   * Optional provenance the chat engine may attach (additive; render only when
-   * present). All values are UNTRUSTED — render as plain text / the `CodeBlock`
-   * primitive (`soc/components/CodeBlock`), never as markup.
+   * Answer blocks (BLOCKS.md). Deliberately `unknown[]`: always pass them through
+   * `parseBlocks()` (`soc/chat/blocks/schema.ts`) before rendering (G9).
+   */
+  blocks?: unknown[];
+  blocks_version?: number;
+  /** The run log: one entry per tool call or model step. */
+  steps?: ChatStep[];
+  /** `null` on legacy replays and turns that recorded no usage ("Usage not recorded"). */
+  usage?: TurnUsage | null;
+  /**
+   * Sources the answer cites by id (`D1` docs, `C2` case, `K3` knowledge, `M1` ATT&CK).
+   * The `n`/`source` members are the retired pre-revamp shape (never sent by the
+   * server); they stay optional only until the legacy `ChatPanel` is removed.
+   */
+  citations?: Array<ChatCitation & LegacyChatCitationFields>;
+  console_links?: ConsoleLink[];
+  /** ≤ 3 follow-up chips (display-sanitised). Only the latest turn shows them. */
+  follow_ups?: string[];
+  answer_kind?: ChatAnswerKind;
+  notice?: TurnNotice | null;
+  /** The live mode this answer ran with (`null` on legacy rows). */
+  stream_mode?: ChatStreamMode | null;
+  turn_id?: string | null;
+  /** The persisted assistant message id (reports reference it). */
+  message_id?: string | null;
+  /** A model-proposed memory change awaiting human confirmation (`memory:manage`). */
+  memory_proposal?: MemoryProposal | null;
+  /**
+   * @deprecated Never sent by the backend (Pydantic drops it). Kept optional only so
+   * the legacy `ChatPanel` compiles until the chat revamp replaces it; derive tool
+   * provenance from `steps` instead.
    */
   tools?: RationaleTool[];
+  /** @deprecated Never sent by the backend; see `tools`. Use `citations`. */
   knowledge?: RationaleKnowledge[];
+  /** @deprecated Never sent by the backend; see `tools`. */
   reasoning?: string;
-  /** Inline citations the answer references (UNTRUSTED — plain text). */
-  citations?: Array<{ n: number; source: string; snippet?: string; ref?: string }>;
+}
+
+// --------------------------------------------------------------------------- //
+// Chat revamp contracts (docs/research/2026-10-chat-revamp/SPEC.md §3, §4.2, §4.5,
+// §8, §9.1). Mirrors backend `models.py`; the shared enums are pinned to
+// `soc/chat/chat-stream-events.contract.json` (and the block enums to
+// `soc/chat/blocks/answer-blocks.contract.json`) by paired contract tests.
+// Every string here may be model- or log-influenced: render as text (#9, G1/G7).
+// --------------------------------------------------------------------------- //
+export type ChatStreamMode = 'steps' | 'text';
+export type ChatScope = 'logs' | 'cases' | 'metrics' | 'intel' | 'docs' | 'platform';
+export type ChatOrigin = 'user' | 'follow_up' | 'starter' | 'command' | 'continue';
+export type ChatStepKind = 'tool' | 'model';
+export type ChatStepStatus = 'ok' | 'error' | 'denied' | 'timeout' | 'skipped' | 'cancelled';
+export type ChatStepBasis = 'exact' | 'newest_n' | 'sample' | 'cached';
+export type ChatAnswerKind = 'data' | 'product_help' | 'mixed' | 'conversation';
+export type TurnNoticeKind =
+  | 'partial'
+  | 'cap'
+  | 'budget'
+  | 'provider'
+  | 'breaker'
+  | 'denied'
+  | 'timeout'
+  | 'cancelled'
+  | 'unsupported'
+  | 'not_saved';
+export type ChatCitationKind = 'doc' | 'case' | 'knowledge' | 'mitre' | 'query';
+export type MemoryProposalOp = 'add' | 'remove';
+export type ChatBudgetState = 'ok' | 'approaching' | 'reached';
+export type TextStreamingReason = 'disabled_by_admin' | 'model_does_not_stream';
+export type ReportTemplateName = 'investigation' | 'hunt' | 'ioc' | 'shift' | 'posture' | 'custom';
+export type ReportItemKind = 'block' | 'section';
+
+/**
+ * The composer time window (backend `TimeRange`). Each bound is `now`,
+ * `now-<n>[m|h|d|w]` or ISO-8601; `from < to`; at most 90 days (else HTTP 422).
+ * Named `ChatTimeRange` to stay distinct from `TimeRangePicker`'s own `TimeRange`.
+ */
+export interface ChatTimeRange {
+  from: string;
+  /** Defaults to `now` server-side. */
+  to?: string;
+}
+
+/** `POST /api/chat` and `POST /api/chat/stream` body (same shape for both). */
+export interface ChatRequest {
+  message: string;
+  case_id?: string | null;
+  history?: ChatTurn[];
+  context?: Record<string, unknown> | null;
+  model?: string | null;
+  source_id?: string | null;
+  conversation_id?: string | null;
+  persist_conversation?: boolean;
+  idempotency_key?: string | null;
+  /** Presentation only (D2); never part of the request identity. */
+  stream_mode?: ChatStreamMode;
+  /** Composer @-scopes; unknown values are dropped server-side. */
+  scopes?: ChatScope[];
+  time_range?: ChatTimeRange | null;
+  /** Only `user` counts as user-authored for the indicator taint rule (§4.8). */
+  origin?: ChatOrigin;
+  /** The assistant message id this turn continues (after a `cap` notice). */
+  continue_of?: string | null;
+}
+
+/** Usage of one model call (or one query-embedding call on a tool step). */
+export interface StepUsage {
+  input_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  output_tokens: number;
+  cost: number;
+  latency_ms: number;
+  /** The provider omitted usage or the call was cancelled mid-stream (show `≈`). */
+  estimated?: boolean;
+  embedding_calls?: number;
+  embedding_tokens?: number;
+  embedding_cost?: number;
+}
+
+/**
+ * Running / final usage of a turn. "Input tokens" for users = uncached + cache read +
+ * cache write; `total_tokens` also adds output and embedding tokens. `simulated`
+ * marks Demo Mode synthetic pricing; `estimated` marks any estimated part.
+ */
+export interface TurnUsage {
+  calls: number;
+  embedding_calls: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost: number;
+  latency_ms: number;
+  model: string | null;
+  pricing_source: string | null;
+  simulated: boolean;
+  estimated: boolean;
+  context_window: number | null;
+  peak_prompt_tokens: number;
+}
+
+/** One run-log row (SPEC §3.3). `untrusted_params` and `query` are untrusted text. */
+export interface ChatStep {
+  /** Display order, 1-based. */
+  index: number;
+  /** Turn-global tool-call ordinal (`tN` artifact refs); tool steps only. */
+  ordinal?: number | null;
+  kind: ChatStepKind;
+  tool?: string | null;
+  /** Engine template ("Searched logs"). */
+  label: string;
+  /** Engine-whitelisted display chips; values display-sanitised. */
+  params: Record<string, string | number | boolean | null>;
+  status: ChatStepStatus;
+  duration_ms: number;
+  /** Engine template + numbers + enums only. */
+  summary: string;
+  untrusted_params?: Record<string, string>;
+  /** Native query text (render as untrusted code). */
+  query?: string | null;
+  rows?: number | null;
+  basis?: ChatStepBasis | null;
+  /** e.g. "newest 200 of 1,284,113", "3 of 4 sources answered". */
+  coverage?: string | null;
+  sources?: string[];
+  /** Model steps only. */
+  usage?: StepUsage | null;
+  /** Steps sharing a group ran in one parallel batch. */
+  group?: number | null;
+}
+
+/** A cited source, referenced by id in the answer (SPEC §3.5). */
+export interface ChatCitation {
+  id: string;
+  kind: ChatCitationKind;
+  title: string;
+  untrusted?: boolean;
+  /** `/docs/<major.minor>/<path>/#anchor` (validated). */
+  doc?: string | null;
+  case_id?: string | null;
+  /** `T1234` or `T1234.001`. */
+  technique?: string | null;
+  snippet?: string | null;
+}
+
+/**
+ * @deprecated The retired pre-revamp citation members (`{n, source, snippet, ref}`).
+ * The server never sends them; they remain optional only while the legacy
+ * `ChatPanel` still reads them.
+ */
+export interface LegacyChatCitationFields {
+  n?: number;
+  source?: string;
+  ref?: string;
+}
+
+/**
+ * A console destination resolved server-side from `console_map` (never from model
+ * text). A link with `allowed: false` renders as plain text naming `requires`.
+ */
+export interface ConsoleLink {
+  id: string;
+  label: string;
+  page: string;
+  opts?: Record<string, string | number>;
+  allowed: boolean;
+  requires?: string | null;
+}
+
+/** A model-proposed memory change; confirmed by a human through the memory routes. */
+export interface MemoryProposal {
+  op: MemoryProposalOp;
+  /** `add`: the proposed fact (≤ 500). */
+  text?: string | null;
+  /** `remove`: exact entry ids only. */
+  ids?: string[];
+}
+
+/** Why a turn is partial, stopped, refused or not saved (SPEC §4.5). */
+export interface TurnNotice {
+  kind: TurnNoticeKind;
+  message: string;
+  retryable: boolean;
+}
+
+/** One row of the caller's tool catalogue (GET /api/chat/context). */
+export interface ChatToolInfo {
+  name: string;
+  label: string;
+  scope: ChatScope;
+  data_source?: string;
+  /** `resource:action` grants, all required. */
+  requires: string[];
+  /** A kind-gated tool (no `requires`) is allowed when at least one kind is. */
+  allowed: boolean;
+  /**
+   * The grants the caller lacks (empty when allowed). For a kind-gated tool with no
+   * usable kind: every per-kind grant, any ONE of which unlocks it.
+   */
+  missing?: string[];
+  /** kind → the extra `resource:action` that kind needs. */
+  kind_requires?: Record<string, string>;
+  /** The kinds the caller may use. */
+  kinds_allowed?: string[];
+}
+
+export interface TextStreamingInfo {
+  available: boolean;
+  reason?: TextStreamingReason | null;
+}
+
+/** The public §4.2 bounds (never `internal_domains`). */
+export interface ChatContextBounds {
+  max_model_calls: number;
+  max_tool_calls: number;
+  max_parallel: number;
+  tool_timeout_s: number;
+  model_step_timeout_s: number;
+  turn_timeout_s: number;
+  turn_token_ceiling: number;
+  final_reserve_tokens: number;
+  observation_chars: number;
+  final_max_tokens: number;
+  max_indicator_lookups: number;
+  default_stream_mode: ChatStreamMode;
+  allow_text_streaming: boolean;
+}
+
+/** Effective per-million rates (present only with `models:read`). */
+export interface ChatRates {
+  input_per_million: number;
+  output_per_million: number;
+  cache_read_per_million?: number | null;
+}
+
+/** The daily budget the meter ring measures (present only with `models:read`). */
+export interface ChatBudgetInfo {
+  enabled: boolean;
+  daily_limit: number | null;
+  soft_warn_pct: number;
+  on_exceed: 'warn' | 'block';
+}
+
+/**
+ * `GET /api/chat/context` (SPEC §8): the composer meter and access catalogue.
+ * Money fields are present only with `models:read`; `spent_today`/`remaining`
+ * additionally need `cost:view`. Without them the meter shows tokens and
+ * `budget_state` only.
+ */
+export interface ChatContextInfo {
+  model: string | null;
+  context_window: number | null;
+  max_output_tokens: number;
+  chars_per_token: number;
+  static_prompt_tokens: number;
+  history_tokens: number;
+  history_exchanges?: number;
+  tools: ChatToolInfo[];
+  text_streaming: TextStreamingInfo;
+  bounds: ChatContextBounds;
+  /** actual ÷ estimate of the last turn in this conversation. */
+  calibration?: number | null;
+  budget_state?: ChatBudgetState | null;
+  rates?: ChatRates | null;
+  simulated?: boolean | null;
+  budget?: ChatBudgetInfo | null;
+  spent_today?: number | null;
+  remaining?: number | null;
+}
+
+/** `Preferences.chat_agent` (SPEC §4.2). Out-of-range stored values are clamped. */
+export interface ChatAgentConfig {
+  max_model_calls: number;
+  max_tool_calls: number;
+  max_parallel: number;
+  tool_timeout_s: number;
+  model_step_timeout_s: number;
+  turn_timeout_s: number;
+  turn_token_ceiling: number;
+  final_reserve_tokens: number;
+  observation_chars: number;
+  final_max_tokens: number;
+  max_concurrent_turns_per_user: number;
+  max_concurrent_turns_global: number;
+  max_indicator_lookups: number;
+  max_indicator_lookups_per_conversation: number;
+  default_stream_mode: ChatStreamMode;
+  allow_text_streaming: boolean;
+  /** Domain suffixes never sent to third-party enrichment. */
+  internal_domains: string[];
+  allow_email_lookup: boolean;
+}
+
+/** Declaration-merges the chat agent bounds onto `Preferences`. */
+export interface Preferences {
+  chat_agent?: ChatAgentConfig;
+}
+
+/** One saved composer prompt (`UserPrefs.chat_prompts`). */
+export interface ChatPrompt {
+  id: string;
+  /** ≤ 60 characters. */
+  title: string;
+  /** ≤ 2000 characters. */
+  text: string;
+}
+
+/** `PATCH /api/chat/conversations/{id}`: at least one of `title` / `pinned`. */
+export interface ChatConversationUpdateRequest {
+  /** 1..80 characters, single line. */
+  title?: string;
+  /** Pinning never changes `updated_at`; an 11th pin is 409 `chat_pin_limit`. */
+  pinned?: boolean;
+}
+
+/** Where a `?q=` content search matched a conversation. */
+export interface ChatConversationMatch {
+  message_id?: string | null;
+  /** ≤ 160 characters, display-sanitised. */
+  snippet: string;
+}
+
+/** A conversation summary returned by a content search. */
+export interface ChatConversationSearchHit extends ChatConversationSummary {
+  match?: ChatConversationMatch | null;
+}
+
+// ---- Reports (SPEC §9) ------------------------------------------------------ //
+export interface ReportItemSource {
+  conversation_id: string;
+  message_id: string;
+  block_id?: string | null;
+}
+
+/** Captured server-side at add time. */
+export interface ReportItemScope {
+  window?: string | null;
+  sources?: string[];
+  /** The model id that produced the answer. */
+  generated_by?: string | null;
+  app_version?: string | null;
+  demo?: boolean;
+}
+
+/** The `block` of a `section` item: a whole added answer. */
+export interface ReportSectionSnapshot {
+  /** The user's question. */
+  title: string;
+  /**
+   * Raw block dicts: the answer's Markdown, then that turn's blocks (≤ 13 in all).
+   * Pass through `parseBlocks(blocks, { limit: LIMITS.section_blocks })`.
+   */
+  blocks: unknown[];
+  /** More blocks were offered than a section holds; caption it "top N" (G4). */
+  truncated?: boolean;
+}
+
+export interface ReportItem {
+  id: string;
+  kind: ReportItemKind;
+  /**
+   * `kind: 'block'` → one answer block; `kind: 'section'` → a
+   * {@link ReportSectionSnapshot}. Always re-validate client-side (`parseBlocks`).
+   */
+  block: unknown;
+  /** User-authored note (≤ 500). */
+  note?: string | null;
+  source: ReportItemSource;
+  scope: ReportItemScope;
+  added_at: string;
+}
+
+/** The AI-written summary; stale when `based_on_version` < the report `version`. */
+export interface ReportSummary {
+  executive_summary: string;
+  next_steps: string[];
+  model?: string | null;
+  usage: TurnUsage;
+  generated_at: string;
+  based_on_version: number;
+}
+
+/** `POST /api/reports/{id}/summary?dry_run=1`. */
+export interface ReportSummaryEstimate {
+  prompt_tokens: number;
+  max_output_tokens: number;
+  total_tokens: number;
+  /** Present only with `models:read`. */
+  cost?: number | null;
+  simulated?: boolean;
+  model?: string | null;
+}
+
+export interface Report {
+  id: string;
+  owner: string;
+  /** ≤ 120 characters. */
+  title: string;
+  template: ReportTemplateName;
+  conversation_id?: string | null;
+  /** ≤ 40 items. */
+  items: ReportItem[];
+  summary?: ReportSummary | null;
+  created_at: string;
+  updated_at: string;
+  /** Strict-CAS version: send it back as `expected_version`. */
+  version: number;
+}
+
+/** One row of `GET /api/reports`. */
+export interface ReportListEntry {
+  id: string;
+  title: string;
+  template: ReportTemplateName;
+  conversation_id?: string | null;
+  item_count: number;
+  created_at?: string | null;
+  updated_at: string;
+  version: number;
+  has_summary?: boolean;
+}
+
+export interface ReportCreateRequest {
+  title?: string;
+  template?: ReportTemplateName;
+  conversation_id?: string | null;
+}
+
+/** `PATCH /api/reports/{id}`; 409 `report_version_conflict` on a stale version. */
+export interface ReportPatchRequest {
+  expected_version: number;
+  title?: string;
+  template?: ReportTemplateName;
+  /** A permutation of the remaining item ids. */
+  item_order?: string[];
+  /** item id → note (`null` clears it). */
+  notes?: Record<string, string | null>;
+  remove_items?: string[];
+}
+
+export interface ReportDeleteRequest {
+  expected_version: number;
+}
+
+/**
+ * `POST /api/reports/add` — add BY REFERENCE: the server loads the block (or the
+ * whole answer as a section when `block_id` is absent) from the caller's persisted
+ * Workspace message. Block JSON is never sent from the client.
+ */
+export interface ReportAddRequest {
+  conversation_id: string;
+  message_id: string;
+  block_id?: string | null;
+  report_id?: string | null;
+}
+
+export interface ReportSummaryRequest {
+  idempotency_key?: string | null;
+  expected_version?: number | null;
 }
 
 export type UsageProcessingTier = 'standard' | 'flex' | 'batch' | 'unconfirmed';

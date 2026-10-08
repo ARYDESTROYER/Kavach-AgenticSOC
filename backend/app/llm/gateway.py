@@ -4,6 +4,13 @@
 written here and ONLY here, so no call can escape the ledger. Errors are recorded
 (outcome=error) and surfaced as ``GatewayError`` so callers can fail-to-human
 rather than silently dropping an alert.
+
+Live text (chat revamp SPEC §6.3) is NOT a second entry point: ``complete`` takes an
+optional ``on_text`` callback and, when it is given, asks the provider to stream.
+Budget pre-flight, breaker admission, failure classification and the single
+``_record`` stay in ``complete`` either way, so a streamed call is metered by the
+same code as a blocking one — exactly one UsageDoc per call on success, failure and
+cancellation (#6).
 """
 
 from __future__ import annotations
@@ -12,7 +19,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ..build_identity import current_record_provenance
 from ..config import ModelConfig, Provider, Secrets
@@ -26,12 +33,23 @@ from .providers import (
     CompletionResult,
     MockProvider,
     ProviderError,
+    StreamInterrupted,
+    StreamProgress,
+    begin_stream_progress,
+    end_stream_progress,
     ensure_providers_discovered,
     last_attempt_count,
+    note_stream_input_usage,
+    provider_streams_text,
     reset_attempt_count,
 )
 
 logger = logging.getLogger("tlsoc.gateway")
+
+#: ``UsageDoc.usage_estimated`` is an additive ledger column that may not exist yet in
+#: the model layer; the gateway writes it only when the contract carries it, so the
+#: estimate flag lands the moment the field does and nothing breaks before then.
+_USAGE_DOC_HAS_ESTIMATED = "usage_estimated" in UsageDoc.model_fields
 
 
 class GatewayError(RuntimeError):
@@ -69,6 +87,26 @@ class BreakerOpen(GatewayError):
     breaker_reason: str = ""
 
 
+class BudgetBlocked(GatewayError):
+    """Raised by the budget pre-flight INSTEAD of a call that would breach the
+    operator's AI budget (chat revamp SPEC §4.5).
+
+    A ``GatewayError`` subclass for the same reason as :class:`BreakerOpen`: every
+    existing ``except GatewayError`` handler keeps routing it to NEEDS_HUMAN (#3), and
+    the message is unchanged (``budget ceiling exceeded: …``). The distinct type lets
+    the chat engine say "daily budget reached" instead of "model unavailable".
+
+    It is NOT a provider failure: ``failure_class`` stays ``""``, nothing is recorded
+    against provider health or the circuit breaker, and no ledger row is written —
+    the call never happened, so nothing was spent (#6).
+    """
+
+    #: The BudgetGate's own reason text (our wording, never provider text).
+    reason: str = ""
+    #: Which ceiling blocked: ``daily`` or ``monthly`` ("" when the gate did not say).
+    window: str = ""
+
+
 # --------------------------------------------------------------------------- #
 # Provider-failure classification — a CLOSED vocabulary of our own literals.
 # --------------------------------------------------------------------------- #
@@ -99,6 +137,15 @@ FAILURE_UNAVAILABLE = "unavailable"
 #: for the answer.
 FAILURE_ABANDONED = "abandoned"
 
+#: A streamed completion failed AFTER its first text delta (SPEC §6.3). It IS a
+#: provider failure (the stream broke on the provider's side of the socket) so it is a
+#: member of :data:`PROVIDER_FAILURE_CLASSES` and feeds the health tracker. It is an
+#: ORDINARY window failure there — not in ``provider_health.IMMEDIATE_TRIP_CLASSES`` —
+#: and the tracker reports any class it has no explicit mapping for as
+#: ``unavailable``, so no existing class's trip semantics change. It is never retried:
+#: part of the answer was already shown.
+FAILURE_STREAM_INTERRUPTED = "stream_interrupted"
+
 #: Every code a provider failure may be reported as. Anything unrecognised
 #: degrades to ``unavailable`` rather than leaking provider text.
 PROVIDER_FAILURE_CLASSES = frozenset(
@@ -108,8 +155,42 @@ PROVIDER_FAILURE_CLASSES = frozenset(
         FAILURE_QUOTA,
         FAILURE_UNSUPPORTED,
         FAILURE_UNAVAILABLE,
+        FAILURE_STREAM_INTERRUPTED,
     }
 )
+
+
+def estimate_message_tokens(messages: list[dict[str, str]]) -> int:
+    """chars/4 of the message contents — the same arithmetic as the budget pre-flight.
+
+    Used for the billed input of a call the provider never reported usage for (a
+    cancelled or interrupted call), so the ledger never shows 0 input for a request
+    that was actually sent. Public so the chat engine can label the same estimate."""
+    chars = 0
+    for message in messages or ():
+        chars += len(str(message.get("content", ""))) if isinstance(message, dict) else 0
+    return max(1, chars // 4)
+
+
+def estimate_text_tokens(text_or_chars: str | int) -> int:
+    """chars/4 of received text (0 for none; at least 1 once anything arrived)."""
+    chars = text_or_chars if isinstance(text_or_chars, int) else len(text_or_chars or "")
+    return max(1, chars // 4) if chars > 0 else 0
+
+
+def _partial_usage(
+    messages: list[dict[str, str]], progress: StreamProgress | None
+) -> tuple[int, int, int, int]:
+    """``(prompt, completion, cache_read, cache_write)`` for a call that ended without
+    a result: the provider-reported input when the stream already reported it, else
+    chars/4 of the messages; output is chars/4 of the text received so far."""
+    if progress is not None and progress.prompt_tokens is not None:
+        prompt = progress.prompt_tokens
+        cache_read, cache_write = progress.cache_read_tokens, progress.cache_write_tokens
+    else:
+        prompt, cache_read, cache_write = estimate_message_tokens(messages), 0, 0
+    completion = estimate_text_tokens(progress.received_chars if progress is not None else 0)
+    return prompt, completion, cache_read, cache_write
 
 
 def classify_provider_failure(exc: BaseException) -> str:
@@ -122,6 +203,10 @@ def classify_provider_failure(exc: BaseException) -> str:
     the incident's operator chased latency for days because a 401 was indistinguishable
     from a timeout.
     """
+    if isinstance(exc, StreamInterrupted):
+        # Checked first: the phase (after the first delta) is the diagnosis, whatever
+        # status the underlying cause carried.
+        return FAILURE_STREAM_INTERRUPTED
     status = getattr(exc, "status", None)
     if not isinstance(status, int):
         # Not every failure arrives as a ``ProviderError``: an out-of-tree provider, or
@@ -260,6 +345,139 @@ _OPENAI_FLEX_MODEL_PREFIXES: tuple[str, ...] = ("gpt-5", "o3", "o4-mini")
 
 def _demo_synthetic_cost(prompt_tokens: int, completion_tokens: int) -> float:
     return round(prompt_tokens * _DEMO_IN_RATE + completion_tokens * _DEMO_OUT_RATE, 8)
+
+
+@dataclass
+class UsageReceipt:
+    """What the gateway ledgered for ONE ``complete``/``embed`` call, handed back
+    through an object the CALLER owns (``usage_receipt=``).
+
+    Why it exists: a caller that stops waiting (``asyncio.wait_for``, a chat step
+    timeout) gets ``TimeoutError``/``CancelledError`` instead of a result, yet the
+    gateway still writes an ``abandoned`` row carrying a real estimated cost (SPEC
+    §6.3). Without this the caller can never learn that cost, so its own roll-up
+    (``Case.token_cost``, a chat turn's ``TurnUsage``) silently sits below the ledger.
+    The object is passed by reference, so it is shared with the gateway coroutine even
+    when ``wait_for`` runs that coroutine in a task with a copied context.
+
+    It is filled inside the ONE ledger write from the exact values of the row being
+    written (never re-derived), immediately BEFORE the store write: the figures are
+    final then, and a second cancellation that interrupts the write itself can only
+    leave the caller's roll-up at or above the ledger, never below it. ``recorded``
+    flips once the row was handed to the store. ``complete`` resets it on entry, so a
+    call refused before any provider request (budget block, open breaker) leaves it
+    empty — exactly like the ledger, which has no row for such a call.
+
+    Token and cost fields SUM over the rows of the call: a completion writes exactly
+    one row (#6); an embedding that fell back to local hashing writes an ERROR row and
+    then the fallback's OK row. The descriptive fields (outcome, failure class, model,
+    pricing source) are the LAST row's. Field names mirror ``UsageDoc``;
+    :meth:`step_usage_fields` maps them onto the chat ``StepUsage`` contract."""
+
+    #: Ledger rows built for this call (0 = refused before any provider request).
+    rows: int = 0
+    #: True once every built row was handed to the usage store.
+    recorded: bool = False
+    outcome: str = ""
+    failure_class: str = ""
+    model: str = ""
+    #: The uncached, full-rate input (UsageDoc semantics: cache slices are separate).
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost: float = 0.0
+    #: Gateway-measured wall time of the call (the longest row: every row of one call
+    #: is timed from the same start, so summing would double count).
+    latency_ms: int = 0
+    pricing_source: str = ""
+    #: Any count was a chars/4 estimate (provider omitted usage, or the call was
+    #: cancelled/interrupted mid-answer). Carried here even while ``UsageDoc`` lacks
+    #: the column, so a caller's meter can label the figure "≈" today.
+    usage_estimated: bool = False
+    #: HTTP requests the call made, including retries and fallback stages (the
+    #: ledger's ``attempts`` column).
+    attempts: int = 0
+    #: Demo Mode: the cost is synthetic (pricing_source is ``zero``).
+    simulated: bool = False
+
+    def reset(self) -> None:
+        """Return every field to its default (the gateway does this on entry)."""
+        for name, default in _RECEIPT_DEFAULTS.items():
+            setattr(self, name, default)
+
+    def step_usage_fields(self) -> dict[str, Any]:
+        """The ``StepUsage`` (SPEC §3.4) fields of a model call, so a meter built from
+        the receipt matches the ledger row exactly. Kept as a plain mapping rather
+        than a model instance so this low-level module never imports the chat
+        contracts."""
+        return {
+            "input_tokens": self.prompt_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "output_tokens": self.completion_tokens,
+            "cost": self.cost,
+            "latency_ms": self.latency_ms,
+            "estimated": self.usage_estimated,
+        }
+
+    def _absorb(self, doc: UsageDoc, *, usage_estimated: bool, simulated: bool) -> None:
+        """Fold one ledger row (about to be written) into the receipt."""
+        self.rows += 1
+        self.recorded = False
+        self.outcome = str(getattr(doc.outcome, "value", doc.outcome) or "")
+        self.failure_class = doc.failure_class
+        self.model = doc.model
+        self.prompt_tokens += int(doc.prompt_tokens or 0)
+        self.completion_tokens += int(doc.completion_tokens or 0)
+        self.cache_read_tokens += int(doc.cache_read_tokens or 0)
+        self.cache_write_tokens += int(doc.cache_write_tokens or 0)
+        # Unrounded: a one-row receipt must equal the ledger row's cost bit for bit.
+        self.cost += float(doc.cost or 0.0)
+        self.latency_ms = max(self.latency_ms, int(doc.latency_ms or 0))
+        self.pricing_source = doc.pricing_source
+        self.usage_estimated = self.usage_estimated or bool(usage_estimated)
+        # Max, not sum: an embedding's fallback row re-stamps the same request count
+        # as the ERROR row before it, so adding them would double the requests made.
+        self.attempts = max(self.attempts, int(doc.attempts or 0))
+        self.simulated = self.simulated or bool(simulated)
+
+
+_RECEIPT_DEFAULTS: dict[str, Any] = {
+    name: field.default for name, field in UsageReceipt.__dataclass_fields__.items()
+}
+
+
+class _TextSink:
+    """The ``on_text`` the gateway hands a provider: counts every delta for
+    cancellation accounting, then relays it to the caller's callback.
+
+    A failing caller callback is logged and further deltas are no longer relayed, but
+    it never propagates into the provider: there it would be reported as a broken
+    stream (``stream_interrupted``) and charged to the provider's health and breaker
+    for a fault that is ours. The call still completes and returns its whole text.
+    Cancellation (a ``BaseException``) is not caught and stops the call as usual."""
+
+    def __init__(self, on_text: Callable[[str], Awaitable[None]],
+                 progress: StreamProgress) -> None:
+        self._on_text = on_text
+        self._progress = progress
+        self._relay = True
+
+    async def __call__(self, delta: str) -> None:
+        if not delta:
+            return
+        self._progress.received_chars += len(delta)
+        if not self._relay:
+            return
+        try:
+            await self._on_text(delta)
+        except Exception:  # noqa: BLE001 — a consumer bug must not fail the model call
+            self._relay = False
+            logger.warning(
+                "on_text callback failed; live text disabled for the rest of this call",
+                exc_info=True,
+            )
 
 
 class LLMGateway:
@@ -583,7 +801,24 @@ class LLMGateway:
         *,
         surface: str = "",
         case_id: str | None = None,
+        on_text: Callable[[str], Awaitable[None]] | None = None,
+        usage_receipt: UsageReceipt | None = None,
     ) -> CompletionResult:
+        """Run one completion and ledger it (#6).
+
+        ``on_text`` (chat Live text, SPEC §6.3) asks the provider to stream: each text
+        delta is awaited through it as it arrives, and the return value is still the
+        whole :class:`CompletionResult`. A provider that cannot stream delivers the
+        whole text through it once. ``on_text=None`` is the historical blocking call,
+        unchanged. Either way the same pre-flight, breaker, classification and single
+        ledger write apply.
+
+        ``usage_receipt`` (optional, caller-owned) is reset here and then filled with
+        exactly what the ledger row records — on success, on a provider failure and on
+        cancellation alike. It is how a caller that abandons the call through
+        ``asyncio.wait_for`` still learns the cost the gateway ledgered for it."""
+        if usage_receipt is not None:
+            usage_receipt.reset()
         role_str = role.value if isinstance(role, Role) else role
         # Budget pre-flight (Feature 9, Track B): a PURE ceiling check that RAISES on
         # block BEFORE the provider call + BEFORE any ledger write, so a blocked call
@@ -621,30 +856,53 @@ class LLMGateway:
         )
         started = time.perf_counter()
         reset_attempt_count()
+        # Armed only for a streamed call; a blocking call keeps the historical path.
+        progress: StreamProgress | None = None
+        sink: _TextSink | None = None
+        if on_text is not None:
+            progress = begin_stream_progress()
+            sink = _TextSink(on_text, progress)
         try:
             provider = self._provider(
                 model_cfg.provider, model=model_cfg.model, endpoint=model_cfg,
                 service_tier=service_tier,
                 fallback_to_standard=fallback_to_standard,
             )
-            result = await provider.complete(
-                role_str, messages, model_cfg.model, model_cfg.temperature, model_cfg.max_tokens
-            )
+            if sink is None:
+                result = await provider.complete(
+                    role_str, messages, model_cfg.model, model_cfg.temperature,
+                    model_cfg.max_tokens,
+                )
+            else:
+                result = await self._complete_streamed(
+                    provider, role_str, messages, model_cfg, sink
+                )
         except asyncio.CancelledError:
-            # The CALLER stopped waiting (its slice of the case time budget, or the
-            # pipeline's hard timeout) for a request that was already in flight. The
-            # provider may well bill it, so #6 requires a row: without one the spend is
-            # invisible to the ledger, the cost page and every budget rollup.
+            # The CALLER stopped waiting (its slice of the case time budget, the
+            # pipeline's hard timeout, a chat step timeout or a factory reset) for a
+            # request that was already in flight. The provider may well bill it, so #6
+            # requires a row: without one the spend is invisible to the ledger, the cost
+            # page and every budget rollup.
+            #
+            # The row carries the input the provider bills for an issued request — its
+            # own count when a stream already reported it, else chars/4 of the messages
+            # — and chars/4 of any text received, flagged estimated (SPEC §6.3). It used
+            # to record 0/0, under-reporting spend for every abandoned call.
             #
             # ``CancelledError`` is a BaseException, so the ``except Exception`` below
             # never saw it. No provider failure is noted and no breaker key is touched:
             # our own deadline says nothing about the provider's health.
             latency = int((time.perf_counter() - started) * 1000)
+            prompt_est, completion_est, cache_read_est, cache_write_est = _partial_usage(
+                messages, progress
+            )
             try:
                 await self._record(
-                    role_str, surface, case_id, model_cfg.model, 0, 0, latency,
-                    UsageOutcome.ERROR, failure_class=FAILURE_ABANDONED,
-                    attempts=last_attempt_count(),
+                    role_str, surface, case_id, model_cfg.model, prompt_est,
+                    completion_est, latency, UsageOutcome.ERROR,
+                    failure_class=FAILURE_ABANDONED, attempts=last_attempt_count(),
+                    cache_read_tokens=cache_read_est, cache_write_tokens=cache_write_est,
+                    usage_estimated=True, receipt=usage_receipt,
                 )
             except (Exception, asyncio.CancelledError):  # noqa: BLE001 — re-cancelled, or a store glitch
                 logger.warning(
@@ -657,9 +915,22 @@ class LLMGateway:
             failure_class = classify_provider_failure(exc)
             attempts = last_attempt_count()
             self._note_provider_failure(model_cfg, failure_class, "completion", role_str)
-            await self._record(role_str, surface, case_id, model_cfg.model, 0, 0, latency,
+            # A stream that broke after its first delta was ANSWERING: the provider
+            # bills its input and the output it sent, so that row carries the same
+            # estimate as a cancelled call. Every other failure keeps the historical
+            # 0/0 row (the request was refused or never completed a response).
+            prompt_err = completion_err = cache_read_err = cache_write_err = 0
+            interrupted = failure_class == FAILURE_STREAM_INTERRUPTED
+            if interrupted:
+                prompt_err, completion_err, cache_read_err, cache_write_err = _partial_usage(
+                    messages, progress
+                )
+            await self._record(role_str, surface, case_id, model_cfg.model,
+                               prompt_err, completion_err, latency,
                                UsageOutcome.ERROR, failure_class=failure_class,
-                               attempts=attempts)
+                               attempts=attempts, cache_read_tokens=cache_read_err,
+                               cache_write_tokens=cache_write_err,
+                               usage_estimated=interrupted, receipt=usage_receipt)
             logger.warning("LLM call failed (role=%s model=%s class=%s attempts=%d): %s",
                            role_str, model_cfg.model, failure_class, attempts, exc)
             # Carry the CLOSED-VOCABULARY class on the exception so the pipeline can
@@ -674,6 +945,12 @@ class LLMGateway:
             error = GatewayError(sanitized_failure_message(failure_class, exc))
             error.failure_class = failure_class
             raise error from exc
+        finally:
+            if progress is not None:
+                # Restores whatever tracker was armed before this call (by token), so
+                # a streamed call nested inside another's ``on_text`` cannot disarm
+                # the outer call's tracker.
+                end_stream_progress(progress)
 
         attempts = last_attempt_count()
         self._note_provider_success(model_cfg, "completion", role_str)
@@ -692,13 +969,62 @@ class LLMGateway:
                             cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                             batch=is_batch)
         result.cost = cost  # let callers roll up per-case cost (Case.token_cost)
-        await self._record(
+        price_src = await self._record(
             role_str, surface, case_id, model_used,
             result.prompt_tokens, result.completion_tokens, latency, UsageOutcome.OK, cost,
             cache_read_tokens=cache_read, cache_write_tokens=cache_write, batch=is_batch,
             processing_tier=processing_tier, attempts=attempts,
+            usage_estimated=bool(getattr(result, "usage_estimated", False)),
+            receipt=usage_receipt,
         )
+        # Per-step usage for callers (the chat meter) without re-deriving either value:
+        # the price provenance the ledger row was stamped with, and the latency it holds.
+        result.pricing_source = price_src
+        result.latency_ms = latency
         return result
+
+    async def _complete_streamed(
+        self, provider: BaseProvider, role: str, messages: list[dict[str, str]],
+        model_cfg: ModelConfig, sink: _TextSink,
+    ) -> CompletionResult:
+        """Ask ``provider`` to stream into ``sink``. A duck-typed provider (an
+        out-of-tree entry point that does not subclass ``BaseProvider``) without
+        ``complete_stream`` gets the same one-shot behaviour as the default."""
+        stream = getattr(provider, "complete_stream", None)
+        if callable(stream):
+            return await stream(
+                role, messages, model_cfg.model, model_cfg.temperature,
+                model_cfg.max_tokens, sink,
+            )
+        result = await provider.complete(
+            role, messages, model_cfg.model, model_cfg.temperature, model_cfg.max_tokens
+        )
+        # Mirror ``BaseProvider.complete_stream``: report the finished call's own usage
+        # before relaying, so a cancel during the relay ledgers the provider's exact
+        # counts instead of a chars/4 estimate.
+        note_stream_input_usage(
+            getattr(result, "prompt_tokens", None),
+            getattr(result, "cache_read_tokens", 0),
+            getattr(result, "cache_write_tokens", 0),
+        )
+        if result.text:
+            await sink(result.text)
+        return result
+
+    def text_streaming_supported(self, provider: Provider | str) -> bool:
+        """Whether a completion on ``provider`` streams text incrementally (SPEC §6.3;
+        ``/api/chat/context.text_streaming``).
+
+        An injected or cached provider instance answers for itself (``streams_text``):
+        that is what makes Demo Mode — every name mapped to the simulated-streaming
+        DemoMockProvider — report Live text as available, and a test's MockProvider
+        report it unavailable. Otherwise the name decides (openai, openai_compatible,
+        anthropic). Never constructs a client, so it cannot fail on a missing key."""
+        name = str(provider or "")
+        instance = self._providers.get(name)
+        if instance is not None:
+            return bool(getattr(instance, "streams_text", False))
+        return provider_streams_text(name)
 
     def _alert_processing_preference(
         self, model_cfg: ModelConfig, surface: str,
@@ -745,10 +1071,12 @@ class LLMGateway:
         *,
         surface: str = "rag",
         case_id: str | None = None,
+        usage_receipt: UsageReceipt | None = None,
     ) -> list[list[float]]:
         """Back-compatible vector-only embedding API."""
         batch = await self.embed_with_provenance(
-            texts, model_cfg, surface=surface, case_id=case_id
+            texts, model_cfg, surface=surface, case_id=case_id,
+            usage_receipt=usage_receipt,
         )
         return batch.vectors
 
@@ -759,8 +1087,13 @@ class LLMGateway:
         *,
         surface: str = "rag",
         case_id: str | None = None,
+        usage_receipt: UsageReceipt | None = None,
     ) -> EmbeddingBatch:
         """Embed ``texts`` through the provider (then the ledger, #6).
+
+        ``usage_receipt`` works as on :meth:`complete` (reset, then filled from the
+        ledger rows). An outage that falls back to local hashing writes two rows — the
+        provider's ERROR row and the fallback's OK row — and the receipt sums them.
 
         NOTE: embeddings are METERED but deliberately NOT pre-flight-gated by the
         BudgetGate. The gate's ``check`` is completion-shaped (it prices a prompt +
@@ -772,6 +1105,8 @@ class LLMGateway:
         NEXT completion pre-flight. (If an operator ever needs to cap embedding spend
         specifically, add an embed-shaped pre-flight here mirroring _budget_preflight.)
         """
+        if usage_receipt is not None:
+            usage_receipt.reset()
         model_cfg = await self._resolve_endpoint(model_cfg)
         started = time.perf_counter()
         provider_used = str(model_cfg.provider)
@@ -814,7 +1149,7 @@ class LLMGateway:
             )
             await self._record(embed_role, surface, case_id, model_used,
                                result.tokens, 0, latency, UsageOutcome.OK, cost,
-                               failure_class=fallback_reason)
+                               failure_class=fallback_reason, receipt=usage_receipt)
             return EmbeddingBatch(
                 vectors=result.vectors,
                 provider=provider_used,
@@ -858,7 +1193,7 @@ class LLMGateway:
                                int((time.perf_counter() - started) * 1000),
                                UsageOutcome.ERROR, 0.0,
                                failure_class=fallback_reason,
-                               attempts=last_attempt_count())
+                               attempts=last_attempt_count(), receipt=usage_receipt)
             result = await self._mock_fallback.embed(texts, "mock-embed")
             provider_used = "mock"
             model_used = "mock-embed"
@@ -876,7 +1211,7 @@ class LLMGateway:
         await self._record(embed_role, surface, case_id, model_used,
                            result.tokens, 0, latency, UsageOutcome.OK, cost,
                            failure_class=fallback_reason,
-                           attempts=last_attempt_count())
+                           attempts=last_attempt_count(), receipt=usage_receipt)
         return EmbeddingBatch(
             vectors=result.vectors,
             provider=provider_used,
@@ -946,9 +1281,10 @@ class LLMGateway:
     async def _budget_preflight(self, role: str, messages: list[dict[str, str]],
                                 model_cfg: ModelConfig) -> None:
         """Run the optional BudgetGate BEFORE a billable call. On a ``block`` decision
-        it RAISES GatewayError (caller fails to NEEDS_HUMAN — never closes #3). Demo/
-        mock / $0 models bypass the gate. Best-effort: a gate evaluation glitch never
-        hard-blocks a call (logged) — the budget is governance, not a safety stop."""
+        it RAISES :class:`BudgetBlocked` (a GatewayError: caller fails to NEEDS_HUMAN —
+        never closes #3). Demo/mock / $0 models bypass the gate. Best-effort: a gate
+        evaluation glitch never hard-blocks a call (logged) — the budget is
+        governance, not a safety stop."""
         if self._budget is None or self._demo:
             return
         if str(model_cfg.provider) == "mock" or model_cfg.model.startswith("mock"):
@@ -967,7 +1303,11 @@ class LLMGateway:
         if decision is not None and decision.get("action") == "block":
             reason = str(decision.get("reason", "budget ceiling exceeded"))
             logger.warning("budget BLOCK (role=%s model=%s): %s", role, model_cfg.model, reason)
-            raise GatewayError(f"budget ceiling exceeded: {reason}")
+            blocked = BudgetBlocked(f"budget ceiling exceeded: {reason}")
+            blocked.reason = reason
+            window = str(decision.get("window") or "")
+            blocked.window = window if window in ("daily", "monthly") else ""
+            raise blocked
 
     # ----- ledger write (the ONE place) -----
     async def _record(
@@ -990,7 +1330,16 @@ class LLMGateway:
         require_persistence: bool = False,
         failure_class: str = "",
         attempts: int = 1,
-    ) -> None:
+        usage_estimated: bool = False,
+        receipt: UsageReceipt | None = None,
+    ) -> str:
+        """Write the ONE UsageDoc for a call and return its ``pricing_source``.
+
+        ``usage_estimated`` marks token counts the gateway or provider estimated
+        (chars/4) rather than read from provider usage; it is persisted once the
+        ledger contract carries the column (see :data:`_USAGE_DOC_HAS_ESTIMATED`).
+        ``receipt`` (the caller's :class:`UsageReceipt`) absorbs the finished row just
+        before the store write, so the caller's figures are the ledger's figures."""
         total = prompt_tokens + completion_tokens
         # Demo Mode: a $0 mock run — pricing_source is ALWAYS 'zero' (the cost is
         # synthetic, not a verified rate), so the cost page can badge it "simulated".
@@ -1013,8 +1362,12 @@ class LLMGateway:
                               cache_read_tokens=cache_read_tokens,
                               cache_write_tokens=cache_write_tokens, batch=batch)
             )
+        optional: dict[str, Any] = {}
+        if _USAGE_DOC_HAS_ESTIMATED:
+            optional["usage_estimated"] = bool(usage_estimated)
         doc = UsageDoc(
             **current_record_provenance(),
+            **optional,
             surface=surface,
             case_id=case_id,
             role=role,
@@ -1037,10 +1390,17 @@ class LLMGateway:
             failure_class=str(failure_class or ""),
             attempts=max(1, int(attempts or 1)),
         )
+        if receipt is not None:
+            # No await between building the row and this: the receipt can never miss a
+            # row that reaches the store (see UsageReceipt on why it precedes the write).
+            receipt._absorb(doc, usage_estimated=usage_estimated, simulated=self._demo)
         if require_persistence:
             await self._usage.write_strict(doc)
         else:
             await self._usage.write(doc)
+        if receipt is not None:
+            receipt.recorded = True
+        return price_src
 
     def reset_providers(self) -> None:
         """Drop cached provider clients so new secret values take effect.
