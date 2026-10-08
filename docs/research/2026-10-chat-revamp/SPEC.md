@@ -1090,7 +1090,13 @@ any pinned test that must change is listed here with its reason before merge:
   fail-closed path under the stricter grammar. The strict `xfail` on
   `test_rag_import_cannot_mint_the_app_docs_label` was removed with the anti-mint fix (A12).
 - `webui/src/soc/chat/__tests__/display.test.ts` (`isDocLink`): `/docs/0.1/` moved from the
-  rejected to the accepted list (A1). New tests: loop and
+  rejected to the accepted list (A1).
+- `webui/src/soc/chat/__tests__/chat-stream-events.contract.test.ts`: an `it.fails` known-gap
+  marker runs the `doc_ref_examples` through `normaliseCitation` (A1, merge-blocking); it is
+  flipped to `it` when `stream-events.ts` adopts the grammar.
+- Wave-3 tests (no released surface): the "Open in Logs" cases in `test_chat_tools_common.py` /
+  `test_chat_tools_logs.py` expect absolute instants and refuse live-tail sources (A14); the
+  replay lookup-count cases in `test_chat_engine_loop.py` count egress (A13). New tests: loop and
 caps (ceiling projection, final reserve, structural observation shrink), parser fixtures §4.1.1,
 failure classes and the D1 fix, taint and side-effect rules §4.8, tools (RBAC incl. custom roles and
 `resolve_grants` with zero audit writes, whitelisting, fencing, demo), audit_search never leaking
@@ -1188,7 +1194,11 @@ look-around (Pydantic validates `pattern` with the Rust engine) and ASCII digit 
 Python, Rust and JavaScript accept the same strings; the shared `doc_ref_examples` vectors in
 `answer-blocks.contract.json` run on both sides. `app.knowledge.doc_href` therefore gives every
 bundled section a `D*` id; a path the grammar refuses still fails closed (shown as reference
-only).
+only). The client citation normaliser (`stream-events.ts` `normaliseCitation`, which drops a
+`doc` citation whose link fails its pattern) must use the same grammar; the same vectors run
+through it in `chat-stream-events.contract.test.ts`. MERGE-BLOCKING until `stream-events.ts`
+adopts it: that test is an `it.fails` known-gap marker (the twin of a strict `xfail`) and turns
+red once the grammar lands, so it is flipped to `it` in the same change.
 
 **A2 — Model-step bounds (§4.2).** `final_max_tokens` applies to every model step, because the
 model decides which step is the final; the earlier budget pre-check keeps the ceiling honest.
@@ -1254,17 +1264,26 @@ every other display string strips them (G7).
   `cases:read`).
 - `app_status` reads `ChatToolContext.secrets_status()` (configured booleans only).
 
-**A12 — Anti-minting (§5.4).** `tools/rag._sanitise_source_label` stores an import whose label is
-one of `app.knowledge.RESERVED_SOURCE_LABELS` (`app_docs`, `app_help`, `product_docs`; compared
-after `strip().casefold()`) as `imported`, as it already did for the trusted RAG labels. A label
-that merely contains a reserved word is an ordinary, untrusted label.
+**A12 — Anti-minting (§5.4).** `tools/rag._sanitise_source_label` stores an import whose label
+LOOKS like a reserved app-knowledge label (`app.knowledge.RESERVED_SOURCE_LABELS`: `app_docs`,
+`app_help`, `product_docs`) or a trusted RAG label (`runbook`, `mitre`, `suppression`) as
+`imported`. "Looks like" is judged on how the label displays: NFKC-folded (full-width forms),
+invisible characters removed (the display sanitiser drops them, so `app_docs` + ZWSP reads as
+`app_docs`), whitespace collapsed, case-folded. Trust checks still compare exactly; this keeps a
+provenance column from misleading an analyst. A label that merely contains a reserved word is an
+ordinary, untrusted label, stored unchanged.
 
 **A13 — Taint and the lookup budget (§4.8.3).** User-text matching is whole-token equality
 (including URL host, `host:port` host, e-mail domain components and refanged defanged forms),
 which is what "verbatim" means. Lookups are budgeted only by `ChatToolbox.execute` (reserve before
-running, commit when at least one provider answered, release otherwise); the engine never
-commits one. On replay, the per-conversation count mirrors that rule: a stored `lookup_indicator`
-step that no provider answered (`rows == 0`, or "from 0 of N providers") does not count.
+running, commit when at least one provider answered, release otherwise: an analyst-value rule for
+the per-turn limit); the engine never commits one. On replay, the per-conversation count is an
+EGRESS cap: every stored `lookup_indicator` step that may have sent the indicator to a third
+party counts, whether or not a provider answered (an `ok` step unless `rows`, the structured
+providers-queried count, is 0; a `timeout` step; an older step without `rows`). A provider
+error, timeout or 429 still received the indicator. The rule reads the stored `rows`, never the
+summary text. Within one turn the conversation count lags by the released failures (the ledger
+releases one slot for both counts); the next turn's replay counts them.
 
 **A14 — Open in Logs (§10.3, §10.7, BLOCKS amendment 3).** Every block may carry `open_in`, an
 `InternalRef` to the EXACT console view of its data. `InternalRef.opts` gains the Logs deep-link
@@ -1272,12 +1291,20 @@ keys `logQuery`, `from`, `to` and `sourceId`, validated exactly like the router'
 (plain id; `now`, `now-<n>[mhdw]` or an ISO-8601 shape with no space; a log query of 1–512 code
 points with no Unicode category C character and no line or paragraph separator); the shared
 `nav_log_examples` vectors run through `clean_nav_opts`, `parseInternalRef` and the router's
-`pageHash`. Mapping from `StructuredQuery`: `contains` → `logQuery`, the resolved window's
-`time_from`/`time_to` → `from`/`to`, a named source → `sourceId` (no `sourceId` = every
+`pageHash`. Mapping from `StructuredQuery`: `contains` → `logQuery`; the window the call
+resolved (§3.1 precedence, request clamp, 90-day cap) → `from`/`to` as ABSOLUTE UTC instants at
+millisecond precision, rounded into the window (`2026-10-08T12:00:00.250Z`), resolved at the
+instant the call started, so a stored answer reopened later opens the window its data came from
+(never a relative `now-24h` re-evaluated then; a relative bound the connector evaluated on its own
+clock differs only by the call's latency); a named source → `sourceId` (no `sourceId` = every
 browse-capable source, which is what a full fan-out read). `ip`, `user`, `host`, `rule`,
 `severity_gte` and `ids` have no Logs field, so such a call gets Copy query only; so does a call
-that read the one implicit primary source (its id is not known to the engine). The view is built
-by `ChatToolbox.execute` from the log call's own parsed input
+that read the one implicit primary source (its id is not known to the engine), and any call that
+read a push source's live-tail ring (mode `buffer`), in a fan-out or as the named source: the
+chat tools filter ring rows themselves, but `GET /api/logs` ignores query and window for a ring,
+so its Logs view would be wider than the block. The decision uses what the call's observation
+says ran (one connector search, or a fan-out whose every source is mode `search`); no record
+means no view. The view is built by `ChatToolbox.execute` from the log call's own parsed input
 (`chat_tools.common.logs_console_view`), copied onto the block by the materialiser, kept across
 `mK.bJ` view changes, and never present on an `ai` block. "Open in Cases" remains limited to a
 single exact case.
@@ -1287,7 +1314,8 @@ when the values add up: always for `count`, `tokens`, `bytes` and `usd`; for `pe
 only when the parts of every complete group reconcile to 100 (or 1) within 0.5 percentage points
 and at least one group is complete — per x slot across the series for a stack, across the
 categories for a donut; never for `score` or a duration. A donut also needs a complete (not
-truncated) population of at most six categories. The server judges the block as shown
+truncated) population of at most six categories, on both sides (the shared vectors include a
+truncated donut). The server judges the block as shown
 (`blocks.chart_kind_fits`, the twin of the webui `views.chartKindFits`; shared `chart_honesty`
 vectors), falls back to the default view when a clipped block no longer supports the requested
 one, and offers only honest views in `allowed_views`; `blocks.artifact_views(artifact)` is the
@@ -1296,7 +1324,9 @@ honest list for the tool-call header.
 **A16 — `search_knowledge` trust split (§5.3).** The engine renders a search observation with
 the trust split per chunk: each curated runbook / ATT&CK / suppression chunk and each approved
 operator-memory item becomes one engine line `TRUSTED K31 [runbook] <text>` (constant label,
-markers neutralised, invisible characters escaped, one line, ≤ 400 chars), and the observation
+markers neutralised, invisible characters escaped, one line, ≤ 600 chars: the tool's own chunk
+bound, so lifting never cuts what the fenced copy would have carried; a ref must be exactly
+`K<n>`), and the observation
 follows in the usual UNTRUSTED fence with those items' text replaced by a pointer, so nothing is
 sent twice and the shape is kept. Trust is re-derived from each chunk's source label against the
 allowlist, never from a flag in the observation; imported intel, resolved cases and any label an

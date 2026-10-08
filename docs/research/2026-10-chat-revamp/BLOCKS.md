@@ -48,7 +48,8 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     `^/docs/[0-9]{1,4}\.[0-9]{1,4}/(?:SEG(?:/SEG)*/?)?(?:#[a-z0-9_-]+)?$` with
     `SEG = [a-z0-9_-]+(?:\.[a-z0-9_-]+)*`: the home and dotted release pages are citable; `.`/`..`/
     empty segments, schemes, hosts, queries, uppercase, `%` and `\` never match. Shared vectors:
-    `doc_ref_examples` in the contract file.
+    `doc_ref_examples` in the contract file; they also run through the citation normaliser
+    (`stream-events.ts`), which must use the same grammar before merge (SPEC A1).
 11. **Callouts are notes (SPEC A5).** Every tone renders `role="note"` (no chat-local live
     regions, SPEC §10.9); the host announces a new warning once through `useAnnouncer()` when it
     must be spoken.
@@ -57,14 +58,17 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
 13. **Honest views (SPEC A15).** `stacked_bar` and `donut` appear in `allowed_views` only when the
     values add up (additive units, or percent/ratio parts that reconcile to the whole per stack
     slot or across the donut's categories; never score or durations; a donut also needs a
-    complete population). Server `chart_kind_fits` and client `chartKindFits` run the shared
-    `chart_honesty` vectors; the client still draws a dishonest kind as columns/hbar.
+    complete, untruncated population on both sides). Server `chart_kind_fits` and client
+    `chartKindFits` run the shared `chart_honesty` vectors (incl. a truncated donut); the client
+    still draws a dishonest kind as columns/hbar.
 14. **`open_in` (SPEC A14).** Every block may carry `open_in?: InternalRef`, the exact console
     view of its data ("Open in Logs"), built by server code from a log call's own input, never by
     the model (dropped from any `ai` block). `InternalRef.opts` gains `logQuery`, `from`, `to`,
-    `sourceId` with the router's deep-link grammar (shared `nav_log_examples` vectors). The card's
-    ⋯ menu offers "Open in <page>" for `open_in`, or for a single exact case; any other filter
-    keeps Copy query only.
+    `sourceId` with the router's deep-link grammar (shared `nav_log_examples` vectors); `from`/`to`
+    are the absolute UTC instants the call resolved, so a reopened answer opens its own window.
+    No `open_in` when the call read a live-tail (`buffer`) source, whose Logs view would ignore
+    the filter. The card's ⋯ menu offers "Open in <page>" for `open_in`, or for a single exact
+    case; any other filter keeps Copy query only.
 15. **Report envelopes are clipped (SPEC A3).** Over-limit sections and leaves are removed and
     counted in the notice line, never a rejection of the whole brief; `subtitle`, a section
     `summary` and `blocks` (alias of `items`) are accepted.

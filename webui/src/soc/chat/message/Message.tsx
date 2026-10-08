@@ -25,6 +25,7 @@ import { copyText } from '@/lib/clipboard';
 import type { TurnNoticeKind } from '@/lib/types';
 import { IconButton } from '@/soc/components/IconButton';
 import { useAnnouncer } from '@/soc/components/announcer';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { ChatMarkdown } from '../ChatMarkdown';
 import { isSafeChatId } from '../chat-api';
 import { legacyTableBlock, parseBlocks, type AnswerBlock } from '../blocks/schema';
@@ -52,10 +53,14 @@ export interface MessageReportBinding {
   blocks: ReadonlySet<string>;
   /** The whole answer is in the report as a section. */
   answerInReport: boolean;
-  /** Adding is possible (a saved message, report not full, no request in flight). */
+  /** Adding is possible (the report is not full). Removing is always possible. */
   canAdd: boolean;
   /** Why adding is off (e.g. "Report is full (40 items)"); shown as the tooltip. */
   disabledReason?: string | null;
+  /**
+   * Toggle a block / the whole answer. The binding decides add vs remove and refuses an
+   * add to a full report with its reason, so the controls never need to unmount.
+   */
   onToggleBlock: (blockId: string) => void;
   onToggleAnswer: () => void;
 }
@@ -121,6 +126,41 @@ function CopyAnswer({ text }: { text: string }) {
     >
       {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
     </IconButton>
+  );
+}
+
+/**
+ * The answer's report toggle. ONE stable name (an APG toggle must not also flip its
+ * name); `aria-pressed` says whether the answer is in the report, and the tooltip uses
+ * the block vocabulary ("In report ✓ (click to remove)"). A full report makes it
+ * `aria-disabled`, never `disabled`: it stays focusable so its tooltip can say why, and
+ * a click is answered with the reason by the binding.
+ */
+function AnswerReportToggle({ report }: { report: MessageReportBinding }) {
+  const unavailable = !report.answerInReport && !report.canAdd;
+  const hint = report.answerInReport
+    ? 'In report ✓ (click to remove)'
+    : unavailable
+      ? (report.disabledReason ?? 'The report cannot take more items')
+      : 'Add answer to report';
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <IconButton
+          label="Add answer to report"
+          tooltip={false}
+          size="sm"
+          aria-pressed={report.answerInReport}
+          aria-disabled={unavailable || undefined}
+          onClick={report.onToggleAnswer}
+          className={cn(report.answerInReport && 'text-primary', unavailable && 'cursor-not-allowed opacity-50')}
+          data-testid="answer-add-to-report"
+        >
+          {report.answerInReport ? <FileCheck2 aria-hidden /> : <FilePlus2 aria-hidden />}
+        </IconButton>
+      </TooltipTrigger>
+      <TooltipContent side="top">{hint}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -209,20 +249,7 @@ function MessageView({
     !running && response ? (
       <>
         {response.answer ? <CopyAnswer text={response.answer} /> : null}
-        {report && persistedMessageId ? (
-          <IconButton
-            // ONE stable name; aria-pressed says whether the answer is in the report
-            // (an APG toggle must not also flip its name).
-            label="Add answer to report"
-            size="sm"
-            aria-pressed={report.answerInReport}
-            disabled={!report.answerInReport && !report.canAdd}
-            onClick={report.onToggleAnswer}
-            className={cn(report.answerInReport && 'text-primary')}
-          >
-            {report.answerInReport ? <FileCheck2 aria-hidden /> : <FilePlus2 aria-hidden />}
-          </IconButton>
-        ) : null}
+        {report && persistedMessageId ? <AnswerReportToggle report={report} /> : null}
         {!unsaved ? (
           <IconButton label="Ask again" size="sm" disabled={busy} onClick={() => engine.askAgain(item.key)}>
             <RefreshCw aria-hidden />
@@ -309,7 +336,9 @@ function MessageView({
               domId={domId}
               compact={compact}
               inReport={report?.blocks}
-              canAddToReport={!!report && !!persistedMessageId && report.canAdd}
+              // Visibility never follows `canAdd` or a pending request: a block already in
+              // a full report must stay removable, and the clicked toggle must keep focus.
+              canAddToReport={!!report && !!persistedMessageId}
               onAddToReport={report && persistedMessageId ? report.onToggleBlock : undefined}
               renderMarkdown={renderMarkdown}
               queryForStep={queryForStep}

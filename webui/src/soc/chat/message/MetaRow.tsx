@@ -11,7 +11,10 @@
  *  - a turn without recorded usage reads "Usage not recorded · —", never 0;
  *  - "Sources n" discloses citations and console links;
  *  - the icon actions on the right are always visible on the latest turn; on older
- *    turns they keep their space and appear on hover or focus-within (CSS visibility).
+ *    turns they keep their space and appear on hover or focus-within. They fade with
+ *    OPACITY, never `visibility: hidden`: a hidden element cannot take focus, so on a
+ *    turn with no earlier focusable control (every pre-revamp turn) Copy and Ask again
+ *    would be unreachable by keyboard (WCAG 2.1.1).
  */
 import * as React from 'react';
 import { ChevronRight } from 'lucide-react';
@@ -127,7 +130,8 @@ export function MetaRow({
         <div
           className={cn(
             'flex shrink-0 items-center gap-0.5',
-            !actionsAlwaysVisible && 'invisible group-hover/turn:visible group-focus-within/turn:visible',
+            !actionsAlwaysVisible &&
+              'opacity-0 transition-opacity group-focus-within/turn:opacity-100 group-hover/turn:opacity-100 focus-within:opacity-100 motion-reduce:transition-none',
           )}
           data-actions-visibility={actionsAlwaysVisible ? 'always' : 'hover'}
         >

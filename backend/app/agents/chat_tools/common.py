@@ -17,8 +17,9 @@ Everything here is deterministic and side-effect free:
 * Formatting helpers for summaries (engine templates + numbers + enums only) and the
   whitelisted case projection every case tool shares.
 * :func:`logs_console_view` — the EXACT "Open in Logs" view of a log tool call (the
-  same free text, window and source), or ``None`` when the Logs page cannot express
-  the filter the tool ran with (it never approximates one).
+  same free text and source, and the window as absolute instants), or ``None`` when
+  the Logs page cannot express the filter the tool ran with or a source it read (a
+  live-tail ring) would ignore it (it never approximates one).
 * Two text helpers with different jobs: :func:`text` / :func:`opt_text` bound an
   OBSERVATION leaf but KEEP invisible characters (SPEC §7.6: ``fence_block`` renders
   them as visible ``\\uXXXX`` escapes, so ``admin`` + ZWSP never reaches a model as

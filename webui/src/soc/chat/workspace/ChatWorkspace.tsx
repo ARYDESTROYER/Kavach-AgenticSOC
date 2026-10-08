@@ -132,6 +132,14 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   /* --------------------------------------------------------------- actions -- */
 
   const focusComposer = React.useCallback(() => composerRef.current?.focus(), []);
+  // A starter card or chip is replaced by the transcript once it sends: focus stays in
+  // the composer (SPEC §10.9) instead of dropping to <body>.
+  const sendStarter = React.useCallback(
+    (starter: ChatStarter) => {
+      if (engine.send(starter.prompt, { origin: 'starter' })) focusComposer();
+    },
+    [engine, focusComposer],
+  );
 
   const newChat = React.useCallback(() => {
     if (busy) return;
@@ -210,6 +218,13 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       ? 'Restore this conversation before sending'
       : null;
 
+  // A highlight belongs to one conversation: it applies only once that conversation is
+  // the engine's transcript, and is dropped by the transcript if its message is not
+  // there once the thread has finished restoring.
+  const highlight =
+    conv.highlight && conv.highlight.conversationId === engine.conversationId ? conv.highlight : null;
+  const highlightReady = !!highlight && !conv.restoring && !conv.threadError;
+
   const title = caseScoped
     ? `Case ${caseId}`
     : summary?.title || conv.conversation?.title || (activeId ? 'Conversation' : 'New chat');
@@ -257,7 +272,10 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       context={ctx}
       variant={caseScoped ? 'case' : 'workspace'}
       disabled={busy || !!disabledReason}
-      onStarter={(starter: ChatStarter) => engine.send(starter.prompt, { origin: 'starter' })}
+      // A failed /chat/context with nothing cached is an error with Retry, not skeletons.
+      error={context.error}
+      onRetry={context.refresh}
+      onStarter={sendStarter}
     />
   );
 
@@ -323,9 +341,10 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       <h1 className="sr-only">Chat</h1>
 
       {rail === 'docked' ? (
-        <aside className="flex w-[264px] shrink-0 flex-col border-r border-border bg-surface/40" aria-label="Conversations">
+        // Not a landmark of its own: the rail's <nav> ("Chat history") is the landmark.
+        <div className="flex w-[264px] shrink-0 flex-col border-r border-border bg-surface/40" data-testid="chat-history-rail">
           <HistoryRail {...railProps} onCollapse={() => geometry.setRailCollapsed(true)} />
-        </aside>
+        </div>
       ) : rail === 'strip' ? (
         <div className="w-12 shrink-0 border-r border-border bg-surface/40">
           <HistoryStrip
@@ -378,12 +397,14 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
 
         <Transcript
           engine={engine}
-          label={caseScoped ? `Case ${caseId} conversation` : 'Conversation'}
+          label={caseScoped ? `Case ${caseId} messages` : 'Messages'}
           header={hasHeader ? header : null}
           replace={replace}
           empty={empty}
-          highlight={conv.highlight}
+          highlight={highlight}
+          highlightReady={highlightReady}
           onHighlightDone={conv.clearHighlight}
+          onFocusComposer={focusComposer}
           reportFor={caseScoped ? undefined : report.bindingFor}
           continueEstimate={continueEstimate}
           onSavePrompt={caseScoped ? undefined : onSavePrompt}
@@ -401,6 +422,8 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
                 disabledReason={disabledReason}
                 onOpenShortcuts={() => setShortcutsOpen(true)}
                 onComposerFocus={context.revalidate}
+                contextError={context.error}
+                onRetryContext={context.refresh}
                 conversationTotals={summary ? { tokens: summary.total_tokens ?? null, cost: summary.total_cost ?? null } : null}
               />
             </div>

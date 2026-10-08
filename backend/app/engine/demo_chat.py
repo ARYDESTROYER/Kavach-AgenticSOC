@@ -141,6 +141,9 @@ _SIGNATURE_LINE_RE = re.compile(r"^- ([a-z][a-z0-9_]{0,63})\((.*)$", re.MULTILIN
 _PARALLEL_RE = re.compile(r"in parallel \(at most (\d{1,2})\)")
 _ANALYST_WINDOW_RE = re.compile(
     r"^- Time window selected by the analyst: (.{1,60}?)\. Use it", re.MULTILINE)
+# ``render_chat_agent_system`` writes the request's @-scope enums on this line. A tool
+# missing from the signatures may be outside these scopes rather than ungranted.
+_SCOPES_RE = re.compile(r"^- The analyst limited lookups to: ([a-z]{2,16}(?:, [a-z]{2,16})*)\.$", re.MULTILINE)
 _CASE_SCOPED_TEXT = "This conversation is about one case"
 _FENCE_LABEL_RE = re.compile(r"^ source=(\S+)(?: tool=(\S+))?\s*$")
 # The legacy ``needs_query`` second-call message (agents.chat._agg_message) and the
@@ -266,6 +269,7 @@ class PromptView:
     max_parallel: int = 4
     analyst_window: str | None = None
     case_scoped: bool = False
+    scopes: tuple[str, ...] = ()
     prior_blocks: list[PriorBlock] = field(default_factory=list)
     prior_calls: list[PriorCall] = field(default_factory=list)
     rounds: list[list[Result]] = field(default_factory=list)
@@ -515,6 +519,8 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
     view.max_parallel = max(1, min(16, int(parallel.group(1)))) if parallel else 4
     window = _ANALYST_WINDOW_RE.search(system)
     view.analyst_window = window.group(1) if window else None
+    scopes = _SCOPES_RE.search(system)
+    view.scopes = tuple(dict.fromkeys(scopes.group(1).split(", "))) if scopes else ()
     view.case_scoped = _CASE_SCOPED_TEXT in system
 
     live = -1
@@ -1787,12 +1793,15 @@ def _say_cost(r: Result) -> list[str]:
     return out
 
 
-def _say_shift(r: Result) -> list[str]:
+def _say_shift(r: Result, *, with_window: bool = True) -> list[str]:
     o = r.obs
     head = o.get("headline") if isinstance(o.get("headline"), Mapping) else {}
-    out = [f"**{_plural(head.get('open'), 'open case')}** at the end of the {_window(o)}: "
-           f"{_count(head.get('escalated'))} escalated, {_count(head.get('needs_human'))} waiting for a human "
-           f"verdict, {_count(head.get('unassigned'))} unassigned and {_count(head.get('sla_breached'))} past SLA."]
+    # ``needs_human`` counts cases whose STATUS is Needs human (shift_report), not
+    # every case with a needs-human verdict (those can be escalated or on hold).
+    when = f" at the end of the {_window(o)}" if with_window else ""
+    out = [f"**{_plural(head.get('open'), 'open case')}**{when}: "
+           f"{_count(head.get('escalated'))} escalated, {_count(head.get('needs_human'))} in Needs human "
+           f"status, {_count(head.get('unassigned'))} unassigned and {_count(head.get('sla_breached'))} past SLA."]
     changes = o.get("changes_vs_prior_window") if isinstance(o.get("changes_vs_prior_window"), Mapping) else {}
     moved = []
     for key, name in (("open", "open"), ("escalated", "escalated"), ("sla_breached", "past SLA")):
@@ -1844,10 +1853,22 @@ def _say_lookup(r: Result) -> str:
     return text + "."
 
 
+def _verdict_adjective(value: Any) -> str:
+    """A verdict as a compound adjective ("true-positive", "needs-human")."""
+    return _verdict_word(value).replace(" ", "-")
+
+
 def _case_facts(case: Mapping[str, Any]) -> str:
-    """"a true positive at 99% confidence, risk 88 (critical)"."""
-    verdict = _verdict_word(case.get("verdict")) or "case without a verdict yet"
-    text = f"a {verdict}"
+    """The case's verdict as a predicate with its verb: "is a true positive at 99%
+    confidence, risk 88 (critical)", "has a needs-human verdict at 88% confidence, …"
+    (needs-human is a routing verdict, not a kind of case), "has no verdict yet, …"."""
+    verdict = _verdict_word(case.get("verdict"))
+    if not verdict:
+        text = "has no verdict yet"
+    elif str(case.get("verdict") or "").upper() in ("TRUE_POSITIVE", "FALSE_POSITIVE"):
+        text = f"is a {verdict}"
+    else:
+        text = f"has a {_verdict_adjective(case.get('verdict'))} verdict"
     confidence = _num(case.get("confidence"))
     if confidence is not None:
         text += f" at {_pct(confidence, ratio=True)} confidence"
@@ -1862,7 +1883,7 @@ def _say_get_case(r: Result, *, lead: bool = True) -> list[str]:
     case = o.get("case") if isinstance(o.get("case"), Mapping) else {}
     out: list[str] = []
     if lead:
-        head = (f"**{_code(case.get('case_id'), 60)}** ({_code(case.get('title'), 80)}) is "
+        head = (f"**{_code(case.get('case_id'), 60)}** ({_code(case.get('title'), 80)}) "
                 f"{_case_facts(case)}, status **{display_text(case.get('status'), 30).replace('_', ' ')}**")
         if case.get("decision_by"):
             head += f", last decided by {display_text(case.get('decision_by'), 30)}"
@@ -1930,8 +1951,8 @@ def _say_decision(r: Result) -> str:
         return ""
     status = display_text(what.get("status"), 30)
     verb, trail = _OUTCOME_WORDS.get(status, ("gives", f" the status {status.replace('_', ' ')}"))
-    text = (f"The deterministic auto-close policy {verb} a {_verdict_word(what.get('verdict'))} at "
-            f"{_pct(_num(what.get('confidence')), ratio=True)} confidence and risk "
+    text = (f"The deterministic auto-close policy {verb} a case with a {_verdict_adjective(what.get('verdict'))} "
+            f"verdict at {_pct(_num(what.get('confidence')), ratio=True)} confidence and risk "
             f"{_count(what.get('risk_score'))}{trail}")
     reason = _policy_reason(o, what)
     text += f", because {reason}." if reason else "."
@@ -2124,10 +2145,19 @@ def _lead(section: HelpSection) -> str:
     return lead if len(lead) >= 50 else ""
 
 
-def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "") -> tuple[list[str], list[str]]:
+_TOPIC_STOP_WORDS = frozenset({
+    "what", "which", "when", "where", "does", "have", "with", "from", "that", "this", "there", "their",
+    "show", "tell", "about", "into", "over", "last", "hours", "days", "please", "could", "would", "should",
+})
+
+
+def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "",
+                     require_match: bool = False) -> tuple[list[str], list[str]]:
     """``(lines, cited ids)``: the best cited sections with their lead prose; sections
-    whose lead mentions the topic's words rank first (stable otherwise)."""
-    words = {w for w in re.findall(r"[a-z]{4,}", topic.lower())}
+    whose lead mentions the topic's words rank first (stable otherwise). With
+    ``require_match`` a section that shares no topic word is left out entirely.
+    Sections that share a title (one page split into excerpts) are shown once."""
+    words = {w for w in re.findall(r"[a-z]{4,}", topic.lower())} - _TOPIC_STOP_WORDS
     ranked: list[tuple[int, int, HelpSection, str]] = []
     seen: set[str] = set()
     for position, section in enumerate(ref.sections):
@@ -2136,13 +2166,22 @@ def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "") -> tupl
         seen.add(section.ref)
         lead = _lead(section)
         hay = f"{section.title} {lead}".lower()
-        score = sum(1 for w in words if w in hay) if lead else -1
-        ranked.append((-score, position, section, lead))
+        hits = sum(1 for w in words if w in hay)
+        if require_match and not hits:
+            continue
+        ranked.append((-(hits if lead else -1), position, section, lead))
     ranked.sort(key=lambda item: (item[0], item[1]))
     lines: list[str] = []
     cited: list[str] = []
     extra: list[str] = []
+    titles: set[str] = set()
     for _score, _pos, section, lead in ranked:
+        # The best-ranked excerpt of a title speaks for it; a second excerpt of the
+        # same page would repeat the heading back to back.
+        title_key = section.title.strip().lower()
+        if title_key in titles:
+            continue
+        titles.add(title_key)
         if lead and len(lines) < limit:
             lines.append(f"**{display_text(section.title, 120)}** [{section.ref}]: {lead}")
             cited.append(section.ref or "")
@@ -2287,30 +2326,82 @@ def _wanted_tools(view: PromptView, ask: Ask) -> list[str]:
     return list(dict.fromkeys(wanted))
 
 
+def _missing_split(view: PromptView, ask: Ask) -> tuple[list[str], list[str]]:
+    """``(locked, scoped)``: the intent's data tools absent from the prompt because the
+    caller lacks the grant (or the deployment switched them off), and those absent
+    only because their catalogue scope is outside the analyst's @-scopes."""
+    locked: list[str] = []
+    scoped: list[str] = []
+    for tool in _wanted_tools(view, ask):
+        if tool in view.granted or tool not in _TOOL_NAMES:
+            continue
+        scope = _tool_scope(tool)
+        if view.scopes and scope is not None and scope not in view.scopes:
+            scoped.append(tool)
+        else:
+            locked.append(tool)
+    return locked, scoped
+
+
+def _missing_lead(view: PromptView, ask: Ask) -> tuple[str, str]:
+    """``(lead, advice)``: what the answer lacks, then how to get it. Each locked tool
+    names its own grant ("indicator reputation (needs enrichment:read) and log search
+    (needs sources:read)"): grants are per tool, never alternatives across tools."""
+    locked, scoped = _missing_split(view, ask)
+    parts: list[str] = []
+    advice: list[str] = []
+    if locked:
+        named = []
+        for tool in locked:
+            grants = _tool_grants(tool)
+            named.append(_TOOL_NAMES[tool] + (f" (needs {_join(grants)})" if grants else ""))
+        parts.append(f"Not available to you in chat: {_join(named)}")
+        advice.append("Ask an administrator for access, or open the matching console page.")
+    if scoped:
+        names = [_TOOL_NAMES[t] for t in scoped]
+        selected = _join([_SCOPE_LABELS.get(s, s) for s in view.scopes])
+        prefix = "outside" if parts else "Outside"
+        parts.append(f"{prefix} the scopes you selected ({selected}): {_join(names)}")
+        wanted = list(dict.fromkeys(s for t in scoped for s in [_tool_scope(t)] if s))
+        noun = "scope" if len(wanted) == 1 else "scopes"
+        advice.append(f"Add the {_join([_SCOPE_LABELS.get(s, s) for s in wanted])} {noun}, or remove the scope "
+                      "chips, to include " + ("it." if len(scoped) == 1 else "them."))
+    return "; ".join(parts), " ".join(advice)
+
+
+#: The composer's scope chip labels (webui ``SCOPE_LABELS``), so the note names a
+#: scope exactly as the analyst sees it.
+_SCOPE_LABELS = {"logs": "Logs", "cases": "Cases", "metrics": "Metrics", "intel": "Threat intel",
+                 "docs": "Help docs", "platform": "Platform"}
+
+
 def _missing_note(view: PromptView, ask: Ask) -> str:
-    """Which of the intent's data the caller cannot read in chat (with the grant)."""
-    missing = [t for t in _wanted_tools(view, ask) if t not in view.granted and t in _TOOL_NAMES]
-    if not missing:
-        return ""
-    names = [_TOOL_NAMES.get(t, t) for t in missing]
-    grants = sorted({g for t in missing for g in _tool_grants(t)})
-    text = f"Not available to you in chat: {_join(names)}"
-    if grants:
-        text += f" (needs {_join(grants, 'or')})"
-    return text + ". Ask an administrator for access, or open the matching console page."
+    """Which of the intent's data this answer could not read, and why (grant or scope)."""
+    lead, advice = _missing_lead(view, ask)
+    return f"{lead}. {advice}".strip() if lead else ""
+
+
+def _catalogue_tool(tool: str) -> Any:
+    try:
+        from ..agents.chat_tools.registry import get_tool
+    except Exception:  # noqa: BLE001 -- the note degrades to names only
+        return None
+    try:
+        return get_tool(tool)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _tool_grants(tool: str) -> list[str]:
     """The grants a tool requires, read from the tool catalogue (class attributes)."""
-    try:
-        from ..agents.chat_tools.registry import get_tool
-    except Exception:  # noqa: BLE001 -- the note degrades to names only
-        return []
-    try:
-        found = get_tool(tool)
-    except Exception:  # noqa: BLE001
-        return []
+    found = _catalogue_tool(tool)
     return [f"{r}:{a}" for r, a in getattr(found, "requires", ()) or ()]
+
+
+def _tool_scope(tool: str) -> str | None:
+    """The tool's @-scope from the catalogue (``logs``, ``cases``, ``metrics``, …)."""
+    scope = getattr(_catalogue_tool(tool), "scope", None)
+    return scope if isinstance(scope, str) else None
 
 
 def _failure_lines(view: PromptView) -> list[str]:
@@ -2375,7 +2466,7 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
         steps.append(f"Work the {_plural(len(breached), 'case')} past SLA first: "
                      + _join([_code(b.get("case_id"), 60) for b in breached[:3]]) + ".")
     if _num(head.get("needs_human")):
-        steps.append(f"Decide the {_plural(head.get('needs_human'), 'case')} waiting for a human verdict.")
+        steps.append(f"Decide the {_plural(head.get('needs_human'), 'case')} in Needs human status.")
     if _num(head.get("escalated")):
         steps.append(f"Confirm an owner and containment for the {_plural(head.get('escalated'), 'escalated case')}.")
     if _num(head.get("unassigned")):
@@ -2387,7 +2478,16 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
         steps.append(f"The false-positive rate is {_pct(fp, ratio=True)}: review tuning proposals for the "
                      "noisiest rules.")
     if not steps:
-        steps.append("No open work needs attention right now; keep watching the queue.")
+        # "Nothing needs attention" is a finding only when the shift snapshot ran: an
+        # @-scope or a missing grant that kept it out says nothing about the queue.
+        if shift is None:
+            steps.append("The shift snapshot was not read in this turn, so open work is unknown here; check the "
+                         "case queue in the console before handing over.")
+        elif _num(head.get("open")):
+            steps.append(f"Review the {_plural(head.get('open'), 'open case')}; none is past SLA, escalated, in "
+                         "Needs human status or unassigned.")
+        else:
+            steps.append("No open work needs attention right now; keep watching the queue.")
     return steps[:5]
 
 
@@ -2400,7 +2500,8 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
     window = _window((shift or post).obs)
     body: list[str] = []
     if shift:
-        lines = _say_shift(shift)
+        # The brief's lead names the window once; the headline sentence then omits it.
+        lines = _say_shift(shift, with_window=False)
         body.append(f"**Shift brief, {window}.** " + lines[0])
         body.extend(lines[1:])
         attention = [a for a in shift.obs.get("attention") or [] if isinstance(a, Mapping)]
@@ -2419,9 +2520,14 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
     steps = _shift_steps(shift, post, camps)
     body.append("The brief below is ready to add to a report.")
     summary = " ".join(s for s in (_say_shift(shift)[0] if shift else "", posture_line) if s)
+    summary_section: dict[str, Any] = {
+        "heading": "Summary", "items": _keep(_block(shift, "kpis", view="kpi_group", title="Shift headline"))}
+    plain_summary = _plain(summary.replace("**", ""), 1100)
+    if plain_summary:
+        # A blank summary is left out: the section validator rejects an empty string.
+        summary_section["summary"] = plain_summary
     sections = [
-        {"heading": "Summary", "summary": _plain(summary.replace("**", ""), 1100),
-         "items": _keep(_block(shift, "kpis", view="kpi_group", title="Shift headline"))},
+        summary_section,
         {"heading": "Open work", "items": _keep(
             _block(shift, "case_list", view="case_list", title="Needs attention"),
             _block(shift, "categories", view="hbar", title="Open cases by analyst"),
@@ -2434,8 +2540,9 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
             {"type": "markdown", "text": "\n".join(f"{i}. {s}" for i, s in enumerate(steps, start=1))}]},
     ]
     sections = [s for s in sections if s["items"]]
-    envelope = {"type": "report", "title": "Shift brief", "subtitle": f"Last shift · {window}",
-                "template": "shift", "sections": sections}
+    envelope = {"type": "report", "title": "Shift brief", "template": "shift", "sections": sections}
+    if window.strip():
+        envelope["subtitle"] = f"Last shift · {window}"
     return Final(body=body, blocks=[envelope], follow_ups=_follow_ups(view, "shift"))
 
 
@@ -2458,7 +2565,13 @@ def _posture_steps(post: Result | None, noise: Result | None) -> list[str]:
     human = _stages(noise.obs).get("needs_human") if noise else None
     if human:
         steps.append(f"Decide the {_plural(human, 'case')} the funnel left for a human.")
-    return steps[:5] or ["No follow-up is needed right now; re-run this report at the next handoff."]
+    if steps:
+        return steps[:5]
+    if post is None:
+        # No posture figures ran (an @-scope or a missing grant): no step can follow from them.
+        return ["The posture figures were not read in this turn, so no next step can be derived from them; "
+                "check the Overview in the console."]
+    return ["No follow-up is needed right now; re-run this report at the next handoff."]
 
 
 #: The default sections of each report template (the composer's ``/report`` requests
@@ -2510,10 +2623,54 @@ def _report_steps(view: PromptView, ask: Ask) -> list[str]:
     return ["Verify the figures in the console before sharing.", "Re-run this report at the next handoff."]
 
 
-def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle: str, summary: str,
-               steps: Sequence[str] = ()) -> Final:
+def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
+    """The report's Summary leaf: numbers, enums and product wording only.
+
+    The leaf is AI-provenance text inside the protocol header, so no value read from
+    a log or a case (an entity, a title, an evidence summary) is copied into it; those
+    stay in the narration, where they are shown as inline code. Per intent the
+    summary is rebuilt from structured fields; otherwise it keeps the narration's
+    opening paragraphs that carry no inline code and no recorded (untrusted) prose."""
+    parts: list[str] = []
+    if ask.intent == "case":
+        got, decision = view.ok("get_case"), view.ok("explain_decision")
+        case = _dig(got.obs, "case") if got else None
+        if isinstance(case, Mapping) and case:
+            parts.append(f"The case {_case_facts(case)}, and its status is "
+                         f"{display_text(case.get('status'), 30).replace('_', ' ')}.")
+        if decision:
+            parts.append(_say_decision(decision))
+    elif ask.intent in ("hunt", "pivot"):
+        lookup, logs = view.ok("lookup_indicator"), view.ok("search_logs")
+        related = view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity")))
+        if lookup and _num(lookup.obs.get("reputation_score")) is not None:
+            parts.append(f"The indicator scores {_count(lookup.obs.get('reputation_score'))}/100 "
+                         f"({display_text(lookup.obs.get('verdict'), 30) or 'unknown'}).")
+        if logs:
+            parts.append(f"{_plural(logs.obs.get('total'), 'log event')} matched it in the {_window(logs.obs)}.")
+        if related:
+            parts.append(f"{_plural(related.obs.get('count'), 'case')} carry it as their entity.")
+    elif ask.intent in ("top", "regroup", "brute"):
+        stats = view.ok("log_stats")
+        if stats:
+            parts.append(f"{_plural(stats.obs.get('total'), 'log event')} in the {_window(stats.obs)}.")
+    if not parts:
+        for paragraph in final.body[:4]:
+            if ("`" in paragraph or paragraph.startswith(("- ", "Recorded", "From the Help"))
+                    or paragraph.endswith(":")):
+                continue
+            parts.append(paragraph)
+            if len(parts) == 2:
+                break
+    return " ".join(p for p in parts if p) or "The findings are in the sections below."
+
+
+def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle: str | None,
+               summary: str, steps: Sequence[str] = ()) -> Final:
     """Wrap a final's blocks into a report envelope with the requested sections (the
-    analyst's headings when the question lists them, else the template's)."""
+    analyst's headings when the question lists them, else the template's). A blank
+    ``subtitle`` is left out: the envelope validator rejects an empty one, and that
+    would lose the whole envelope."""
     template = ask.report if ask.report in _REPORT_TEMPLATES else "custom"
     headings = list(ask.headings) or list(_TEMPLATE_HEADINGS.get(template, _TEMPLATE_HEADINGS["custom"]))
     leaves = [b for b in final.blocks if "ref" in b]
@@ -2537,7 +2694,7 @@ def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle
     for heading in headings:
         low = heading.lower()
         items = claimed[heading]
-        if any(w in low for w in ("summary", "hypothesis")):
+        if plain_summary and any(w in low for w in ("summary", "hypothesis")):
             items.insert(0, {"type": "markdown", "text": plain_summary})
         if any(w in low for w in ("next", "step", "recommend")):
             items.append({"type": "markdown", "text": "\n".join(
@@ -2547,10 +2704,34 @@ def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle
     rest = [leaf for index, leaf in enumerate(leaves) if index not in placed]
     if rest:
         sections.append({"heading": "Details", "items": rest})
-    envelope = {"type": "report", "title": title, "subtitle": subtitle, "template": template,
-                "sections": sections[:12]}
+    envelope: dict[str, Any] = {"type": "report", "title": title, "template": template, "sections": sections[:12]}
+    if subtitle and subtitle.strip():
+        envelope["subtitle"] = subtitle.strip()[:200]
     final.blocks = [envelope]
     final.body = final.body + ["The report below is ready to add to your Reports."]
+    return final
+
+
+#: Case Manager turns are never added to reports (SPEC §1, #5; §4.6), so a report
+#: request there gets the blocks unwrapped and this pointer instead of an envelope.
+_CASE_REPORT_NOTE = ("Case conversations cannot be added to Reports. To build a report on this case, ask for it "
+                     "in Workspace chat and add the result to your Reports there.")
+
+
+def _unwrap_report(final: Final) -> Final:
+    """A case-scoped final keeps the envelope's chart and list leaves as ordinary
+    blocks, drops the envelope and its 'ready to add' sentence, and says where a
+    report can be built instead."""
+    leaves: list[dict[str, Any]] = []
+    for block in final.blocks:
+        if block.get("type") == "report":
+            for section in block.get("sections") or []:
+                leaves.extend(i for i in section.get("items") or [] if isinstance(i, dict) and "ref" in i)
+        else:
+            leaves.append(block)
+    final.blocks = leaves[:12]
+    final.body = [p for p in final.body if not p.startswith(("The report below is ready", "The brief below is ready"))]
+    final.body.append(_CASE_REPORT_NOTE)
     return final
 
 
@@ -2643,7 +2824,7 @@ def _final_case(view: PromptView, ask: Ask) -> Final | None:
         lead = f"**{_code(case.get('case_id'), 60)}**"
         if search is not None and not ask.case_id:
             lead += f", the newest of {_plural(search.obs.get('count'), f'{status_word} case')},"
-        lead += (f" is {_case_facts(case)}, and its status is "
+        lead += (f" {_case_facts(case)}, and its status is "
                  f"**{display_text(case.get('status'), 30).replace('_', ' ')}**.")
         body.append(lead)
     if decision:
@@ -2715,20 +2896,46 @@ _ENTITY_WORDS = {"ip": "source IP", "domain": "domain", "file_hash": "file hash"
                  "url": "URL", "user": "user", "host": "host"}
 
 
-def _hunt_conclusion(view: PromptView) -> str:
-    """One data-driven sentence on what the sightings mean (no number is new)."""
+def _is_false_positive(case: Any) -> bool:
+    return isinstance(case, Mapping) and str(case.get("verdict") or "").upper() == "FALSE_POSITIVE"
+
+
+def _hunt_conclusion(view: PromptView, source_case: Mapping[str, Any] | None = None) -> str:
+    """One data-driven sentence on what the sightings mean (no number is new).
+
+    Zero, one and several related cases are three different findings: an indicator
+    no case carries has no containment to keep (the reputation result is the only
+    signal), and a case closed as a false positive needs no containment at all.
+    ``source_case`` is the case a pivot hunt started from (it carries the entity)."""
     logs = view.ok("search_logs")
     related = view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity")))
     if logs is None or related is None:
         return ""
     sightings = _num(logs.obs.get("total")) or 0
     cases = _num(related.obs.get("count")) or 0
-    if not sightings and cases <= 1:
+    linked = [c for c in related.obs.get("cases") or [] if isinstance(c, Mapping)]
+    if source_case and not any(c.get("case_id") == source_case.get("case_id") for c in linked):
+        linked.append(source_case)
+    all_fp = bool(linked) and all(_is_false_positive(c) for c in linked)
+    reputation = view.ok("lookup_indicator")
+    if sightings:
+        text = "It is still active in the logs: review the matching events and check the hosts they touch"
+        if cases:
+            text += f", and read them alongside the {_plural(cases, 'related case')}"
+        return text + "."
+    if not cases and source_case is None:
+        signal = ("so the reputation result above is the only signal"
+                  if reputation is not None else "so this hunt found no signal for it")
+        return (f"Nothing in the logs or the case store links it to activity here, {signal}; there is no "
+                "case containment to keep. Block or monitor it under your policy if its reputation warrants it.")
+    if all_fp:
+        return ("It is quiet in the logs and its case was closed as a false positive, so no containment is "
+                "needed; watch for a return.")
+    if cases <= 1:
         return ("It is quiet in the logs and tied to a single case, so the activity looks contained; keep "
                 "the case's containment in place and watch for a return.")
-    if sightings:
-        return "It is still active in the logs: review the matching events and check the hosts they touch."
-    return f"It is tied to {_plural(cases, 'case')}, so treat them as one incident."
+    return (f"It is quiet in the logs but tied to {_plural(cases, 'case')}, so treat them as one incident and "
+            "check each one's containment.")
 
 
 def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
@@ -2742,17 +2949,28 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
                      follow_ups=_follow_ups(view, "pivot"))
     body: list[str] = []
     entity = _entity_of(got.obs) if got else None
+    case = got.obs.get("case") if got and isinstance(got.obs.get("case"), Mapping) else None
     if got and entity:
-        case = got.obs.get("case") or {}
-        body.append(f"Pivoted from the newest {name} case {_code(case.get('case_id'), 60)} "
-                    f"({_code(case.get('title'), 80)}) to its {_ENTITY_WORDS.get(entity[0], entity[0])} "
+        source = case or {}
+        if ask.keyword:
+            # search_cases ran with the keyword sorted by creation time (newest first).
+            anchor = f"Pivoted from the newest {name} case"
+        else:
+            # No indicator and no known attack type in the question: the plan anchors on
+            # the riskiest open case that carries an indicator entity, and says so.
+            anchor = ("The question names no indicator or known attack type, so this hunt is anchored on the "
+                      "highest-risk open case with an indicator entity,")
+        body.append(f"{anchor} {_code(source.get('case_id'), 60)} ({_code(source.get('title'), 80)}), which "
+                    f"{_case_facts(source)}; its {_ENTITY_WORDS.get(entity[0], entity[0])} is "
                     f"**{_code(entity[1])}**.")
+        if not ask.keyword:
+            body.append("Name an indicator (an IP, domain, URL or hash) to hunt it directly.")
     elif got:
         body.extend(_say_get_case(got))
         body.append("That case has no IP, domain or hash entity to hunt.")
     indicator_lines, blocks = _indicator_body(view, entity[1] if entity else None)
     body.extend(indicator_lines)
-    conclusion = _hunt_conclusion(view)
+    conclusion = _hunt_conclusion(view, case if entity else None)
     if conclusion:
         body.append(conclusion)
     if got:
@@ -3007,26 +3225,35 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
     orientation answer for the fallback intent."""
     data = [r for r in view.results() if r.ok and r.tool not in _REFERENCE_TOOLS and r.observation is not None]
     body: list[str] = []
-    note = _missing_note(view, ask)
+    lead, advice = _missing_lead(view, ask) if ask.intent in _DATA_INTENTS else ("", "")
+    locked, _scoped = _missing_split(view, ask) if lead else ([], [])
     if ask.intent == "fallback" and data:
         body.append("I could not map that to one specific lookup, so here is where things stand:")
-    elif note and data:
+    elif lead and data:
         # The direct answer to "why is this not the answer I asked for".
-        body.append(note.split(". Ask an administrator")[0] + ", so this answer uses what you can read:")
-        note = ""
+        reads = "what you can read" if locked else "what those scopes cover"
+        body.append(f"{lead}, so this answer uses {reads}:")
+    elif lead:
+        # Nothing data-bearing ran: the missing access IS the answer, so it leads.
+        body.append(f"{lead}, so no data backs this answer. {advice}".strip())
+        advice = ""
     elif data:
         body.append("Here is what I could read for this question:")
     for r in data:
         body.extend(_say_result(r)[:4])
-    paragraphs, cited = _help_paragraphs(view.reference)
+    # In a degraded answer only excerpts that match the question's topic are worth
+    # showing; an unrelated top hit would read as an answer it is not.
+    degraded = ask.intent != "fallback"
+    paragraphs, cited = _help_paragraphs(view.reference, topic=(ask.topic or ask.question) if degraded else "",
+                                         require_match=degraded)
     if paragraphs:
         body.append("From the Help Center:")
         body.extend(paragraphs)
     console = _console_sentence(view.reference)
     if console:
         body.append(console)
-    if note:
-        body.append(note)
+    if advice:
+        body.append(advice)
     failures = _failure_lines(view)
     if failures:
         body.append("Lookups that did not complete:")

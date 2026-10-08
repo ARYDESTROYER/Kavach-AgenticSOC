@@ -285,12 +285,16 @@ describe('ReportPanel', () => {
     await user.click(screen.getByTestId('report-menu-trigger'));
     // Keyboard path through the submenu (Radix sub-menus open on ArrowRight).
     const sub = await screen.findByRole('menuitem', { name: 'Export' });
-    sub.focus();
+    // Radix menu items set their focused state in onFocus: a bare .focus() outside act
+    // logs an act() warning (stderr fails test:strict) whenever it lands between flushes.
+    act(() => sub.focus());
     await user.keyboard('{ArrowRight}');
     const md = await screen.findByRole('menuitem', { name: 'Markdown (.md)' });
     await waitFor(() => expect(md).toHaveFocus());
     await user.keyboard('{Enter}');
     await waitFor(() => expect(exportReport).toHaveBeenCalledTimes(1));
+    // Let the menu finish closing inside act so no late Radix update escapes the test.
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     const [report, format, options] = exportReport.mock.calls[0] as unknown as [Report, string, { defang: boolean; author: string; sourceTurns: Map<string, unknown> }];
     expect(report.id).toBe('rep-1');
     expect(format).toBe('markdown');

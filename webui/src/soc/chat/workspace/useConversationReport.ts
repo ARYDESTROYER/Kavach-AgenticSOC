@@ -12,6 +12,12 @@
  * shared `report-sync` window event: every change made here is emitted with the
  * server's copy, and every change the panel (or another surface) makes is applied
  * here, so the transcript's marks never drift from the panel.
+ *
+ * The toggles stay mounted while a request is in flight and when the report is full:
+ * a click during a request is ignored (one request at a time), and adding to a full
+ * report is refused locally with the reason, while an item already in a full report
+ * can still be removed from the transcript. Visibility never depends on `pending`, so
+ * the clicked control keeps focus and the layout does not shift.
  */
 import * as React from 'react';
 import { toast } from 'sonner';
@@ -45,6 +51,8 @@ export interface UseConversationReportOptions {
   onAdded?: (count: number, reportId: string) => void;
   /** An item was removed here. */
   onRemoved?: (count: number) => void;
+  /** An add was refused locally (the report is full); the reason is shown as a toast too. */
+  onRefused?: (reason: string) => void;
 }
 
 export interface ConversationReportController {
@@ -62,13 +70,16 @@ export function useConversationReport({
   enabled,
   onAdded,
   onRemoved,
+  onRefused,
 }: UseConversationReportOptions): ConversationReportController {
   const [report, setReport] = React.useState<Report | null>(null);
   const [reportId, setReportId] = React.useState<string | null>(knownReportId);
-  const [pending, setPending] = React.useState(false);
+  // A ref, not state: an in-flight request must not rebuild every message's binding
+  // (that re-rendered every block and unmounted the clicked toggle).
+  const pendingRef = React.useRef(false);
   const generationRef = React.useRef(0);
-  const callbacksRef = React.useRef({ onAdded, onRemoved });
-  callbacksRef.current = { onAdded, onRemoved };
+  const callbacksRef = React.useRef({ onAdded, onRemoved, onRefused });
+  callbacksRef.current = { onAdded, onRemoved, onRefused };
 
   const knownRef = React.useRef(knownReportId);
   knownRef.current = knownReportId;
@@ -153,8 +164,8 @@ export function useConversationReport({
 
   const add = React.useCallback(
     async (messageId: string, blockId: string | null) => {
-      if (!conversationId || pending) return;
-      setPending(true);
+      if (!conversationId || pendingRef.current) return;
+      pendingRef.current = true;
       const generation = generationRef.current;
       try {
         const result = await addToReport({ conversationId, messageId, blockId, reportId: report?.id ?? reportId });
@@ -166,16 +177,16 @@ export function useConversationReport({
       } catch (error) {
         if (generation === generationRef.current) toast.error(reportErrorMessage(error, 'Could not add it to the report.'));
       } finally {
-        setPending(false);
+        pendingRef.current = false;
       }
     },
-    [conversationId, pending, report?.id, reportId],
+    [conversationId, report?.id, reportId],
   );
 
   const remove = React.useCallback(
     async (itemId: string) => {
-      if (!report || pending) return;
-      setPending(true);
+      if (!report || pendingRef.current) return;
+      pendingRef.current = true;
       const generation = generationRef.current;
       try {
         const next = await patchReport(report.id, { expected_version: report.version, remove_items: [itemId] });
@@ -188,15 +199,22 @@ export function useConversationReport({
         toast.error(isVersionConflict(error) ? 'This report changed elsewhere. It was reloaded — try again.' : reportErrorMessage(error));
         if (isVersionConflict(error)) void load(report.id);
       } finally {
-        setPending(false);
+        pendingRef.current = false;
       }
     },
-    [conversationId, load, pending, report],
+    [conversationId, load, report],
   );
 
-  // One binding object per message until the report (or a pending request) changes, so
-  // memoised messages and their blocks do not re-render on every live transcript update:
-  // the cache lives inside the memoised function and is rebuilt with it.
+  // Adding to a full report is refused here, with the reason, instead of hiding the
+  // control (an item already in the report stays removable from the transcript).
+  const refuseFull = React.useCallback(() => {
+    toast(REPORT_FULL_MESSAGE);
+    callbacksRef.current.onRefused?.(REPORT_FULL_MESSAGE);
+  }, []);
+
+  // One binding object per message until the report changes, so memoised messages and
+  // their blocks do not re-render on every live transcript update (or on a request
+  // starting): the cache lives inside the memoised function and is rebuilt with it.
   const bindingFor = React.useMemo(() => {
     const cache = new Map<string, MessageReportBinding>();
     return (item: ChatAssistantItem): MessageReportBinding | null => {
@@ -210,22 +228,24 @@ export function useConversationReport({
       const binding: MessageReportBinding = {
         blocks,
         answerInReport: answerItem !== null,
-        canAdd: !full && !pending,
-        disabledReason: full ? REPORT_FULL_MESSAGE : pending ? 'Updating the report…' : null,
+        canAdd: !full,
+        disabledReason: full ? REPORT_FULL_MESSAGE : null,
         onToggleBlock: (blockId: string) => {
           const itemId = index.get(reportItemKey(messageId, blockId));
           if (itemId) void remove(itemId);
+          else if (full) refuseFull();
           else void add(messageId, blockId);
         },
         onToggleAnswer: () => {
           if (answerItem) void remove(answerItem);
+          else if (full) refuseFull();
           else void add(messageId, null);
         },
       };
       cache.set(messageId, binding);
       return binding;
     };
-  }, [add, blocksByMessage, conversationId, enabled, full, index, pending, remove]);
+  }, [add, blocksByMessage, conversationId, enabled, full, index, refuseFull, remove]);
 
   return { report, reportId: report?.id ?? reportId, count, full, bindingFor };
 }
