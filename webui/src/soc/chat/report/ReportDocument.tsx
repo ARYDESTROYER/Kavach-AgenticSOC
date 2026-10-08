@@ -63,7 +63,7 @@ export function ReportDocument({
       methodology: sectionNodes(doc, 'methodology', opts),
       appendix: sectionNodes(doc, 'appendix', opts),
     };
-  }, [doc, defangOn, showTitle]);
+  }, [doc, defangOn, showTitle, mode]);
   const { header, summary, methodology, appendix } = nodes;
   const H2 = `h${Math.min(6, 2 + headingShift)}` as 'h2' | 'h3';
   const H3 = `h${Math.min(6, 3 + headingShift)}` as 'h3' | 'h4';

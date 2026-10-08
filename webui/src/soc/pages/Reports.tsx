@@ -7,11 +7,17 @@
  * the report modules it shares with the chat's report panel (SPEC §10.10: the revamp may
  * add at most 1 kB to the entry). While the body loads, the page keeps the console's
  * page anatomy (container + header) with the shared loading state.
+ *
+ * Every `/api/reports` route needs `cases:read`. The rail entry stays visible like the
+ * other Workspace pages (a nav `perm` would cost entry bytes), so a role without it gets
+ * a plain explanation here instead of a 403 error state.
  */
 import * as React from 'react';
 import { FileText } from 'lucide-react';
 
 import { LoadingState } from '@/design-system';
+import { useAuth } from '@/soc/auth';
+import { EmptyState } from '@/soc/components/EmptyState';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { useRoute } from '@/soc/router';
@@ -28,7 +34,20 @@ export interface ReportsPageProps {
 
 export default function Reports({ reportId: explicit }: ReportsPageProps = {}) {
   const route = useRoute();
+  const { hasPermission } = useAuth();
   const reportId = explicit ?? (route.page === 'reports' ? route.opts?.reportId : undefined);
+  if (!hasPermission('cases', 'read')) {
+    return (
+      <PageContainer variant="wide" className="space-y-6">
+        <PageHeader icon={FileText} eyebrow="Workspace" title="Reports" />
+        <EmptyState
+          state="unavailable"
+          title="Reports need access to cases"
+          description="Your role cannot read cases, so it cannot open or build reports. An administrator can grant the Cases read permission."
+        />
+      </PageContainer>
+    );
+  }
   return (
     <React.Suspense
       fallback={

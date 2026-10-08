@@ -116,6 +116,56 @@ describe('buildReportDoc', () => {
   });
 });
 
+describe('methodology scoping', () => {
+  const turns = sourceTurnsFromConversation(sampleConversation());
+
+  it('attributes to a block only the lookup that produced it', () => {
+    const block = { ...rawBlock('signins'), from_step: 2 };
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[1], block, source: { conversation_id: 'conv-1', message_id: 'msg-2', block_id: 'signins' } }],
+      summary: null,
+    });
+    const doc = buildReportDoc(report, { generatedAt: NOW.toISOString(), sourceTurns: turns });
+    expect(doc.items[0].turn?.steps.filter((s) => s.kind === 'tool').map((s) => s.index)).toEqual([2]);
+    expect(doc.methodology).toContain('Lookups (1 call): Searched cases.');
+    // Step 1's query belongs to another part of the answer: not in this report's appendix.
+    expect(doc.queries).toEqual([]);
+  });
+
+  it('keeps every lookup for a whole answer, and for a block naming no known step', () => {
+    const block = { ...rawBlock('signins'), from_step: 9 };
+    const report = sampleReport({ items: [{ ...sampleReport().items[1], block }], summary: null });
+    const doc = buildReportDoc(report, { generatedAt: NOW.toISOString(), sourceTurns: turns });
+    expect(doc.methodology).toContain('Lookups (2 calls): Counted log events; Searched cases.');
+  });
+
+  it('says why an item has no lookup record', () => {
+    const base = sampleReport();
+    const items = [
+      base.items[5], // conv-gone
+      { ...base.items[2], id: 'x-1', source: { conversation_id: 'conv-late', message_id: 'm-1', block_id: 'b' } },
+      { ...base.items[2], id: 'x-2', source: { conversation_id: 'conv-err', message_id: 'm-2', block_id: 'b' } },
+      { ...base.items[2], id: 'x-3', source: { conversation_id: 'conv-1', message_id: 'msg-old', block_id: 'b' } },
+    ];
+    const doc = buildReportDoc(sampleReport({ items, summary: null }), {
+      generatedAt: NOW.toISOString(),
+      sourceTurns: turns,
+      conversationStatus: new Map([
+        ['conv-1', 'read'],
+        ['conv-gone', 'gone'],
+        ['conv-late', 'skipped'],
+        ['conv-err', 'failed'],
+      ] as const),
+    });
+    expect(doc.methodology).toContain('Lookup details were not recorded for 1 item (older answers).');
+    expect(doc.methodology).toContain('Lookup details are not available for 1 item: conversation no longer available.');
+    expect(doc.methodology).toContain('Lookup details are not shown for 1 item: the source conversation could not be loaded.');
+    expect(doc.methodology).toContain(
+      'Lookup details are not shown for 1 item: an export reads at most 10 source conversations, and theirs were not read.',
+    );
+  });
+});
+
 describe('helpers', () => {
   it('counts not-measured values per block type', () => {
     expect(notMeasuredCount(parseBlock(rawBlock('kpis')) as never)).toBe(1);

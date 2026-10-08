@@ -122,6 +122,18 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     expect(bytes - PRE_REVAMP_ENTRY_BYTES, `entry is ${bytes} B`).toBeLessThanOrEqual(REVAMP_ENTRY_BUDGET_BYTES);
   });
 
+  it("the entry's preload lists never repeat a chunk the entry already imports statically", () => {
+    // vite.config.ts `resolvePreloadDependencies`: a chunk the entry imports statically
+    // (react-vendor, radix, icons, utils) has loaded before any lazy import can run, so
+    // listing it again in every page's preload list only grows first paint.
+    const entry = readEntry();
+    const statics = [...entry.matchAll(/from\s*["']\.\/([A-Za-z0-9._-]+\.js)["']/g)].map((mm) => `assets/${mm[1]}`);
+    expect(statics.length).toBeGreaterThan(0);
+    const table = entry.match(/m\.f=\[([^\]]*)\]/)?.[1] ?? '';
+    expect(table.length).toBeGreaterThan(0);
+    for (const name of statics) expect(table, name).not.toContain(`"${name}"`);
+  });
+
   it('react-vendor carries no renderToStaticMarkup (react-dom/server stays out)', () => {
     // The HTML export is a string serialiser (BLOCKS.md amendment 8); react-dom/server in
     // the shared react-vendor chunk would ride every page.

@@ -15,7 +15,8 @@ import { TooltipProvider } from '@/ui/tooltip';
 
 const announce = vi.fn();
 vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => announce }));
-vi.mock('@/soc/auth', () => ({ useAuth: () => ({ username: 'ana', hasPermission: () => true }) }));
+const canReadCases = vi.hoisted(() => ({ value: true }));
+vi.mock('@/soc/auth', () => ({ useAuth: () => ({ username: 'ana', hasPermission: () => canReadCases.value }) }));
 const navigate = vi.fn();
 vi.mock('@/soc/router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/soc/router')>();
@@ -70,6 +71,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   window.location.hash = '';
+  canReadCases.value = true;
 });
 
 describe('Reports library', () => {
@@ -120,6 +122,13 @@ describe('Reports library', () => {
     expect(options.conversationStatus.get('conv-gone')).toBe('gone');
   });
 
+  it('explains a missing cases:read grant instead of failing on a 403', async () => {
+    canReadCases.value = false;
+    show();
+    expect(await screen.findByText('Reports need access to cases')).toBeInTheDocument();
+    expect(api.listReports).not.toHaveBeenCalled();
+  });
+
   it('shows a first-use state when there are no reports', async () => {
     api.listReports.mockResolvedValue([]);
     show();
@@ -136,6 +145,10 @@ describe('Reports library', () => {
     expect(doc).toHaveTextContent('AI-generated; verify before acting.');
     expect(doc).toHaveTextContent('Methodology & limitations');
     expect(doc).toHaveTextContent('Appendix: queries');
+    // The screen stamp is the report's last change, and conversations go by title only.
+    await waitFor(() => expect(doc).toHaveTextContent('Source conversations: VPN brute force, conv-gone'));
+    expect(doc).toHaveTextContent('Updated 2026-10-08 13:40');
+    expect(doc).not.toHaveTextContent('(conv-1)');
     // The deleted conversation's item says so; the others link back.
     await waitFor(() => expect(within(doc).getByText('Conversation no longer available')).toBeInTheDocument());
     const links = within(doc).getAllByRole('button', { name: 'Open source conversation' });

@@ -16,6 +16,9 @@ import { attackUrl, documentNodes } from '../export/walker';
 import { parseChatMarkdown } from '../../ChatMarkdown';
 import { parseBlock } from '../../blocks/schema';
 import { NOW, rawBlock, sampleConversation, sampleReport } from './fixtures';
+import { LIMITS } from '../../blocks/schema';
+
+const LIMITS_TITLE = LIMITS.title;
 
 const build = (defangTurns = true) =>
   buildReportDoc(sampleReport(), {
@@ -89,7 +92,35 @@ describe('Markdown export', () => {
   });
 });
 
+describe('Markdown structure guards', () => {
+  it('keeps note and callout lines from becoming lists, headings or code', () => {
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[1], note: 'First line\n---\n- not a list\n1. not numbered\n    not code\n===' }],
+    });
+    const md = reportToMarkdown(buildReportDoc(report, { generatedAt: NOW.toISOString() }));
+    expect(md).toContain('> **Analyst note:** First line\\\n> \\---\\\n> \\- not a list\\\n> 1\\. not numbered\\\n> not code\\\n> \\===');
+  });
+
+  it('never lets a paragraph of dashes become a thematic break', () => {
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[0], block: { title: 'Q', blocks: [{ id: 'c', type: 'callout', provenance: 'ai', tone: 'info', text: 'Look\n---\n- x' }], truncated: false } }],
+      summary: null,
+    });
+    const md = reportToMarkdown(buildReportDoc(report, { generatedAt: NOW.toISOString() }));
+    expect(md).not.toMatch(/^> ---$/m);
+    expect(md).not.toMatch(/^> - x$/m);
+  });
+});
+
 describe('HTML export', () => {
+  it('defangs the document title like the heading', () => {
+    const report = sampleReport({ title: 'Activity from evil.example.com' });
+    const html = reportToHtml(buildReportDoc(report, { generatedAt: NOW.toISOString() }));
+    expect(html).toContain('<title>Activity from evil[.]example[.]com</title>');
+    const raw = reportToHtml(buildReportDoc(report, { generatedAt: NOW.toISOString() }), { defang: false });
+    expect(raw).toContain('<title>Activity from evil.example.com</title>');
+  });
+
   it('pins the exact CSP of BLOCKS.md amendment 8 and inline light tokens', () => {
     const html = reportToHtml(build());
     expect(REPORT_CSP).toBe("default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'");
@@ -191,6 +222,22 @@ describe('conversation export', () => {
     const html = conversationToHtml(sampleConversation(), { now: NOW });
     expect(html).toContain(REPORT_CSP);
     expect(html).not.toMatch(/<script|<img/i);
+  });
+
+  it('quotes a long prompt in full and keeps an unanswered last prompt', () => {
+    const conversation = sampleConversation();
+    const long = `${'Why did vpn-gw-2 see so many failures '.repeat(5)}\nand from where?`;
+    conversation.messages[0] = { ...conversation.messages[0], content: long };
+    conversation.messages.push({ id: 'msg-3', role: 'user', content: 'And yesterday?', created_at: '2026-10-08T12:01:00Z' });
+    const doc = buildConversationDoc(conversation, { generatedAt: NOW.toISOString() });
+    expect(doc.items).toHaveLength(2);
+    expect(doc.items[0].title.length).toBeLessThanOrEqual(LIMITS_TITLE);
+    expect(doc.items[0].question).toContain('and from where?');
+    expect(doc.items[1].title).toBe('And yesterday?');
+    expect(doc.items[1].blocks.some((b) => b.type === 'callout' && b.text === 'No answer was saved for this question.')).toBe(true);
+    const md = conversationToMarkdown(conversation, { now: NOW });
+    expect(md).toContain('> **Question:**');
+    expect(md).toContain('No answer was saved for this question.');
   });
 
   it('keeps a stopped or failed turn visible as a notice', () => {

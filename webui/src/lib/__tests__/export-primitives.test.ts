@@ -54,7 +54,30 @@ describe('lib/csv', () => {
   });
 });
 
+describe('lib/csv TSV folding', () => {
+  it('defuses a formula that only appears after whitespace folding', () => {
+    // A space, then a TAB: not a lead on the raw text, but it folds to "  =1".
+    expect(tsvField(' \t=1')).toBe("'  =1");
+    expect(tsvField('\t=1')).toBe("' =1");
+    expect(tsvField('a\tb')).toBe('a b');
+  });
+});
+
 describe('lib/defang', () => {
+  it('treats a mixed-case TLD as a host when the context says so (case is attacker-chosen)', () => {
+    expect(defang('Visit www.evil.Com/x now')).toBe('Visit www[.]evil[.]Com/x now');
+    expect(defang('a.b.Evil.Com')).toBe('a[.]b[.]Evil[.]Com');
+    expect(defang('see http://Evil.Com')).toBe('see hxxp://Evil[.]Com');
+    expect(defang('evil.Com/login')).toBe('evil[.]Com/login');
+    expect(defang('evil.Com:8443')).toBe('evil[.]Com:8443');
+    expect(defang('mail eve@Corp.Example')).toBe('mail eve[@]Corp[.]Example');
+    // A bare two-label mixed-case token stays prose (the pinned `end.Next` rule).
+    expect(defang('evil.Com')).toBe('evil.Com');
+    expect(defang('Mr.Smith said end.Next')).toBe('Mr.Smith said end.Next');
+    const once = defang('www.evil.Com/x');
+    expect(defang(once)).toBe(once);
+  });
+
   it('defangs URLs, IPs, domains and e-mail addresses idempotently', () => {
     const out = defang('GET https://evil.example.com/x from 198.51.100.7 by eve@corp.example');
     expect(out).toBe('GET hxxps://evil[.]example[.]com/x from 198[.]51[.]100[.]7 by eve[@]corp[.]example');
