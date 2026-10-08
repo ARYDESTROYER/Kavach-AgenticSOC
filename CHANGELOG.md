@@ -45,8 +45,8 @@ analyst's own words or this question's results; private, reserved and internal v
 never sent, and policy refusals are reported as such rather than as missing permissions.
 Memory changes are only proposed and need a `memory:manage` confirmation; money figures
 need `models:read`; case-thread saves need `cases:comment`; reports and conversations are
-owner-scoped, server-resolved from saved answers (case content is unaddable), audited and
-stored in mapping-safe documents on every state backend. Every model call, including
+owner-scoped, server-resolved from saved answers (case content is unaddable), audited, and
+stored so they can never grow the shared Elasticsearch mapping. Every model call, including
 streamed, cancelled and summary calls, records exactly one usage row.
 
 Also in this change: the ATT&CK heatmap's tactic and cell labels move from 10 px to the

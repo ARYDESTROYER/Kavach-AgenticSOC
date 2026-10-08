@@ -4,7 +4,7 @@
  * bounds, nulls, gauges, trends and refs; timeline, entity, MITRE (constructed ATT&CK
  * links only), query, callout roles, citation anchors, guide refs, markdown and the Brief.
  */
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => () => undefined }));
@@ -78,11 +78,14 @@ describe('case list', () => {
     await act(async () => {
       fireEvent.pointerEnter(list.parentElement!);
     });
-    // The link survives the lazy swap and is still a single link per case. The hover
-    // card is a lazy import: under a loaded full-suite run its first transform can take
-    // longer than findBy's default 1 s, so the wait is generous (it returns as soon as
-    // the link is there).
-    expect(await screen.findByRole('link', { name: 'Brute force against vpn-gw-2' }, { timeout: 10_000 })).toBeInTheDocument();
+    // Wait for the SWAP, not just for a link: the plain link is there before the hover
+    // card loads, so `findByRole` can return it and the lazy module (slow under a loaded
+    // full-suite run) can then replace it before the assertion. The armed link is the
+    // hover card's trigger (Radix marks it with `data-state`); the wait is generous.
+    const name = 'Brute force against vpn-gw-2';
+    await waitFor(() => expect(screen.getByRole('link', { name })).toHaveAttribute('data-state'), { timeout: 10_000 });
+    // The link survives the lazy swap and is still a single link per case.
+    expect(screen.getAllByRole('link', { name })).toHaveLength(1);
   }, 15_000);
 });
 

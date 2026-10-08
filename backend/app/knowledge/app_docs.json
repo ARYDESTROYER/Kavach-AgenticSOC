@@ -1460,7 +1460,7 @@
    "page": "analyst/chat.md",
    "anchor": "saved-prompts",
    "heading": "Saved prompts",
-   "text": "Keep questions you ask often. Select **Save prompt** beside any of your earlier\nquestions, or choose **Save current prompt** in the Saved prompts submenu of Options for\nthe text in the composer. Saved prompts appear in the `/` menu and in that submenu, where\n**Manage saved prompts…** renames or deletes them. You can keep up to 50; they belong to\nyour account.",
+   "text": "Keep questions you ask often. Select **Save prompt** beside any of your earlier\nquestions, or choose **Save current prompt** in the Saved prompts submenu of Options for\nthe text in the composer. Saved prompts appear in the `/` menu and in that submenu, where\n**Manage saved prompts…** lets you use or delete them. You can keep up to 50; they belong to\nyour account.",
    "console": []
   },
   {
@@ -1590,7 +1590,7 @@
    "page": "analyst/chat.md",
    "anchor": "the-reports-library",
    "heading": "The Reports library",
-   "text": "Open **Triage → Workspace → Reports** to see every report you own, with its template,\nitem count, source conversation, and last update. Search by title, and open, rename,\nexport, or delete any report; an open report shows the same document view as the\nexports, with a link back to its source conversation.\n\nA report holds up to **40 items**, and you can keep up to **100 reports**; at that limit,\ndelete one to start another. Reports are never removed automatically, and a report\nsurvives the deletion of its conversation: its source link then reads \"Conversation no\nlonger available\". Reports are visible only to the user who created them, every change\nis recorded in the audit log, and each summary writes one usage record like any other\nmodel call.",
+   "text": "Open **Triage → Workspace → Reports** to see every report you own, with its template,\nitem count, source conversation, and last update. Search by title or template, and open,\nrename, export, or delete any report; an open report shows the same document view as\nthe exports, with a link back to its source conversation.\n\nA report holds up to **40 items**, and you can keep up to **100 reports**; at that limit,\ndelete one to start another. Reports are never removed automatically, and a report\nsurvives the deletion of its conversation: its source link then reads \"Conversation no\nlonger available\". Reports are visible only to the user who created them, every change\nis recorded in the audit log, and each summary writes one usage record like any other\nmodel call.",
    "console": [
     "page:reports"
    ]
@@ -1635,7 +1635,7 @@
    "page": "analyst/chat.md",
    "anchor": "case-scoped-chat",
    "heading": "Case-scoped chat",
-   "text": "The **Chat** tab in Case Manager uses the same assistant with the selected case as its\ncontext. It is compact: no history, no report panel, no **Add to report**, and no `/`\nor `@` menus. Only the final answer is saved to the case thread, and only when you hold\nthe `cases:comment` permission; otherwise the answer says \"Not saved to the case\nthread\". Case conversations never enter your personal Workspace history.\n\n| Surface | Use it for | Where answers are kept |\n|---|---|---|\n| **Triage → Workspace → Chat** | Questions across telemetry, cases, metrics, intelligence, and the product | Your saved conversations and reports |\n| **Case Manager → Chat** | Evidence and follow-up for the selected case | The case thread |",
+   "text": "The **Chat** tab in Case Manager uses the same assistant with the selected case as its\ncontext. It is compact: no history, no report panel, no **Add to report**, and no `/`\nor `@` menus. Only the final answer is saved to the case thread, and only when you hold\nthe `cases:comment` permission; otherwise the answer says \"Not saved to the case\nthread\". When the save itself fails, **Run again to save** asks the question again,\nwhich is billed again. Case conversations never enter your personal Workspace history.\n\n| Surface | Use it for | Where answers are kept |\n|---|---|---|\n| **Triage → Workspace → Chat** | Questions across telemetry, cases, metrics, intelligence, and the product | Your saved conversations and reports |\n| **Case Manager → Chat** | Evidence and follow-up for the selected case | The case thread |",
    "console": [
     "page:chat"
    ]

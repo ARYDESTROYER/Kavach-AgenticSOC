@@ -1498,8 +1498,8 @@ every split reference width is 8 px narrower than first drafted: 1280/nav 64 →
   analyst notes, and reads every digest field leniently.
 
 **A28 — Topic passthrough (§3.1, §10.7, A7).** `ChatRequest.topic` (optional,
-`^[a-z0-9_:.-]{1,64}$`; a malformed id is 422, a well-formed id the corpus does not know is
-ignored) names the console-map topic an "Ask about this" turn was started from. It is never prompt
+`models.CHAT_TOPIC_PATTERN`, the same bound as `GET /api/chat/topics/{topic_id}`; a malformed
+id is 422, a well-formed id the corpus does not know is ignored) names the console-map topic an "Ask about this" turn was started from. It is never prompt
 text: the route puts it on `ChatToolContext.topic`, `app_help` defaults its topic input to it so
 that topic's glossary sections lead retrieval, and the $0 Help Center fallback (§5.4.1) pins the
 same sections. Like the other revamp fields it joins the idempotency fingerprint only when set, so
@@ -1527,8 +1527,11 @@ conversation, internal domains, e-mail lookups). It mirrors the backend ranges a
 longer shows it. The schema title is "Chat assistant".
 
 **A32 — Mapping-safe KV documents (§7.5, §9.1).** On Elasticsearch every KV namespace shares one
-dynamically mapped config index, so no stored document may use data (conversation ids,
-idempotency keys, case ids) as object keys. Chat conversation partitions and case threads store
-each record as one opaque canonical-JSON string in a fixed array (storage form 3); form 2 rows
-are still read and are rewritten on the next write. Report documents use fixed,
-`report_`-prefixed fields with opaque JSON strings.
+dynamically mapped config index (default limit 1,000 fields), so a document there may not use
+data (conversation ids, idempotency keys, case ids) as object keys. Both partition forms are
+always read; the form written depends on the KV backend (`case_thread.opaque_rows_for`). On
+Elasticsearch, chat conversation partitions and case threads write each record as one opaque
+canonical-JSON string in a fixed array (storage form 3), which is one-way: an older build reads
+an empty history there. On PostgreSQL and SQLite they keep writing the keyed form 2, which every
+released build reads, so the supported image-only rollback keeps its chat history. Report
+documents use fixed, `report_`-prefixed fields with opaque JSON strings on every backend.
