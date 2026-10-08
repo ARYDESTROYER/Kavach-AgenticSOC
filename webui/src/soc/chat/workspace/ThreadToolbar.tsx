@@ -6,7 +6,10 @@
  * "12.4k tokens · $0.03" (only when the toolbar is ≥ 560 px; otherwise inside ⋯) ·
  * [Report · n] (Workspace only) · [New chat] (only when the rail is a Sheet, so exactly
  * one New chat is ever visible) · ⋯ (Rename, Pin conversation, Export conversation ▸,
- * Delete).
+ * Delete; only once the thread is saved — a draft has nothing to act on).
+ *
+ * Inline rename returns focus to the title when it ends from the keyboard (Enter /
+ * Escape); a blur commit leaves focus wherever the reader moved it.
  */
 import * as React from 'react';
 import { Download, FileText, History, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
@@ -27,9 +30,9 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
-import { IconButton } from '@/soc/components/IconButton';
+import { shortcutLabel } from '../shortcuts/shortcut-list';
 import { compactTokens, formatCost } from '../message/format';
-import { EXPORT_FORMATS, type ConversationExportFormat } from './HistoryRail';
+import { EXPORT_FORMATS, HintedIconButton, SHORTCUT_HINT_KEYS, type ConversationExportFormat } from './HistoryRail';
 
 /** "12.4k tokens · $0.03", or "Usage —" for a legacy thread without totals. */
 export function conversationTotal(summary: ChatConversationSummary | null): string | null {
@@ -39,17 +42,32 @@ export function conversationTotal(summary: ChatConversationSummary | null): stri
   return `${compactTokens(summary.total_tokens)} tokens${cost}`;
 }
 
-function TitleEditor({ initial, onCommit, onCancel }: { initial: string; onCommit: (title: string) => void; onCancel: () => void }) {
+/** How an inline rename ended: from the keyboard (refocus the title) or by blur. */
+type EditEnd = 'keyboard' | 'blur';
+
+function TitleEditor({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  onCommit: (title: string, end: EditEnd) => void;
+  onCancel: (end: EditEnd) => void;
+}) {
   const [value, setValue] = React.useState(initial);
   const ref = React.useRef<HTMLInputElement>(null);
+  const endedRef = React.useRef(false);
   React.useEffect(() => {
     ref.current?.focus();
     ref.current?.select();
   }, []);
-  const commit = () => {
+  const commit = (end: EditEnd) => {
+    // Enter commits and unmounts the field, which also blurs it: end once.
+    if (endedRef.current) return;
+    endedRef.current = true;
     const title = value.replace(/\s+/g, ' ').trim().slice(0, 80);
-    if (title && title !== initial) onCommit(title);
-    else onCancel();
+    if (title && title !== initial) onCommit(title, end);
+    else onCancel(end);
   };
   return (
     <Input
@@ -57,15 +75,16 @@ function TitleEditor({ initial, onCommit, onCancel }: { initial: string; onCommi
       value={value}
       maxLength={80}
       onChange={(event) => setValue(event.target.value)}
-      onBlur={commit}
+      onBlur={() => commit('blur')}
       onKeyDown={(event) => {
         if (event.nativeEvent.isComposing) return;
         if (event.key === 'Enter') {
           event.preventDefault();
-          commit();
+          commit('keyboard');
         } else if (event.key === 'Escape') {
           event.preventDefault();
-          onCancel();
+          endedRef.current = true;
+          onCancel('keyboard');
         }
       }}
       className="h-7 max-w-md rounded-sm px-2 text-sm font-semibold"
@@ -117,36 +136,57 @@ export function ThreadToolbar({
   className,
 }: ThreadToolbarProps) {
   const [editing, setEditing] = React.useState(false);
+  const [refocusTitle, setRefocusTitle] = React.useState(false);
+  const titleButtonRef = React.useRef<HTMLButtonElement>(null);
+  // ⋯ → Rename: the field must mount only after the menu has closed. Radix flushes an
+  // item's onSelect synchronously while the menu (and its focus trap) is still open, so
+  // a field mounted there would lose focus to the trap at once — and its blur commits.
+  const renamingRef = React.useRef(false);
   const hintId = `${React.useId().replace(/[^A-Za-z0-9_-]/g, '')}-rename-hint`;
   const total = conversationTotal(summary);
   const saved = !!summary;
 
+  React.useEffect(() => {
+    if (!refocusTitle || editing) return;
+    titleButtonRef.current?.focus();
+    setRefocusTitle(false);
+  }, [editing, refocusTitle]);
+  const endEdit = (end: EditEnd) => {
+    setEditing(false);
+    if (end === 'keyboard') setRefocusTitle(true);
+  };
+
   return (
     <div className={cn('flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-3', className)} data-testid="chat-thread-toolbar">
       {railInSheet && !caseScoped ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-8 shrink-0 gap-1.5 px-2"
-          onClick={onOpenHistory}
-          aria-label={narrow ? 'History' : undefined}
-          aria-keyshortcuts={shortcuts?.history}
-        >
-          <History aria-hidden />
-          {narrow ? null : 'History'}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 shrink-0 gap-1.5 px-2"
+              onClick={onOpenHistory}
+              aria-label={narrow ? 'History' : undefined}
+              aria-keyshortcuts={shortcuts?.history}
+            >
+              <History aria-hidden />
+              {narrow ? null : 'History'}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{`History (${shortcutLabel(SHORTCUT_HINT_KEYS.toggleHistory)})`}</TooltipContent>
+        </Tooltip>
       ) : null}
 
       <div className="min-w-0 flex-1">
         {editing && summary ? (
           <TitleEditor
             initial={summary.title}
-            onCommit={(next) => {
-              setEditing(false);
+            onCommit={(next, end) => {
+              endEdit(end);
               onRename(next);
             }}
-            onCancel={() => setEditing(false)}
+            onCancel={endEdit}
           />
         ) : (
           <div className="flex min-w-0 items-baseline gap-2">
@@ -155,6 +195,7 @@ export function ThreadToolbar({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
+                      ref={titleButtonRef}
                       type="button"
                       className="max-w-full truncate rounded-sm text-left hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => setEditing(true)}
@@ -202,12 +243,19 @@ export function ThreadToolbar({
       ) : null}
 
       {railInSheet && !caseScoped ? (
-        <IconButton label="New chat" onClick={onNewChat} disabled={busy} aria-keyshortcuts={shortcuts?.newChat}>
+        <HintedIconButton
+          label="New chat"
+          hint={SHORTCUT_HINT_KEYS.newChat}
+          tooltipSide="bottom"
+          onClick={onNewChat}
+          disabled={busy}
+          aria-keyshortcuts={shortcuts?.newChat}
+        >
           <Plus aria-hidden />
-        </IconButton>
+        </HintedIconButton>
       ) : null}
 
-      {!caseScoped ? (
+      {!caseScoped && saved ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -218,7 +266,17 @@ export function ThreadToolbar({
               <MoreHorizontal className="size-4" aria-hidden />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuContent
+            align="end"
+            className="w-56"
+            onCloseAutoFocus={(event) => {
+              if (!renamingRef.current) return;
+              renamingRef.current = false;
+              // Not back to ⋯: the title field takes focus as it mounts.
+              event.preventDefault();
+              setEditing(true);
+            }}
+          >
             {!wide && total ? (
               <>
                 <DropdownMenuLabel className="text-xs font-normal tabular-nums text-muted-foreground">
@@ -227,16 +285,20 @@ export function ThreadToolbar({
                 <DropdownMenuSeparator />
               </>
             ) : null}
-            <DropdownMenuItem disabled={!saved} onSelect={() => setEditing(true)}>
+            <DropdownMenuItem
+              onSelect={() => {
+                renamingRef.current = true;
+              }}
+            >
               <Pencil aria-hidden />
               Rename
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={!saved} onSelect={onTogglePin}>
+            <DropdownMenuItem onSelect={onTogglePin}>
               {summary?.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
               {summary?.pinned ? 'Unpin conversation' : 'Pin conversation'}
             </DropdownMenuItem>
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={!saved}>
+              <DropdownMenuSubTrigger>
                 <Download aria-hidden />
                 Export conversation
               </DropdownMenuSubTrigger>
@@ -250,7 +312,7 @@ export function ThreadToolbar({
             </DropdownMenuSub>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={!saved || busy}
+              disabled={busy}
               className="text-critical-text focus:text-critical-text"
               onSelect={onDelete}
             >

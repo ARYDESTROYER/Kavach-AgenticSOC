@@ -4,14 +4,18 @@
  * Input (uncached + cache read + cache write, the user-facing definition of §3.4),
  * cached, output, total, embedding, cost, model latency, model and the sources the
  * lookups queried, with the honest "estimated" and "simulated" qualifiers spelled out.
- * The trigger is a real button: Radix opens the card on hover AND on keyboard focus,
- * and the button's accessible name already carries the headline figures.
+ *
+ * A Popover, not a hover card: a hover card has no accessibility relationship and
+ * cannot open on touch. The trigger is a real button that opens it on click, tap,
+ * Enter or Space (focus moves into the labelled dialog, so a screen reader hears the
+ * details; Esc closes and returns focus). A mouse may also open it by hovering; a
+ * hover-opened card never takes focus, and clicking then pins it open.
  */
 import * as React from 'react';
 
 import { fmtNumber } from '@/lib/format';
 import type { TurnUsage } from '@/lib/types';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/ui/hover-card';
+import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { formatCost, formatDuration, inputTokens, usageSummary } from './format';
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -57,23 +61,82 @@ export function UsageDetails({ usage, sources = [] }: UsageCardProps) {
   );
 }
 
-/** The meta row's token figure: a button that opens the card on hover and focus. */
+const HOVER_OPEN_MS = 250;
+const HOVER_CLOSE_MS = 150;
+
+/** The meta row's token figure: a button that opens the usage details. */
 export function UsageCard({ usage, sources }: UsageCardProps) {
   const summary = usageSummary(usage);
+  const [open, setOpen] = React.useState(false);
+  /** Opened by a hovering mouse (not pinned): closes when the pointer leaves. */
+  const hoverRef = React.useRef(false);
+  const timerRef = React.useRef<number | null>(null);
+  const clearTimer = () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  };
+  React.useEffect(() => clearTimer, []);
+  const hoverOpen = (event: React.PointerEvent) => {
+    if (event.pointerType !== 'mouse') return;
+    clearTimer();
+    if (open) return;
+    timerRef.current = window.setTimeout(() => {
+      hoverRef.current = true;
+      setOpen(true);
+    }, HOVER_OPEN_MS);
+  };
+  const hoverClose = (event: React.PointerEvent) => {
+    if (event.pointerType !== 'mouse') return;
+    clearTimer();
+    if (!hoverRef.current) return;
+    timerRef.current = window.setTimeout(() => {
+      hoverRef.current = false;
+      setOpen(false);
+    }, HOVER_CLOSE_MS);
+  };
   return (
-    <HoverCard openDelay={250} closeDelay={100}>
-      <HoverCardTrigger asChild>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        clearTimer();
+        hoverRef.current = false;
+        setOpen(next);
+      }}
+    >
+      <PopoverTrigger asChild>
         <button
           type="button"
           className="min-w-0 truncate rounded-sm tabular-nums hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={`${summary}. Usage details`}
+          onPointerEnter={hoverOpen}
+          onPointerLeave={hoverClose}
+          onClick={(event) => {
+            // A click on a hover-opened card pins it instead of closing it.
+            if (open && hoverRef.current) {
+              hoverRef.current = false;
+              clearTimer();
+              event.preventDefault();
+            }
+          }}
         >
           {summary}
         </button>
-      </HoverCardTrigger>
-      <HoverCardContent align="start" className="w-72 p-3">
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-72 p-3"
+        aria-label="Usage details"
+        onPointerEnter={(event) => {
+          if (event.pointerType === 'mouse') clearTimer();
+        }}
+        onPointerLeave={hoverClose}
+        // A hover never moves focus; a click / key opens into the dialog.
+        onOpenAutoFocus={(event) => {
+          if (hoverRef.current) event.preventDefault();
+        }}
+      >
         <UsageDetails usage={usage} sources={sources} />
-      </HoverCardContent>
-    </HoverCard>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -48,19 +48,21 @@ def _request(state: Any) -> Any:
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(tlsoc=state)), cookies={}, headers={})
 
 
-async def _context(state: Any, question: str, grants: frozenset[tuple[str, str]]) -> Any:
+async def _context(state: Any, question: str, grants: frozenset[tuple[str, str]], **fields: Any) -> Any:
     builder = getattr(state, "build_chat_tool_context", None)
     if builder is None:  # the route builder is the contract; the helper mirrors it
         return demo_context(state, grants=grants)
-    return await builder(_request(state), ChatRequest(message=question), grants=grants)
+    return await builder(_request(state), ChatRequest(message=question, **fields), grants=grants)
 
 
 async def _turn(state: Any, question: str, *, grants: frozenset[tuple[str, str]] | None = None,
-                origin: str = "starter", prior: list[PriorExchange] | None = None) -> ChatResponse:
+                origin: str = "starter", prior: list[PriorExchange] | None = None,
+                **fields: Any) -> ChatResponse:
+    """One turn; ``fields`` are extra ``ChatRequest`` fields (scopes, time_range, case_id)."""
     grants = catalogue_grant_pairs() if grants is None else grants
-    ctx = await _context(state, question, grants)
+    ctx = await _context(state, question, grants, **fields)
     return await state.chat_engine.chat(question, state.execution_prefs, tool_context=ctx, origin=origin,
-                                        prior_exchanges=prior)
+                                        prior_exchanges=prior, case_id=fields.get("case_id"))
 
 
 def _tool_steps(response: ChatResponse) -> list[Any]:
@@ -253,6 +255,10 @@ SWEEP = (
     ("How many open critical cases are there?", "cases"),
     ("What are MTTA and MTTR, and what are ours?", "explain_metric"),
     ("What version is this deployment and is Demo Mode on?", "help"),
+    ("What are the top source IPs?", "top"),
+    ("What is a true positive?", "help"),
+    ("Can we see brute force attempts?", "brute"),
+    ("Build a hunt report on lateral movement", "pivot"),
 )
 
 
@@ -290,3 +296,69 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
     assert response.answer.startswith(f"**`{case_id}`** is a true positive")
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes, end to end over the Demo stack.
+# --------------------------------------------------------------------------- #
+async def test_an_unknown_indicator_hunt_does_not_invent_a_case(demo_state) -> None:
+    response = await _turn(demo_state, "Hunt for 198.51.100.77 across logs, cases and threat intel.", origin="user")
+    assert "No case has it as its entity." in response.answer
+    assert "single case" not in response.answer and "containment in place" not in response.answer
+    assert ("Nothing in the logs or the case store links it to activity here, so the reputation result above is "
+            "the only signal") in response.answer
+
+
+async def test_a_report_on_a_case_materialises_and_case_manager_reports_do_not(demo_state) -> None:
+    case_id = "demo-00000539-0004"
+    workspace = await _turn(demo_state, f"Give me a report on case {case_id}", origin="user")
+    report = _block(workspace, type="report")
+    assert report["template"] == "investigation" and report["sections"]
+    assert not any(b.get("type") == "callout" for b in workspace.blocks)
+    assert workspace.answer.endswith("The report below is ready to add to your Reports.")
+
+    case_chat = await _turn(demo_state, "Write a report for this case", origin="user", case_id=case_id)
+    assert case_chat.blocks and not any(b.get("type") == "report" for b in case_chat.blocks)
+    assert "ready to add" not in case_chat.answer
+    assert "Case conversations cannot be added to Reports." in case_chat.answer
+
+
+async def test_the_users_window_wins_over_the_chip_and_the_answer_says_so(demo_state) -> None:
+    response = await _turn(demo_state, "Which hosts generated the most events in the last 24 hours?",
+                           origin="user", time_range={"from": "now-7d"})
+    (step,) = _tool_steps(response)
+    assert step.params["time_from"] == "now-24h"
+    assert "in the last 24h" in response.answer
+    assert response.answer.endswith("Window: your question named the last 24 hours, so the lookups used that "
+                                    "window instead of the last 7d you selected.")
+    narrower = await _turn(demo_state, "Which hosts generated the most events in the last 7 days?",
+                           origin="user", time_range={"from": "now-6h"})
+    assert "so it was limited to the last 6h" in narrower.answer
+
+
+async def test_scopes_are_reported_as_scopes_not_as_missing_permissions(demo_state) -> None:
+    posture = await _turn(demo_state, STARTERS["posture"].prompt, scopes=["cases"])
+    assert {s.tool for s in _tool_steps(posture)} <= {"search_cases", "get_case", "shift_report", "list_campaigns",
+                                                       "explain_decision"}
+    assert posture.answer.startswith("Outside the scopes you selected (Cases): SOC metrics")
+    assert "Not available to you" not in posture.answer and "administrator" not in posture.answer
+    brief = await _turn(demo_state, "/shift-brief", origin="user", scopes=["metrics"])
+    envelope = _block(brief, type="report")
+    steps = next(b for s in envelope["sections"] if s["heading"] == "Next steps" for b in s["blocks"])
+    assert "No open work needs attention" not in str(steps)
+    assert "The shift snapshot was not read in this turn" in str(steps)
+
+
+@pytest.mark.parametrize("topic_id", ["kpi:total_cases", "kpi:human_vs_ai", "kpi:llm_spend", "settings:sessions",
+                                      "settings:keys", "settings:standup", "settings:notifications"])
+async def test_ask_about_this_topic_questions_are_answered_from_the_help_center(demo_state, topic_id) -> None:
+    from app.knowledge import get_app_knowledge
+
+    question = get_app_knowledge().topics[topic_id].question
+    response = await _turn(demo_state, question)          # topic questions are sent with origin "starter"
+    tools = [s.tool for s in _tool_steps(response)]
+    assert tools and tools[0] == "app_help", (topic_id, tools)
+    assert not {"shift_report", "search_cases"} & set(tools), (topic_id, tools)
+    assert response.notice is None, (topic_id, response.notice)
+    assert response.answer_kind in ("product_help", "mixed"), topic_id
+    assert response.citations, topic_id

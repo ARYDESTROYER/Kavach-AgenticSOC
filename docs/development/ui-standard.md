@@ -174,13 +174,16 @@ The conversation always keeps at least 640 px:
   leaves 640 px; below that it becomes a 48 px icon strip (New chat, Search, Show
   history), and below a 640 px frame a left Sheet opened by **History** in the toolbar.
   A viewer may collapse the docked rail to the strip; that choice persists locally.
-- The report panel opens as a split column (default 360 px, 320–480 px) only when the
-  conversation keeps 640 px, collapsing the docked rail to the strip first if that is
-  enough; otherwise it is an overlay Sheet. The split reuses the queue/detail separator
-  idiom: one focusable hairline (`role="separator"` with value attributes), arrow keys
-  in small steps, Shift for larger ones, Home/End, double-click to reset, and a width
+- The report panel opens as a split column (default 360 px, 320–480 px, plus its 9 px
+  separator handle) only when the conversation keeps 640 px, collapsing the docked rail
+  to the strip first if that is enough; otherwise it is an overlay Sheet. The split
+  reuses the queue/detail separator idiom: one focusable 9 px handle around a centred
+  1 px hairline (`role="separator"` with value attributes), arrow keys in small steps,
+  Shift for larger ones, Home/End, double-click to reset, pointer drag, and a width
   persisted per viewer. Split mode never moves focus; the overlay moves focus to the
-  panel heading and returns it on close.
+  panel heading and returns it on close. The first Add to report of a conversation
+  opens the split without moving focus; in overlay geometry it never auto-opens, and a
+  toast offers **Open** instead.
 - Exactly one **New chat** is visible at every width: in the docked rail header, in the
   icon strip, or in the toolbar when the rail is a Sheet.
 
@@ -192,11 +195,18 @@ does not sit inside a `PageContainer` or `PageHeader`. Headings: one `sr-only`
 text in a tooltip); every turn has a hidden `<h3>`. The toolbar holds, left to right,
 History (Sheet mode only), the title, the conversation total ("12.4k tokens · $0.03",
 inline from 560 px, otherwise in the ⋯ menu), **Report · n**, New chat (Sheet mode
-only) and ⋯ (Rename, Pin conversation, Export conversation, Delete).
+only) and ⋯ (Rename, Pin conversation, Export conversation, Delete), which appears only
+once the thread is saved. Tooltips of History, Collapse/Show history and New chat name
+their shortcut (Ctrl/⌘+Shift+S, Ctrl/⌘+Shift+O); `aria-keyshortcuts` carries the
+machine form. An inline rename (title or rail row) returns focus to what it replaced,
+and a rename started from a menu begins only after the menu has closed, so the menu's
+focus trap cannot pull focus out of the field.
 
 **Lane.** One five-track grid gives prose, the user bubble, the meta row and the
-composer a 48rem measure and lets answer blocks widen to 64rem; exchanges and messages
-are column subgrids, so every turn and the composer share the same edges. The
+composer a 48rem measure and lets answer blocks widen to 64rem. Every exchange repeats
+the same track list (an off-screen exchange uses `content-visibility: auto`, whose
+layout containment turns a subgrid into a plain grid) and each message subgrids its
+exchange, so every turn and the composer share the same edges. The
 transcript is the only scrolling region and the composer stays docked below it in the
 empty, restoring, error and populated states. The empty state is top-aligned in the
 lane, never a centred marketing panel.
@@ -204,12 +214,15 @@ lane, never a centred marketing panel.
 **History rail.** New chat and a server-side content search sit in the header; a hit
 shows a snippet under its title and opening it scrolls to and highlights the matching
 message. Groups are Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, then
-month. Rows are one line (title and a quiet relative time) whose accessible name is
-"title — exact date · N messages"; the active row carries `aria-current`, and ↑/↓/
-Home/End move between rows through a single roving tab stop. The row menu offers
-Rename (inline, IME-safe), Pin/Unpin, Open report (when the thread has one), Export and
-Delete; Delete confirms that the report stays in Reports and is disabled for the thread
-a turn is running in. History truth is fail-closed: a read failure is an explicit
+month; the group labels label `role="group"` lists and are not headings (the page
+outline is h1 Chat → h2 thread title → h3 turns). Rows are one line (title and a quiet
+relative time, with the full title and exact date in a tooltip) whose accessible name
+is "title — exact date · N messages"; the active row carries `aria-current`, and ↑/↓/
+Home/End move between rows through a single roving tab stop that always lands on an
+existing, enabled row. The row menu offers Rename (inline, IME-safe), Pin/Unpin, Open
+report (when the thread has one; disabled with its reason while another thread's turn
+runs), Export and Delete; Delete confirms that the report stays in Reports and is
+disabled for the thread a turn is running in. History truth is fail-closed: a read failure is an explicit
 retryable error, never the calm **No previous conversations** state. The footer
 discloses retention when history was truncated or at least 45 conversations exist.
 
@@ -225,13 +238,23 @@ the step the turn is waiting on and a failed call; their tokens tick on the head
 starts. A finished turn reads answer → blocks → meta row → follow-ups (latest turn only).
 The meta row is one 28 px `text-xs` line: a disclosure that reopens the run log in place
 ("4 lookups · 6.2 s"; "Answered in 1.1 s" without lookups), the token figure that opens
-the usage card on hover or focus, **Sources n**, and the Copy / Add to report / Ask again
-icon actions — always visible on the latest turn and revealed on hover or focus-within
-on older ones, with their space reserved. A turn without recorded usage reads "Usage
-not recorded · —", never 0; Demo Mode appends "simulated". At most one quiet line
-follows: a memory echo, a memory proposal (confirmable only with `memory:manage`), or
-"Not saved · Retry save". Restored turns render collapsed. Aim for no more than 40 px of
-chrome per historical turn.
+the usage details (a popover: click, tap, Enter, or hover with a mouse), **Sources n**,
+and the Copy / Add to report / Ask again icon actions — always visible on the latest
+turn and revealed on hover or focus-within on older ones by opacity, never
+`visibility: hidden` (a hidden control cannot take focus), with their space reserved.
+A turn without recorded usage reads "Usage not recorded · —", never 0, followed by the
+model and source it ran on when known; Demo Mode appends "simulated". Quiet lines
+follow when relevant: a memory echo or proposal (confirmable only with
+`memory:manage`; a removal first resolves its ids and lists exactly the facts it would
+forget, skipping unknown ones) and "Not saved · Run again to save" (honestly a new,
+billed run, not a save-only retry). Restored turns render collapsed. Aim for no more
+than 40 px of chrome per historical turn.
+
+**Add to report.** The answer and block toggles keep one stable name and use
+`aria-pressed` for "In report ✓". They never unmount while a request is in flight
+(a click then is ignored) or when the report is full: the answer toggle becomes
+`aria-disabled` with the reason ("Report is full (40 items)") in its tooltip, a new add
+is refused with that reason, and an item already in the report stays removable.
 
 **Notices.** Partial, denied, timeout, provider, breaker, cancelled, unsupported and
 budget notices are one callout at the top of the answer, with Retry only when the
@@ -243,11 +266,19 @@ version appears after refresh." Budget state appears as one alert above the comp
 **Scrolling and announcements.** On send, the user turn moves to the lane top with a
 48 px peek of the previous turn; the lane follows new content only while the reader is
 within 72 px of the bottom and only until that turn's top reaches the lane top, and
-otherwise shows **Jump to latest**. Reduced motion means no smooth scrolling and no
-typewriter effect. Off-screen exchanges use `content-visibility: auto`. The transcript is
-`role="log"` without `aria-live`; every announcement ("Working", throttled step
-progress, "Answer ready", "Stopped", "Error: …", "Added to report (n items)") goes
-through the shell announcer, and focus never jumps on new content.
+otherwise shows **Jump to latest**. After a jump, or when a thread opens, the lane sticks
+to the bottom while a turn runs or late content lands (lazy answer blocks), until the
+reader scrolls, points or focuses inside it; content growth is observed, so **Jump to
+latest** returns whenever new content lands below a reader who scrolled away. A requested
+message that is not in the restored thread is dropped and the thread opens at its
+latest turn. Reduced motion means no smooth scrolling and no typewriter effect.
+Off-screen exchanges use `content-visibility: auto`. The transcript is `role="log"` with
+an explicit `aria-live="off"` (the role is implicitly polite and would read every
+delta); every announcement ("Working", throttled step progress, "Answer ready",
+"Stopped", "Error: …", "Added to report (n items)") goes through the shell announcer.
+Focus never jumps on new content, and an action whose control is replaced or disabled
+by the send — a starter, a quick action, a follow-up, Continue, Ask again, Retry, Jump
+to latest — hands focus to the composer instead of dropping it to the page.
 
 **Truth and persistence.** A new conversation is a local draft until its first answer
 is saved; selecting a thread restores the server transcript and its source and model in
@@ -263,6 +294,10 @@ messages each) and every boundary is disclosed rather than inferred.
 **Case Manager chat** is the same engine scoped to one case: compact presentation, its
 one-line status and quick actions, the compact composer, no rail, no report panel and no
 Add to report. Case turns never enter personal Workspace history.
+
+**Context failures.** When `/chat/context` fails with nothing cached, the empty state and
+the composer's access popover say so with **Retry** (in Workspace and Case Manager
+alike); they never show skeletons or "Checking…" forever.
 
 ## Navigation and information architecture
 

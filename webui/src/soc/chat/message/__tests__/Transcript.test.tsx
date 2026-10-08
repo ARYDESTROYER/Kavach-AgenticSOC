@@ -1,8 +1,11 @@
 /**
- * Transcript — `role="log"` without `aria-live`, exchanges in order, the empty and
+ * Transcript — `role="log"` with `aria-live="off"`, exchanges in order, the empty and
  * replace slots, scroll anchoring on send (user turn at the lane top with a 48 px peek),
- * Jump to latest when the reader is away from the bottom, the requested-message
- * highlight for 2 s, content-visibility on older exchanges, and the turn announcer.
+ * Jump to latest when the reader is away from the bottom (and again after a jump, when
+ * new content lands), sticking to the bottom while late content lands after a thread
+ * opens, the requested-message highlight for 2 s (and dropping a request whose message
+ * is gone), content-visibility on older exchanges without subgrid, focus handed to the
+ * composer after a transcript action, and the turn announcer.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
@@ -12,7 +15,7 @@ import { TooltipProvider } from '@/ui/tooltip';
 import type { ChatEngine, ChatTranscriptItem } from '../../useChatEngine';
 import { ANCHOR_PEEK_PX, HIGHLIGHT_MS, Transcript, groupExchanges, type TranscriptProps } from '../Transcript';
 import { useTurnAnnouncer } from '../useTurnAnnouncer';
-import { assistantItem, runningItem, stubEngine, userItem } from './fixtures';
+import { assistantItem, response, runningItem, stubEngine, userItem } from './fixtures';
 
 type TestEngine = Pick<ChatEngine, 'items'> & ReturnType<typeof stubEngine>;
 
@@ -31,9 +34,45 @@ function renderTranscript(props: Partial<TranscriptProps> & { engine: TestEngine
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   // jsdom has no Element.scrollTo; drop the spy one test installs.
   delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
 });
+
+/** Controllable lane geometry (jsdom has no layout); `top` clamps like a browser. */
+function laneMetrics(container: HTMLElement, initial = { top: 0, height: 2000, client: 500 }) {
+  const lane = container.querySelector('[data-chat-scroll-lane]') as HTMLElement;
+  const m = { ...initial };
+  Object.defineProperty(lane, 'scrollTop', {
+    configurable: true,
+    get: () => m.top,
+    set: (value: number) => {
+      m.top = Math.max(0, Math.min(value, m.height - m.client));
+    },
+  });
+  Object.defineProperty(lane, 'scrollHeight', { configurable: true, get: () => m.height });
+  Object.defineProperty(lane, 'clientHeight', { configurable: true, get: () => m.client });
+  return { lane, m };
+}
+
+/** A ResizeObserver whose notifications the test delivers. */
+function captureResizeObservers() {
+  const callbacks: Array<() => void> = [];
+  class ManualResizeObserver {
+    constructor(callback: () => void) {
+      callbacks.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal('ResizeObserver', ManualResizeObserver);
+  return () => act(() => callbacks.forEach((callback) => callback()));
+}
+
+function withText(item: ReturnType<typeof runningItem>, text: string) {
+  return { ...item, live: { ...item.live!, text } };
+}
 
 describe('Transcript', () => {
   it('pairs each user turn with its answer', () => {
@@ -46,12 +85,13 @@ describe('Transcript', () => {
     ]);
   });
 
-  it('is a log without a live region and renders the user content, never the raw prompt', () => {
+  it('is a log with its implicit live region turned off and renders the user content, never the raw prompt', () => {
     renderTranscript({
       engine: engineWith([userItem('Show failed logins', { prompt: 'Show failed​ logins' }), assistantItem()]),
     });
-    const log = screen.getByRole('log', { name: 'Conversation' });
-    expect(log).not.toHaveAttribute('aria-live');
+    const log = screen.getByRole('log', { name: 'Messages' });
+    // role=log is implicitly polite; only the shell announcer may speak.
+    expect(log).toHaveAttribute('aria-live', 'off');
     expect(screen.getByText('Show failed logins')).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 3, name: 'You' })).toBeInTheDocument();
   });
@@ -77,6 +117,12 @@ describe('Transcript', () => {
     expect(exchanges).toHaveLength(4);
     expect(exchanges[0].className).toContain('[content-visibility:auto]');
     expect(exchanges[3].className).not.toContain('[content-visibility:auto]');
+    // Layout containment turns a subgrid into a plain grid (CSS Grid 2), so every
+    // exchange repeats the lane tracks instead of subgridding them.
+    for (const exchange of exchanges) {
+      expect(exchange.className).not.toContain('grid-cols-subgrid');
+      expect(exchange.className).toContain('grid-cols-[minmax(0,1fr)_minmax(0,8rem)_min(48rem,100%)_minmax(0,8rem)_minmax(0,1fr)]');
+    }
   });
 
   it('anchors a new turn at the lane top with a 48 px peek of the previous one', () => {
@@ -119,6 +165,101 @@ describe('Transcript', () => {
     const jump = screen.getByRole('button', { name: 'Jump to latest' });
     fireEvent.click(jump);
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+  });
+
+  it('brings Jump to latest back after a jump when new content lands below the reader', () => {
+    const onFocusComposer = vi.fn();
+    const user = userItem('q');
+    const running = runningItem();
+    const { container, rerender } = renderTranscript({ engine: engineWith([user, running], true), onFocusComposer });
+    const { lane, m } = laneMetrics(container);
+    const update = (text: string) =>
+      rerender(
+        <TooltipProvider>
+          <Transcript engine={engineWith([user, withText(running, text)], true)} onFocusComposer={onFocusComposer} />
+        </TooltipProvider>,
+      );
+
+    // The reader scrolls away while the turn runs: Jump to latest appears.
+    m.top = 100;
+    fireEvent.scroll(lane);
+    update('a');
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to latest' }));
+    expect(m.top).toBe(1500);
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+    // The button unmounted: focus goes to the composer, not <body>.
+    expect(onFocusComposer).toHaveBeenCalledTimes(1);
+
+    // After the jump the lane follows the running turn to the bottom...
+    m.height = 2600;
+    update('ab');
+    expect(m.top).toBe(2100);
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+
+    // ...until the reader scrolls away again; then the button comes back.
+    m.top = 400;
+    fireEvent.scroll(lane);
+    m.height = 3000;
+    update('abc');
+    expect(m.top).toBe(400);
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
+  });
+
+  it('keeps an opened thread at its latest turn while late content lands, until the reader takes over', () => {
+    const deliverResize = captureResizeObservers();
+    const { container } = renderTranscript({ engine: engineWith([userItem('q'), assistantItem({ restored: true })]) });
+    const { lane, m } = laneMetrics(container, { top: 500, height: 1000, client: 500 });
+
+    // The lazy answer blocks replace their placeholders: the lane re-pins to the bottom.
+    m.height = 1400;
+    deliverResize();
+    expect(m.top).toBe(900);
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+
+    // The reader takes over and scrolls up: later growth no longer moves the lane, and
+    // Jump to latest says there is more below.
+    fireEvent.wheel(lane);
+    m.top = 200;
+    fireEvent.scroll(lane);
+    m.height = 1800;
+    deliverResize();
+    expect(m.top).toBe(200);
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
+  });
+
+  it('hands focus to the composer after a transcript action that sends', () => {
+    const onFocusComposer = vi.fn();
+    const engine = engineWith([userItem('q'), assistantItem({ response: response({ follow_ups: ['Show the top hosts'] }) })]);
+    renderTranscript({ engine, onFocusComposer });
+    fireEvent.click(screen.getByRole('button', { name: 'Show the top hosts' }));
+    expect(engine.send).toHaveBeenCalledWith('Show the top hosts', { origin: 'follow_up' });
+    expect(onFocusComposer).toHaveBeenCalledTimes(1);
+    // Nothing sent (busy, blocked): focus is left alone.
+    (engine.askAgain as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+    expect(onFocusComposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a requested message that is not in the restored thread and opens at the latest turn', () => {
+    const onHighlightDone = vi.fn();
+    const items = [userItem('q'), assistantItem({ restored: true, messageId: 'm-present' })];
+    const { container, rerender } = renderTranscript({
+      engine: engineWith(items),
+      highlight: { messageId: 'm-gone', nonce: 1 },
+      highlightReady: false,
+      onHighlightDone,
+    });
+    const { m } = laneMetrics(container, { top: 0, height: 1200, client: 500 });
+    // Still restoring: keep waiting.
+    expect(onHighlightDone).not.toHaveBeenCalled();
+    rerender(
+      <TooltipProvider>
+        <Transcript engine={engineWith(items)} highlight={{ messageId: 'm-gone', nonce: 1 }} highlightReady onHighlightDone={onHighlightDone} />
+      </TooltipProvider>,
+    );
+    expect(onHighlightDone).toHaveBeenCalledTimes(1);
+    expect(m.top).toBe(700);
+    expect(document.querySelector('[data-highlighted="true"]')).toBeNull();
   });
 
   it('highlights a requested message for 2 s, then reports it done', () => {

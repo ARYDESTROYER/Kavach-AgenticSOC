@@ -7,8 +7,10 @@
  *  - the left figure is a disclosure that reopens the run log in place
  *    (`aria-expanded` / `aria-controls`); a turn without lookups reads
  *    "Answered in 1.1 s" instead; a stopped, partial or failed turn leads with that word;
- *  - the token figure opens the usage card (hover and keyboard focus);
- *  - a turn without recorded usage reads "Usage not recorded · —", never 0;
+ *  - the token figure opens the usage card (click, tap, Enter; or hover with a mouse);
+ *  - a turn without recorded usage reads "Usage not recorded · —", never 0, followed by
+ *    the model and source the turn ran on when the response names them (compatibility
+ *    and pre-revamp turns carry no usage card to show them in);
  *  - "Sources n" discloses citations and console links;
  *  - the icon actions on the right are always visible on the latest turn; on older
  *    turns they keep their space and appear on hover or focus-within. They fade with
@@ -21,6 +23,7 @@ import { ChevronRight } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import type { ChatResponse } from '@/lib/types';
+import { displayText } from '../stream-events';
 import { formatDuration, lookupCount, lookupsLabel, turnDurationMs } from './format';
 import type { RunLogStep } from './RunLog';
 import { UsageCard } from './UsageCard';
@@ -71,6 +74,12 @@ export function MetaRow({
   );
   const timeText = duration !== null ? formatDuration(duration) : null;
   const sourceNames = Array.from(new Set(steps.flatMap((step) => step.result?.sources ?? [])));
+  // Per-turn provenance for a turn without a usage card (display text only).
+  const provenance = usage
+    ? []
+    : [displayText(response.effective_model, 60), displayText(response.effective_source_name || response.effective_source_id, 60)].filter(
+        Boolean,
+      );
 
   const lead = (() => {
     const prefix = outcome ? `${outcome} · ` : '';
@@ -111,6 +120,14 @@ export function MetaRow({
         ) : (
           <span className="truncate">Usage not recorded · —</span>
         )}
+        {provenance.map((value, index) => (
+          <React.Fragment key={index}>
+            <Dot />
+            <span className={cn('truncate', index === 0 && response.effective_model ? 'font-mono' : undefined)} data-testid="turn-provenance">
+              {value}
+            </span>
+          </React.Fragment>
+        ))}
         {sources && sources.count > 0 ? (
           <>
             <Dot />

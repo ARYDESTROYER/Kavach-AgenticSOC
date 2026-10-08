@@ -2,9 +2,10 @@
  * ReportPanelHost — the third zone (chat revamp SPEC §10.1, §10.6, §10.9).
  *
  * Hosts the reports package's lazy `ReportPanel` either as a docked split column with
- * a resizable hairline separator (the Case Manager split idiom: `role="separator"`
- * with value attributes, ←/→ in 16 px steps, Shift for 32 px, Home/End, double-click
- * to reset, pointer drag; the width persists per viewer) or, when the conversation
+ * a resizable separator (the Case Manager split idiom: a 9 px transparent handle around
+ * a centred 1 px hairline, `role="separator"` with value attributes, ←/→ in 16 px
+ * steps, Shift for 32 px, Home/End, double-click to reset, pointer drag; the width
+ * persists per viewer) or, when the conversation
  * would drop below 640 px, as an overlay Sheet that moves focus to the panel heading
  * and returns it on close. Split mode never moves focus.
  */
@@ -13,7 +14,7 @@ import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { LoadingState } from '@/design-system/loading';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
-import { PANEL_DEFAULT, PANEL_MIN } from './useChatGeometry';
+import { PANEL_DEFAULT, PANEL_MIN, SPLIT_HANDLE_PX } from './useChatGeometry';
 
 const ReportPanel = React.lazy(() => import('../report/ReportPanel'));
 
@@ -99,7 +100,10 @@ export function ReportSplit({ width, maxWidth, onResize, onClose, conversationId
           dragRef.current = null;
           setDragging(false);
         }}
-        className="group relative flex h-full w-px shrink-0 cursor-col-resize touch-none items-stretch justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        // The handle is the hit target (9 px, the Case Manager split); only the centred
+        // hairline is drawn.
+        style={{ width: SPLIT_HANDLE_PX }}
+        className="group relative flex h-full shrink-0 cursor-col-resize touch-none items-stretch justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <span
           className={cn(

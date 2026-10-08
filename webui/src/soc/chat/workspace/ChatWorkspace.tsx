@@ -47,6 +47,7 @@ import {
   C_MIN,
   PANEL_MAX,
   RAIL_WIDTH,
+  SPLIT_HANDLE_PX,
   STRIP_WIDTH,
   TOOLBAR_COMPACT_MAX,
   TOOLBAR_TOTAL_MIN,
@@ -327,7 +328,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   }).panel;
   // The widest split panel that still leaves the conversation its 640 px.
   const railZone = rail === 'docked' ? RAIL_WIDTH + 1 : rail === 'strip' ? STRIP_WIDTH + 1 : 0;
-  const panelMax = Math.min(PANEL_MAX, (geometry.frameWidth || 1600) - railZone - C_MIN - 1);
+  const panelMax = Math.min(PANEL_MAX, (geometry.frameWidth || 1600) - railZone - C_MIN - SPLIT_HANDLE_PX);
   const showPanel = panelOpen && !caseScoped;
 
   return (

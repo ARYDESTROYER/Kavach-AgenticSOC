@@ -32,8 +32,10 @@ Rules, all structural so the planner can never become a back door:
   and "as a donut" re-views a stored block without inventing a number.
 * Narration leads with the direct answer, cites numbers with units and windows,
   states basis and coverage, and offers three follow-ups that lead to other intents.
-  Values read from logs or cases are shown as inline code, and no log value is ever
-  written into the protocol header.
+  Values read from logs or cases are shown as inline code in the Markdown body. The
+  protocol header carries refs, views and product wording; its text leaves (a report's
+  Summary and Next steps) are rebuilt from numbers, enums and case ids, so no log
+  value or case text (titles, entities, evidence, recommendations) is copied into it.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..agents.blocks import display_text
@@ -58,6 +60,8 @@ from ..agents.chat_events import (
     parse_tool_call_header,
 )
 from ..agents.chat_tools.base import granted_tool_names
+from ..agents.chat_tools.common import visible_text
+from ..agents.chat_tools.taint import REFUSED_TAINT
 from ..constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from ..models import ChatStarter
 
@@ -632,8 +636,10 @@ def _plural(n: Any, one: str, many: str | None = None) -> str:
 
 
 def _code(value: Any, limit: int = 80) -> str:
-    """A log- or case-derived value as inline code (display-sanitised, no backticks)."""
-    text = display_text(value if isinstance(value, str) else ("" if value is None else str(value)), limit)
+    """A log- or case-derived value as inline code, no backticks. Invisible characters
+    are written as visible ``\\uXXXX`` escapes (``visible_text``, as the chart labels
+    show them), never deleted: ``ad``+ZWSP+``min`` must not read as ``admin``."""
+    text = visible_text(value if isinstance(value, str) else ("" if value is None else str(value)), limit)
     text = text.replace("`", "'").strip()
     return f"`{text}`" if text else "`(blank)`"
 
@@ -754,6 +760,7 @@ class Ask:
     report: str | None = None                     # report template when asked
     headings: tuple[str, ...] = ()                # requested report sections
     memory: str | None = None
+    definition: bool = False                      # a "what does X count/measure" question
 
 
 _IPV4_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
@@ -797,23 +804,41 @@ _METRIC_TERMS: tuple[tuple[str, str, str], ...] = (
     (r"noise|funnel|reduction", "noise_funnel", "noise reduction funnel"),
     (r"false[- ]positive rate|fp rate|false positives?", "posture", "false-positive rate"),
     (r"(active )?risk index", "posture", "Active Risk Index"),
-    (r"\bmtt[adr]\b|mean time|dwell|response time", "timing", "MTTA, MTTR and MTTD"),
+    (r"\bmtt[adr]\b|mean time|dwell|response time|respond timing", "timing", "MTTA, MTTR and MTTD"),
     (r"auto[- ]?clos", "auto_close_health", "auto-close rate"),
     (r"case mix|verdict mix", "case_mix", "case mix"),
     (r"coverage of att&ck|att&ck coverage|mitre coverage|technique coverage", "mitre_coverage",
      "ATT&CK coverage"),
     (r"automation rate|escalation rate", "posture", "automation and escalation rates"),
-    (r"llm spend|ai spend|token cost", "cost", "AI spend"),
+    (r"llm spend|ai (?:model )?spend|model spend|token cost", "cost", "AI spend"),
 )
 
 _DEFINITION_RE = re.compile(
-    r"\b(what (?:does|do|is|are)(?! (?:our|we|my)\b)|what'?s (?:a|an|the)\b|explain|meaning|means?\b|"
+    r"\b(what (?:does|do|is|are)\b(?! (?:our|we|my)\b)|what'?s (?:a|an|the)\b|explain|meaning|means?\b|"
     r"defin(?:e|ition)|how (?:is|are) .{0,40}(?:calculated|computed|measured)|"
     r"how do (?:you|we) (?:calculate|compute|measure))")
 _HELP_RE = re.compile(
     r"^\s*(?:/help\b|how (?:do|can|should) (?:i|we)\b|how to\b|where (?:do|can|should) (?:i|we)\b|"
     r"where (?:is|are) (?:the )?[a-z &-]{0,40}(?:setting|settings|page|option|button|menu|tab)s?\b|"
     r"can (?:i|we)\b|is it possible\b|help me\b|what can (?:i|you|chat)\b)")
+# Definitional forms ("Ask about this" topic questions, SPEC A7, and their like): what
+# a KPI counts, what a setting controls, how a figure is calculated. They are answered
+# from the Help Center (plus our own figure when a metric matches), never by a data
+# intent that would show numbers without the definition.
+_DEFINITIONAL_RE = re.compile(
+    r"^\s*(?:"
+    r"what does (?!(?:our|my|this|that|it)\b)(?:the |a |an )?.{1,90}?\b(?:counts?|measures?|means?|controls?|"
+    r"tracks?|represents?)\b"
+    r"|how (?:is|are) (?!(?:our|my)\b)(?:the |a |an )?.{1,90}?\b(?:calculated|computed|measured|derived|"
+    r"attributed|scored|defined|counted)\b"
+    r"|how does (?:the |a |an )?.{1,60}?\b(?:card|kpi|chart|metric|funnel|gauge|score|index|widget|panel|tile|"
+    r"setting)s?\b"
+    r"|how should (?:i|we) read\b"
+    r"|what (?:is|are) (?:a|an)\s+[a-z]"
+    r"|what(?: is|'s) the (?:difference|meaning)\b"
+    r")")
+# "Can we see brute force attempts?" asks for data, not for how to use the console.
+_DATA_ASK_RE = re.compile(r"^\s*(?:can|could) (?:i|we|you) (?:see|show|get|find|list|pull|look at)\b")
 _ACCESS_RE = re.compile(r"\b(what can (?:i|you|chat) do|my access|my role|my permissions?|permissions?|"
                         r"allowed to|am i able)\b")
 _OVERVIEW_RE = re.compile(r"\b(version|demo mode|what is enabled|which features|deployment|configured)\b")
@@ -969,6 +994,20 @@ def _report_request(lowered: str, question: str = "") -> tuple[str | None, tuple
     return template or "custom", headings
 
 
+_RESHAPE_STOP_WORDS = frozenset({
+    "show", "that", "this", "those", "them", "these", "same", "chart", "graph", "view", "with", "into", "make",
+    "turn", "display", "the", "instead", "please", "can", "you", "now", "previous", "last", "answer", "and",
+    "for", "one", "put", "give", "change", "switch", "convert", "plot", "draw", "render", "again", "use",
+    "horizontal", "vertical", "stacked", "column", "columns", "bar", "bars", "donut", "doughnut", "pie", "table",
+    "line", "area", "funnel", "kpi", "kpis", "timeline", "sparkline", "instead", "not",
+})
+
+
+def _content_words(text: str) -> set[str]:
+    """The words of ``text`` that name a subject (not a view or a back-reference)."""
+    return set(re.findall(r"[a-z]{3,}", text.lower())) - _RESHAPE_STOP_WORDS
+
+
 def classify(question: str, view: PromptView | None = None) -> Ask:
     """The intent of ``question`` (deterministic regex rules; order matters)."""
     view = view or PromptView()
@@ -995,11 +1034,21 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     # Follow-ups that reuse an earlier answer (SPEC §4.3 digest + stored block ids).
     requested_view = _requested_view(low)
     refers_back = bool(re.search(r"\b(that|it|this|those|them|these|same|previous|last answer)\b", low))
-    if view.prior_blocks and requested_view and (refers_back or len(low.split()) <= 6):
+    # A view change needs a back-reference, a phrase that names nothing but the view
+    # ("as a donut"), or a subject matching an earlier block's title ("the severity
+    # chart as a bar chart"); "top hosts as a table" with no hosts block is a new ask.
+    content = _content_words(low)
+    titled = any(content & _content_words(b.title) for b in view.prior_blocks
+                 if requested_view in b.views)
+    if view.prior_blocks and requested_view and (refers_back or titled or not content):
         return ask("reshape", view=requested_view)
     group = _group_field(low)
     log_history = any(c.tool in ("log_stats", "search_logs") for c in view.prior_calls)
     if log_history and group and (refers_back or re.match(r"^\s*(chart|break|split|group|now)\b", low)):
+        return ask("regroup", field=group)
+    if group and refers_back and (view.prior_calls or view.prior_blocks):
+        # "Chart that by host" after a metrics answer: no log lookup to regroup; the
+        # final says so instead of guessing a different question.
         return ask("regroup", field=group)
     if view.prior_calls and hours is not None and (
             re.search(r"\b(same|again|repeat|redo)\b", low)
@@ -1016,7 +1065,14 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         f"T{m.group(1)}" + (f".{m.group(2)}" if m.group(2) else "") for m in _TECHNIQUE_RE.finditer(q)))
     if techniques:
         return ask("mitre", techniques=techniques)
-    if view.case_scoped and not _HELP_RE.search(low) and re.search(
+    if _DEFINITIONAL_RE.search(low) and not re.search(r"\b(?:this|that) (?:case|alert|incident|entity)\b", low):
+        metric = _metric(low)
+        if metric:
+            return ask("explain_metric", metric=metric[0], topic=metric[1], definition=True)
+        return ask("help", definition=True, wants_access=bool(_ACCESS_RE.search(low)),
+                   wants_overview=bool(_OVERVIEW_RE.search(low)))
+    help_like = bool(_HELP_RE.search(low)) and not _DATA_ASK_RE.match(low)
+    if view.case_scoped and not help_like and re.search(
             r"\b(this|it|why|what happened|summar\w+|explain|evidence|decision|decided|timeline|verdict|"
             r"risk|closed|escalat\w*|status|entity|attack|mitre|logs?|activity)\b", low):
         # The Case Manager chat is about ONE case (SPEC §4.6): its questions default
@@ -1025,7 +1081,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     metric = _metric(low)
     if metric and _DEFINITION_RE.search(low):
         return ask("explain_metric", metric=metric[0], topic=metric[1])
-    if _HELP_RE.search(low) or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
+    if metric and not help_like and re.search(r"\b(?:our|ours|we|my)\b", low):
+        # "What is our false-positive rate?" asks for our figure, not a definition.
+        intent = {"posture": "posture", "noise_funnel": "noise", "cost": "cost"}.get(metric[0], "metric")
+        return ask(intent, metric=metric[0] if intent == "metric" else None)
+    if help_like or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
         return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
                    wants_overview=bool(_OVERVIEW_RE.search(low)))
     if re.search(r"\b(runbooks?|playbooks?|knowledge base|guidance)\b", low):
@@ -1058,7 +1118,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("metric", metric="mitre_coverage")
     if re.search(r"\b(att&ck|mitre|tactics?|techniques?)\b", low):
         return ask("mitre")
-    if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", low):
+    if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", low) and not re.search(
+            r"\bsource[- ]?(?:ips?|address(?:es)?)\b", low):
+        # "top source IPs" is a log question (handled by the top-N rule below).
         return ask("sources")
     if re.search(r"\bcampaigns?\b", low):
         return ask("campaigns")
@@ -1421,24 +1483,52 @@ def _degraded_calls(view: PromptView, ask: Ask) -> list[Call]:
     return calls
 
 
+def _call_key(tool: str, inp: Mapping[str, Any]) -> str:
+    return json.dumps([tool, inp], sort_keys=True)
+
+
+def _pending_calls(view: PromptView, ask: Ask) -> list[Call]:
+    """Planned, granted calls that have not run yet, from the earliest plan stage
+    that still has one. A stage the parallel bound split is finished before the next
+    stage starts, so no planned call is dropped silently (it runs in a later round,
+    or the final names it). Calls that ran — whatever their result — never repeat."""
+    planner = _PLANS.get(ask.intent)
+    if planner is None:
+        return []
+    # Each completed call accounts for ONE planned call: the same tool with the same
+    # input, else the same tool whose input the echo did not carry (an unreadable
+    # echo must never make a lookup run twice).
+    remaining = list(view.results())
+
+    def consume(call: Call) -> bool:
+        key = _call_key(call.tool, call.input)
+        for loose in (False, True):
+            for index, result in enumerate(remaining):
+                if result.tool == call.tool and (
+                        (not result.input) if loose else _call_key(result.tool, result.input) == key):
+                    del remaining[index]
+                    return True
+        return False
+
+    for stage in range(len(view.rounds) + 1):
+        wanted = planner(view, ask, stage)
+        calls = [c for c in wanted if view.can(c.tool, c.input.get("kind"))]
+        if stage == 0 and not calls and wanted:
+            calls = [c for c in _degraded_calls(view, ask) if view.can(c.tool)]
+        pending: list[Call] = []
+        for call in calls:
+            if call not in pending and not consume(call):
+                pending.append(call)
+        if pending:
+            return pending
+    return []
+
+
 def _next_calls(view: PromptView, ask: Ask) -> list[Call]:
     """The next lookup round, filtered to granted tools and the parallel bound."""
-    done = len(view.rounds)
-    if view.final_only or done >= MAX_PLAN_ROUNDS or not view.granted or view.legacy is not None:
+    if view.final_only or len(view.rounds) >= MAX_PLAN_ROUNDS or not view.granted or view.legacy is not None:
         return []
-    planner = _PLANS.get(ask.intent)
-    wanted = planner(view, ask, done) if planner else []
-    calls = [c for c in wanted if view.can(c.tool, c.input.get("kind"))]
-    if not calls and done == 0 and wanted:
-        calls = [c for c in _degraded_calls(view, ask) if view.can(c.tool)]
-    unique: list[Call] = []
-    for call in calls:
-        if call not in unique:
-            unique.append(call)
-    # Never repeat a round that already ran (no loops, whatever the results were).
-    ran = {json.dumps([r.tool, r.input], sort_keys=True) for r in view.results()}
-    unique = [c for c in unique if json.dumps([c.tool, c.input], sort_keys=True) not in ran]
-    return unique[: view.max_parallel]
+    return _pending_calls(view, ask)[: view.max_parallel]
 
 
 # --------------------------------------------------------------------------- #
@@ -1642,7 +1732,14 @@ def _say_trends(r: Result) -> str:
     if not measured:
         return ""
     bucket = _num(o.get("bucket_minutes"))
-    size = "hour" if bucket == 60 else "day" if bucket == 1440 else f"{_dec(bucket, 0)}-minute bucket"
+    if bucket == 60:
+        size = "hour"
+    elif bucket == 1440:
+        size = "day"
+    elif bucket and bucket % 60 == 0:
+        size = f"{_dec(bucket / 60, 0)}-hour bucket"
+    else:
+        size = f"{_dec(bucket, 0)}-minute bucket"
     peak = max(measured)
     peak_at = max(i for i, v in enumerate(new) if v == peak)
     where = (f"the latest {size}" if peak_at == len(new) - 1
@@ -1843,13 +1940,13 @@ def _say_lookup(r: Result) -> str:
     score = _num(o.get("reputation_score"))
     verdict = display_text(o.get("verdict"), 30) or "unknown"
     answered, queried = _num(o.get("providers_answered")) or 0, _num(o.get("providers_queried")) or 0
-    providers = f"{_count(answered)} of {_plural(queried, 'provider')} answered"
+    # A Demo Mode synthetic result queried no provider, so no provider "answered".
+    providers = ("a labelled Demo Mode synthetic result; no provider was queried"
+                 if o.get("synthetic_demo_result") else f"{_count(answered)} of {_plural(queried, 'provider')} answered")
     if score is None:
         text = f"{value} has no reputation score ({providers})"
     else:
-        text = f"**{value} scores {_count(score)}/100 ({verdict})** ({providers}"
-        text += "; a labelled Demo Mode synthetic result, no provider was queried)" if o.get(
-            "synthetic_demo_result") else ")"
+        text = f"**{value} scores {_count(score)}/100 ({verdict})** ({providers})"
     return text + "."
 
 
@@ -2157,7 +2254,11 @@ def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "",
     whose lead mentions the topic's words rank first (stable otherwise). With
     ``require_match`` a section that shares no topic word is left out entirely.
     Sections that share a title (one page split into excerpts) are shown once."""
-    words = {w for w in re.findall(r"[a-z]{4,}", topic.lower())} - _TOPIC_STOP_WORDS
+    ordered = [w for w in re.findall(r"[a-z]{3,}", topic.lower()) if w not in _TOPIC_STOP_WORDS]
+    words = {w for w in ordered if len(w) >= 4}
+    # Adjacent topic words ("total cases") found in a section TITLE mark the section
+    # that is about the thing asked, not one that merely mentions its words.
+    phrases = {f"{a} {b}" for a, b in zip(ordered, ordered[1:])}
     ranked: list[tuple[int, int, HelpSection, str]] = []
     seen: set[str] = set()
     for position, section in enumerate(ref.sections):
@@ -2165,11 +2266,13 @@ def _help_paragraphs(ref: Reference, limit: int = 2, *, topic: str = "",
             continue
         seen.add(section.ref)
         lead = _lead(section)
-        hay = f"{section.title} {lead}".lower()
+        title = section.title.lower()
+        hay = f"{title} {lead}".lower()
         hits = sum(1 for w in words if w in hay)
         if require_match and not hits:
             continue
-        ranked.append((-(hits if lead else -1), position, section, lead))
+        score = hits + sum(1 for w in words if w in title) + 3 * sum(1 for p in phrases if p in title)
+        ranked.append((-(score if lead else -1), position, section, lead))
     ranked.sort(key=lambda item: (item[0], item[1]))
     lines: list[str] = []
     cited: list[str] = []
@@ -2304,6 +2407,8 @@ class Final:
     answer_kind: str = "data"
     unsupported: bool = False
     memory_proposal: dict[str, Any] | None = None
+    #: Ordinals of failed calls the body already explains (not listed again).
+    narrated: set[int] = field(default_factory=set)
 
 
 def _keep(*blocks: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -2375,12 +2480,6 @@ _SCOPE_LABELS = {"logs": "Logs", "cases": "Cases", "metrics": "Metrics", "intel"
                  "docs": "Help docs", "platform": "Platform"}
 
 
-def _missing_note(view: PromptView, ask: Ask) -> str:
-    """Which of the intent's data this answer could not read, and why (grant or scope)."""
-    lead, advice = _missing_lead(view, ask)
-    return f"{lead}. {advice}".strip() if lead else ""
-
-
 def _catalogue_tool(tool: str) -> Any:
     try:
         from ..agents.chat_tools.registry import get_tool
@@ -2404,9 +2503,12 @@ def _tool_scope(tool: str) -> str | None:
     return scope if isinstance(scope, str) else None
 
 
-def _failure_lines(view: PromptView) -> list[str]:
+def _failure_lines(view: PromptView, skip: Iterable[int] = ()) -> list[str]:
+    skipped = set(skip)
     lines = []
     for r in view.failed():
+        if r.ordinal in skipped:
+            continue
         reason = display_text(r.summary, 160) or r.status
         lines.append(f"- `{r.tool}` {r.status}: {reason}")
     return lines
@@ -2477,13 +2579,13 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
     if fp is not None and fp >= 0.7:
         steps.append(f"The false-positive rate is {_pct(fp, ratio=True)}: review tuning proposals for the "
                      "noisiest rules.")
-    if not steps:
+    if shift is None:
         # "Nothing needs attention" is a finding only when the shift snapshot ran: an
         # @-scope or a missing grant that kept it out says nothing about the queue.
-        if shift is None:
-            steps.append("The shift snapshot was not read in this turn, so open work is unknown here; check the "
-                         "case queue in the console before handing over.")
-        elif _num(head.get("open")):
+        steps.insert(0, "The shift snapshot was not read in this turn, so open work is unknown here; check the "
+                        "case queue in the console before handing over.")
+    elif not steps:
+        if _num(head.get("open")):
             steps.append(f"Review the {_plural(head.get('open'), 'open case')}; none is past SLA, escalated, in "
                          "Needs human status or unassigned.")
         else:
@@ -2583,6 +2685,7 @@ _TEMPLATE_HEADINGS: dict[str, tuple[str, ...]] = {
     "ioc": ("Indicator", "Reputation", "Sightings", "Related cases", "Next steps"),
     "custom": ("Summary", "Findings", "Next steps"),
 }
+_INTENT_TEMPLATES = {"case": "investigation", "hunt": "ioc", "pivot": "hunt", "posture": "posture"}
 _TEMPLATE_TITLES = {"posture": "Posture report", "investigation": "Investigation report", "hunt": "Hunt report",
                     "ioc": "IOC report", "custom": "Report"}
 _ANY_LEAF = ("hbar", "bar", "donut", "table", "line", "area", "stacked_bar", "sparkline", "funnel", "entity",
@@ -2608,8 +2711,11 @@ def _report_steps(view: PromptView, ask: Ask) -> list[str]:
         return _posture_steps(view.ok("soc_metrics", "posture"), view.ok("soc_metrics", "noise_funnel"))
     if ask.intent == "case":
         got = view.ok("get_case")
-        action = _plain(_dig(got.obs if got else {}, "case", "recommended_action"), 200)
-        steps = [f"Act on the recorded recommendation: {action.rstrip('.')}." if action else "",
+        action = _dig(got.obs if got else {}, "case", "recommended_action")
+        # The recommendation itself is case text: the narration quotes it; the report
+        # step (a header leaf) only points at it.
+        steps = ["Act on the recommendation recorded on the case." if isinstance(action, str) and action.strip()
+                 else "",
                  "Confirm the recorded decision with the case owner.",
                  "Check other cases for the same entity before closing."]
         return [x for x in steps if x]
@@ -2775,7 +2881,8 @@ def _final_brute(view: PromptView, ask: Ask) -> Final | None:
         body.extend(_case_bullets(cases))
     if stats:
         top = [t for t in _dig(stats.obs, "top", "ip") or [] if isinstance(t, Mapping)]
-        body.append("Failed sign-ins in the logs (text filter `fail`): " + _say_log_stats(stats, subject=""))
+        # A text filter, not a parsed outcome field: say what was matched, not "failed sign-ins".
+        body.append("Log events matching the text filter `fail`: " + _say_log_stats(stats, subject=""))
         peak = _num(top[0].get("count")) if top else None
         if peak is not None and peak <= 3:
             body.append("No single source IP dominates, so the logs do not show an active brute force right "
@@ -2784,7 +2891,7 @@ def _final_brute(view: PromptView, ask: Ask) -> Final | None:
             body.append(f"{_code(top[0].get('value'))} stands out; hunt it to check its reputation and "
                         "related cases.")
     return Final(body=body, blocks=_keep(
-        _block(stats, "categories", view="hbar", title="Failed sign-ins by source IP"),
+        _block(stats, "categories", view="hbar", title="Events matching 'fail' by source IP"),
         _block(cases, "case_list", view="case_list", title="Brute-force cases"),
     ), follow_ups=_follow_ups(view, "brute", charts=True, field="ip"))
 
@@ -2852,18 +2959,27 @@ def _final_case(view: PromptView, ask: Ask) -> Final | None:
     ), follow_ups=_follow_ups(view, "case", charts=bool(stats)))
 
 
-def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], list[dict[str, Any]]]:
+def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], list[dict[str, Any]], set[int]]:
+    """``(body, blocks, narrated failure ordinals)`` of an indicator hunt."""
     lookup = view.ok("lookup_indicator")
     logs = view.ok("search_logs")
     related = view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity")))
     body: list[str] = []
+    narrated: set[int] = set()
     if lookup:
         body.append(_say_lookup(lookup))
     else:
         refused = next((r for r in view.results() if r.tool == "lookup_indicator" and not r.ok), None)
         if refused is not None:
-            body.append(f"Reputation was not looked up ({display_text(refused.summary, 160)}). Indicator lookups "
-                        "run only for a value you typed yourself or one a lookup found as evidence this turn.")
+            narrated.add(refused.ordinal)
+            reason = display_text(refused.summary, 160) or refused.status
+            text = f"Reputation was not looked up ({reason})."
+            if REFUSED_TAINT in refused.summary:
+                # Only the taint refusal is about where the value came from; a private
+                # address or an unknown kind was typed by the user and refused for that.
+                text += (" Indicator lookups run only for a value you typed yourself or one a lookup found as "
+                         "evidence this turn.")
+            body.append(text)
     if logs:
         body.append(_say_search_logs(logs, subject=_code(value) if value else None))
     if related:
@@ -2878,18 +2994,18 @@ def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], lis
         _block(related, "case_list", view="case_list", title="Related cases")
         if related and _num(related.obs.get("count")) else None,
     )
-    return body, blocks
+    return body, blocks, narrated
 
 
 def _final_hunt(view: PromptView, ask: Ask) -> Final | None:
     value = ask.indicator[0] if ask.indicator else None
-    body, blocks = _indicator_body(view, value)
+    body, blocks, narrated = _indicator_body(view, value)
     if not body:
         return None
     conclusion = _hunt_conclusion(view)
     if conclusion:
         body.append(conclusion)
-    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "hunt"))
+    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "hunt"), narrated=narrated)
 
 
 _ENTITY_WORDS = {"ip": "source IP", "domain": "domain", "file_hash": "file hash", "hash": "file hash",
@@ -2924,13 +3040,16 @@ def _hunt_conclusion(view: PromptView, source_case: Mapping[str, Any] | None = N
             text += f", and read them alongside the {_plural(cases, 'related case')}"
         return text + "."
     if not cases and source_case is None:
-        signal = ("so the reputation result above is the only signal"
-                  if reputation is not None else "so this hunt found no signal for it")
-        return (f"Nothing in the logs or the case store links it to activity here, {signal}; there is no "
-                "case containment to keep. Block or monitor it under your policy if its reputation warrants it.")
+        if reputation is None:
+            return ("Nothing in the logs or the case store links it to activity here, and no reputation was "
+                    "read, so this hunt found no signal for it; there is no case containment to keep.")
+        return ("Nothing in the logs or the case store links it to activity here, so the reputation result above "
+                "is the only signal; there is no case containment to keep. Block or monitor it under your policy "
+                "if its reputation warrants it.")
     if all_fp:
-        return ("It is quiet in the logs and its case was closed as a false positive, so no containment is "
-                "needed; watch for a return.")
+        which = "its only case has a false-positive verdict" if len(linked) == 1 else \
+            f"all {_plural(len(linked), 'case')} carrying it have false-positive verdicts"
+        return f"It is quiet in the logs and {which}, so no containment is needed; watch for a return."
     if cases <= 1:
         return ("It is quiet in the logs and tied to a single case, so the activity looks contained; keep "
                 "the case's containment in place and watch for a return.")
@@ -2968,7 +3087,7 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
     elif got:
         body.extend(_say_get_case(got))
         body.append("That case has no IP, domain or hash entity to hunt.")
-    indicator_lines, blocks = _indicator_body(view, entity[1] if entity else None)
+    indicator_lines, blocks, narrated = _indicator_body(view, entity[1] if entity else None)
     body.extend(indicator_lines)
     conclusion = _hunt_conclusion(view, case if entity else None)
     if conclusion:
@@ -2981,7 +3100,7 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
         blocks += _keep(_block(got, "mitre", view="mitre", title="ATT&CK techniques"))
     if not indicator_lines and got and entity:
         body.append("The follow-up lookups did not run.")
-    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "pivot"))
+    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "pivot"), narrated=narrated)
 
 
 def _final_mitre(view: PromptView, ask: Ask) -> Final | None:
@@ -3048,26 +3167,37 @@ def _final_help(view: PromptView, ask: Ask, intent: str = "help") -> Final | Non
         return None
     body: list[str] = []
     allowed = [t for t in ref.targets if t.allowed]
-    if allowed and help_result is not None:
-        # Lead with the direct answer: where in the console the thing is done.
-        body.append("Start in " + _join([f"**{display_text(t.label, 100)}**" for t in allowed[:2]], "or")
-                    + "; the Help Center explains the steps.")
     paragraphs, cited = _help_paragraphs(ref, limit=3, topic=ask.topic)
-    if paragraphs:
-        body.append("From the Help Center:")
-        body.extend(paragraphs)
-    elif help_result is not None:
-        body.append("The Help Center has no section that answers this directly.")
+    if ask.definition:
+        # "What does X count / control?": the definition IS the direct answer, so the
+        # Help Center leads and the console page follows as where to see it.
+        if paragraphs:
+            body.append("From the Help Center:")
+            body.extend(paragraphs)
+        elif help_result is not None:
+            body.append("The Help Center has no section that defines this directly.")
+        if allowed and help_result is not None:
+            body.append("See it in the console: " + _join([f"**{display_text(t.label, 100)}**"
+                                                          for t in allowed[:2]], "or") + ".")
+    else:
+        if allowed and help_result is not None:
+            # Lead with the direct answer: where in the console the thing is done.
+            body.append("Start in " + _join([f"**{display_text(t.label, 100)}**" for t in allowed[:2]], "or")
+                        + "; the Help Center explains the steps.")
+        if paragraphs:
+            body.append("From the Help Center:")
+            body.extend(paragraphs)
+        elif help_result is not None:
+            body.append("The Help Center has no section that answers this directly.")
     locked = _console_sentence(Reference(targets=[t for t in ref.targets if not t.allowed]))
     if locked:
         body.append(locked)
     if status is not None:
         usable = [t for t in (ref.facts.get("chat_lookups_you_can_use") or "").split(", ") if t]
-        locked_tools = (ref.facts.get("chat_lookups_locked") or "").strip()
+        locked_tools = _locked_lookups(ref.facts.get("chat_lookups_locked") or "")
         if usable:
             body.append(f"With your access you can use **{_plural(len(usable), 'chat lookup')}**"
-                        + (f"; locked: {display_text(locked_tools, 200)}." if locked_tools and locked_tools != "none"
-                           else ", none locked.")
+                        + (f"; locked: {_join(locked_tools)}." if locked_tools else ", none locked.")
                         + " Chat is read-only: it searches and explains, and never changes anything.")
         version = re.search(r"version=([0-9][0-9A-Za-z.+-]{0,30})", ref.facts.get("product", ""))
         if version:
@@ -3080,6 +3210,23 @@ def _final_help(view: PromptView, ask: Ask, intent: str = "help") -> Final | Non
         follow_ups=_follow_ups(view, intent, skip=("access",) if ask.wants_access else ()))
 
 
+def _locked_lookups(fact: str, limit: int = 4) -> list[str]:
+    """The ``chat_lookups_locked`` fact ("tool=grant; tool=grant") as display names
+    with their grants, whole entries only (never cut inside a name)."""
+    entries: list[str] = []
+    for part in fact.split("; "):
+        tool, _, grant = part.strip().partition("=")
+        tool = tool.strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", tool):
+            continue
+        name = _TOOL_NAMES.get(tool, tool.replace("_", " "))
+        grant = display_text(grant, 60).strip()
+        entries.append(f"{name} (needs {grant})" if grant else name)
+    if len(entries) > limit:
+        entries = entries[:limit] + [f"{len(entries) - limit} more"]
+    return entries
+
+
 def _final_explain_metric(view: PromptView, ask: Ask) -> Final | None:
     metric = view.ok("cost_usage") if ask.metric == "cost" else view.ok("soc_metrics", ask.metric)
     if view.ok("app_help") is None and metric is None:
@@ -3087,7 +3234,8 @@ def _final_explain_metric(view: PromptView, ask: Ask) -> Final | None:
     body: list[str] = []
     paragraphs, cited = _help_paragraphs(view.reference, topic=ask.topic)
     if paragraphs:
-        body.append(f"**What the {ask.topic} measures**, from the Help Center:")
+        verb = "measure" if " and " in ask.topic or ask.topic.endswith("rates") else "measures"
+        body.append(f"**What the {ask.topic} {verb}**, from the Help Center:")
         body.extend(paragraphs)
     if metric is not None:
         sentences = _say_cost(metric) if metric.tool == "cost_usage" else _say_soc_metrics(metric)
@@ -3147,8 +3295,9 @@ def _final_remember(view: PromptView, ask: Ask) -> Final:
 def _final_reshape(view: PromptView, ask: Ask) -> Final:
     wanted = ask.view or "table"
     candidates = [b for b in reversed(view.prior_blocks) if wanted in b.views]
-    words = set(re.findall(r"[a-z]{4,}", ask.lowered)) - {"that", "this", "show", "chart", "with", "into", "same"}
-    titled = [b for b in candidates if words & set(re.findall(r"[a-z]{4,}", b.title.lower()))]
+    # The same subject-word test the classifier used to call this a view change.
+    words = _content_words(ask.lowered)
+    titled = [b for b in candidates if words & _content_words(b.title)]
     chosen = (titled or candidates or [None])[0]
     label = _VIEW_LABEL.get(wanted, wanted)
     if chosen is None:
@@ -3162,6 +3311,24 @@ def _final_reshape(view: PromptView, ask: Ask) -> Final:
                        "was needed: the numbers are the stored ones."],
                  blocks=[{"ref": chosen.ref, "view": wanted}], answer_kind="data",
                  follow_ups=_follow_ups(view, "reshape"))
+
+
+def _final_regroup(view: PromptView, ask: Ask) -> Final | None:
+    """A regroup re-ran the earlier log lookup; without one there is nothing to
+    regroup, and the answer says what the earlier figures came from instead."""
+    if view.ok("log_stats") is not None:
+        return _final_top(view, ask, "regroup")
+    if any(c.tool in ("log_stats", "search_logs") for c in view.prior_calls):
+        return None  # the log lookup was planned but did not run: the generic final explains
+    label = _FIELD_LABEL.get(ask.field or "", ask.field or "that field")
+    latest = view.prior_calls[-1].key if view.prior_calls else None
+    sources = list(dict.fromkeys(_TOOL_NAMES.get(c.tool, c.tool) for c in view.prior_calls if c.key == latest))
+    origin = f" (its figures came from {_join(sources)})" if sources else ""
+    plural = f"{label}s"
+    return Final(body=[f"The earlier answer did not come from a log lookup{origin}, so it cannot be regrouped by "
+                       f"{label}. To count log events by {label}, ask for a fresh lookup, for example: which "
+                       f"{plural} generated the most events in the last 24 hours?"],
+                 answer_kind="conversation", follow_ups=_follow_ups(view, "regroup"))
 
 
 def _final_rerun(view: PromptView, ask: Ask) -> Final | None:
@@ -3279,8 +3446,76 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "campaigns": _final_campaigns, "cases": _final_cases, "help": _final_help,
     "explain_metric": _final_explain_metric, "change": _final_change, "unsupported": _final_unsupported,
     "remember": _final_remember, "reshape": _final_reshape, "rerun": _final_rerun,
-    "regroup": lambda v, a: _final_top(v, a, "regroup"), "empty": _final_empty,
+    "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
 }
+
+
+_LABEL_SPAN_RE = re.compile(r"^last (\d{1,4}) ?(h|d|w|hours?|days?|weeks?)$")
+
+
+def _label_hours(label: str) -> int | None:
+    """Hours of a trailing window label ("last 6h", "last 7d"); None otherwise."""
+    match = _LABEL_SPAN_RE.match(label.strip().lower())
+    if not match:
+        return None
+    n, unit = int(match.group(1)), match.group(2)[0]
+    return n * {"h": 1, "d": 24, "w": 168}[unit]
+
+
+def _hours_phrase(hours: int) -> str:
+    if hours == 1:
+        return "the last hour"
+    if hours >= 48 and hours % 24 == 0:
+        return f"the last {hours // 24} days"
+    return f"the last {hours} hours"
+
+
+def _window_note(view: PromptView, ask: Ask) -> str:
+    """The effective-window sentence when the analyst selected a time chip (SPEC
+    §3.1, §4.3): the chip applies only when the question names no window; a window
+    the question names wins; a lookup whose window reached outside the chip was
+    limited to it (§4.8.4). Derived from each observation's own window label and
+    clamp flag, never assumed."""
+    if not view.analyst_window:
+        return ""
+    windowed = [r for r in view.results()
+                if r.ok and r.observation is not None and isinstance(r.obs.get("window"), str)]
+    if not windowed:
+        return ""
+    chip = display_text(view.analyst_window, 60)
+
+    def clamped(r: Result) -> bool:
+        if r.obs.get("window_clamped_to_request") or "window limited to the selected range" in r.summary:
+            return True
+        span = _label_hours(_window(r.obs, ""))
+        return ask.hours is not None and span is not None and span < ask.hours
+
+    limited = [r for r in windowed if clamped(r)]
+    if limited:
+        which, held = ("1 lookup", "it was") if len(limited) == 1 else (f"{len(limited)} lookups", "they were")
+        return (f"Window: {which} asked for a window reaching outside the {chip} you selected, so {held} "
+                f"limited to the {chip}; a selected range is never widened.")
+    if ask.hours is not None:
+        return (f"Window: your question named {_hours_phrase(ask.hours)}, so the lookups used that window "
+                f"instead of the {chip} you selected.")
+    return f"Window: the {chip} you selected applies to the windowed lookups above."
+
+
+def _pending_note(view: PromptView, ask: Ask) -> str:
+    """Planned lookups the turn's round limit left unrun (the parallel bound split a
+    plan over more rounds than the turn allows), named instead of dropped silently."""
+    if view.final_only or len(view.rounds) < MAX_PLAN_ROUNDS:
+        return ""
+    try:
+        pending = _pending_calls(view, ask)
+    except Exception:  # noqa: BLE001 -- advisory only
+        return ""
+    names = list(dict.fromkeys(_TOOL_NAMES.get(c.tool, c.tool) for c in pending))
+    if not names:
+        return ""
+    return (f"Not run within this turn's {MAX_PLAN_ROUNDS} lookup rounds (at most "
+            f"{_plural(view.max_parallel, 'lookup')} at a time here): {_join(names)}. Ask again to include "
+            + ("it." if len(names) == 1 else "them."))
 
 
 def _compose_final(view: PromptView, ask: Ask) -> Final:
@@ -3293,29 +3528,47 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
     if final is None:
         final = _final_generic(view, ask)
     else:
-        note = _missing_note(view, ask) if ask.intent in _DATA_INTENTS else ""
-        if note:
-            final.body.append(note)
-        failures = _failure_lines(view)
+        lead, advice = _missing_lead(view, ask) if ask.intent in _DATA_INTENTS else ("", "")
+        primary = (_INTENT_TOOLS.get(ask.intent) or ("",))[0]
+        if lead and primary and view.ok(primary) is None:
+            # The intent's main data is missing: that leads the answer (what is
+            # unavailable and why), and the advice closes it.
+            locked, _scoped = _missing_split(view, ask)
+            reads = "what you can read" if locked else "what those scopes cover"
+            final.body.insert(0, f"{lead}, so this answer uses {reads}:")
+            final.body.append(advice)
+        elif lead:
+            final.body.append(f"{lead}. {advice}".strip())
+        failures = _failure_lines(view, skip=final.narrated)
         if failures:
             final.body.append("Lookups that did not complete:")
             final.body.extend(failures)
-    if (ask.report and ask.intent != "shift" and any("ref" in b for b in final.blocks)
+    pending = _pending_note(view, ask)
+    if pending:
+        final.body.append(pending)
+    if view.case_scoped:
+        # A Case Manager turn can never be added to a report (SPEC §1, #5; §4.6).
+        if ask.report or any(b.get("type") == "report" for b in final.blocks):
+            final = _unwrap_report(final)
+    elif (ask.report and ask.intent != "shift" and any("ref" in b for b in final.blocks)
             and not any(b.get("type") == "report" for b in final.blocks)):
+        if ask.report == "custom" and not re.search(r"\bcustom\b", ask.lowered):
+            # "a report on case X" names no template: the intent's own one fits best.
+            ask = replace(ask, report=_INTENT_TEMPLATES.get(ask.intent, "custom"))
         windows = [_window(r.obs, "") for r in view.results() if r.ok and r.observation is not None]
         final = _as_report(
             final, view, ask, title=_TEMPLATE_TITLES.get(ask.report or "", "Report"),
-            subtitle=next((w for w in windows if w), view.analyst_window or ""),
-            summary=" ".join(final.body[:2]), steps=_report_steps(view, ask))
+            subtitle=next((w for w in windows if w), view.analyst_window),
+            summary=_report_summary(final, view, ask), steps=_report_steps(view, ask))
     if view.unrun:
         final.body.append("The turn reached its time limit before the remaining lookups ran, so this answer "
                           "uses only the lookups that completed.")
     elif view.final_only and not view.results() and ask.intent in _DATA_INTENTS:
         final.body.append("Tool use was closed for this turn before any lookup ran, so no data backs this "
                           "answer. Ask again or narrow the question.")
-    if view.analyst_window and any(r.ok for r in view.results()):
-        final.body.append(f"Window: the {display_text(view.analyst_window, 60)} you selected applies to every "
-                          "lookup above.")
+    window_note = _window_note(view, ask)
+    if window_note:
+        final.body.append(window_note)
     return final
 
 
@@ -3424,6 +3677,16 @@ def _sentence(text: str) -> str:
 
 
 def summarise_report(messages: Sequence[Mapping[str, Any]]) -> str:
+    """The Demo summary of a report (see :func:`_summarise_report`). Never raises: an
+    unexpected digest shape degrades to the no-digest sentence, as ``plan_turn``
+    degrades to its safe final."""
+    try:
+        return _summarise_report(messages)
+    except Exception:  # noqa: BLE001 -- deterministic, but never allowed to fail a summary call
+        return _NO_DIGEST_SUMMARY
+
+
+def _summarise_report(messages: Sequence[Mapping[str, Any]]) -> str:
     """The Demo summary of a report: the ``{executive_summary, next_steps}`` JSON that
     ``REPORT_SUMMARY_SYSTEM`` asks for, built only from values in the fenced digest
     (``engine.report_digest``): item titles, KPI values, top categories, series

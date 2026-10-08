@@ -6,9 +6,13 @@
  *    snippet under the title; opening a hit selects that thread and highlights the
  *    matching message.
  *  - Groups: Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, then month.
- *  - One-line rows: title + relative time. The accessible name is
- *    "<title> — <exact date> · N messages"; the active row carries `aria-current`.
- *    ↑/↓/Home/End move between rows (roving tab stop).
+ *  - One-line rows: title + relative time, with the full title and exact date in a
+ *    tooltip. The accessible name is "<title> — <exact date> · N messages"; the active
+ *    row carries `aria-current`. ↑/↓/Home/End move between rows (one roving tab stop
+ *    that always lands on an existing, enabled row).
+ *  - Group labels are labels of `role="group"`, not headings: the page's heading
+ *    outline is h1 Chat → h2 thread title → h3 turns (SPEC §10.1a).
+ *  - Inline rename returns focus to the row it replaced.
  *  - Row menu: Rename (inline), Pin/Unpin, Open report (when the thread has one),
  *    Export ▸, Delete (disabled for the thread a turn is running in).
  *  - Footer: the retention note when history was truncated or ≥ 45 threads exist.
@@ -49,8 +53,10 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { LoadingState } from '@/design-system/loading';
-import { IconButton } from '@/soc/components/IconButton';
+import { IconButton, type IconButtonProps } from '@/soc/components/IconButton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { UNTITLED_CONVERSATION } from '../chat-api';
+import { shortcutLabel, type ShortcutKey } from '../shortcuts/shortcut-list';
 import type { ChatRetentionInfo } from '../useChatConversations';
 
 export type ConversationExportFormat = 'markdown' | 'html' | 'print';
@@ -134,6 +140,37 @@ export function shortAge(iso: string, now = new Date()): string {
   return date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 }
 
+/* -------------------------------------------------------------------------- */
+/* Shortcut hints.                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** The visible keys of the rail / toolbar shortcuts (SPEC §10.4a). */
+export const SHORTCUT_HINT_KEYS = {
+  newChat: ['Mod', 'Shift', 'O'],
+  toggleHistory: ['Mod', 'Shift', 'S'],
+} as const satisfies Record<string, readonly ShortcutKey[]>;
+
+/**
+ * An icon button whose tooltip adds the keyboard shortcut ("New chat (Ctrl+Shift+O)")
+ * while its accessible name stays the plain label; `aria-keyshortcuts` carries the
+ * machine form.
+ */
+export function HintedIconButton({
+  label,
+  hint,
+  tooltipSide = 'top',
+  ...props
+}: Omit<IconButtonProps, 'tooltip'> & { hint?: readonly ShortcutKey[] }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <IconButton label={label} tooltip={false} {...props} />
+      </TooltipTrigger>
+      <TooltipContent side={tooltipSide}>{hint ? `${label} (${shortcutLabel(hint)})` : label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function rowName(conversation: ChatConversationSummary): string {
   const count = conversation.message_count;
   return `${conversation.title || UNTITLED_CONVERSATION} — ${formatTimestamp(conversation.updated_at)} · ${count} ${count === 1 ? 'message' : 'messages'}`;
@@ -162,6 +199,7 @@ function RenameField({
 }: {
   conversation: ChatConversationSummary;
   onCommit: (title: string) => void;
+  /** Escape, Cancel, or a commit with no change. */
   onCancel: () => void;
 }) {
   const [value, setValue] = React.useState(conversation.title);
@@ -209,6 +247,12 @@ function RenameField({
 function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: ChatConversationSummary; actions: RowActions; onRename: () => void; tabIndex: number }) {
   const title = conversation.title || UNTITLED_CONVERSATION;
   const deleteLocked = actions.busy && actions.activeId === conversation.id;
+  // Selection is refused while a turn runs, so another thread's report cannot open yet.
+  const reportLocked = actions.busy && actions.activeId !== conversation.id;
+  // Rename replaces the row (and this trigger) with a field that takes focus. It starts
+  // only once the menu has closed: Radix runs an item's onSelect synchronously while the
+  // menu's focus trap is still active, which would pull focus back out of the field.
+  const renamingRef = React.useRef(false);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -221,8 +265,22 @@ function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: 
           <MoreHorizontal className="size-4" aria-hidden />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuItem onSelect={onRename}>
+      <DropdownMenuContent
+        align="end"
+        className="w-48"
+        onCloseAutoFocus={(event) => {
+          if (!renamingRef.current) return;
+          renamingRef.current = false;
+          // Not back to the trigger, which the rename field replaces.
+          event.preventDefault();
+          onRename();
+        }}
+      >
+        <DropdownMenuItem
+          onSelect={() => {
+            renamingRef.current = true;
+          }}
+        >
           <Pencil aria-hidden />
           Rename
         </DropdownMenuItem>
@@ -231,9 +289,9 @@ function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: 
           {conversation.pinned ? 'Unpin' : 'Pin'}
         </DropdownMenuItem>
         {conversation.report_id && actions.onOpenReport ? (
-          <DropdownMenuItem onSelect={() => actions.onOpenReport?.(conversation)}>
+          <DropdownMenuItem disabled={reportLocked} onSelect={() => actions.onOpenReport?.(conversation)}>
             <FileText aria-hidden />
-            Open report
+            {reportLocked ? 'Open report (answer in progress)' : 'Open report'}
           </DropdownMenuItem>
         ) : null}
         {actions.onExport ? (
@@ -314,6 +372,8 @@ export function HistoryRail({
   const { activeId, busy } = actions;
   const [renamingId, setRenamingId] = React.useState<string | null>(null);
   const [focusIndex, setFocusIndex] = React.useState<number | null>(null);
+  /** A row to focus once it renders again (after an inline rename ends). */
+  const [refocusId, setRefocusId] = React.useState<string | null>(null);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const headingPrefix = `chat-history-${React.useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
@@ -326,10 +386,37 @@ export function HistoryRail({
   const groups = React.useMemo(() => groupConversations(conversations), [conversations]);
   const ordered = React.useMemo(() => groups.flatMap((group) => group.conversations), [groups]);
   const activeIndex = ordered.findIndex((row) => row.id === activeId);
-  const tabIndexFor = (index: number) => (index === (focusIndex ?? (activeIndex >= 0 ? activeIndex : 0)) ? 0 : -1);
+  const rowDisabled = (index: number) => busy && ordered[index]?.id !== activeId;
+  // The one tab stop: the last focused row while it still exists and is enabled, else
+  // the active row, else the first row. A deleted row or a shorter list never leaves
+  // the history without a tab stop.
+  const tabStop = (() => {
+    if (focusIndex !== null && focusIndex < ordered.length && !rowDisabled(focusIndex)) return focusIndex;
+    if (activeIndex >= 0) return activeIndex;
+    const firstEnabled = ordered.findIndex((_, index) => !rowDisabled(index));
+    return firstEnabled >= 0 ? firstEnabled : 0;
+  })();
+  const tabIndexFor = (index: number) => (index === tabStop ? 0 : -1);
+
+  React.useEffect(() => {
+    if (!refocusId) return;
+    const row = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-rail-row]') ?? []).find(
+      (candidate) => candidate.dataset.conversationId === refocusId,
+    );
+    row?.focus();
+    setRefocusId(null);
+  }, [refocusId, renamingId]);
+
+  const endRename = (id: string) => {
+    setRenamingId(null);
+    setRefocusId(id);
+  };
 
   const moveFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    // Only the rows rove: keys in the rename field or on a row's ⋯ trigger (which
+    // opens its menu on ArrowDown) keep their own meaning.
+    if (!(event.target instanceof HTMLElement) || !event.target.matches('[data-rail-row]')) return;
     const rows = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-rail-row]') ?? []);
     if (!rows.length) return;
     const current = rows.indexOf(document.activeElement as HTMLButtonElement);
@@ -349,22 +436,32 @@ export function HistoryRail({
     <div className={cn('flex h-full min-h-0 flex-col', className)}>
       <div className={cn('shrink-0 space-y-2 px-3 pb-2 pt-3', inSheet && 'pr-12')}>
         <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 flex-1 justify-start gap-2"
-            onClick={onNewChat}
-            disabled={busy}
-            aria-keyshortcuts={shortcuts?.newChat}
-          >
-            <Plus aria-hidden />
-            New chat
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 flex-1 justify-start gap-2"
+                onClick={onNewChat}
+                disabled={busy}
+                aria-keyshortcuts={shortcuts?.newChat}
+              >
+                <Plus aria-hidden />
+                New chat
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{`New chat (${shortcutLabel(SHORTCUT_HINT_KEYS.newChat)})`}</TooltipContent>
+          </Tooltip>
           {onCollapse ? (
-            <IconButton label="Collapse history" onClick={onCollapse} aria-keyshortcuts={shortcuts?.toggle}>
+            <HintedIconButton
+              label="Collapse history"
+              hint={SHORTCUT_HINT_KEYS.toggleHistory}
+              onClick={onCollapse}
+              aria-keyshortcuts={shortcuts?.toggle}
+            >
               <PanelLeftClose aria-hidden />
-            </IconButton>
+            </HintedIconButton>
           ) : null}
         </div>
         <div className="relative">
@@ -410,9 +507,9 @@ export function HistoryRail({
                 const headingId = `${headingPrefix}-${group.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
                 return (
                   <div key={group.label} role="group" aria-labelledby={headingId} className="pt-2">
-                    <h2 id={headingId} className="px-2 pb-1 text-2xs font-medium text-muted-foreground">
+                    <p id={headingId} className="px-2 pb-1 text-2xs font-medium text-muted-foreground">
                       {group.label}
-                    </h2>
+                    </p>
                     <ul className="space-y-px">
                       {group.conversations.map((conversation) => {
                         const index = ordered.indexOf(conversation);
@@ -424,40 +521,50 @@ export function HistoryRail({
                               <RenameField
                                 conversation={conversation}
                                 onCommit={(title) => {
-                                  setRenamingId(null);
+                                  endRename(conversation.id);
                                   actions.onRename(conversation, title);
                                 }}
-                                onCancel={() => setRenamingId(null)}
+                                onCancel={() => endRename(conversation.id)}
                               />
                             </li>
                           );
                         }
                         return (
                           <li key={conversation.id} className="group/row relative">
-                            <button
-                              type="button"
-                              data-rail-row=""
-                              tabIndex={tabIndex}
-                              aria-current={active ? 'page' : undefined}
-                              aria-label={rowName(conversation)}
-                              disabled={busy && !active}
-                              onFocus={() => setFocusIndex(index)}
-                              onClick={() => actions.onSelect(conversation)}
-                              className={cn(
-                                'flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
-                                'hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                                'disabled:cursor-not-allowed disabled:opacity-60',
-                                active ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground',
-                              )}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{conversation.title || UNTITLED_CONVERSATION}</span>
-                              <span
-                                className="shrink-0 text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible"
-                                aria-hidden
-                              >
-                                {shortAge(conversation.updated_at)}
-                              </span>
-                            </button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  data-rail-row=""
+                                  data-conversation-id={conversation.id}
+                                  tabIndex={tabIndex}
+                                  aria-current={active ? 'page' : undefined}
+                                  aria-label={rowName(conversation)}
+                                  disabled={busy && !active}
+                                  onFocus={() => setFocusIndex(index)}
+                                  onClick={() => actions.onSelect(conversation)}
+                                  className={cn(
+                                    'flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
+                                    'hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                                    'disabled:cursor-not-allowed disabled:opacity-60',
+                                    active ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground',
+                                  )}
+                                >
+                                  <span className="min-w-0 flex-1 truncate">{conversation.title || UNTITLED_CONVERSATION}</span>
+                                  <span
+                                    className="shrink-0 text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible"
+                                    aria-hidden
+                                  >
+                                    {shortAge(conversation.updated_at)}
+                                  </span>
+                                </button>
+                              </TooltipTrigger>
+                              {/* The full title (rows truncate) and the exact date (SPEC §10.2). */}
+                              <TooltipContent side="right" className="max-w-xs break-words">
+                                <span className="block font-medium">{conversation.title || UNTITLED_CONVERSATION}</span>
+                                <span className="block text-muted-foreground">{formatTimestamp(conversation.updated_at)}</span>
+                              </TooltipContent>
+                            </Tooltip>
                             <RowMenu
                               conversation={conversation}
                               actions={actions}
@@ -492,9 +599,9 @@ function SearchResults({ search, busy, headingPrefix }: { search: HistoryRailSea
   const headingId = `${headingPrefix}-results`;
   return (
     <div role="group" aria-labelledby={headingId} className="pt-2">
-      <h2 id={headingId} className="px-2 pb-1 text-2xs font-medium text-muted-foreground">
+      <p id={headingId} className="px-2 pb-1 text-2xs font-medium text-muted-foreground">
         {search.searching ? 'Searching…' : results ? `${results.length} ${results.length === 1 ? 'match' : 'matches'}` : 'Search'}
-      </h2>
+      </p>
       {search.error ? (
         <p className="px-2 py-2 text-xs text-muted-foreground" role="note">
           {search.error}
@@ -544,15 +651,28 @@ export interface HistoryStripProps {
 export function HistoryStrip({ onNewChat, onSearch, onExpand, busy, shortcuts }: HistoryStripProps) {
   return (
     <nav className="flex h-full flex-col items-center gap-1 py-3" aria-label="Chat history">
-      <IconButton label="New chat" tooltipSide="right" onClick={onNewChat} disabled={busy} aria-keyshortcuts={shortcuts?.newChat}>
+      <HintedIconButton
+        label="New chat"
+        hint={SHORTCUT_HINT_KEYS.newChat}
+        tooltipSide="right"
+        onClick={onNewChat}
+        disabled={busy}
+        aria-keyshortcuts={shortcuts?.newChat}
+      >
         <Plus aria-hidden />
-      </IconButton>
+      </HintedIconButton>
       <IconButton label="Search chats" tooltipSide="right" onClick={onSearch}>
         <Search aria-hidden />
       </IconButton>
-      <IconButton label="Show history" tooltipSide="right" onClick={onExpand} aria-keyshortcuts={shortcuts?.toggle}>
+      <HintedIconButton
+        label="Show history"
+        hint={SHORTCUT_HINT_KEYS.toggleHistory}
+        tooltipSide="right"
+        onClick={onExpand}
+        aria-keyshortcuts={shortcuts?.toggle}
+      >
         <PanelLeftOpen aria-hidden />
-      </IconButton>
+      </HintedIconButton>
     </nav>
   );
 }

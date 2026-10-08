@@ -1287,7 +1287,10 @@ class DemoMockProvider(MockProvider):
             from ..engine.demo_chat import plan_turn
         except Exception:  # noqa: BLE001 -- a broken import degrades one answer, never the turn
             return _DEMO_AGENT_PLACEHOLDER_FINAL
-        return plan_turn(messages)
+        try:
+            return plan_turn(messages)
+        except Exception:  # noqa: BLE001 -- plan_turn never raises; a regression degrades, never fails
+            return _DEMO_AGENT_PLACEHOLDER_FINAL
 
     def _demo_report_summary(self, messages: list[dict[str, str]]) -> str:
         """The deterministic Demo report summary (SPEC §9.2/§9.4): the
@@ -1298,7 +1301,10 @@ class DemoMockProvider(MockProvider):
             from ..engine.demo_chat import summarise_report
         except Exception:  # noqa: BLE001
             return _DEMO_REPORT_SUMMARY_PLACEHOLDER
-        return summarise_report(messages)
+        try:
+            return summarise_report(messages)
+        except Exception:  # noqa: BLE001 -- summarise_report never raises; a regression degrades, never fails
+            return _DEMO_REPORT_SUMMARY_PLACEHOLDER
 
     @staticmethod
     def _resolve(messages: list[dict[str, str]]):

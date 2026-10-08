@@ -19,6 +19,7 @@ import type { Case, ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import type { Navigate } from '@/soc/router';
+import { useAuth } from '@/soc/auth';
 import { Composer, type ComposerHandle } from '@/soc/chat/composer/Composer';
 import { EmptyState } from '@/soc/chat/empty/EmptyState';
 import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
@@ -42,11 +43,26 @@ const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> 
   'Suggest Remediation': ShieldCheck,
 };
 
+/**
+ * The signed-in principal when an AuthProvider is mounted (the app always has one; a
+ * standalone render does not). It keys the shared `/chat/context` cache, so opening
+ * another case reuses a fresh context instead of refetching. `useAuth` reads the
+ * context before it throws, so the hook order is the same either way.
+ */
+function useOptionalPrincipal(): string | null {
+  try {
+    return useAuth().username ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The case chat body: status, transcript, quick actions, compact composer. */
 function CaseChat({ caseId, caseManager, starters }: { caseId: string; caseManager: boolean; starters: readonly string[] }) {
   const [model, setModel] = React.useState<string | null>(null);
   const [busyMirror, setBusyMirror] = React.useState(false);
-  const context = useChatContext({ conversationId: null, model, caseId, busy: busyMirror });
+  const principal = useOptionalPrincipal();
+  const context = useChatContext({ conversationId: null, model, caseId, principal, busy: busyMirror });
   const ctx = context.context;
   const engine = useChatEngine({
     caseId,
@@ -59,7 +75,12 @@ function CaseChat({ caseId, caseManager, starters }: { caseId: string; caseManag
   useTurnAnnouncer(engine, ctx?.bounds.max_tool_calls ?? null);
   const composerRef = React.useRef<ComposerHandle>(null);
   const busy = engine.busy;
-  const send = (prompt: string) => engine.send(prompt, { origin: 'starter' });
+  const focusComposer = React.useCallback(() => composerRef.current?.focus(), []);
+  // A quick action is disabled (and a starter replaced) while the turn runs: focus
+  // moves to the composer instead of dropping to <body> (SPEC §10.9).
+  const send = (prompt: string) => {
+    if (engine.send(prompt, { origin: 'starter' })) focusComposer();
+  };
 
   return (
     <div
@@ -82,13 +103,16 @@ function CaseChat({ caseId, caseManager, starters }: { caseId: string; caseManag
       <Transcript
         engine={engine}
         compact
-        label={`Case ${caseId} conversation`}
+        label={`Case ${caseId} messages`}
+        onFocusComposer={focusComposer}
         empty={
           <EmptyState
             context={ctx}
             variant="case"
             disabled={busy}
-            onStarter={(starter: ChatStarter) => engine.send(starter.prompt, { origin: 'starter' })}
+            error={context.error}
+            onRetry={context.refresh}
+            onStarter={(starter: ChatStarter) => send(starter.prompt)}
           />
         }
       />
@@ -119,7 +143,15 @@ function CaseChat({ caseId, caseManager, starters }: { caseId: string; caseManag
                 );
               })}
             </div>
-            <Composer ref={composerRef} engine={engine} context={ctx} variant="case" onComposerFocus={context.revalidate} />
+            <Composer
+              ref={composerRef}
+              engine={engine}
+              context={ctx}
+              variant="case"
+              onComposerFocus={context.revalidate}
+              contextError={context.error}
+              onRetryContext={context.refresh}
+            />
           </div>
         </div>
       </div>

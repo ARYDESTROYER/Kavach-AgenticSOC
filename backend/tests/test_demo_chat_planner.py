@@ -43,11 +43,15 @@ ALL_TOOLS = tuple(t.name for t in catalogue())
 # Prompt builders (mirroring agents/chat.py exactly).
 # --------------------------------------------------------------------------- #
 def system(tools: tuple[str, ...] | list[str] = ALL_TOOLS, *, max_parallel: int = 4,
-           window: str | None = None, case_scoped: bool = False) -> dict[str, str]:
+           window: str | None = None, case_scoped: bool = False,
+           scopes: tuple[str, ...] = ()) -> dict[str, str]:
     granted = [get_tool(name) for name in tools]
+    if scopes:
+        # The engine lists only in-scope tools in the signatures (ChatToolbox.in_scope).
+        granted = [t for t in granted if t.scope in scopes]
     return {"role": "system", "content": render_chat_agent_system(
         render_tool_signatures(granted), max_parallel=max_parallel, time_window=window,
-        case_scoped=case_scoped)}
+        case_scoped=case_scoped, scopes=scopes)}
 
 
 def call(tool: str, observation: dict[str, Any] | None = None, *, status: str = "ok",
@@ -375,7 +379,9 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     assert [s["heading"] for s in envelope["sections"]] == ["Summary", "Open work", "Key metrics", "Next steps"]
     steps = envelope["sections"][-1]["items"][0]["text"]
     assert steps.startswith("1. Work the 1 case past SLA first: `case-0042`.")
-    assert "**5 open cases**" in body and "1 waiting for a human verdict" in body
+    # The lead names the window once; needs_human counts cases in Needs human STATUS.
+    assert body.startswith("**Shift brief, last 24h.** **5 open cases**: 2 escalated, 1 in Needs human status")
+    assert "Decide the 1 case in Needs human status." in steps
 
 
 def test_noise_final_is_a_funnel_with_the_reduction() -> None:
@@ -403,8 +409,9 @@ def test_case_final_explains_the_decision_from_the_policy_table() -> None:
     header, body = final_of(plan_turn(msgs))
     assert_valid_final(header, manifest(msgs))
     assert body.startswith("**`case-0042`** is a true positive at 90% confidence, risk 80 (critical)")
-    assert ("Why it is still open: the deterministic auto-close policy sends a true positive at 90% confidence "
-            "and risk 80 to a human, because true-positive auto-close is turned off in the policy.") in body
+    assert ("Why it is still open: the deterministic auto-close policy sends a case with a true-positive verdict "
+            "at 90% confidence and risk 80 to a human, because true-positive auto-close is turned off in the "
+            "policy.") in body
     assert [b["view"] for b in header["blocks"]] == ["entity", "timeline", "kpi_group", "mitre"]
 
 
@@ -658,7 +665,9 @@ def test_report_requests_wrap_any_intent_in_the_template_sections() -> None:
     assert [i["view"] for i in sections["Evidence"]] == ["entity", "hbar", "mitre"]
     assert [i["view"] for i in sections["Timeline"]] == ["timeline"]
     assert [i["view"] for i in sections["Decision"]] == ["kpi_group"]
-    assert sections["Next steps"][0]["text"].startswith("1. Act on the recorded recommendation: Reset credentials.")
+    assert sections["Next steps"][0]["text"].startswith("1. Act on the recommendation recorded on the case.")
+    assert "Reset credentials" not in json.dumps(envelope)   # case text stays in the narration
+    assert "Recorded recommendation: Reset credentials." in body
     assert body.endswith("The report below is ready to add to your Reports.")
     # Without listed sections the template's defaults apply (here: an IOC report).
     ioc = "Build an IOC report on 203.0.113.7"
@@ -681,3 +690,379 @@ def test_reference_parser_keeps_excerpt_text_that_looks_like_facts_or_notes() ->
     assert ref.facts["chat_lookups_you_can_use"] == "app_help, search_cases"
     _, body = final_of(plan_turn(msgs))
     assert "With your access you can use **2 chat lookups**, none locked." in body
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes: each test pins one reviewer finding.
+# --------------------------------------------------------------------------- #
+def _hunt_round(cases: int, sightings: int, *, verdict: str = "TRUE_POSITIVE",
+                lookup: bool = True) -> list[dict[str, Any]]:
+    rows = [{"case_id": f"case-{i}", "title": "x", "verdict": verdict, "status": "new"} for i in range(cases)]
+    calls = []
+    if lookup:
+        calls.append(call("lookup_indicator", {"indicator": "203.0.113.7", "reputation_score": 80,
+                                                "verdict": "malicious", "synthetic_demo_result": True},
+                          artifacts=[art("a1", "entity", {"entity": {"kind": "ip", "value": "x"}})]))
+    else:
+        calls.append(call("lookup_indicator", status="denied",
+                          summary="Not looked up: private, reserved, loopback or link-local addresses are never "
+                                  "sent to third parties"))
+    calls.append(call("search_logs", {"window": "last 7d", "filters": {"ip": "203.0.113.7"}, "total": sightings,
+                                      "sources": [{"status": "ok"}]},
+                      artifacts=[art("a1", "table", {"columns": [], "rows": []})]))
+    calls.append(call("search_cases", {"filters": {"entity": "203.0.113.7"}, "count": cases, "exact": True,
+                                       "cases": rows}, artifacts=CASES_ARTS))
+    return calls
+
+
+@pytest.mark.parametrize("cases,sightings,expected,absent", [
+    (0, 0, "Nothing in the logs or the case store links it to activity here, so the reputation result above is "
+           "the only signal; there is no case containment to keep.", "single case"),
+    (1, 0, "It is quiet in the logs and tied to a single case", "Nothing in the logs"),
+    (3, 0, "It is quiet in the logs but tied to 3 cases, so treat them as one incident", "single case"),
+    (0, 4, "It is still active in the logs: review the matching events and check the hosts they touch.",
+     "single case"),
+    (2, 4, "It is still active in the logs: review the matching events and check the hosts they touch, and read "
+           "them alongside the 2 related cases.", "single case"),
+])
+def test_hunt_conclusion_distinguishes_zero_one_and_many_cases(cases: int, sightings: int, expected: str,
+                                                                absent: str) -> None:
+    _, body = final_of(plan_turn(prompt("Check 203.0.113.7", _hunt_round(cases, sightings))))
+    assert expected in body
+    assert absent not in body
+
+
+def test_hunt_conclusion_needs_no_containment_for_false_positives_or_without_reputation() -> None:
+    _, body = final_of(plan_turn(prompt("Check 203.0.113.7", _hunt_round(1, 0, verdict="FALSE_POSITIVE"))))
+    assert "its only case has a false-positive verdict, so no containment is needed" in body
+    assert "containment in place" not in body
+    _, body = final_of(plan_turn(prompt("Check 10.0.0.5", _hunt_round(0, 0, lookup=False))))
+    assert "no reputation was read, so this hunt found no signal for it" in body
+    assert "reputation warrants" not in body
+
+
+def test_a_private_address_refusal_is_not_narrated_as_taint_and_not_listed_twice() -> None:
+    _, body = final_of(plan_turn(prompt("Is 10.0.0.5 doing anything weird?", _hunt_round(0, 0, lookup=False))))
+    assert "Reputation was not looked up (Not looked up: private, reserved" in body
+    assert "a value you typed yourself" not in body          # the user DID type it
+    assert "Lookups that did not complete" not in body       # already explained above
+    _, body = final_of(plan_turn(prompt("Check 203.0.113.7", [
+        call("lookup_indicator", status="denied", summary="Not looked up: indicator not from user or evidence")],
+        final_only=True)))
+    assert "a value you typed yourself" in body              # the taint refusal keeps its explanation
+
+
+def test_a_case_report_without_any_windowed_lookup_keeps_its_envelope() -> None:
+    q = "Give me a report on case-0042"
+    msgs = prompt(q, [call("get_case", GET_CASE_OBS, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
+                      call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])
+    header, body = final_of(plan_turn(msgs))
+    (envelope,) = header["blocks"]
+    assert envelope["type"] == "report" and "subtitle" not in envelope       # blank subtitle left out
+    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report"
+    requests, dropped = parse_final_block_requests(header["blocks"])
+    assert not dropped and requests[0].type == "report" and requests[0].invalid_items == 0
+    # The Summary leaf is rebuilt from numbers and enums: no log or case value in the header.
+    summary = envelope["sections"][0]["items"][0]["text"]
+    assert summary.startswith("The case is a true positive at 90% confidence, risk 80 (critical)")
+    assert "`" not in summary and "amy" not in summary and "lure" not in summary
+    assert body.endswith("The report below is ready to add to your Reports.")
+
+
+def test_case_scoped_report_requests_never_build_an_envelope() -> None:
+    msgs = prompt("Write a report for this case", [
+        call("get_case", GET_CASE_OBS, artifacts=GET_CASE_ARTS), call("explain_decision", DECISION_OBS,
+                                                                       artifacts=DECISION_ARTS)], case_scoped=True)
+    header, body = final_of(plan_turn(msgs))
+    assert not any(b.get("type") == "report" for b in header["blocks"])
+    assert [b["view"] for b in header["blocks"]] == ["entity", "timeline", "kpi_group", "mitre"]
+    assert "ready to add" not in body
+    assert body.endswith("Case conversations cannot be added to Reports. To build a report on this case, ask for "
+                         "it in Workspace chat and add the result to your Reports there.")
+
+
+@pytest.mark.parametrize("window,question,obs_window,clamped,expected", [
+    ("last 7d", "Which hosts generated the most events in the last 24 hours?", "last 24h", False,
+     "Window: your question named the last 24 hours, so the lookups used that window instead of the last 7d you "
+     "selected."),
+    ("last 6h", "Which hosts generated the most events in the last 7 days?", "last 6h", True,
+     "Window: 1 lookup asked for a window reaching outside the last 6h you selected, so it was limited to the "
+     "last 6h; a selected range is never widened."),
+    ("last 7d", "Which hosts generated the most events?", "last 7d", False,
+     "Window: the last 7d you selected applies to the windowed lookups above."),
+])
+def test_the_window_note_follows_the_observations_not_the_chip_alone(window: str, question: str, obs_window: str,
+                                                                      clamped: bool, expected: str) -> None:
+    obs = {**LOG_STATS_OBS, "window": obs_window, "window_clamped_to_request": clamped}
+    _, body = final_of(plan_turn(prompt(question, [call("log_stats", obs, artifacts=LOG_STATS_ARTS)],
+                                        window=window)))
+    assert body.endswith(expected)
+    assert body.count("Window:") == 1
+
+
+def test_a_metric_window_narrowed_by_the_chip_is_reported_as_limited() -> None:
+    # soc_metrics carries no clamp flag: a trailing window label narrower than the ask is the evidence.
+    narrowed = {**POSTURE_OBS, "window": "last 6h"}
+    _, body = final_of(plan_turn(prompt("How are we doing over the last 7 days?", [
+        call("soc_metrics", narrowed, artifacts=POSTURE_ARTS), call("soc_metrics", {**TRENDS_OBS, "window": "last 6h"})],
+        window="last 6h")))
+    assert body.endswith("Window: 2 lookups asked for a window reaching outside the last 6h you selected, so they "
+                         "were limited to the last 6h; a selected range is never widened.")
+
+
+def test_scopes_are_read_and_named_as_scopes_not_missing_permissions() -> None:
+    msgs = prompt("How is our security posture right now?", tools=ALL_TOOLS, scopes=("cases",))
+    view = read_prompt(msgs)
+    assert view.scopes == ("cases",) and "soc_metrics" not in view.granted
+    plan = tools_of(plan_turn(msgs))
+    assert [t for t, _ in plan] == ["search_cases"]
+    cases = {"filters": {"status_group": "active"}, "window": "all time", "count": 3, "exact": True, "cases": []}
+    msgs = prompt("How is our security posture right now?", [call("search_cases", cases, artifacts=CASES_ARTS,
+                                                                    inp=plan[0][1])],
+                  tools=ALL_TOOLS, scopes=("cases",))
+    _, body = final_of(plan_turn(msgs))
+    assert body.startswith("Outside the scopes you selected (Cases): SOC metrics, so this answer uses what those "
+                           "scopes cover:")
+    assert body.endswith("Add the Metrics scope, or remove the scope chips, to include it.")
+    assert "Not available to you" not in body and "administrator" not in body
+
+
+def test_a_scoped_shift_brief_never_claims_the_queue_is_clear() -> None:
+    msgs = prompt("/shift-brief", [call("soc_metrics", POSTURE_OBS, artifacts=POSTURE_ARTS,
+                                        inp={"kind": "posture"})], tools=ALL_TOOLS, scopes=("metrics",))
+    header, body = final_of(plan_turn(msgs))
+    assert body.startswith("Outside the scopes you selected (Metrics): the shift snapshot and campaigns, so this "
+                           "answer uses what those scopes cover:")
+    (envelope,) = header["blocks"]
+    steps = envelope["sections"][-1]["items"][0]["text"]
+    assert "No open work needs attention" not in steps
+    assert "The shift snapshot was not read in this turn" in steps
+    assert demo_chat._posture_steps(None, None)[0].startswith("The posture figures were not read in this turn")
+
+
+def test_missing_grants_are_named_per_tool_and_lead_a_no_data_answer() -> None:
+    help_obs = {"kind": "app_help", "available": True, "results": [
+        {"ref": "D1", "title": "Prompt-injection containment", "breadcrumb": "Security", "href": "/docs/0.1/x/",
+         "text": "Untrusted text is fenced before any model reads it, and tool output is labelled as data.",
+         "console": []}]}
+    msgs = prompt("Check 203.0.113.7", [call("app_help", help_obs, inp={"query": "Check 203.0.113.7"})],
+                  tools=("app_help",))
+    _, body = final_of(plan_turn(msgs))
+    assert body.startswith("Not available to you in chat: indicator reputation (needs enrichment:read), log search "
+                           "(needs sources:read) and case search (needs cases:read), so no data backs this answer.")
+    assert " or " not in body.split(", so no data backs this answer")[0]   # grants are per tool
+    assert "Prompt-injection containment" not in body           # an unrelated excerpt is not an answer
+
+
+def test_definitional_topic_questions_are_answered_from_the_help_center() -> None:
+    from app.knowledge import get_app_knowledge
+
+    help_obs = {"kind": "app_help", "available": True, "results": [
+        {"ref": "D1", "title": "KPI glossary › Total Cases", "breadcrumb": "KPI glossary", "href": "/docs/0.1/k/",
+         "text": "Every case that arrived in the selected window is counted here.", "console": []}]}
+    for topic in get_app_knowledge().topics.values():
+        ask = classify(topic.question)
+        assert ask.intent in ("help", "explain_metric"), (topic.id, ask.intent)
+        assert ask.definition or ask.intent == "explain_metric", topic.id
+        plan = tools_of(plan_turn(prompt(topic.question)))
+        assert plan[0][0] == "app_help", (topic.id, plan)
+        header, _ = final_of(plan_turn(prompt(topic.question, [call("app_help", help_obs)], final_only=True)))
+        assert "unsupported" not in header, topic.id
+        assert header["answer_kind"] in ("product_help", "mixed"), topic.id
+
+
+def test_a_definition_answer_leads_with_the_definition_and_ranks_the_titled_section_first() -> None:
+    help_obs = {"kind": "app_help", "available": True, "results": [
+        {"ref": "D1", "title": "KPI glossary › Total Critical", "breadcrumb": "KPI glossary", "href": "/docs/0.1/k/",
+         "text": "Cases in the top severity band, counted on the server over the whole window.", "console": []},
+        {"ref": "D2", "title": "KPI glossary › Total Cases", "breadcrumb": "KPI glossary", "href": "/docs/0.1/k/",
+         "text": "Every case that arrived in the selected window, the denominator of the other tiles.",
+         "console": []},
+        {"ref": "D3", "title": "KPI glossary › Total Cases", "breadcrumb": "KPI glossary", "href": "/docs/0.1/k/",
+         "text": "A second excerpt of the same page that would repeat the heading back to back.", "console": []}],
+        "console_targets": [{"id": "page:metrics", "label": "Analytics › Metrics", "requires": None,
+                             "allowed": True}]}
+    _, body = final_of(plan_turn(prompt("What does the Total Cases KPI count?", [call("app_help", help_obs)])))
+    assert body.startswith("From the Help Center:\n\n**KPI glossary › Total Cases** [D2]")
+    assert body.count("KPI glossary › Total Cases") == 1
+    assert "See it in the console: **Analytics › Metrics**." in body
+
+
+@pytest.mark.parametrize("question,intent,extra", [
+    ("What are the top source IPs?", "top", {"field": "ip"}),
+    ("What is a true positive?", "help", {}),
+    ("Can we see brute force attempts?", "brute", {}),
+    ("What does our noise funnel show?", "noise", {}),
+    ("What is our false positive rate?", "posture", {}),
+    ("Are any sources silent?", "sources", {}),
+])
+def test_classifier_ordering_fixes(question: str, intent: str, extra: dict[str, Any]) -> None:
+    ask = classify(question)
+    assert ask.intent == intent, (question, ask.intent)
+    for key, value in extra.items():
+        assert getattr(ask, key) == value
+
+
+def _posture_prior() -> PriorExchange:
+    return PriorExchange(
+        user="How are we doing?", answer="done", message_id="msg-1",
+        steps=({"kind": "tool", "tool": "soc_metrics", "status": "ok", "summary": "posture",
+                "params": {"kind": "posture"}},),
+        blocks=({"id": "b1", "type": "chart", "kind": "donut", "title": "Cases by severity",
+                 "artifact_kind": "categories", "allowed_views": ["donut", "hbar", "bar", "table"],
+                 "provenance": "code", "unit": "count", "x": {"kind": "category", "values": ["low", "high"]},
+                 "series": [{"key": "value", "label": "Value", "values": [31, 6]}]},))
+
+
+def test_view_changes_need_a_back_reference_or_a_matching_title() -> None:
+    prior = _posture_prior()
+    header, _ = final_of(plan_turn(prompt("Show the severity chart as a bar chart", history=[prior])))
+    assert header["blocks"] == [{"ref": "m1.b1", "view": "bar"}]
+    # A new subject with a view word is a new question, not a re-view of an unrelated block.
+    plan = tools_of(plan_turn(prompt("Top hosts as a table", history=[prior])))
+    assert plan[0][0] == "log_stats" and plan[0][1]["group_by"] == ["host"]
+    header, _ = final_of(plan_turn(prompt("As a table", history=[prior])))
+    assert header["blocks"] == [{"ref": "m1.b1", "view": "table"}]
+
+
+def test_regrouping_an_answer_that_had_no_log_lookup_says_so() -> None:
+    header, body = final_of(plan_turn(prompt("Now chart that by host", history=[_posture_prior()])))
+    assert header["blocks"] == [] and header["answer_kind"] == "conversation"
+    assert body.startswith("The earlier answer did not come from a log lookup (its figures came from SOC metrics), "
+                           "so it cannot be regrouped by host.")
+
+
+def test_calls_over_the_parallel_bound_run_in_the_next_round_or_are_named() -> None:
+    shift_obs = {"window": "last 24h", "headline": {"open": 0}}
+    first = [call("shift_report", shift_obs, inp={}), call("soc_metrics", POSTURE_OBS, inp={"kind": "posture"})]
+    assert tools_of(plan_turn(prompt("/shift-brief", first, max_parallel=2))) == [
+        ("list_campaigns", {"status": "open", "limit": 5})]
+    # A pivot hunt one lookup at a time reaches the round limit before its last calls.
+    hunt = "Hunt the source IP behind the newest SQL injection case"
+    sqli = {**CASES_OBS, "cases": [{"case_id": "case-7", "entity": "ip:192.0.2.5", "title": "sqli"}]}
+    got = {"case": {"case_id": "case-7", "entity": "ip:192.0.2.5", "title": "sqli", "verdict": "TRUE_POSITIVE"}}
+    rounds = [[call("search_cases", sqli, inp={"text": "sql", "sort_field": "created_at", "limit": 5})],
+              [call("get_case", got, inp={"case_id": "case-7"})],
+              [call("lookup_indicator", {"indicator": "192.0.2.5", "reputation_score": 70, "verdict": "suspicious"},
+                    inp={"indicator": "192.0.2.5", "kind": "ip"})]]
+    _, body = final_of(plan_turn(prompt(hunt, *rounds, max_parallel=1)))
+    assert ("Not run within this turn's 3 lookup rounds (at most 1 lookup at a time here): log search and case "
+            "search. Ask again to include them.") in body
+
+
+def test_an_unreadable_echo_never_repeats_a_lookup() -> None:
+    # The echoed inputs are unknown ({}): the completed call still accounts for the plan.
+    msgs = prompt("How are we doing?", [call("soc_metrics", POSTURE_OBS, artifacts=POSTURE_ARTS),
+                                        call("soc_metrics", TRENDS_OBS, artifacts=TRENDS_ARTS)])
+    assert parse_reply(plan_turn(msgs)).kind == "final"
+
+
+def test_a_behaviour_hunt_says_how_it_chose_its_anchor_case() -> None:
+    q = "Build a hunt report on lateral movement"
+    active = {"filters": {"status_group": "active"}, "count": 2, "exact": True, "cases": [
+        {"case_id": "case-9", "entity": "ip:192.0.2.62", "title": "web", "verdict": "FALSE_POSITIVE",
+         "risk_score": 20}]}
+    got = {"case": {"case_id": "case-9", "entity": "ip:192.0.2.62", "title": "web", "verdict": "FALSE_POSITIVE",
+                    "confidence": 0.88, "risk_score": 20, "severity": "low", "status": "new"}}
+    msgs = prompt(q, [call("search_cases", active, artifacts=CASES_ARTS,
+                           inp={"status_group": "active", "sort_field": "risk_score", "limit": 10})],
+                  [call("get_case", got, artifacts=GET_CASE_ARTS, inp={"case_id": "case-9"})],
+                  _hunt_round(1, 0, verdict="FALSE_POSITIVE"))
+    _, body = final_of(plan_turn(msgs))
+    assert body.startswith("The question names no indicator or known attack type, so this hunt is anchored on the "
+                           "highest-risk open case with an indicator entity, `case-9`")
+    assert "which is a false positive at 88% confidence" in body
+    assert "Name an indicator (an IP, domain, URL or hash) to hunt it directly." in body
+    assert "newest" not in body and "containment in place" not in body
+
+
+def test_wording_fixes() -> None:
+    case = {"verdict": "NEEDS_HUMAN", "confidence": 0.88, "risk_score": 64, "severity": "high"}
+    assert demo_chat._case_facts(case) == "has a needs-human verdict at 88% confidence, risk 64 (high)"
+    assert demo_chat._case_facts({"risk_score": 5}) == "has no verdict yet, risk 5"
+    msgs = prompt("Check 203.0.113.7", _hunt_round(0, 0))
+    _, body = final_of(plan_turn(msgs))
+    assert "(a labelled Demo Mode synthetic result; no provider was queried)" in body
+    assert "provider answered" not in body
+    assert demo_chat._locked_lookups(
+        "soc_metrics=metrics:view; automation_status=automation:read or rules:read; cost_usage=cost:view; "
+        "audit_search=audit:view; source_health=sources:read") == [
+        "SOC metrics (needs metrics:view)", "automation status (needs automation:read or rules:read)",
+        "AI cost data (needs cost:view)", "the audit trail (needs audit:view)", "1 more"]
+    trends = {**TRENDS_OBS, "bucket_minutes": 360}
+    assert "(4 6-hour buckets)" in demo_chat._say_trends(demo_chat.Result(1, "soc_metrics", "ok", "", (), trends))
+
+
+def test_explain_metric_verbs_agree_with_plural_topics() -> None:
+    help_obs = {"kind": "app_help", "available": True, "results": [
+        {"ref": "D1", "title": "Timing definitions", "breadcrumb": "Analytics", "href": "/docs/0.1/t/",
+         "text": "MTTA uses a human acknowledgement; an automatic close is not counted as a response.",
+         "console": []}]}
+    timing = {"kind": "timing", "window": "last 24h", "lifecycle_minutes": {}}
+    _, body = final_of(plan_turn(prompt("What do MTTA and MTTR measure?", [
+        call("app_help", help_obs), call("soc_metrics", timing, inp={"kind": "timing"})])))
+    assert "**What the MTTA, MTTR and MTTD measure**" in body
+
+
+def test_code_spans_keep_invisible_characters_visible() -> None:
+    assert demo_chat._code("ad​min") == "`ad\\u200bmin`"
+    assert demo_chat._code("a`b") == "`a'b`"
+
+
+def test_report_summary_never_raises_on_an_odd_digest() -> None:
+    odd = {"report": {"items": 1}, "items": [{"title": "x", "blocks": [{"kpis": 5}]}]}
+    messages = [{"role": "system", "content": f"{REPORT_SUMMARY_SYSTEM_MARKER}\nsummarise"},
+                {"role": "user", "content": fence_block(odd, source="report")}]
+    assert summarise_report(messages).startswith("Demo report summary")
+
+
+def test_brute_force_final_titles_the_text_filter_honestly() -> None:
+    stats = {**LOG_STATS_OBS, "group_by": ["ip"], "filters": {"contains": "fail"},
+             "top": {"ip": [{"value": "192.0.2.9", "count": 9}, {"value": "192.0.2.4", "count": 2}]}}
+    cases = {"filters": {"text": "brute"}, "count": 1, "exact": True, "cases": [
+        {"case_id": "case-1", "title": "rdp", "severity": "critical", "verdict": "TRUE_POSITIVE", "status": "resolved"}]}
+    header, body = final_of(plan_turn(prompt("Any brute force today?", [
+        call("log_stats", stats, artifacts=LOG_STATS_ARTS), call("search_cases", cases, artifacts=CASES_ARTS)])))
+    assert header["blocks"][0]["title"] == "Events matching 'fail' by source IP"
+    assert "Log events matching the text filter `fail`: **77 events**" in body
+    assert "`192.0.2.9` stands out" in body and "Failed sign-ins" not in body
+
+
+def test_tp_cost_mitre_sources_and_campaign_finals_state_their_figures() -> None:
+    tps = {"filters": {"verdict": "TRUE_POSITIVE"}, "window": "last 24h", "count": 2, "exact": True,
+           "by_status": {"escalated": 1, "closed": 1}, "cases": []}
+    mix = {"kind": "case_mix", "window": "last 24h", "cases": 41, "by_verdict": {"FALSE_POSITIVE": 33,
+                                                                                 "TRUE_POSITIVE": 2},
+           "avg_risk_score": 26.7}
+    _, body = final_of(plan_turn(prompt("Summarise today's true positives", [
+        call("search_cases", tps, artifacts=CASES_ARTS), call("soc_metrics", mix)])))
+    assert body.startswith("**2 true positives** in the last 24h: 1 closed and 1 escalated.")
+    assert "For context, 41 cases in the last 24h (33 false positive and 2 true positive), average risk 26.7." in body
+
+    cost = {"window": "last 24h", "total_cost_usd": 0.053, "calls": 6, "total_tokens": 14669, "simulated": True,
+            "by_role": [{"key": "chat", "cost": 0.0503, "calls": 5}]}
+    _, body = final_of(plan_turn(prompt("What did AI spend look like?", [call("cost_usage", cost)])))
+    assert body.startswith("**AI spend in the last 24h: $0.0530 (simulated)** across 6 model calls and 14,669 "
+                           "tokens.")
+    assert "By role: `chat` $0.0503 (5 calls)." in body
+
+    techniques = {"techniques": [{"id": "T1110", "name": "Brute Force", "tactics": ["credential-access"],
+                                  "description": "Adversaries may use brute force. More text."}]}
+    coverage = {"kind": "mitre_coverage", "covered_techniques": 12, "total_techniques": 697, "coverage_pct": 1.7,
+                "top_techniques": [{"id": "T1110", "name": "Brute Force", "cases": 4}]}
+    _, body = final_of(plan_turn(prompt("Explain T1110", [call("mitre_lookup", techniques),
+                                                         call("soc_metrics", coverage)])))
+    assert body.startswith("**T1110 Brute Force** (credential-access): Adversaries may use brute force.")
+    assert "T1110 appears in 4 cases in the case store." in body
+
+    health = {"coverage": {"sources_enabled": 5, "sources_total": 6, "sources_silent": 1, "events_per_min": 12.5},
+              "sources": [{"name": "fw", "type": "syslog", "kind": "push", "silent": True}]}
+    _, body = final_of(plan_turn(prompt("Are any sources silent?", [call("source_health", health)])))
+    assert body.startswith("**5 of 6 sources enabled; 1 silent.** Combined ingest is 12.5 events/min.")
+    assert "- `fw` (syslog, push): silent" in body
+
+    camps = {"total": 1, "status_filter": "open", "campaigns": [
+        {"name": "rdp wave", "case_count": 3, "severity": "high", "entities": ["ip:192.0.2.9"],
+         "mitre": ["T1110"]}]}
+    _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
+    assert body.startswith("**1 campaign** (open): `rdp wave` (3 cases; high; shared `ip:192.0.2.9`; ATT&CK T1110).")

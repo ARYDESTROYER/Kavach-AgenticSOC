@@ -3,25 +3,33 @@
  * its collapse, the meta row (lookups, time, usage, legacy and simulated wording), the
  * Sources disclosure and `[D1]` markers, the notice placement table (callout, Continue
  * chip, locally stopped wording, D1 said once), failed turns (Retry same request vs Ask
- * again), the action visibility rule, follow-ups on the latest turn only, the memory
- * line gated on `memory:manage`, "Retry save", the lazy blocks and Add to report.
+ * again), the action visibility rule (opacity, so older turns stay keyboard-reachable),
+ * follow-ups on the latest turn only, the memory line gated on `memory:manage` (a
+ * removal resolves its ids first), "Run again to save", the usage popover, per-turn
+ * provenance without usage, the lazy blocks and Add to report (toggles stay mounted
+ * when the report is full).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
 
-const { canRef, addMemoryMock, deleteMemoryMock } = vi.hoisted(() => ({
+const { canRef, addMemoryMock, deleteMemoryMock, getMemoryMock } = vi.hoisted(() => ({
   canRef: { current: true },
   addMemoryMock: vi.fn(),
   deleteMemoryMock: vi.fn(),
+  getMemoryMock: vi.fn(),
 }));
 
 vi.mock('@/soc/components/Can', () => ({ useCan: () => canRef.current }));
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>();
-  return { ...actual, api: { ...actual.api, addMemory: addMemoryMock, deleteMemory: deleteMemoryMock } };
+  return {
+    ...actual,
+    api: { ...actual.api, addMemory: addMemoryMock, deleteMemory: deleteMemoryMock, getMemory: getMemoryMock },
+  };
 });
 
 import { TooltipProvider } from '@/ui/tooltip';
@@ -43,6 +51,7 @@ beforeEach(() => {
   canRef.current = true;
   addMemoryMock.mockReset().mockResolvedValue({});
   deleteMemoryMock.mockReset().mockResolvedValue({ ok: true, id: 'x' });
+  getMemoryMock.mockReset().mockResolvedValue({ entries: [], count: 0 });
 });
 
 afterEach(() => {
@@ -172,19 +181,60 @@ describe('Message — completed', () => {
     renderMessage({ item: assistantItem(), latest: false, report: { ...report, answerInReport: true } });
     const older = screen.getByTestId('meta-row').querySelector('[data-actions-visibility]');
     expect(older).toHaveAttribute('data-actions-visibility', 'hover');
-    expect(older).toHaveClass('invisible');
+    // Opacity, never visibility: a visibility-hidden control cannot take focus.
+    expect(older).toHaveClass('opacity-0');
+    expect(older).not.toHaveClass('invisible');
     expect(screen.getByRole('button', { name: 'Add answer to report' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('never offers Add to report without a binding (case scope) and disables it when the report is full', () => {
-    const { unmount } = renderMessage({ item: assistantItem() });
-    expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
-    unmount();
+  it('keeps Copy and Ask again keyboard-reachable on an older pre-revamp turn', async () => {
+    const user = userEvent.setup();
+    // A restored legacy turn: no usage, no lookups, no sources — nothing focusable
+    // precedes the actions inside the turn.
     renderMessage({
-      item: assistantItem(),
-      report: { blocks: new Set(), answerInReport: false, canAdd: false, disabledReason: 'Report is full (40 items)', onToggleAnswer: vi.fn(), onToggleBlock: vi.fn() },
+      latest: false,
+      item: assistantItem({ restored: true, response: response({ usage: null, steps: [], citations: [] }) }),
     });
-    expect(screen.getByRole('button', { name: 'Add answer to report' })).toBeDisabled();
+    await user.tab();
+    expect(document.activeElement).toHaveAccessibleName('Copy answer');
+    await user.tab();
+    expect(document.activeElement).toHaveAccessibleName('Ask again');
+  });
+
+  it('never offers Add to report without a binding (case scope)', () => {
+    renderMessage({ item: assistantItem() });
+    expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
+  });
+
+  it('keeps the answer toggle focusable on a full report and says why in its tooltip', async () => {
+    const onToggleAnswer = vi.fn();
+    const full: MessageReportBinding = {
+      blocks: new Set(),
+      answerInReport: false,
+      canAdd: false,
+      disabledReason: 'Report is full (40 items)',
+      onToggleAnswer,
+      onToggleBlock: vi.fn(),
+    };
+    const { unmount } = renderMessage({ item: assistantItem(), report: full });
+    const toggle = screen.getByRole('button', { name: 'Add answer to report' });
+    // aria-disabled, not disabled: it keeps focus and its tooltip.
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    act(() => toggle.focus());
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Report is full (40 items)');
+    // The binding answers the click with the reason (no request).
+    fireEvent.click(toggle);
+    expect(onToggleAnswer).toHaveBeenCalledTimes(1);
+    unmount();
+
+    // An answer already in a full report stays removable, with the block vocabulary.
+    renderMessage({ item: assistantItem(), report: { ...full, answerInReport: true } });
+    const inReport = screen.getByRole('button', { name: 'Add answer to report' });
+    expect(inReport).not.toHaveAttribute('aria-disabled');
+    expect(inReport).toHaveAttribute('aria-pressed', 'true');
+    act(() => inReport.focus());
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('In report ✓ (click to remove)');
   });
 
   it('labels product help and offers follow-ups on the latest turn only (origin follow_up)', () => {
@@ -261,18 +311,36 @@ describe('Message — notices and failures', () => {
     expect(second.engine.askAgain).toHaveBeenCalledTimes(1);
   });
 
-  it('offers Retry save only for a retryable not-saved notice', () => {
+  it('offers Run again to save (honestly a re-run) only for a retryable not-saved notice', () => {
     const { engine, unmount } = renderMessage({
       item: assistantItem({ response: response({ notice: { kind: 'not_saved', message: 'Not saved to the case thread', retryable: true } }) }),
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry save' }));
+    const rerun = screen.getByRole('button', { name: 'Run again to save' });
+    // It says it is a new model run, not a save-only retry.
+    expect(rerun).toHaveAccessibleDescription(/asks the model again and uses tokens again/);
+    expect(screen.queryByRole('button', { name: 'Retry save' })).toBeNull();
+    fireEvent.click(rerun);
     expect(engine.retry).toHaveBeenCalledTimes(1);
     unmount();
     renderMessage({
       item: assistantItem({ response: response({ notice: { kind: 'not_saved', message: 'Not saved to the case thread', retryable: false } }) }),
     });
     expect(screen.getByText('Not saved to the case thread')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Retry save' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Run again to save' })).toBeNull();
+  });
+
+  it('shows a not-saved line and a memory proposal on the same turn', () => {
+    renderMessage({
+      item: assistantItem({
+        response: response({
+          notice: { kind: 'not_saved', message: 'Not saved to the case thread', retryable: false },
+          memory_proposal: { op: 'add', text: 'Jump host is 10.1.1.9', ids: [] },
+        }),
+      }),
+    });
+    expect(screen.getByText('Not saved')).toBeInTheDocument();
+    expect(screen.getByText('Jump host is 10.1.1.9')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remember this' })).toBeInTheDocument();
   });
 });
 
@@ -290,6 +358,51 @@ describe('Message — memory line', () => {
     expect(screen.getByText('VPN egress is 203.0.113.0/24')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Remember this' })).toBeNull();
     expect(screen.getByText(/needs memory:manage/)).toBeInTheDocument();
+  });
+
+  it('shows exactly which facts a proposed removal forgets, and skips unknown ids', async () => {
+    getMemoryMock.mockResolvedValue({
+      entries: [
+        { id: 'mem-1', text: 'The VPN pool is 10.8.0.0/16', source: 'human', active: true },
+        { id: 'mem-other', text: 'Unrelated fact', source: 'human', active: true },
+      ],
+      count: 2,
+    });
+    const item = assistantItem({ response: response({ memory_proposal: { op: 'remove', ids: ['mem-1', 'mem-gone'] } }) });
+    const { unmount } = renderMessage({ item });
+    const list = await screen.findByRole('list', { name: 'Facts that would be forgotten' });
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['The VPN pool is 10.8.0.0/16']);
+    expect(screen.queryByText('Unrelated fact')).toBeNull();
+    expect(screen.getByText(/1 saved fact is no longer saved and will be skipped/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Forget this fact' }));
+    await waitFor(() => expect(deleteMemoryMock).toHaveBeenCalledTimes(1));
+    expect(deleteMemoryMock).toHaveBeenCalledWith('mem-1');
+    expect(await screen.findByText('Removed from memory (1 saved fact)')).toBeInTheDocument();
+    unmount();
+
+    // Nothing resolvable: nothing to confirm.
+    getMemoryMock.mockResolvedValue({ entries: [], count: 0 });
+    renderMessage({ item: assistantItem({ response: response({ memory_proposal: { op: 'remove', ids: ['mem-gone'] } }) }) });
+    expect(await screen.findByText(/None of these facts are saved any more/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Forget/ })).toBeNull();
+  });
+
+  it('never resolves or confirms a removal without memory:manage, and retries a failed lookup', async () => {
+    canRef.current = false;
+    const item = assistantItem({ response: response({ memory_proposal: { op: 'remove', ids: ['mem-1'] } }) });
+    const { unmount } = renderMessage({ item });
+    expect(screen.getByText(/needs memory:manage/)).toBeInTheDocument();
+    expect(getMemoryMock).not.toHaveBeenCalled();
+    unmount();
+
+    canRef.current = true;
+    getMemoryMock.mockRejectedValueOnce(new Error('Memory is unavailable'));
+    renderMessage({ item });
+    expect(await screen.findByText('Memory is unavailable')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Forget/ })).toBeNull();
+    getMemoryMock.mockResolvedValueOnce({ entries: [{ id: 'mem-1', text: 'Fact one', source: 'human', active: true }], count: 1 });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('button', { name: 'Forget this fact' })).toBeInTheDocument();
   });
 
   it('echoes a legacy memory removal as a forgotten fact', () => {
@@ -314,6 +427,26 @@ describe('Message — answer blocks', () => {
     expect(onToggleBlock).toHaveBeenCalledWith('kpis');
   });
 
+  it('keeps block toggles mounted on a full report: in-report blocks stay removable', async () => {
+    const onToggleBlock = vi.fn();
+    renderMessage({
+      item: assistantItem({ response: response({ blocks: [GALLERY_RAW[1]] }) }),
+      report: {
+        blocks: new Set(['kpis']),
+        answerInReport: false,
+        canAdd: false,
+        disabledReason: 'Report is full (40 items)',
+        onToggleAnswer: vi.fn(),
+        onToggleBlock,
+      },
+    });
+    const blocks = await screen.findByTestId('answer-blocks', {}, { timeout: 15000 });
+    const toggle = within(blocks).getByTestId('block-add-to-report');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
+    expect(onToggleBlock).toHaveBeenCalledWith('kpis');
+  });
+
   it('renders a pre-revamp table through the same block path', async () => {
     renderMessage({
       item: assistantItem({
@@ -322,6 +455,31 @@ describe('Message — answer blocks', () => {
       }),
     });
     expect(await screen.findByText('web-01', {}, { timeout: 15000 })).toBeInTheDocument();
+  });
+});
+
+describe('Message — usage and provenance', () => {
+  it('opens the usage details on click as a labelled dialog (touch and keyboard friendly)', async () => {
+    const user = userEvent.setup();
+    renderMessage({ item: assistantItem() });
+    await user.click(screen.getByRole('button', { name: /Usage details$/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Usage details' });
+    expect(dialog).toHaveTextContent('Input tokens');
+    expect(dialog).toHaveTextContent('gpt-test');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Usage details' })).toBeNull());
+  });
+
+  it('names the model and source a turn without usage ran on', () => {
+    renderMessage({
+      item: assistantItem({
+        restored: true,
+        response: response({ usage: null, steps: [], effective_model: 'gpt-legacy', effective_source_name: 'Wazuh prod' }),
+      }),
+    });
+    const meta = screen.getByTestId('meta-row');
+    expect(meta).toHaveTextContent('Usage not recorded · —');
+    expect(within(meta).getAllByTestId('turn-provenance').map((node) => node.textContent)).toEqual(['gpt-legacy', 'Wazuh prod']);
   });
 });
 

@@ -1,13 +1,16 @@
 /**
  * HistoryRail — ported from the pre-revamp `ChatHistoryRail` suite and extended for the
  * revamp (SPEC §10.2): grouping (Pinned, Today, Yesterday, Previous 7 / 30 days,
- * month), one-line rows with the full accessible name and `aria-current`, roving
- * arrow-key focus, inline rename (IME-safe), the row menu (Pin, Open report only with a
- * report, Export, Delete locked for the running thread), server search with snippets,
- * the retention footer, honest loading / retryable error / empty states, and axe.
+ * month) labelled as groups rather than headings, one-line rows with the full
+ * accessible name, `aria-current` and an exact-date tooltip, roving arrow-key focus
+ * (only from rows, with a tab stop that survives a shorter list), inline rename
+ * (IME-safe, focus returns to the row), the row menu (Pin, Open report only with a
+ * report and not while another thread runs, Export, Delete locked for the running
+ * thread), shortcut hints, server search with snippets, the retention footer, honest
+ * loading / retryable error / empty states, and axe.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
@@ -93,8 +96,10 @@ describe('HistoryRail', () => {
     const { props } = renderRail();
     const nav = screen.getByRole('navigation', { name: 'Chat history' });
     for (const label of ['Pinned', 'Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days']) {
-      expect(within(nav).getByRole('heading', { name: label })).toBeInTheDocument();
+      expect(within(nav).getByRole('group', { name: label })).toBeInTheDocument();
     }
+    // Group labels are not headings: the outline is h1 Chat → h2 thread → h3 turns.
+    expect(within(nav).queryAllByRole('heading')).toHaveLength(0);
     const active = screen.getByRole('button', { name: /^Investigate sign-ins — .* · 2 messages$/ });
     expect(active).toHaveAttribute('aria-current', 'page');
     const other = screen.getByRole('button', { name: /^Review endpoint alert — .* · 4 messages$/ });
@@ -119,17 +124,58 @@ describe('HistoryRail', () => {
     expect(document.activeElement).toHaveAccessibleName(/^Phishing wave/);
   });
 
-  it('renames inline from the row menu (Enter commits, IME Enter does not)', async () => {
+  it('keeps a tab stop on an existing row when the focused row disappears', () => {
+    const { rerender, props } = renderRail({ activeId: null });
+    const last = screen.getByRole('button', { name: /^Phishing wave/ });
+    act(() => last.focus());
+    // The focused (last) row is deleted and nothing is active.
+    rerender(
+      <TooltipProvider>
+        <HistoryRail {...props} activeId={null} conversations={ROWS.slice(0, 2)} />
+      </TooltipProvider>,
+    );
+    const rows = screen.getAllByRole('button', { name: / messages$/ });
+    expect(rows.filter((row) => row.tabIndex === 0)).toHaveLength(1);
+  });
+
+  it('renames inline from the row menu (Enter commits, IME Enter does not) and returns focus to the row', async () => {
     const user = userEvent.setup();
     const { props } = renderRail();
     await user.click(screen.getByRole('button', { name: 'Actions for Investigate sign-ins' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
     const input = screen.getByRole('textbox', { name: 'Rename Investigate sign-ins' });
+    // The menu closing does not take focus back from the field.
+    await waitFor(() => expect(input).toHaveFocus());
+    // Arrow keys inside the field edit the text; they do not rove the rows.
+    fireEvent.keyDown(input, { key: 'Home' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input).toHaveFocus();
     fireEvent.change(input, { target: { value: '正在调查' } });
     fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
     expect(props.onRename).not.toHaveBeenCalled();
     fireEvent.keyDown(input, { key: 'Enter', isComposing: false });
     expect(props.onRename).toHaveBeenCalledWith(ROWS[0], '正在调查');
+    expect(screen.getByRole('button', { name: /^Investigate sign-ins — / })).toHaveFocus();
+
+    // Escape cancels and also returns focus to the row.
+    await user.click(screen.getByRole('button', { name: 'Actions for Review endpoint alert' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Rename Review endpoint alert' }), { key: 'Escape' });
+    expect(screen.getByRole('button', { name: /^Review endpoint alert — / })).toHaveFocus();
+  });
+
+  it('shows the full title and exact date in a row tooltip, and shortcut hints on the header', async () => {
+    renderRail({ onCollapse: vi.fn(), shortcuts: { toggle: 'Control+Shift+S Meta+Shift+S' } });
+    const row = screen.getByRole('button', { name: /^Review endpoint alert — / });
+    act(() => row.focus());
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('Review endpoint alert');
+    expect(tip).toHaveTextContent(/\d/);
+    act(() => row.blur());
+    const collapse = screen.getByRole('button', { name: 'Collapse history' });
+    expect(collapse).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+S Meta+Shift+S');
+    act(() => collapse.focus());
+    await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent(/^Collapse history \((Ctrl|⌘).*S\)$/));
   });
 
   it('pins, opens a report only when one exists, exports and deletes', async () => {
@@ -164,6 +210,10 @@ describe('HistoryRail', () => {
     expect(screen.getByRole('button', { name: 'New chat' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Actions for Investigate sign-ins' }));
     expect(await screen.findByRole('menuitem', { name: /Delete \(answer in progress\)/ })).toHaveAttribute('data-disabled');
+    await user.keyboard('{Escape}');
+    // Another thread's report cannot open while selection is refused: said, not ignored.
+    await user.click(screen.getByRole('button', { name: 'Actions for Phishing wave' }));
+    expect(await screen.findByRole('menuitem', { name: 'Open report (answer in progress)' })).toHaveAttribute('data-disabled');
   });
 
   it('searches server-side and opens a hit with its snippet', () => {

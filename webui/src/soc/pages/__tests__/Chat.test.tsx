@@ -5,7 +5,9 @@
  * promotion, retry with one key, confirmed delete, case scope) and adds the revamp
  * flows: the live run log, "Ask about this" topics, deep-link highlight and hash
  * clearing, the unavailable notice, Add to report opening the split panel with an
- * announcement, and jest-axe in the empty, running, completed, error and panel-open
+ * announcement, a failed `/chat/context` reaching the empty state and composer as a
+ * retryable error, focus kept in the composer after a starter, conversation export
+ * from the rail, and jest-axe in the empty, running, completed, error and panel-open
  * states.
  *
  * The composer, empty state, budget alert and shortcut sheet belong to the composer
@@ -27,7 +29,7 @@ vi.mock('@/soc/chat/composer/Composer', async () => {
   const React = await import('react');
   type Engine = import('@/soc/chat/useChatEngine').ChatEngine;
   const Composer = React.forwardRef(function ComposerDouble(
-    props: { engine: Engine; variant?: string; disabledReason?: string | null },
+    props: { engine: Engine; variant?: string; disabledReason?: string | null; contextError?: string | null },
     ref: React.Ref<{ focus: () => void; setText: (text: string) => void; savePrompt: (text: string) => void }>,
   ) {
     const area = React.useRef<HTMLTextAreaElement>(null);
@@ -42,6 +44,7 @@ vi.mock('@/soc/chat/composer/Composer', async () => {
         'data-testid': 'composer',
         'data-variant': props.variant,
         'data-disabled-reason': props.disabledReason ?? '',
+        'data-context-error': props.contextError ?? '',
         onSubmit: (event: React.FormEvent) => {
           event.preventDefault();
           props.engine.send();
@@ -64,11 +67,24 @@ vi.mock('@/soc/chat/composer/Composer', async () => {
 vi.mock('@/soc/chat/empty/EmptyState', async () => {
   const React = await import('react');
   return {
-    EmptyState: (props: { context: import('@/lib/types').ChatContextInfo | null; onStarter: (s: import('@/lib/types').ChatStarter) => void }) =>
+    EmptyState: (props: {
+      context: import('@/lib/types').ChatContextInfo | null;
+      onStarter: (s: import('@/lib/types').ChatStarter) => void;
+      error?: string | null;
+      onRetry?: () => void;
+    }) =>
       React.createElement(
         'div',
         { 'data-testid': 'empty-state' },
         React.createElement('p', null, 'Ask about your data, build a quick report, or learn how this console works. Read-only.'),
+        props.error && !props.context
+          ? React.createElement(
+              'p',
+              { 'data-testid': 'empty-context-error' },
+              props.error,
+              props.onRetry ? React.createElement('button', { type: 'button', onClick: props.onRetry }, 'Retry context') : null,
+            )
+          : null,
         ...(props.context?.starters ?? []).map((starter) =>
           React.createElement('button', { key: starter.id, type: 'button', onClick: () => props.onStarter(starter) }, starter.label),
         ),
@@ -78,6 +94,13 @@ vi.mock('@/soc/chat/empty/EmptyState', async () => {
 
 vi.mock('@/soc/chat/composer/BudgetAlert', () => ({ BudgetAlert: () => null }));
 vi.mock('@/soc/chat/shortcuts/ShortcutSheet', () => ({ ShortcutSheet: () => null }));
+
+const { exportConversationMock, toastMock } = vi.hoisted(() => ({
+  exportConversationMock: vi.fn(),
+  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
+}));
+vi.mock('sonner', async (importOriginal) => ({ ...(await importOriginal<typeof import('sonner')>()), toast: toastMock }));
+vi.mock('@/soc/chat/report/export/conversation', () => ({ exportConversation: exportConversationMock }));
 
 vi.mock('@/soc/chat/report/ReportPanel', async () => {
   const React = await import('react');
@@ -120,6 +143,7 @@ let streams: StreamHandle[] = [];
 let rows: ChatConversationSummary[] = [];
 let details: Record<string, ChatConversation> = {};
 let streamFailures = 0;
+let contextFailures = 0;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -184,6 +208,10 @@ beforeEach(() => {
   calls = [];
   streams = [];
   streamFailures = 0;
+  contextFailures = 0;
+  exportConversationMock.mockReset().mockResolvedValue({ ok: true, message: 'Conversation exported as Markdown' });
+  toastMock.mockReset();
+  toastMock.error.mockReset();
   rows = [OLDER, NEWEST];
   details = { [OLDER.id]: detailOf(OLDER), [NEWEST.id]: detailOf(NEWEST) };
   clearChatContextCache();
@@ -198,7 +226,13 @@ beforeEach(() => {
       calls.push({ url, method, body });
       const path = url.split('?')[0];
       if (path === '/api/prefs/user') return json({});
-      if (path === '/api/chat/context') return json(CONTEXT);
+      if (path === '/api/chat/context') {
+        if (contextFailures > 0) {
+          contextFailures -= 1;
+          return json({ detail: 'Chat context is temporarily unavailable.' }, 503);
+        }
+        return json(CONTEXT);
+      }
       if (path === '/api/chat/conversations' && method === 'GET') {
         const q = new URLSearchParams(url.split('?')[1] ?? '').get('q');
         const hits = q ? rows.filter((row) => row.title.toLowerCase().includes(q.toLowerCase())) : rows;
@@ -251,8 +285,20 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   window.location.hash = '';
 });
+
+/** Give the chat frame a measured width (jsdom has no layout). */
+function frameWidth(width: number) {
+  const original = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === 'workspace-chat-page') return DOMRect.fromRect({ width, height: 800 });
+    return original.call(this);
+  });
+}
+
+const shortcut = (key: string) => fireEvent.keyDown(window, { key, ctrlKey: true, shiftKey: true });
 
 function renderChat(props: { caseId?: string; opts?: NavOpts } = {}) {
   return render(
@@ -440,6 +486,43 @@ describe('Workspace Chat page', () => {
     expect(screen.queryByTestId('report-panel')).toBeNull();
   });
 
+  it('never auto-opens the panel as an overlay: a toast offers it instead', async () => {
+    // 900 px frame: strip rail, and the panel (360 + 9) would leave < 640 px.
+    frameWidth(900);
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-rail', 'strip');
+    fireEvent.click(screen.getByRole('button', { name: 'Add answer to report' }));
+    await settle();
+    expect(screen.queryByTestId('report-panel')).toBeNull();
+    expect(toastMock).toHaveBeenCalledWith('Added to report', expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }));
+    // The toast's Open shows the overlay.
+    act(() => toastMock.mock.calls[0][1].action.onClick());
+    expect(await screen.findByTestId('report-panel')).toHaveAttribute('data-mode', 'overlay');
+    expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-panel', 'overlay');
+  });
+
+  it('toggles history with Ctrl/Cmd+Shift+S: docked ↔ strip, and the Sheet when the rail cannot dock', async () => {
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const frame = screen.getByTestId('workspace-chat-page');
+    expect(frame).toHaveAttribute('data-rail', 'docked');
+    shortcut('S');
+    expect(frame).toHaveAttribute('data-rail', 'strip');
+    shortcut('S');
+    expect(frame).toHaveAttribute('data-rail', 'docked');
+  });
+
+  it('opens the history Sheet from the shortcut on a narrow frame', async () => {
+    frameWidth(600);
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-rail', 'sheet');
+    expect(screen.queryByRole('dialog', { name: 'Conversations' })).toBeNull();
+    shortcut('S');
+    expect(await screen.findByRole('dialog', { name: 'Conversations' })).toBeInTheDocument();
+  });
+
   it('confirms a delete and keeps the report', async () => {
     const user = userEvent.setup();
     renderChat();
@@ -453,6 +536,51 @@ describe('Workspace Chat page', () => {
       expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/chat/conversations/c-older')).toBe(true),
     );
     expect(screen.queryByRole('button', { name: /^Older endpoint review — / })).toBeNull();
+  });
+
+  it('shows a failed /chat/context as a retryable error in the empty state and the composer', async () => {
+    rows = [];
+    details = {};
+    contextFailures = 1;
+    renderChat();
+    const error = await screen.findByTestId('empty-context-error');
+    expect(error).toHaveTextContent(/unavailable/i);
+    expect(screen.getByTestId('composer').getAttribute('data-context-error')).toMatch(/unavailable/i);
+    fireEvent.click(within(error).getByRole('button', { name: 'Retry context' }));
+    // The retry reads the context again; the starters replace the error.
+    expect(await screen.findByRole('button', { name: 'Posture now' })).toBeInTheDocument();
+    expect(screen.queryByTestId('empty-context-error')).toBeNull();
+    expect(calls.filter((call) => call.url.startsWith('/api/chat/context'))).toHaveLength(2);
+  });
+
+  it('keeps focus in the composer after a starter sends (the card is replaced)', async () => {
+    rows = [];
+    details = {};
+    renderChat();
+    fireEvent.click(await screen.findByRole('button', { name: 'Posture now' }));
+    await settle();
+    expect(streamCalls()[0].body).toMatchObject({ message: 'How are we doing right now?', origin: 'starter' });
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
+  });
+
+  it('exports a conversation from the rail and says how it went', async () => {
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    await user.click(screen.getByRole('button', { name: 'Actions for Older endpoint review' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Export' }));
+    const markdown = await screen.findByRole('menuitem', { name: 'Markdown (.md)' });
+    act(() => markdown.focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(exportConversationMock).toHaveBeenCalledTimes(1));
+    const [conversation, format, options] = exportConversationMock.mock.calls[0];
+    expect(conversation).toMatchObject({ id: 'c-older', title: 'Older endpoint review' });
+    expect(format).toBe('markdown');
+    expect(options).toEqual({ author: 'analyst' });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(document.body).toHaveTextContent('Conversation exported as Markdown');
   });
 
   it('runs case-scoped without history, report or persistence', async () => {

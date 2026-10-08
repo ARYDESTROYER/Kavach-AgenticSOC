@@ -24,18 +24,29 @@ expect.extend(toHaveNoViolations);
 vi.mock('@/soc/chat/composer/Composer', async () => {
   const React = await import('react');
   type Engine = import('@/soc/chat/useChatEngine').ChatEngine;
-  const Composer = React.forwardRef(function ComposerDouble(props: { engine: Engine; variant?: string }, _ref: React.Ref<unknown>) {
+  const Composer = React.forwardRef(function ComposerDouble(
+    props: { engine: Engine; variant?: string; contextError?: string | null },
+    ref: React.Ref<{ focus: () => void; setText: (text: string) => void; savePrompt: (text: string) => void }>,
+  ) {
+    const area = React.useRef<HTMLTextAreaElement>(null);
+    React.useImperativeHandle(ref, () => ({
+      focus: () => area.current?.focus(),
+      setText: (text: string) => props.engine.setDraft(text),
+      savePrompt: () => undefined,
+    }));
     return React.createElement(
       'form',
       {
         'data-testid': 'composer',
         'data-variant': props.variant,
+        'data-context-error': props.contextError ?? '',
         onSubmit: (event: React.FormEvent) => {
           event.preventDefault();
           props.engine.send();
         },
       },
       React.createElement('textarea', {
+        ref: area,
         'aria-label': 'Message',
         value: props.engine.draft,
         onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => props.engine.setDraft(event.target.value),
@@ -49,8 +60,13 @@ vi.mock('@/soc/chat/composer/Composer', async () => {
 vi.mock('@/soc/chat/empty/EmptyState', async () => {
   const React = await import('react');
   return {
-    EmptyState: (props: { variant?: string }) =>
-      React.createElement('p', { 'data-testid': 'empty-state', 'data-variant': props.variant }, 'Ask about this case. Read-only.'),
+    EmptyState: (props: { variant?: string; error?: string | null; onRetry?: () => void }) =>
+      React.createElement(
+        'div',
+        { 'data-testid': 'empty-state', 'data-variant': props.variant, 'data-error': props.error ?? '' },
+        'Ask about this case. Read-only.',
+        props.error && props.onRetry ? React.createElement('button', { type: 'button', onClick: props.onRetry }, 'Retry context') : null,
+      ),
   };
 });
 
@@ -70,6 +86,7 @@ interface Call {
 
 let calls: Call[] = [];
 let controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+let contextFailures = 0;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -78,6 +95,7 @@ function json(body: unknown, status = 200): Response {
 beforeEach(() => {
   calls = [];
   controllers = [];
+  contextFailures = 0;
   clearChatContextCache();
   vi.stubGlobal(
     'fetch',
@@ -86,7 +104,13 @@ beforeEach(() => {
       const method = init?.method ?? 'GET';
       calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       if (url.startsWith('/api/prefs/user')) return json({});
-      if (url.startsWith('/api/chat/context')) return json({ tools: [], bounds: { max_tool_calls: 10 }, text_streaming: { available: true } });
+      if (url.startsWith('/api/chat/context')) {
+        if (contextFailures > 0) {
+          contextFailures -= 1;
+          return json({ detail: 'Chat context is temporarily unavailable.' }, 503);
+        }
+        return json({ tools: [], bounds: { max_tool_calls: 10 }, text_streaming: { available: true } });
+      }
       if (url === '/api/chat/stream') {
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
@@ -160,6 +184,26 @@ describe('ChatTab — the case-scoped chat', () => {
     expect(screen.getByTestId('meta-row')).toHaveTextContent('500 tokens');
     expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Ask again' })).toBeInTheDocument();
+  });
+
+  it('keeps focus in the composer after a quick action and surfaces a failed context with Retry', async () => {
+    contextFailures = 1;
+    renderTab({ presentation: 'case-manager' });
+    await settle();
+    const empty = screen.getByTestId('empty-state');
+    expect(empty.getAttribute('data-error')).toMatch(/unavailable/i);
+    expect(screen.getByTestId('composer').getAttribute('data-context-error')).toMatch(/unavailable/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry context' }));
+    await settle();
+    expect(screen.getByTestId('empty-state')).toHaveAttribute('data-error', '');
+
+    const action = screen.getByRole('button', { name: 'Summarize Case' });
+    action.focus();
+    fireEvent.click(action);
+    await settle();
+    // The quick action is disabled while the turn runs: focus is in the composer.
+    expect(action).toBeDisabled();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
   });
 
   it('"Open full chat" closes the sheet then navigates to the case-scoped chat', async () => {

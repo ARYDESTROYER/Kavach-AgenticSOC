@@ -6,13 +6,13 @@
  *   C_min = 640 px of conversation, always.
  *   History rail: docked (264 px + hairline) while frame − 265 ≥ C_min; else a 48 px
  *   icon strip (+ hairline); below a 640 px frame, a left Sheet.
- *   Report panel: a split (320–480 px, default 360, + hairline) only if the
- *   conversation keeps ≥ C_min — collapsing the docked rail to the strip first when
- *   that is enough — otherwise an overlay Sheet.
+ *   Report panel: a split (320–480 px, default 360, + its 9 px separator handle) only
+ *   if the conversation keeps ≥ C_min — collapsing the docked rail to the strip first
+ *   when that is enough — otherwise an overlay Sheet.
  *
  * Reference widths (SPEC §10.1): 1280/nav 240 → frame 992: rail docked, conversation
- * 727, panel overlay; 1280/nav 64 → frame 1168: strip + split, conversation 758;
- * 1440/nav 64 → frame 1328: docked + split, conversation 702.
+ * 727, panel overlay; 1280/nav 64 → frame 1168: strip + split, conversation 750;
+ * 1440/nav 64 → frame 1328: docked + split, conversation 694.
  */
 import * as React from 'react';
 
@@ -25,6 +25,11 @@ export const STRIP_TOTAL = STRIP_WIDTH + 1;
 export const PANEL_MIN = 320;
 export const PANEL_MAX = 480;
 export const PANEL_DEFAULT = 360;
+/**
+ * The split separator's hit target: the Case Manager split idiom (a 9 px transparent
+ * handle around a centred 1 px hairline), wide enough to grab with a pointer.
+ */
+export const SPLIT_HANDLE_PX = 9;
 /** The thread toolbar shows the conversation total from this width. */
 export const TOOLBAR_TOTAL_MIN = 560;
 /** Below this width the toolbar's History and Report controls drop their words. */
@@ -70,7 +75,7 @@ export function computeGeometry({ frameWidth, railCollapsed, panelOpen, panelWid
   if (!panelOpen) {
     return { rail: baseRail, panel: 'split', conversationWidth: width - railTotal(baseRail), railCanDock };
   }
-  const panelTotal = clampPanelWidth(panelWidth) + 1;
+  const panelTotal = clampPanelWidth(panelWidth) + SPLIT_HANDLE_PX;
   if (width - railTotal(baseRail) - panelTotal >= C_MIN) {
     return { rail: baseRail, panel: 'split', conversationWidth: width - railTotal(baseRail) - panelTotal, railCanDock };
   }

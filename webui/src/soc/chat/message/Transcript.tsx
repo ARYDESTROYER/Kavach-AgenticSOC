@@ -288,11 +288,19 @@ export function Transcript({
     if (followRef.current) setShowJump(false);
   }, []);
 
-  // The reader takes over: no more sticking to late content, and a smooth scroll they
-  // interrupted is no longer ours.
-  const takeOver = React.useCallback(() => {
-    settleRef.current = false;
-    autoScrollRef.current = null;
+  // The reader takes over (wheel, touch, a click or focus inside the lane): no more
+  // sticking to late content, and a smooth scroll they interrupted is no longer ours.
+  // Passive native listeners: they only observe, and never delay scrolling.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const takeOver = () => {
+      settleRef.current = false;
+      autoScrollRef.current = null;
+    };
+    const events = ['wheel', 'touchstart', 'pointerdown', 'focusin'] as const;
+    events.forEach((type) => el.addEventListener(type, takeOver, { passive: true }));
+    return () => events.forEach((type) => el.removeEventListener(type, takeOver));
   }, []);
 
   // Scroll behaviour on every transcript change.
@@ -394,10 +402,6 @@ export function Transcript({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        onWheel={takeOver}
-        onTouchStart={takeOver}
-        onPointerDown={takeOver}
-        onFocus={takeOver}
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable_both-edges]"
         data-chat-scroll-lane="true"
       >

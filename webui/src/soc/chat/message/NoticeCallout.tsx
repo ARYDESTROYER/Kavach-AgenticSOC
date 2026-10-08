@@ -3,7 +3,7 @@
  * partial, refused, stopped or failed (chat revamp SPEC §4.5, §10.3 notice placement).
  *
  * `cap` is not a callout: it becomes the "Continue where this stopped" chip under the
- * answer, and `not_saved` is the quiet "Not saved · Retry save" line under the meta
+ * answer, and `not_saved` is the quiet "Not saved · Run again to save" line under the meta
  * row (see `MemoryLine`). The callout is `role="note"`, never a live region: the page
  * announces errors once through the shell announcer (SPEC §10.9).
  */

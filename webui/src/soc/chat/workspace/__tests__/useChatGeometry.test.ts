@@ -15,16 +15,20 @@ describe('computeGeometry', () => {
     // nav 240 → frame 992: docked rail, conversation 727, the panel is an overlay.
     expect(geometry(frame(1280, 240))).toMatchObject({ rail: 'docked', conversationWidth: 727 });
     expect(geometry(frame(1280, 240), true)).toMatchObject({ rail: 'docked', panel: 'overlay', conversationWidth: 727 });
-    // nav 64 → frame 1168: 903 alone; with the panel the rail collapses to the strip (758).
+    // nav 64 → frame 1168: 903 alone; with the panel (360 + its 9 px separator handle)
+    // the rail collapses to the strip (750).
     expect(geometry(frame(1280, 64))).toMatchObject({ rail: 'docked', conversationWidth: 903 });
-    expect(geometry(frame(1280, 64), true)).toMatchObject({ rail: 'strip', panel: 'split', conversationWidth: 758 });
+    expect(geometry(frame(1280, 64), true)).toMatchObject({ rail: 'strip', panel: 'split', conversationWidth: 750 });
   });
 
   it('matches the 1440 and 1920 px reference rows', () => {
-    expect(geometry(frame(1440, 240), true)).toMatchObject({ rail: 'strip', panel: 'split', conversationWidth: 742 });
-    expect(geometry(frame(1440, 64), true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 702 });
-    expect(geometry(frame(1920, 240), true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 1006 });
-    expect(geometry(frame(1920, 64), true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 1182 });
+    expect(geometry(frame(1440, 240), true)).toMatchObject({ rail: 'strip', panel: 'split', conversationWidth: 734 });
+    expect(geometry(frame(1440, 64), true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 694 });
+    expect(geometry(frame(1920, 240), true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 998 });
+    expect(geometry(frame(1920, 64), true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 1174 });
+    // The split needs the panel plus its 9 px handle: one pixel less and it overlays.
+    expect(geometry(265 + 640 + 360 + 9, true)).toMatchObject({ rail: 'docked', panel: 'split', conversationWidth: 640 });
+    expect(geometry(49 + 640 + 360 + 8, true)).toMatchObject({ panel: 'overlay' });
   });
 
   it('turns both side zones into Sheets below a 640 px frame (390 px phones)', () => {
