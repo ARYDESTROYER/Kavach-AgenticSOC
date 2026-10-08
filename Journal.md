@@ -11328,3 +11328,162 @@
 - Tests: backend full suite exit 0 with the sandbox-injected AWS/proxy variables unset (5 tests read them: live keyless enrichment and secret-field env checks; they also fail on clean HEAD here). Webui `test:strict` 333 files / 2545 passed; tsc, lint (0 warnings) and gates clean.
 - Status: wave 1 done.
 - Next: wave 2 (WP-D tools, WP-E app knowledge, WP-F engine, WP-I1 web data layer, WP-J blocks kit).
+
+
+### 2026-10-08 — WP-D implementation agent — Chat revamp: data-tool fix round (reviewer findings)
+- Context: the independent review of WP-D raised 6 major and 6 minor findings: mislabelled metric windows, zeros during a case-store outage, the Elasticsearch 10k total shown as exact, a get_case rationale leaking audit payloads, invisible characters deleted before the fence, and context-dependent kinds that could never work.
+- Did:
+  - metrics.py:
+    - `metric_window()` narrows the window to whole hours and caps it at 30 days. Engine functions are called with `now=window end`; for a past range the cohort is [start, end), the trends bucket that starts at the end is dropped, and noise counters are read with `end_exclusive`. "Open now" and SLA clocks are still measured now.
+    - Labels say what was computed; `requested_window` and `window_capped` are set when that differs from the request.
+    - cost_usage and shift_report refuse a range that ends in the past.
+    - During a case-store outage, kinds computed only from cases fail with CASE_STORE_DOWN; noise_funnel sets its case stages to null.
+  - logs.py:
+    - `reported_total` reads `hits.total.relation`; a 10,000 total is a lower bound unless one exact `aggregate()` count replaces it (concurrent recounts in the fan-out).
+    - Observations show "at least N". log_stats keeps basis exact on totals when only the merged top values are partial.
+  - cases.py:
+    - The get_case rationale is a whitelist: tool counts, at most 3 queries of up to 200 characters, knowledge source counts, reasoning, the decision rationale, persona and playbook ids.
+    - explain_decision notes its forwarding log read in the summary and audit query text.
+    - Undated cases are kept inside a window.
+  - common.py:
+    - `text()`/`opt_text()` keep invisible characters for the fence. New `visible_text()` escapes them in evidence labels.
+    - Window gains trailing, span_hours and hours_capped. The unused shrinker is removed.
+  - registry, ops, intel:
+    - Per-caller signatures through a `signature_for(ctx)` hook and per-turn tool copies: only granted and available kinds are listed, and rule_versions stays hidden until ChatToolContext has the store.
+    - An unknown kind on a kind-gated tool is checked as "no kind", so a caller with no kind grant is denied and audited.
+    - `consumes_budget` releases a lookup when no provider answered.
+    - rule_versions uses `list_strict`; source_health shows last poll; mitre_lookup reports parent resolutions.
+  - taint.py: whole-token taint matching (`indicator_tokens`, refangs defanged indicators).
+  - elastic.aggregate: the .keyword retry targets the fields named in the 400 error and falls back to sampling when a retried group is empty.
+- Tests:
+  - WP-D: 134 passed across 11 files; new tests/test_chat_tools_metrics.py.
+  - Chat suites: 444 passed, 1 xfailed.
+  - Full backend suite: 4,417 passed, 4 skipped, 1 xfailed, 1 failed. The failure is the stale wave-1 NotImplementedError assertion in test_chat_contracts.py, which is not a WP-D file. Run with the sandbox AWS and proxy variables unset.
+- Status: done. The search_knowledge per-chunk trust split is still open; it needs WP-F (chat.py) or a SPEC change.
+- Next:
+  - WP-A: add runbooks, playbooks and rule_versions to ChatToolContext.
+  - WP-H: set them in build_chat_tool_context.
+  - WP-F: keep rendering signatures from toolbox.tools; decide the knowledge trust split.
+  - Drop the stale contract assertion.
+  - Add 'app_docs' to rag._sanitise_source_label's refused set.
+
+### 2026-10-08 12:30Z — WP-E implementation agent — Chat revamp: app knowledge fix round (routing, guide steps, minors)
+- Context: independent review of WP-E. Two major findings ($0 help answered data questions; guide steps showed raw Markdown and every step appeared twice) and ten minors.
+- Did:
+  - answer.classify_intent: hard data signals (ids, IPs, hashes, domains, the object in view, time windows, list/aggregate requests, activity words) always block routing. Strong cues (how-to, definitions, KPI wording) outweigh only soft signals (filtered sets, our/my metrics). Product and weak cues need a BM25F floor and every word present in the corpus. The cue-less path is removed. Golden, product-question and topic questions route; 32 data probes do not.
+  - render.plain_inline for guide steps (no markup, cut at a sentence or word boundary). The $0 guide block now carries links only, and the steps appear once in the prose.
+  - D ids only for citable sections. render_app_docs takes a max_chars budget (default 6000) and shrinks structurally, stating each omission.
+  - Alias keys folded. Async load_app_knowledge and warm_app_knowledge; lazy package __init__.
+  - CRLF-tolerant hashing in the loader, --check and Vitest.
+  - app_status provider key map (azure, bedrock, openai_compatible, mock).
+  - Strict anti-mint xfail. Compatibility-prefixed env names renamed.
+  - The build fails on unresolved breadcrumbs outside an allowlist.
+  - chat.md Limits breadcrumb and citation wording fixed; release gate step added to docs/releases/channels.md.
+  - Corpus regenerated.
+- Tests: test_app_knowledge 117 passed, 1 strict xfail (WP-D). Full backend suite: only the 6 known failures (5 sandbox, 1 stale contract pin owned by WP-A/WP-F). Console-map Vitest 5/5; lint, tsc and gates clean; check_docs and strict MkDocs OK; --check current (638 chunks); CI contract OK.
+- Status: done.
+- Next:
+  - WP-F: pass max_chars=observation_chars to render_app_docs.
+  - WP-H/L: call warm_app_knowledge() at startup.
+  - WP-D: anti-mint, then remove the strict xfail marker.
+  - WP-L: add .gitattributes; regenerate (gen:console-map, then build_app_knowledge) after WP-K and the chat_agent editor land, and update the chat.md Limits breadcrumb.
+
+### 2026-10-08 14:10Z — WP-F (engine sub-agent) — Chat revamp wave 2 fix round: shrinking, report envelope, legacy window, minors
+- Context: The reviewer raised four majors and several minors against WP-F, on branch claude/chat-revamp.
+- Did:
+  - chat_protocol.shrink_observation is series-aware:
+    - Parallel numeric arrays shrink together and keep the newest points. The series start moves forward with them, or is set to null when it can't be computed.
+    - Chronological lists keep their tail and ranked lists keep their head.
+    - `rows` is no longer treated as sample data.
+  - Report envelopes and sections in blocks.py:
+    - Extra keys no longer drop the whole brief. `blocks` is accepted for `items`, and subtitle and section summary are carried through.
+    - Section and leaf limits are clipped and counted instead of failing the envelope.
+    - Parse drops and lost leaves reach the one quiet notice through `materialise_final_blocks(dropped_requests=...)`.
+  - The legacy needs_query path in chat.py:
+    - The window is clamped through `resolve_window`, so a model-supplied wider window can't widen the request's range.
+    - The audit row records whitelisted display params, and a turned-off or out-of-scope tool reports its real reason.
+  - Minors:
+    - After the wall clock, one final-only answer still runs.
+    - `not_saved` is retryable only for a store error, and a turn stopped before any answer leaves no orphan case message.
+    - The memory deferral reason is truthful.
+    - Clipped categories, hidden columns and invalid KPIs are disclosed, and an explicit caption keeps its truncation phrase.
+    - Oversized tool input is refused instead of run with defaults; back-to-back action objects become one batch; identical refs are de-duplicated; the live-text streamer scans in linear time.
+- Tests:
+  - Owned files: test_chat_protocol 60, test_chat_blocks_materialise 60, test_chat_engine_loop 53, all green.
+  - Targeted chat suites: 818 passed, 1 failed.
+  - Full suite: 4412 passed, 6 failed. Five are the known sandbox network/env tests; the sixth is test_chat_contracts::test_retention_stub_and_helpers, which still pins the old NotImplementedError stubs and lives outside WP-F.
+  - ruff F/E9 clean.
+- Status: done. The suite is green once the orchestrator updates the pinned contract test.
+- Next:
+  - The orchestrator applies the test_chat_contracts replacement and lists it in SPEC §11.
+  - The SPEC owner confirms the amended wall-clock behaviour and whether `final_max_tokens` applies to every step.
+  - WP-H passes the conversation's chip as `ctx.time_range` so the legacy clamp takes effect.
+
+### 2026-10-08 12:45Z — WP-I1 implementation agent — Web chat data layer, review fix round
+- Context: the reviewer's findings on WP-I1 (chat revamp SPEC v2, wave 2): one major (heading-order) and twelve minors.
+- Did:
+  - ChatMarkdown rank-normalises headings per answer, so there are no skipped levels; the AST gains `rank`, and memo keys include ranks.
+  - No nested docs links.
+  - URLs glued to a word are defanged (display.ts and the inline parser).
+  - useChatEngine:
+    - adopts `turn.start.conversation_id` after a forced Stop or an unconfirmed connection loss (not after `turn.error`);
+    - a local Stopped answer stays out of history, and Stop is a no-op on a blocking turn;
+    - recovery waits up to the turn's own limits (new `turnBounds` option, `retry_after` body hint);
+    - `chat_idempotency_conflict` is not retryable;
+    - a `caseId` change resets the transcript;
+    - `turn.start` resets the live projection, and a Stop is re-sent to a replay's turn;
+    - user items split display `content` from the exact `prompt`.
+  - useChatConversations:
+    - checks a thread missing from the page before calling it unavailable or dropping the selection;
+    - refuses to delete the active thread while busy;
+    - sanitises optimistic titles.
+  - chat-api adds `apiRetryAfterSeconds`.
+  - Router time bounds reject a space.
+- Tests:
+  - Chat suite 198/198 strict.
+  - Legacy chat, router and lib suites green.
+  - tsc clean; lint 0/0; gates pass.
+  - Full strict: 2863/2864. The 1 failure (release-updates.test.tsx, settings) passes alone.
+- Status: done. Nothing committed.
+- Open, needing decisions or owners outside WP-I1:
+  - case-turn replay after a lost connection needs WP-H/SPEC sign-off;
+  - the list contract for pinned threads beyond 50 (WP-H);
+  - the 409 `retry_after` body hint (WP-H);
+  - the per-user live-mode storage key.
+- Next:
+  - WP-I2: pass `turnBounds: ctx.bounds`; render `ChatUserItem.content`, never `prompt`.
+  - WP-K exporters: nest by `MdBlock.rank`.
+
+### 2026-10-08 12:30Z — WP-J (blocks and charts kit) — reviewer fix round
+- Context: Chat revamp wave 2. WP-J fix round on the independent review: 2 major findings and 15 minor ones.
+- Did:
+  - Honest views (major). views.ts allows stacked/donut views only when values add up: count, tokens, bytes and usd always; percent and ratio only when the parts reconcile to the whole; never score or durations. honestChart/honestBlock draw a dishonest server-chosen kind as grouped columns or horizontal bars. ChartBlockView applies the same guard on the static path.
+  - No landmark per block (major). Cards are `<figure aria-labelledby>` with a `<figcaption>`; a report is announced as "Brief <title>". Report sections are labelled groups, and MITRE tactic groups are plain divs.
+  - Stacked charts: the sr-only Total covers all series; "total of shown series" once a series is hidden; per-segment reconcilingShares in the tooltip and the table.
+  - Chart tooltip in the Expand sheet: Esc is caught in the window capture phase, so one Esc closes only the tooltip. The tooltip is portalled into the enclosing dialog so it stays hoverable.
+  - CaseHoverArm loads the preview by hand and never wraps links while focus is inside, so keyboard focus is kept. A failed load or failed render falls back to the plain link.
+  - pickXLabels: sub-hour intervals, at least 2 labels.
+  - Clipboard: TSV defuses a leading quote and a formula after leading spaces; defang skips file names (exe, dll, docx and so on) and mixed-case endings.
+  - Exactly one citations block per message carries the `-cite-n` anchors.
+  - G9: BlockBoundary.tsx keeps the block's fallback_text; each report leaf has its own boundary.
+  - Callouts are `role="note"`; SPEC §10.9 takes precedence over the BLOCKS.md live roles.
+  - Rendering: chart y-axis title; heatmap axis titles; heatmap column labels that span to the next label; forced-colors step digits; hbar reference label; mono indicator title and reputation detail; "Brief" eyebrow; stable Add-to-report name; formatDelta (pp for rates, plain points for scores); KPI strip as a list.
+  - Static/print path: every table row, visible chart data tables, no card controls.
+  - Gallery series are now hourly (matching bucket 1h).
+  - ESLint G1 now also bans the Identifier and string-Literal forms.
+  - The bundle guard now also covers the Workspace route chunk (AnswerBlocks, BlockCard, charts/* and renderers/* only via import()).
+  - Noted from the first round: MitreHeatmap labels changed from 10px to text-2xs (11px) in Metrics and the dashboard MITRE widget. This needs a CHANGELOG line.
+- Tests: kit plus guards under test-strict, 259/259 (13 files). Consumer set, 270/270 (21 files). Full webui test:strict, 2,837/2,838: the one failure was an Overview drill-down test that timed out under load and passes 28/28 alone. tsc clean; lint 0/0; gates all pass. schema.ts and the contract JSON are unchanged. No browser for visual QA.
+- Status: done (WP-J fix round).
+- Next:
+  - WP-F: apply the same additive-unit rule when building allowed_views.
+  - WP-L: add the CHANGELOG note for the MitreHeatmap label size; ratchet the charts-soc grep baseline; browser visual QA (heatmap at 390px, Expand sheet tooltip, forced colors).
+  - WP-K: use BlockBody/ChartBlockView with staticMode for print.
+  - Spec owner: align the BLOCKS.md callout roles and the kpi_group `<dl>` with SPEC §10.9 and KpiTile.
+
+### 2026-10-08 13:20Z — Orchestrator — Chat revamp wave 2 integrated; wave 3 launched
+- Context: chat revamp (docs/research/2026-10-chat-revamp/SPEC.md v2), wave 2 of 4: WP-D chat tools, WP-E app knowledge, WP-F engine, WP-I1 web data layer, WP-J blocks/charts kit. Each package ran implement → independent adversarial review → fix as its own workflow (one per package, because the per-workflow agent cap on this 4-CPU sandbox is 2).
+- Did: committed the five packages (ec0d2be, 809da94, 6eea734, ba78ba0, efe0f15 on claude/chat-revamp); replaced the wave-1 contract test that pinned the materialisation stubs with assertions on the implemented behaviour; added ChatToolContext.secrets_status and the runbooks/playbooks/rule_versions catalogue fields; added models.ChatStarter / ChatContextInfo.starters / ChatTopicQuestion (+ types.ts mirrors) so the empty state and "Ask about this" have one server-built source; wrote compiling interface stubs for the composer, empty state, shortcuts and chat-context hook so the chat page UI could be split into two parallel packages (WP-I2a shell + transcript, WP-I2b composer + meter); compiled every package's interfaces and cross-package open issues into binding wave-3 notes with ten orchestrator decisions (starters, topic endpoint, case turns not auto-replayed, pinned-first list up to 60, retry_after body hint, entry budget, ownership of chat-api.ts in wave 3).
+- Tests: chat contract, knowledge and tool suites green after the integration edits; per-package reports: tools 134, knowledge 117 + 1 strict xfail (anti-mint, routed to WP-INT), engine/protocol/materialise 173, web chat suite 198 strict, blocks kit 259 strict; full webui strict 2,863/2,864 (one load timeout that passes alone). Full backend suite re-run in progress on the integrated tree.
+- Status: wave 2 done; wave 3 running (WP-INT integration fixes, WP-G demo planner, WP-H chat routes/persistence/state, WP-H2 reports backend, WP-I2a workspace shell, WP-I2b composer, WP-K reports UI + exports).
+- Next: integrate wave 3, then wave 4 (WP-L): regenerate openapi/api types, console map then app knowledge corpus, grep-baseline ratchet, CHANGELOG (incl. MitreHeatmap 10→11 px labels), .gitattributes for the knowledge JSON, entry-chunk measurement, browser visual QA with screenshots, final adversarial review.
