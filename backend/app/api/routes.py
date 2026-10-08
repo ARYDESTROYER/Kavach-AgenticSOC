@@ -78,10 +78,11 @@ from ..llm.pricing import (
 from ..models import (
     Case,
     CaseComment,
-    ChatConversationRenameRequest,
+    ChatConversation,
+    ChatConversationSearchHit,
+    ChatConversationUpdateRequest,
     ChatRequest,
     ChatResponse,
-    ChatTurn,
     Cluster,
     Entity,
     FeedbackEntry,
@@ -102,11 +103,8 @@ from ..playbooks.registry import (
 from ..state import AppState
 from ..stores.base import CASE_STATUS_GROUPS
 from ..stores.chat_conversations import (
-    ChatConversationMissing,
     ChatHistoryUnavailable,
-    ChatIdempotencyConflict,
-    ChatRequestCapacityBusy,
-    ChatRequestInProgress,
+    ChatPinLimitReached,
 )
 from ..stores.proposals import (
     BULK_DECISION_LIMIT,
@@ -128,7 +126,6 @@ from .deps import (
     current_user,
     current_username,
     get_state,
-    has_permission,
     require_admin,
     require_fresh_auth,
     require_permission,
@@ -1711,60 +1708,64 @@ def _chat_conflict_http(code: str, message: str) -> HTTPException:
 
 
 def _chat_request_fingerprint(body: ChatRequest) -> str:
-    """Stable identity over caller-controlled inputs (never over generated ids)."""
-    payload = body.model_dump(
-        mode="json", exclude={"idempotency_key", "persist_conversation"}
-    )
+    """Stable identity over caller-controlled inputs (never over generated ids).
+
+    ``fingerprint_payload`` dumps the pre-revamp fields exactly as before and the
+    revamp fields only when they differ from their defaults (``stream_mode`` never),
+    so a pre-revamp body hashes byte-identically and one key is valid across
+    ``/chat`` and ``/chat/stream`` (chat revamp SPEC §3.1)."""
+    payload = body.fingerprint_payload()
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _replayed_chat_response(reservation) -> ChatResponse:
-    conversation = reservation.conversation
-    assistant = reservation.assistant_message
-    if assistant is None:
-        raise _chat_history_http(
-            ChatHistoryUnavailable("The completed chat response could not be restored.")
-        )
-    payload = dict(assistant.response or {})
-    payload.update({
-        "answer": assistant.content,
-        "conversation_id": reservation.conversation_id,
-        "conversation_title": reservation.conversation_title
-        or (conversation.title if conversation else "Conversation"),
-        "idempotency_key": reservation.idempotency_key,
-        "effective_model": assistant.model or (conversation.model if conversation else None),
-        "effective_source_id": assistant.source_id
-        or (conversation.source_id if conversation else None),
-        "effective_source_name": assistant.source_name
-        or (conversation.source_name if conversation else None),
-        "truncated": bool(payload.get("truncated")),
-    })
-    try:
-        return ChatResponse.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001 -- corrupt durable receipt is a store failure
-        raise _chat_history_http(
-            ChatHistoryUnavailable("The completed chat response is invalid.")
-        ) from exc
+class ChatConversationPage(BaseModel):
+    """``GET /api/chat/conversations``: one page of the caller's conversation
+    summaries. With ``?q=`` each row also carries ``match {message_id, snippet}``
+    (rows of a plain listing omit it; the route serialises with
+    ``response_model_exclude_unset`` so the wire shape is unchanged)."""
+
+    conversations: list[ChatConversationSearchHit]
+    # The retained (paginatable) count, kept for compatibility.
+    total: int
+    history_truncated: bool
+    total_conversation_count: int
+    oldest_retained_at: str | None = None
+    limit: int
+    offset: int
 
 
-@router.get("/chat/conversations")
+@router.get(
+    "/chat/conversations",
+    response_model=ChatConversationPage,
+    response_model_exclude_unset=True,
+)
 async def list_chat_conversations(
     request: Request,
     state: AppState = Depends(get_state),
-    limit: int = Query(default=30, ge=1, le=50),
+    limit: int = Query(default=30, ge=1, le=60),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=200),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
-    """Newest-first Workspace conversation summaries owned by this principal.
+    """Workspace conversation summaries owned by this principal: pinned first, then
+    newest first. ``limit`` goes to 60 so the <= 10 pinned conversations (exempt
+    from the 50-conversation eviction) are never off the first page. With ``q`` the
+    rows are the conversations whose title, messages or block titles contain it,
+    each with a ``match {message_id, snippet}`` (chat revamp SPEC §7.5).
 
     Auth-disabled deployments use the same isolated ``default`` profile as user
     preferences. Case-scoped collaboration chat is intentionally not listed here.
     """
     try:
-        page = await state.chat_conversations.list_page(
-            current_username(request), limit=limit, offset=offset,
-        )
+        if q and q.strip():
+            page = await state.chat_conversations.search(
+                current_username(request), q, limit=limit, offset=offset,
+            )
+        else:
+            page = await state.chat_conversations.list_page(
+                current_username(request), limit=limit, offset=offset,
+            )
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
     return {
@@ -1779,7 +1780,11 @@ async def list_chat_conversations(
     }
 
 
-@router.get("/chat/conversations/{conversation_id}")
+@router.get(
+    "/chat/conversations/{conversation_id}",
+    response_model=ChatConversation,
+    response_model_exclude_unset=True,
+)
 async def get_chat_conversation(
     conversation_id: str,
     request: Request,
@@ -1799,29 +1804,41 @@ async def get_chat_conversation(
     return conversation.model_dump(mode="json")
 
 
-@router.patch("/chat/conversations/{conversation_id}")
-async def rename_chat_conversation(
+@router.patch(
+    "/chat/conversations/{conversation_id}",
+    response_model=ChatConversation,
+    response_model_exclude_unset=True,
+)
+async def update_chat_conversation(
     conversation_id: str,
-    body: ChatConversationRenameRequest,
+    body: ChatConversationUpdateRequest,
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
-    """Rename one owned conversation with bounded, single-line plain text."""
+    """Rename (bounded, single-line plain text) and/or pin one owned conversation
+    (chat revamp SPEC §7.5). Pinning never changes ``updated_at``; an 11th pin is
+    409 ``chat_pin_limit``."""
     user = current_username(request)
     try:
-        conversation = await state.chat_conversations.rename(
-            user, conversation_id, body.title
+        conversation = await state.chat_conversations.update(
+            user, conversation_id, title=body.title, pinned=body.pinned,
         )
+    except ChatPinLimitReached as exc:
+        raise _chat_conflict_http("chat_pin_limit", str(exc)) from exc
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
     if conversation is None:
         raise HTTPException(status_code=404, detail="conversation not found")
+    changes = [
+        *(["renamed"] if body.title is not None else []),
+        *(["pinned" if body.pinned else "unpinned"] if body.pinned is not None else []),
+    ]
     await state.audit.record(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
-        actor=user,
-        result_summary=f"conversation renamed: {conversation.id}"[:500],
+        actor=user or "default",
+        result_summary=f"conversation {' and '.join(changes)}: {conversation.id}"[:500],
     )
     return conversation.model_dump(mode="json")
 
@@ -1850,254 +1867,17 @@ async def delete_chat_conversation(
     return {"ok": True, "id": conversation_id}
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest, request: Request, state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> dict[str, Any]:
-    # The auth dependency already verified the principal; the same helper used by
-    # preferences/history defines the auth-off ``default`` partition.
-    author = current_username(request)
-    # Workspace history is opt-in and NEVER duplicates case-scoped turns. Context may
-    # carry a case id even when the top-level field does not, so resolve the effective
-    # case boundary before deciding whether this belongs in personal history.
-    effective_case_id = body.case_id or (body.context.case_id if body.context else None)
-    persist_workspace = bool(body.persist_conversation and not effective_case_id)
-    history = body.history
-    existing_conversation = None
-    if persist_workspace and body.conversation_id:
-        try:
-            existing_conversation = await state.chat_conversations.get(
-                author, body.conversation_id
-            )
-        except ChatHistoryUnavailable as exc:
-            raise _chat_history_http(exc) from exc
-        if existing_conversation is None:
-            raise HTTPException(status_code=404, detail="conversation not found")
-        # The durable transcript is authoritative for a resumed conversation. Ignore
-        # caller-supplied history so a client cannot replace another turn sequence.
-        history = [
-            ChatTurn(role=item.role, content=item.content)
-            for item in existing_conversation.messages
-        ]
+) -> ChatResponse:
+    """One chat turn, blocking (chat revamp SPEC §6): the same preflight, turn task
+    and persistence as ``POST /api/chat/stream`` (``routes_chat.run_chat_turn``),
+    awaited. Imported lazily: ``routes_chat`` imports this module."""
+    from .routes_chat import run_chat_blocking
 
-    # Per-call model override (additive): run THIS chat turn with the chat-role model
-    # swapped to body.model via a prefs copy. Unchanged when body.model is None.
-    # ``None`` means the CURRENT default. The UI resends a saved non-default
-    # selection while resuming; omitting it is how an analyst resets the thread.
-    selected_model = body.model
-    prefs_eff = _override_models(state.execution_prefs, selected_model, ("chat",))
-    selected_source_id = body.source_id
-    request_key = body.idempotency_key or new_id("chatreq-")
-    request_fingerprint = _chat_request_fingerprint(body)
-    reservation = None
-    source_conn = None
-    owned_client = None
-    effective_source_id = None
-    effective_source_name = None
-    try:
-        if persist_workspace:
-            try:
-                reservation = await state.chat_conversations.reserve_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    conversation_id=body.conversation_id,
-                )
-            except ChatHistoryUnavailable as exc:
-                raise _chat_history_http(exc) from exc
-            except ChatRequestInProgress as exc:
-                raise _chat_conflict_http("chat_request_in_progress", str(exc)) from exc
-            except ChatRequestCapacityBusy as exc:
-                raise _chat_conflict_http("chat_request_capacity_busy", str(exc)) from exc
-            except ChatIdempotencyConflict as exc:
-                raise _chat_conflict_http("chat_idempotency_conflict", str(exc)) from exc
-            except ChatConversationMissing as exc:
-                raise HTTPException(status_code=404, detail="conversation not found") from exc
-            if reservation.status == "completed":
-                return _replayed_chat_response(reservation).model_dump(mode="json")
-
-        # Resolve a live source only after durable replay had a chance to return.
-        # A historical receipt remains replayable even if its source was later
-        # disabled or removed. New executions reject an unusable explicit source.
-        source_conn, owned_client, effective_source_id, effective_source_name = (
-            _chat_source_connector(state, selected_source_id)
-        )
-        resp = await state.chat_engine.chat(
-            body.message, prefs_eff, case_id=body.case_id, history=history,
-            context=body.context, author=author, source=source_conn,
-            can_manage_memory=await has_permission(request, "memory", "manage"),
-        )
-    except HTTPException:
-        if persist_workspace and reservation is not None:
-            try:
-                await state.chat_conversations.abort_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    lease_token=reservation.lease_token or "",
-                )
-            except Exception:  # noqa: BLE001 -- preserve the typed HTTP failure
-                pass
-        raise
-    except Exception:
-        if persist_workspace and reservation is not None:
-            try:
-                await state.chat_conversations.abort_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    lease_token=reservation.lease_token or "",
-                )
-            except Exception:  # noqa: BLE001 -- never hide the original model failure
-                pass
-        raise
-    finally:
-        if owned_client is not None:
-            try:
-                await owned_client.close()
-            except Exception:  # noqa: BLE001
-                pass
-    if persist_workspace:
-        assert reservation is not None
-        response_with_provenance = resp.model_copy(update={
-            "idempotency_key": request_key,
-            "effective_model": resp.effective_model,
-            "effective_source_id": effective_source_id,
-            "effective_source_name": effective_source_name,
-        })
-        try:
-            completed = await state.chat_conversations.complete_exchange(
-                author,
-                idempotency_key=request_key,
-                request_fingerprint=request_fingerprint,
-                conversation_id=reservation.conversation_id,
-                lease_token=reservation.lease_token or "",
-                requested_existing_conversation=body.conversation_id is not None,
-                user_content=body.message,
-                assistant_content=resp.answer,
-                response=response_with_provenance.model_dump(mode="json"),
-                model=resp.effective_model,
-                source_id=effective_source_id,
-                source_name=effective_source_name,
-            )
-        except ChatHistoryUnavailable as exc:
-            raise _chat_history_http(exc) from exc
-        except ChatConversationMissing as exc:
-            raise _chat_conflict_http(
-                "chat_idempotency_conflict",
-                "The conversation changed while the response was being saved.",
-            ) from exc
-        except ChatIdempotencyConflict as exc:
-            raise _chat_conflict_http("chat_idempotency_conflict", str(exc)) from exc
-        except ChatRequestInProgress as exc:
-            raise _chat_conflict_http("chat_request_in_progress", str(exc)) from exc
-        conversation = completed.conversation
-        if conversation is None:
-            raise _chat_history_http(
-                ChatHistoryUnavailable("The saved conversation could not be restored.")
-            )
-        resp = response_with_provenance.model_copy(update={
-            "conversation_id": conversation.id,
-            "conversation_title": conversation.title,
-            "truncated": bool(
-                (completed.assistant_message.response or {}).get("truncated")
-                if completed.assistant_message is not None else False
-            ),
-        })
-    else:
-        resp = resp.model_copy(update={
-            "idempotency_key": body.idempotency_key,
-            "effective_model": resp.effective_model,
-            "effective_source_id": effective_source_id,
-            "effective_source_name": effective_source_name,
-        })
-    return resp.model_dump(mode="json")
-
-
-def _chat_source_connector(state: AppState, source_id: str | None):
-    """Build the PULL connector for an explicitly-selected chat source.
-
-    Returns connector/client plus the truthful effective id/name. ``None`` connector
-    means use the engine's configured primary only when no explicit id was supplied.
-    Explicit unknown, disabled, receiver-only or unbuildable sources return 422."""
-    if not source_id:
-        if state.demo_active:
-            from ..engine.demo_sources import DEMO_SOURCE_SPECS
-
-            spec = DEMO_SOURCE_SPECS["splunk"]
-            return None, None, spec.source_id, spec.display_name
-        primary = state.execution_prefs.primary_source()
-        return (
-            None,
-            None,
-            primary.id if primary is not None else None,
-            (primary.display_name or primary.id) if primary is not None else "Primary source",
-        )
-    if state.demo_active:
-        # Demo push adapters expose the same bounded search contract as a pull
-        # connector, so chat source selection remains truthful for all four rows.
-        connector = state.demo_source_connector(source_id)
-        if connector is None:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "chat_source_unavailable",
-                    "message": "The selected source is unavailable for chat.",
-                },
-            )
-        rows = state.demo_sources_overlay()
-        row = next((item for item in rows if item.get("id") == source_id), {})
-        return connector, None, source_id, str(row.get("display_name") or source_id)
-    src = next((s for s in state.prefs.sources if s.id == source_id and s.enabled), None)
-    if src is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source is unknown or disabled.",
-            },
-        )
-    reg = get_registry()
-    if not reg.is_pull(src.source_type):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source does not provide a query surface.",
-            },
-        )
-    try:
-        from ..connectors.elastic import ElasticConnector
-        from ..connectors.opensearch import OpenSearchConnector
-        from ..connectors.wazuh import WazuhConnector
-
-        es_client, owned = state.es_client_for_source(src)
-        cfg = {**(src.config or {})}
-        if src.display_name:
-            cfg.setdefault("display_name", src.display_name)
-        if src.source_type == SourceType.OPENSEARCH:
-            conn = OpenSearchConnector(es_client, config=cfg, connector_id=src.id)
-        elif src.source_type == SourceType.WAZUH:
-            conn = WazuhConnector(es_client, config=cfg, connector_id=src.id)
-        else:
-            conn = ElasticConnector(es_client, config=cfg, connector_id=src.id)
-        return (
-            conn,
-            (es_client if owned else None),
-            src.id,
-            src.display_name or src.id,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source could not be prepared for chat.",
-            },
-        ) from exc
+    return await run_chat_blocking(request, body, state)
 
 
 # --------------------------------------------------------------------------- #

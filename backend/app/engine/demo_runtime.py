@@ -143,6 +143,10 @@ class DemoStack:
         # noise-reduction surface (over the demo ES — purged on disable).
         from ..stores.noise_counters import NoiseCounterStore
         self.noise_counters = NoiseCounterStore(self.kv)
+        # Chat reports made during the demo (chat revamp SPEC §9.1) live on the demo
+        # KV too, so disabling Demo Mode purges them with everything else and no demo
+        # report can ever reach the tenant's library.
+        self.reports = self._build_reports()
         # How many pre-seed "already processed" events were counted (for status/tests).
         self.preseed_events = 0
         # ONE shared vector store for BOTH the pipeline RAG and the chat RAG (the old
@@ -250,6 +254,45 @@ class DemoStack:
             self.es, self.gateway, self.audit, self.cases, rag,
             source=source, memory=self.memory, threads=self.case_threads,
         )
+
+    def _build_reports(self):
+        """``stores.reports.ReportStore`` over the demo KV, or None while the reports
+        package is not installed."""
+        try:
+            from ..stores.reports import ReportStore
+        except ImportError:
+            return None
+        return ReportStore(self.kv)
+
+    def chat_context_extras(
+        self,
+        *,
+        prefs: Preferences,
+        query_source_for: Callable[[str | None], Any],
+    ) -> dict[str, Any]:
+        """What Demo Mode changes in a chat turn's tool context (chat revamp SPEC §2,
+        §5.1). ``AppState.build_chat_tool_context`` reads everything else through the
+        demo-switchable properties already, so this lists only what has no property:
+
+        * no third-party enrichment (``lookup_indicator`` returns its labelled
+          synthetic result) and no budget gate (demo spend is simulated);
+        * no tenant secrets status and no tenant runbook/playbook/rule-version
+          catalogues (the tools report the bundled catalogue instead);
+        * case clusters rebuilt from the DEMO log surface, never the tenant one."""
+        from .case_cluster import bind_cluster_for_case
+
+        return {
+            "enrich": None,
+            "budget_gate": None,
+            "secrets_status": None,
+            "runbooks": None,
+            "playbooks": None,
+            "rule_versions": None,
+            "cluster_for_case": bind_cluster_for_case(
+                es=self.es, log_source=self.sources.get("splunk"), prefs=prefs,
+                query_source_for=query_source_for,
+            ),
+        }
 
     def _demo_prefs(self) -> Preferences:
         """Prefs the demo pipeline runs under: the live prefs but with a SANDBOXED

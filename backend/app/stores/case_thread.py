@@ -18,7 +18,10 @@ adapter (a doc in the existing config index).
 Reads + writes are read-modify-write over the single dict — fine at our scale
 (operator collaboration, not log volume). The store NEVER raises: a load/save
 failure degrades to an empty thread / best-effort write and is logged, so a thread
-glitch can never drop an alert or break a case page.
+glitch can never drop an alert or break a case page. The one exception is
+:meth:`CaseThreadStore.append_if_absent`, which exists to REPORT whether a keyed
+chat turn was written, so it confirms its write and raises
+:class:`CaseThreadWriteFailed` instead of returning an optimistic result.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from typing import Any, Callable, TypeVar
 from ..constants import CASE_THREAD_KEY, CASE_THREAD_NS
 from ..models import CaseMessage
 from ..utils import iso_now
-from .base import KVStore, kv_mutate
+from .base import KVStore, kv_mutate, kv_mutate_strict
 
 _T = TypeVar("_T")
 
@@ -39,6 +42,11 @@ logger = logging.getLogger("tlsoc.stores.case_thread")
 
 def _norm_case_id(case_id: str | None) -> str:
     return (case_id or "").strip()
+
+
+class CaseThreadWriteFailed(RuntimeError):
+    """A confirmed thread write could not be proven durable (backend error or
+    exhausted compare-and-set retries); nothing can be assumed written."""
 
 
 class CaseThreadStore:
@@ -122,6 +130,45 @@ class CaseThreadStore:
 
         await self._mutate(_change)
         return message
+
+    async def append_if_absent(self, message: CaseMessage) -> tuple[CaseMessage, bool]:
+        """Append ``message`` unless its case thread already holds a message with the
+        same id, as ONE confirmed compare-and-set mutation. Returns ``(stored,
+        appended)``: the existing message and False when the id was already there.
+
+        A retried case-scoped chat turn derives deterministic message ids from its
+        idempotency key (chat revamp SPEC §4.6); a check-then-append outside the CAS
+        would let two simultaneous retries both see "absent" and duplicate the turn.
+
+        Unlike the other methods this one is STRICT: the best-effort ``kv_mutate``
+        returns its computed value even when nothing was stored, which would report
+        ``appended=True`` for a lost write and leave the caller unable to tell
+        "already appended" from "never written". A write that cannot be confirmed
+        raises :class:`CaseThreadWriteFailed` (the engine maps it to a retryable
+        ``not_saved`` notice)."""
+        cid = _norm_case_id(message.case_id)
+        if not cid:
+            raise ValueError("message.case_id is required")
+        box: dict[str, tuple[CaseMessage, bool]] = {}
+
+        def _mutator(current: dict | None) -> dict:
+            # Pure in its snapshot: a CAS retry re-runs it on the fresh document.
+            threads = self._decode(current)
+            msgs = list(threads.get(cid, []))
+            existing = next((m for m in msgs if m.id == message.id), None)
+            if existing is not None:
+                box["r"] = (existing, False)
+            else:
+                threads[cid] = [*msgs, message]
+                box["r"] = (message, True)
+            return self._encode(threads)
+
+        try:
+            await kv_mutate_strict(self._kv, CASE_THREAD_NS, CASE_THREAD_KEY, _mutator, lock=self._lock)
+        except Exception as exc:  # noqa: BLE001 -- any failure means "not proven written"
+            logger.warning("Confirmed case-thread append failed (%s)", type(exc).__name__)
+            raise CaseThreadWriteFailed("The case thread could not be saved.") from exc
+        return box["r"]
 
     async def edit(self, case_id: str | None, message_id: str, body: str,
                    *, editor: str = "") -> CaseMessage | None:

@@ -900,6 +900,91 @@
       }
     ]
   },
+  "nav_log_examples": {
+    "_comment": "Logs deep-link opts an InternalRef may carry ('Open in Logs', SPEC §10.7): the webui router's DEEP_LINK_KEYS.logs grammar. blocks.clean_nav_opts / NavRefOpts and schema.ts parseInternalRef accept exactly 'valid' and refuse 'invalid' (an invalid opt invalidates the whole ref); the webui test also checks router pageHash serialises exactly the valid ones.",
+    "valid": {
+      "logQuery": [
+        "failed password",
+        "user.name:\"alice\" AND event.action:login",
+        "x",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ünïcödé 名前 😀"
+      ],
+      "from": [
+        "now",
+        "now-24h",
+        "now-15m",
+        "now-99999w",
+        "2026-10-08",
+        "2026-10-08T10:00:00Z",
+        "2026-10-08T10:00:00.123456+00:00"
+      ],
+      "to": [
+        "now",
+        "now-24h",
+        "now-15m",
+        "now-99999w",
+        "2026-10-08",
+        "2026-10-08T10:00:00Z",
+        "2026-10-08T10:00:00.123456+00:00"
+      ],
+      "sourceId": [
+        "wazuh-prod",
+        "primary",
+        "src_1.a:b",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    },
+    "invalid": {
+      "logQuery": [
+        "",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "line\nbreak",
+        "tab\there",
+        "zero\u200bwidth",
+        "bidi\u202eoverride",
+        "sep\u2028arator",
+        "nul\u0000byte",
+        "private\ue000use",
+        "unassigned\u0378"
+      ],
+      "from": [
+        "",
+        "NOW",
+        "now-24 h",
+        "now-100000d",
+        "now-24y",
+        "now-24h ",
+        "yesterday",
+        "2026-10-08 10:00",
+        "2026-10-08T10:00:00 05:00",
+        "26-10-08",
+        "2026-10-08T10:00:00.123456789012+00:00:00"
+      ],
+      "to": [
+        "",
+        "NOW",
+        "now-24 h",
+        "now-100000d",
+        "now-24y",
+        "now-24h ",
+        "yesterday",
+        "2026-10-08 10:00",
+        "2026-10-08T10:00:00 05:00",
+        "26-10-08",
+        "2026-10-08T10:00:00.123456789012+00:00:00"
+      ],
+      "sourceId": [
+        "",
+        "x y",
+        "a/b",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "src\u200b",
+        "ü",
+        "src#1"
+      ]
+    }
+  },
   "fallback_text": "This part of the answer could not be displayed",
   "expired_text": "Expired from saved history"
 }

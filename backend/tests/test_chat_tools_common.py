@@ -118,3 +118,40 @@ def test_one_observation_shrinker_only() -> None:
     assert not hasattr(common, "shrink_observation")
     assert not hasattr(common, "observation_chars")
     assert callable(chat_protocol.shrink_observation)
+
+
+def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
+    """"Open in Logs" (SPEC §10.7): the exact view, or nothing — never a wider one."""
+    from types import SimpleNamespace
+
+    from app.agents.chat_tools.common import logs_console_view
+
+    def args(**kw: object) -> SimpleNamespace:
+        base = {k: None for k in ("ip", "user", "host", "rule", "severity_gte", "contains",
+                                  "time_from", "time_to", "source_id")}
+        base["ids"] = []
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    fanout = {"sources": [{"name": "A"}, {"name": "B"}]}
+    view = logs_console_view(make_ctx(), args(contains="failed password", time_from="now-7d"), fanout)
+    assert view == {"page": "logs", "opts": {"logQuery": "failed password", "from": "now-7d", "to": "now"}}
+    # The request's source wins over the call's, exactly as the tool resolves it.
+    named = logs_console_view(make_ctx(source_id="wazuh-prod"), args(source_id="other"), {"source": "Wazuh"})
+    assert named == {"page": "logs", "opts": {"from": "now-24h", "to": "now", "sourceId": "wazuh-prod"}}
+    assert logs_console_view(make_ctx(), args(source_id="src-b"), {"source": "B"})["opts"]["sourceId"] == "src-b"
+    # The request chip is the window when the call set none; a wider call is clamped.
+    chip = make_ctx(time_range=TimeRange(**{"from": "now-6h"}))
+    assert logs_console_view(chip, args(), fanout)["opts"]["from"] == "now-6h"
+    assert logs_console_view(chip, args(time_from="now-30d"), fanout)["opts"]["from"] == "now-6h"
+    # Not expressible on the Logs page: a structured filter, ids, an implicit single
+    # source, unsafe or padded free text, a window outside the router grammar, a
+    # clock-dependent 90-day cap.
+    for refused in (args(ip="10.0.0.1"), args(user="alice"), args(host="web01"), args(rule="r1"),
+                    args(severity_gte=5.0), args(ids=["e1"]), args(contains="a​b"),
+                    args(contains=" padded"), args(time_from="2026-10-01 00:00")):
+        assert logs_console_view(make_ctx(), refused, fanout) is None, refused
+    assert logs_console_view(make_ctx(), args(), {"source": "Primary"}) is None
+    assert logs_console_view(make_ctx(), args(), None) is None
+    assert logs_console_view(make_ctx(), args(time_from="now-120d"), fanout) is None
+    assert logs_console_view(make_ctx(source_id="bad id"), args(), fanout) is None

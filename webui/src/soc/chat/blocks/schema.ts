@@ -329,6 +329,13 @@ export interface InternalRef {
     tab?: string;
     section?: string;
     anchor?: string;
+    /** Logs deep link ("Open in Logs", SPEC §10.7): the exact free-text filter. */
+    logQuery?: string;
+    /** Logs window bounds: `now`, `now-<n>[mhdw]` or an ISO-8601 shape. */
+    from?: string;
+    to?: string;
+    /** Logs: the one source the data came from (absent = every browsable source). */
+    sourceId?: string;
   };
 }
 /** A same-origin Help Center page, e.g. `/docs/0.1/analyst/chat/#sources`. */
@@ -352,6 +359,12 @@ interface BlockBase {
   from_step?: number;
   fallback_text?: string;
   downsampled_for_storage: boolean;
+  /**
+   * The EXACT console view of this block's data (e.g. the Logs page with the same
+   * filter, window and source), built by server code from the tool's own input.
+   * Never present on an `ai` block; re-validated with the router's guards.
+   */
+  open_in?: InternalRef;
 }
 
 export interface MarkdownBlock extends BlockBase {
@@ -716,7 +729,35 @@ const semantic = (v: unknown): SemanticKey | undefined => enumOr(v, SEMANTIC_KEY
 /* -------------------------------------------------------------------------- */
 /* Refs.                                                                       */
 /* -------------------------------------------------------------------------- */
-const NAV_OPT_KEYS = ['caseId', 'severity', 'status', 'window', 'tab', 'section', 'anchor'] as const;
+const NAV_OPT_KEYS = [
+  'caseId',
+  'severity',
+  'status',
+  'window',
+  'tab',
+  'section',
+  'anchor',
+  'logQuery',
+  'from',
+  'to',
+  'sourceId',
+] as const;
+/*
+ * The Logs deep-link grammar, EXACTLY the router's `DEEP_LINK_KEYS.logs` (soc/router.tsx;
+ * the shared `nav_log_examples` vectors also run through the router's `pageHash`): a
+ * source id is a plain id; a time bound is `now`, `now-<n>[mhdw]` or an ISO-8601 shape
+ * with no space; a log query is bounded text with no control, format, unassigned,
+ * private-use or separator character (it is never trimmed: it is the exact filter).
+ */
+const LOG_QUERY_RE = /^[^\p{C}\u2028\u2029]{1,512}$/u;
+const NAV_TIME_RE = /^(now(-\d{1,5}[mhdw])?|\d{4}-\d\d-\d\d[\dTt:.Zz+-]{0,24})$/;
+const NAV_ID_RE = /^[\w.:-]{1,128}$/;
+const LOG_OPT_RE: Readonly<Record<'logQuery' | 'from' | 'to' | 'sourceId', RegExp>> = {
+  logQuery: LOG_QUERY_RE,
+  from: NAV_TIME_RE,
+  to: NAV_TIME_RE,
+  sourceId: NAV_ID_RE,
+};
 
 /** A valid in-app ref (router guards), else null. Unknown opts invalidate the ref. */
 export function parseInternalRef(raw: unknown): InternalRef | null {
@@ -740,6 +781,9 @@ export function parseInternalRef(raw: unknown): InternalRef | null {
     } else if (key === 'window') {
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 720) return null;
       opts.window = value;
+    } else if (key === 'logQuery' || key === 'from' || key === 'to' || key === 'sourceId') {
+      if (typeof value !== 'string' || !LOG_OPT_RE[key].test(value)) return null;
+      opts[key] = value;
     } else {
       if (typeof value !== 'string' || !isSafeRouteToken(value)) return null;
       opts[key as 'tab' | 'section' | 'anchor'] = value;
@@ -1215,6 +1259,12 @@ function parseBase(raw: Obj, id: string): Base {
   if (step) base.from_step = step;
   const fallback = optText(raw.fallback_text, LIMITS.fallback, true);
   if (fallback) base.fallback_text = fallback;
+  // A navigation target is never model-made: an `ai` block (or a missing provenance,
+  // which fails safe to `ai`) carries none. An invalid ref is dropped, not fatal.
+  if (base.provenance !== 'ai' && raw.open_in !== undefined && raw.open_in !== null) {
+    const openIn = parseInternalRef(raw.open_in);
+    if (openIn) base.open_in = openIn;
+  }
   return base;
 }
 

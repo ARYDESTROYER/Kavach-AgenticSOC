@@ -23,8 +23,8 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
    zero-width characters, bounds length and never linkifies.
 5. **Markdown subset.** `markdown` text is parsed into a fixed AST: paragraphs, emphasis, inline
    code, lists, headings up to H3 (rendered one level below the message heading), blockquote,
-   rule, fenced code, GFM tables and links. A link is kept only if its target matches
-   `^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$`; in-app navigation never comes from a
+   rule, fenced code, GFM tables and links. A link is kept only if its target is a Help Center
+   path (`DOC_REF_PATTERN`, amendment 10); in-app navigation never comes from a
    model-written path (it comes from `console_links` ids). Images, raw HTML, autolinks and
    reference links render as literal text; an external URL renders as defanged text with a copy
    button. The Markdown and HTML exporters serialise from the same sanitised AST.
@@ -41,6 +41,33 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
 9. **Clipboard and exports are defused.** CSV/TSV cells (string columns only) are formula-escaped;
    numeric columns stay numeric. IOCs are defanged by default in Markdown, HTML, Print and Copy
    data (toggle in the export menu; never applied to the live UI; off for JSON).
+
+### Wave-3 amendments (implementation decisions; SPEC §13 has the full text)
+
+10. **Help Center links (SPEC A1).** `DocRef.doc`, `Citation.doc` and Markdown doc links match
+    `^/docs/[0-9]{1,4}\.[0-9]{1,4}/(?:SEG(?:/SEG)*/?)?(?:#[a-z0-9_-]+)?$` with
+    `SEG = [a-z0-9_-]+(?:\.[a-z0-9_-]+)*`: the home and dotted release pages are citable; `.`/`..`/
+    empty segments, schemes, hosts, queries, uppercase, `%` and `\` never match. Shared vectors:
+    `doc_ref_examples` in the contract file.
+11. **Callouts are notes (SPEC A5).** Every tone renders `role="note"` (no chat-local live
+    regions, SPEC §10.9); the host announces a new warning once through `useAnnouncer()` when it
+    must be spoken.
+12. **KPI groups are lists (SPEC A6).** `role="list"` with one `listitem` per `KpiTile` (the tile
+    has no `dt`/`dd` mode); units stay spelled out in `sr-only` text.
+13. **Honest views (SPEC A15).** `stacked_bar` and `donut` appear in `allowed_views` only when the
+    values add up (additive units, or percent/ratio parts that reconcile to the whole per stack
+    slot or across the donut's categories; never score or durations; a donut also needs a
+    complete population). Server `chart_kind_fits` and client `chartKindFits` run the shared
+    `chart_honesty` vectors; the client still draws a dishonest kind as columns/hbar.
+14. **`open_in` (SPEC A14).** Every block may carry `open_in?: InternalRef`, the exact console
+    view of its data ("Open in Logs"), built by server code from a log call's own input, never by
+    the model (dropped from any `ai` block). `InternalRef.opts` gains `logQuery`, `from`, `to`,
+    `sourceId` with the router's deep-link grammar (shared `nav_log_examples` vectors). The card's
+    ⋯ menu offers "Open in <page>" for `open_in`, or for a single exact case; any other filter
+    keeps Copy query only.
+15. **Report envelopes are clipped (SPEC A3).** Over-limit sections and leaves are removed and
+    counted in the notice line, never a rejection of the whole brief; `subtitle`, a section
+    `summary` and `blocks` (alias of `items`) are accepted.
 
 ---
 
@@ -99,10 +126,11 @@ export interface InternalRef {
     status?: string;                             // isSafeCaseResultStatus()
     window?: number;                             // 1..720 (hours)
     tab?: string; section?: string; anchor?: string;  // isSafeRouteToken()
+    logQuery?: string; from?: string; to?: string; sourceId?: string;  // Logs deep link (amendment 14)
   };
 }
 /** Same-origin Help Center page, e.g. "/docs/0.1/analyst/chat/#sources". */
-export interface DocRef { doc: string }          // /^\/docs\/\d+\.\d+\/[a-z0-9/_.-]*(#[a-z0-9_-]+)?$/
+export interface DocRef { doc: string }          // DOC_REF_PATTERN (amendment 10)
 
 interface BlockBase {
   id: string;                 // /^[a-z0-9][a-z0-9_.-]{0,47}$/, unique per message (anchors/TOC only)
@@ -116,6 +144,7 @@ interface BlockBase {
   as_of?: string;             // ISO-8601 UTC
   from_step?: number;         // the lookup step that produced the data (links into Evidence & execution)
   fallback_text?: string;     // ≤ 2k, plain; shown if the renderer cannot display the block
+  open_in?: InternalRef;      // exact console view of the data (amendment 14); never on `ai` blocks
 }
 
 export type BlockType =
@@ -184,7 +213,8 @@ interface KpiItem {
   card inside the transcript, because hover cards stacked over the transcript are noisy.
 - **Delta colours:** improved shows `success`, regressed shows `critical`, and the
   arrow always shows the true direction (`goodDirection`, as in `KpiTile`).
-- **A11y:** a `<dl>` structure, each value with its unit spelled out in `sr-only`.
+- **A11y:** a list (`role="list"`, one `listitem` per tile; amendment 12), each value with its
+  unit spelled out in `sr-only`.
 
 #### `chart` (bar, hbar, stacked bar, line, area, donut, sparkline)
 
@@ -393,8 +423,7 @@ JSON.
 ```
 
 - **Renderer:** `ui/alert`. `critical` maps to `destructive`; the others map one to one
-  (`info/success/warning`). Status tones get `role="status"`, warning and critical get
-  `role="alert"`.
+  (`info/success/warning`). Every tone renders `role="note"` (amendment 11).
 - **Use:** caveats such as "Scan bounded at 5,000 cases: counts are lower bounds" or
   "Insufficient evidence".
 

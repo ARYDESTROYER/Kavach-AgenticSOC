@@ -342,3 +342,30 @@ async def test_log_stats_sample_path_treats_a_capped_total_as_a_lower_bound() ->
     kpis = next(a for a in out.artifacts if a.kind == "kpis")
     assert kpis.data["items"][0]["value"] == 10_000 and kpis.data["items"][0]["bound"] == "lower"
     assert "of at least 10,000" in (out.coverage or "")
+
+
+async def test_toolbox_gives_exact_log_calls_an_open_in_logs_view() -> None:
+    """WP-INT item 5: a successful search whose filter the Logs page can express
+    gets ``open_in`` on every artifact (the materialiser copies it to the block);
+    any other filter gets none, so the block offers "Copy query" only."""
+    from app.agents.chat_tools.registry import build_toolbox
+
+    targets = [_target("a", rows=3, total=3), _target("b", rows=2, total=2)]
+    box = build_toolbox(make_ctx(browse_sources=lambda: targets))
+    out = await box.execute("search_logs", {"contains": "login failed", "time_from": "now-7d"})
+    assert out.ok and out.artifacts
+    expected = {"page": "logs", "opts": {"logQuery": "login failed", "from": "now-7d", "to": "now"}}
+    assert all(a.data.get("open_in") == expected for a in out.artifacts)
+    narrowed = await box.execute("search_logs", {"ip": "203.0.113.5"})
+    assert narrowed.ok and all("open_in" not in a.data for a in narrowed.artifacts)
+    stats = await box.execute("log_stats", {"group_by": ["ip"]})
+    assert stats.ok and stats.artifacts
+    assert all(a.data["open_in"]["opts"] == {"from": "now-24h", "to": "now"} for a in stats.artifacts)
+    # One implicit source (the primary connector): its id is unknown here, so no view.
+    single = build_toolbox(make_ctx(log_source=RecordingConnector()))
+    implicit = await single.execute("search_logs", {})
+    assert implicit.ok and all("open_in" not in a.data for a in implicit.artifacts)
+    # A request-selected source is named exactly.
+    chosen = build_toolbox(make_ctx(log_source=RecordingConnector(), source_id="src-a"))
+    selected = await chosen.execute("search_logs", {"contains": "x"})
+    assert selected.artifacts[0].data["open_in"]["opts"]["sourceId"] == "src-a"

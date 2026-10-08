@@ -64,6 +64,7 @@ import {
   Columns3,
   BookMarked,
   BookOpenText,
+  FileText,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
@@ -79,6 +80,7 @@ export type PageId =
   | 'case_manager'
   | 'investigate'
   | 'chat'
+  | 'reports'
   | 'intelligence'
   | 'metrics'
   | 'effectiveness'
@@ -268,9 +270,12 @@ export const FEATURES: FeatureNode[] = [
     label: 'Workspace',
     icon: MessageSquare,
     group: 'triage',
+    // Chat · Investigate · Reports (SPEC §10.6). Reports is a standalone lazy route
+    // (its own chunk), not a Workspace tab: the library lists every saved report.
     children: [
       { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'investigate', label: 'Entity investigation', icon: SearchIcon },
+      { id: 'reports', label: 'Reports', icon: FileText },
     ],
   },
   {
@@ -520,8 +525,7 @@ export const FEATURE_GROUPS: { id: NavGroupId; label: string }[] = [
  * chunk only when navigated to; `App.tsx`'s single `<Suspense>` covers the fetch, and
  * its `<ErrorBoundary>` catches a failed chunk load instead of white-screening. All
  * targets are DEFAULT exports (verified) so the bare `import()` resolves to the
- * `{ default }` module `React.lazy` expects; the two component-directory pages
- * (`UnifiedLogsSheet`, and — historically — others) are named-export-adapted below.
+ * `{ default }` module `React.lazy` expects (every route now lives under `pages/`).
  *
  * NOTE: Login + the first-run Wizard are intentionally NOT here — they own first paint
  * (the login gate + OOBE) and stay EAGERLY imported in `App.tsx`, framer-motion-free.
@@ -553,9 +557,11 @@ const AdminSessions = React.lazy(() => import('./pages/AdminSessions'));
 const Models = React.lazy(() => import('./pages/Models'));
 const Roles = React.lazy(() => import('./pages/Roles'));
 const InboxPage = React.lazy(() => import('./pages/Inbox'));
-// The `logs` route renders the STANDALONE full-page view — the module's DEFAULT export
-// (`UnifiedLogsView`), not the `UnifiedLogsSheet` sheet variant (which needs open/onClose).
-const UnifiedLogs = React.lazy(() => import('./components/UnifiedLogsSheet'));
+// The `logs` route renders the standalone Logs page, which also honours the chat's
+// "Open in Logs" deep link (`logQuery`/`from`/`to`/`sourceId`, SPEC §10.7) and otherwise
+// shows the shared `UnifiedLogsBody` browser.
+const UnifiedLogs = React.lazy(() => import('./pages/UnifiedLogs'));
+const Reports = React.lazy(() => import('./pages/Reports'));
 const Campaigns = React.lazy(() => import('./pages/Campaigns'));
 const Tuning = React.lazy(() => import('./pages/Tuning'));
 const BatchJobs = React.lazy(() => import('./pages/BatchJobs'));
@@ -652,7 +658,9 @@ export const ROUTES: Record<PageId, RouteDef> = {
   sources: { element: Sources },
 
   /* ---- Round-4 surfaces ---- */
+  // Both read their deep-link opts from the router (no render thunk: entry budget).
   logs: { element: UnifiedLogs },
+  reports: { element: Reports },
   campaigns: { element: Campaigns },
   tuning: { element: Tuning },
   batchjobs: { element: BatchJobs },

@@ -114,19 +114,26 @@ describe("Console route visual standard", () => {
     }
   });
 
-  it("lets Workspace Chat own one fluid route container without a detached embedded toolbar", () => {
+  it("lets Workspace Chat own its full-height frame instead of a page container (chat revamp §10.1a)", () => {
     const workspace = source("soc/pages/Workspace.tsx");
     const chat = source("soc/pages/Chat.tsx");
-    const history = source("soc/components/ChatHistoryRail.tsx");
+    const frame = source("soc/chat/workspace/ChatWorkspace.tsx");
+    const history = source("soc/chat/workspace/HistoryRail.tsx");
 
+    // Both Workspace tabs are lazy so Chat never downloads the case-detail chunk.
+    expect(workspace).toContain("const Chat = React.lazy(() => import('./Chat'));");
+    expect(workspace).toContain("const Investigate = React.lazy(() => import('./Investigate'));");
+    expect(workspace).toContain("<Chat caseId={caseId} opts={opts} />");
     expect(workspace).not.toContain('<PageContainer variant="fixed">');
-    expect(workspace).toContain("return <Chat caseId={caseId} />");
-    expect(chat).toContain('variant="fluid"');
-    expect(workspace).not.toContain("<Chat embedded");
-    expect(chat).toContain("actions={actions}");
-    expect(chat).toContain("<ChatHistoryRail");
-    expect(history).toContain('aria-label="Conversation history"');
-    expect(chat).toContain('presentation="workspace"');
+    expect(chat).toContain("<ChatWorkspace");
+    expect(chat).not.toContain("<PageHeader");
+    expect(chat).not.toContain("<PageContainer");
+    // The frame bleeds the shell's vertical inset: `-my-6` is the matched pair of
+    // CONTENT_INSET's `py-6` (pinned above), and the height is the viewport minus the
+    // 3.5rem top bar, so the document never scrolls.
+    expect(frame).toContain('className="-my-6 flex h-[calc(100dvh-3.5rem)] min-h-0 min-w-0 overflow-hidden bg-background"');
+    expect(frame).toContain('<h1 className="sr-only">Chat</h1>');
+    expect(history).toContain('aria-label="Chat history"');
   });
 
   it("uses one shared blocking-load grammar across case evidence panels", () => {

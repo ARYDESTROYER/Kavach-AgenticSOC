@@ -50,6 +50,9 @@ import { INVISIBLE_TEXT_CLASS, INVISIBLE_TEXT_RANGES, displayText } from '@/soc/
 import { DOC_LINK_RE, isDocLink } from '@/soc/chat/display';
 import { ADDITIVE_UNITS, SHARE_TOLERANCE, chartKindFits, switchableViews } from '@/soc/chat/blocks/views';
 import type { ChartBlock, ChartKind, ValueUnit } from '@/soc/chat/blocks/schema';
+import { parseInternalRef } from '@/soc/chat/blocks/schema';
+import { pageHash } from '@/soc/router';
+import type { NavOpts } from '@/soc/nav-types';
 import { isSafeCaseResultStatus } from '@/soc/case-result-route';
 
 const c = contract as unknown as Record<string, unknown>;
@@ -220,6 +223,29 @@ describe('answer-blocks contract', () => {
       },
     ]).blocks[0];
     expect(switchableViews(minutes)).toEqual(['line', 'area', 'bar']);
+  });
+
+  it('validates the Logs deep-link opts exactly like the router (shared nav_log_examples)', () => {
+    const examples = contract.nav_log_examples;
+    const keys = ['logQuery', 'from', 'to', 'sourceId'] as const;
+    expect(Object.keys(examples.valid).sort()).toEqual([...keys].sort());
+    expect(Object.keys(examples.invalid).sort()).toEqual([...keys].sort());
+    const serialised = (key: string, value: string) =>
+      new URLSearchParams(pageHash('logs', { [key]: value } as NavOpts).split('?')[1] ?? '').get(key);
+    for (const key of keys) {
+      for (const value of examples.valid[key]) {
+        expect(parseInternalRef({ page: 'logs', opts: { [key]: value } }), `${key}=${value}`).toEqual({
+          page: 'logs',
+          opts: { [key]: value },
+        });
+        // The router writes it into the durable hash and reads back the same value.
+        expect(serialised(key, value), `${key}=${value}`).toBe(value);
+      }
+      for (const value of examples.invalid[key]) {
+        expect(parseInternalRef({ page: 'logs', opts: { [key]: value } }), `${key}=${JSON.stringify(value)}`).toBeNull();
+        expect(serialised(key, value), `${key}=${JSON.stringify(value)}`).toBeNull();
+      }
+    }
   });
 
   it('builds an astral-safe invisible class from the shared ranges', () => {

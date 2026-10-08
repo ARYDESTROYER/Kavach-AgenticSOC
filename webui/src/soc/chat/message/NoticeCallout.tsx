@@ -11,7 +11,7 @@ import * as React from 'react';
 import { CircleAlert, CircleStop, Info, RotateCcw, TriangleAlert } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import type { TurnNotice, TurnNoticeKind } from '@/lib/types';
+import type { TurnNoticeKind } from '@/lib/types';
 import { Button } from '@/ui/button';
 
 /** Notice kinds that render as the top-of-answer callout. */

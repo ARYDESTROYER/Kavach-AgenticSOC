@@ -57,6 +57,8 @@ export interface TableNode {
   /** Columns whose cells are untrusted (code spans). */
   code: boolean[];
   rows: string[][];
+  /** Per-cell override of `code` (a key/value table whose rows differ in trust). */
+  cellCode?: boolean[][];
 }
 
 export type DocNode =
@@ -68,7 +70,7 @@ export type DocNode =
    * Sanitised answer prose; `base` = the level its rank-1 headings render at. `defang`
    * picks a URL node's defanged form (the text itself was defanged before parsing).
    */
-  | { k: 'md'; blocks: MdBlock[]; base: number; defang: boolean }
+  | { k: 'md'; text: string; blocks: MdBlock[]; base: number; defang: boolean }
   | TableNode
   | { k: 'list'; ordered: boolean; items: Line[] }
   | { k: 'code'; lang: string | null; text: string; caption: string | null }
@@ -130,7 +132,14 @@ class Walker {
     if (text) this.push({ k: 'para', line: [{ text: this.f(text) }], muted });
   }
 
-  table(head: string[], rows: Cell[][], numeric: boolean[], code: boolean[], format?: (cell: Cell, col: number) => string): void {
+  table(
+    head: string[],
+    rows: Cell[][],
+    numeric: boolean[],
+    code: boolean[],
+    format?: (cell: Cell, col: number) => string,
+    cellCode?: boolean[][],
+  ): void {
     const cellText = (cell: Cell, col: number): string => {
       if (format) return format(cell, col);
       if (cell === null) return '—';
@@ -142,6 +151,7 @@ class Walker {
       numeric,
       code,
       rows: rows.map((row) => head.map((_, i) => this.f(cellText(row[i] ?? null, i)))),
+      ...(cellCode ? { cellCode } : {}),
     });
   }
 
@@ -151,8 +161,9 @@ class Walker {
   }
 
   md(text: string, base: number): void {
-    const blocks = parseChatMarkdown(this.f(text));
-    if (blocks.length) this.push({ k: 'md', blocks, base, defang: this.on });
+    const prose = this.f(text);
+    const blocks = parseChatMarkdown(prose);
+    if (blocks.length) this.push({ k: 'md', text: prose, blocks, base, defang: this.on });
   }
 
   /* ---------------------------------------------------------------- blocks -- */
@@ -264,17 +275,22 @@ class Walker {
         );
         return;
       case 'entity': {
-        const rows: Cell[][] = [
-          ['Kind', block.entity.kind],
-          ['Value', block.entity.value],
-        ];
-        if (block.risk !== undefined) rows.push(['Risk', block.risk === null ? null : formatValue(block.risk, 'score')]);
-        if (block.verdict) rows.push(['Verdict', block.verdict]);
-        if (block.first_seen) rows.push(['First seen', formatUtc(block.first_seen)]);
-        if (block.last_seen) rows.push(['Last seen', formatUtc(block.last_seen)]);
-        for (const f of block.facts) rows.push([f.label, f.value]);
-        for (const c of block.counts) rows.push([c.label, formatValue(c.value, c.unit)]);
-        this.table(['Field', 'Value'], rows, [false, false], [false, true], (cell) => (cell === null ? '—' : String(cell)));
+        // Key/value rows; only the indicator and untrusted facts are code (G7).
+        const rows: Cell[][] = [];
+        const trust: boolean[][] = [];
+        const add = (label: string, value: Cell, code = false) => {
+          rows.push([label, value]);
+          trust.push([false, code]);
+        };
+        add('Kind', block.entity.kind);
+        add('Value', block.entity.value, true);
+        if (block.risk !== undefined) add('Risk', block.risk === null ? null : formatValue(block.risk, 'score'));
+        if (block.verdict) add('Verdict', block.verdict);
+        if (block.first_seen) add('First seen', formatUtc(block.first_seen));
+        if (block.last_seen) add('Last seen', formatUtc(block.last_seen));
+        for (const f of block.facts) add(f.label, f.value, f.untrusted || block.untrusted);
+        for (const c of block.counts) add(c.label, formatValue(c.value, c.unit));
+        this.table(['Field', 'Value'], rows, [false, false], [false, false], (cell) => (cell === null ? '—' : String(cell)), trust);
         if (block.reputation.length) {
           this.table(
             ['Provider', 'Verdict', 'Score', 'Detail'],
@@ -452,12 +468,12 @@ export function summaryNodes(doc: ReportDoc, w: Walker): void {
 }
 
 /** One item: its heading, scope line, blocks and the analyst's note. */
-export function itemNodes(item: DocItem, index: number, w: Walker, level = 2): void {
+export function itemNodes(item: DocItem, index: number, w: Walker, level = 2, verb: 'Added' | 'Asked' = 'Added'): void {
   w.heading(level, `${index + 1}. ${item.title}`);
   const meta: string[] = [item.kind === 'section' ? 'Answer' : BLOCK_TYPE_LABEL[item.blocks[0]?.type ?? 'markdown']];
   if (item.scope.window) meta.push(`Window: ${item.scope.window}`);
   if (item.scope.sources?.length) meta.push(`Sources: ${item.scope.sources.join(', ')}`);
-  if (item.addedAt) meta.push(`${item.kind === 'section' && !item.note ? 'Asked' : 'Added'} ${utc(item.addedAt)}`);
+  if (item.addedAt) meta.push(`${verb} ${utc(item.addedAt)}`);
   w.push({ k: 'meta', text: w.f(meta.join(' · ')) });
   // A section's own title already names it; its blocks keep their own titles.
   const titled = item.kind === 'section' || item.blocks.length !== 1;
@@ -489,7 +505,7 @@ export function documentNodes(doc: ReportDoc, options: WalkOptions = {}): DocNod
   summaryNodes(doc, w);
   w.heading(2, doc.kind === 'conversation' ? 'Conversation' : 'Findings');
   if (!doc.items.length) w.para('This report has no items yet.', true);
-  doc.items.forEach((item, i) => itemNodes(item, i, w, 3));
+  doc.items.forEach((item, i) => itemNodes(item, i, w, 3, doc.kind === 'conversation' ? 'Asked' : 'Added'));
   methodologyNodes(doc, w);
   appendixNodes(doc, w);
   w.push({ k: 'rule' });

@@ -21,10 +21,14 @@ labels are log- or case-derived). The caller sends it through
 (``ensure_ascii``: an invisible character becomes a visible ``\\uXXXX`` escape) and
 marker-neutralised, so that fence is idempotent and the length bound holds after it.
 
-Shrinking is structural, never a character cut through the JSON: each level keeps
-fewer categories, sample rows, series and characters; past the last level whole items
-are dropped from the end and counted in ``omitted.items``. The result is always valid
-JSON.
+Shrinking is structural, never a character cut through the JSON, and it shrinks
+INSIDE items before it drops any: each level keeps fewer categories, sample rows,
+series, column labels and characters (titles and bases included); then every item
+keeps only its first blocks (the rest counted in ``omitted.blocks``); then every block
+is reduced to a skeleton (type, view, title, provenance, total). Only past all of that
+are whole items dropped from the end, counted in ``omitted.items``. The result is
+always valid JSON; :func:`bounded_digest` also says how many items it kept, so the
+caller can refuse to bill a model call over a digest that kept none.
 """
 
 from __future__ import annotations
@@ -39,24 +43,34 @@ from ..models import Report, ReportItem
 
 REPORT_DIGEST_MAX_CHARS = 12_000
 
-# Table columns a digest may sample (SPEC §9.4 "identity keys"): entity, time and
-# classification fields plus the canonical keys of aggregated table views. Free-text
-# columns (``message``, ``detail``, raw ``code``) never reach the model.
+# Table columns a digest may sample (SPEC §9.4 "identity keys", #7). A column is
+# sampled when its TYPE says its cells are identities or bounded classifications
+# (:data:`IDENTITY_COLUMN_TYPES`: an entity, a case id, a time, a number, an enum), or
+# when it is a plain-``text`` column whose KEY names a true identity field
+# (:data:`IDENTITY_KEYS`: an IP, a user, a host, a rule, a source, a case id, a time).
+# Generic keys such as ``label``, ``value``, ``x``, ``y``, ``kind`` or ``action`` are
+# deliberately NOT identity keys: a timeline-as-table ``label`` is event text and a
+# categories table's ``label`` can be any log value, so they qualify only through a
+# typed column. A ``code`` column (raw payloads, queries) is never sampled, whatever
+# its key, and neither is free text (``message``, ``detail``, ``title``).
 IDENTITY_KEYS: frozenset[str] = frozenset({
     "ts", "time", "timestamp", "at", "source", "source_id", "source_name", "ip", "src_ip",
     "dst_ip", "source.ip", "destination.ip", "user", "user.name", "host", "host.name",
-    "rule", "rule_name", "rule.name", "severity", "action", "label", "stage", "case_id",
-    "verdict", "status", "technique", "tactic", "kind", "x", "y", "value", "count",
+    "rule", "rule_name", "rule.name", "rule_id", "rule.id", "case_id", "severity",
+    "verdict", "status", "technique", "technique_id", "tactic",
 })
 IDENTITY_COLUMN_TYPES: frozenset[str] = frozenset({
     "entity", "case", "severity", "verdict", "status", "mitre", "risk", "time", "number",
 })
+NEVER_SAMPLED_COLUMN_TYPES: frozenset[str] = frozenset({"code"})
 MAX_SAMPLE_COLUMNS = 9
 
 
 @dataclass(frozen=True)
 class _Level:
-    """One shrink level: every bound the digest applies at once."""
+    """One shrink level: every bound the digest applies at once. Every field that can
+    grow with the content is bounded here (titles, bases and column labels included),
+    so no single item can outgrow the digest at the smaller levels."""
 
     categories: int
     sample_rows: int
@@ -68,18 +82,41 @@ class _Level:
     labels: int
     facts: int
     cell: int
+    title: int = 120
+    basis: int = 200
+    columns: int = 12
+    kpis: int = 6
+    tally: int = 14
+    counts: int = 8
+    sources: int = 5
+    window: int = 80
+    # A skeleton block keeps only what it IS (type, view, title, provenance, total,
+    # truncation): the last resort before whole items are dropped.
+    skeleton: bool = False
 
 
 _LEVELS: tuple[_Level, ...] = (
     _Level(categories=10, sample_rows=5, markdown=1_000, note=500, series=8, case_ids=10,
            techniques=20, labels=5, facts=6, cell=120),
     _Level(categories=5, sample_rows=3, markdown=500, note=300, series=4, case_ids=5,
-           techniques=10, labels=3, facts=4, cell=80),
+           techniques=10, labels=3, facts=4, cell=80, title=100, basis=120, columns=8,
+           kpis=6, tally=8, counts=6, sources=3),
     _Level(categories=3, sample_rows=1, markdown=250, note=200, series=2, case_ids=3,
-           techniques=5, labels=2, facts=2, cell=60),
+           techniques=5, labels=2, facts=2, cell=60, title=80, basis=80, columns=4,
+           kpis=4, tally=5, counts=4, sources=2, window=60),
     _Level(categories=0, sample_rows=0, markdown=120, note=120, series=1, case_ids=0,
-           techniques=0, labels=0, facts=0, cell=40),
+           techniques=0, labels=0, facts=0, cell=40, title=60, basis=40, columns=2,
+           kpis=2, tally=3, counts=2, sources=1, window=40),
+    _Level(categories=0, sample_rows=0, markdown=0, note=80, series=0, case_ids=0,
+           techniques=0, labels=0, facts=0, cell=0, title=40, basis=0, columns=0,
+           kpis=0, tally=0, counts=0, sources=1, window=40, skeleton=True),
 )
+_RICHEST_COMPACT_LEVEL = 3          # the smallest level that still carries figures
+_SKELETON_LEVEL = len(_LEVELS) - 1
+# Per-item block caps tried (at the compact, then the skeleton level) before any item
+# is dropped: every item stays represented by at least its first block.
+_BLOCK_CAPS: tuple[int, ...] = (8, 4, 2, 1)
+_SKELETON_BLOCK_CAPS: tuple[int, ...] = (4, 2, 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,12 +157,16 @@ def _drop_empty(entry: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in entry.items() if not _empty(v)}
 
 
-def _tally(values: Iterable[Any]) -> dict[str, int]:
+def _tally(values: Iterable[Any], limit: int = 14) -> dict[str, int]:
+    """Value → count, largest first, at most ``limit`` keys (each clipped: a tally key
+    is a stored value, so it is bounded like any other label)."""
     counts: dict[str, int] = {}
     for value in values:
         if isinstance(value, str) and value:
-            counts[value] = counts.get(value, 0) + 1
-    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+            key = _clip(value, 60)
+            counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return dict(ranked[: max(0, limit)])
 
 
 def _trend(values: list[int | float]) -> str:
@@ -143,16 +184,16 @@ def _trend(values: list[int | float]) -> str:
 # --------------------------------------------------------------------------- #
 # Per-block digests.
 # --------------------------------------------------------------------------- #
-def _base(block: dict[str, Any]) -> dict[str, Any]:
+def _base(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     btype = block.get("type")
     entry: dict[str, Any] = {
         "type": btype,
         "view": block.get("kind") if btype == "chart" else None,
-        "title": _clip(block.get("title"), 120),
+        "title": _clip(block.get("title"), lv.title),
         "provenance": block.get("provenance"),
         # The engine-written caption carries the sample basis, window and truncation
         # phrase ("newest 200 of 1,284 · last 24h"): the model must respect it.
-        "basis": _clip(block.get("caption"), 200),
+        "basis": _clip(block.get("caption"), lv.basis),
         "total": _num(block.get("total")),
         "truncated": block.get("truncated") is True,
     }
@@ -161,7 +202,7 @@ def _base(block: dict[str, Any]) -> dict[str, Any]:
 
 def _kpis(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     items = []
-    for item in (block.get("items") or [])[:6]:
+    for item in (block.get("items") or [])[: lv.kpis]:
         if not isinstance(item, dict):
             continue
         delta = item.get("delta") if isinstance(item.get("delta"), dict) else None
@@ -241,14 +282,25 @@ def _heatmap(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     return out
 
 
+def _sampleable(col: dict[str, Any]) -> bool:
+    """Whether a table column's cells may appear in the digest's sample rows (see
+    :data:`IDENTITY_KEYS`): never a ``code`` column, any identity-TYPED column, and a
+    plain-text column only when its key is a true identity field."""
+    ctype = col.get("type") if isinstance(col.get("type"), str) else "text"
+    if ctype in NEVER_SAMPLED_COLUMN_TYPES:
+        return False
+    if ctype in IDENTITY_COLUMN_TYPES:
+        return True
+    return ctype == "text" and str(col.get("key") or "").lower() in IDENTITY_KEYS
+
+
 def _sample_columns(block: dict[str, Any]) -> list[tuple[int, str]]:
     picked: list[tuple[int, str]] = []
     for i, col in enumerate(block.get("columns") or []):
         if not isinstance(col, dict):
             continue
-        key = str(col.get("key") or "")
-        if key.lower() in IDENTITY_KEYS or col.get("type") in IDENTITY_COLUMN_TYPES:
-            picked.append((i, key))
+        if _sampleable(col):
+            picked.append((i, str(col.get("key") or "")))
         if len(picked) >= MAX_SAMPLE_COLUMNS:
             break
     return picked
@@ -258,9 +310,11 @@ def _table(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     columns = [c for c in (block.get("columns") or []) if isinstance(c, dict)]
     rows = [r for r in (block.get("rows") or []) if isinstance(r, list)]
     out: dict[str, Any] = {
-        "columns": [_clip(c.get("label") or c.get("key"), 60) for c in columns],
+        "columns": [_clip(c.get("label") or c.get("key"), 60) for c in columns[: lv.columns]],
         "rows": len(rows),
     }
+    if len(columns) > lv.columns:
+        out["columns_total"] = len(columns)
     picked = _sample_columns(block)
     if picked and lv.sample_rows > 0:
         samples = []
@@ -281,9 +335,9 @@ def _case_list(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     return _drop_empty({
         "cases": len(items),
         "case_ids": [_clip(i.get("case_id"), 64) for i in items[: lv.case_ids]],
-        "verdicts": _tally(i.get("verdict") for i in items),
-        "severities": _tally(i.get("severity") for i in items),
-        "statuses": _tally(i.get("status") for i in items),
+        "verdicts": _tally((i.get("verdict") for i in items), lv.tally),
+        "severities": _tally((i.get("severity") for i in items), lv.tally),
+        "statuses": _tally((i.get("status") for i in items), lv.tally),
     })
 
 
@@ -293,7 +347,7 @@ def _timeline(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
         "events": len(events),
         "first": _clip(events[0].get("at"), 40) if events else None,
         "last": _clip(events[-1].get("at"), 40) if events else None,
-        "kinds": _tally(e.get("kind") for e in events),
+        "kinds": _tally((e.get("kind") for e in events), lv.tally),
         "labels": [_clip(e.get("label"), 80) for e in events[: lv.labels]],
     })
 
@@ -308,8 +362,10 @@ def _entity(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
         "verdict": block.get("verdict"),
         "facts": [{"label": _clip(f.get("label"), 60), "value": _clip(f.get("value"), lv.cell)}
                   for f in facts[: lv.facts]],
-        "counts": [{"label": _clip(c.get("label"), 60), "value": _measured(c.get("value"))} for c in counts],
-        "reputation": _tally(r.get("verdict") for r in (block.get("reputation") or []) if isinstance(r, dict)),
+        "counts": [{"label": _clip(c.get("label"), 60), "value": _measured(c.get("value"))}
+                   for c in counts[: lv.counts]],
+        "reputation": _tally((r.get("verdict") for r in (block.get("reputation") or []) if isinstance(r, dict)),
+                             lv.tally),
         "related_cases": [_clip(r.get("case_id"), 64) for r in (block.get("related_cases") or [])
                           if isinstance(r, dict)][: lv.case_ids],
     })
@@ -321,7 +377,7 @@ def _mitre(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
         "techniques_total": len(techniques),
         "techniques": [_drop_empty({"id": t.get("id"), "tactic": _clip(t.get("tactic"), 40),
                                     "count": _num(t.get("count"))}) for t in techniques[: lv.techniques]],
-        "tactics": _tally(t.get("tactic") for t in techniques),
+        "tactics": _tally((t.get("tactic") for t in techniques), lv.tally),
     })
 
 
@@ -352,9 +408,18 @@ _DIGESTERS = {
 }
 
 
-def _block_digest(block: Any, lv: _Level, omitted: dict[str, int]) -> dict[str, Any] | None:
+def _capped(digests: list[dict[str, Any]], cap: int | None, omitted: dict[str, int]) -> list[dict[str, Any]]:
+    """The first ``cap`` block digests; the rest are counted in ``omitted.blocks``."""
+    if cap is None or len(digests) <= cap:
+        return digests
+    omitted["blocks"] = omitted.get("blocks", 0) + len(digests) - cap
+    return digests[:cap]
+
+
+def _block_digest(block: Any, lv: _Level, omitted: dict[str, int], cap: int | None = None) -> dict[str, Any] | None:
     """One block's digest, or None for a query block (omitted: a native query is
-    log-shaped text, and the summary has no use for it) or an unreadable entry."""
+    log-shaped text, and the summary has no use for it) or an unreadable entry. A
+    report envelope's sections and their leaves are capped like an item's blocks."""
     if not isinstance(block, dict):
         return None
     btype = block.get("type")
@@ -367,15 +432,22 @@ def _block_digest(block: Any, lv: _Level, omitted: dict[str, int]) -> dict[str, 
             if not isinstance(section, dict):
                 continue
             leaves = [d for d in (_block_digest(b, lv, omitted) for b in section.get("blocks") or []) if d]
-            sections.append(_drop_empty({"heading": _clip(section.get("heading"), 120), "blocks": leaves}))
-        return _drop_empty({**_base(block), "sections": sections})
+            sections.append(_drop_empty({"heading": _clip(section.get("heading"), lv.title),
+                                         "blocks": _capped(leaves, cap, omitted)}))
+        if cap is not None and len(sections) > cap:
+            omitted["sections"] = omitted.get("sections", 0) + len(sections) - cap
+            sections = sections[:cap]
+        return _drop_empty({**_base(block, lv), "sections": sections})
     digester = _DIGESTERS.get(str(btype))
     if digester is None:
         return None
-    return _drop_empty({**_base(block), **digester(block, lv)})
+    if lv.skeleton:
+        return _drop_empty({**_base(block, lv), "expired": True if is_expired_block(block) else None})
+    return _drop_empty({**_base(block, lv), **digester(block, lv)})
 
 
-def _item_digest(n: int, item: ReportItem, lv: _Level, omitted: dict[str, int]) -> dict[str, Any]:
+def _item_digest(n: int, item: ReportItem, lv: _Level, omitted: dict[str, int],
+                 cap: int | None = None) -> dict[str, Any]:
     block = item.block if isinstance(item.block, dict) else {}
     if item.kind == "section":
         title = block.get("title")
@@ -383,35 +455,38 @@ def _item_digest(n: int, item: ReportItem, lv: _Level, omitted: dict[str, int]) 
     else:
         title = block.get("title")
         raw_blocks = [block]
-    blocks = [d for d in (_block_digest(b, lv, omitted) for b in raw_blocks) if d]
+    blocks = [d for d in (_block_digest(b, lv, omitted, cap) for b in raw_blocks) if d]
     scope = item.scope
     return _drop_empty({
         "n": n,
         "kind": item.kind,
-        "title": _clip(title, 120),
-        "window": _clip(scope.window, 80),
-        "sources": [_clip(s, 60) for s in scope.sources[:5]],
+        "title": _clip(title, lv.title),
+        "window": _clip(scope.window, lv.window),
+        "sources": [_clip(s, 60) for s in scope.sources[: lv.sources]],
         "demo_data": scope.demo,
         "section_truncated": block.get("truncated") is True if item.kind == "section" else None,
         # User-authored and UNTRUSTED (it rides inside the report fence like the rest).
         "analyst_note_untrusted": _clip(item.note, lv.note) if item.note else None,
-        "blocks": blocks,
+        "blocks": _capped(blocks, cap, omitted),
     })
 
 
-def build_digest(report: Report, *, level: int = 0, max_items: int | None = None) -> dict[str, Any]:
-    """The digest structure at one shrink ``level`` (0 = richest), keeping the first
-    ``max_items`` items. Pure and deterministic."""
+def build_digest(
+    report: Report, *, level: int = 0, max_items: int | None = None, max_blocks: int | None = None,
+) -> dict[str, Any]:
+    """The digest structure at one shrink ``level`` (0 = richest, the last level is
+    the skeleton), keeping the first ``max_items`` items and at most ``max_blocks``
+    blocks per item (and per report-envelope section). Pure and deterministic."""
     lv = _LEVELS[max(0, min(level, len(_LEVELS) - 1))]
     items = list(report.items)
     kept = items if max_items is None else items[: max(0, max_items)]
     omitted: dict[str, int] = {}
-    digest_items = [_item_digest(n, item, lv, omitted) for n, item in enumerate(kept, start=1)]
+    digest_items = [_item_digest(n, item, lv, omitted, max_blocks) for n, item in enumerate(kept, start=1)]
     if len(kept) < len(items):
         omitted["items"] = len(items) - len(kept)
     return _drop_empty({
         "report": _drop_empty({
-            "title": _clip(report.title, 120),
+            "title": _clip(report.title, lv.title),
             "template": report.template,
             "items": len(items),
             "content_version": report.version,
@@ -427,35 +502,65 @@ def serialise_digest(digest: dict[str, Any]) -> str:
     return neutralise_markers(json.dumps(digest, ensure_ascii=True, separators=(",", ":")))
 
 
+@dataclass(frozen=True)
+class ReportDigest:
+    """The bounded digest text plus how much of the report it represents."""
+
+    text: str
+    items_kept: int
+    items_total: int
+
+    @property
+    def empty(self) -> bool:
+        """True when the report has items but the digest could keep none of them: a
+        model call over it would bill a summary of nothing (the route refuses)."""
+        return self.items_total > 0 and self.items_kept == 0
+
+
+def bounded_digest(report: Report, *, max_chars: int = REPORT_DIGEST_MAX_CHARS) -> ReportDigest:
+    """The bounded, deterministic digest of ``report`` (text ≤ ``max_chars``).
+
+    Shrinks inside items first (the levels, then per-item block caps at the compact
+    and the skeleton level), so every item stays represented while that can fit; only
+    then are trailing items dropped (counted in ``omitted.items``). Always valid JSON."""
+    total = len(report.items)
+    attempts: list[tuple[int, int | None]] = [(level, None) for level in range(_SKELETON_LEVEL)]
+    attempts += [(_RICHEST_COMPACT_LEVEL, cap) for cap in _BLOCK_CAPS]
+    attempts += [(_SKELETON_LEVEL, cap) for cap in _SKELETON_BLOCK_CAPS]
+    for level, cap in attempts:
+        text = serialise_digest(build_digest(report, level=level, max_blocks=cap))
+        if len(text) <= max_chars:
+            return ReportDigest(text, total, total)
+    for keep in range(total - 1, -1, -1):
+        text = serialise_digest(build_digest(report, level=_SKELETON_LEVEL, max_items=keep, max_blocks=1))
+        if len(text) <= max_chars:
+            return ReportDigest(text, keep, total)
+    # Only reachable with a tiny ``max_chars``: the smallest valid JSON that still
+    # says what happened.
+    return ReportDigest(serialise_digest({"report": {"items": total}, "omitted": {"items": total}}), 0, total)
+
+
 def report_digest(report: Report, *, max_chars: int = REPORT_DIGEST_MAX_CHARS) -> str:
-    """The bounded, deterministic digest text of ``report`` (≤ ``max_chars``).
-
-    Tries each shrink level with every item, then drops trailing items at the
-    smallest level until it fits. Always returns valid JSON."""
-    for level in range(len(_LEVELS)):
-        text = serialise_digest(build_digest(report, level=level))
-        if len(text) <= max_chars:
-            return text
-    last = len(_LEVELS) - 1
-    for keep in range(len(report.items) - 1, -1, -1):
-        text = serialise_digest(build_digest(report, level=last, max_items=keep))
-        if len(text) <= max_chars:
-            return text
-    # Unreachable in practice (a zero-item digest is a few hundred bytes); keep the
-    # contract anyway with the smallest valid JSON that still says what happened.
-    return serialise_digest({"report": {"items": len(report.items)}, "omitted": {"items": len(report.items)}})
+    """The bounded, deterministic digest text of ``report`` (≤ ``max_chars``)."""
+    return bounded_digest(report, max_chars=max_chars).text
 
 
-def report_summary_messages(report: Report) -> list[dict[str, str]]:
+def report_summary_messages(report: Report, *, digest: str | None = None) -> list[dict[str, str]]:
     """The ONE prompt of a report summary: the fixed ``REPORT_SUMMARY_SYSTEM`` plus
-    this report's digest fenced as ``source=report`` (prompts.py)."""
-    return build_report_summary_messages(report_digest(report), template=report.template)
+    this report's digest fenced as ``source=report`` (prompts.py). ``digest`` lets a
+    caller that already computed :func:`bounded_digest` reuse that exact text."""
+    return build_report_summary_messages(
+        report_digest(report) if digest is None else digest, template=report.template,
+    )
 
 
 __all__ = [
     "IDENTITY_COLUMN_TYPES",
     "IDENTITY_KEYS",
+    "NEVER_SAMPLED_COLUMN_TYPES",
     "REPORT_DIGEST_MAX_CHARS",
+    "ReportDigest",
+    "bounded_digest",
     "build_digest",
     "report_digest",
     "report_summary_messages",

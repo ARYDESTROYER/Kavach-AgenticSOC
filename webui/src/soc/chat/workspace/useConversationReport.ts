@@ -1,0 +1,231 @@
+/**
+ * useConversationReport — the open conversation's draft report as the transcript sees
+ * it: which answers and blocks are already in it ("In report ✓"), and the add/remove
+ * toggles behind every "Add to report" control (chat revamp SPEC §9.2, §10.6).
+ *
+ * Adds go BY REFERENCE (`POST /api/reports/add` with the saved message id and an
+ * optional block id); the server snapshots the block and creates the conversation's
+ * draft on the first add. A second click removes the item (`PATCH … remove_items`
+ * with `expected_version`; a 409 reloads and asks to try again).
+ *
+ * The report panel lives in another lazy chunk; both sides stay current through the
+ * shared `report-sync` window event: every change made here is emitted with the
+ * server's copy, and every change the panel (or another surface) makes is applied
+ * here, so the transcript's marks never drift from the panel.
+ */
+import * as React from 'react';
+import { toast } from 'sonner';
+
+import { ApiError } from '@/lib/api';
+import type { Report } from '@/lib/types';
+import { addToReport, getReport, isSafeChatId, patchReport } from '../chat-api';
+import {
+  REPORT_FULL_MESSAGE,
+  emitReportChanged,
+  isVersionConflict,
+  onReportChanged,
+  reportErrorMessage,
+  reportItemIndex,
+  reportItemKey,
+} from '../report/report-sync';
+import type { ChatAssistantItem } from '../useChatEngine';
+import type { MessageReportBinding } from '../message/Message';
+import { CHAT_LIMITS } from '../stream-events';
+
+const ORIGIN = 'chat-transcript';
+
+export interface UseConversationReportOptions {
+  /** The saved conversation, or null for a draft / case scope. */
+  conversationId: string | null;
+  /** The conversation's draft report as the rail row knows it. */
+  reportId: string | null;
+  /** Off for case-scoped chat (case content is never addable, SPEC §9.2). */
+  enabled: boolean;
+  /** An item was added here; `count` is the report's new item count. */
+  onAdded?: (count: number, reportId: string) => void;
+  /** An item was removed here. */
+  onRemoved?: (count: number) => void;
+}
+
+export interface ConversationReportController {
+  report: Report | null;
+  reportId: string | null;
+  count: number;
+  full: boolean;
+  /** The binding one assistant message needs (null when it cannot be added). */
+  bindingFor: (item: ChatAssistantItem) => MessageReportBinding | null;
+}
+
+export function useConversationReport({
+  conversationId,
+  reportId: knownReportId,
+  enabled,
+  onAdded,
+  onRemoved,
+}: UseConversationReportOptions): ConversationReportController {
+  const [report, setReport] = React.useState<Report | null>(null);
+  const [reportId, setReportId] = React.useState<string | null>(knownReportId);
+  const [pending, setPending] = React.useState(false);
+  const generationRef = React.useRef(0);
+  const callbacksRef = React.useRef({ onAdded, onRemoved });
+  callbacksRef.current = { onAdded, onRemoved };
+
+  const knownRef = React.useRef(knownReportId);
+  knownRef.current = knownReportId;
+  // Another conversation: forget the previous report at once (no stale "In report").
+  React.useEffect(() => {
+    generationRef.current += 1;
+    setReport(null);
+    setReportId(enabled ? knownRef.current : null);
+  }, [conversationId, enabled]);
+
+  // The rail learnt the thread's report id (e.g. after a refresh): adopt it without
+  // dropping a copy of the same report that is already on screen.
+  const currentIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (enabled && knownReportId && knownReportId !== currentIdRef.current) setReportId(knownReportId);
+  }, [enabled, knownReportId]);
+
+  const load = React.useCallback(async (id: string) => {
+    const generation = generationRef.current;
+    try {
+      const next = await getReport(id);
+      if (generation === generationRef.current) setReport(next);
+    } catch (error) {
+      if (generation !== generationRef.current) return;
+      // A deleted report: the next add creates a fresh draft.
+      if (error instanceof ApiError && error.status === 404) {
+        setReport(null);
+        setReportId(null);
+      }
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!enabled || !reportId || !isSafeChatId(reportId) || report?.id === reportId) return;
+    void load(reportId);
+  }, [enabled, load, report?.id, reportId]);
+
+  // Changes made by the panel, the library or another tab's panel.
+  const stateRef = React.useRef({ reportId, conversationId });
+  stateRef.current = { reportId: report?.id ?? reportId, conversationId };
+  React.useEffect(
+    () =>
+      onReportChanged((detail) => {
+        if (detail.origin === ORIGIN) return;
+        const { reportId: current, conversationId: thread } = stateRef.current;
+        const mine =
+          (current && detail.reportId === current) || (!!thread && detail.conversationId === thread);
+        if (!mine) return;
+        if (detail.report === null) {
+          setReport(null);
+          setReportId(null);
+          return;
+        }
+        if (detail.report) {
+          const next = detail.report;
+          setReportId(next.id);
+          // Never step back to an older copy than the one already shown.
+          setReport((prev) => (prev && prev.id === next.id && prev.version > next.version ? prev : next));
+          return;
+        }
+        const id = current ?? detail.reportId;
+        if (id) void load(id);
+      }),
+    [load],
+  );
+
+  currentIdRef.current = report?.id ?? reportId;
+  const index = React.useMemo(() => reportItemIndex(report), [report]);
+  // Block ids per message, read from the items themselves (ids may contain ':').
+  const blocksByMessage = React.useMemo(() => {
+    const out = new Map<string, Set<string>>();
+    for (const item of report?.items ?? []) {
+      if (item.kind === 'section' || !item.source.block_id) continue;
+      const set = out.get(item.source.message_id) ?? new Set<string>();
+      set.add(item.source.block_id);
+      out.set(item.source.message_id, set);
+    }
+    return out;
+  }, [report]);
+  const count = report?.items.length ?? 0;
+  const full = count >= CHAT_LIMITS.report_items;
+
+  const add = React.useCallback(
+    async (messageId: string, blockId: string | null) => {
+      if (!conversationId || pending) return;
+      setPending(true);
+      const generation = generationRef.current;
+      try {
+        const result = await addToReport({ conversationId, messageId, blockId, reportId: report?.id ?? reportId });
+        if (generation !== generationRef.current) return;
+        setReport(result.report);
+        setReportId(result.report.id);
+        emitReportChanged({ reportId: result.report.id, conversationId, report: result.report, origin: ORIGIN });
+        callbacksRef.current.onAdded?.(result.report.items.length, result.report.id);
+      } catch (error) {
+        if (generation === generationRef.current) toast.error(reportErrorMessage(error, 'Could not add it to the report.'));
+      } finally {
+        setPending(false);
+      }
+    },
+    [conversationId, pending, report?.id, reportId],
+  );
+
+  const remove = React.useCallback(
+    async (itemId: string) => {
+      if (!report || pending) return;
+      setPending(true);
+      const generation = generationRef.current;
+      try {
+        const next = await patchReport(report.id, { expected_version: report.version, remove_items: [itemId] });
+        if (generation !== generationRef.current) return;
+        setReport(next);
+        emitReportChanged({ reportId: next.id, conversationId, report: next, origin: ORIGIN });
+        callbacksRef.current.onRemoved?.(next.items.length);
+      } catch (error) {
+        if (generation !== generationRef.current) return;
+        toast.error(isVersionConflict(error) ? 'This report changed elsewhere. It was reloaded — try again.' : reportErrorMessage(error));
+        if (isVersionConflict(error)) void load(report.id);
+      } finally {
+        setPending(false);
+      }
+    },
+    [conversationId, load, pending, report],
+  );
+
+  // One binding object per message until the report (or a pending request) changes, so
+  // memoised messages and their blocks do not re-render on every live transcript update:
+  // the cache lives inside the memoised function and is rebuilt with it.
+  const bindingFor = React.useMemo(() => {
+    const cache = new Map<string, MessageReportBinding>();
+    return (item: ChatAssistantItem): MessageReportBinding | null => {
+      if (!enabled || !conversationId) return null;
+      const messageId = item.messageId;
+      if (!isSafeChatId(messageId) || item.status !== 'done' || !item.response) return null;
+      const cached = cache.get(messageId);
+      if (cached) return cached;
+      const blocks = blocksByMessage.get(messageId) ?? new Set<string>();
+      const answerItem = index.get(reportItemKey(messageId, null)) ?? null;
+      const binding: MessageReportBinding = {
+        blocks,
+        answerInReport: answerItem !== null,
+        canAdd: !full && !pending,
+        disabledReason: full ? REPORT_FULL_MESSAGE : pending ? 'Updating the report…' : null,
+        onToggleBlock: (blockId: string) => {
+          const itemId = index.get(reportItemKey(messageId, blockId));
+          if (itemId) void remove(itemId);
+          else void add(messageId, blockId);
+        },
+        onToggleAnswer: () => {
+          if (answerItem) void remove(answerItem);
+          else void add(messageId, null);
+        },
+      };
+      cache.set(messageId, binding);
+      return binding;
+    };
+  }, [add, blocksByMessage, conversationId, enabled, full, index, pending, remove]);
+
+  return { report, reportId: report?.id ?? reportId, count, full, bindingFor };
+}

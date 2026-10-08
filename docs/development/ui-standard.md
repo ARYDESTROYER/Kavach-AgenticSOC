@@ -164,85 +164,105 @@ or the agent assessment, while deterministic case policy makes the final route.
 
 ## Conversation workspaces
 
-Workspace Chat is a conversation workspace, not an empty dashboard. On desktop it
-uses one quiet 264px history rail separated from the active thread by a hairline; below
-the desktop breakpoint, the rail becomes a left Sheet opened by an explicit
-**History** control. The list is searchable, newest-first, and grouped by recency. Its
-rows show title, preview, age, and message count; the selected row exposes
-`aria-current`, while rename and delete remain secondary row actions. Loading, empty,
-partial-error, and no-match states occupy the rail rather than replacing the usable
-active transcript. Desktop exposes one page-level **New chat** action; the mobile Sheet
-may repeat it locally because the page action is no longer in view.
+Workspace Chat is a three-zone conversation workspace: a history rail, the
+conversation, and an on-demand report panel. Zones follow the **measured** width of
+the chat frame (a ResizeObserver), never viewport breakpoints, because the app
+navigation rail (240 or 64 px) and the shell gutter have already taken their share.
+The conversation always keeps at least 640 px:
 
-The Chat workspace owns one fluid `PageContainer`; a route wrapper must not place the
-split conversation workspace inside a second fixed-width container.
+- The history rail docks at 264 px plus a hairline while the frame minus 265 px still
+  leaves 640 px; below that it becomes a 48 px icon strip (New chat, Search, Show
+  history), and below a 640 px frame a left Sheet opened by **History** in the toolbar.
+  A viewer may collapse the docked rail to the strip; that choice persists locally.
+- The report panel opens as a split column (default 360 px, 320–480 px) only when the
+  conversation keeps 640 px, collapsing the docked rail to the strip first if that is
+  enough; otherwise it is an overlay Sheet. The split reuses the queue/detail separator
+  idiom: one focusable hairline (`role="separator"` with value attributes), arrow keys
+  in small steps, Shift for larger ones, Home/End, double-click to reset, and a width
+  persisted per viewer. Split mode never moves focus; the overlay moves focus to the
+  panel heading and returns it on close.
+- Exactly one **New chat** is visible at every width: in the docked rail header, in the
+  icon strip, or in the toolbar when the rail is a Sheet.
 
-Its height follows the available viewport below the shared shell header. Do not impose
-a fixed `rem` minimum on the transcript/workbench: short desktop windows must keep the
-single docked composer fully visible while the transcript becomes the scroll owner.
+**Chrome.** The Chat route owns its frame: it bleeds the shell's vertical inset with a
+`-my-6` that matches `CONTENT_INSET`'s `py-6` and is exactly `h-[calc(100dvh-3.5rem)]`
+tall, so the document never scrolls at 1280×560, 1440×900, 1920×1080 or 390×844. It
+does not sit inside a `PageContainer` or `PageHeader`. Headings: one `sr-only`
+`<h1>Chat</h1>`; the thread title is the 44 px toolbar's `<h2>` (click to rename, full
+text in a tooltip); every turn has a hidden `<h3>`. The toolbar holds, left to right,
+History (Sheet mode only), the title, the conversation total ("12.4k tokens · $0.03",
+inline from 560 px, otherwise in the ⋯ menu), **Report · n**, New chat (Sheet mode
+only) and ⋯ (Rename, Pin conversation, Export conversation, Delete).
 
-History truth is fail-closed. A storage/read failure is an explicit retryable error and
-must never render the calm **No previous conversations** state. Revalidate the newest-
-first summary list when the workspace mounts and when its browser tab regains focus so
-another tab or device does not leave a stale rail indefinitely. Same-origin tabs may
-announce mutations for faster refresh, but focus revalidation remains the correctness
-fallback; keep the already-open transcript usable while that background refresh runs.
+**Lane.** One five-track grid gives prose, the user bubble, the meta row and the
+composer a 48rem measure and lets answer blocks widen to 64rem; exchanges and messages
+are column subgrids, so every turn and the composer share the same edges. The
+transcript is the only scrolling region and the composer stays docked below it in the
+empty, restoring, error and populated states. The empty state is top-aligned in the
+lane, never a centred marketing panel.
 
-The transcript begins at the top of a readable 52–54rem measure and uses ordinary
-speaker labels, neutral operator messages, and flat assistant responses. Keep exactly
-one thread header, one `Agent ready|working` status, and one composer. The composer
-remains docked at the bottom in empty, restoring, error, and populated states; it is
-disabled while a saved thread restores or a turn is in flight. Source and model live in
-the composer's settings and quiet footer, not in a second status band. The empty state
-is compact and top-aligned, with no vertically centered marketing panel. Do not add an
-assistant accent rail, a blue user-message wash, duplicate readiness/source/model
-strips, or a second inline composer.
+**History rail.** New chat and a server-side content search sit in the header; a hit
+shows a snippet under its title and opening it scrolls to and highlights the matching
+message. Groups are Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, then
+month. Rows are one line (title and a quiet relative time) whose accessible name is
+"title — exact date · N messages"; the active row carries `aria-current`, and ↑/↓/
+Home/End move between rows through a single roving tab stop. The row menu offers
+Rename (inline, IME-safe), Pin/Unpin, Open report (when the thread has one), Export and
+Delete; Delete confirms that the report stays in Reports and is disabled for the thread
+a turn is running in. History truth is fail-closed: a read failure is an explicit
+retryable error, never the calm **No previous conversations** state. The footer
+discloses retention when history was truncated or at least 45 conversations exist.
 
-The answer is the primary object. Query, tools, knowledge, citations, reasoning, model,
-and per-message cost belong in one collapsed **Evidence & execution** disclosure beneath
-that answer instead of separate cards or debug bands. If a bounded saved snapshot omits
-larger evidence structures, the disclosure must say that explicitly. New turns follow automatically
-only while the analyst is already near the transcript bottom. If the analyst is reading
-older evidence, preserve their position and reveal **Jump to latest** when new content
-arrives; smooth scrolling must respect reduced-motion preference.
+**Turns.** A user turn is a compact muted bubble, right-aligned, at most 36rem, showing
+the display form of the prompt. An assistant turn is unboxed with no avatar. While it
+runs, the run log sits expanded under the user turn: one row per tool call or framed
+parallel batch, each with a status icon and status word (Done, Failed, Timed out,
+Denied, Skipped, Stopped), the engine label, parameter chips including the effective
+window and source, the summary, rows/basis/coverage, the duration and the exact query
+behind a collapsed disclosure rendered as untrusted code. Model steps add no rows except
+the step the turn is waiting on and a failed call; their tokens tick on the header
+("Working · 3 lookups · 1.2k tokens · $0.002"). The log collapses when answer text
+starts. A finished turn reads answer → blocks → meta row → follow-ups (latest turn only).
+The meta row is one 28 px `text-xs` line: a disclosure that reopens the run log in place
+("4 lookups · 6.2 s"; "Answered in 1.1 s" without lookups), the token figure that opens
+the usage card on hover or focus, **Sources n**, and the Copy / Add to report / Ask again
+icon actions — always visible on the latest turn and revealed on hover or focus-within
+on older ones, with their space reserved. A turn without recorded usage reads "Usage
+not recorded · —", never 0; Demo Mode appends "simulated". At most one quiet line
+follows: a memory echo, a memory proposal (confirmable only with `memory:manage`), or
+"Not saved · Retry save". Restored turns render collapsed. Aim for no more than 40 px of
+chrome per historical turn.
 
-Execution provenance is per turn, not inferred from the conversation's latest selector.
-Show the effective source and effective model that actually served the answer. When an
-operator explicitly selects a source that is disabled, missing, non-queryable, or cannot
-be built, fail that turn with a scoped recovery message; never run it against Primary and
-then label the answer with the requested source. Primary is the fallback only when the
-operator made no explicit source selection.
+**Notices.** Partial, denied, timeout, provider, breaker, cancelled, unsupported and
+budget notices are one callout at the top of the answer, with Retry only when the
+notice is retryable. A capped answer offers "Continue where this stopped (≈ +N tokens)".
+A failed turn offers **Retry same request** (same idempotency key) or, when retrying
+cannot help, **Ask again** (a new key). A locally stopped turn says "Stopped. The saved
+version appears after refresh." Budget state appears as one alert above the composer.
 
-A new conversation is a truthful local draft until its first successful response is
-saved and the backend confirms that the record is durable. Selecting an existing
-conversation restores the server transcript and its source/model inside the still-mounted
-workspace. Preserve the unsent composer draft independently for the new-chat draft and
-for each visited saved thread; switching threads must not erase analyst input or write it
-to server history. A restore failure leaves that frame
-and its single disabled composer in place, with explicit **Retry** and **Start new chat**
-recovery. Stale in-flight replies must not land in a newly selected thread, and thread
-switching is disabled while the current turn is being committed. Case Manager chat is
-a separate case-scoped entry point to the same engine and must never appear in personal
-Workspace history. On narrow layouts, closing the History Sheet returns focus through
-the Radix trigger path.
+**Scrolling and announcements.** On send, the user turn moves to the lane top with a
+48 px peek of the previous turn; the lane follows new content only while the reader is
+within 72 px of the bottom and only until that turn's top reaches the lane top, and
+otherwise shows **Jump to latest**. Reduced motion means no smooth scrolling and no
+typewriter effect. Off-screen exchanges use `content-visibility: auto`. The transcript is
+`role="log"` without `aria-live`; every announcement ("Working", throttled step
+progress, "Answer ready", "Stopped", "Error: …", "Added to report (n items)") goes
+through the shell announcer, and focus never jumps on new content.
 
-Every persisted Workspace turn carries one stable 8–128 character
-`idempotency_key`. Retrying an ambiguous response reuses that identifier; the server
-returns the previously committed turn or commits it once, never bills or appends a
-duplicate exchange. Do not promote a draft into the saved rail until the verified-save
-response arrives. If generation succeeds but persistence does not, retain the local
-turn attempt with an explicit **not saved** state and one retry path rather than
-claiming durability; do not put the failed attempt into hidden model history.
+**Truth and persistence.** A new conversation is a local draft until its first answer
+is saved; selecting a thread restores the server transcript and its source and model in
+the still-mounted frame, with **Retry** and **Start new chat** on a restore failure.
+Drafts are kept per thread and never written to the server. Every persisted turn
+carries one stable idempotency key; a turn whose first model call failed is shown but
+never enters model history. A deep link (`#/chat?conversationId=&messageId=`) selects,
+scrolls to and highlights the message for 2 s and is cleared from the hash once the
+selection moves; a missing thread reads "This conversation is no longer available".
+History is bounded (50 conversations, 10 of them pinnable beyond the limit, 100
+messages each) and every boundary is disclosed rather than inferred.
 
-History remains intentionally bounded. The current contract retains at most 50
-conversations per user and 100 messages per conversation. When an older conversation or
-turn is removed, disclose the boundary in the rail/transcript; message counts describe
-retained messages and must not imply that a clipped transcript is complete. Use the
-server's `history_truncated`, total-count, and `oldest_retained_at` metadata rather than
-inferring completeness in the client. Persisted history is partitioned by normalized
-user identity so one operator's append does not rewrite every user's transcript.
-Deployments upgrading from the legacy shared document must migrate it through the
-compatibility path without requiring an operator reset.
+**Case Manager chat** is the same engine scoped to one case: compact presentation, its
+one-line status and quick actions, the compact composer, no rail, no report panel and no
+Add to report. Case turns never enter personal Workspace history.
 
 ## Navigation and information architecture
 

@@ -417,6 +417,20 @@ export function collectQueries(items: readonly DocItem[]): DocQuery[] {
 /* -------------------------------------------------------------------------- */
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+/** "1 block shows" / "3 blocks show". */
+const counted = (n: number, one: string, singularVerb: string, pluralVerb: string): string =>
+  `${plural(n, one)} ${n === 1 ? singularVerb : pluralVerb}`;
+
+/** Each source turn once (several items may come from the same answer). */
+function distinctTurns(items: readonly DocItem[]): SourceTurnFacts[] {
+  const seen = new Map<string, SourceTurnFacts>();
+  items.forEach((item, i) => {
+    if (!item.turn) return;
+    const key = item.source.message_id || `#${i}`;
+    if (!seen.has(key)) seen.set(key, item.turn);
+  });
+  return Array.from(seen.values());
+}
 
 /** Deterministic, locale-free money for the methodology line. */
 export function usd(value: number): string {
@@ -465,7 +479,8 @@ const DATA_TYPES = new Set<AnswerBlock['type']>(['kpi_group', 'chart', 'heatmap'
 export function buildMethodology(doc: ReportDoc, context: { turnsAvailable: boolean }): string[] {
   const lines: string[] = [READ_ONLY_NOTICE];
   const leaves = doc.items.flatMap((i) => leafBlocks(i.blocks));
-  const steps = doc.items.flatMap((i) => i.turn?.steps ?? []);
+  const turns = distinctTurns(doc.items);
+  const steps = turns.flatMap((t) => t.steps);
   const toolSteps = steps.filter((s) => s.kind === 'tool');
 
   // Tools that ran (recorded labels with counts, in first-seen order).
@@ -517,28 +532,28 @@ export function buildMethodology(doc: ReportDoc, context: { turnsAvailable: bool
     };
     for (const s of failed) by.set(word[s.status] ?? s.status, (by.get(word[s.status] ?? s.status) ?? 0) + 1);
     lines.push(
-      `${plural(failed.length, 'lookup')} did not complete (${Array.from(by, ([w, n]) => `${n} ${w}`).join(', ')}); ` +
+      `${counted(failed.length, 'lookup', 'did', 'did')} not complete (${Array.from(by, ([w, n]) => `${n} ${w}`).join(', ')}); ` +
         'figures that depend on them are missing, not zero.',
     );
   }
-  const notices = uniq(doc.items.map((i) => (i.turn?.notice ? displayText(i.turn.notice.message, 200) : null)));
+  const notices = uniq(turns.map((t) => (t.notice ? displayText(t.notice.message, 200) : null)));
   if (notices.length) lines.push(`Answer notices: ${notices.slice(0, 4).join('; ')}.`);
 
   // Truncation, storage and provenance disclosures from the blocks themselves.
   const truncated = leaves.filter((b) => b.truncated).length;
-  if (truncated) lines.push(`${plural(truncated, 'block')} show the top entries of a larger total (stated on each block).`);
+  if (truncated) lines.push(`${counted(truncated, 'block', 'shows', 'show')} the top entries of a larger total (stated on each block).`);
   const downsampled = leaves.filter((b) => b.downsampled_for_storage).length;
-  if (downsampled) lines.push(`${plural(downsampled, 'block')} were downsampled for saved history.`);
+  if (downsampled) lines.push(`${counted(downsampled, 'block', 'was', 'were')} downsampled for saved history.`);
   const expired = leaves.filter((b) => isExpiredBlock(b)).length;
-  if (expired) lines.push(`${plural(expired, 'block')} expired from saved history; only their titles remain.`);
+  if (expired) lines.push(`${plural(expired, 'block')} expired from saved history; only the titles remain.`);
   const clipped = doc.items.filter((i) => i.truncated).length;
   if (clipped) lines.push(`${plural(clipped, 'answer')} held more blocks than a report section keeps; the first ones are shown.`);
   const dropped = doc.items.reduce((n, i) => n + i.dropped, 0);
-  if (dropped) lines.push(`${plural(dropped, 'block')} could not be displayed and are shown as a notice.`);
+  if (dropped) lines.push(`${counted(dropped, 'block', 'was', 'were')} not displayable and ${dropped === 1 ? 'is' : 'are'} shown as a notice.`);
   const unmeasured = leaves.reduce((n, b) => n + notMeasuredCount(b), 0);
-  if (unmeasured) lines.push(`${plural(unmeasured, 'value')} were not measured and are shown as "—", never as 0.`);
+  if (unmeasured) lines.push(`${counted(unmeasured, 'value', 'was', 'were')} not measured and ${unmeasured === 1 ? 'is' : 'are'} shown as "—", never as 0.`);
   const aiStated = leaves.filter((b) => DATA_TYPES.has(b.type) && b.provenance === 'ai').length;
-  if (aiStated) lines.push(`${plural(aiStated, 'block')} state values written by the model, not measured.`);
+  if (aiStated) lines.push(`${counted(aiStated, 'block', 'states', 'state')} values written by the model, not measured.`);
   if (leaves.some((b) => b.untrusted)) lines.push(UNTRUSTED_NOTICE);
 
   // Windows and sources.
@@ -546,7 +561,7 @@ export function buildMethodology(doc: ReportDoc, context: { turnsAvailable: bool
   if (doc.sources.length) lines.push(`Sources queried: ${doc.sources.slice(0, 12).join(', ')}${doc.sources.length > 12 ? ', …' : ''}.`);
 
   // Tokens and cost.
-  const usages = doc.items.map((i) => i.turn?.usage).filter((u): u is TurnUsage => !!u);
+  const usages = turns.map((t) => t.usage).filter((u): u is TurnUsage => !!u);
   if (usages.length) {
     const total = usages.reduce((n, u) => n + (u.total_tokens || 0), 0);
     const cost = usages.reduce((n, u) => n + (u.cost || 0), 0);

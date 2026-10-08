@@ -15,7 +15,10 @@ builds ONE :class:`ChatToolbox` per turn with :func:`build_toolbox` and calls
    ENGINE-template error (raw exception text never reaches a prompt or the UI);
 4. feeds the call's artifacts to the taint ledger so later calls in the turn may
    look up what this one found (§4.8.3);
-5. writes the execution audit row (§5.2): ``ES_QUERY`` for log tools, ``TOOL_CALL``
+5. gives a successful log call's artifacts their EXACT "Open in Logs" view
+   (``open_in``, see :func:`~app.agents.chat_tools.common.logs_console_view`), only
+   when the Logs page can express the filter the call ran with;
+6. writes the execution audit row (§5.2): ``ES_QUERY`` for log tools, ``TOOL_CALL``
    otherwise, ``actor`` = the username (``"default"`` when auth is off),
    ``surface="chat"``, ``tool_input`` = the whitelisted display params, the native
    query in ``query_text`` and a ``result_summary`` starting ``turn=<id> step=<n>``.
@@ -39,7 +42,7 @@ from typing import Any, Iterable
 from ...constants import ActionType
 from ...models import ChatToolInfo
 from .base import ChatTool, ChatToolContext, Grant, ToolOutcome, render_tool_signatures
-from .common import ToolCall, call_scope
+from .common import ToolCall, call_scope, logs_console_view, parse_input
 from .taint import TaintLedger
 
 logger = logging.getLogger("tlsoc.agents.chat_tools")
@@ -319,6 +322,8 @@ class ChatToolbox:
             else:
                 taint.release_lookup()
         duration_ms = int((time.monotonic() - started) * 1000)
+        if outcome.ok and tool.name in LOG_TOOLS:
+            _attach_logs_view(tool.name, clean, outcome, self.ctx)
         if taint is not None and outcome.ok:
             try:
                 taint.observe(outcome.artifacts)
@@ -370,6 +375,33 @@ class ChatToolbox:
             )
         except Exception as exc:  # noqa: BLE001 — an audit hiccup never fails a turn
             logger.error("chat tool audit write failed (tool=%s): %s", tool.name, exc)
+
+
+def _attach_logs_view(name: str, inp: dict[str, Any], outcome: ToolOutcome, ctx: ChatToolContext) -> None:
+    """"Open in Logs" (SPEC §10.3/§10.7): give every artifact of a successful log
+    call the EXACT Logs view of that call (``open_in``), which the materialiser copies
+    onto the block. The view is derived by :func:`common.logs_console_view` from the
+    call's own parsed input — the same model the tool validated — never from model
+    prose; a filter the Logs page cannot express yields no view, so the block offers
+    "Copy query" only. A tool that already set ``open_in`` keeps its own. Best-effort:
+    a failure here never touches the outcome."""
+    try:
+        from . import logs  # lazy: the log tools import this module's siblings
+
+        model = {"search_logs": logs.SearchLogsInput, "log_stats": logs.LogStatsInput}.get(name)
+        if model is None or not outcome.artifacts:
+            return
+        args, error = parse_input(model, inp)
+        if error is not None:
+            return
+        view = logs_console_view(ctx, args, outcome.observation)
+        if view is None:
+            return
+        for artifact in outcome.artifacts:
+            if isinstance(artifact.data, dict) and "open_in" not in artifact.data:
+                artifact.data["open_in"] = {"page": view["page"], "opts": dict(view["opts"])}
+    except Exception:  # noqa: BLE001 — a convenience link never fails a lookup
+        logger.debug("logs view not attached for %s", name, exc_info=True)
 
 
 def _consumes_budget(tool: ChatTool, outcome: ToolOutcome) -> bool:

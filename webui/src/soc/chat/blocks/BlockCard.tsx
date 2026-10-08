@@ -147,10 +147,19 @@ function isDataBlock(block: AnswerBlock): boolean {
 }
 
 /**
- * An EXACT in-app target for "Open in …" (SPEC §10.7): only when the destination can
- * filter by the precise id(s) in the block — today a single case.
+ * An EXACT in-app target for "Open in …" (SPEC §10.3, §10.7): only when the destination
+ * shows precisely this block's data, never an approximation of it:
+ *
+ * - the server's `open_in` view — "Open in Logs" for a query-backed block whose tool
+ *   call used only the free text, window and source the Logs page can express (built
+ *   from the call's own input, re-validated by `parseBlocks`; absent on `ai` blocks);
+ * - a single case, by its id.
+ *
+ * A block with any other filter gets no "Open in" (Copy query remains): the client
+ * never reconstructs a filter from a query string or a label.
  */
 export function openTargetFor(block: AnswerBlock): InternalRef | null {
+  if (block.open_in && block.provenance !== 'ai') return block.open_in;
   if (block.type === 'case_list' && block.items.length === 1 && isSafeCaseId(block.items[0].case_id)) {
     return { page: 'case_manager', opts: { caseId: block.items[0].case_id } };
   }

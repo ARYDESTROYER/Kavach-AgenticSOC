@@ -186,6 +186,16 @@ def test_a_top_n_cut_that_breaks_the_whole_withdraws_the_total_views() -> None:
     top = to_blocks(_cat(), MaterialiseOptions(block_id="b1", top_n=2))[0]
     assert top["kind"] == "hbar" and "donut" not in top["allowed_views"]
     assert revise_view(top, "donut", block_id="b2") is None
+    # A TABLE view is judged on the data read back from it (what an mK.bJ change uses).
+    shares = _cat(data={"values": [50, 30, 20], "unit": "percent"})
+    whole = to_blocks(shares, MaterialiseOptions(block_id="b1", view="table"))[0]
+    assert whole["type"] == "table" and "donut" in whole["allowed_views"]
+    assert revise_view(whole, "donut", block_id="b2")["kind"] == "donut"
+    clipped = to_blocks(shares, MaterialiseOptions(block_id="b1", view="table", top_n=2))[0]
+    assert "donut" not in clipped["allowed_views"]
+    table = to_blocks(three, MaterialiseOptions(block_id="b1", view="table", top_n=2))[0]
+    assert table["type"] == "table" and "stacked_bar" not in table["allowed_views"]
+    assert "stacked_bar" in to_blocks(three, MaterialiseOptions(block_id="b1", view="table"))[0]["allowed_views"]
 
 
 def test_a_dishonest_stored_view_is_never_rebuilt() -> None:
@@ -195,6 +205,27 @@ def test_a_dishonest_stored_view_is_never_rebuilt() -> None:
     forged = dict(stored, allowed_views=["line", "area", "bar", "stacked_bar", "table"])
     assert revise_view(forged, "stacked_bar", block_id="b2") is None
     assert revise_view(forged, "bar", block_id="b2")["allowed_views"] == ["line", "area", "bar", "table"]
+
+
+def test_open_in_travels_from_the_artifact_through_every_view() -> None:
+    """"Open in Logs": the tool-side exact view rides on the artifact data, lands on
+    the block in every view, survives an ``mK.bJ`` view change and dumps ``from``
+    under its wire name."""
+    ref = {"page": "logs", "opts": {"logQuery": "failed password", "from": "now-24h", "to": "now",
+                                    "sourceId": "wazuh-prod"}}
+    artifact = _cat(data={"open_in": ref})
+    for view in ("hbar", "bar", "donut", "table"):
+        block = to_blocks(artifact, MaterialiseOptions(block_id="b1", view=view))[0]
+        assert block["open_in"] == ref, view
+    stored = to_blocks(artifact, MaterialiseOptions(block_id="b1"))[0]
+    assert revise_view(stored, "table", block_id="b2")["open_in"] == ref
+    query = Artifact(id="a2", kind="query", title="Query", provenance="source",
+                     data={"language": "kql", "query": "failed password", "open_in": ref})
+    assert to_blocks(query, MaterialiseOptions(block_id="b3"))[0]["open_in"] == ref
+    # An invalid ref never sinks the block; it is just not offered.
+    broken = to_blocks(_cat(data={"open_in": {"page": "logs", "opts": {"sourceId": "a b"}}}),
+                       MaterialiseOptions(block_id="b1"))[0]
+    assert "open_in" not in broken and broken["kind"] == "hbar"
 
 
 def test_series_order_is_deterministic_with_other_last() -> None:

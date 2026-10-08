@@ -6,12 +6,18 @@ table):
 * ONE document per report, ``(REPORTS_NS, "<user-hash>:<report-id>")`` — with the
   Elasticsearch backend that is the config-index doc ``reports:<user-hash>:<report-id>``
   the spec names. Items and the summary are stored as OPAQUE canonical-JSON strings
-  (``items_json`` / ``summary_json``) so the ES KV index never sees block field names
-  or types (log- and model-derived content must not grow the mapping, SPEC §7.5).
-  A document is at most ``MAX_REPORT_DOC_BYTES`` (512 kB) serialised.
+  (``report_items_json`` / ``report_summary_json``) so the ES KV index never sees block
+  field names or types (log- and model-derived content must not grow the mapping, SPEC
+  §7.5). A document is at most ``MAX_REPORT_DOC_BYTES`` (512 kB) serialised.
 * ONE small index document per user, ``(REPORTS_NS, "<user-hash>:index")``, listing
   ids, titles, template, conversation id, item count and timestamps (at most
-  ``MAX_REPORTS_PER_USER``). Listing reports never loads any report's items.
+  ``MAX_REPORTS_PER_USER``) as one opaque string. Listing never loads any items.
+
+Every top-level field name is ``report_``-prefixed (``_rev`` aside). On Elasticsearch
+all KV namespaces share the config index and therefore ONE dynamic mapping: a generic
+name such as ``id``, ``title``, ``version`` or a date-detected ``created_at`` could
+collide with another namespace's type and make a write fail. Only fixed, report-owned
+field names (strings, one int, one bool) ever reach that mapping.
 
 The user hash is the chat-history partition hash (``partition_key_for_user``), so a raw
 username never appears in a key and one principal can never address another's report.
@@ -24,10 +30,18 @@ back as ``expected_version``; ``_rev`` is the storage revision. Writing a summar
 ``_rev`` but never ``version``, so a summary is stale exactly when the report content
 changed after it was generated (``ReportSummary.based_on_version < Report.version``).
 
+Size: ``MAX_REPORT_DOC_BYTES`` bounds the whole stored document. Content writes (add,
+and a PATCH that grows the document) keep ``SUMMARY_RESERVE_BYTES`` free for the
+largest possible summary, so writing a summary — a billed model call — never fails on
+size; a PATCH that shrinks the document is always accepted.
+
 Delete is a strict TOMBSTONE put followed by index removal (the KV contract has no
 delete). A tombstone holds no content. A delete interrupted between the two steps is
-completed by the next delete of the same id. Reports are never evicted: at the cap a
-new report is refused (:class:`ReportLimitReached`).
+completed by the next delete of the same id, and an add to that conversation's draft
+finishes it too (the row is dropped and a fresh draft started). The index is only ever
+re-grown for a report whose document is still live, so a concurrent delete or factory
+purge is never undone. Reports are never evicted: at the cap a new report is refused
+(:class:`ReportLimitReached`).
 
 Report content is presentation data only; nothing here feeds ``case_manager.decide()``
 (#3), and the store never calls a model.
@@ -63,6 +77,11 @@ _T = TypeVar("_T")
 CAS_RETRIES = 8
 _SCHEMA_VERSION = 1
 _UNSET: Any = object()
+# Headroom kept free by every content write for the largest summary (1 200-char
+# executive summary + 5 × 280-char steps, up to 4 UTF-8 bytes per character and the
+# double JSON escaping of the opaque string, plus usage/model/timestamps and the
+# idempotency key): ~11 kB worst case, rounded up.
+SUMMARY_RESERVE_BYTES = 16_384
 
 
 # --------------------------------------------------------------------------- #
@@ -90,8 +109,9 @@ class ReportLimitReached(RuntimeError):
 
 
 class ReportFull(RuntimeError):
-    """An item cannot be added: 40 items (``reason="items"``) or the 512 kB document
-    bound (``reason="size"``)."""
+    """A write would exceed a report bound: 40 items (``reason="items"``) or the
+    512 kB document bound (``reason="size"``; an add, or a PATCH that grows notes or
+    the title past it)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(
@@ -146,6 +166,22 @@ class ReportAddOutcome:
 
 
 @dataclass(frozen=True)
+class ReportDeleted:
+    """What :meth:`ReportStore.delete` removed. ``report`` is None when the call only
+    completed an earlier interrupted delete (the content was already tombstoned);
+    ``conversation_id`` is known in both cases, so the caller can always unlink the
+    conversation whose draft it was."""
+
+    report_id: str
+    conversation_id: str | None
+    report: Report | None = None
+
+    @property
+    def completed_interrupted(self) -> bool:
+        return self.report is None
+
+
+@dataclass(frozen=True)
 class ReportPatch:
     """The mutable fields of ``PATCH /api/reports/{id}`` (``None`` = unchanged)."""
 
@@ -186,6 +222,18 @@ def _doc_bytes(doc: dict[str, Any]) -> int:
     return len(json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def _content_bytes(doc: dict[str, Any] | None) -> int:
+    """The stored size of ``doc`` without its summary (what content writes control)."""
+    if not isinstance(doc, dict):
+        return 0
+    return _doc_bytes({k: v for k, v in doc.items() if k not in ("report_summary_json", "report_summary_key")})
+
+
+def _content_fits(doc: dict[str, Any]) -> bool:
+    """A content write fits when it leaves room for the largest summary."""
+    return _content_bytes(doc) + 32 + SUMMARY_RESERVE_BYTES <= MAX_REPORT_DOC_BYTES
+
+
 def _rev(doc: dict[str, Any] | None) -> int:
     try:
         return max(0, int((doc or {}).get("_rev", 0)))
@@ -194,32 +242,39 @@ def _rev(doc: dict[str, Any] | None) -> int:
 
 
 def _is_tombstone(doc: dict[str, Any] | None) -> bool:
-    return isinstance(doc, dict) and doc.get("deleted") is True
+    return isinstance(doc, dict) and doc.get("report_deleted") is True
 
 
 def _is_live(doc: dict[str, Any] | None) -> bool:
     """A live report document (absent, cleared ``{}`` and tombstones are not)."""
-    return isinstance(doc, dict) and not _is_tombstone(doc) and isinstance(doc.get("id"), str)
+    return (
+        isinstance(doc, dict) and not _is_tombstone(doc)
+        and isinstance(doc.get("report_id"), str) and isinstance(doc.get("report_meta_json"), str)
+    )
 
 
 def encode_report(report: Report, *, summary_key: str | None = None) -> dict[str, Any]:
     """The KV document for ``report`` (without ``_rev``; the CAS writer adds it).
-    Scalars stay fields; items and summary become opaque canonical-JSON strings."""
-    items = [item.model_dump(mode="json") for item in report.items]
-    summary = report.summary.model_dump(mode="json") if report.summary is not None else None
-    return {
-        "schema": _SCHEMA_VERSION,
-        "id": report.id,
-        "owner": report.owner,
+    The id and owner stay scalar (for operators and the tombstone check); everything
+    else is an opaque canonical-JSON string."""
+    meta = {
         "title": report.title,
         "template": report.template,
         "conversation_id": report.conversation_id,
         "created_at": report.created_at,
         "updated_at": report.updated_at,
         "version": report.version,
-        "items_json": _canonical(items),
-        "summary_json": _canonical(summary) if summary is not None else None,
-        "summary_key": summary_key,
+    }
+    items = [item.model_dump(mode="json") for item in report.items]
+    summary = report.summary.model_dump(mode="json") if report.summary is not None else None
+    return {
+        "report_schema": _SCHEMA_VERSION,
+        "report_id": report.id,
+        "report_owner": report.owner,
+        "report_meta_json": _canonical(meta),
+        "report_items_json": _canonical(items),
+        "report_summary_json": _canonical(summary) if summary is not None else None,
+        "report_summary_key": summary_key,
     }
 
 
@@ -238,25 +293,28 @@ def decode_report(doc: dict[str, Any] | None) -> ReportRecord | None:
     if not _is_live(doc):
         return None
     assert doc is not None
-    payload = {
-        "id": doc.get("id"),
-        "owner": doc.get("owner") if isinstance(doc.get("owner"), str) else "",
-        "title": doc.get("title"),
-        "template": doc.get("template"),
-        "conversation_id": doc.get("conversation_id") if isinstance(doc.get("conversation_id"), str) else None,
-        "items": _load_json(doc.get("items_json"), []),
-        "summary": _load_json(doc.get("summary_json"), None),
-        "version": doc.get("version") if isinstance(doc.get("version"), int) and doc.get("version") >= 0 else 1,
+    meta = _load_json(doc.get("report_meta_json"), {})
+    meta = meta if isinstance(meta, dict) else {}
+    version = meta.get("version")
+    payload: dict[str, Any] = {
+        "id": doc.get("report_id"),
+        "owner": doc.get("report_owner") if isinstance(doc.get("report_owner"), str) else "",
+        "title": meta.get("title"),
+        "template": meta.get("template"),
+        "conversation_id": meta.get("conversation_id") if isinstance(meta.get("conversation_id"), str) else None,
+        "items": _load_json(doc.get("report_items_json"), []),
+        "summary": _load_json(doc.get("report_summary_json"), None),
+        "version": version if isinstance(version, int) and not isinstance(version, bool) and version >= 0 else 1,
     }
     for name in ("created_at", "updated_at"):
-        if isinstance(doc.get(name), str) and doc.get(name):
-            payload[name] = doc[name]
+        if isinstance(meta.get(name), str) and meta.get(name):
+            payload[name] = meta[name]
     try:
         report = Report.model_validate(payload)
     except Exception:  # noqa: BLE001 -- a corrupt id/owner row is unreadable, not fatal
-        logger.warning("report document %s could not be decoded", str(doc.get("id"))[:80])
+        logger.warning("report document %s could not be decoded", str(doc.get("report_id"))[:80])
         return None
-    key = doc.get("summary_key")
+    key = doc.get("report_summary_key")
     return ReportRecord(report=report, summary_key=key if isinstance(key, str) and key else None)
 
 
@@ -276,7 +334,7 @@ def index_entry(report: Report) -> dict[str, Any]:
 
 
 def _index_rows(doc: dict[str, Any] | None) -> list[dict[str, Any]]:
-    rows = (doc or {}).get("reports")
+    rows = _load_json((doc or {}).get("report_index_json"), [])
     if not isinstance(rows, list):
         return []
     seen: set[str] = set()
@@ -289,7 +347,7 @@ def _index_rows(doc: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _encode_index(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"schema": _SCHEMA_VERSION, "reports": rows}
+    return {"report_schema": _SCHEMA_VERSION, "report_index_json": _canonical(rows)}
 
 
 def _source_identity(item: ReportItem) -> tuple[str, str, str | None]:
@@ -427,33 +485,49 @@ class ReportStore:
     async def _index_sync_locked(self, owner: str | None, report: Report) -> None:
         """Refresh the report's index row after a content/summary change. The report
         document is the truth and is already confirmed, so a failure here is logged
-        rather than reported as a failed mutation; the next change re-syncs the row
-        (and re-adds it when it was lost)."""
-        def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, None]:
-            rows = _index_rows(current)
-            entry = index_entry(report)
-            for i, row in enumerate(rows):
-                if row["id"] == report.id:
-                    if row == entry:
-                        return None, None
-                    rows[i] = entry
-                    break
-            else:
+        rather than reported as a failed mutation; the next change re-syncs the row.
+
+        A MISSING row is re-added only after re-reading the report document and finding
+        it still live: between this process's confirmed write and this sync, another
+        process may have deleted the report, or a factory reset (which does not take
+        this lock) may have purged the namespace, and neither may be undone by bringing
+        a user-authored title back into the list."""
+        def _change(entry: dict[str, Any], *, append: bool) -> Callable[
+            [dict[str, Any] | None], tuple[dict[str, Any] | None, bool]
+        ]:
+            def apply(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, bool]:
+                rows = _index_rows(current)
+                for i, row in enumerate(rows):
+                    if row["id"] == entry["id"]:
+                        if row == entry:
+                            return None, True
+                        rows[i] = entry
+                        return _encode_index(rows), True
+                if not append or len(rows) >= MAX_REPORTS_PER_USER:
+                    return None, False
                 rows.append(entry)
-            return _encode_index(rows), None
+                return _encode_index(rows), True
+            return apply
 
         try:
-            await self._strict_mutate(index_key(owner), _change)
+            found = await self._strict_mutate(index_key(owner), _change(index_entry(report), append=False))
+            if found:
+                return
+            record = decode_report(await self._strict_get(report_key(owner, report.id)))
+            if record is None or record.report.owner != normalize_user_id(owner):
+                return  # deleted or purged meanwhile: leave the index alone
+            await self._strict_mutate(index_key(owner), _change(index_entry(record.report), append=True))
         except ReportStoreUnavailable as exc:
             logger.warning("report index sync failed for %s (%s)", report.id, exc)
 
-    async def _index_remove_locked(self, owner: str | None, report_id: str) -> bool:
-        def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, bool]:
+    async def _index_remove_locked(self, owner: str | None, report_id: str) -> dict[str, Any] | None:
+        """Drop the report's index row; returns the removed row (None when absent)."""
+        def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
             rows = _index_rows(current)
-            kept = [r for r in rows if r["id"] != report_id]
-            if len(kept) == len(rows):
-                return None, False
-            return _encode_index(kept), True
+            removed = next((r for r in rows if r["id"] == report_id), None)
+            if removed is None:
+                return None, None
+            return _encode_index([r for r in rows if r["id"] != report_id]), removed
 
         return await self._strict_mutate(index_key(owner), _change)
 
@@ -531,6 +605,13 @@ class ReportStore:
                 if not draft_conversation_id:
                     raise ReportNotFound("No report to add to.")
                 target = await self.draft_for_conversation(owner, draft_conversation_id)
+                if target is not None and not _is_live(await self._strict_get(report_key(owner, target))):
+                    # The index still names a draft whose document is a tombstone (a
+                    # delete interrupted before its index step) or gone: finish that
+                    # removal so the conversation can start a new draft, instead of
+                    # failing every add with "not found" until it is deleted again.
+                    await self._index_remove_locked(owner, target)
+                    target = None
                 if target is None:
                     draft = await self._create_locked(
                         owner, title=draft_title, template="custom",
@@ -558,7 +639,7 @@ class ReportStore:
                     "updated_at": iso_now(),
                 })
                 doc = encode_report(updated, summary_key=record.summary_key)
-                if _doc_bytes(doc) + 32 > MAX_REPORT_DOC_BYTES:
+                if not _content_fits(doc):
                     raise ReportFull("size")
                 return doc, ReportAddOutcome(updated, new_item.id, True, created)
 
@@ -615,7 +696,14 @@ class ReportStore:
                 updated = candidate.model_copy(update={
                     "version": report.version + 1, "updated_at": iso_now(),
                 })
-                return encode_report(updated, summary_key=record.summary_key), updated
+                doc = encode_report(updated, summary_key=record.summary_key)
+                # Longer notes or a longer title must not push the document past its
+                # bound (or eat the summary's headroom); a change that shrinks it
+                # (removing items, clearing notes) is always allowed, so a report that
+                # predates the headroom can still be trimmed.
+                if not _content_fits(doc) and _content_bytes(doc) > _content_bytes(current):
+                    raise ReportFull("size")
+                return doc, updated
 
             report = await self._strict_mutate(report_key(owner, report_id), _change)
             await self._index_sync_locked(owner, report)
@@ -636,7 +724,12 @@ class ReportStore:
                 if record is None or record.report.owner != uid:
                     raise ReportNotFound("Report not found.")
                 updated = record.report.model_copy(update={"summary": summary})
-                return encode_report(updated, summary_key=idempotency_key), updated
+                doc = encode_report(updated, summary_key=idempotency_key)
+                # Content writes keep SUMMARY_RESERVE_BYTES free, so this only trips for
+                # a document written before that headroom existed.
+                if _doc_bytes(doc) + 32 > MAX_REPORT_DOC_BYTES:
+                    raise ReportFull("size")
+                return doc, updated
 
             report = await self._strict_mutate(report_key(owner, report_id), _change)
             await self._index_sync_locked(owner, report)
@@ -646,21 +739,24 @@ class ReportStore:
     @staticmethod
     def _tombstone(report_id: str, owner: str) -> dict[str, Any]:
         return {
-            "schema": _SCHEMA_VERSION, "id": report_id, "owner": owner,
-            "deleted": True, "deleted_at": iso_now(),
+            "report_schema": _SCHEMA_VERSION, "report_id": report_id, "report_owner": owner,
+            "report_deleted": True, "report_deleted_at": iso_now(),
         }
 
-    async def delete(self, owner: str | None, report_id: str, *, expected_version: int) -> Report | None:
-        """Strict tombstone, then index removal. Returns the deleted report, or
-        ``None`` when this call only completed an earlier interrupted delete (the
-        document was already a tombstone but the index still listed it)."""
+    async def delete(self, owner: str | None, report_id: str, *, expected_version: int) -> ReportDeleted:
+        """Strict tombstone, then index removal. ``ReportDeleted.report`` is the deleted
+        report, or ``None`` when this call only completed an earlier interrupted delete
+        (the document was already a tombstone but the index still listed it); the
+        conversation id comes from the index row in that case."""
         uid = normalize_user_id(owner)
         key = report_key(owner, report_id)
         async with self._lock_for(owner):
             current = await self._strict_get(key)
-            if _is_tombstone(current) and current.get("owner") == uid:
-                if await self._index_remove_locked(owner, report_id):
-                    return None
+            if _is_tombstone(current) and current.get("report_owner") == uid:
+                row = await self._index_remove_locked(owner, report_id)
+                if row is not None:
+                    cid = row.get("conversation_id")
+                    return ReportDeleted(report_id, cid if isinstance(cid, str) and cid else None, None)
                 raise ReportNotFound("Report not found.")
 
             def _change(doc: dict[str, Any] | None) -> tuple[dict[str, Any], Report]:
@@ -673,12 +769,14 @@ class ReportStore:
 
             deleted = await self._strict_mutate(key, _change)
             await self._index_remove_locked(owner, report_id)
-            return deleted
+            return ReportDeleted(report_id, deleted.conversation_id, deleted)
 
 
 __all__ = [
+    "SUMMARY_RESERVE_BYTES",
     "ReportAddOutcome",
     "ReportConversationDraftExists",
+    "ReportDeleted",
     "ReportFull",
     "ReportItemUnknown",
     "ReportLimitReached",

@@ -76,9 +76,12 @@ function rowSummary(r: AuditRecord): string {
  */
 const KNOWN_ACTIONS: readonly string[] = [
   'prompt', 'es_query', 'tool_call', 'verdict', 'decision', 'error', 'poll', 'scan',
-  'feedback', 'collab', 'status', 'context', 'proposal', 'automation', 'notification',
-  'user_mgmt', 'auth', 'access_denied', 'thread_post', 'reaction', 'task_update',
-  'inapp_notify', 'tuning', 'reset',
+  'feedback', 'collab', 'status', 'context', 'proposal', 'automation', 'playbook',
+  'runbook', 'notification', 'user_mgmt', 'auth', 'access_denied', 'thread_post',
+  'reaction', 'task_update', 'inapp_notify', 'tuning', 'reset', 'data_export', 'job',
+  'system_update',
+  // Chat revamp: chat report created / edited / summarised / deleted (SPEC §9.2).
+  'report',
 ];
 
 /** Debounce a rapidly-changing value (free-text filters) before it drives a fetch. */

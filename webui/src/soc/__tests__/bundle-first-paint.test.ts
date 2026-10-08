@@ -39,6 +39,14 @@ const HAS_DIST = fs.existsSync(path.join(DIST, 'index.html'));
 
 const HINT = 'no dist/ build present — run `vite build` first (CI/integrator does)';
 
+/*
+ * Chat revamp entry budget (SPEC §1, §10.10): the whole revamp may add at most 1 kB to the
+ * entry chunk. The baseline is the entry chunk at 05a40d1 (the revamp's branch point),
+ * measured with `vite build` (file size on disk, as `statSync` reads it below).
+ */
+const PRE_REVAMP_ENTRY_BYTES = 396_537;
+const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
+
 function readHtml(): string {
   return fs.readFileSync(path.join(DIST, 'index.html'), 'utf8');
 }
@@ -104,6 +112,26 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     expect(bytes).toBeLessThan(400_000);
   });
 
+  it('the chat revamp grows the entry chunk by at most 1 kB over the recorded baseline', () => {
+    const html = readHtml();
+    const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
+    if (!m) throw new Error('could not find the entry chunk in dist/index.html');
+    const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
+    // Chat, reports and the palette's chat entries reach the entry only as nav metadata
+    // and `React.lazy` thunks; everything else lives in lazy chunks.
+    expect(bytes - PRE_REVAMP_ENTRY_BYTES, `entry is ${bytes} B`).toBeLessThanOrEqual(REVAMP_ENTRY_BUDGET_BYTES);
+  });
+
+  it('react-vendor carries no renderToStaticMarkup (react-dom/server stays out)', () => {
+    // The HTML export is a string serialiser (BLOCKS.md amendment 8); react-dom/server in
+    // the shared react-vendor chunk would ride every page.
+    const vendors = fs.readdirSync(path.join(DIST, 'assets')).filter((f) => /^react-vendor-[^/]+\.js$/.test(f));
+    expect(vendors.length).toBeGreaterThan(0);
+    for (const f of vendors) {
+      expect(fs.readFileSync(path.join(DIST, 'assets', f), 'utf8')).not.toContain('renderToStaticMarkup');
+    }
+  });
+
   it('entry chunk statically imports ONLY vendor chunks (no page/settings chunk)', () => {
     // Static `from"./<chunk>.js"` statements in the entry. The ONLY allowed static
     // app-graph imports are the shared vendor splits (react-vendor/radix/icons/utils);
@@ -130,6 +158,38 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
       ...settingsChunks.map((f) => fs.statSync(path.join(DIST, 'assets', f)).size),
     );
     expect(biggest).toBeGreaterThan(50_000);
+  });
+});
+
+describe('report exports stay off react-dom/server (source guard)', () => {
+  it('no module under src/ imports react-dom/server', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (['node_modules', 'dist', '__tests__', 'test'].includes(entry.name)) continue;
+          walk(full);
+        } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+          if (/['"]react-dom\/server(?:\.[a-z]+)?['"]/.test(fs.readFileSync(full, 'utf8'))) {
+            offenders.push(path.relative(WEBUI_ROOT, full));
+          }
+        }
+      }
+    };
+    walk(path.join(WEBUI_ROOT, 'src'));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the export modules load lazily, never from the eager shell', () => {
+    const EAGER = ['soc/App.tsx', 'soc/AppShell.tsx', 'soc/registry.tsx', 'soc/components/CommandPalette.tsx', 'soc/components/NavSidebar.tsx'];
+    for (const rel of EAGER) {
+      const full = path.join(WEBUI_ROOT, 'src', rel);
+      if (!fs.existsSync(full)) continue;
+      const text = fs.readFileSync(full, 'utf8');
+      // Only `import()` may reach the report UI; a static `from '…/chat/report/…'` may not.
+      expect(text, rel).not.toMatch(/\bfrom\s+['"][^'"]*chat\/report[^'"]*['"]/);
+    }
   });
 });
 

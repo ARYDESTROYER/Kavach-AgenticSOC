@@ -1135,6 +1135,48 @@ def test_chart_honesty_vectors_are_shared_with_the_webui() -> None:
         assert B.chart_kind_fits(block, example["kind"]) is example["fits"], example["name"]
 
 
+def test_logs_nav_opts_are_shared_with_the_webui_router() -> None:
+    """"Open in Logs" deep-link opts validate EXACTLY like the router's logs deep
+    links on the server too: a valid value survives ``clean_nav_opts`` and an
+    InternalRef; an invalid one is dropped by ``clean_nav_opts`` and invalidates the
+    ref. The webui test runs the same vectors through ``parseInternalRef`` and the
+    router's ``pageHash``."""
+    examples = _load(_ANSWER_CONTRACT)["nav_log_examples"]
+    assert set(examples["valid"]) == set(examples["invalid"]) == set(B.LOG_NAV_KEYS)
+    for key, values in examples["valid"].items():
+        for value in values:
+            assert B.clean_nav_opts({key: value}) == {key: value}, (key, value)
+            ref = B.parse_ref({"page": "logs", "opts": {key: value}})
+            assert ref is not None, (key, value)
+            assert B.dump_block(B.CalloutBlock.model_validate({  # by-alias round trip
+                "id": "c1", "type": "callout", "tone": "info", "text": "t", "provenance": "code",
+                "open_in": {"page": "logs", "opts": {key: value}},
+            }))["open_in"] == {"page": "logs", "opts": {key: value}}, (key, value)
+    for key, values in examples["invalid"].items():
+        for value in values:
+            assert B.clean_nav_opts({key: value}) == {}, (key, repr(value))
+            assert B.parse_ref({"page": "logs", "opts": {key: value}}) is None, (key, repr(value))
+    # ``from`` is a wire name only: the Python attribute name is not accepted.
+    assert B.parse_ref({"page": "logs", "opts": {"from_": "now"}}) is None
+    assert B.clean_nav_opts({"from_": "now"}) == {}
+
+
+def test_open_in_is_a_code_side_ref_never_a_model_one() -> None:
+    """``open_in`` (the exact console view of a block) survives on a code/source
+    block, is dropped (never fatal) when invalid, and is stripped from anything the
+    model authored, whatever provenance it claims."""
+    ref = {"page": "logs", "opts": {"logQuery": "failed password", "from": "now-24h", "to": "now"}}
+    table = dict(VALID_BLOCKS["table"], open_in=ref)
+    assert B.validate_blocks([table])[0][0]["open_in"] == ref
+    bad = dict(VALID_BLOCKS["table"], open_in={"page": "logs", "opts": {"from": "yesterday"}})
+    kept, dropped = B.validate_blocks([bad])
+    assert dropped == [] and "open_in" not in kept[0]
+    callout = {"id": "c1", "type": "callout", "tone": "info", "text": "t", "provenance": "code", "open_in": ref}
+    assert "open_in" not in B.validate_blocks([callout], model_authored=True)[0][0]
+    assert "open_in" not in B.validate_blocks([dict(callout, provenance="ai")])[0][0]
+    assert "open_in" not in B.parse_persisted_blocks([dict(callout, provenance="ai")])[0]
+
+
 def test_stream_events_contract_parity() -> None:
     from app import models as M
 

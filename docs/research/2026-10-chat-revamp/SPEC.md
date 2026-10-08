@@ -8,7 +8,8 @@ Companion: `BLOCKS.md` (answer-block schema, renderers, exports). Research input
 session scratchpad and are not committed.
 
 Section numbers are referenced from code comments and tests. Do not renumber after
-implementation starts.
+implementation starts. Decisions taken during implementation are recorded in §13
+(amendments A1–A20); where a section below and §13 disagree, §13 wins.
 
 ---
 
@@ -179,7 +180,7 @@ class Citation(BaseModel):
     kind: Literal["doc", "case", "knowledge", "mitre", "query"]
     title: str                                     # plain value; display-sanitised
     untrusted: bool = False                        # fence markers never reach the client
-    doc: str | None = None                         # ^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$
+    doc: str | None = None                         # blocks.DOC_REF_PATTERN (A1): /docs/<line>/[<path>][/][#anchor]
     case_id: str | None = None                     # validated
     technique: str | None = None                   # ^T\d{4}(\.\d{3})?$
     snippet: str | None = None                     # ≤ 280
@@ -238,8 +239,8 @@ Markdown prose (BLOCKS.md amendment 5 subset).
 retained assistant message `K` (the message ordinal shown in the replay digest, §4.3); the server
 rebuilds it from the stored block with a different `view` from its `allowed_views` and never
 creates numbers. An unknown or expired ref becomes a quiet notice line, never numbers. A `report`
-envelope is validated (≤ 12 sections, ≤ 40 leaves; counts as one block) and replaced by a notice if
-no leaf resolves.
+envelope is validated and CLIPPED to ≤ 12 sections and ≤ 40 leaves (counts as one block; the
+overflow is counted in the notice line, A3) and replaced by a notice if no leaf resolves.
 
 ### 4.1.1 Parser rules
 
@@ -269,11 +270,11 @@ call subject to grants and scopes (§4.7). Golden parser fixtures cover (a)–(f
 | `max_parallel` | 4 | calls per `tools` batch |
 | `tool_timeout_s` | 15 | per tool; the log fan-out keeps per-source timeouts |
 | `model_step_timeout_s` | 30 | `asyncio.wait_for` per gateway call |
-| `turn_timeout_s` | 90 | wall clock; stops NEW steps, never cancels an in-flight model call |
+| `turn_timeout_s` | 90 | wall clock; stops NEW lookups, never cancels an in-flight model call; one final-only step may still run (A2) |
 | `turn_token_ceiling` | 60 000 | summed input + output across steps |
 | `final_reserve_tokens` | 12 000 | always available for the final step |
 | `observation_chars` | 6 000 | per batch; per call `observation_chars // calls` with a 1 500 floor |
-| `final_max_tokens` | 4 000 | final step uses `max(chat_model.max_tokens, final_max_tokens)` |
+| `final_max_tokens` | 4 000 | every model step uses `max(chat_model.max_tokens, final_max_tokens)`: any step may be the final (A2) |
 | `max_concurrent_turns_per_user` | 2 | /chat and /chat/stream, Workspace and case-scoped |
 | `max_concurrent_turns_global` | 8 | process-local semaphore registry |
 | `max_indicator_lookups` | 3 | per turn (and 10 per conversation) |
@@ -395,7 +396,8 @@ AST test counts them). If any pinned test must change, it is listed in §11 with
    `"command"`. Only `origin: "user"` text counts as user-authored for the taint rules.
 3. `lookup_indicator` dispatches a value only if it appears verbatim in a user-authored message
    of this conversation or in a code-provenance artifact field (entity/ip/domain/hash column)
-   produced this turn; otherwise the step is `denied` ("indicator not from user or evidence").
+   produced this turn (whole-token match; budget accounting in A13); otherwise the step is
+   `denied` ("indicator not from user or evidence").
    Values are validated by kind; private, reserved, loopback and link-local IPs, single-label
    hosts, `internal_domains` suffixes and (unless allowed) emails are never sent to third parties.
 4. Tool results can never widen `scopes`, the time window beyond the request, or the source
@@ -490,7 +492,7 @@ recorrelate or `StandupService.generate`). Audit per execution: `ES_QUERY` for l
 | `list_campaigns` | cases | cases:read | table, kpis | |
 | `lookup_indicator` | intel | enrichment:read | entity, kpis | cached (#8); taint rules §4.8; Demo returns a labelled synthetic result |
 | `mitre_lookup` | intel | — | mitre | pure search over the bundled corpus; names resolved server-side |
-| `search_knowledge` | intel | rag:read | guide, table | kinds: search (runbooks, ATT&CK guidance, approved memory, imported intel; trust split per chunk via `_render_knowledge`), list_runbooks, list_playbooks |
+| `search_knowledge` | intel | rag:read | guide, table | kinds: search (runbooks, ATT&CK guidance, approved memory, imported intel; trust split per chunk, A16), list_runbooks, list_playbooks |
 | `cost_usage` | platform | cost:view | kpis, series, categories | spend, tokens, by role/model/surface, budget |
 | `source_health` | platform | sources:read | table, kpis | silent sources, coverage, last poll |
 | `automation_status` | platform | per kind: rules:read, automation:read, settings:read, proposals:read | table, kpis | kinds: tuning, baselines, approvals, schedulers, telemetry_gaps, rule_versions |
@@ -523,7 +525,7 @@ opts, required permission, topics) is produced and verified by
 from the real `FEATURES`, `SETTINGS_SECTIONS_META` and `SETTING_ANCHORS`. Loader: package path
 only, manifest verified, fails closed; a dependency-free BM25F index (reusing `rag._tokenize`
 math and sub-token splitting) built at first use. Trust: its own boundary — `APP_DOCS` markers
-are neutralised everywhere else (§7.6), `_sanitise_source_label` refuses to mint `app_docs`,
+are neutralised everywhere else (§7.6), `_sanitise_source_label` refuses to mint `app_docs` (A12),
 `TRUSTED_KNOWLEDGE_SOURCES` is unchanged. `--check` runs in the CI "Help Center & docs" lane;
 `pyproject` package data adds `knowledge/*.json` and the package-integrity lane requires the four
 files. Docs added or fixed in the same change: a KPI glossary page (Active Risk Index, FP rate,
@@ -652,9 +654,11 @@ the stream ends with `turn.done` carrying `notice {kind: "cancelled"}`, the text
 and replays as "Stopped". Once any model call was billed, the reservation is COMPLETED (never
 aborted), so Retry with the same key replays it; "Ask again" sends a new key. A client disconnect
 without cancel is not a stop: the turn completes and persists; a reconnect retry with the same key
-gets 409 `chat_request_in_progress` (Retry-After) until the replay is available. If a stream ends
-without `turn.done`/`turn.error`, the client shows "Connection lost — checking whether the answer
-was saved" and replays once with the same key.
+gets 409 `chat_request_in_progress` (Retry-After, and `retry_after` seconds in the detail body,
+A9) until the replay is available. If a stream ends without `turn.done`/`turn.error`, the client
+shows "Connection lost — checking whether the answer was saved" and replays once with the same
+key. A case-scoped turn is never replayed automatically (A4): it shows "Connection lost" with
+Retry same request.
 
 ---
 
@@ -694,7 +698,8 @@ fallback, never throw; G10 interactions limited to BLOCKS.md amendment 3.
 | `entity`, `mitre`, `guide`, `query` | same name | same |
 | report envelope | `report` | — (structural; leaves materialised individually) |
 
-Series order is deterministic (descending total, ties by label) so colours are stable;
+`stacked_bar` and `donut` are offered only where the values add up (A15). Series order is
+deterministic (descending total, ties by label) so colours are stable;
 `--chart-1..7` with `--chart-8` for "Other". Model-requested `top_n`/`title` are clamped and
 display-sanitised.
 
@@ -731,7 +736,8 @@ segments; table ≤ 12 columns × ≤ 200 rows (≤ 10 rows inline, "View all" o
   they survive trimming; legacy rows null → "—").
 - **Pin.** `PATCH /api/chat/conversations/{id}` takes `{title?: 1..80 single-line, pinned?: bool}`
   (at least one). Pinning never changes `updated_at`. Up to 10 pinned conversations are exempt
-  from the 50-conversation eviction; an 11th returns 409 `chat_pin_limit`.
+  from the 50-conversation eviction; an 11th returns 409 `chat_pin_limit`. The list returns pinned
+  rows first and accepts `limit` up to 60 (A9).
 - **Search.** `GET /api/chat/conversations?q=` (≤ 200 chars): case-insensitive substring over
   titles, user and assistant text and block titles, returning `match {message_id, snippet ≤ 160}`.
 
@@ -978,7 +984,8 @@ chats", "Ask AI: <text>" and "Open Reports".
 Top-aligned in the 48rem lane: one capability line ("Ask about your data, build a quick report, or
 learn how this console works. Read-only."), then a 2×3 grid of starters (1 column below 560 px; each
 ≤ 64 px tall): Investigate, Hunt an indicator, Posture now, Shift brief, Explain a metric, Learn the
-app. A card shows only if all its tools are allowed. Production prompts are filled from live
+app. The cards are the server-built `starters` of `/chat/context` (A8). A card shows only if all its
+tools are allowed. Production prompts are filled from live
 context (newest open case id, primary source name, "last 24h"), never literal IOCs; Demo uses the
 §5.5 prompts. Below: "What can the assistant access?" link (the access popover: each tool's label,
 data source, required permission, ✓ or "Needs <perm>").
@@ -1007,12 +1014,14 @@ conversation (`navigate('chat', {conversationId, messageId})`).
 ### 10.7 Deep links (NavOpts, additive, validated)
 
 `conversationId`, `messageId`, `newChat`, `topic` for chat; `reportId` for reports; `logQuery`,
-`from`, `to`, `sourceId` for logs (UnifiedLogs reads them). Chat honours `conversationId` as a
+`from`, `to`, `sourceId` for logs (UnifiedLogs reads them; blocks carry them in an `open_in` ref,
+A14). Chat honours `conversationId` as a
 requested selection: select it, scroll to `messageId`, highlight for 2 s; if absent, the inline
 notice "This conversation is no longer available (deleted or removed by the 50-conversation
 limit)". "Open in Cases" is offered only when the target can filter by the exact ids in the block.
 `topic` (from KPI help and Settings section headers: "Ask about this") starts a new chat with a
-templated question resolved from `console_map` topics; the page never sends free text.
+templated question resolved from `console_map` topics through `GET /api/chat/topics/{topic_id}`
+and sent with `origin: "starter"` (A7); the page never sends free text.
 
 ### 10.8 Engine hooks, Case Manager, must-keep
 
@@ -1068,7 +1077,20 @@ asserts the entry grows ≤ 1 024 B against a recorded baseline.
 ## 11. Quality gates
 
 Backend: `pytest -q` green. Existing chat tests pass unchanged thanks to compatibility mode (§4.7);
-any pinned test that must change is listed here with its reason before merge. New tests: loop and
+any pinned test that must change is listed here with its reason before merge:
+- `tests/test_chat_contracts.py::test_retention_stub_and_helpers`: the wave-1 stubs of
+  `blocks.to_blocks` / `blocks.revise_view` raised `NotImplementedError`, which the test pinned.
+  WP-F implemented both, so the two `pytest.raises(NotImplementedError)` blocks became real
+  assertions (an empty kpis artifact materialises to `[]`; a stored chart can only be re-viewed as
+  one of its own allowed views). No behaviour of a released surface changed.
+- `tests/test_app_knowledge.py`: `test_doc_hrefs_are_validated_and_version_matched` and
+  `test_uncitable_sections_get_no_citable_id_and_rebase_stays_unique` pinned the Help Center home
+  and dotted release pages as uncitable under the first doc-link grammar; A1 makes them citable,
+  so the first now asserts every bundled section has a `D*` link and the second exercises the
+  fail-closed path under the stricter grammar. The strict `xfail` on
+  `test_rag_import_cannot_mint_the_app_docs_label` was removed with the anti-mint fix (A12).
+- `webui/src/soc/chat/__tests__/display.test.ts` (`isDocLink`): `/docs/0.1/` moved from the
+  rejected to the accepted list (A1). New tests: loop and
 caps (ceiling projection, final reserve, structural observation shrink), parser fixtures §4.1.1,
 failure classes and the D1 fix, taint and side-effect rules §4.8, tools (RBAC incl. custom roles and
 `resolve_grants` with zero audit writes, whitelisting, fencing, demo), audit_search never leaking
@@ -1148,3 +1170,149 @@ order. Packages report a Journal entry; the orchestrator commits.
 - **WP-L Integration.** Regenerate `webui/openapi.json` and `src/lib/api-types.gen.ts`, the app
   knowledge corpus and console map; `CHANGELOG.md`, `Journal.md`, `AGENTS.md` layout; all gates;
   browser visual QA; adversarial review; fixes. Any file not listed belongs to WP-L.
+
+---
+
+## 13. Amendments recorded during implementation
+
+Decisions taken while building waves 1–3, recorded so the contract matches the code. Each names
+the section it amends; the inline text above points here.
+
+**A1 — Help Center links (§3.5, BLOCKS amendment 5).** The doc-link grammar is
+`^/docs/[0-9]{1,4}\.[0-9]{1,4}/(?:SEG(?:/SEG)*/?)?(?:#[a-z0-9_-]+)?$` with
+`SEG = [a-z0-9_-]+(?:\.[a-z0-9_-]+)*` (`blocks.DOC_REF_PATTERN`, `schema.ts` `doc_ref`,
+`display.ts` `DOC_LINK_RE`). The Help Center home (`/docs/0.1/`) and dotted release pages
+(`/docs/0.1/releases/0.1.13/`) are citable; a `.`/`..`/empty segment, any scheme or host, a
+query, uppercase, `%`-encoding and backslashes never match; the anchor stays optional. No
+look-around (Pydantic validates `pattern` with the Rust engine) and ASCII digit classes, so
+Python, Rust and JavaScript accept the same strings; the shared `doc_ref_examples` vectors in
+`answer-blocks.contract.json` run on both sides. `app.knowledge.doc_href` therefore gives every
+bundled section a `D*` id; a path the grammar refuses still fails closed (shown as reference
+only).
+
+**A2 — Model-step bounds (§4.2).** `final_max_tokens` applies to every model step, because the
+model decides which step is the final; the earlier budget pre-check keeps the ceiling honest.
+Once `turn_timeout_s` passes, no NEW lookups run; a tool-using turn that has not had its
+final-only step and still has a model call left gets ONE final-only step bounded by
+`model_step_timeout_s`, and keeps the timeout notice. A turn can therefore run up to
+`model_step_timeout_s` past `turn_timeout_s`; a route-level hard cap must allow for it.
+
+**A3 — Report envelopes (§4.1, BLOCKS amendment 6).** An envelope is clipped to 12 sections and
+40 leaves rather than rejected, and every removed or unusable leaf is counted in the one notice
+line ("N requested items could not be shown"). It accepts BLOCKS.md's `subtitle`, a section
+`summary`, and `blocks` as an alias of `items`; other keys are ignored; a blank title becomes
+"Report" and a blank heading "Details". An envelope that resolves no leaf becomes the
+"brief could not be built" notice.
+
+**A4 — Lost connections on case-scoped turns (§6.4).** A case-scoped turn is never replayed
+automatically after a lost connection: only its thread append is deduplicated, so a replay would
+bill the model again. It shows "Connection lost" with Retry same request (same key);
+`stores/case_thread.append_if_absent` closes the race between two simultaneous retries under the
+existing CAS.
+
+**A5 — Callouts (§10.9, BLOCKS `callout`).** Every callout tone renders `role="note"`; there are
+no chat-local live regions. When a newly arrived warning must be spoken, the host announces it
+once through `useAnnouncer()`.
+
+**A6 — KPI groups (BLOCKS `kpi_group`).** The strip uses list semantics (`role="list"`, one
+`listitem` per tile) because `KpiTile` owns its label/value markup and has no `dt`/`dd` mode; each
+value keeps its unit spelled out in `sr-only` text.
+
+**A7 — "Ask about this" (§10.7).** `NavOpts.topic` makes the chat page call
+`GET /api/chat/topics/{topic_id}` (`models.ChatTopicQuestion {topic, question}` from
+`app.knowledge.topic_question`; 404 for an unknown id) and send the returned question with
+`origin: "starter"` in a new chat. The page never sends free text for a topic.
+
+**A8 — Starters (§8, §10.5).** `GET /api/chat/context` returns `starters: ChatStarter[]`
+(`{id, label, description, prompt, tools[]}`; ids `investigate`, `hunt`, `posture`,
+`shift_brief`, `explain_metric`, `learn_app`). Demo Mode uses `engine.demo_chat.DEMO_STARTERS`;
+production prompts are built server-side from live context (newest open case id, primary source
+name, "last 24h"), never literal IOCs. The empty state shows a card only when every tool in its
+`tools` is allowed in `context.tools`.
+
+**A9 — Conversation list and in-progress replays (§6.4, §7.5).** `GET /api/chat/conversations`
+returns pinned rows first and accepts `limit` up to 60, so the ten pin-exempt conversations are
+never off-page. The 409 `chat_request_in_progress` detail body carries `retry_after` (seconds)
+besides the `Retry-After` header.
+
+**A10 — Evidence labels (§7.6, BLOCKS amendment 4).** Prompt-bound text renders invisible
+characters as visible `\uXXXX` escapes. Evidence labels in log artifacts (`log_stats` categories
+and heatmap rows, `search_logs` table cells) also write them as visible escape text before
+display sanitising, so a lookalike such as `ad`+ZWSP+`min` stays distinguishable from `admin`;
+every other display string strips them (G7).
+
+**A11 — Tool deviations (§5.3).**
+- `soc_metrics` windows are narrowed to whole hours (a range under one hour reads 1 h) and capped
+  at 30 days; the observation names the window actually computed plus `requested_window`,
+  `window_capped` and a coverage note.
+- `cost_usage` and `shift_report` refuse a range that ends in the past: their stores only count
+  back from now, and trailing data would read outside the selection (§4.8.4).
+- "Response times by day" covers only the window's own cases and days.
+- `search_cases`' in-memory path reports `exact: true` when the 5,000-case scan covered the whole
+  store.
+- `automation_status kind=telemetry_gaps` requires `automation:read` (the HTTP route uses
+  `cases:read`).
+- `app_status` reads `ChatToolContext.secrets_status()` (configured booleans only).
+
+**A12 — Anti-minting (§5.4).** `tools/rag._sanitise_source_label` stores an import whose label is
+one of `app.knowledge.RESERVED_SOURCE_LABELS` (`app_docs`, `app_help`, `product_docs`; compared
+after `strip().casefold()`) as `imported`, as it already did for the trusted RAG labels. A label
+that merely contains a reserved word is an ordinary, untrusted label.
+
+**A13 — Taint and the lookup budget (§4.8.3).** User-text matching is whole-token equality
+(including URL host, `host:port` host, e-mail domain components and refanged defanged forms),
+which is what "verbatim" means. Lookups are budgeted only by `ChatToolbox.execute` (reserve before
+running, commit when at least one provider answered, release otherwise); the engine never
+commits one. On replay, the per-conversation count mirrors that rule: a stored `lookup_indicator`
+step that no provider answered (`rows == 0`, or "from 0 of N providers") does not count.
+
+**A14 — Open in Logs (§10.3, §10.7, BLOCKS amendment 3).** Every block may carry `open_in`, an
+`InternalRef` to the EXACT console view of its data. `InternalRef.opts` gains the Logs deep-link
+keys `logQuery`, `from`, `to` and `sourceId`, validated exactly like the router's deep links
+(plain id; `now`, `now-<n>[mhdw]` or an ISO-8601 shape with no space; a log query of 1–512 code
+points with no Unicode category C character and no line or paragraph separator); the shared
+`nav_log_examples` vectors run through `clean_nav_opts`, `parseInternalRef` and the router's
+`pageHash`. Mapping from `StructuredQuery`: `contains` → `logQuery`, the resolved window's
+`time_from`/`time_to` → `from`/`to`, a named source → `sourceId` (no `sourceId` = every
+browse-capable source, which is what a full fan-out read). `ip`, `user`, `host`, `rule`,
+`severity_gte` and `ids` have no Logs field, so such a call gets Copy query only; so does a call
+that read the one implicit primary source (its id is not known to the engine). The view is built
+by `ChatToolbox.execute` from the log call's own parsed input
+(`chat_tools.common.logs_console_view`), copied onto the block by the materialiser, kept across
+`mK.bJ` view changes, and never present on an `ai` block. "Open in Cases" remains limited to a
+single exact case.
+
+**A15 — Honest views (§7.3).** `stacked_bar` and `donut` draw a total, so they are offered only
+when the values add up: always for `count`, `tokens`, `bytes` and `usd`; for `percent`/`ratio`
+only when the parts of every complete group reconcile to 100 (or 1) within 0.5 percentage points
+and at least one group is complete — per x slot across the series for a stack, across the
+categories for a donut; never for `score` or a duration. A donut also needs a complete (not
+truncated) population of at most six categories. The server judges the block as shown
+(`blocks.chart_kind_fits`, the twin of the webui `views.chartKindFits`; shared `chart_honesty`
+vectors), falls back to the default view when a clipped block no longer supports the requested
+one, and offers only honest views in `allowed_views`; `blocks.artifact_views(artifact)` is the
+honest list for the tool-call header.
+
+**A16 — `search_knowledge` trust split (§5.3).** The engine renders a search observation with
+the trust split per chunk: each curated runbook / ATT&CK / suppression chunk and each approved
+operator-memory item becomes one engine line `TRUSTED K31 [runbook] <text>` (constant label,
+markers neutralised, invisible characters escaped, one line, ≤ 400 chars), and the observation
+follows in the usual UNTRUSTED fence with those items' text replaced by a pointer, so nothing is
+sent twice and the shape is kept. Trust is re-derived from each chunk's source label against the
+allowlist, never from a flag in the observation; imported intel, resolved cases and any label an
+import chose stay fenced. An observation with nothing trusted is fenced whole, as before.
+
+**A17 — One observation shrinker (§4.2).** Observations are shrunk only by
+`chat_protocol.shrink_observation` (aligned parallel series, ranked heads, chronological tails);
+the tool-side duplicate in `chat_tools.common` was removed.
+
+**A18 — Reports API shapes (§9.2).** `POST /api/reports/add` → `{report, item_id}`;
+`POST /api/reports/{id}/summary` → the `Report` with its summary (`?dry_run=1` →
+`ReportSummaryEstimate`); `GET /api/reports` → `{reports: [...]}`.
+
+**A19 — Stored blocks dump by alias.** `blocks.dump_block` is the only block serialiser and dumps
+`by_alias`, so `NavRefOpts.from_` is written as `from` everywhere a block is stored or sent.
+
+**A20 — Persisted provenance of navigation.** `parse_persisted_blocks` and `validate_blocks` drop
+`open_in` from any block whose provenance is (or fails safe to) `ai`, and from everything
+validated with `model_authored=True`, so a model can never author a navigation target.

@@ -48,6 +48,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated, Any, Iterable, Literal, Union, get_args
@@ -635,7 +636,7 @@ OptNavRef = Annotated[Union[InternalRef, None], BeforeValidator(_internal_ref_or
 OptAnyRef = Annotated[Union[DocRef, InternalRef, None], BeforeValidator(parse_ref)]
 AnyRef = Annotated[Union[DocRef, InternalRef], BeforeValidator(_required_ref)]
 
-_NAV_OPT_KEYS = tuple(_NAV_OPT_ATTRS.values())   # the wire keys, ``from`` included
+# The wire keys of the Logs deep link ("Open in Logs", SPEC §13 A14).
 LOG_NAV_KEYS = ("logQuery", "from", "to", "sourceId")
 
 
@@ -1455,7 +1456,7 @@ _FIELD_NAMES = _collect_field_names([
     KpiItem, ChartX, ChartSeries, ChartReferenceY, ChartReferenceX, HeatmapAxis, TableColumn,
     TableSort, CaseListItem, TimelineEvent, EntityRef, EntityFact, ReputationRow, RelatedCase,
     MitreTechnique, CitationItem, GuideStep, GuideLink, ReportScope, ReportSection,
-])
+]) | frozenset(_NAV_OPT_ATTRS.values())   # wire aliases (``from``) appear in error paths
 
 
 # --------------------------------------------------------------------------- #
@@ -1800,7 +1801,7 @@ def allowed_views_for(artifact_kind: str, *, categories: int | None = None) -> l
 # the tool-call header and replay digest, or to the "Show as" menu) the client refuses.
 ADDITIVE_UNITS: tuple[str, ...] = ("count", "tokens", "bytes", "usd")
 SHARE_TOLERANCE = 0.5          # percentage points a set of parts may drift from 100
-TOTAL_VIEWS: frozenset[str] = frozenset({"stacked_bar", "donut"})
+TOTAL_VIEWS: frozenset[str] = frozenset({"stacked_bar", "donut"})   # the views that draw a total
 
 
 def _parts_make_whole(groups: Iterable[Iterable[Any]], unit: str) -> bool:
@@ -2233,6 +2234,23 @@ def _caption(
     return display_text(text, MAX_CAPTION) or None
 
 
+def _honest_block_views(raw: dict[str, Any], kind: str) -> list[str]:
+    """``raw``'s ``allowed_views`` narrowed to what the block AS SHOWN supports: a
+    chart is judged exactly as the client's "Show as" menu judges it (it re-renders
+    this same data); any other view of the data (a table, say) is judged on the data
+    read back from it, which is what a later ``mK.bJ`` view change would use, so a
+    clipped top-N table never offers a donut or a stack that no longer adds up."""
+    views = [v for v in raw.get("allowed_views") or [] if isinstance(v, str)]
+    if raw.get("type") == "chart":
+        return [v for v in views if v not in CHART_KINDS or chart_kind_fits(raw, v)]
+    if not TOTAL_VIEWS.intersection(views):
+        return views
+    data = _artifact_data_from_block({**raw, "artifact_kind": kind})
+    honest = set(artifact_views(SimpleNamespace(kind=kind, data=data, truncated=bool(raw.get("truncated"))))
+                 if isinstance(data, dict) else ())
+    return [v for v in views if v not in TOTAL_VIEWS or v in honest]
+
+
 def _views_of(artifact: Any) -> list[str]:
     """The artifact's own view list (``Artifact.views()``, else the §7.3 row) narrowed
     to the views its data can honestly support (:func:`artifact_views`), so a requested
@@ -2285,6 +2303,11 @@ def _base_block(
     }
     if title:
         out["title"] = title
+    open_in = artifact.data.get("open_in") if isinstance(getattr(artifact, "data", None), dict) else None
+    if isinstance(open_in, dict):
+        # The tool-side "exact console view" (see ``_BlockBase.open_in``); validation
+        # keeps it only when it is a valid ref, and never on an ``ai`` block.
+        out["open_in"] = open_in
     return out
 
 
@@ -2692,13 +2715,7 @@ def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[st
             # The CLIPPED block no longer supports its kind (a top-N cut that breaks a
             # 100 % stack, say): draw the honest default instead of an invented total.
             raw = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
-        if raw.get("type") == "chart":
-            # Offer only the chart views the block AS SHOWN supports, judged exactly as
-            # the client's "Show as" menu judges them (it re-renders this same data).
-            raw["allowed_views"] = [
-                v for v in raw.get("allowed_views") or []
-                if v not in CHART_KINDS or chart_kind_fits(raw, v)
-            ]
+        raw["allowed_views"] = _honest_block_views(raw, kind)
     except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
         return []
     block, _drop = _validate_one(raw, "1", allow_ai_data=False, adapter=_LEAF_BLOCK)
@@ -2729,7 +2746,15 @@ def _column_unit(block: dict[str, Any], key: str) -> str:
 def artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
     """The artifact data a STORED block was materialised from (the inverse of the
     projection above), or ``None`` when the block cannot be read back (a stub, a
-    model-written block, or a table whose canonical columns are missing)."""
+    model-written block, or a table whose canonical columns are missing). A block's
+    ``open_in`` console view travels with its data, so a view change keeps it."""
+    data = _artifact_data_from_block(block)
+    if data is not None and isinstance(block.get("open_in"), dict):
+        data["open_in"] = block["open_in"]
+    return data
+
+
+def _artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(block, dict) or is_expired_block(block):
         return None
     kind = block.get("artifact_kind")

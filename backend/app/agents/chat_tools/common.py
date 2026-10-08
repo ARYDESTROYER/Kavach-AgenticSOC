@@ -16,6 +16,9 @@ Everything here is deterministic and side-effect free:
   for may widen the window the request selected.
 * Formatting helpers for summaries (engine templates + numbers + enums only) and the
   whitelisted case projection every case tool shares.
+* :func:`logs_console_view` — the EXACT "Open in Logs" view of a log tool call (the
+  same free text, window and source), or ``None`` when the Logs page cannot express
+  the filter the tool ran with (it never approximates one).
 * Two text helpers with different jobs: :func:`text` / :func:`opt_text` bound an
   OBSERVATION leaf but KEEP invisible characters (SPEC §7.6: ``fence_block`` renders
   them as visible ``\\uXXXX`` escapes, so ``admin`` + ZWSP never reaches a model as
@@ -38,7 +41,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ...constants import INVISIBLE_TEXT_CLASS
 from ...models import resolve_time_expr
-from ..blocks import ELLIPSIS, display_text
+from ..blocks import ELLIPSIS, NAV_ID_PATTERN, NAV_TIME_PATTERN, display_text, is_safe_log_query
 from .base import ChatToolContext, ToolOutcome
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -279,6 +282,65 @@ def resolve_window(
         hours=_hours(start, end), label=window_label(from_expr, to_expr, start, end),
         source=source, clamped=clamped,
     )
+
+
+# --------------------------------------------------------------------------- #
+# "Open in Logs" (SPEC §10.3, §10.7): the exact console view of a log tool call.
+# --------------------------------------------------------------------------- #
+_NAV_ID_RE = re.compile(NAV_ID_PATTERN)
+_NAV_TIME_RE = re.compile(NAV_TIME_PATTERN)
+# Filters the Logs page has no field for: a call that used any of them gets "Copy
+# query" only, never a Logs view that would silently show a WIDER result.
+LOGS_UNEXPRESSIBLE_FILTERS: tuple[str, ...] = ("ip", "user", "host", "rule", "severity_gte", "ids")
+
+
+def logs_console_view(ctx: ChatToolContext, args: Any, observation: Any = None) -> dict[str, Any] | None:
+    """``{"page": "logs", "opts": {logQuery?, from, to, sourceId?}}`` for a log tool
+    call whose filter the Logs page can express EXACTLY, else ``None``.
+
+    The Logs page (``GET /api/logs``) filters by free text (``contains``), a time
+    window and one optional source, so the view is exact only when:
+
+    * the call used no other filter (:data:`LOGS_UNEXPRESSIBLE_FILTERS`);
+    * its free text is router-safe (single line, no control/format characters) and
+      has no edge whitespace (the Logs page trims what it sends);
+    * the window is the one the tool resolved (:func:`resolve_window`, the same
+      precedence and request clamp) in the router's ``from``/``to`` grammar — the
+      same expressions the connector received;
+    * the source is NAMED (the request's selected source, else the call's
+      ``source_id``), or the call fanned out over every browse-capable source
+      (``observation["sources"]``, which is what the Logs page reads without a
+      source). A call that read the one implicit primary source gets no view: its
+      id is not known here, and guessing would be fabricating a filter.
+
+    ``args`` is the tool's parsed input (read with ``getattr``; this module cannot
+    import the log tools). Pure apart from reading the clock for the window."""
+    if any(getattr(args, key, None) not in (None, [], ()) for key in LOGS_UNEXPRESSIBLE_FILTERS):
+        return None
+    window = resolve_window(ctx, time_from=getattr(args, "time_from", None), time_to=getattr(args, "time_to", None))
+    if isinstance(window, str):
+        return None
+    if window.clamped and window.time_from == window.start.isoformat():
+        # The 90-day cap wrote a clock-dependent start: this resolution's instant is
+        # not the one the tool's own resolution handed the connector.
+        return None
+    if not (_NAV_TIME_RE.fullmatch(window.time_from) and _NAV_TIME_RE.fullmatch(window.time_to)):
+        return None
+    opts: dict[str, Any] = {}
+    contains = getattr(args, "contains", None)
+    if contains is not None:
+        if not isinstance(contains, str) or contains != contains.strip() or not is_safe_log_query(contains):
+            return None
+        opts["logQuery"] = contains
+    opts["from"], opts["to"] = window.time_from, window.time_to
+    source = getattr(ctx, "source_id", None) or getattr(args, "source_id", None)
+    if source:
+        if not isinstance(source, str) or not _NAV_ID_RE.fullmatch(source):
+            return None
+        opts["sourceId"] = source
+    elif not (isinstance(observation, dict) and isinstance(observation.get("sources"), list)):
+        return None
+    return {"page": "logs", "opts": opts}
 
 
 # --------------------------------------------------------------------------- #

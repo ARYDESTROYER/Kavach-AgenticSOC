@@ -2936,12 +2936,8 @@ export interface ChatResponse {
   steps?: ChatStep[];
   /** `null` on legacy replays and turns that recorded no usage ("Usage not recorded"). */
   usage?: TurnUsage | null;
-  /**
-   * Sources the answer cites by id (`D1` docs, `C2` case, `K3` knowledge, `M1` ATT&CK).
-   * The `n`/`source` members are the retired pre-revamp shape (never sent by the
-   * server); they stay optional only until the legacy `ChatPanel` is removed.
-   */
-  citations?: Array<ChatCitation & LegacyChatCitationFields>;
+  /** Sources the answer cites by id (`D1` docs, `C2` case, `K3` knowledge, `M1` ATT&CK). */
+  citations?: ChatCitation[];
   console_links?: ConsoleLink[];
   /** ≤ 3 follow-up chips (display-sanitised). Only the latest turn shows them. */
   follow_ups?: string[];
@@ -2954,16 +2950,6 @@ export interface ChatResponse {
   message_id?: string | null;
   /** A model-proposed memory change awaiting human confirmation (`memory:manage`). */
   memory_proposal?: MemoryProposal | null;
-  /**
-   * @deprecated Never sent by the backend (Pydantic drops it). Kept optional only so
-   * the legacy `ChatPanel` compiles until the chat revamp replaces it; derive tool
-   * provenance from `steps` instead.
-   */
-  tools?: RationaleTool[];
-  /** @deprecated Never sent by the backend; see `tools`. Use `citations`. */
-  knowledge?: RationaleKnowledge[];
-  /** @deprecated Never sent by the backend; see `tools`. */
-  reasoning?: string;
 }
 
 // --------------------------------------------------------------------------- //
@@ -3111,17 +3097,6 @@ export interface ChatCitation {
   /** `T1234` or `T1234.001`. */
   technique?: string | null;
   snippet?: string | null;
-}
-
-/**
- * @deprecated The retired pre-revamp citation members (`{n, source, snippet, ref}`).
- * The server never sends them; they remain optional only while the legacy
- * `ChatPanel` still reads them.
- */
-export interface LegacyChatCitationFields {
-  n?: number;
-  source?: string;
-  ref?: string;
 }
 
 /**

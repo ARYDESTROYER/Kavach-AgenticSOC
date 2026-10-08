@@ -1134,8 +1134,8 @@ DEMO_STREAM_DELAY_S = 0.03
 #: Words per simulated stream piece.
 DEMO_STREAM_WORDS_PER_GROUP = 4
 
-#: Placeholder chat-agent answer until the Demo planner (WP-G) is wired into
-#: :meth:`DemoMockProvider._demo_chat_agent_turn`: a valid, block-free §4.1 final.
+#: The chat-agent answer when the Demo planner cannot be imported (it never should):
+#: a valid, block-free §4.1 final, so a broken install degrades one answer only.
 _DEMO_AGENT_PLACEHOLDER_FINAL = (
     json.dumps({
         "action": "final", "blocks": [], "citations": [], "console_links": [],
@@ -1275,20 +1275,30 @@ class DemoMockProvider(MockProvider):
         return None
 
     def _demo_chat_agent_turn(self, messages: list[dict[str, str]]) -> str:
-        """HOOK for the deterministic Demo chat planner (WP-G, ``engine/demo_chat.py``).
+        """The deterministic Demo chat planner (SPEC §5.5, ``engine/demo_chat.py``).
 
         Called for role ``chat`` when the system prompt carries
-        ``CHAT_AGENT_SYSTEM_MARKER``; must return one §4.1 protocol message (a tool
-        step or a final). Until the planner is wired in, it answers with a valid,
-        block-free final so agent-mode Demo chat is coherent rather than broken."""
-        return _DEMO_AGENT_PLACEHOLDER_FINAL
+        ``CHAT_AGENT_SYSTEM_MARKER``; returns one §4.1 protocol message (a lookup step
+        or a final) planned from the prompt alone, so the real engine validates,
+        audits and executes every call exactly as for a provider model. Imported
+        lazily: the planner pulls in the tool contract, which this low-level module
+        must not load at import time."""
+        try:
+            from ..engine.demo_chat import plan_turn
+        except Exception:  # noqa: BLE001 -- a broken import degrades one answer, never the turn
+            return _DEMO_AGENT_PLACEHOLDER_FINAL
+        return plan_turn(messages)
 
     def _demo_report_summary(self, messages: list[dict[str, str]]) -> str:
-        """HOOK for the deterministic Demo report summary (WP-G; SPEC §9.4).
-
-        Called when the system prompt carries ``REPORT_SUMMARY_SYSTEM_MARKER``; must
-        return Markdown prose. Placeholder until the summary template is wired in."""
-        return _DEMO_REPORT_SUMMARY_PLACEHOLDER
+        """The deterministic Demo report summary (SPEC §9.2/§9.4): the
+        ``{executive_summary, next_steps}`` JSON ``REPORT_SUMMARY_SYSTEM`` asks for,
+        built only from the fenced report digest (a plain sentence when the prompt
+        holds no readable digest)."""
+        try:
+            from ..engine.demo_chat import summarise_report
+        except Exception:  # noqa: BLE001
+            return _DEMO_REPORT_SUMMARY_PLACEHOLDER
+        return summarise_report(messages)
 
     @staticmethod
     def _resolve(messages: list[dict[str, str]]):
