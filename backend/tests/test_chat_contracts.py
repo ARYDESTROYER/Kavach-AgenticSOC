@@ -879,10 +879,11 @@ def test_retention_stub_and_helpers() -> None:
     assert B.block_view(VALID_BLOCKS["chart"]) == "hbar" and B.block_view(VALID_BLOCKS["table"]) == "table"
     assert "donut" not in B.allowed_views_for("categories", categories=7)
     assert B.semantic_verdict("NEEDS_HUMAN") == "needs_human" and B.semantic_status("weird") is None
-    with pytest.raises(NotImplementedError):
-        B.to_blocks(Artifact(id="a1", kind="kpis", title="K", data={"items": []}), B.MaterialiseOptions(block_id="b1"))
-    with pytest.raises(NotImplementedError):
-        B.revise_view(VALID_BLOCKS["chart"], "donut", block_id="m3.b1")
+    # Materialisation landed in wave 2: an empty KPI artifact yields no block, and a
+    # stored chart can only be re-viewed as one of its own allowed views.
+    assert B.to_blocks(Artifact(id="a1", kind="kpis", title="K", data={"items": []}), B.MaterialiseOptions(block_id="b1")) == []
+    assert B.revise_view(VALID_BLOCKS["chart"], "donut", block_id="m3.b1") is None
+    assert B.revise_view(VALID_BLOCKS["chart"], "hbar", block_id="m3.b1")["kind"] == "hbar"
     assert [b["id"] for b in B.iter_leaf_blocks([VALID_BLOCKS["report"], VALID_BLOCKS["chart"]])] == ["r1-1", "t1.a1"]
 
 
