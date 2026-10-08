@@ -324,8 +324,21 @@ describe('useChatConversations — retention and refresh', () => {
     const { result } = await mount();
     expect(result.current.retention).toEqual({ limit: 50, truncated: true, total: 64, showNote: true });
     expect(result.current.threadRetention.note).toBe(
-      'Showing the latest 100 of 148 messages. Older turns were removed by retention.',
+      'Showing the latest 100 of 148 messages. Conversations keep their newest 100 messages.',
     );
+    expect(result.current.threadRetention.removed).toBe(true);
+    expect(result.current.threadRetention.trimmedHint).toBeNull();
+  });
+
+  it('bases the removed-turns note on the counts, not on history_truncated', async () => {
+    // One large answer tightened to fit storage: truncated, but no turn is missing.
+    const tightened = { ...NEWEST, message_count: 2, total_message_count: 2, history_truncated: true };
+    listMock.mockResolvedValueOnce({ conversations: [tightened] });
+    getMock.mockResolvedValueOnce({ ...detail(tightened), message_count: 2, total_message_count: 2, history_truncated: true });
+    const { result } = await mount();
+    expect(result.current.threadRetention.removed).toBe(false);
+    expect(result.current.threadRetention.note).toBeNull();
+    expect(result.current.threadRetention.trimmedHint).toBe(TRIMMED_TO_FIT_HINT);
   });
 
   it('shows the retention note from 45 conversations even when nothing was evicted', async () => {

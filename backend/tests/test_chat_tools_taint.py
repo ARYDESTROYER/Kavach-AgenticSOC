@@ -250,3 +250,35 @@ async def test_evidence_from_an_earlier_call_in_the_turn_clears_the_rule() -> No
                              data={"entity": {"kind": "ip", "value": "8.8.4.4"}})])
     out = await build_toolbox(make_ctx(enrich=spy)).execute("lookup_indicator", {"indicator": "8.8.4.4"}, taint=ledger)
     assert out.ok and spy.calls
+
+
+def test_an_egressed_release_gives_back_the_turn_slot_but_not_the_conversation_slot() -> None:
+    """SPEC A13: a lookup that reached providers which all failed gave the analyst
+    nothing (its per-turn slot comes back) but still sent the indicator out (the
+    conversation egress cap counts it at once, not only on the next turn's replay)."""
+    ledger = TaintLedger(["x"], conversation_lookups=8, max_per_turn=3, max_per_conversation=10)
+    assert ledger.lookups_remaining() == 2
+    assert ledger.reserve_lookup()
+    ledger.release_lookup(egressed=True)
+    assert ledger.lookups == 0 and ledger.egressed == 1 and ledger.lookups_remaining() == 1
+    assert ledger.reserve_lookup()
+    ledger.release_lookup()  # refused before dispatch: both slots come back
+    assert ledger.lookups_remaining() == 1
+    assert ledger.reserve_lookup()
+    ledger.release_lookup(egressed=True)
+    assert not ledger.can_lookup()  # 8 earlier + 2 egressed = the conversation cap
+    # The per-turn limit alone is not touched by egress.
+    fresh = TaintLedger(["x"], max_per_turn=1, max_per_conversation=10)
+    assert fresh.reserve_lookup()
+    fresh.release_lookup(egressed=True)
+    assert fresh.lookups_remaining() == 1
+
+
+def test_one_egress_rule_for_the_live_turn_and_the_replay() -> None:
+    from app.agents.chat_tools.taint import lookup_left_deployment
+
+    assert lookup_left_deployment("ok", 2) and lookup_left_deployment("ok", None)
+    assert not lookup_left_deployment("ok", 0)
+    assert lookup_left_deployment("timeout", 0)
+    for status in ("denied", "skipped", "error", "cancelled"):
+        assert not lookup_left_deployment(status, 3)

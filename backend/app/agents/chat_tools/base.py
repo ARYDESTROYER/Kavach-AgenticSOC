@@ -45,10 +45,9 @@ from ...models import (
 )
 from ...utils import iso_now
 from ..blocks import (
-    ALLOWED_VIEWS,
     ARTIFACT_KINDS,
-    MAX_DONUT_SEGMENTS,
     ArtifactKind,
+    artifact_views,
     display_text,
 )
 from ..chat_events import NO_ARTIFACTS, TOOL_CALL_HEADER, TOOL_STATUSES
@@ -142,14 +141,11 @@ class Artifact:
             raise ValueError("artifact data must be a dict")
 
     def views(self) -> list[str]:
-        """The views this artifact offers (SPEC §7.3); ``donut`` only while the
-        categories fit in six segments."""
-        views = list(ALLOWED_VIEWS[self.kind])
-        if self.kind == "categories":
-            labels = self.data.get("labels")
-            if isinstance(labels, list) and len(labels) > MAX_DONUT_SEGMENTS:
-                views.remove("donut")
-        return views
+        """The views this artifact can HONESTLY be shown in (SPEC §7.3, A15): the ONE
+        rule :func:`app.agents.blocks.artifact_views` that :func:`~app.agents.blocks.to_blocks`
+        also obeys, so the TRUSTED tool-call header never offers a view (a stacked bar
+        of minutes, a donut of a truncated top-N) the materialiser would refuse."""
+        return artifact_views(self)
 
     def problems(self) -> list[str]:
         """Missing required data keys for this kind (empty when well-formed)."""
@@ -181,6 +177,11 @@ class ToolOutcome:
     # The run-log status this outcome maps to (the engine may override it with
     # timeout/denied/cancelled, which a tool cannot observe from inside).
     status: ToolStatus = "ok"
+    # Why a ``denied`` call was refused: ``policy`` when no grant would help (a
+    # private or internal indicator, the taint rule, an invalid kind), so the turn's
+    # notice does not tell the analyst to ask for a permission; anything else
+    # (``None``/``grant``) is a missing grant.
+    refusal: Literal["grant", "policy"] | None = None
 
     def __post_init__(self) -> None:
         if not self.ok and self.status == "ok":
@@ -190,9 +191,17 @@ class ToolOutcome:
             raise ValueError("artifact ids must be unique within one call")
 
     @classmethod
-    def failure(cls, error: str, *, status: ToolStatus = "error", summary: str | None = None) -> "ToolOutcome":
+    def failure(
+        cls, error: str, *, status: ToolStatus = "error", summary: str | None = None,
+        refusal: Literal["grant", "policy"] | None = None,
+    ) -> "ToolOutcome":
         """A failed call with an engine-template ``error`` (also its summary)."""
-        return cls(ok=False, summary=summary or error, error=error, status=status)
+        return cls(ok=False, summary=summary or error, error=error, status=status, refusal=refusal)
+
+    @property
+    def policy_refused(self) -> bool:
+        """A ``denied`` call that no grant would have allowed (see ``refusal``)."""
+        return self.status == "denied" and self.refusal == "policy"
 
 
 @dataclass(frozen=True)
@@ -245,6 +254,10 @@ class ChatToolContext:
     # Request selection the tools must respect (never widen).
     scopes: frozenset[str] = frozenset()
     source_id: str | None = None
+    # The "Ask about this" topic id this turn was started from (``ChatRequest.topic``):
+    # ``app_help`` defaults its ``topic`` input to it, so the topic's own glossary
+    # sections lead. Never prompt text; an unknown id is ignored.
+    topic: str | None = None
 
     def has(self, resource: str, action: str) -> bool:
         return (resource, action) in self.grants

@@ -323,6 +323,12 @@ class TaintLedger:
         self.lookups = 0
         #: Lookups reserved by calls still running (see :meth:`reserve_lookup`).
         self.reserved = 0
+        #: Lookups this turn that may have sent the indicator out (dispatched to
+        #: providers that all failed, or timed out) but gave the analyst nothing. They
+        #: gave back their PER-TURN slot (an analyst-value rule) and keep their
+        #: CONVERSATION slot (the egress cap, SPEC A13), so the conversation count no
+        #: longer lags behind until the next turn's replay.
+        self.egressed = 0
         for item in user_texts:
             self.add_user_text(item)
 
@@ -416,7 +422,7 @@ class TaintLedger:
         used = self.lookups + self.reserved + max(0, int(in_flight))
         return max(0, min(
             self.max_per_turn - used,
-            self.max_per_conversation - self.conversation_lookups - used,
+            self.max_per_conversation - self.conversation_lookups - self.egressed - used,
         ))
 
     def can_lookup(self, in_flight: int = 0) -> bool:
@@ -435,13 +441,36 @@ class TaintLedger:
         self.reserved = max(0, self.reserved - 1)
         self.lookups += 1
 
-    def release_lookup(self) -> None:
-        """The reserved call was refused or failed: give the lookup back."""
+    def release_lookup(self, *, egressed: bool = False) -> None:
+        """The reserved call was refused or failed: give the lookup back. With
+        ``egressed`` (the indicator may have left the deployment, see
+        :func:`lookup_left_deployment`) only the per-turn slot is given back; the
+        conversation egress cap keeps counting it."""
         self.reserved = max(0, self.reserved - 1)
+        if egressed:
+            self.egressed += 1
 
     @property
     def lookups_this_turn(self) -> int:
         return self.lookups
+
+
+def lookup_left_deployment(status: Any, rows: Any) -> bool:
+    """Whether an indicator lookup may have sent its value to a third party (the
+    per-conversation EGRESS cap, SPEC §4.8 / A13), from its run-log ``status`` and
+    ``rows`` (``LookupIndicatorTool``'s structured providers-queried count). ONE rule
+    for the live turn (the toolbox's release) and the replay of stored steps:
+
+    * ``ok``: yes, unless no provider was queried (``rows == 0``: no enabled provider
+      covers the kind); a missing ``rows`` counts (the safe side of a budget);
+    * ``timeout``: yes, it ran out of time after it may have dispatched;
+    * anything else (``denied``, ``skipped``, ``error``, ``cancelled``): refused before
+      dispatch or nothing to call."""
+    if status == "timeout":
+        return True
+    if status != "ok":
+        return False
+    return not (isinstance(rows, int) and not isinstance(rows, bool) and rows == 0)
 
 
 __all__ = [
@@ -457,5 +486,6 @@ __all__ = [
     "TaintLedger",
     "detect_kind",
     "indicator_tokens",
+    "lookup_left_deployment",
     "validate_indicator",
 ]

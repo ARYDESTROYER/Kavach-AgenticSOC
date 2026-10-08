@@ -921,3 +921,64 @@ def test_lazy_exports_match_all():
         assert getattr(knowledge, name) is not None, name
     with pytest.raises(AttributeError):
         knowledge.not_a_name  # noqa: B018
+
+
+# --------------------------------------------------------------------------- #
+# "Ask about this" topic passthrough (SPEC A7; ChatRequest.topic → ctx.topic).
+# --------------------------------------------------------------------------- #
+_AUTO_CLOSED = "kpi:auto_closed"
+
+
+def _anchor(doc: str | None) -> str:
+    return (doc or "").rsplit("#", 1)[-1]
+
+
+async def test_app_help_defaults_its_topic_to_the_turns_topic():
+    """The page sends the topic's question; without the topic the plain retrieval
+    leads with a neighbouring glossary entry. ``ctx.topic`` pins the topic's own
+    section first, and a model-chosen query is kept (it ranks the rest)."""
+    question = topic_question(_AUTO_CLOSED)
+    plain = await AppHelpTool().run(_ctx(), query=question)
+    assert plain.ok and _anchor(plain.citations[0].doc) != "auto-closed"
+    pinned = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED), query=question)
+    assert pinned.ok and _anchor(pinned.citations[0].doc) == "auto-closed"
+    own_query = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED), query="how is resolved closed counted")
+    assert _anchor(own_query.citations[0].doc) == "auto-closed"
+    assert own_query.untrusted_params["query"] == "how is resolved closed counted"
+    # No query at all: the topic's own question is searched.
+    bare = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED))
+    assert bare.ok and _anchor(bare.citations[0].doc) == "auto-closed"
+    # An unknown (well-formed) topic is ignored, never an error.
+    unknown = await AppHelpTool().run(_ctx(topic="kpi:not_a_topic"), query=question)
+    assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
+
+
+async def test_zero_cost_answer_pins_the_turns_topic():
+    from app.agents.chat import ChatEngine, TurnOutcome, _discover_app_knowledge
+    from app.audit.audit_log import AuditLogger
+    from app.config import ModelConfig
+    from app.es.fake import InMemoryESClient
+    from app.llm.gateway import LLMGateway
+    from app.stores.cases import CaseStore
+
+    adapter = _discover_app_knowledge()
+    question = topic_question(_AUTO_CLOSED)
+    plain = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured")
+    assert _anchor(plain.citations[0].doc) != "auto-closed"
+    pinned = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_AUTO_CLOSED)
+    assert _anchor(pinned.citations[0].doc) == "auto-closed"
+    console = get_app_knowledge().topics[_AUTO_CLOSED].console
+    assert pinned.console_links[0].id == console
+    unknown = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic="kpi:nope")
+    assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
+
+    # End to end through the engine: a legacy-mock deployment answers at $0 with the
+    # topic's section cited first.
+    es = InMemoryESClient()
+    prefs = Preferences()
+    prefs.chat_model = ModelConfig(provider="mock", model="mock")
+    engine = ChatEngine(es, LLMGateway.__new__(LLMGateway), AuditLogger(es), CaseStore(es))
+    outcome = TurnOutcome()
+    response = await engine.chat(question, prefs, tool_context=_ctx(topic=_AUTO_CLOSED), outcome=outcome)
+    assert response.answer_kind == "product_help" and response.usage and response.usage.calls == 0
+    assert _anchor(response.citations[0].doc) == "auto-closed"

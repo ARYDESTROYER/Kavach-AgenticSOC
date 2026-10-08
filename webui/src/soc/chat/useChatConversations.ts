@@ -23,7 +23,8 @@
  *
  * Revamp additions: server-side content search (`?q=`, debounced, with snippets),
  * pinning (≤ 10; 409 `chat_pin_limit`), `report_id` on rows, and a REQUESTED selection
- * from the route (`NavOpts` `conversationId` / `messageId` / `newChat` / `topic`).
+ * from the route (`NavOpts` `conversationId` / `messageId` / `newChat` / `topic` / the
+ * palette's `ask`).
  *
  * The list is one page (the server caps it at 50), and pinned or older threads may sit
  * beyond it. So a thread missing from the page is CHECKED (`GET …/{id}`) before it is
@@ -45,6 +46,7 @@ import {
   listConversations,
   updateConversation,
 } from './chat-api';
+import { clampAsk } from './ask';
 import { displayText } from './stream-events';
 
 /** The cross-tab history signal (unchanged from the pre-revamp page). */
@@ -97,21 +99,25 @@ export interface ChatNavRequest {
   newChat: boolean;
   /** A `console_map` topic id; the page resolves it to a templated question. */
   topic: string | null;
+  /** The palette's "Ask AI" text, prefilled into the new chat's composer (never sent). */
+  ask: string | null;
 }
 
 /**
  * Read the chat keys of `NavOpts`, validated (an invalid id is dropped, a message id
  * without its conversation is dropped). `null` when nothing chat-related was asked.
- * A `topic` implies a fresh chat; a `conversationId` wins over `newChat`.
+ * A `topic` or an `ask` implies a fresh chat; a `conversationId` wins over `newChat`,
+ * and a `topic` (a templated question the page sends) wins over a free-text `ask`.
  */
 export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRequest | null {
   if (!opts) return null;
   const conversationId = isSafeChatId(opts.conversationId) ? opts.conversationId : null;
   const messageId = conversationId && isSafeChatId(opts.messageId) ? opts.messageId : null;
   const topic = typeof opts.topic === 'string' && TOPIC_RE.test(opts.topic) ? opts.topic : null;
-  const newChat = !conversationId && (opts.newChat === true || topic !== null);
+  const ask = topic ? null : clampAsk(opts.ask);
+  const newChat = !conversationId && (opts.newChat === true || topic !== null || ask !== null);
   if (!conversationId && !newChat) return null;
-  return { conversationId, messageId, newChat, topic: conversationId ? null : topic };
+  return { conversationId, messageId, newChat, topic: conversationId ? null : topic, ask: conversationId ? null : ask };
 }
 
 export interface UseChatConversationsOptions {
@@ -148,11 +154,55 @@ export interface ChatRetentionInfo {
 }
 
 export interface ChatThreadRetention {
+  /** The server's `history_truncated`: SOMETHING was shortened (text, an answer, turns). */
   truncated: boolean;
+  /**
+   * Turns were REMOVED: `total_message_count > message_count` (the backend's
+   * `stores.chat_conversations.turns_removed`; the lifetime count only grows).
+   */
+  removed: boolean;
   retained: number | null;
   total: number | null;
-  /** "Showing the latest X of Y messages. Older turns were removed by retention." */
+  /** The removed-turns note above the transcript (null when nothing was removed). */
   note: string | null;
+  /**
+   * A quieter line when the thread was only shortened in place (an answer tightened to
+   * fit storage, clipped text) and no turn was removed; null otherwise.
+   */
+  trimmedHint: string | null;
+}
+
+/** The per-conversation message window (`MAX_MESSAGES_PER_CONVERSATION`, SPEC §7.5). */
+export const MAX_THREAD_MESSAGES = 100;
+export const TRIMMED_TO_FIT_HINT = 'Some saved text in this conversation was trimmed to fit storage.';
+
+/**
+ * The thread retention copy from the stored counts. Turns were removed exactly when the
+ * lifetime count exceeds the retained count; below the 100-message window that can only
+ * be the storage bound, at the window it is the 100-message limit. `history_truncated`
+ * alone (no turn missing) means an answer or prompt was shortened in place.
+ */
+export function threadRetentionInfo(
+  retained: number | null,
+  total: number | null,
+  truncated: boolean,
+): ChatThreadRetention {
+  const removed = typeof retained === 'number' && typeof total === 'number' && total > retained;
+  let note: string | null = null;
+  if (removed) {
+    note =
+      (retained as number) >= MAX_THREAD_MESSAGES
+        ? `Showing the latest ${retained} of ${total} messages. Conversations keep their newest ${MAX_THREAD_MESSAGES} messages.`
+        : `Showing the latest ${retained} of ${total} messages. Older turns were removed to stay within the storage limit.`;
+  }
+  return {
+    truncated,
+    removed,
+    retained,
+    total,
+    note,
+    trimmedHint: !removed && truncated ? TRIMMED_TO_FIT_HINT : null,
+  };
 }
 
 export interface ChatConversationsController {
@@ -181,6 +231,12 @@ export interface ChatConversationsController {
   /** The validated topic of the last `topic` request (the page asks its template). */
   topic: string | null;
   clearTopic: () => void;
+  /**
+   * The palette's "Ask AI" text for the fresh draft of the last request (the page
+   * prefills the composer once, then clears it). Dropped by any later navigation.
+   */
+  ask: string | null;
+  clearAsk: () => void;
   /**
    * Increments whenever the controller deliberately enters a fresh New-chat draft
    * (New chat, deleting the last thread, a `newChat` / `topic` request). Pass it to
@@ -244,6 +300,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [requestedUnavailable, setRequestedUnavailable] = React.useState(false);
   const [highlight, setHighlight] = React.useState<ChatHighlightRequest | null>(null);
   const [topic, setTopic] = React.useState<string | null>(null);
+  const [ask, setAsk] = React.useState<string | null>(null);
   const [newDraftEpoch, setNewDraftEpoch] = React.useState(0);
   const [searchQuery, setSearchQueryState] = React.useState('');
   const [searchResults, setSearchResults] = React.useState<ChatConversationSearchHit[] | null>(null);
@@ -335,6 +392,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
    */
   const applyRequest = React.useCallback(
     async (request: ChatNavRequest, rows: ChatConversationSummary[], listFailed: boolean): Promise<void> => {
+      // The latest navigation decides: an unconsumed ask from an earlier one never
+      // prefills a draft it was not meant for.
+      setAsk(request.newChat ? request.ask : null);
       if (request.newChat) {
         if (request.topic) setTopic(request.topic);
         applyTarget(null);
@@ -817,16 +877,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const retained = conversation?.message_count ?? activeSummary?.message_count ?? null;
   const total = conversation?.total_message_count ?? activeSummary?.total_message_count ?? null;
   const threadTruncated = conversation?.history_truncated === true || activeSummary?.history_truncated === true;
-  const threadRetention: ChatThreadRetention = {
-    truncated: threadTruncated,
-    retained,
-    total,
-    note: threadTruncated
-      ? typeof retained === 'number' && typeof total === 'number'
-        ? `Showing the latest ${retained} of ${total} messages. Older turns were removed by retention.`
-        : 'This conversation shows its retained message window. Older turns were removed by retention.'
-      : null,
-  };
+  const threadRetention = threadRetentionInfo(retained, total, threadTruncated);
 
   const restoring =
     enabled &&
@@ -853,6 +904,8 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     clearHighlight: React.useCallback(() => setHighlight(null), []),
     topic,
     clearTopic: React.useCallback(() => setTopic(null), []),
+    ask,
+    clearAsk: React.useCallback(() => setAsk(null), []),
     newDraftEpoch,
     busy,
     setBusy,

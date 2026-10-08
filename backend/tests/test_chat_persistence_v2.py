@@ -42,8 +42,11 @@ from app.stores.chat_conversations import (
     decode_response,
     encode_assistant_response,
     partition_key_for_user,
+    stored_conversation_rows,
     stored_presentation_size,
+    stored_request_rows,
     turns_removed,
+    with_stored_rows,
 )
 from app.stores.memory import EsKVStore
 
@@ -150,15 +153,17 @@ async def test_stored_partition_holds_no_nested_presentation_objects(app_state: 
     store = app_state.chat_conversations
     done = await _exchange(store, "alice", 1, conversation_id=None)
     raw = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user("alice"))
-    offenders = [(p, k) for p, k in _walk_keys(raw) if k in NESTED_KEYS]
+    rows = stored_conversation_rows(raw)
+    # Nested presentation objects never appear in the document, nor inside a row.
+    offenders = [(p, k) for p, k in [*_walk_keys(raw), *_walk_keys(rows)] if k in NESTED_KEYS]
     assert offenders == []
-    message = raw["conversations"][done.conversation_id]["messages"][1]
+    message = rows[done.conversation_id]["messages"][1]
     assert isinstance(message["response"][PRESENTATION_KEY], str)
     assert set(message["response"]) <= {
         PRESENTATION_KEY, "cost", "query", "effective_model", "effective_source_name",
         "truncated", "turn_id", "blocks_version", "idempotency_key",
     }
-    receipt = raw["requests"]["persist-key-000001"]
+    receipt = stored_request_rows(raw)["persist-key-000001"]
     assert PRESENTATION_KEY not in json.dumps(receipt)
     assert all(not isinstance(v, (dict, list)) for v in receipt["assistant_response"].values())
     # Decoded on read: the presentation, the re-injected answer.
@@ -172,8 +177,8 @@ async def test_stored_partition_holds_no_nested_presentation_objects(app_state: 
 async def test_compact_storage_limits_and_legacy_table_round_trip(app_state: AppState) -> None:
     store = app_state.chat_conversations
     done = await _exchange(store, "bob", 2, conversation_id=None)
-    stored = (await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user("bob")))[
-        "conversations"][done.conversation_id]["messages"][1]["response"]
+    stored = stored_conversation_rows(await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user("bob")))[
+        done.conversation_id]["messages"][1]["response"]
     assert len(stored[PRESENTATION_KEY].encode("utf-8")) <= MAX_PRESENTATION_BYTES
     presentation = json.loads(stored[PRESENTATION_KEY])
     blocks = {b["id"]: b for b in presentation["blocks"]}
@@ -337,7 +342,7 @@ async def test_downgrade_before_drop_keeps_text_and_strips_old_details(app_state
     newest = conversation.messages[-1].response
     assert not any(is_expired_block(b) for b in newest["blocks"])
     raw = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user("carol"))
-    stored_messages = raw["conversations"][conversation_id]["messages"]
+    stored_messages = stored_conversation_rows(raw)[conversation_id]["messages"]
     assert len(json.dumps(stored_messages, separators=(",", ":"), ensure_ascii=False).encode()) <= MAX_CONVERSATION_BYTES
 
 
@@ -425,9 +430,11 @@ async def test_pre_revamp_conversation_keeps_unknown_totals(app_state: AppState)
     store = app_state.chat_conversations
     saved = await store.append_exchange("gus", conversation_id=None, user_content="q", assistant_content="a")
     raw = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user("gus"))
+    rows = stored_conversation_rows(raw)
     for key in ("total_tokens", "total_cost", "usage_turns"):
-        raw["conversations"][saved.id].pop(key, None)              # a pre-revamp row
-    await app_state.kv.put(CHAT_CONVERSATIONS_NS, partition_key_for_user("gus"), raw)
+        rows[saved.id].pop(key, None)                              # a pre-revamp row
+    await app_state.kv.put(CHAT_CONVERSATIONS_NS, partition_key_for_user("gus"),
+                           with_stored_rows(raw, conversations=rows))
     later = await _exchange(store, "gus", 9, conversation_id=saved.id)
     assert later.conversation.total_tokens is None and later.conversation.usage_turns is None
 

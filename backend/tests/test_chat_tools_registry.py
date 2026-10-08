@@ -103,6 +103,29 @@ def test_zero_indicator_lookups_turns_the_tool_off() -> None:
     prefs = Preferences(chat_agent=ChatAgentConfig(max_indicator_lookups=0))
     box = build_toolbox(make_ctx(prefs=prefs))
     assert "lookup_indicator" not in box.names()
+    # Named as switched off by configuration (the caller holds enrichment:read), so
+    # the prompt can say "turned off on this deployment" instead of naming a grant.
+    assert box.disabled == ("lookup_indicator",)
+    assert build_toolbox(make_ctx()).disabled == ()
+
+
+def test_disabled_lists_only_tools_the_caller_could_otherwise_use() -> None:
+    prefs = Preferences(chat_agent=ChatAgentConfig(max_indicator_lookups=0))
+    ungranted = make_ctx(prefs=prefs, grants=frozenset({("cases", "read")}))
+    assert build_toolbox(ungranted).disabled == ()  # a grant gap stays a grant gap
+    assert build_toolbox(make_ctx(prefs=prefs), scopes=["cases"]).disabled == ()  # out of scope
+    assert build_toolbox(make_ctx(prefs=prefs), scopes=["intel"]).disabled == ("lookup_indicator",)
+
+
+def test_system_prompt_names_configuration_disabled_tools_on_one_trusted_line() -> None:
+    from app.agents.prompts import DISABLED_TOOLS_LINE_PREFIX, render_chat_agent_system
+
+    text = render_chat_agent_system("- search_cases(status) -- cases",
+                                    disabled_tools=["lookup_indicator", "Bad Name", "lookup_indicator"])
+    lines = [ln for ln in text.splitlines() if DISABLED_TOOLS_LINE_PREFIX in ln]
+    assert len(lines) == 1 and lines[0].startswith(f"- {DISABLED_TOOLS_LINE_PREFIX} lookup_indicator. ")
+    assert "Bad Name" not in text and "never that a permission is missing" in lines[0]
+    assert DISABLED_TOOLS_LINE_PREFIX not in render_chat_agent_system("- search_cases(status) -- cases")
 
 
 async def test_execute_refuses_ungranted_tool_with_one_access_denied_row() -> None:
@@ -254,6 +277,26 @@ async def test_lookup_budget_is_reserved_and_released_by_execute() -> None:
     assert first.ok and ledger.lookups == 1
     second = await box.execute("lookup_indicator", {"indicator": "1.1.1.1"}, taint=ledger)
     assert second.status == "skipped" and "limit" in (second.error or "")
+
+
+async def test_a_lookup_whose_providers_all_failed_counts_toward_the_conversation_cap_at_once() -> None:
+    """Dispatched to providers that all failed: the per-turn slot is given back (the
+    analyst got nothing), the conversation egress slot is kept within the SAME turn."""
+    from app.enrichment.base import ProviderResult
+
+    ledger = TaintLedger(["check 8.8.8.8 and 1.1.1.1"], conversation_lookups=9,
+                         max_per_turn=3, max_per_conversation=10)
+
+    async def enrich(value, kind):
+        return [ProviderResult(provider="abuseipdb", indicator=value, indicator_kind="ip", ok=False,
+                               error="HTTP 429")]
+
+    box = build_toolbox(make_ctx(enrich=enrich))
+    failed = await box.execute("lookup_indicator", {"indicator": "8.8.8.8"}, taint=ledger)
+    assert failed.ok and failed.rows == 1 and failed.observation["providers_answered"] == 0
+    assert ledger.lookups == 0 and ledger.reserved == 0 and ledger.egressed == 1
+    refused = await box.execute("lookup_indicator", {"indicator": "1.1.1.1"}, taint=ledger)
+    assert refused.status == "skipped" and "limit" in (refused.error or "")
 
 
 async def test_parallel_calls_see_their_own_call_identity(probe_catalogue) -> None:

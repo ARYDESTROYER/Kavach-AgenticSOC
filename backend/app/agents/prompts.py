@@ -775,6 +775,10 @@ from .chat_events import (  # noqa: E402 -- the chat section depends on the prot
     USER_TURN_MARKER,
 )
 
+# The trusted "This conversation" line naming configuration-disabled tools; the Demo
+# planner reads the names back after it (engine.demo_chat).
+DISABLED_TOOLS_LINE_PREFIX = "Turned off on this deployment:"
+
 _CHAT_AGENT_BODY = (
     "You are the Agentic SOC assistant inside a security operations console. You answer "
     "analysts' questions about their security data (logs, cases, metrics, threat intel, "
@@ -866,13 +870,19 @@ def render_chat_agent_system(
     time_window: str | None = None,
     case_scoped: bool = False,
     scopes: Sequence[str] = (),
+    disabled_tools: Sequence[str] = (),
 ) -> str:
     """The agent-mode system prompt: :data:`CHAT_AGENT_SYSTEM_MARKER` on the first
     line (the Demo provider routes on it), then the protocol, the GRANTED tool
     signatures (``render_tool_signatures`` output), trust, honesty and style rules.
 
     ``time_window`` is a validated ``TimeRange.label()``; ``scopes`` are the request's
-    @-scope enums. Neither is free text, so neither can carry an instruction."""
+    @-scope enums; ``disabled_tools`` are catalogue tool names the caller holds the
+    grants for (and may use in these scopes) that this deployment's CONFIGURATION
+    switched off (``lookup_indicator`` when ``max_indicator_lookups == 0``). Without
+    that line such a tool is simply absent, exactly like an ungranted one, and the
+    answer would wrongly name a permission. None is free text, so none can carry an
+    instruction."""
     signatures = (tool_signatures or "").strip() or (
         "(none) No lookups are available in this conversation: answer from product "
         "knowledge and say which data you cannot read."
@@ -894,6 +904,14 @@ def render_chat_agent_system(
     clean_scopes = [s for s in scopes if isinstance(s, str) and re.fullmatch(r"[a-z]{2,16}", s)]
     if clean_scopes:
         context.append(f"- The analyst limited lookups to: {', '.join(clean_scopes)}.")
+    off = list(dict.fromkeys(
+        t for t in disabled_tools if isinstance(t, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", t)))
+    if off:
+        context.append(
+            f"- {DISABLED_TOOLS_LINE_PREFIX} {', '.join(off)}. The analyst's role allows them, but an "
+            "operator switched them off: when a question needs one, say it is turned off on this "
+            "deployment, never that a permission is missing."
+        )
     if case_scoped:
         context.append(
             "- This conversation is about one case (see the case context). Case lookups default "

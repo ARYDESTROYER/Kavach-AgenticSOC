@@ -266,6 +266,24 @@ def test_fingerprint_ignores_stream_mode_but_not_revamp_inputs() -> None:
     )
 
 
+def test_topic_is_a_validated_console_map_id_and_part_of_the_identity_only_when_set() -> None:
+    from pydantic import ValidationError
+
+    assert ChatRequest(message="x", topic="kpi:mtta").topic == "kpi:mtta"
+    assert ChatRequest(message="x", topic="settings:detection.detection-autoclose").topic
+    assert ChatRequest(message="x", topic="  ").topic is None
+    for bad in ("Kpi:MTTA", "kpi mtta", "kpi:<<<APP_DOCS>>>", "x" * 65, "kpi:mtta\n"):
+        with pytest.raises(ValidationError):
+            ChatRequest(message="x", topic=bad)
+    base = ChatRequest(message="What does MTTA measure?")
+    # Absent topic: byte-identical to a pre-revamp body (exclude_defaults).
+    assert "topic" not in base.fingerprint_payload()
+    assert _fingerprint(base) == _legacy_fingerprint(base)
+    with_topic = ChatRequest(message="What does MTTA measure?", topic="kpi:mtta")
+    assert with_topic.fingerprint_payload()["topic"] == "kpi:mtta"
+    assert _fingerprint(base) != _fingerprint(with_topic)
+
+
 # --------------------------------------------------------------------------- #
 # ChatResponse — lenient replay (§3.2, §3.3, §3.5, §4.5)
 # --------------------------------------------------------------------------- #

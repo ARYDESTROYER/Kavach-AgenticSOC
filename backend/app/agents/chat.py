@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 import re
@@ -59,7 +60,7 @@ from ..models import (
     TurnUsage,
     display_params,
 )
-from ..stores.case_thread import CaseThreadStore
+from ..stores.case_thread import CaseThreadStore, CaseThreadWriteFailed
 from ..stores.cases import CaseStore
 from ..stores.memory import MemoryStore
 from ..tools.es_query import EsQueryTool
@@ -111,7 +112,13 @@ from .chat_protocol import (
 )
 from .chat_tools.base import Artifact, ChatToolContext, ToolOutcome, render_tool_call_header, render_tool_signatures
 from .chat_tools.common import resolve_window
-from .chat_tools.taint import KIND_ALIASES, REFUSED_TAINT, TaintLedger, validate_indicator
+from .chat_tools.taint import (
+    KIND_ALIASES,
+    REFUSED_TAINT,
+    TaintLedger,
+    lookup_left_deployment,
+    validate_indicator,
+)
 from .prompts import (
     CHAT_SYSTEM,
     fence,
@@ -234,6 +241,9 @@ class _PlannedCall:
     tool: Any = None
     status: str = "ok"           # ok = dispatch; otherwise the refusal status
     reason: str = ""
+    # A ``denied`` refusal no grant would fix (§4.8.3 indicator policy): the turn's
+    # notice then says "policy does not allow", never "permissions you do not have".
+    policy: bool = False
     outcome: ToolOutcome | None = None
     duration_ms: int = 0
     artifacts: list[Artifact] = field(default_factory=list)
@@ -289,8 +299,35 @@ class _KnowledgeAdapter:
     def __init__(self, module: Any) -> None:
         self._module = module
 
-    def fallback_answer(self, question: str, *, grants: frozenset[tuple[str, str]], reason: str) -> Any:
-        return self._module.answer_app_question(question, grants=grants, reason=reason)
+    def fallback_answer(
+        self, question: str, *, grants: frozenset[tuple[str, str]], reason: str, topic: str | None = None,
+    ) -> Any:
+        """The $0 Help Center answer. For an "Ask about this" turn (``topic``), the
+        topic's own glossary sections lead the retrieval exactly as in ``app_help``,
+        and its console destination is linked first."""
+        answer = self._module.answer_app_question
+        if not topic:
+            return answer(question, grants=grants, reason=reason)
+        if _accepts_keyword(answer, "topic"):
+            return answer(question, grants=grants, reason=reason, topic=topic)
+        try:
+            knowledge = self._module.get_app_knowledge()
+            entry = knowledge.topics.get(topic)
+        except Exception:  # noqa: BLE001 -- no corpus: the plain answer decides
+            entry = None
+        if entry is None:
+            return answer(question, grants=grants, reason=reason)
+        try:
+            value = answer(question, grants=grants, reason=reason, knowledge=_topic_view(knowledge, entry))
+        except Exception as exc:  # noqa: BLE001 -- never worse than the plain answer
+            logger.info("topic-pinned app help unavailable (%s)", type(exc).__name__)
+            return answer(question, grants=grants, reason=reason)
+        fallback = coerce_fallback_answer(value)
+        if fallback is None or not entry.console:
+            return fallback
+        lead = coerce_console_links(self.resolve_console_links([entry.console], grants=grants))
+        fallback.console_links = (lead + [link for link in fallback.console_links if link.id != entry.console])
+        return fallback
 
     def resolve_console_links(self, ids: Sequence[str], *, grants: frozenset[tuple[str, str]]) -> Any:
         return self._module.resolve_console_links(list(ids), grants)
@@ -300,6 +337,55 @@ class _KnowledgeAdapter:
 
     def rebase_citations(self, outcome: Any, taken: Sequence[Citation]) -> None:
         self._module.rebase_doc_citations(outcome, taken)
+
+
+# A pinned topic section's score when the question itself matched nothing better:
+# above the Help Center's "settings prose" floor, so the section is kept as prose.
+_PINNED_TOPIC_SCORE = 12.0
+
+
+def _accepts_keyword(fn: Any, name: str) -> bool:
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+class _TopicPinnedIndex:
+    """A read-only view of the Help Center index whose ``search`` returns an "Ask
+    about this" topic's own glossary sections first (the ``app_help`` tool's rule,
+    SPEC A7), scored level with the best match so the extractive answer quotes the
+    topic's section and cites close runners-up as before. Everything else (routing
+    scores, unknown-term checks) is the real index, so pinning never changes WHETHER
+    a question routes to the Help Center."""
+
+    def __init__(self, index: Any, keys: Sequence[str], hit_type: Any) -> None:
+        self._index = index
+        self._keys = tuple(dict.fromkeys(keys))
+        self._hit = hit_type
+
+    def search(self, query: str, k: int = 4, **kwargs: Any) -> list[Any]:
+        hits = list(self._index.search(query, k, **kwargs))
+        top = max([float(getattr(h, "score", 0.0) or 0.0) for h in hits] + [_PINNED_TOPIC_SCORE])
+        pinned = [self._hit(key=key, score=top) for key in self._keys]
+        return (pinned + [h for h in hits if getattr(h, "key", None) not in self._keys])[:max(1, k)]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._index, name)
+
+
+def _topic_view(knowledge: Any, topic: Any) -> Any:
+    """``knowledge`` with its doc index pinned to ``topic``'s glossary sections; the
+    unchanged corpus when the topic names none (a settings topic links its page)."""
+    keys = [
+        chunk.id for chunk in knowledge.chunks
+        if f"{knowledge.pages[chunk.page].path}#{chunk.anchor}" in tuple(topic.docs or ())
+    ]
+    if not keys:
+        return knowledge
+    from ..knowledge.index import Hit
+
+    return replace(knowledge, index=_TopicPinnedIndex(knowledge.index, keys, Hit))
 
 
 def _discover_app_knowledge() -> Any:
@@ -886,7 +972,7 @@ class ChatEngine:
                 return False, "no_case"
             ids = _thread_message_ids(cid, idempotency_key)
             prompt_text = (prompt or "").strip()
-            if prompt_text and not await self._thread_has(cid, ids[0]):
+            if prompt_text:
                 message = CaseMessage(
                     case_id=cid,
                     author_type=AuthorType.HUMAN.value,
@@ -897,9 +983,9 @@ class ChatEngine:
                 )
                 if ids[0]:
                     message.id = ids[0]
-                await self._threads.append(message)
+                await self._append_thread_message(message)
             reply_text = (answer or "").strip()
-            if reply_text and not await self._thread_has(cid, ids[1]):
+            if reply_text:
                 model = getattr(getattr(prefs, "chat_model", None), "model", "") or ""
                 message = CaseMessage(
                     case_id=cid,
@@ -911,19 +997,29 @@ class ChatEngine:
                 )
                 if ids[1]:
                     message.id = ids[1]
-                await self._threads.append(message)
+                await self._append_thread_message(message)
+        except CaseThreadWriteFailed:
+            # The store could not PROVE the write (backend error or exhausted CAS
+            # retries): a retry with the same key appends only what is missing.
+            logger.warning("Persisting case chat turn was not confirmed; continuing")
+            return False, "store_error"
         except Exception as exc:  # noqa: BLE001 — thread persistence must never break chat
-            logger.warning("Persisting case chat turn failed (%s); continuing", exc)
+            logger.warning("Persisting case chat turn failed (%s); continuing", type(exc).__name__)
             return False, "store_error"
         return True, None
 
-    async def _thread_has(self, case_id: str, message_id: str | None) -> bool:
-        if not message_id or self._threads is None:
-            return False
-        try:
-            return await self._threads.get(case_id, message_id) is not None
-        except Exception:  # noqa: BLE001 -- unknown → append (never lose the turn)
-            return False
+    async def _append_thread_message(self, message: CaseMessage) -> None:
+        """Append one case-thread message, deduplicated by id inside the store's ONE
+        compare-and-set (SPEC A4). The earlier check-then-append let two simultaneous
+        retries of a keyed turn both see "absent" and duplicate it; a write the store
+        cannot confirm raises :class:`CaseThreadWriteFailed`. A duck-typed store
+        without ``append_if_absent`` keeps the plain append (no dedup)."""
+        assert self._threads is not None
+        append_if_absent = getattr(self._threads, "append_if_absent", None)
+        if callable(append_if_absent):
+            await append_if_absent(message)
+        else:
+            await self._threads.append(message)
 
     def _app_knowledge(self) -> Any:
         value = self.app_knowledge
@@ -1056,7 +1152,10 @@ class _AgentTurn:
         self.effective_model: str | None = None
         self.notice: TurnNotice | None = None
         self.cap_hit = False
+        # Grant gaps and policy refusals get different notices (a missing permission
+        # can be requested; a private indicator can never be sent out).
         self.denied_any = False
+        self.policy_refused_any = False
         self.legacy_table: dict[str, Any] | None = None
         self.legacy_query: str | None = None
         self.streamed_text = ""
@@ -1108,9 +1207,13 @@ class _AgentTurn:
     async def _build_messages(self) -> None:
         signatures = render_tool_signatures(self.granted)
         window = self.ctx.time_range.label() if self.ctx.time_range is not None else None
+        # Tools the caller may use but configuration switched off: named only when the
+        # turn offers tools at all (a one-call turn lists none).
+        disabled = [n for n in (getattr(self.toolbox, "disabled", ()) or ()) if isinstance(n, str)]
         system = render_chat_agent_system(
             signatures, max_parallel=self.cfg.max_parallel, time_window=window,
             case_scoped=bool(self.case_id), scopes=sorted(self.ctx.scopes),
+            disabled_tools=disabled if self.cfg.max_model_calls > 1 else (),
         )
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         mem_block = await self.engine._render_memory()
@@ -1427,6 +1530,9 @@ class _AgentTurn:
                 refusal = self._indicator_refusal(request, indicator_lookups)
                 if refusal is not None:
                     call.status, call.reason = refusal
+                    # Every engine-side indicator ``denied`` is a policy refusal
+                    # (kind/egress validation or the taint rule), never a grant gap.
+                    call.policy = call.status == "denied"
                 else:
                     indicator_lookups += 1
             if call.status == "ok":
@@ -1446,9 +1552,10 @@ class _AgentTurn:
         # and scope itself and writes the ACCESS_DENIED / execution audit rows.
         for call in planned:
             if call.status != "ok":
-                call.outcome = ToolOutcome.failure(call.reason, status=call.status)
+                call.outcome = ToolOutcome.failure(call.reason, status=call.status,
+                                                   refusal="policy" if call.policy else None)
                 if call.status == "denied":
-                    self.denied_any = True
+                    self._note_denied(call.outcome)
                     await self._audit_refusal(call)
                 call.step = self._tool_step(call)
                 yield StepEndEvent(step=call.step)
@@ -1568,6 +1675,15 @@ class _AgentTurn:
         call.outcome = outcome
         call.status = outcome.status or ("ok" if outcome.ok else "error")
         if call.status == "denied":
+            call.policy = outcome.policy_refused
+            self._note_denied(outcome)
+
+    def _note_denied(self, outcome: ToolOutcome) -> None:
+        """Record a refused call for the turn notice: a policy refusal (no grant
+        would help) or a missing grant (the default for any other ``denied``)."""
+        if outcome.policy_refused:
+            self.policy_refused_any = True
+        else:
             self.denied_any = True
 
     def _tool_step(self, call: _PlannedCall) -> ChatStep:
@@ -1839,8 +1955,14 @@ class _AgentTurn:
         knowledge = self.engine._app_knowledge()
         if knowledge is None:
             return None
+        # "Ask about this" (SPEC A7): the turn's topic pins its glossary sections in
+        # the $0 answer too. Passed only when set, so a knowledge package (or a test
+        # double) without the keyword keeps working for every other turn.
+        topic = getattr(self.ctx, "topic", None)
+        extra = {"topic": topic} if isinstance(topic, str) and topic else {}
         try:
-            value = knowledge.fallback_answer(self.message, grants=frozenset(self.ctx.grants), reason=reason)
+            value = knowledge.fallback_answer(self.message, grants=frozenset(self.ctx.grants), reason=reason,
+                                              **extra)
         except Exception as exc:  # noqa: BLE001 -- the fallback is best effort
             logger.info("app-help fallback unavailable (%s)", type(exc).__name__)
             return None
@@ -1928,8 +2050,10 @@ class _AgentTurn:
         unsupported = bool(protocol_header and header.get("unsupported") is True)
         if notice is None and unsupported:
             notice = make_notice("unsupported", retryable=False)
-        if notice is None and self.denied_any:
-            notice = make_notice("denied", retryable=False)
+        if notice is None and (self.denied_any or self.policy_refused_any):
+            key = ("denied_policy" if self.denied_any and self.policy_refused_any
+                   else "denied" if self.denied_any else "policy")
+            notice = make_notice(key, retryable=False)
         # Citations: the ones the answer referenced first, then the rest of the turn's.
         referenced = [c for c in (header.get("citations") if protocol_header and isinstance(header.get("citations"), list) else []) if isinstance(c, str)]
         by_id = {c.id: c for c in self.citations}
@@ -2070,21 +2194,17 @@ def _prior_lookup_consumed(step: Any) -> bool:
     * ``denied``/``skipped``/``error``: not counted (refused before dispatch, the
       limit was already reached, or the deployment has no enrichment to call).
 
-    Within a turn the toolbox's per-turn rule differs on purpose: it gives a lookup
-    back when no provider answered (``LookupIndicatorTool.consumes_budget``), because
-    the analyst got nothing; that release is an analyst-value rule, not egress."""
+    Within a turn the toolbox's per-turn rule differs on purpose: it gives the PER-TURN
+    slot back when no provider answered (``LookupIndicatorTool.consumes_budget``),
+    because the analyst got nothing, but keeps the conversation slot of a lookup that
+    may have left (``TaintLedger.release_lookup(egressed=True)``), by this same rule
+    (``taint.lookup_left_deployment``)."""
     def field_of(name: str) -> Any:
         return step.get(name) if isinstance(step, Mapping) else getattr(step, name, None)
 
     if field_of("tool") != INDICATOR_TOOL:
         return False
-    status = field_of("status")
-    if status == "timeout":
-        return True
-    if status != "ok":
-        return False
-    rows = field_of("rows")
-    return not (isinstance(rows, int) and not isinstance(rows, bool) and rows == 0)
+    return lookup_left_deployment(field_of("status"), field_of("rows"))
 
 
 def _legacy_table(artifact: Artifact) -> dict[str, Any]:

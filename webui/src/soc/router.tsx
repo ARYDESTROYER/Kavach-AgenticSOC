@@ -119,9 +119,10 @@ export function settingsSectionHash(section: string, anchor?: string): string {
  * Chat revamp deep links (SPEC §10.7): the durable keys each page owns in its hash.
  * Ids use the backend's plain-id grammar; a log query is bounded text with no control,
  * format (bidi, zero-width) or separator characters; time bounds are `now[-<n><unit>]`
- * or an ISO-8601 shape (the Logs page re-validates the window). `newChat` and `topic`
- * stay in memory so a refresh never starts another chat or asks again. Kept compact:
- * this module ships in the entry chunk.
+ * or an ISO-8601 shape (the Logs page re-validates the window). `newChat`, `topic` and
+ * the palette's free-text `ask` are absent here on purpose: they stay in memory so a
+ * refresh never starts another chat or asks again, and free text never reaches a URL.
+ * Kept compact: this module ships in the entry chunk.
  */
 const NAV_ID = /^[\w.:-]{1,128}$/;
 // No space: a hand-typed `+05:00` reaches URLSearchParams as a space and must fail

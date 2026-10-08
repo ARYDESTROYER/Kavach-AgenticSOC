@@ -39,7 +39,7 @@ import logging
 import math
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, AsyncIterator, Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -622,6 +622,10 @@ async def _prepare(
             request, body, grants=grants, prefs=prefs, log_source=conn,
             source_id=body.source_id or None, case_id=effective_case_id,
         )
+        if body.topic and is_dataclass(plan.ctx) and getattr(plan.ctx, "topic", None) != body.topic:
+            # "Ask about this" (SPEC A7): the validated topic id reaches app_help and
+            # the $0 Help Center answer for THIS turn only (never prompt text).
+            plan.ctx = replace(plan.ctx, topic=body.topic)
     except BaseException:
         await _close_owned(plan)
         await _abort(plan)
@@ -1317,6 +1321,8 @@ async def chat_context(
     toolbox = build_toolbox(ctx, ())
     system = render_chat_agent_system(
         toolbox.signatures(), max_parallel=cfg.max_parallel, case_scoped=bool(case_id),
+        # The same configuration-disabled line a turn's prompt carries (estimate parity).
+        disabled_tools=toolbox.disabled if cfg.max_model_calls > 1 else (),
     )
     history_tokens, history_exchanges, conversation = (0, 0, None)
     if not case_id:

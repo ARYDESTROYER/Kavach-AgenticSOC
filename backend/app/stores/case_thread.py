@@ -9,11 +9,17 @@ render-escaped user input (never an unfenced prompt instruction, #9).
 
 Backend-agnostic by construction (the SAME single-KV-document pattern as
 :mod:`app.stores.memory` / :mod:`app.stores.user_prefs`): the WHOLE thread set is
-ONE KV document (``ns=CASE_THREAD_NS``, ``key=CASE_THREAD_KEY``) whose value is
-``{"threads": {"<case_id>": [<CaseMessage json>, ...], ...}}`` — so it needs NO new
-ES index / SQL table / migration. The SQL backend uses ``SqlKVStore`` (the shared
-KV table); the ES backend uses the thin :class:`app.stores.memory.EsKVStore`
+ONE KV document (``ns=CASE_THREAD_NS``, ``key=CASE_THREAD_KEY``) — so it needs NO
+new ES index / SQL table / migration. The SQL backend uses ``SqlKVStore`` (the
+shared KV table); the ES backend uses the thin :class:`app.stores.memory.EsKVStore`
 adapter (a doc in the existing config index).
+
+Storage form: ``{"thread_rows": ["<canonical JSON {case_id, messages}>", ...]}``,
+one OPAQUE string per case. The Elasticsearch config index maps every KV document
+with ONE shared dynamic mapping (default limit 1,000 fields); the earlier form,
+``{"threads": {"<case_id>": [...]}}``, minted ~20 mapped fields per case id (and
+``ai_meta`` keys per message), so threads on a few dozen cases would make every
+KV write in the index fail. Reads still accept that form; the next write converts.
 
 Reads + writes are read-modify-write over the single dict — fine at our scale
 (operator collaboration, not log volume). The store NEVER raises: a load/save
@@ -27,6 +33,7 @@ chat turn was written, so it confirms its write and raises
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Callable, TypeVar
 
@@ -38,6 +45,40 @@ from .base import KVStore, kv_mutate, kv_mutate_strict
 _T = TypeVar("_T")
 
 logger = logging.getLogger("tlsoc.stores.case_thread")
+
+# One opaque JSON string per case (see the module docstring); ``threads`` is the
+# earlier keyed form, still read.
+THREAD_ROWS_KEY = "thread_rows"
+_LEGACY_THREADS_KEY = "threads"
+
+
+def _thread_row(case_id: str, messages: list[dict[str, Any]]) -> str:
+    return json.dumps({"case_id": case_id, "messages": messages}, ensure_ascii=False,
+                      sort_keys=True, separators=(",", ":"), default=str)
+
+
+def stored_threads(doc: Any) -> dict[str, list[Any]]:
+    """The raw stored messages by case id, in either storage form (an unreadable
+    row is skipped; the opaque rows win when present)."""
+    if not isinstance(doc, dict):
+        return {}
+    rows = doc.get(THREAD_ROWS_KEY)
+    if isinstance(rows, list):
+        out: dict[str, list[Any]] = {}
+        for item in rows:
+            try:
+                row = json.loads(item) if isinstance(item, str) else item
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            cid = row.get("case_id")
+            messages = row.get("messages")
+            if isinstance(cid, str) and cid and isinstance(messages, list) and cid not in out:
+                out[cid] = messages
+        return out
+    legacy = doc.get(_LEGACY_THREADS_KEY)
+    return {str(k): v for k, v in legacy.items() if isinstance(v, list)} if isinstance(legacy, dict) else {}
 
 
 def _norm_case_id(case_id: str | None) -> str:
@@ -52,7 +93,7 @@ class CaseThreadWriteFailed(RuntimeError):
 class CaseThreadStore:
     """CRUD over per-case message threads, persisted as one KV document.
 
-    The KV value is ``{"threads": {"<case_id>": [<CaseMessage json>, ...]}}``.
+    The KV value is ``{"thread_rows": ["<JSON {case_id, messages}>", ...]}``.
     Methods are read-modify-write; none raises (a failure logs + returns a safe
     default). Messages within a case keep insertion order (chronological)."""
 
@@ -62,9 +103,8 @@ class CaseThreadStore:
 
     @staticmethod
     def _decode(doc: dict | None) -> dict[str, list[CaseMessage]]:
-        raw = doc.get("threads", {}) if isinstance(doc, dict) else {}
         out: dict[str, list[CaseMessage]] = {}
-        for cid, items in (raw or {}).items():
+        for cid, items in stored_threads(doc).items():
             msgs: list[CaseMessage] = []
             for item in items or []:
                 try:
@@ -76,8 +116,12 @@ class CaseThreadStore:
 
     @staticmethod
     def _encode(threads: dict[str, list[CaseMessage]]) -> dict:
-        return {"threads": {cid: [m.model_dump(mode="json") for m in msgs]
-                            for cid, msgs in threads.items()}}
+        # One opaque string per case: the document's mapped field paths never depend
+        # on case ids or message contents (see the module docstring).
+        return {THREAD_ROWS_KEY: [
+            _thread_row(cid, [m.model_dump(mode="json") for m in msgs])
+            for cid, msgs in threads.items()
+        ]}
 
     async def _load_all(self) -> dict[str, list[CaseMessage]]:
         try:

@@ -136,7 +136,7 @@ describe('chat answer-blocks bundle guards', () => {
   it('keeps the heavy kit out of the Workspace route chunk (static imports only through import())', () => {
     const routeFiles = [
       ...chatFiles.filter((f) => !f.startsWith(BLOCKS + path.sep)),
-      ...['soc/pages/Chat.tsx', 'soc/pages/Workspace.tsx', 'soc/pages/casedetail/CaseChatPanel.tsx'].map((f) => path.join(SRC, f)),
+      ...['soc/pages/Chat.tsx', 'soc/pages/Workspace.tsx', 'soc/pages/casedetail/CaseChatPanel.tsx', 'soc/pages/casedetail/CaseChat.tsx'].map((f) => path.join(SRC, f)),
     ].filter((f) => fs.existsSync(f));
     const offenders = routeFiles.flatMap((f) =>
       staticSpecifiers(fs.readFileSync(f, 'utf8'))

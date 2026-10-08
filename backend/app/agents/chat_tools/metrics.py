@@ -250,6 +250,9 @@ class SocMetricsTool(ChatTool):
             outcome.observation = {"kind": args.kind, "window": label, **outcome.observation}
             notes: list[str] = []
             if outcome.observation.pop("_window_applies", True):
+                # Like the log tools: the request's time chip narrowed the window the
+                # model asked for. A structured flag, so nobody has to compare labels.
+                outcome.observation["window_clamped_to_request"] = mw.clamped
                 if mw.relabelled:
                     outcome.observation["requested_window"] = mw.requested
                 if mw.capped:
@@ -877,6 +880,7 @@ class CostUsageTool(ChatTool):
         if budget is not None:
             observation["budget"] = {k: budget.get(k) for k in ("enabled", "on_exceed", "soft_warn_pct", "daily", "monthly")}
         observation["window"] = window.label
+        observation["window_clamped_to_request"] = window.clamped
         if window.relabelled:
             observation["requested_window"] = window.requested
         summary = (f"AI spend ({window.label}): ${finite(s.get('total_cost')) or 0:,.4f} over "

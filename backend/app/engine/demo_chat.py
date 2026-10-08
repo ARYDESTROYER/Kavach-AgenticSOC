@@ -148,6 +148,11 @@ _ANALYST_WINDOW_RE = re.compile(
 # ``render_chat_agent_system`` writes the request's @-scope enums on this line. A tool
 # missing from the signatures may be outside these scopes rather than ungranted.
 _SCOPES_RE = re.compile(r"^- The analyst limited lookups to: ([a-z]{2,16}(?:, [a-z]{2,16})*)\.$", re.MULTILINE)
+# ``render_chat_agent_system`` names the granted tools CONFIGURATION switched off on
+# this line (``prompts.DISABLED_TOOLS_LINE_PREFIX``): a tool absent for that reason
+# is "turned off on this deployment", never a missing grant.
+_DISABLED_RE = re.compile(
+    r"^- Turned off on this deployment: ([a-z][a-z0-9_]{0,63}(?:, [a-z][a-z0-9_]{0,63})*)\.", re.MULTILINE)
 _CASE_SCOPED_TEXT = "This conversation is about one case"
 _FENCE_LABEL_RE = re.compile(r"^ source=(\S+)(?: tool=(\S+))?\s*$")
 # The legacy ``needs_query`` second-call message (agents.chat._agg_message) and the
@@ -274,6 +279,7 @@ class PromptView:
     analyst_window: str | None = None
     case_scoped: bool = False
     scopes: tuple[str, ...] = ()
+    disabled: tuple[str, ...] = ()
     prior_blocks: list[PriorBlock] = field(default_factory=list)
     prior_calls: list[PriorCall] = field(default_factory=list)
     rounds: list[list[Result]] = field(default_factory=list)
@@ -525,6 +531,8 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
     view.analyst_window = window.group(1) if window else None
     scopes = _SCOPES_RE.search(system)
     view.scopes = tuple(dict.fromkeys(scopes.group(1).split(", "))) if scopes else ()
+    disabled = _DISABLED_RE.search(system)
+    view.disabled = tuple(dict.fromkeys(disabled.group(1).split(", "))) if disabled else ()
     view.case_scoped = _CASE_SCOPED_TEXT in system
 
     live = -1
@@ -2453,14 +2461,23 @@ def _missing_lead(view: PromptView, ask: Ask) -> tuple[str, str]:
     names its own grant ("indicator reputation (needs enrichment:read) and log search
     (needs sources:read)"): grants are per tool, never alternatives across tools."""
     locked, scoped = _missing_split(view, ask)
+    # A tool the prompt names as switched off by CONFIGURATION is not a grant gap:
+    # the analyst may well hold the grant, so the note never names one for it.
+    off = [t for t in locked if t in view.disabled]
+    locked = [t for t in locked if t not in view.disabled]
     parts: list[str] = []
     advice: list[str] = []
+    if off:
+        parts.append(f"Turned off on this deployment: {_join([_TOOL_NAMES[t] for t in off])}")
+        advice.append("An administrator can turn " + ("it" if len(off) == 1 else "them")
+                      + " back on in Settings.")
     if locked:
         named = []
         for tool in locked:
             grants = _tool_grants(tool)
             named.append(_TOOL_NAMES[tool] + (f" (needs {_join(grants)})" if grants else ""))
-        parts.append(f"Not available to you in chat: {_join(named)}")
+        prefix = "not available" if parts else "Not available"
+        parts.append(f"{prefix} to you in chat: {_join(named)}")
         advice.append("Ask an administrator for access, or open the matching console page.")
     if scoped:
         names = [_TOOL_NAMES[t] for t in scoped]
@@ -3485,8 +3502,13 @@ def _window_note(view: PromptView, ask: Ask) -> str:
     chip = display_text(view.analyst_window, 60)
 
     def clamped(r: Result) -> bool:
-        if r.obs.get("window_clamped_to_request") or "window limited to the selected range" in r.summary:
+        flag = r.obs.get("window_clamped_to_request")
+        if isinstance(flag, bool):
+            # Log AND metric observations carry the structured flag: exact.
+            return flag
+        if "window limited to the selected range" in r.summary:
             return True
+        # An observation without the flag (another windowed tool): compare spans.
         span = _label_hours(_window(r.obs, ""))
         return ask.hours is not None and span is not None and span < ask.hours
 
@@ -3775,6 +3797,12 @@ def _summarise_report(messages: Sequence[Mapping[str, Any]]) -> str:
     if _num(_dig(digest, "omitted", "items")):
         parts.append(f"{_plural(_dig(digest, 'omitted', 'items'), 'item')} did not fit the digest and "
                      "are not reflected here.")
+    # The bounded digest may also drop blocks or whole-answer sections inside kept
+    # items (report_digest's ``omitted.blocks``/``omitted.sections``).
+    dropped_parts = (_num(_dig(digest, "omitted", "blocks")) or 0) + (_num(_dig(digest, "omitted", "sections")) or 0)
+    if dropped_parts:
+        parts.append(f"{_plural(int(dropped_parts), 'chart or table', 'charts or tables')} inside the items "
+                     "did not fit the digest and are not reflected here.")
     summary = " ".join(parts)
     if len(summary) > 1200:
         summary = summary[:1199].rstrip() + "\u2026"

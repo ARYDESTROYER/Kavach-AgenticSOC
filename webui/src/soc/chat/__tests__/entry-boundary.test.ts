@@ -50,6 +50,20 @@ describe('chat entry-chunk boundary', () => {
     }
   });
 
+  it('the Case Detail chat tab reaches the chat modules only through React.lazy', () => {
+    // CaseDetail is shared by the dashboard, Case Manager and Scans: a static chat import
+    // in its Chat tab shell would put the engine, context and Markdown chunks on every
+    // page's preload list (entry bytes) and download them whenever a case opens.
+    const shell = fs.readFileSync(path.join(SRC, 'soc/pages/casedetail/CaseChatPanel.tsx'), 'utf8');
+    const chatImports = staticSpecifiers(shell).filter(
+      (specifier) => specifier.startsWith('@/soc/chat') || /(^|\/)chat\//.test(specifier) || specifier === './CaseChat',
+    );
+    expect(chatImports).toEqual([]);
+    expect(shell).toContain("React.lazy(() => import('./CaseChat'))");
+    const detail = fs.readFileSync(path.join(SRC, 'soc/pages/CaseDetail.tsx'), 'utf8');
+    expect(staticSpecifiers(detail).filter((specifier) => specifier.includes('chat/') || specifier.endsWith('/CaseChat'))).toEqual([]);
+  });
+
   it('the eager api object carries no chat revamp or reports endpoints', () => {
     const source = fs.readFileSync(path.join(SRC, 'lib/api.ts'), 'utf8');
     for (const endpoint of ["'chat/stream'", "'chat/context'", 'chat/turns/', "'reports", '`reports/']) {

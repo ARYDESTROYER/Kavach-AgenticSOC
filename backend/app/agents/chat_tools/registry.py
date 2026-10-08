@@ -218,10 +218,17 @@ class ChatToolbox:
     refuses ungranted / out-of-scope ones itself, because a model can name a tool it
     was never shown."""
 
-    def __init__(self, ctx: ChatToolContext, tools: Iterable[ChatTool], scopes: frozenset[str]) -> None:
+    def __init__(
+        self, ctx: ChatToolContext, tools: Iterable[ChatTool], scopes: frozenset[str],
+        disabled: Iterable[str] = (),
+    ) -> None:
         self.ctx = ctx
         self.tools: tuple[ChatTool, ...] = tuple(tools)
         self.scopes = scopes
+        # Granted, in-scope tools this deployment's configuration switched off
+        # (:func:`tool_available`). The prompt names them so an answer says "turned
+        # off on this deployment" instead of naming a grant the caller already holds.
+        self.disabled: tuple[str, ...] = tuple(dict.fromkeys(disabled))
         self._by_name = {t.name: t for t in self.tools}
 
     # -- prompt + catalogue ------------------------------------------------- #
@@ -285,7 +292,7 @@ class ChatToolbox:
         if verdict.status == "denied":
             if record_denial:
                 await self._record_denial(tool, verdict.missing, call)
-            return ToolOutcome.failure(verdict.reason, status="denied")
+            return ToolOutcome.failure(verdict.reason, status="denied", refusal="grant")
         if verdict.status == "skipped":
             return ToolOutcome.failure(verdict.reason, status="skipped")
 
@@ -326,7 +333,10 @@ class ChatToolbox:
             if _consumes_budget(tool, outcome):
                 taint.commit_lookup()
             else:
-                taint.release_lookup()
+                # A lookup that reached providers which all failed (or timed out)
+                # gives back its per-turn slot but still counts toward the
+                # conversation egress cap within this turn (SPEC A13).
+                taint.release_lookup(egressed=_left_deployment(tool, outcome))
         duration_ms = int((time.monotonic() - started) * 1000)
         if outcome.ok and tool.name in LOG_TOOLS:
             _attach_logs_view(tool.name, clean, outcome, self.ctx, now=called_at)
@@ -426,6 +436,18 @@ def _consumes_budget(tool: ChatTool, outcome: ToolOutcome) -> bool:
     return bool(outcome.ok and outcome.status == "ok")
 
 
+def _left_deployment(tool: ChatTool, outcome: ToolOutcome) -> bool:
+    """Whether a budgeted call that gave the analyst nothing may still have sent its
+    value out: the tool's ``left_deployment(outcome)`` hook, else no."""
+    hook = getattr(tool, "left_deployment", None)
+    if not callable(hook):
+        return False
+    try:
+        return bool(hook(outcome))
+    except Exception:  # noqa: BLE001 — count it: the safe side of an egress cap
+        return True
+
+
 def _kind_of(tool: ChatTool, inp: Any) -> str | None:
     """The CANONICAL ``kind`` input of a kind-aware tool, else ``None``. A tool that
     folds aliases (``proposals`` → ``approvals``) exposes ``canonical_kind``, and the
@@ -466,18 +488,23 @@ def build_toolbox(ctx: ChatToolContext, scopes: Iterable[str] | None = None) -> 
     """The toolbox for one turn: the catalogue filtered to the tools the caller holds
     the grants for (a kind-gated tool when ANY of its kinds is granted), inside the
     request's @-scopes (``scopes`` overrides ``ctx.scopes``; empty = all) and not
-    switched off by configuration. Writes nothing."""
+    switched off by configuration (those are named in ``ChatToolbox.disabled``).
+    Writes nothing."""
     scope_set = frozenset(s for s in (scopes if scopes is not None else ctx.scopes) if isinstance(s, str))
     granted: list[ChatTool] = []
+    disabled: list[str] = []
     for tool in catalogue():
-        if ctx.missing(tool) or (scope_set and tool.scope not in scope_set) or not tool_available(tool, ctx):
+        if ctx.missing(tool) or (scope_set and tool.scope not in scope_set):
+            continue
+        if not tool_available(tool, ctx):
+            disabled.append(tool.name)
             continue
         # The caller's own signature (only its usable kinds); a kind-aware tool none
         # of whose kinds this caller can use here is left out of the prompt.
         mine = _for_caller(tool, ctx)
         if mine is not None:
             granted.append(mine)
-    return ChatToolbox(ctx, granted, scope_set)
+    return ChatToolbox(ctx, granted, scope_set, disabled)
 
 
 def _reset_catalogue_for_tests() -> None:  # pragma: no cover - test helper

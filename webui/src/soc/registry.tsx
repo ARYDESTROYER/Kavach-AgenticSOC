@@ -271,11 +271,13 @@ export const FEATURES: FeatureNode[] = [
     icon: MessageSquare,
     group: 'triage',
     // Chat · Investigate · Reports (SPEC §10.6). Reports is a standalone lazy route
-    // (its own chunk), not a Workspace tab: the library lists every saved report.
+    // (its own chunk), not a Workspace tab: the library lists every saved report, and
+    // the reports API is owner-scoped behind cases:read (SPEC §9.2), so the rail and the
+    // palette hide it from a role that could only ever see the page's explanation.
     children: [
       { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'investigate', label: 'Entity investigation', icon: SearchIcon },
-      { id: 'reports', label: 'Reports', icon: FileText },
+      { id: 'reports', label: 'Reports', icon: FileText, perm: { resource: 'cases', action: 'read' } },
     ],
   },
   {

@@ -54,6 +54,13 @@ export type NavOpts = {
   newChat?: boolean;
   /** Chat: a `console_map` topic id ("Ask about this"); never free text, in memory only. */
   topic?: string;
+  /**
+   * Chat: the command palette's "Ask AI: <text>" — the analyst's own words, prefilled
+   * into a new chat's composer (never sent automatically; at most 2,000 characters).
+   * In memory only: the router never writes it to the hash, so a refresh or a shared
+   * link never carries free text.
+   */
+  ask?: string;
   /** Reports library: the report to open (`#/reports?reportId=…`). */
   reportId?: string;
   /** Logs: an exact query to pre-fill (untrusted text, bounded, control/bidi-free). */

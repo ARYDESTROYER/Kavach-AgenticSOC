@@ -887,13 +887,23 @@ NOTICE_MESSAGES: dict[str, str] = {
     "cancelled": "Stopped.",
     "unsupported": "Chat cannot read that data. Use the linked console page instead.",
     "denied": "Some lookups were not run because they need permissions you do not have.",
+    # A POLICY refusal (a private/reserved/internal indicator, a value that did not
+    # come from the analyst or this turn's evidence, an invalid kind): no grant would
+    # help, so the notice must not send the analyst to ask for one. Same wire kind
+    # ("denied": "Some lookups were not allowed"), so older clients keep working.
+    "policy": ("Some lookups were not run because policy does not allow them: private or "
+               "internal values, and values that did not come from you or this turn's results, "
+               "are never sent to outside services."),
+    "denied_policy": ("Some lookups were not run: some need permissions you do not have, and "
+                      "policy does not allow the others."),
     "not_saved": "Not saved to the case thread",
 }
 
 
 def make_notice(key: str, *, retryable: bool | None = None) -> TurnNotice:
     """A notice from the engine templates (``key`` is a NOTICE_MESSAGES key)."""
-    kind = {"provider_config": "provider", "provider_down": "provider", "length": "partial"}.get(key, key)
+    kind = {"provider_config": "provider", "provider_down": "provider", "length": "partial",
+            "policy": "denied", "denied_policy": "denied"}.get(key, key)
     default_retry = key in ("breaker", "provider_down", "partial", "timeout")
     return TurnNotice(kind=kind, message=NOTICE_MESSAGES[key],
                       retryable=default_retry if retryable is None else retryable)
@@ -981,10 +991,12 @@ class AppKnowledge(Protocol):
     """What the engine needs from the app-knowledge package (SPEC §5.4/§5.4.1)."""
 
     def fallback_answer(
-        self, question: str, *, grants: frozenset[tuple[str, str]], reason: str,
+        self, question: str, *, grants: frozenset[tuple[str, str]], reason: str, topic: str | None = None,
     ) -> FallbackAnswer | Mapping[str, Any] | None:
         """The extractive answer when ``question`` routes to app help, else None.
-        ``reason`` is one of :data:`FALLBACK_REASONS`."""
+        ``reason`` is one of :data:`FALLBACK_REASONS`. ``topic`` (an "Ask about this"
+        console_map topic id) pins that topic's glossary sections first; the engine
+        passes it only when the turn has one."""
 
     def resolve_console_links(
         self, ids: Sequence[str], *, grants: frozenset[tuple[str, str]],

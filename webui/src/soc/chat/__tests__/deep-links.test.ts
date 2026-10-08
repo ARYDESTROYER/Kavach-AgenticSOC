@@ -1,7 +1,7 @@
 /**
  * Chat revamp deep links (SPEC §10.7): the router serialises only the durable,
  * validated keys of each page (chat: conversationId/messageId; reports: reportId;
- * logs: logQuery/from/to/sourceId), keeps newChat/topic in memory, and fails closed
+ * logs: logQuery/from/to/sourceId), keeps newChat/topic/ask in memory, and fails closed
  * on anything malformed when reading a hash.
  */
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,6 +24,18 @@ describe('pageHash — chat revamp keys', () => {
   it('keeps newChat and topic in memory only, and drops an orphan message anchor', () => {
     expect(pageHash('chat', { newChat: true, topic: 'kpi:mttr' })).toBe('#/chat');
     expect(pageHash('chat', { messageId: 'msg-2' })).toBe('#/chat');
+  });
+
+  it("never writes the palette's free-text ask to the hash, on any page", () => {
+    const ask = 'why did case-12 escalate?';
+    expect(pageHash('chat', { newChat: true, ask })).toBe('#/chat');
+    expect(pageHash('chat', { conversationId: 'conv-1', ask })).toBe('#/chat?conversationId=conv-1');
+    for (const page of ['logs', 'reports', 'cases'] as PageId[]) expect(pageHash(page, { ask })).not.toContain('ask');
+  });
+
+  it('never reads an ask from a hash (a shared link cannot prefill free text)', () => {
+    setHash('#/chat?ask=hello');
+    expect(optsFromHash()).toBeUndefined();
   });
 
   it('drops invalid ids instead of serialising them', () => {

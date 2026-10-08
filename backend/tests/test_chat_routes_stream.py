@@ -42,7 +42,7 @@ from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.models import CaseMessage, ChatRequest
 from app.state import AppState
-from app.stores.chat_conversations import ChatHistoryUnavailable, partition_key_for_user
+from app.stores.chat_conversations import ChatHistoryUnavailable, partition_key_for_user, stored_request_rows
 
 TOOL_STEP = json.dumps({"action": "tool", "tool": "mitre_lookup", "input": {"ids": ["T1110"]}})
 FINAL = (
@@ -299,7 +299,7 @@ def test_first_call_failure_returns_notice_and_persists_nothing() -> None:
         assert client.get("/api/chat/conversations").json()["total"] == 0
         # The reservation was aborted: the same key can run again, fresh.
         doc = client.portal.call(state.kv.get, CHAT_CONVERSATIONS_NS, partition_key_for_user(""))
-        assert not (doc or {}).get("requests")
+        assert not stored_request_rows(doc)
 
 
 def test_save_failure_after_billing_keeps_the_reservation() -> None:
@@ -360,7 +360,7 @@ def test_unbilled_save_failure_aborts_and_stays_retryable() -> None:
         }).text)
         assert events[-1].type == "turn.error" and events[-1].retryable is True
         doc = client.portal.call(state.kv.get, CHAT_CONVERSATIONS_NS, partition_key_for_user(""))
-        assert not (doc or {}).get("requests")                  # aborted: a retry runs fresh
+        assert not stored_request_rows(doc)                  # aborted: a retry runs fresh
 
 
 # --------------------------------------------------------------------------- #
@@ -451,7 +451,7 @@ async def test_factory_reset_cancels_running_turns_before_drain(gated_state) -> 
     assert len(rows) == 1 and rows[0]["prompt_tokens"] > 0
     assert rows[0].get("failure_class") == "abandoned"
     doc = await state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user(""))
-    assert not (doc or {}).get("requests")
+    assert not stored_request_rows(doc)
     assert state.chat_turns.active == 0
     # A new turn is refused while a reset owns the gate.
     await state.mutation_gate.close("reset-job-2")
@@ -463,7 +463,7 @@ async def test_factory_reset_cancels_running_turns_before_drain(gated_state) -> 
 
 async def _requests(state: AppState) -> list[str]:
     doc = await state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user(""))
-    return list((doc or {}).get("requests", {}))
+    return list(stored_request_rows(doc))
 
 
 async def test_cancel_all_right_after_start_settles_an_unstarted_turn(gated_state) -> None:
@@ -584,7 +584,7 @@ async def test_per_user_and_global_concurrency_bounds(gated_state) -> None:
     assert _chat_calls(provider) == calls                 # refused before any work
     page = await state.chat_conversations.list_page("")
     doc = await state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user(""))
-    assert page.total == 0 and list((doc or {}).get("requests", {})) == ["conc-key-0001"]
+    assert page.total == 0 and list(stored_request_rows(doc)) == ["conc-key-0001"]
     provider.gate.set()
     await asyncio.wait_for(first.handle.finished.wait(), 10)
     third, _ = await _start(state, idempotency_key="conc-key-0003")
@@ -654,6 +654,29 @@ def test_case_scoped_turn_never_enters_workspace_history_and_dedupes_by_key() ->
         assert client.get("/api/chat/conversations").json()["total"] == 0
         threads = client.portal.call(state.case_threads.list_for_case, "case-missing")
         assert threads == []
+
+
+def test_ask_about_this_topic_reaches_app_help_for_that_turn_only() -> None:
+    """``ChatRequest.topic`` is carried to ``ChatToolContext.topic``: the turn's
+    app_help call pins the topic's glossary section first (the model's own query is
+    kept), and the next turn without a topic is unpinned."""
+    question = "What does Auto Closed count, and how does it relate to Resolved / Closed?"
+    help_step = json.dumps({"action": "tool", "tool": "app_help", "input": {"query": question}})
+    answer = json.dumps({"action": "final", "citations": ["D1"], "answer_kind": "product_help"}) + \
+        "\n---ANSWER---\nSee [D1]."
+    provider = MockProvider()
+    for _ in range(2):
+        provider.push("chat", help_step)
+        provider.push("chat", answer)
+    with _client(provider) as client:
+        pinned = client.post("/api/chat", json={"message": question, "origin": "starter",
+                                                "topic": "kpi:auto_closed"})
+        assert pinned.status_code == 200, pinned.text
+        assert pinned.json()["citations"][0]["doc"].endswith("#auto-closed")
+        plain = client.post("/api/chat", json={"message": question, "origin": "starter"})
+        assert not plain.json()["citations"][0]["doc"].endswith("#auto-closed")
+        malformed = client.post("/api/chat", json={"message": question, "topic": "Not A Topic"})
+        assert malformed.status_code == 422
 
 
 async def test_case_thread_append_if_absent_is_one_cas(app_state: AppState) -> None:

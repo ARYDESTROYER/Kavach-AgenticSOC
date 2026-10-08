@@ -44,14 +44,14 @@ ALL_TOOLS = tuple(t.name for t in catalogue())
 # --------------------------------------------------------------------------- #
 def system(tools: tuple[str, ...] | list[str] = ALL_TOOLS, *, max_parallel: int = 4,
            window: str | None = None, case_scoped: bool = False,
-           scopes: tuple[str, ...] = ()) -> dict[str, str]:
-    granted = [get_tool(name) for name in tools]
+           scopes: tuple[str, ...] = (), disabled: tuple[str, ...] = ()) -> dict[str, str]:
+    granted = [get_tool(name) for name in tools if name not in disabled]
     if scopes:
         # The engine lists only in-scope tools in the signatures (ChatToolbox.in_scope).
         granted = [t for t in granted if t.scope in scopes]
     return {"role": "system", "content": render_chat_agent_system(
         render_tool_signatures(granted), max_parallel=max_parallel, time_window=window,
-        case_scoped=case_scoped, scopes=scopes)}
+        case_scoped=case_scoped, scopes=scopes, disabled_tools=disabled)}
 
 
 def call(tool: str, observation: dict[str, Any] | None = None, *, status: str = "ok",
@@ -492,6 +492,22 @@ def test_restricted_role_gets_a_coherent_answer_naming_what_is_unavailable() -> 
     assert "**3 open cases**." in body
     assert all(r["ref"].startswith("t") for r in header["blocks"])
     assert not any("soc_metrics" in f or "noise" in f.lower() for f in header["follow_ups"])
+
+
+def test_a_tool_turned_off_by_configuration_is_never_called_a_missing_grant() -> None:
+    """``max_indicator_lookups == 0`` removes lookup_indicator from the signatures
+    exactly like a missing grant; the trusted "Turned off on this deployment" line
+    lets the note say so instead of naming enrichment:read the analyst holds."""
+    question = "Is 203.0.113.7 malicious?"
+    msgs = prompt(question, final_only=True, disabled=("lookup_indicator",))
+    assert read_prompt(msgs).disabled == ("lookup_indicator",)
+    _, body = final_of(plan_turn(msgs))
+    assert "Turned off on this deployment: indicator reputation" in body
+    assert "enrichment:read" not in body and "Ask an administrator for access" not in body
+    # Without the line (a real grant gap) the grant is still named.
+    _, body = final_of(plan_turn(prompt(question, final_only=True,
+                                        tools=tuple(t for t in ALL_TOOLS if t != "lookup_indicator"))))
+    assert "indicator reputation (needs enrichment:read)" in body
 
 
 # --------------------------------------------------------------------------- #
@@ -1066,3 +1082,21 @@ def test_tp_cost_mitre_sources_and_campaign_finals_state_their_figures() -> None
          "mitre": ["T1110"]}]}
     _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
     assert body.startswith("**1 campaign** (open): `rdp wave` (3 cases; high; shared `ip:192.0.2.9`; ATT&CK T1110).")
+
+
+def test_report_summary_says_when_blocks_inside_items_were_left_out() -> None:
+    """The bounded digest can drop blocks or whole-answer sections inside kept items
+    (``omitted.blocks``/``omitted.sections``); the demo summary says so instead of
+    reading as if it covered everything."""
+    from app.engine.report_digest import build_digest
+
+    digest = build_digest(_report())
+    digest["omitted"] = {**(digest.get("omitted") or {}), "blocks": 2, "sections": 1}
+    messages = [{"role": "system", "content": f"{REPORT_SUMMARY_SYSTEM_MARKER}\nsummarise"},
+                {"role": "user", "content": fence_block(digest, source="report")}]
+    summary, _ = parse_report_summary(summarise_report(messages))
+    assert summary.startswith("This shift report holds 2 items")
+    assert "3 charts or tables inside the items did not fit the digest" in summary
+    plain, _ = parse_report_summary(summarise_report([messages[0], {"role": "user", "content": fence_block(
+        build_digest(_report()), source="report")}]))
+    assert "did not fit the digest" not in plain

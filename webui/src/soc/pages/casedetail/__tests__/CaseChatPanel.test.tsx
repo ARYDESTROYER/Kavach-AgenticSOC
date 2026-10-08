@@ -1,5 +1,5 @@
 /**
- * CaseChatPanel (ChatTab) — the case-scoped entry point to the ONE chat engine (#5,
+ * CaseChatPanel (ChatTab) + its lazy CaseChat body — the case-scoped entry point to the ONE chat engine (#5,
  * SPEC §4.6, §10.8), ported from the pre-revamp ChatPanel embed suite:
  *
  *   1. every turn carries THIS case id and is never saved to personal history
@@ -140,20 +140,28 @@ const settle = () =>
     await new Promise((resolve) => setTimeout(resolve, 40));
   });
 
-function renderTab(props: Partial<React.ComponentProps<typeof ChatTab>> = {}) {
-  return render(
+/**
+ * Render the tab and wait for its lazy chat body (`./CaseChat`) to mount, then let the
+ * context request settle. The body is a `React.lazy` boundary so opening a case never
+ * downloads the chat chunks; the generous timeout covers the first transform of the
+ * module graph under a loaded test runner.
+ */
+async function renderTab(props: Partial<React.ComponentProps<typeof ChatTab>> = {}) {
+  const view = render(
     <TooltipProvider>
       <ChatTab c={CASE} onNavigate={vi.fn()} onClose={vi.fn()} {...props} />
     </TooltipProvider>,
   );
+  await screen.findByRole('group', { name: 'AI analyst status' }, { timeout: 5000 });
+  await settle();
+  return view;
 }
 
 const streamBodies = () => calls.filter((call) => call.url === '/api/chat/stream').map((call) => call.body);
 
 describe('ChatTab — the case-scoped chat', () => {
   it('scopes every turn to this case and never saves it to personal history', async () => {
-    renderTab();
-    await settle();
+    await renderTab();
     expect(screen.getByRole('group', { name: 'AI analyst status' })).toHaveTextContent(/Scoped to\s*case-9/);
     expect(screen.getByTestId('empty-state')).toHaveAttribute('data-variant', 'case');
     expect(screen.getByTestId('composer')).toHaveAttribute('data-variant', 'case');
@@ -166,8 +174,7 @@ describe('ChatTab — the case-scoped chat', () => {
   });
 
   it('shows Working while a turn runs and Ready with the compact answer after it, with no Add to report', async () => {
-    renderTab({ presentation: 'case-manager' });
-    await settle();
+    await renderTab({ presentation: 'case-manager' });
     const status = screen.getByRole('group', { name: 'AI analyst status' });
     expect(status).not.toHaveAttribute('aria-live');
     expect(status).toHaveTextContent('Ready');
@@ -188,8 +195,7 @@ describe('ChatTab — the case-scoped chat', () => {
 
   it('keeps focus in the composer after a quick action and surfaces a failed context with Retry', async () => {
     contextFailures = 1;
-    renderTab({ presentation: 'case-manager' });
-    await settle();
+    await renderTab({ presentation: 'case-manager' });
     const empty = screen.getByTestId('empty-state');
     expect(empty.getAttribute('data-error')).toMatch(/unavailable/i);
     expect(screen.getByTestId('composer').getAttribute('data-context-error')).toMatch(/unavailable/i);
@@ -209,22 +215,19 @@ describe('ChatTab — the case-scoped chat', () => {
   it('"Open full chat" closes the sheet then navigates to the case-scoped chat', async () => {
     const onNavigate = vi.fn();
     const onClose = vi.fn();
-    renderTab({ onNavigate, onClose });
-    await settle();
+    await renderTab({ onNavigate, onClose });
     fireEvent.click(screen.getByRole('button', { name: /Open full chat/ }));
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onNavigate).toHaveBeenCalledWith('chat', { caseId: 'case-9' });
   });
 
   it('omits the deep-link when no navigate handler is provided', async () => {
-    renderTab({ onNavigate: undefined });
-    await settle();
+    await renderTab({ onNavigate: undefined });
     expect(screen.queryByRole('button', { name: /Open full chat/ })).toBeNull();
   });
 
   it('keeps the Case Manager frame on the shared rail with the composer docked below the transcript', async () => {
-    const { container } = renderTab({ presentation: 'case-manager' });
-    await settle();
+    const { container } = await renderTab({ presentation: 'case-manager' });
     const panel = container.querySelector('[data-case-panel="chat"][data-presentation="case-manager"]');
     expect(panel).toHaveClass('flex', 'h-full', 'min-h-0', 'overflow-hidden', 'px-4', 'py-4', 'sm:px-5', 'sm:py-5', 'lg:px-6');
     const frame = container.querySelector('[data-chat-presentation="case-manager"]');
@@ -240,12 +243,10 @@ describe('ChatTab — the case-scoped chat', () => {
   });
 
   it('has no accessibility violations in either presentation', async () => {
-    const { container, unmount } = renderTab();
-    await settle();
+    const { container, unmount } = await renderTab();
     expect(await axe(container)).toHaveNoViolations();
     unmount();
-    const second = renderTab({ presentation: 'case-manager' });
-    await settle();
+    const second = await renderTab({ presentation: 'case-manager' });
     expect(await axe(second.container)).toHaveNoViolations();
   });
 });

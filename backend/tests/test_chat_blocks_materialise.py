@@ -471,6 +471,38 @@ def test_report_envelope_tolerates_extra_keys_and_the_blocks_alias() -> None:
     assert report["sections"][1]["blocks"][0]["type"] == "chart"
 
 
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t", None])
+def test_blank_optional_report_text_becomes_none_instead_of_losing_the_brief(blank: Any) -> None:
+    # A provider model may send ``subtitle: ""``/``null`` or a blank section summary.
+    # The length bound used to run on the ``None`` the sanitiser returned and fail with
+    # "NoneType has no len()", losing the WHOLE envelope (or the section).
+    raw = [{"type": "report", "title": "Brief", "subtitle": blank, "sections": [
+        {"heading": "Summary", "summary": blank, "items": [{"type": "markdown", "text": "Quiet."}]}]}]
+    requests, dropped = parse_final_block_requests(raw)
+    assert dropped == [] and len(requests) == 1
+    assert requests[0].subtitle is None and requests[0].sections[0].summary is None
+    out = materialise_final_blocks(requests)
+    (report,) = out.blocks
+    assert report["type"] == "report" and report["sections"][0]["blocks"][0]["text"] == "Quiet."
+    assert "subtitle" not in report or report["subtitle"] is None
+    direct = B.ReportEnvelopeRequest.model_validate(raw[0])
+    assert direct.subtitle is None
+
+
+def test_blank_or_invalid_optional_block_fields_never_fail_the_block() -> None:
+    # Every ``_opt_text_type`` field (and the optional timestamp) shares the fix: an
+    # explicit null, a blank value or an unparseable timestamp is simply absent.
+    block = {"type": "markdown", "id": "b1", "provenance": "ai", "text": "hello",
+             "title": None, "caption": "  ", "fallback_text": "", "as_of": "not-a-time"}
+    blocks, _ = B.validate_blocks([block])
+    assert len(blocks) == 1 and blocks[0]["text"] == "hello"
+    assert all(blocks[0].get(key) is None for key in ("title", "caption", "fallback_text", "as_of"))
+    over = B.ReportEnvelopeRequest.model_validate({"type": "report", "title": "T", "subtitle": "x" * 500,
+                                                   "sections": [{"heading": "H", "items": [
+                                                       {"type": "markdown", "text": "y"}]}]})
+    assert over.subtitle is not None and len(over.subtitle) <= 200
+
+
 def test_report_envelope_counts_bad_leaves_and_names_missing_headings() -> None:
     raw = [{"type": "report", "title": "", "sections": [
         {"items": [{"type": "markdown", "text": "kept"}, {"ref": "t01.a1"}, {"type": "chart", "kind": "bar"}]},
@@ -511,3 +543,29 @@ def test_block_limit_and_size_cap() -> None:
     out = materialise_final_blocks(requests, artifacts=_turn())
     assert len(out.blocks) == B.MAX_BLOCKS_PER_MESSAGE
     assert len(json.dumps(out.blocks)) <= B.MAX_BLOCKS_BYTES
+
+
+def test_tool_call_header_offers_only_the_views_to_blocks_would_keep() -> None:
+    """``Artifact.views`` IS ``blocks.artifact_views`` (SPEC A15), so the TRUSTED
+    header never invites the model into a view the materialiser would refuse."""
+    from app.agents.chat_tools.base import render_tool_call_header
+
+    minutes = Artifact(id="a1", kind="series", title="Response times", data={
+        "x": ["2026-10-08T00:00:00Z", "2026-10-08T01:00:00Z"],
+        "series": [{"key": "mtta", "label": "MTTA", "values": [12, 9]},
+                   {"key": "mttr", "label": "MTTR", "values": [40, 31]}],
+        "unit": "minutes"})
+    truncated = _cat(truncated=True, total=40)
+    for artifact in (minutes, truncated):
+        assert artifact.views() == B.artifact_views(artifact)
+    assert "stacked_bar" not in minutes.views() and "sparkline" not in minutes.views()
+    assert "donut" not in truncated.views()
+    header = render_tool_call_header(3, "soc_metrics", "ok", "done", [minutes, truncated])
+    assert "t3.a1 series" in header and "stacked_bar" not in header and "donut" not in header
+    # Whatever the header lists, the materialiser keeps.
+    for artifact in (minutes, truncated):
+        for view in artifact.views():
+            (block,) = to_blocks(artifact, MaterialiseOptions(block_id="b1", view=view))[:1]
+            assert B.block_view(block) == view
+    complete = _cat()
+    assert "donut" in complete.views()  # a complete count population still offers it

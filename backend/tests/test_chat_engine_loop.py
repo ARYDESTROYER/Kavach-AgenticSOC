@@ -33,7 +33,7 @@ from app.agents.chat_events import (
     UsageEvent,
     find_tool_call_headers,
 )
-from app.agents.chat_protocol import FallbackAnswer, PriorExchange
+from app.agents.chat_protocol import NOTICE_MESSAGES, FallbackAnswer, PriorExchange
 from app.agents.chat_tools import registry
 from app.agents.chat_tools.base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from app.agents.chat_tools.common import current_call
@@ -355,6 +355,23 @@ async def test_tool_then_final_with_refs_events_usage_and_audit() -> None:
     (row,) = audit.of(ActionType.ES_QUERY)
     assert row["result_summary"].startswith("turn=turn-1 step=2 t1 log_stats ok")
     assert control.rows == []
+
+
+async def test_system_prompt_names_tools_turned_off_by_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.agents.prompts import DISABLED_TOOLS_LINE_PREFIX
+
+    monkeypatch.setattr(IndicatorTool, "available", staticmethod(lambda ctx: False), raising=False)
+    gateway = FakeGateway([final("x")])
+    prefs = make_prefs()
+    await run(make_engine(gateway), "is 185.220.101.4 bad?", prefs, make_ctx(prefs))
+    system = gateway.calls[0]["messages"][0]["content"]
+    assert f"- {DISABLED_TOOLS_LINE_PREFIX} lookup_indicator." in system
+    assert "- lookup_indicator(" not in system
+    # A one-call turn offers no tools at all, so it names none as switched off.
+    gateway = FakeGateway([final("x")])
+    single = make_prefs(max_model_calls=1)
+    await run(make_engine(gateway), "q", single, make_ctx(single))
+    assert DISABLED_TOOLS_LINE_PREFIX not in gateway.calls[0]["messages"][0]["content"]
 
 
 async def test_system_prompt_lists_only_granted_tools_and_marks_the_question() -> None:
@@ -882,6 +899,54 @@ async def test_private_and_internal_values_are_never_sent() -> None:
     assert IndicatorTool.dispatched == []
 
 
+async def test_policy_refusals_never_claim_a_missing_permission() -> None:
+    # "Is 10.20.3.4 doing anything weird?": the caller HOLDS enrichment:read, so
+    # no grant would help; the notice must say policy, not "permissions you lack".
+    gateway = FakeGateway([tool_call("lookup_indicator", indicator="10.20.3.4"), final()])
+    prefs = make_prefs()
+    _, resp, _ = await run(make_engine(gateway), "Is 10.20.3.4 doing anything weird?", prefs, make_ctx(prefs))
+    step = next(s for s in resp.steps if s.tool == "lookup_indicator")
+    assert step.status == "denied" and IndicatorTool.dispatched == []
+    assert resp.notice.kind == "denied" and resp.notice.retryable is False
+    assert resp.notice.message == NOTICE_MESSAGES["policy"]
+    assert "policy does not allow" in resp.notice.message and "permission" not in resp.notice.message
+
+
+async def test_grant_gap_and_policy_refusal_in_one_turn_name_both() -> None:
+    gateway = FakeGateway([tool_calls(("audit_search", {}), ("lookup_indicator", {"indicator": "10.0.0.5"})),
+                           final()])
+    prefs = make_prefs()
+    _, resp, _ = await run(make_engine(gateway), "audit and 10.0.0.5", prefs, make_ctx(prefs))
+    assert [s.status for s in resp.steps if s.kind == "tool"] == ["denied", "denied"]
+    assert resp.notice.kind == "denied" and resp.notice.message == NOTICE_MESSAGES["denied_policy"]
+    # A grant gap alone keeps the permission wording.
+    gateway = FakeGateway([tool_call("audit_search"), final()])
+    _, resp, _ = await run(make_engine(gateway), "audit", prefs, make_ctx(prefs))
+    assert resp.notice.message == NOTICE_MESSAGES["denied"]
+
+
+async def test_a_tool_side_policy_refusal_is_a_policy_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tool re-checks the policy itself (the engine pre-check could be bypassed by
+    # a value the engine let through): its ``refusal="policy"`` reaches the notice.
+    async def refuse(self: Any, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
+        return ToolOutcome.failure("Not looked up: private address", status="denied", refusal="policy")
+
+    monkeypatch.setattr(IndicatorTool, "run", refuse)
+    gateway = FakeGateway([tool_call("lookup_indicator", indicator="185.220.101.4"), final()])
+    prefs = make_prefs()
+    _, resp, _ = await run(make_engine(gateway), "is 185.220.101.4 bad?", prefs, make_ctx(prefs))
+    step = next(s for s in resp.steps if s.tool == "lookup_indicator")
+    assert step.status == "denied" and resp.notice.message == NOTICE_MESSAGES["policy"]
+
+
+async def test_lookup_indicator_tool_marks_its_refusals_as_policy() -> None:
+    from app.agents.chat_tools.intel import LookupIndicatorTool
+
+    prefs = make_prefs()
+    out = await LookupIndicatorTool().run(make_ctx(prefs), indicator="10.0.0.5")
+    assert out.status == "denied" and out.refusal == "policy" and out.policy_refused
+
+
 async def test_user_typed_and_evidence_values_are_allowed() -> None:
     typed = await _lookup("is 185.220.101.4 malicious?", "185.220.101.4")
     evidence = await _lookup("what about the case entity?", "185.220.101.9", first="get_case")
@@ -1011,17 +1076,58 @@ async def test_case_turn_not_saved_without_grant_or_case(app_state) -> None:
 
 
 async def test_case_turn_store_error_is_retryable(app_state, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.stores.case_thread import CaseThreadWriteFailed
+
     await _seed_case(app_state)
 
     async def broken(*_a: Any, **_k: Any) -> None:
-        raise RuntimeError("thread store down")
+        raise CaseThreadWriteFailed("thread store down")
 
-    monkeypatch.setattr(app_state.case_threads, "append", broken)
+    monkeypatch.setattr(app_state.case_threads, "append_if_absent", broken)
     prefs = make_prefs()
     engine = _case_engine(app_state, FakeGateway([final("x")]))
     _, resp, outcome = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77")
     assert resp.notice.kind == "not_saved" and resp.notice.retryable is True
     assert outcome.case_saved is False
+
+
+async def test_case_turn_unconfirmed_backend_write_is_a_retryable_not_saved(app_state, monkeypatch) -> None:
+    """A KV backend that cannot confirm the compare-and-set makes the STRICT append
+    raise CaseThreadWriteFailed; the engine maps it to the retryable notice instead
+    of reporting an optimistic save."""
+    await _seed_case(app_state)
+    kv = app_state.case_threads._kv
+
+    async def refuse(*_a: Any, **_k: Any) -> bool:
+        raise ConnectionError("backend down")
+
+    monkeypatch.setattr(kv, "put_if_strict", refuse, raising=False)
+    monkeypatch.setattr(kv, "put_if", refuse, raising=False)
+    prefs = make_prefs()
+    engine = _case_engine(app_state, FakeGateway([final("x")]))
+    _, resp, outcome = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77",
+                                 idempotency_key="key-unconfirmed")
+    assert resp.notice.kind == "not_saved" and resp.notice.retryable is True
+    assert outcome.case_saved is False
+
+
+async def test_simultaneous_keyed_case_retries_append_each_message_once(app_state) -> None:
+    """Two retries of one keyed case turn racing each other: the id check happens
+    INSIDE the store's compare-and-set, so neither can see "absent" after the other
+    wrote (the old check-then-append duplicated the pair)."""
+    await _seed_case(app_state)
+    prefs = make_prefs()
+
+    async def one() -> Any:
+        engine = _case_engine(app_state, FakeGateway([final("Looks benign.")]))
+        return await run(engine, "is this benign?", prefs, make_ctx(prefs, case_id="case-77"),
+                         case_id="case-77", idempotency_key="key-race-1")
+
+    results = await asyncio.gather(one(), one(), one())
+    assert all(outcome.case_saved is True and resp.notice is None for _, resp, outcome in results)
+    thread = await app_state.case_threads.list_for_case("case-77")
+    assert [m.author_type for m in thread] == ["human", "ai"]
+    assert len({m.id for m in thread}) == 2
 
 
 async def test_case_turn_stopped_before_an_answer_leaves_no_orphan_question(app_state) -> None:

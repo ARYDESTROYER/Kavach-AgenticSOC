@@ -179,3 +179,21 @@ async def test_cost_usage_refuses_a_past_range_and_flags_the_cap() -> None:
     assert all(a.window == "last 30d" for a in capped.artifacts)
     plain = await CostUsageTool().run(make_ctx(usage=usage))
     assert plain.observation["window"] == "last 24h" and plain.coverage is None
+
+
+async def test_metric_observations_flag_a_window_the_chip_narrowed(store: CaseStore) -> None:
+    """Like the log tools, a metric observation says (structurally) when the request's
+    time chip narrowed the window the model asked for, so a planner or model never
+    has to compare a trailing label with the hours the question named."""
+    chip = TimeRange(**{"from": "now-6h"})
+    narrowed = await SocMetricsTool().run(make_ctx(cases=store, time_range=chip), kind="posture", window_hours=24)
+    assert narrowed.ok and narrowed.observation["window_clamped_to_request"] is True
+    assert narrowed.observation["window"] == "last 6h"
+    assert "window limited to the selected range" in (narrowed.coverage or "")
+    inside = await SocMetricsTool().run(make_ctx(cases=store, time_range=chip), kind="posture", window_hours=2)
+    assert inside.observation["window_clamped_to_request"] is False
+    plain = await SocMetricsTool().run(make_ctx(cases=store), kind="case_mix")
+    assert plain.observation["window_clamped_to_request"] is False
+    usage = _Usage()
+    cost = await CostUsageTool().run(make_ctx(usage=usage, time_range=chip), window_hours=48)
+    assert cost.ok and cost.observation["window_clamped_to_request"] is True and usage.hours == [6]

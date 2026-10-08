@@ -55,7 +55,8 @@ class AppHelpInput(ToolInput):
     query: str = Field(default="", max_length=300)
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     # An "Ask about this" topic id (``kpi:mtta``). Engine/route use only: its fixed
-    # question replaces ``query`` and its doc anchors are cited first.
+    # question replaces ``query`` and its doc anchors are cited first. Without it, the
+    # turn's ``ChatToolContext.topic`` pins the anchors and the model's query stays.
     topic: str | None = Field(default=None, max_length=120)
 
 
@@ -93,6 +94,13 @@ class AppHelpTool(ChatTool):
 
         topic = knowledge.topics.get(parsed.topic) if parsed.topic else None
         query = topic.question if topic else parsed.query
+        if topic is None and isinstance(ctx.topic, str):
+            # A turn started from "Ask about this" (``ChatRequest.topic``): its
+            # glossary sections lead every Help Center search of the turn, while the
+            # model's own query (if any) still ranks the rest.
+            topic = knowledge.topics.get(ctx.topic)
+            if topic is not None and not query.strip():
+                query = topic.question
         if not query.strip():
             return ToolOutcome.failure("Invalid input: check query")
 

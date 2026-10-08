@@ -38,6 +38,17 @@ Chat revamp storage form (SPEC §7.5):
 * **Compact receipts.** An idempotency receipt keeps the assistant message id, a
   bounded copy of the answer text and the scalar whitelist only — never the full
   response — so 256 receipts cannot outgrow the transcript they protect.
+* **Mapping-safe partition (storage form 3).** On the Elasticsearch state backend
+  every KV namespace shares ONE dynamically mapped config index (default limit 1,000
+  fields). Form 2 keyed the partition by conversation id and idempotency key
+  (``conversations.<cid>.messages.…``, ``requests.<key>.…``), so every new
+  conversation or request minted ~20 new mapped fields until writes failed for
+  every namespace. Form 3 stores each conversation and each request record as ONE
+  opaque canonical-JSON string in two arrays (:data:`CONVERSATION_ROWS_KEY`,
+  :data:`REQUEST_ROWS_KEY`): the document's field paths are a fixed handful whatever
+  it holds, and no stored value (a date-like title, a mixed-type legacy table row)
+  can ever conflict with a dynamic mapping. Reads still accept form 2 rows; the next
+  write re-encodes them.
 """
 
 from __future__ import annotations
@@ -102,8 +113,16 @@ MAX_RECEIPT_CONTENT_CHARS = 2_000
 MAX_SEARCH_CHARS = 200
 MAX_SNIPPET_CHARS = 160
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _PARTITION_PREFIX = "user-"
+# Storage form 3: one opaque canonical-JSON string per conversation / request record
+# (see the module docstring). Distinct names, because the form 2 keys are already
+# mapped as objects in existing Elasticsearch config indexes and a string array
+# written to an object field would be refused.
+CONVERSATION_ROWS_KEY = "chat_conversation_rows"
+REQUEST_ROWS_KEY = "chat_request_rows"
+_LEGACY_CONVERSATIONS_KEY = "conversations"
+_LEGACY_REQUESTS_KEY = "requests"
 
 # The ONE opaque string that holds an assistant message's structured presentation.
 PRESENTATION_KEY = "presentation_json"
@@ -226,7 +245,7 @@ def _json_size(value: Any) -> int:
 
 
 def stored_presentation_size(presentation: Any) -> int:
-    """Bytes ``presentation`` occupies in the partition document: its canonical JSON
+    """Bytes ``presentation`` occupies in its stored message JSON: its canonical JSON
     is stored as a JSON *string*, so every quote and backslash is escaped once more
     (a quote-dense table of short cells grows by ~40 %). :data:`MAX_PRESENTATION_BYTES`
     caps THIS size, because it is what ``_trim_messages`` counts against
@@ -661,6 +680,7 @@ def _listing_order(rows: Iterable[ChatConversation]) -> list[ChatConversation]:
 
 
 def _empty_partition() -> dict[str, Any]:
+    """The DECODED form of an empty partition (store it with :func:`_encode_partition`)."""
     return {
         "schema": _SCHEMA_VERSION,
         "conversations": {},
@@ -668,6 +688,82 @@ def _empty_partition() -> dict[str, Any]:
         "history_truncated": False,
         "total_conversation_count": 0,
     }
+
+
+def _load_row(value: Any) -> dict[str, Any] | None:
+    """One stored row: an opaque JSON string (form 3) or, leniently, an object."""
+    if isinstance(value, dict):
+        return copy.deepcopy(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def stored_conversation_rows(doc: Any) -> dict[str, dict[str, Any]]:
+    """A partition document's raw conversation rows by id, in either storage form
+    (form 3 opaque rows win when present; an unreadable row is skipped)."""
+    if not isinstance(doc, dict):
+        return {}
+    rows = doc.get(CONVERSATION_ROWS_KEY)
+    if isinstance(rows, list):
+        out: dict[str, dict[str, Any]] = {}
+        for item in rows:
+            raw = _load_row(item)
+            cid = raw.get("id") if raw is not None else None
+            if isinstance(cid, str) and cid and cid not in out:
+                out[cid] = raw
+        return out
+    legacy = doc.get(_LEGACY_CONVERSATIONS_KEY)
+    return {str(k): v for k, v in legacy.items()} if isinstance(legacy, dict) else {}
+
+
+def stored_request_rows(doc: Any) -> dict[str, dict[str, Any]]:
+    """A partition document's idempotency records by key, in either storage form."""
+    if not isinstance(doc, dict):
+        return {}
+    rows = doc.get(REQUEST_ROWS_KEY)
+    if isinstance(rows, list):
+        out: dict[str, dict[str, Any]] = {}
+        for item in rows:
+            raw = _load_row(item)
+            key = raw.get("key") if raw is not None else None
+            record = raw.get("record") if raw is not None else None
+            if isinstance(key, str) and key and isinstance(record, dict) and key not in out:
+                out[key] = record
+        return out
+    legacy = doc.get(_LEGACY_REQUESTS_KEY)
+    return {
+        str(k): copy.deepcopy(v) for k, v in legacy.items() if isinstance(v, dict)
+    } if isinstance(legacy, dict) else {}
+
+
+def with_stored_rows(
+    doc: Any,
+    *,
+    conversations: dict[str, dict[str, Any]] | None = None,
+    requests: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A copy of a partition document in storage form 3 with its raw rows replaced
+    (``None`` keeps the document's own). For repair tools and tests that patch a row;
+    the rows are written exactly as the store writes them."""
+    base = copy.deepcopy(doc) if isinstance(doc, dict) else {}
+    conv = stored_conversation_rows(base) if conversations is None else conversations
+    reqs = stored_request_rows(base) if requests is None else requests
+    for key in (_LEGACY_CONVERSATIONS_KEY, _LEGACY_REQUESTS_KEY):
+        base.pop(key, None)
+    base["schema"] = _SCHEMA_VERSION
+    base[CONVERSATION_ROWS_KEY] = [
+        canonical_json({**row, "id": cid}) for cid, row in conv.items() if isinstance(row, dict)
+    ]
+    base[REQUEST_ROWS_KEY] = [
+        canonical_json({"key": key, "record": record}) for key, record in reqs.items()
+        if isinstance(record, dict)
+    ]
+    return base
 
 
 def _rev(doc: dict[str, Any] | None) -> int:
@@ -714,19 +810,16 @@ def _normalize_conversation(raw: Any, cid: str) -> ChatConversation | None:
 
 
 def _decode_partition(doc: dict[str, Any] | None) -> dict[str, Any]:
+    """Lenient: either storage form; a corrupt row is skipped, never fatal."""
     decoded = _empty_partition()
     if not isinstance(doc, dict):
         return decoded
     rows: dict[str, ChatConversation] = {}
-    for cid, raw in (doc.get("conversations") or {}).items():
+    for cid, raw in stored_conversation_rows(doc).items():
         conversation = _normalize_conversation(raw, str(cid))
         if conversation is not None:
             rows[str(cid)] = conversation
-    requests = {
-        str(key): copy.deepcopy(value)
-        for key, value in (doc.get("requests") or {}).items()
-        if isinstance(value, dict)
-    }
+    requests = stored_request_rows(doc)
     retained = len(rows)
     decoded.update({
         "conversations": rows,
@@ -740,13 +833,19 @@ def _decode_partition(doc: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _encode_partition(data: dict[str, Any]) -> dict[str, Any]:
+    """Storage form 3: every conversation and request record is ONE opaque string,
+    so the document's mapped field paths never depend on what it holds."""
     return {
         "schema": _SCHEMA_VERSION,
-        "conversations": {
-            cid: conversation.model_dump(mode="json")
-            for cid, conversation in data["conversations"].items()
-        },
-        "requests": copy.deepcopy(data.get("requests", {})),
+        CONVERSATION_ROWS_KEY: [
+            canonical_json(conversation.model_dump(mode="json"))
+            for conversation in data["conversations"].values()
+        ],
+        REQUEST_ROWS_KEY: [
+            canonical_json({"key": key, "record": record})
+            for key, record in (data.get("requests") or {}).items()
+            if isinstance(record, dict)
+        ],
         "history_truncated": bool(data.get("history_truncated", False)),
         "total_conversation_count": max(
             len(data["conversations"]),
@@ -1611,7 +1710,7 @@ class ChatConversationStore:
 
         def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
             current_count = len(_decode_partition(current)["conversations"])
-            return _empty_partition(), current_count
+            return _encode_partition(_empty_partition()), current_count
 
         return await self._strict_mutate(key, _change) if count else 0
 
@@ -1623,7 +1722,7 @@ class ChatConversationStore:
         for key in keys:
             def _clear(current: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
                 count = len(_decode_partition(current)["conversations"])
-                return _empty_partition(), count
+                return _encode_partition(_empty_partition()), count
 
             cleared += await self._strict_mutate(key, _clear)
 

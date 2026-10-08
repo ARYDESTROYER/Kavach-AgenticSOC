@@ -391,14 +391,15 @@ def _scalar_text(value: Any, limit: int, *, multiline: bool = False) -> str:
 
 
 def _optional_text(value: Any, limit: int, *, multiline: bool = False) -> str | None:
-    """Lenient optional text: ``None``/blank/containers become ``None``."""
+    """Lenient optional text: ``None``/blank/containers become ``None``. Multiline text
+    keeps its inner whitespace, so a whitespace-only value is checked explicitly."""
     if value is None:
         return None
     try:
         text = _scalar_text(value, limit, multiline=multiline)
     except ValueError:
         return None
-    return text or None
+    return text if text and text.strip() else None
 
 
 def finite_number(value: Any) -> int | float | None:
@@ -481,10 +482,16 @@ def _text_type(limit: int, *, multiline: bool = False) -> Any:
 
 
 def _opt_text_type(limit: int, *, multiline: bool = False) -> Any:
+    """Optional text: blank, whitespace-only or explicit ``null`` becomes ``None``.
+
+    The length bound sits on the ``str`` arm only. On the whole ``Union`` it would also
+    run on the ``None`` the sanitiser returns and fail with "object of type 'NoneType'
+    has no len()", so a blank optional field (a report ``subtitle: ""`` from a provider
+    model) would lose the WHOLE envelope, section or block instead of just itself."""
     def _sanitise(value: Any) -> str | None:
         return _optional_text(value, limit, multiline=multiline)
 
-    return Annotated[Union[str, None], BeforeValidator(_sanitise), Field(max_length=limit)]
+    return Annotated[Union[Annotated[str, Field(max_length=limit)], None], BeforeValidator(_sanitise)]
 
 
 Title = _text_type(MAX_TITLE)
@@ -495,7 +502,11 @@ OptCaption = _opt_text_type(MAX_CAPTION)
 Category = _text_type(MAX_CATEGORY_CHARS)
 Number = Union[int, float]
 OptNumber = Annotated[Union[int, float, None], BeforeValidator(finite_number)]
-OptTimestamp = Annotated[Union[str, None], BeforeValidator(_iso_or_none), Field(max_length=MAX_TIMESTAMP_CHARS)]
+# Same shape as ``_opt_text_type``: an invalid or blank timestamp is ``None`` (not
+# measured), never a failed block.
+OptTimestamp = Annotated[
+    Union[Annotated[str, Field(max_length=MAX_TIMESTAMP_CHARS)], None], BeforeValidator(_iso_or_none),
+]
 OptSeverity = Annotated[Union[SeverityKey, None], BeforeValidator(lambda v: _enum_or(v, SEVERITY_KEYS, None))]
 OptVerdict = Annotated[Union[VerdictKey, None], BeforeValidator(lambda v: _enum_or(v, VERDICT_KEYS, None))]
 OptCaseStatus = Annotated[Union[CaseStatusKey, None], BeforeValidator(lambda v: _enum_or(v, CASE_STATUS_KEYS, None))]

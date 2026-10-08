@@ -2401,8 +2401,11 @@ CHAT_REQUEST_FINGERPRINT_EXCLUDE: frozenset[str] = frozenset(
     {"idempotency_key", "persist_conversation", "stream_mode"}
 )
 CHAT_REQUEST_REVAMP_FIELDS: frozenset[str] = frozenset(
-    {"scopes", "time_range", "origin", "continue_of"}
+    {"scopes", "time_range", "origin", "continue_of", "topic"}
 )
+# An "Ask about this" topic id (``kpi:mtta``, ``settings:models``): the console_map
+# topic grammar, bounded. An unknown well-formed id is ignored by its consumers.
+CHAT_TOPIC_PATTERN = r"^[a-z0-9_:.-]{1,64}$"
 
 
 class ChatRequest(BaseModel):
@@ -2447,6 +2450,18 @@ class ChatRequest(BaseModel):
     origin: ChatOrigin = "user"
     # The assistant message id this turn continues after a cap notice.
     continue_of: str | None = Field(default=None, max_length=128, pattern=_SAFE_ID_PATTERN)
+    # "Ask about this" (SPEC A7): the console_map topic this turn was started from. It
+    # is never prompt text: ``app_help`` pins that topic's glossary sections first and
+    # the $0 Help Center answer does the same. Part of the request identity (it changes
+    # retrieval) but, like the other revamp fields, only when set, so a body without
+    # it fingerprints exactly as before. A malformed id is 422; a well-formed id the
+    # corpus does not know is ignored.
+    topic: str | None = Field(default=None, max_length=64, pattern=CHAT_TOPIC_PATTERN)
+
+    @field_validator("topic", mode="before")
+    @classmethod
+    def _blank_topic(cls, value: Any) -> Any:
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("scopes", mode="before")
     @classmethod
