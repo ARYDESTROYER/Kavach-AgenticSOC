@@ -136,6 +136,68 @@ function docsRequestBoundary(docsRoot: string): Connect.NextHandleFunction {
   };
 }
 
+/**
+ * Chunks each chunk is guaranteed to have loaded before any of its code runs: the
+ * transitive closure of its STATIC imports (an ES module evaluates only after every
+ * static dependency has loaded). Filled per build by {@link preloadClosurePlugin}.
+ */
+let staticClosureByChunk = new Map<string, Set<string>>();
+
+/**
+ * Records every chunk's static-import closure before Vite writes the dynamic-import
+ * preload lists (`order: 'pre'` runs this hook ahead of Vite's own import analysis).
+ */
+function preloadClosurePlugin(): Plugin {
+  return {
+    name: 'tlsoc-preload-closure',
+    apply: 'build',
+    generateBundle: {
+      order: 'pre',
+      handler(_options, bundle) {
+        const imports = new Map<string, string[]>();
+        for (const output of Object.values(bundle)) {
+          if (output.type === 'chunk') imports.set(output.fileName, output.imports);
+        }
+        const next = new Map<string, Set<string>>();
+        for (const [fileName, direct] of imports) {
+          const seen = new Set<string>();
+          const visit = (name: string) => {
+            if (seen.has(name)) return;
+            seen.add(name);
+            for (const dep of imports.get(name) ?? []) visit(dep);
+          };
+          direct.forEach(visit);
+          next.set(fileName, seen);
+        }
+        staticClosureByChunk = next;
+      },
+    },
+  };
+}
+
+/**
+ * Trim each dynamic import's preload list to chunks that can still be missing. Vite lists
+ * the imported chunk's whole static graph, including the vendor chunks its importer has
+ * already loaded; in the entry that is every `React.lazy` page naming react-vendor,
+ * radix, icons and utils again, which the browser already holds (they are the entry's
+ * own static imports and index.html modulepreloads). Dropping them changes nothing at
+ * runtime and keeps the first-paint entry inside the chat revamp's 1 kB budget
+ * (SPEC §10.10). A list left holding only the imported chunk itself becomes `[]`, the
+ * same rule Vite applies (preloading the module `import()` fetches next is a no-op).
+ * Without a recorded closure (an unexpected hook order) the list is kept as Vite built it.
+ */
+function resolvePreloadDependencies(
+  filename: string,
+  deps: string[],
+  context: { hostId: string; hostType: 'html' | 'js' },
+): string[] {
+  if (context.hostType !== 'js') return deps;
+  const loaded = staticClosureByChunk.get(context.hostId);
+  if (!loaded) return deps;
+  const kept = deps.filter((dep) => !loaded.has(dep));
+  return kept.length === 1 && kept[0] === filename ? [] : kept;
+}
+
 function bundledDocumentationPlugin(): Plugin {
   return {
     name: 'tlsoc-bundled-documentation',
@@ -149,7 +211,7 @@ function bundledDocumentationPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [releaseManifestPlugin(), bundledDocumentationPlugin(), react()],
+  plugins: [releaseManifestPlugin(), bundledDocumentationPlugin(), preloadClosurePlugin(), react()],
   define: {
     __TLSOC_RELEASE_IDENTITY__: JSON.stringify(RELEASE_IDENTITY),
   },
@@ -169,6 +231,7 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
     chunkSizeWarningLimit: 4096,
+    modulePreload: { resolveDependencies: resolvePreloadDependencies },
     rollupOptions: {
       output: {
         /**
@@ -179,6 +242,11 @@ export default defineConfig({
          * falls through to Vite's default chunking.
          */
         manualChunks(id: string) {
+          // App modules (src/) are never grouped here: Rollup pulls a manual chunk's
+          // static dependencies into it, so grouping e.g. the shared chat modules moved
+          // lib/api, registry and nav into that chunk and made the entry import it
+          // statically (measured during the chat revamp). Preload-list size is trimmed
+          // by `resolvePreloadDependencies` instead.
           if (!id.includes('node_modules')) return undefined;
           // clsx / tailwind-merge back the entry's cn() helper AND are a transitive
           // dependency of recharts. They MUST get their own tiny, stable chunk

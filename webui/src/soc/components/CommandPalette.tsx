@@ -8,8 +8,10 @@
  *   (b) debounce-queries GET /api/search?q= for cases + sources and lets the
  *       operator open one;
  *   (c) offers quick actions (New chat, Toggle theme, Go to Settings, Enable demo
- *       mode — admin only) and the chat entries (Ask AI: <text>, Search chats, Open
- *       Reports — SPEC §10.4a), which load as a LAZY chunk so the entry stays small;
+ *       mode — admin only) and, LAST, the chat entries (Search chats, Open Reports —
+ *       SPEC §10.4a), which load as a LAZY chunk so the entry stays small. They render
+ *       after every page/action/setting match so Enter on a typed page name still opens
+ *       that page (cmdk selects the first item);
  *   (d) remembers recently-jumped targets (localStorage) and surfaces them first.
  *
  * SECURITY (#9): every case/source title, entity value and source name returned by
@@ -344,10 +346,6 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
               <CommandSeparator />
             ) : null}
 
-            <React.Suspense fallback={null}>
-              <PaletteSearch query={query} go={go} />
-            </React.Suspense>
-
             {/* Quick actions (filtered by the local substring match). */}
             <CommandGroup heading="Actions">
               {localMatch('new chat workspace investigate assistant') ? (
@@ -467,6 +465,12 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                 </CommandGroup>
               );
             })}
+
+            {/* Chat entries + chat search: last, so they never take the default Enter
+                from a page, action or setting the query names. */}
+            <React.Suspense fallback={null}>
+              <PaletteSearch query={query} go={go} />
+            </React.Suspense>
           </CommandList>
           <div
             className="flex items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground"

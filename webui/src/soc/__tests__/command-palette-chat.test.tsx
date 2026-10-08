@@ -1,9 +1,10 @@
 /**
  * Command palette chat entries (chat revamp SPEC §10.4a): "New chat" opens a fresh chat
- * (`newChat`), "Ask AI: <text>" carries the operator's own words, "Search chats" finds
- * saved conversations (with the matched snippet) and reports, and "Open Reports" jumps to
- * the library. The chat entries are a LAZY chunk; the chat data client loads only when the
- * operator chooses to search.
+ * (`newChat`), "Search chats" finds saved conversations (with the matched snippet) and
+ * reports, and "Open Reports" jumps to the library. The chat entries are a LAZY chunk
+ * rendered after every page/action match (Enter on a typed page name still opens the
+ * page); the chat data client loads only when the operator chooses to search. "Ask AI:
+ * <text>" stays off until the chat page reads a palette question.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
@@ -109,15 +110,38 @@ describe('CommandPalette — chat entries', () => {
     expect(chatApi.listConversations).not.toHaveBeenCalled();
   });
 
-  it('sends the typed text with "Ask AI: <text>" as a new chat', async () => {
-    const { onNavigate, onOpenChange } = renderPalette();
+  it('does not offer "Ask AI" while nothing on the chat page reads the question', async () => {
+    renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
-    fireEvent.change(input, { target: { value: '  who logged in from 203.0.113.14?  ' } });
-    await waitFor(() => expect(item('action-ask-ai')).toBeTruthy());
-    expect(item('action-ask-ai')).toHaveTextContent('Ask AI: who logged in from 203.0.113.14?');
-    fireEvent.click(item('action-ask-ai')!);
-    expect(onNavigate).toHaveBeenCalledWith('chat', { newChat: true, ask: 'who logged in from 203.0.113.14?' });
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+    fireEvent.change(input, { target: { value: 'who logged in from 203.0.113.14?' } });
+    await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
+    expect(item('action-ask-ai')).toBeNull();
+  });
+
+  it('keeps Enter on a typed page name going to that page, with the chat entries last', async () => {
+    const user = userEvent.setup();
+    const { onNavigate } = renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    await user.type(input, 'approvals');
+    await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
+    const values = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.getAttribute('data-value'));
+    // The chat group renders after every page target.
+    expect(values.indexOf('action-search-chats')).toBeGreaterThan(values.indexOf('nav-approvals'));
+    await user.keyboard('{Enter}');
+    expect(onNavigate).toHaveBeenCalledWith('approvals');
+    expect(onNavigate).not.toHaveBeenCalledWith('chat', expect.anything());
+  });
+
+  it('lets the rail "Reports" target answer a query naming it (no duplicate "Open Reports")', async () => {
+    const user = userEvent.setup();
+    const { onNavigate } = renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    await user.type(input, 'reports');
+    await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
+    expect(item('action-open-reports')).toBeNull();
+    expect(item('navc-chat-reports')).toBeTruthy();
+    await user.keyboard('{Enter}');
+    expect(onNavigate).toHaveBeenCalledWith('reports');
   });
 
   it('searches saved chats and reports only when asked, and opens a hit at its message', async () => {

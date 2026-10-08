@@ -14,6 +14,7 @@
  *     something slipped through it could run no script and make no request;
  *   - colours are the inline light-theme tokens (`report-tokens.ts`).
  */
+import { maybeDefang } from '@/lib/defang';
 import type { MdBlock, MdInline } from '../../ChatMarkdown';
 import type { ReportDoc } from '../model';
 import { tokenDeclarations } from './report-tokens';
@@ -241,5 +242,6 @@ export function htmlDocument(title: string, body: string): string {
 
 /** The whole document as a static HTML file (defanged by default). */
 export function reportToHtml(doc: ReportDoc, options: WalkOptions = {}): string {
-  return htmlDocument(doc.title, nodesToHtml(documentNodes(doc, options)));
+  // The <title> is a content string too (a tab or bookmark shows it): defanged like the h1.
+  return htmlDocument(maybeDefang(doc.title, options.defang !== false), nodesToHtml(documentNodes(doc, options)));
 }

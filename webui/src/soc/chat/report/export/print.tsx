@@ -67,6 +67,7 @@ export function printCopy(doc: ReportDoc, defang: boolean): ReportDoc {
       ...item,
       title: defangText(item.title),
       note: item.note ? defangText(item.note) : null,
+      question: item.question ? defangText(item.question) : null,
       blocks: defangBlocks(item.blocks),
     })),
   };

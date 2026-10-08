@@ -20,6 +20,12 @@
  * Every write sends the report's `expected_version` (strict CAS). A 409 shows "This
  * report changed elsewhere — Reload" and never discards what the analyst typed. Writes
  * are serialised, so a fast sequence of edits always carries the latest version.
+ *
+ * The host keeps one panel mounted and swaps `reportId` when the conversation changes.
+ * Each write is bound to the report it was queued for (a note flushed on the switch
+ * still lands where it was typed), and only a response for the panel's CURRENT report
+ * reaches the screen: the old report is cleared at once (a loading state, never stale
+ * content to edit), and a late reply for it updates the cache and the event bus only.
  * Every string shown is a React text node (G1); snapshots are re-validated with
  * `parseBlocks` before they render.
  */
@@ -79,7 +85,7 @@ import {
   onReportChanged,
   reportErrorMessage,
 } from './report-sync';
-import { loadSourceContext, sourceConversationIds } from './useSourceTurns';
+import { loadReportSourceContext } from './useSourceTurns';
 import type { ReportExportFormat } from './export/run';
 
 export interface ReportPanelProps {
@@ -125,7 +131,8 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
   }, [rawId]);
 
   const [report, setReport] = React.useState<Report | null>(null);
-  const [loading, setLoading] = React.useState(false);
+  // Loading from the first render when there is a report to fetch (no empty-state flash).
+  const [loading, setLoading] = React.useState(reportId !== null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [conflict, setConflict] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
@@ -141,11 +148,23 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
 
   const reportRef = React.useRef<Report | null>(null);
   reportRef.current = report;
+  /**
+   * The report the panel is showing or loading: `reportId`, or the conversation's draft
+   * adopted from a change event before the host knows its id; null after a delete. Only
+   * a response for this id may touch the screen.
+   */
+  const targetRef = React.useRef<string | null>(reportId);
+  /** The newest copy seen of every report this panel wrote to (writes read versions here). */
+  const latestRef = React.useRef(new Map<string, Report>());
+  const titleButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const refocusTitle = React.useRef(false);
+  const itemsHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const listRef = React.useRef<HTMLOListElement | null>(null);
   const draftsRef = React.useRef(drafts);
   draftsRef.current = drafts;
   const queue = React.useRef<Promise<unknown>>(Promise.resolve());
   const timers = React.useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const summaryKey = React.useRef<{ version: number; key: string } | null>(null);
+  const summaryKey = React.useRef<{ id: string; version: number; key: string } | null>(null);
   const headingRef = React.useRef<HTMLHeadingElement | null>(null);
   const alive = React.useRef(true);
   React.useEffect(() => {
@@ -156,6 +175,15 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     };
   }, []);
 
+  // A rename committed or cancelled from the keyboard returns focus to the title button
+  // (the field it was typed in has unmounted).
+  React.useEffect(() => {
+    if (editingTitle === null && refocusTitle.current) {
+      refocusTitle.current = false;
+      titleButtonRef.current?.focus();
+    }
+  }, [editingTitle]);
+
   // One announcement per conflict (SPEC §10.9: the shell announcer, no local live region).
   React.useEffect(() => {
     if (conflict) announce('This report changed elsewhere. Reload to continue editing.');
@@ -165,40 +193,68 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
   }, [actionError, announce]);
 
   /* ------------------------------------------------------------ loading -- */
+  /**
+   * Record a report the server returned and show it if it is still the panel's report.
+   * Returns whether it reached the screen. A copy older than one already seen never
+   * replaces it.
+   */
+  const show = React.useCallback((next: Report): boolean => {
+    const known = latestRef.current.get(next.id);
+    const newest = known && known.version > next.version ? known : next;
+    latestRef.current.set(next.id, newest);
+    if (!alive.current || next.id !== targetRef.current) return false;
+    reportRef.current = newest;
+    setReport(newest);
+    return true;
+  }, []);
+
+  /** Load (or reload) one report; resolves true when it is on screen. */
   const load = React.useCallback(
-    async (id: string | null, signal?: AbortSignal) => {
+    async (id: string | null, signal?: AbortSignal): Promise<boolean> => {
       if (!id) {
-        setReport(null);
-        setLoadError(null);
-        setLoading(false);
-        return;
+        if (targetRef.current === null) {
+          setReport(null);
+          setLoadError(null);
+          setLoading(false);
+        }
+        return false;
       }
+      const current = () => alive.current && !signal?.aborted && targetRef.current === id;
       setLoading(true);
       setLoadError(null);
       try {
         const fresh = await getReport(id, signal);
-        if (!alive.current || signal?.aborted) return;
-        setReport(fresh);
-        setConflict(false);
+        if (!current()) return false;
+        const shown = show(fresh);
+        if (shown) setConflict(false);
+        return shown;
       } catch (err) {
-        if (!alive.current || signal?.aborted) return;
-        setLoadError(reportErrorMessage(err, 'The report could not be loaded.'));
+        if (current()) setLoadError(reportErrorMessage(err, 'The report could not be loaded.'));
+        return false;
       } finally {
-        if (alive.current && !signal?.aborted) setLoading(false);
+        if (current()) setLoading(false);
       }
     },
-    [],
+    [show],
   );
 
   React.useEffect(() => {
-    // Another report (the host switched conversation): start from a clean slate.
-    setDrafts({});
-    setNoteState({});
-    setExpanded(new Set());
-    setConflict(false);
-    setActionError(null);
-    setSummaryError(null);
-    setEditingTitle(null);
+    targetRef.current = reportId;
+    // Another report (the host switched conversation): never leave the previous one on
+    // screen to be edited while this one loads, and start from a clean slate. The same
+    // report under its now-known id (an adopted draft) keeps what is on screen.
+    if (reportRef.current?.id !== reportId) {
+      reportRef.current = null;
+      setReport(null);
+      setDrafts({});
+      setNoteState({});
+      setExpanded(new Set());
+      setConflict(false);
+      setActionError(null);
+      setSummaryError(null);
+      setSummaryBusy(false);
+      setEditingTitle(null);
+    }
     const controller = new AbortController();
     void load(reportId, controller.signal);
     return () => controller.abort();
@@ -209,31 +265,37 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     () =>
       onReportChanged((detail) => {
         if (detail.origin === PANEL_ORIGIN) return;
-        const current = reportRef.current?.id ?? reportId;
+        const current = targetRef.current;
         const mine =
           (current && detail.reportId === current) ||
           (!current && conversationId && detail.conversationId === conversationId);
         if (!mine) return;
         if (detail.report === null) {
+          if (detail.reportId) latestRef.current.delete(detail.reportId);
+          // Deleted elsewhere: the conversation's next draft may be adopted.
+          targetRef.current = null;
+          reportRef.current = null;
           setReport(null);
           return;
         }
         if (detail.report && detail.report.id) {
-          const next = detail.report;
-          // Never step back to an older copy than the one on screen.
-          setReport((prev) => (prev && prev.id === next.id && prev.version > next.version ? prev : next));
-          setConflict(false);
+          // The conversation's first draft (created by the transcript) is adopted here.
+          if (!current) targetRef.current = detail.report.id;
+          // `show` never steps back to an older copy than the one on screen.
+          if (show(detail.report)) setConflict(false);
           return;
         }
         if (current) void load(current);
       }),
-    [conversationId, reportId, load],
+    [conversationId, load, show],
   );
 
   const count = report?.items.length ?? 0;
+  const pendingFirstLoad = loading && !report;
   React.useEffect(() => {
-    onCountChange?.(count);
-  }, [count, onCountChange]);
+    // A report still loading has no count yet; reporting 0 would flicker the toolbar.
+    if (!pendingFirstLoad) onCountChange?.(count);
+  }, [count, pendingFirstLoad, onCountChange]);
 
   // Overlay: the Sheet opened on purpose, so its heading takes focus (split never moves it).
   React.useEffect(() => {
@@ -247,24 +309,29 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
    */
   const mutate = React.useCallback(
     (body: Omit<ReportPatchRequest, 'expected_version'>): Promise<Report | 'conflict' | null> => {
+      // Bound to the report on screen when the write is queued, so a note flushed while
+      // the host switches reports still lands on the report it was typed into.
+      const onScreenReport = reportRef.current;
+      const target = onScreenReport?.id ?? null;
+      if (onScreenReport) {
+        const known = latestRef.current.get(onScreenReport.id);
+        if (!known || known.version < onScreenReport.version) latestRef.current.set(onScreenReport.id, onScreenReport);
+      }
       const run = async (): Promise<Report | 'conflict' | null> => {
-        const current = reportRef.current;
+        const current = target ? latestRef.current.get(target) : undefined;
         if (!current) return null;
+        const onScreen = () => alive.current && targetRef.current === target;
         try {
           const next = await patchReport(current.id, { ...body, expected_version: current.version });
-          reportRef.current = next;
-          if (alive.current) {
-            setReport(next);
-            setActionError(null);
-          }
+          if (show(next)) setActionError(null);
           emitReportChanged({ reportId: next.id, conversationId: next.conversation_id ?? conversationId, report: next, origin: PANEL_ORIGIN });
           return next;
         } catch (err) {
           if (isVersionConflict(err)) {
-            if (alive.current) setConflict(true);
+            if (onScreen()) setConflict(true);
             return 'conflict';
           }
-          if (alive.current) setActionError(reportErrorMessage(err));
+          if (onScreen()) setActionError(reportErrorMessage(err));
           return null;
         }
       };
@@ -272,12 +339,12 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
       queue.current = next;
       return next;
     },
-    [conversationId],
+    [conversationId, show],
   );
 
   const reload = React.useCallback(async () => {
-    const id = reportRef.current?.id ?? reportId;
-    await load(id);
+    const ok = await load(targetRef.current);
+    if (!alive.current) return;
     // A note the analyst typed survives the reload; it is now explicitly unsaved.
     setNoteState((prev) => {
       const next: Record<string, NoteState> = {};
@@ -285,8 +352,9 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
       for (const k of Object.keys(draftsRef.current)) next[k] = 'unsaved';
       return next;
     });
-    announce('Report reloaded');
-  }, [announce, load, reportId]);
+    // The failure itself shows (and is announced) beside the conflict banner.
+    if (ok) announce('Report reloaded');
+  }, [announce, load]);
 
   /* -------------------------------------------------------------- notes -- */
   const saveNote = React.useCallback(
@@ -299,9 +367,11 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
         setDrafts(({ [itemId]: _drop, ...rest }) => rest);
         return;
       }
+      const target = reportRef.current?.id ?? null;
       setNoteState((s) => ({ ...s, [itemId]: 'saving' }));
       const result = await mutate({ notes: { [itemId]: text.trim() ? text : null } });
-      if (!alive.current) return;
+      // Flushed on a report switch: saved to its own report; this panel shows another.
+      if (!alive.current || targetRef.current !== target) return;
       if (result && result !== 'conflict') {
         // Keep anything typed while the save was in flight.
         setDrafts((d) => {
@@ -360,15 +430,34 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     if (result && result !== 'conflict') announce(`Moved ${title} to position ${target + 1} of ${order.length}`);
   };
 
+  /**
+   * Put focus somewhere sensible once the element holding it is gone (a removed item's
+   * menu, the deleted report's menu). Deferred past the menu/dialog's own focus return,
+   * which targets the trigger that no longer exists.
+   */
+  const focusLater = (pick: () => HTMLElement | null | undefined) => {
+    window.setTimeout(() => {
+      if (alive.current) pick()?.focus({ preventScroll: true });
+    }, 0);
+  };
+
   const remove = async (itemId: string) => {
     const current = reportRef.current;
-    const item = current?.items.find((i) => i.id === itemId);
-    if (!current || !item) return;
+    const index = current?.items.findIndex((i) => i.id === itemId) ?? -1;
+    if (!current || index < 0) return;
     const result = await mutate({ remove_items: [itemId] });
-    if (result && result !== 'conflict') {
+    if (result && result !== 'conflict' && targetRef.current === result.id) {
       const n = result.items.length;
       announce(`Removed from report (${n} ${n === 1 ? 'item' : 'items'})`);
       setDrafts(({ [itemId]: _gone, ...rest }) => rest);
+      // The next item's toggle (or the previous one when the last went), else the heading.
+      const neighbour = result.items[Math.min(index, n - 1)]?.id;
+      focusLater(() => {
+        const row = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-report-item]') ?? []).find(
+          (el) => el.dataset.reportItem === neighbour,
+        );
+        return row?.querySelector<HTMLElement>('button[aria-expanded]') ?? itemsHeadingRef.current;
+      });
     }
   };
 
@@ -391,11 +480,17 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     if (!current) return;
     try {
       await deleteReport(current.id, current.version);
-      setReport(null);
-      reportRef.current = null;
+      latestRef.current.delete(current.id);
       emitReportChanged({ reportId: current.id, conversationId: current.conversation_id ?? conversationId, report: null, origin: PANEL_ORIGIN });
+      if (!alive.current || targetRef.current !== current.id) return;
+      // The conversation's next "Add to report" starts a new draft this panel adopts.
+      targetRef.current = null;
+      reportRef.current = null;
+      setReport(null);
       announce('Report deleted');
+      focusLater(() => headingRef.current);
     } catch (err) {
+      if (!alive.current || targetRef.current !== current.id) return;
       if (isVersionConflict(err)) setConflict(true);
       else setActionError(reportErrorMessage(err, 'The report could not be deleted.'));
     }
@@ -407,13 +502,14 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     // The methodology needs the source turns' recorded steps; read them only on export.
     const [{ exportReport }, sources] = await Promise.all([
       import('./export/run'),
-      format === 'json' ? null : loadSourceContext(sourceConversationIds(current)),
+      format === 'json' ? null : loadReportSourceContext(current),
     ]);
     const outcome = await exportReport(current, format, {
       defang: defangOn,
       author: username,
       sourceTurns: sources?.turns ?? null,
       conversationTitles: sources?.titles ?? null,
+      conversationStatus: sources?.status ?? null,
     });
     announce(outcome.message);
     if (!outcome.ok) setActionError(outcome.message);
@@ -447,27 +543,30 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     const current = reportRef.current;
     if (!current || summaryBusy) return;
     // One key per report version: a retry after a lost response replays, never re-bills.
-    if (!summaryKey.current || summaryKey.current.version !== current.version) {
-      summaryKey.current = { version: current.version, key: newKey() };
+    let key = summaryKey.current;
+    if (!key || key.id !== current.id || key.version !== current.version) {
+      key = { id: current.id, version: current.version, key: newKey() };
+      summaryKey.current = key;
     }
+    const idempotencyKey = key.key;
+    // A slow summary for a report the panel has since left updates that report only.
+    const onScreen = () => alive.current && targetRef.current === current.id;
     setSummaryBusy(true);
     setSummaryError(null);
     announce('Writing the summary');
     try {
       const result = await generateReportSummary(current.id, {
-        idempotencyKey: summaryKey.current.key,
+        idempotencyKey,
         expectedVersion: current.version,
       });
-      if (!alive.current) return;
       const next = result.report ?? (result.summary ? { ...current, summary: result.summary } : null);
       if (next) {
-        reportRef.current = next;
-        setReport(next);
+        show(next);
         emitReportChanged({ reportId: next.id, conversationId: next.conversation_id ?? conversationId, report: next, origin: PANEL_ORIGIN });
       }
-      announce('Summary ready');
+      if (onScreen()) announce('Summary ready');
     } catch (err) {
-      if (!alive.current) return;
+      if (!onScreen()) return;
       if (isVersionConflict(err)) setConflict(true);
       else {
         const message = reportErrorMessage(err, 'The summary could not be written. Try again.');
@@ -475,7 +574,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
         announce(message);
       }
     } finally {
-      if (alive.current) setSummaryBusy(false);
+      if (onScreen()) setSummaryBusy(false);
     }
   };
 
@@ -508,16 +607,19 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
+                  refocusTitle.current = true;
                   void commitTitle();
                 } else if (e.key === 'Escape') {
                   e.preventDefault();
                   e.stopPropagation();
+                  refocusTitle.current = true;
                   setEditingTitle(null);
                 }
               }}
             />
           ) : report ? (
             <button
+              ref={titleButtonRef}
               type="button"
               className={cn('block max-w-full truncate rounded-sm text-left hover:underline', focusRing)}
               title={`${title} — click to rename`}
@@ -591,7 +693,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     body = (
       <div className="space-y-2 px-3 py-4 text-sm">
         <p className="text-muted-foreground">{loadError}</p>
-        <Button variant="outline" size="sm" onClick={() => void load(reportId)}>
+        <Button variant="outline" size="sm" onClick={() => void load(targetRef.current)}>
           <RefreshCw aria-hidden /> Try again
         </Button>
       </div>
@@ -671,13 +773,18 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
 
         {/* ---- Items ---- */}
         <section aria-labelledby={ids.items} className="space-y-2">
-          <h3 id={ids.items} className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <h3
+            ref={itemsHeadingRef}
+            id={ids.items}
+            tabIndex={-1}
+            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground focus:outline-none"
+          >
             Items
           </h3>
           {count === 0 ? (
             <p className="text-sm text-muted-foreground">This report is empty. Use Add to report in the conversation.</p>
           ) : (
-            <ol className="space-y-2">
+            <ol ref={listRef} className="space-y-2">
               {report.items.map((item, index) => {
                 const parsed = itemBlocks(item);
                 const open = expanded.has(item.id);
@@ -819,6 +926,11 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
       {actionError && !conflict ? (
         <p className="border-b border-border px-3 py-1.5 text-xs text-critical-text">
           {actionError}
+        </p>
+      ) : null}
+      {loadError && report ? (
+        <p className="border-b border-border px-3 py-1.5 text-xs text-critical-text" data-testid="report-reload-error">
+          {loadError}
         </p>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto">{body}</div>

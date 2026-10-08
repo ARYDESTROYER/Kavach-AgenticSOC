@@ -183,9 +183,6 @@ UNRESOLVED_BREADCRUMB_ALLOWLIST = frozenset({
     "Case Manager → Chat",            # a tab of the Case Manager detail pane
     "Open source → Edit",             # buttons on the Playbooks page
     "Settings → Pages → Source",      # GitHub's repository settings (release procedure)
-    # The Reports page ships with the chat reports package; until its PageId is in the
-    # registry (and the console map is regenerated) this crumb cannot resolve.
-    "Triage → Workspace → Reports",
 })
 
 

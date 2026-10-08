@@ -55,7 +55,7 @@ export function ReportDocument({
 }: ReportDocumentProps) {
   const defangOn = mode === 'print' && defang;
   const nodes = React.useMemo(() => {
-    const opts: WalkOptions = { defang: defangOn };
+    const opts: WalkOptions = { defang: defangOn, screen: mode === 'screen' };
     const head = sectionNodes(doc, 'header', opts);
     return {
       header: showTitle ? head : head.filter((n, i) => !(i === 0 && n.k === 'heading')),
@@ -111,6 +111,12 @@ export function ReportDocument({
                   ) : null
                 ) : null}
               </p>
+              {item.question ? (
+                <div role="note" className="whitespace-pre-wrap rounded-md border border-l-4 border-border border-l-info bg-surface px-3 py-2 text-sm">
+                  <span className="font-semibold">Question: </span>
+                  {item.question}
+                </div>
+              ) : null}
               {renderBlocks ? (
                 renderBlocks(item, index)
               ) : (

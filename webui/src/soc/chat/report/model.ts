@@ -71,6 +71,8 @@ export const READ_ONLY_NOTICE =
 export const UNTRUSTED_NOTICE =
   'Log-derived values (host names, users, rule names, messages) are untrusted source data and are reproduced as text.';
 export const SOURCE_UNAVAILABLE = 'Conversation no longer available';
+/** At most this many source conversations are read for one report (export or view). */
+export const MAX_SOURCE_CONVERSATIONS = 10;
 
 /** A block's plain-text title (the same rule as the transcript card). */
 export function blockTitle(block: AnswerBlock): string {
@@ -94,6 +96,28 @@ export interface SourceTurnFacts {
 
 /** Turn facts by assistant message id. */
 export type SourceTurns = ReadonlyMap<string, SourceTurnFacts>;
+
+/**
+ * What became of reading one source conversation: `read` (its facts are in), `gone`
+ * (404: deleted or evicted), `failed` (any other error) or `skipped` (beyond the
+ * per-export read limit). The methodology words a missing lookup record by it.
+ */
+export type ConversationReadStatus = 'read' | 'gone' | 'failed' | 'skipped';
+
+/**
+ * The facts that belong to one report item. A whole answer (a section) carries its turn's
+ * facts; a single block that names the lookup that produced it (`from_step`) carries only
+ * that lookup (all lookups when the step is not found — the server's scope capture does
+ * the same) and no answer-level notice, so a report never attributes an unrelated lookup,
+ * failure or query to the block.
+ */
+export function scopeTurnFacts(facts: SourceTurnFacts | null, block: AnswerBlock | undefined): SourceTurnFacts | null {
+  const fromStep = block?.from_step;
+  if (!facts || typeof fromStep !== 'number') return facts;
+  const own = facts.steps.filter((s) => s.kind === 'tool' && s.index === fromStep);
+  if (!own.length) return facts;
+  return { ...facts, steps: [...facts.steps.filter((s) => s.kind !== 'tool'), ...own], notice: null };
+}
 
 /** The facts of one persisted assistant response. */
 export function turnFactsOf(response: ChatResponse | null | undefined, model?: string | null): SourceTurnFacts | null {
@@ -135,6 +159,11 @@ export interface DocItem {
   truncated: boolean;
   /** The analyst's note (untrusted for models; plain text here). */
   note: string | null;
+  /**
+   * Conversation exports: the user's full prompt (the title is cut to one line), shown
+   * as the section's first callout. Absent on report items.
+   */
+  question?: string | null;
   scope: ReportItemScope;
   source: ReportItemSource;
   addedAt: string;
@@ -196,6 +225,8 @@ export interface BuildOptions {
   sourceTurns?: SourceTurns | null;
   /** Known conversation titles (keyed by id). */
   conversationTitles?: ReadonlyMap<string, string> | null;
+  /** How reading each source conversation went (for the methodology wording). */
+  conversationStatus?: ReadonlyMap<string, ConversationReadStatus> | null;
 }
 
 const uniq = (values: Iterable<string | null | undefined>): string[] => {
@@ -249,7 +280,11 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
       scope: item.scope,
       source: item.source,
       addedAt: item.added_at,
-      turn: item.source.message_id ? (turns?.get(item.source.message_id) ?? null) : null,
+      turn: item.source.message_id
+        ? item.kind === 'block'
+          ? scopeTurnFacts(turns?.get(item.source.message_id) ?? null, parsed.blocks[0])
+          : (turns?.get(item.source.message_id) ?? null)
+        : null,
     };
   });
   const conversationIds = uniq([report.conversation_id, ...report.items.map((i) => i.source.conversation_id)]);
@@ -283,7 +318,7 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
     version: report.version,
   };
   doc.queries = collectQueries(doc.items);
-  doc.methodology = buildMethodology(doc, { turnsAvailable: turns !== null });
+  doc.methodology = buildMethodology(doc, { turnsAvailable: turns !== null, conversationStatus: options.conversationStatus ?? null });
   return doc;
 }
 
@@ -291,22 +326,48 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
 /* Conversation documents (the chat toolbar's "Export conversation").          */
 /* -------------------------------------------------------------------------- */
 
+/** The longest prompt a conversation export quotes in full (the composer's own bound). */
+const PROMPT_EXPORT_CHARS = 8_000;
+
 /**
- * A conversation as a document: one section per exchange, titled by the user's prompt,
- * holding the answer prose, then that turn's blocks (the legacy `table` when no block
- * carries it). Turns that failed or were stopped keep their notice as a callout.
+ * A conversation as a document: one section per exchange, titled by the user's prompt
+ * (one line) and quoting it in full, holding the answer prose, then that turn's blocks
+ * (the legacy `table` when no block carries it). Turns that failed or were stopped keep
+ * their notice as a callout; a prompt with no saved answer (a failed or stopped send)
+ * still appears, with a "No answer was saved" callout, so the export never drops what
+ * the analyst asked.
  */
 export function buildConversationDoc(conversation: ChatConversation, options: BuildOptions = {}): ReportDoc {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const items: DocItem[] = [];
-  let question: string | null = null;
-  let questionAt = '';
+  let pending: { id: string; title: string; full: string | null; at: string } | null = null;
+  const unanswered = (prompt: { id: string; title: string; full: string | null; at: string }) => {
+    items.push({
+      id: prompt.id,
+      kind: 'section',
+      title: prompt.title,
+      blocks: parseBlocks([{ id: 'unanswered', type: 'callout', provenance: 'code', tone: 'info', text: 'No answer was saved for this question.' }], { limit: 1 }).blocks,
+      dropped: 0,
+      truncated: false,
+      note: null,
+      question: prompt.full,
+      scope: { window: null, sources: [], generated_by: null, app_version: null, demo: false },
+      source: { conversation_id: conversation.id, message_id: '', block_id: null },
+      addedAt: prompt.at,
+      turn: null,
+    });
+  };
   conversation.messages.forEach((message) => {
     if (message.role === 'user') {
-      question = displayText(message.content, LIMITS.title) || 'Question';
-      questionAt = message.created_at;
+      if (pending) unanswered(pending);
+      const title = displayText(message.content, LIMITS.title) || 'Question';
+      const full = displayText(message.content, PROMPT_EXPORT_CHARS, { multiline: true }) || null;
+      // The title already says it all for a one-line prompt; quote only a longer one.
+      pending = { id: message.id, title, full: full && full !== title ? full : null, at: message.created_at };
       return;
     }
+    const question = pending;
+    pending = null;
     const response = message.response ?? null;
     const raw: unknown[] = [];
     const answer = response?.answer ?? message.content;
@@ -323,11 +384,12 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
     items.push({
       id: message.id,
       kind: 'section',
-      title: question ?? 'Answer',
+      title: question?.title ?? 'Answer',
       blocks,
       dropped: parsed.dropped.length,
       truncated: false,
       note: null,
+      question: question?.full ?? null,
       scope: {
         window: null,
         sources: uniq([message.source_name, response?.effective_source_name]),
@@ -336,11 +398,11 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
         demo: response?.usage?.simulated === true,
       },
       source: { conversation_id: conversation.id, message_id: message.id, block_id: null },
-      addedAt: questionAt || message.created_at,
+      addedAt: question?.at || message.created_at,
       turn: turnFactsOf(response, message.model),
     });
-    question = null;
   });
+  if (pending) unanswered(pending);
   const doc: ReportDoc = {
     kind: 'conversation',
     title: displayText(conversation.title, LIMITS.title) || 'Conversation',
@@ -421,15 +483,28 @@ const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLoca
 const counted = (n: number, one: string, singularVerb: string, pluralVerb: string): string =>
   `${plural(n, one)} ${n === 1 ? singularVerb : pluralVerb}`;
 
-/** Each source turn once (several items may come from the same answer). */
+/**
+ * Each source answer once (several items may come from the same answer): its usage and
+ * notice counted once, its steps the union of what its items carry (a block item carries
+ * only its own lookup, so two blocks of one answer contribute both lookups).
+ */
 function distinctTurns(items: readonly DocItem[]): SourceTurnFacts[] {
-  const seen = new Map<string, SourceTurnFacts>();
+  const seen = new Map<string, { facts: SourceTurnFacts; steps: Map<number, ChatStep> }>();
   items.forEach((item, i) => {
     if (!item.turn) return;
     const key = item.source.message_id || `#${i}`;
-    if (!seen.has(key)) seen.set(key, item.turn);
+    let entry = seen.get(key);
+    if (!entry) {
+      entry = { facts: { ...item.turn, notice: null }, steps: new Map() };
+      seen.set(key, entry);
+    }
+    if (item.turn.notice && !entry.facts.notice) entry.facts.notice = item.turn.notice;
+    for (const step of item.turn.steps) if (!entry.steps.has(step.index)) entry.steps.set(step.index, step);
   });
-  return Array.from(seen.values());
+  return Array.from(seen.values(), ({ facts, steps }) => ({
+    ...facts,
+    steps: Array.from(steps.values()).sort((a, b) => a.index - b.index),
+  }));
 }
 
 /** Deterministic, locale-free money for the methodology line. */
@@ -476,7 +551,10 @@ const DATA_TYPES = new Set<AnswerBlock['type']>(['kpi_group', 'chart', 'heatmap'
  * The "Methodology & limitations" lines. Every sentence is an engine template filled
  * with counts, enums and recorded labels — never model prose.
  */
-export function buildMethodology(doc: ReportDoc, context: { turnsAvailable: boolean }): string[] {
+export function buildMethodology(
+  doc: ReportDoc,
+  context: { turnsAvailable: boolean; conversationStatus?: ReadonlyMap<string, ConversationReadStatus> | null },
+): string[] {
   const lines: string[] = [READ_ONLY_NOTICE];
   const leaves = doc.items.flatMap((i) => leafBlocks(i.blocks));
   const turns = distinctTurns(doc.items);
@@ -493,13 +571,25 @@ export function buildMethodology(doc: ReportDoc, context: { turnsAvailable: bool
     const list = Array.from(counts, ([label, n]) => (n > 1 ? `${label} ×${n}` : label)).join('; ');
     lines.push(`Lookups (${plural(toolSteps.length, 'call')}): ${list}.`);
   }
-  const withoutTurn = doc.items.filter((i) => i.turn === null).length;
-  if (withoutTurn > 0) {
-    lines.push(
-      context.turnsAvailable
-        ? `Lookup details were not recorded for ${plural(withoutTurn, 'item')} (older answers, or a ${SOURCE_UNAVAILABLE.toLowerCase()}).`
-        : `Lookup details are not shown for ${plural(withoutTurn, 'item')}: the source conversation was not loaded.`,
-    );
+  const withoutTurn = doc.items.filter((i) => i.turn === null);
+  if (withoutTurn.length > 0 && !context.turnsAvailable) {
+    lines.push(`Lookup details are not shown for ${plural(withoutTurn.length, 'item')}: the source conversation was not loaded.`);
+  } else if (withoutTurn.length > 0) {
+    // Say WHY each item has no lookup record: a missing record is not a skipped read.
+    const by = { gone: 0, failed: 0, skipped: 0, unrecorded: 0 };
+    for (const item of withoutTurn) {
+      const status = context.conversationStatus?.get(item.source.conversation_id);
+      if (status === 'gone' || status === 'failed' || status === 'skipped') by[status] += 1;
+      else by.unrecorded += 1;
+    }
+    if (by.unrecorded) lines.push(`Lookup details were not recorded for ${plural(by.unrecorded, 'item')} (older answers).`);
+    if (by.gone) lines.push(`Lookup details are not available for ${plural(by.gone, 'item')}: ${SOURCE_UNAVAILABLE.toLowerCase()}.`);
+    if (by.failed) lines.push(`Lookup details are not shown for ${plural(by.failed, 'item')}: the source conversation could not be loaded.`);
+    if (by.skipped) {
+      lines.push(
+        `Lookup details are not shown for ${plural(by.skipped, 'item')}: an export reads at most ${MAX_SOURCE_CONVERSATIONS} source conversations, and theirs were not read.`,
+      );
+    }
   }
 
   // Sample basis and coverage, as the engine stated it.

@@ -30,8 +30,15 @@ export function mdText(text: string): string {
     .replace(/\r?\n/g, ' ');
 }
 
-/** Escape a line start that would otherwise read as a list, quote or heading marker. */
+/**
+ * Escape a line start that would otherwise read as Markdown structure: a list marker
+ * (`- `, `+ `, `1. `), or a line made only of `-` / `=` marks, which is a thematic break
+ * or turns the line before it into a heading (setext underline). `*`, `_`, `#` and `>`
+ * are already escaped by {@link mdText}. Model- or log-written text must never be able
+ * to rearrange the exported document.
+ */
 function guardLineStart(text: string): string {
+  if (/^\s*([-=])(?:\s*\1)*\s*$/.test(text)) return text.replace(/[-=]/, '\\$&');
   return text.replace(/^(\s*)([-+]|\d+[.)])(\s)/, (_m, sp: string, marker: string, after: string) =>
     `${sp}${marker.replace(/([-+.)])/g, '\\$1')}${after}`,
   );
@@ -185,7 +192,7 @@ function node(n: DocNode): string {
       return [head, sep, ...rows].join('\n');
     }
     case 'list':
-      return n.items.map((line, i) => `${n.ordered ? `${i + 1}.` : '-'} ${runs(line)}`).join('\n');
+      return n.items.map((line, i) => `${n.ordered ? `${i + 1}.` : '-'} ${guardLineStart(runs(line))}`).join('\n');
     case 'code': {
       const fence = fenceFor(n.text);
       const lang = n.lang && LANG_RE.test(n.lang) ? n.lang : '';
@@ -193,8 +200,10 @@ function node(n: DocNode): string {
       return `${caption}${fence}${lang}\n${n.text}\n${fence}`;
     }
     case 'callout': {
-      // Keep the note's own line breaks (hard breaks inside one quote).
-      const lines = n.text.split(/\r?\n/).map((l) => mdText(l));
+      // Keep the note's own line breaks (hard breaks inside one quote). Each line is
+      // guarded like a paragraph: inside the quote a `- x`, `---` or indented line would
+      // otherwise become a list, a heading underline or a code block.
+      const lines = n.text.split(/\r?\n/).map((l) => guardLineStart(mdText(l.replace(/^\s+/, ''))));
       return `> **${mdText(n.label)}:** ${lines.join('\\\n> ')}`;
     }
     case 'attack':

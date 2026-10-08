@@ -82,6 +82,12 @@ export type DocNode =
 export interface WalkOptions {
   /** Defang IOCs in content strings (default true). */
   defang?: boolean;
+  /**
+   * The on-screen document view (not a file): the header shows when the report last
+   * changed ("Updated") rather than an export instant, and names source conversations
+   * by title without their raw ids (an export keeps the ids for traceability).
+   */
+  screen?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -110,9 +116,11 @@ const CODE_TYPES: readonly ColumnType[] = ['entity', 'code', 'mitre'];
 class Walker {
   readonly out: DocNode[] = [];
   private readonly on: boolean;
+  readonly screen: boolean;
 
   constructor(options: WalkOptions) {
     this.on = options.defang !== false;
+    this.screen = options.screen === true;
   }
 
   /** Content string → defanged per the toggle. */
@@ -433,14 +441,14 @@ const utc = (iso: string | null | undefined): string => formatUtc(iso ?? undefin
 /** The header block: title, then engine-written metadata lines. */
 export function headerNodes(doc: ReportDoc, w: Walker): void {
   w.heading(1, doc.title);
-  const first: string[] = [`Generated ${utc(doc.generatedAt)}`];
+  const first: string[] = [w.screen ? `Updated ${utc(doc.updatedAt)}` : `Generated ${utc(doc.generatedAt)}`];
   if (doc.author) first.push(`Author: ${doc.author}`);
   if (doc.appVersion) first.push(`Agentic SOC ${doc.appVersion.startsWith('v') ? doc.appVersion : `v${doc.appVersion}`}`);
   if (doc.template) first.push(`Template: ${TEMPLATE_LABEL[doc.template]}`);
   w.push({ k: 'meta', text: first.join(' · ') });
   const second: string[] = [];
   if (doc.conversations.length) {
-    const names = doc.conversations.map((c) => (c.title ? `${c.title} (${c.id})` : c.id));
+    const names = doc.conversations.map((c) => (c.title ? (w.screen ? c.title : `${c.title} (${c.id})`) : c.id));
     second.push(`${doc.conversations.length === 1 ? 'Source conversation' : 'Source conversations'}: ${names.join(', ')}`);
   }
   if (doc.windows.length) second.push(`Window: ${doc.windows.join('; ')}`);
@@ -475,6 +483,7 @@ export function itemNodes(item: DocItem, index: number, w: Walker, level = 2, ve
   if (item.scope.sources?.length) meta.push(`Sources: ${item.scope.sources.join(', ')}`);
   if (item.addedAt) meta.push(`${verb} ${utc(item.addedAt)}`);
   w.push({ k: 'meta', text: w.f(meta.join(' · ')) });
+  if (item.question) w.push({ k: 'callout', tone: 'info', label: 'Question', text: w.f(item.question) });
   // A section's own title already names it; its blocks keep their own titles.
   const titled = item.kind === 'section' || item.blocks.length !== 1;
   for (const block of item.blocks) w.block(block, level + 1, titled);

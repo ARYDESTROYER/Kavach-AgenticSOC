@@ -1,8 +1,10 @@
 /**
  * Spreadsheet-safe field encoders (chat revamp SPEC §9.3, BLOCKS.md amendment 9).
  *
- * The ONE home of the formula-injection defusal the console's exports share (it used to
- * live in `KpiDrilldownPanel` and the answer-blocks kit). Rules:
+ * The shared home of the formula-injection defusal for the chat answer blocks and report
+ * exports (the blocks kit's copy moved here). `KpiDrilldownPanel` still carries its own
+ * `csvField`, and a few components their own download helper; they are to migrate here.
+ * Rules:
  *
  *   - STRING cells are formula-defused: a leading `= + - @ TAB CR` gets a `'` prefix,
  *     also when only spaces precede it. A source-controlled rule named
@@ -40,15 +42,16 @@ export function csvField(value: CsvCell): string {
 /**
  * One TSV field (Copy data → paste into a spreadsheet): numbers raw, strings defused
  * with tabs and line breaks folded to spaces (TSV has no quoting a paste target honours
- * reliably), null empty. Defusing runs on the RAW text first, so a leading TAB/CR — itself
- * a formula lead — is neutralised before it is folded into a space.
+ * reliably), null empty. The lead is checked on the RAW text (a leading TAB/CR is itself a
+ * formula lead) AND on the folded text (` \t=1` folds to `  =1`, spaces before `=`).
  */
 export function tsvField(value: CsvCell): string {
   if (value === null) return '';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
-  const safe = TSV_LEAD.test(value) ? `'${value}` : defuseFormula(value);
-  return safe.replace(/[\t\r\n]+/g, ' ');
+  const folded = value.replace(/[\t\r\n]+/g, ' ');
+  const dangerous = TSV_LEAD.test(value) || FORMULA_LEAD.test(value) || FORMULA_LEAD.test(folded);
+  return dangerous ? `'${folded}` : folded;
 }
 
 /** One RFC-4180 record (no trailing line break). */

@@ -34,13 +34,21 @@ const NOT_A_TLD = new Set([
 ]);
 
 /**
- * Is `tld` plausibly a top-level domain? Not a known non-TLD file extension, and
- * single-cased: DNS names in logs are lower (or upper) case, while `Mr.Smith` or
- * `end.Next` are prose.
+ * Should `match` (a dotted name `host` + `tld` at `offset` in `text`) be defanged? Never a
+ * known non-TLD file extension. A single-cased TLD always counts (DNS names in logs are
+ * lower or upper case). A mixed-case one (`Com`) is prose (`Mr.Smith`, `end.Next`) ONLY as
+ * a bare two-label token: case is chosen by whoever wrote the log or the model text, so a
+ * name with three or more labels, a `www.` prefix, a scheme or `@` before it, or a path or
+ * port after it is a host whatever its case (GFM and PDF readers autolink `www.evil.Com`).
  */
-function plausibleTld(tld: string): boolean {
+function isHost(match: string, host: string, tld: string, offset: number, text: string): boolean {
   if (NOT_A_TLD.has(tld.toLowerCase())) return false;
-  return tld === tld.toLowerCase() || tld === tld.toUpperCase();
+  if (tld === tld.toLowerCase() || tld === tld.toUpperCase()) return true;
+  if (host.split('.').length > 2 || /^www\./i.test(host)) return true;
+  const before = text.slice(Math.max(0, offset - 3), offset);
+  if (before.endsWith('://') || before.endsWith('@') || before.endsWith('[@]')) return true;
+  const after = text.slice(offset + match.length, offset + match.length + 2);
+  return after.startsWith('/') || /^:\d/.test(after);
 }
 
 /**
@@ -52,7 +60,9 @@ export function defang(text: string): string {
   out = out.replace(FTP_SCHEME_RE, (_m, _f, _t, _p, sep: string) => `fxp${sep}`);
   out = out.replace(EMAIL_RE, (_m, user: string, host: string) => `${user}[@]${host}`);
   out = out.replace(IPV4_RE, '$1[.]$2[.]$3[.]$4');
-  out = out.replace(DOMAIN_RE, (m: string, _host: string, tld: string) => (plausibleTld(tld) ? m.replace(/\./g, '[.]') : m));
+  out = out.replace(DOMAIN_RE, (m: string, host: string, tld: string, offset: number, whole: string) =>
+    isHost(m, host, tld, offset, whole) ? m.replace(/\./g, '[.]') : m,
+  );
   return out;
 }
 

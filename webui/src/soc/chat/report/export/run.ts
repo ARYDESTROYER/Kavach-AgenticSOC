@@ -13,7 +13,7 @@ import { CONSOLE_RELEASE_IDENTITY } from '@/lib/release';
 import { EXPORT_MIME, downloadText, exportFileName } from '@/lib/download';
 import type { Report } from '@/lib/types';
 
-import { buildReportDoc, type ReportDoc, type SourceTurns } from '../model';
+import { buildReportDoc, type ConversationReadStatus, type ReportDoc, type SourceTurns } from '../model';
 import { reportTablesCsv } from './csv';
 import { reportToHtml } from './html';
 import { reportToJson } from './json';
@@ -43,6 +43,8 @@ export interface ReportExportOptions {
   author?: string | null;
   sourceTurns?: SourceTurns | null;
   conversationTitles?: ReadonlyMap<string, string> | null;
+  /** How reading each source conversation went (`loadReportSourceContext`). */
+  conversationStatus?: ReadonlyMap<string, ConversationReadStatus> | null;
   /** Export instant (tests pin it). */
   now?: Date;
 }
@@ -91,6 +93,7 @@ export async function exportReport(
     generatedAt: now.toISOString(),
     sourceTurns: options.sourceTurns ?? null,
     conversationTitles: options.conversationTitles ?? null,
+    conversationStatus: options.conversationStatus ?? null,
   });
   if (format === 'csv') {
     const csv = reportTablesCsv(doc);

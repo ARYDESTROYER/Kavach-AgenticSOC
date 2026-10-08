@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   generateReportSummary: vi.fn(),
   getConversation: vi.fn(),
   listReports: vi.fn(),
+  listConversations: vi.fn(),
 }));
 vi.mock('@/soc/chat/chat-api', () => api);
 
@@ -45,6 +46,7 @@ beforeEach(() => {
   clearSourceTurnCache();
   api.getReport.mockResolvedValue(sampleReport());
   api.getConversation.mockResolvedValue(sampleConversation());
+  api.listConversations.mockResolvedValue({ conversations: [] });
   api.estimateReportSummary.mockResolvedValue({ prompt_tokens: 1, max_output_tokens: 1, total_tokens: 2, cost: null, simulated: false, model: null });
 });
 

@@ -115,6 +115,27 @@ export function reportErrorMessage(error: unknown, fallback = 'The report could 
       return 'Add something to the report before summarising it';
     case 'report_store_unavailable':
       return 'Reports are temporarily unavailable';
+    case 'report_conversation_draft_exists':
+      return 'This conversation already has a report. Open it from Reports';
+    case 'report_item_unknown':
+      return 'That item is no longer in the report. Reload it';
+    case 'report_item_order_invalid':
+      return 'The report changed while you reordered it. Reload it';
+    // Summary failures (routes_reports.SUMMARY_FAILURE_MESSAGES): say what happened, and
+    // offer a retry only where one can help (a used-up budget or an oversized report
+    // will fail the same way again).
+    case 'report_too_large_to_summarise':
+      return 'This report is too large to summarise. Remove some items first';
+    case 'budget_blocked':
+      return 'The AI budget is used up, so no summary was written. Raise the budget or try later';
+    case 'breaker_open':
+      return 'The AI provider is paused after repeated errors. Try again shortly';
+    case 'provider_unavailable':
+      return 'The AI provider is unavailable or not configured, so no summary was written';
+    case 'report_summary_timeout':
+      return 'The summary took too long and was stopped. Try again';
+    case 'report_summary_invalid':
+      return 'The model returned no summary. Try again';
     default:
       break;
   }

@@ -5,7 +5,7 @@
  * (`navigate('chat', {conversationId, messageId})`), including a conversation that no
  * longer exists.
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,6 +28,7 @@ const api = vi.hoisted(() => ({
   patchReport: vi.fn(),
   deleteReport: vi.fn(),
   getConversation: vi.fn(),
+  listConversations: vi.fn(),
 }));
 vi.mock('@/soc/chat/chat-api', () => api);
 const exportReport = vi.hoisted(() => vi.fn(async () => ({ ok: true, message: 'Markdown downloaded' })));
@@ -60,6 +61,7 @@ beforeEach(() => {
   navigate.mockClear();
   clearSourceTurnCache();
   api.listReports.mockResolvedValue(ROWS);
+  api.listConversations.mockResolvedValue({ conversations: [{ id: 'conv-1', title: 'VPN brute force', created_at: '', updated_at: '', message_count: 2 }] });
   api.getReport.mockResolvedValue(sampleReport());
   api.getConversation.mockImplementation(async (id: string) => {
     if (id === 'conv-1') return sampleConversation();
@@ -83,6 +85,39 @@ describe('Reports library', () => {
     await user.type(screen.getByRole('textbox', { name: 'Search reports' }), 'night');
     expect(within(table).queryByRole('button', { name: 'Brute force on vpn-gw-2' })).toBeNull();
     expect(within(table).getByRole('button', { name: 'Night shift handoff' })).toBeInTheDocument();
+  });
+
+  it('names each source conversation, or says it no longer exists', async () => {
+    api.listReports.mockResolvedValue([...ROWS, { ...ROWS[0], id: 'rep-3', title: 'Old hunt', conversation_id: 'conv-gone' }]);
+    const user = userEvent.setup();
+    show();
+    const table = await screen.findByRole('table', { name: 'Reports' });
+    const link = await within(table).findByRole('button', { name: 'Open the source conversation of Brute force on vpn-gw-2: VPN brute force' });
+    expect(link).toHaveTextContent('VPN brute force');
+    // The listing holds every conversation, so one it lacks is gone.
+    expect(within(table).getByText('Conversation no longer available')).toBeInTheDocument();
+    await user.click(link);
+    expect(navigate).toHaveBeenLastCalledWith('chat', { conversationId: 'conv-1' });
+  });
+
+  it('exports a list row with the same source facts as the document view', async () => {
+    const user = userEvent.setup();
+    show();
+    await user.click(await screen.findByRole('button', { name: 'Actions for Brute force on vpn-gw-2' }));
+    // Keyboard path through the submenu (Radix sub-menus open on ArrowRight).
+    const sub = await screen.findByRole('menuitem', { name: 'Export' });
+    act(() => sub.focus());
+    await user.keyboard('{ArrowRight}');
+    const md = await screen.findByRole('menuitem', { name: 'Markdown (.md)' });
+    await waitFor(() => expect(md).toHaveFocus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(exportReport).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(api.getConversation).toHaveBeenCalledWith('conv-1');
+    const options = (exportReport.mock.calls[0] as unknown as [unknown, string, { sourceTurns: Map<string, unknown>; conversationStatus: Map<string, string> }])[2];
+    expect(options.sourceTurns.has('msg-2')).toBe(true);
+    expect(options.conversationStatus.get('conv-1')).toBe('read');
+    expect(options.conversationStatus.get('conv-gone')).toBe('gone');
   });
 
   it('shows a first-use state when there are no reports', async () => {

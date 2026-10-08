@@ -1511,7 +1511,9 @@
    "anchor": "reports",
    "heading": "Reports",
    "text": "Collect results into a report as you work:\n\n- Select **Add to report** on a block to add that block, or on the meta row to add the\n  whole answer as a section. The first add creates this conversation's draft report.\n  Select it again to remove it.\n- The **Report panel** shows the report title, template (investigation, hunt, IOC,\n  shift, posture, or custom), and item count. Each item can carry a note, which saves\n  automatically. Move items up or down, or remove them.\n- **Generate summary** writes an AI executive summary and up to five next steps. It is\n  one metered model call; the button shows the estimated tokens and cost first. The\n  summary is labelled \"AI-written\" and shows **Out of date — Regenerate** after the\n  report changes.\n- **Export** produces Markdown, HTML, or Print/PDF for the whole report, and CSV or JSON\n  for single blocks. Exports include a methodology section listing the lookups, queries,\n  samples, and limits behind the numbers. Indicators are defanged by default in\n  Markdown, HTML, and print exports.",
-   "console": []
+   "console": [
+    "page:reports"
+   ]
   },
   {
    "id": "analyst/chat#reports:1",
@@ -1519,7 +1521,9 @@
    "anchor": "reports",
    "heading": "Reports",
    "text": "Open **Triage → Workspace → Reports** for the Reports library: search, open, rename,\ndelete, and export every report, and jump back to the source conversation. A report\nholds up to 40 items, and you can keep up to 100 reports. Reports are never removed\nautomatically and survive the deletion of their conversation. Content from case-scoped\nchat cannot be added to a report.",
-   "console": []
+   "console": [
+    "page:reports"
+   ]
   },
   {
    "id": "analyst/chat#conversation-history:0",

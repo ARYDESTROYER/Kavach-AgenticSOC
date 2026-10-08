@@ -254,6 +254,22 @@
       "owned_keys": []
     },
     {
+      "id": "page:reports",
+      "kind": "page",
+      "label": "Reports",
+      "crumb": [
+        "Triage",
+        "Workspace",
+        "Reports"
+      ],
+      "page": "reports",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [],
+      "owned_keys": []
+    },
+    {
       "id": "page:approvals",
       "kind": "page",
       "label": "Approvals",

@@ -44,14 +44,14 @@ import { useAnnouncer } from '@/soc/components/announcer';
 import { useAuth } from '@/soc/auth';
 import { useNavigateOptional } from '@/soc/router';
 import { LoadingState } from '@/design-system';
-import { deleteReport, getReport, listReports, patchReport } from '../chat-api';
+import { deleteReport, getReport, listConversations, listReports, patchReport } from '../chat-api';
 import { displayText } from '../stream-events';
 import { formatUtc } from '../blocks/format';
 import { ExportMenuItems, useDefangPreference } from './ExportMenu';
 import { ReportDocument } from './ReportDocument';
-import { TEMPLATE_LABEL, buildReportDoc, type DocItem } from './model';
+import { SOURCE_UNAVAILABLE, TEMPLATE_LABEL, buildReportDoc, type DocItem } from './model';
 import { emitReportChanged, isVersionConflict, onReportChanged, reportErrorMessage } from './report-sync';
-import { useSourceTurns } from './useSourceTurns';
+import { loadReportSourceContext, useSourceTurns } from './useSourceTurns';
 import type { ReportExportFormat, ReportExportOptions } from './export/run';
 
 const MENU_TRIGGER = cn(
@@ -65,6 +65,17 @@ const ORIGIN = 'reports-page';
 async function runExport(report: Report, format: ReportExportFormat, defang: boolean, extra: ReportExportOptions) {
   const { exportReport } = await import('./export/run');
   return exportReport(report, format, { ...extra, defang });
+}
+
+/**
+ * Every conversation's title, read once for the list's "Source conversation" column. The
+ * listing holds all of a user's conversations (at most 50 plus 10 pinned), so an id it
+ * lacks is gone (deleted or evicted); a shorter answer than the cap is complete.
+ */
+const CONVERSATION_LIST_CAP = 60;
+interface ConversationIndex {
+  titles: Map<string, string>;
+  complete: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -177,9 +188,10 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
             generatedAt: report.updated_at || undefined,
             sourceTurns: sources.turns,
             conversationTitles: sources.titles,
+            conversationStatus: sources.status,
           })
         : null,
-    [report, username, sources.turns, sources.titles],
+    [report, username, sources.turns, sources.titles, sources.status],
   );
 
   const openSource = React.useCallback(
@@ -222,6 +234,7 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
       author: username,
       sourceTurns: sources.turns,
       conversationTitles: sources.titles,
+      conversationStatus: sources.status,
     });
     announce(outcome.message);
     setNotice(outcome.ok ? null : outcome.message);
@@ -364,6 +377,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
   const [deleting, setDeleting] = React.useState<ReportListEntry | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [defang, setDefang] = useDefangPreference();
+  const [conversations, setConversations] = React.useState<ConversationIndex | null>(null);
 
   const load = React.useCallback(async (signal?: AbortSignal) => {
     setError(null);
@@ -373,6 +387,21 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
     } catch (err) {
       if (!signal?.aborted) setError(err);
     }
+  }, []);
+
+  // Conversation titles for the source column; without them the column still links.
+  React.useEffect(() => {
+    const controller = new AbortController();
+    listConversations({ limit: CONVERSATION_LIST_CAP }, controller.signal)
+      .then((list) => {
+        if (controller.signal.aborted) return;
+        setConversations({
+          titles: new Map(list.conversations.map((c) => [c.id, displayText(c.title, 120) || 'Untitled conversation'])),
+          complete: list.conversations.length < CONVERSATION_LIST_CAP,
+        });
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
   }, []);
 
   React.useEffect(() => {
@@ -419,7 +448,14 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
   const doExport = async (entry: ReportListEntry, format: ReportExportFormat, on: boolean) => {
     try {
       const report = await getReport(entry.id);
-      const outcome = await runExport(report, format, on, { author: username });
+      // The same methodology as the document view: read the source turns first.
+      const sources = format === 'json' ? null : await loadReportSourceContext(report);
+      const outcome = await runExport(report, format, on, {
+        author: username,
+        sourceTurns: sources?.turns ?? null,
+        conversationTitles: sources?.titles ?? null,
+        conversationStatus: sources?.status ?? null,
+      });
       announce(outcome.message);
       setNotice(outcome.ok ? null : outcome.message);
     } catch (err) {
@@ -455,20 +491,23 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
     {
       id: 'conversation',
       header: 'Source conversation',
-      cell: (r) =>
-        r.conversation_id ? (
+      cell: (r) => {
+        if (!r.conversation_id) return <span className="text-muted-foreground">—</span>;
+        const known = conversations?.titles.get(r.conversation_id);
+        if (!known && conversations?.complete) return <span className="text-muted-foreground">{SOURCE_UNAVAILABLE}</span>;
+        return (
           <button
             type="button"
             onClick={() => navigate('chat', { conversationId: r.conversation_id ?? undefined })}
-            className={cn('inline-flex items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
-            aria-label={`Open the source conversation of ${r.title}`}
+            className={cn('inline-flex max-w-full items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
+            aria-label={`Open the source conversation of ${r.title}${known ? `: ${known}` : ''}`}
+            title={known}
           >
-            <ExternalLink className="size-3" aria-hidden />
-            Open conversation
+            <ExternalLink className="size-3 shrink-0" aria-hidden />
+            <span className="truncate">{known ?? 'Open conversation'}</span>
           </button>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        ),
+        );
+      },
     },
     {
       id: 'updated',

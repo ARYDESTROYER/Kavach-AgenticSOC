@@ -304,6 +304,125 @@ describe('ReportPanel', () => {
     expect(announce).toHaveBeenCalledWith('Markdown downloaded');
   });
 
+  it('never applies a late write for the previous report after the host switches reports', async () => {
+    // The host keeps one panel mounted and swaps reportId when the conversation changes.
+    const user = userEvent.setup();
+    const other = sampleReport({ id: 'rep-B', conversation_id: 'conv-2', title: 'Phishing wave', items: sampleReport().items.slice(0, 2), version: 3 });
+    let releasePatch: (r: Report) => void = () => undefined;
+    api.patchReport.mockImplementation(
+      () => new Promise<Report>((resolve) => {
+        releasePatch = resolve;
+      }),
+    );
+    const { rerender, onCountChange, onClose } = show();
+    const note = await screen.findByRole('textbox', { name: 'Note for item 3' });
+    await user.type(note, 'Typed on rep-1');
+
+    // Switch before the autosave fires: the pending note is flushed to rep-1 ...
+    let releaseGet: (r: Report) => void = () => undefined;
+    api.getReport.mockImplementation(
+      () => new Promise<Report>((resolve) => {
+        releaseGet = resolve;
+      }),
+    );
+    onCountChange.mockClear();
+    rerender(
+      <TooltipProvider>
+        <ReportPanel conversationId="conv-2" reportId="rep-B" mode="split" onClose={onClose} onCountChange={onCountChange} />
+      </TooltipProvider>,
+    );
+    await waitFor(() => expect(api.patchReport).toHaveBeenCalledWith('rep-1', { expected_version: 5, notes: { 'it-3': 'Typed on rep-1' } }));
+    // ... and rep-1 is gone from the screen at once: nothing of it can be edited meanwhile.
+    expect(screen.queryByRole('textbox', { name: 'Note for item 3' })).toBeNull();
+    expect(screen.queryByText('Brute force on vpn-gw-2')).toBeNull();
+    expect(screen.getByText('Loading report')).toBeInTheDocument();
+    expect(onCountChange).not.toHaveBeenCalled();
+
+    // rep-B arrives first, then rep-1's save resolves late: rep-B stays on screen.
+    await act(async () => releaseGet(other));
+    expect(await screen.findByTestId('report-count')).toHaveTextContent('2/40');
+    const saved = withVersion(sampleReport(), 6);
+    const events: string[] = [];
+    const off = (await import('../report-sync')).onReportChanged((d) => events.push(String(d.reportId)));
+    await act(async () => releasePatch(saved));
+    off();
+    expect(events).toContain('rep-1');
+    expect(screen.getByRole('button', { name: /Phishing wave, rename report/ })).toBeInTheDocument();
+    expect(screen.getByTestId('report-count')).toHaveTextContent('2/40');
+    expect(screen.queryByTestId('report-conflict')).toBeNull();
+    await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(2));
+    expect(onCountChange).not.toHaveBeenCalledWith(6);
+  });
+
+  it('drops a slow summary for a report the panel has left', async () => {
+    const user = userEvent.setup();
+    api.getReport.mockResolvedValue(sampleReport({ summary: null }));
+    let release: (v: { report: Report; summary: null }) => void = () => undefined;
+    api.generateReportSummary.mockImplementation(
+      () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const { rerender, onClose } = show();
+    await user.click(await screen.findByTestId('report-generate-summary'));
+    const other = sampleReport({ id: 'rep-B', conversation_id: 'conv-2', title: 'Phishing wave', summary: null, version: 2 });
+    api.getReport.mockResolvedValue(other);
+    rerender(
+      <TooltipProvider>
+        <ReportPanel conversationId="conv-2" reportId="rep-B" mode="split" onClose={onClose} />
+      </TooltipProvider>,
+    );
+    expect(await screen.findByRole('button', { name: /Phishing wave, rename report/ })).toBeInTheDocument();
+    // The new report's Generate is not blocked by the old report's call.
+    await waitFor(() => expect(screen.getByTestId('report-generate-summary')).not.toBeDisabled());
+    announce.mockClear();
+    await act(async () => release({ report: withVersion(sampleReport(), 6), summary: null }));
+    expect(screen.getByRole('button', { name: /Phishing wave, rename report/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('report-summary')).toBeNull();
+    expect(announce).not.toHaveBeenCalledWith('Summary ready');
+  });
+
+  it('returns focus after a keyboard rename, a removal and a delete', async () => {
+    const user = userEvent.setup();
+    const report = sampleReport();
+    api.patchReport.mockResolvedValueOnce(withVersion(report, 6, { title: 'Renamed' }));
+    show();
+    await user.click(await screen.findByRole('button', { name: /rename report/ }));
+    const field = screen.getByRole('textbox', { name: 'Report title' });
+    await user.clear(field);
+    await user.type(field, 'Renamed{Enter}');
+    expect(screen.getByRole('button', { name: /rename report/ })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Renamed, rename report' })).toBeInTheDocument());
+
+    // Removing item 2 lands on the item that took its place.
+    api.patchReport.mockResolvedValueOnce(withVersion(report, 7, { items: [report.items[0], ...report.items.slice(2)] }));
+    await user.click(screen.getByRole('button', { name: 'Actions for item 2' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^2\. Alerts by source/ })).toHaveFocus());
+
+    // Deleting the report lands on the panel heading (the menu trigger is gone).
+    api.deleteReport.mockResolvedValue(undefined);
+    await user.click(screen.getByTestId('report-menu-trigger'));
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete report' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete report' }));
+    await screen.findByTestId('report-empty');
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('H2'));
+  });
+
+  it('announces a reload only when it worked and shows why it did not', async () => {
+    const user = userEvent.setup();
+    api.patchReport.mockRejectedValueOnce(conflict());
+    show();
+    const note = await screen.findByRole('textbox', { name: 'Note for item 3' });
+    await user.type(note, 'x');
+    const banner = await screen.findByTestId('report-conflict', {}, { timeout: NOTE_AUTOSAVE_MS + 1500 });
+    api.getReport.mockRejectedValue(new ApiError(503, 'down', { detail: { code: 'report_store_unavailable', message: 'down' } }));
+    announce.mockClear();
+    await user.click(within(banner).getByRole('button', { name: /Reload/ }));
+    expect(await screen.findByTestId('report-reload-error')).toHaveTextContent('Reports are temporarily unavailable');
+    expect(announce).not.toHaveBeenCalledWith('Report reloaded');
+  });
+
   it('moves focus to its heading only in overlay mode', async () => {
     const { unmount } = show({ mode: 'split' });
     await screen.findByTestId('report-count');
