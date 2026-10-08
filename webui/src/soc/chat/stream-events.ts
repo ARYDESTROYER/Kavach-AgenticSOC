@@ -390,7 +390,10 @@ const CITATION_ID_RE = /^[A-Z][0-9]{1,3}$/;
 const CONSOLE_LINK_ID_RE = /^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$/;
 const GRANT_RE = /^[a-z_]{1,40}:[a-z_]{1,40}$/;
 const SAFE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-const DOC_REF_RE = /^\/docs\/\d+\.\d+\/[a-z0-9/_-]+\/?(#[a-z0-9_-]+)?$/;
+// The shared Help Center link grammar (SPEC A1): the backend DOC_REF_PATTERN, blocks/schema.ts
+// `doc_ref` and display.ts DOC_LINK_RE; vectors: answer-blocks contract `doc_ref_examples`.
+const DOC_REF_RE =
+  /^\/docs\/[0-9]{1,4}\.[0-9]{1,4}\/(?:[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\/[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)*\/?)?(?:#[a-z0-9_-]+)?$/;
 const TECHNIQUE_RE = /^T\d{4}(\.\d{3})?$/;
 const CASE_ID_RE = /^[A-Za-z0-9_.:@ /-]{1,128}$/;
 const ROUTE_TOKEN_RE = /^[A-Za-z0-9_.:@ -]{1,128}$/;

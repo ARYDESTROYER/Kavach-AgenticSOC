@@ -78,16 +78,7 @@ describe('chat stream-events contract', () => {
 describe('citation doc links use the shared Help Center grammar (SPEC A1)', () => {
   const cite = (doc: string) => normaliseCitation({ id: 'D1', kind: 'doc', title: 'Help Center', doc });
 
-  /*
-   * KNOWN GAP, MERGE-BLOCKING (WP-L owns `stream-events.ts`): the server cites the Help
-   * Center home (`/docs/0.1/`) and dotted release pages (`/docs/0.1/releases/0.1.13/`)
-   * since SPEC A1, but `normaliseCitation` still checks the wave-1 `DOC_REF_RE`, so it
-   * drops those `[Dn]` citations (and keeps `/docs/0.1//x`). This is the strict-xfail
-   * twin: `it.fails` passes only while the gap exists. Replacing `DOC_REF_RE` with the
-   * shared grammar (the `doc_ref` pattern below) makes it pass, so `it.fails` turns RED:
-   * change it to `it` in the same change.
-   */
-  it.fails('keeps every valid doc link and drops every invalid one', () => {
+  it('keeps every valid doc link and drops every invalid one', () => {
     for (const doc of blocksContract.doc_ref_examples.valid) expect(cite(doc)?.doc, doc).toBe(doc);
     for (const doc of blocksContract.doc_ref_examples.invalid) expect(cite(doc), doc).toBeNull();
   });
