@@ -1077,6 +1077,64 @@ def test_answer_blocks_contract_parity() -> None:
     assert c["fallback_text"] == B.FALLBACK_TEXT and c["expired_text"] == B.EXPIRED_TEXT
 
 
+def test_doc_ref_examples_are_shared_with_the_webui() -> None:
+    """The Help Center link grammar accepts and rejects EXACTLY the shared vectors on
+    every server path: the Rust-regex ``pattern`` of :class:`blocks.DocRef` and of
+    ``models.Citation.doc``, and a strict Python ``fullmatch`` (what the knowledge
+    package uses). The webui contract test runs the same vectors through
+    ``parseBlocks`` and ``isDocLink``."""
+    import re
+
+    from app.models import Citation
+
+    examples = _load(_ANSWER_CONTRACT)["doc_ref_examples"]
+    strict = re.compile(B.DOC_REF_PATTERN)
+    for value in examples["valid"]:
+        assert B.parse_ref({"doc": value}) is not None, value
+        assert strict.fullmatch(value), value
+        assert Citation(id="D1", kind="doc", title="t", doc=value).doc == value
+    for value in examples["invalid"]:
+        assert B.parse_ref({"doc": value}) is None, repr(value)
+        assert not strict.fullmatch(value), repr(value)
+        with pytest.raises(ValidationError):
+            Citation(id="D1", kind="doc", title="t", doc=value)
+    # The home and a dotted release page are among the accepted vectors on purpose:
+    # those Help Center sections were uncitable under the first pattern.
+    assert {"/docs/0.1/", "/docs/0.1/releases/0.1.13/"} <= set(examples["valid"])
+    # Python's ``$`` would accept a trailing newline; the Rust engine Pydantic uses and
+    # ``fullmatch`` both refuse it.
+    assert "/docs/0.1/analyst/chat/\n" in examples["invalid"]
+
+
+def _honesty_block(example: dict[str, Any]) -> dict[str, Any]:
+    """A chart block dict for a shared ``chart_honesty`` vector (the webui test builds
+    the same block)."""
+    width = max(len(values) for values in example["series"])
+    if example["x_kind"] == "time":
+        x = [f"2026-10-08T{h:02d}:00:00Z" for h in range(width)]
+    else:
+        x = [chr(ord("a") + i) for i in range(width)]
+    return {
+        "type": "chart", "kind": example["kind"], "unit": example["unit"],
+        "x": {"kind": example["x_kind"], "values": x},
+        "series": [{"key": f"s{i + 1}", "label": f"S{i + 1}", "values": values}
+                   for i, values in enumerate(example["series"])],
+    }
+
+
+def test_chart_honesty_vectors_are_shared_with_the_webui() -> None:
+    """``blocks.chart_kind_fits`` (what ``allowed_views`` offers) agrees with the webui
+    ``views.chartKindFits`` (what "Show as" draws) on every shared vector, and both
+    sides use the same additive units and tolerance."""
+    honesty = _load(_ANSWER_CONTRACT)["chart_honesty"]
+    assert list(B.ADDITIVE_UNITS) == honesty["additive_units"]
+    assert B.SHARE_TOLERANCE == honesty["share_tolerance"]
+    assert {e["unit"] for e in honesty["examples"]} == set(B.VALUE_UNITS)
+    for example in honesty["examples"]:
+        block = _honesty_block(example)
+        assert B.chart_kind_fits(block, example["kind"]) is example["fits"], example["name"]
+
+
 def test_stream_events_contract_parity() -> None:
     from app import models as M
 

@@ -289,7 +289,13 @@ export const PATTERN_SOURCES = {
   page: '^[a-z][a-z_]{0,39}$',
   route_token: '^[A-Za-z0-9_.:@ -]{1,128}$',
   case_id: '^[A-Za-z0-9_.:@ /-]{1,128}$',
-  doc_ref: '^/docs/\\d+\\.\\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$',
+  // Help Center path: the version line, zero or more lowercase dot-joined segments
+  // (so `/docs/0.1/` and `releases/0.1.13/` cite), never a `.`/`..`/empty segment,
+  // scheme, host, query, uppercase, `%` or backslash. Vectors: contract `doc_ref_examples`.
+  doc_ref:
+    '^/docs/[0-9]{1,4}\\.[0-9]{1,4}/' +
+    '(?:[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*(?:/[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*)*/?)?' +
+    '(?:#[a-z0-9_-]+)?$',
   technique: '^T\\d{4}(\\.\\d{3})?$',
   section_id: '^[a-z0-9][a-z0-9_-]{0,31}$',
   artifact_ref: '^t([1-9][0-9]{0,2})\\.a([1-9][0-9]{0,2})$',

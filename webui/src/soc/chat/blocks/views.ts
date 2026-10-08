@@ -15,9 +15,12 @@
  *     usd), or for percentages/ratios whose parts reconcile to the whole (a 100 % stack,
  *     a share-of-total donut).
  *
- * The server's `allowed_views` (SPEC §7.3) cannot tell whether series are additive, so
- * the client is the last guard: a block whose OWN kind fails the rule is drawn in the
- * nearest honest kind ({@link honestChart}) rather than with an invented total.
+ * The server applies the same rule when it builds `allowed_views` (`blocks.py`
+ * `chart_kind_fits`; both sides run the contract file's `chart_honesty` vectors), so it
+ * never offers a view this module refuses. The client stays the last guard for blocks
+ * from anywhere else (an older stored answer, a drifted payload): a block whose OWN kind
+ * fails the rule is drawn in the nearest honest kind ({@link honestChart}) rather than
+ * with an invented total.
  */
 import { blockTabular } from './export-helpers';
 import type {
@@ -66,7 +69,7 @@ export function canShowTable(block: AnswerBlock): boolean {
 export const ADDITIVE_UNITS: readonly ValueUnit[] = ['count', 'tokens', 'bytes', 'usd'];
 
 /** How far a set of percentage parts may drift from 100 (rounding at the source). */
-const SHARE_TOLERANCE = 0.5;
+export const SHARE_TOLERANCE = 0.5;
 
 /**
  * Do the parts reconcile to the whole (100 %, or 1 for a ratio)? Only then is a stack or

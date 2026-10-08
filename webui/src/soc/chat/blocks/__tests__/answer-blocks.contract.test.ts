@@ -31,6 +31,8 @@ import {
   NAV_STATUSES,
   PATTERN_SOURCES,
   PROVENANCES,
+  parseBlocks,
+  parseRef,
   parseTimestamp,
   QUERY_LANGUAGES,
   REPORT_TEMPLATES,
@@ -45,6 +47,9 @@ import {
   X_KINDS,
 } from '@/soc/chat/blocks/schema';
 import { INVISIBLE_TEXT_CLASS, INVISIBLE_TEXT_RANGES, displayText } from '@/soc/chat/stream-events';
+import { DOC_LINK_RE, isDocLink } from '@/soc/chat/display';
+import { ADDITIVE_UNITS, SHARE_TOLERANCE, chartKindFits, switchableViews } from '@/soc/chat/blocks/views';
+import type { ChartBlock, ChartKind, ValueUnit } from '@/soc/chat/blocks/schema';
 import { isSafeCaseResultStatus } from '@/soc/case-result-route';
 
 const c = contract as unknown as Record<string, unknown>;
@@ -133,6 +138,88 @@ describe('answer-blocks contract', () => {
     expect(parseTimestamp('2026-10-08T10:10:10+0200')).toBe(Date.UTC(2026, 9, 8, 8, 10, 10));
     expect(parseTimestamp('2026-10-08 10:10:10.123456789z')).toBe(Date.UTC(2026, 9, 8, 10, 10, 10, 123));
     expect(parseTimestamp('0001-01-01')).toBe(-62135596800000);
+  });
+
+  it('accepts and rejects exactly the shared Help Center link vectors (same list as the backend)', () => {
+    const examples = contract.doc_ref_examples;
+    // The route-chunk literal (display.ts) and the lazy parser (schema.ts) are the same
+    // grammar; comparing normalised sources catches an edit to only one of them.
+    expect(DOC_LINK_RE.source.replace(/\\\//g, '/')).toBe(PATTERN_SOURCES.doc_ref);
+    for (const doc of examples.valid) {
+      expect(parseRef({ doc }), doc).toEqual({ doc });
+      expect(isDocLink(doc), doc).toBe(true);
+    }
+    for (const doc of examples.invalid) {
+      expect(parseRef({ doc }), JSON.stringify(doc)).toBeNull();
+      expect(isDocLink(doc), JSON.stringify(doc)).toBe(false);
+    }
+    // End to end: a guide link to the Help Center home survives parseBlocks.
+    const { blocks } = parseBlocks([
+      {
+        id: 'g1',
+        type: 'guide',
+        provenance: 'code',
+        artifact_kind: 'guide',
+        links: [
+          { label: 'Help Center', ref: { doc: '/docs/0.1/' } },
+          { label: 'Release', ref: { doc: '/docs/0.1/releases/0.1.13/' } },
+          { label: 'Traversal', ref: { doc: '/docs/0.1/../admin/' } },
+        ],
+      },
+    ]);
+    expect(blocks[0]).toMatchObject({
+      type: 'guide',
+      links: [
+        { label: 'Help Center', ref: { doc: '/docs/0.1/' } },
+        { label: 'Release', ref: { doc: '/docs/0.1/releases/0.1.13/' } },
+      ],
+    });
+  });
+
+  it('judges stacks and donuts exactly as the server does (shared chart_honesty vectors)', () => {
+    const honesty = contract.chart_honesty;
+    expect([...ADDITIVE_UNITS]).toEqual(honesty.additive_units);
+    expect(SHARE_TOLERANCE).toBe(honesty.share_tolerance);
+    expect(new Set(honesty.examples.map((e) => e.unit))).toEqual(new Set(VALUE_UNITS));
+    for (const example of honesty.examples) {
+      const width = Math.max(...example.series.map((values) => values.length));
+      const x = Array.from({ length: width }, (_, i) =>
+        example.x_kind === 'time' ? `2026-10-08T${String(i).padStart(2, '0')}:00:00Z` : String.fromCharCode(97 + i),
+      );
+      const parsed = parseBlocks([
+        {
+          id: 'h1',
+          type: 'chart',
+          kind: 'line',
+          provenance: 'code',
+          artifact_kind: 'series',
+          allowed_views: ['line', 'area', 'bar', 'stacked_bar', 'sparkline', 'table'],
+          unit: example.unit,
+          x: { kind: example.x_kind, values: x },
+          series: example.series.map((values, i) => ({ key: `s${i + 1}`, label: `S${i + 1}`, values })),
+        },
+      ]).blocks[0] as ChartBlock;
+      const block: ChartBlock = { ...parsed, unit: example.unit as ValueUnit };
+      expect(chartKindFits(block, example.kind as ChartKind), example.name).toBe(example.fits);
+    }
+    // The view a server stops offering is also absent from the "Show as" menu.
+    const minutes = parseBlocks([
+      {
+        id: 'm1',
+        type: 'chart',
+        kind: 'line',
+        provenance: 'code',
+        artifact_kind: 'series',
+        allowed_views: ['line', 'area', 'bar', 'table'],
+        unit: 'minutes',
+        x: { kind: 'category', values: ['a', 'b'] },
+        series: [
+          { key: 'p50', label: 'Median', values: [12, 40] },
+          { key: 'p90', label: '90th percentile', values: [3, 4] },
+        ],
+      },
+    ]).blocks[0];
+    expect(switchableViews(minutes)).toEqual(['line', 'area', 'bar']);
   });
 
   it('builds an astral-safe invisible class from the shared ranges', () => {

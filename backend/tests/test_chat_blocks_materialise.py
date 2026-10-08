@@ -138,6 +138,65 @@ def test_donut_only_for_a_complete_population() -> None:
     assert "donut" not in to_blocks(many, MaterialiseOptions(block_id="b1"))[0]["allowed_views"]
 
 
+def _series(unit: str, rows: list[list[Any]], **over: Any) -> Artifact:
+    """A category-axis series artifact: ``rows`` are the series' values."""
+    width = max(len(r) for r in rows)
+    return Artifact(id="a1", kind="series", title="t", data={
+        "x": [f"x{i}" for i in range(width)], "x_kind": "category", "unit": unit,
+        "series": [{"key": f"s{i}", "label": f"S{i}", "values": r} for i, r in enumerate(rows)]}, **over)
+
+
+def test_stacks_and_donuts_are_offered_only_for_values_that_add_up() -> None:
+    """WP-INT item 2: a stack draws a slot total and a donut a centre total, so the
+    server offers them only where that total means something, as the webui does."""
+    # Additive units: always.
+    assert "stacked_bar" in to_blocks(_series("tokens", [[1, 2], [3, 4]]), MaterialiseOptions(block_id="b1"))[0]["allowed_views"]
+    # Percent parts reconcile to 100 per slot: a 100 % stack is honest.
+    shares = _series("percent", [[60, 30], [40, 70]])
+    assert "stacked_bar" in B.artifact_views(shares)
+    stack = to_blocks(shares, MaterialiseOptions(block_id="b1", view="stacked_bar"))[0]
+    assert stack["kind"] == "stacked_bar" and "stacked_bar" in stack["allowed_views"]
+    # Rates, scores and durations never stack: the request falls back to the default.
+    for unit, rows in (("percent", [[60, 30], [10, 10]]), ("score", [[40, 50], [60, 50]]),
+                       ("minutes", [[12, 40], [3, 4]]), ("ms", [[1, 2], [3, 4]])):
+        artifact = _series(unit, rows)
+        assert "stacked_bar" not in B.artifact_views(artifact), unit
+        block = to_blocks(artifact, MaterialiseOptions(block_id="b1", view="stacked_bar"))[0]
+        assert block["kind"] == "line" and "stacked_bar" not in block["allowed_views"], unit
+    # Donut: a share-of-total percentage or ratio is honest; a median is not.
+    pct = _cat(data={"values": [50, 30, 20], "unit": "percent"})
+    assert to_blocks(pct, MaterialiseOptions(block_id="b1", view="donut"))[0]["kind"] == "donut"
+    ratio = _cat(data={"values": [0.5, 0.25, 0.25], "unit": "ratio"})
+    assert "donut" in B.artifact_views(ratio)
+    for data in ({"values": [50, 30, 30], "unit": "percent"}, {"values": [12, 7, 7], "unit": "minutes"},
+                 {"values": [80, 60, 40], "unit": "score"}, {"values": [50, None, 50], "unit": "percent"}):
+        block = to_blocks(_cat(data=data), MaterialiseOptions(block_id="b1", view="donut"))[0]
+        assert block["kind"] == "hbar" and "donut" not in block["allowed_views"], data
+
+
+def test_a_top_n_cut_that_breaks_the_whole_withdraws_the_total_views() -> None:
+    """Judged on the block AS SHOWN, as the client's "Show as" menu judges it: the
+    first two of three shares no longer make 100 %, and a donut of a clipped top-N is
+    not a whole either (even for counts)."""
+    three = _series("percent", [[50, 40], [30, 30], [20, 30]])
+    assert "stacked_bar" in B.artifact_views(three)
+    cut = to_blocks(three, MaterialiseOptions(block_id="b1", view="stacked_bar", top_n=2))[0]
+    assert cut["kind"] == "line" and "stacked_bar" not in cut["allowed_views"]
+    assert cut["truncated"] is True
+    top = to_blocks(_cat(), MaterialiseOptions(block_id="b1", top_n=2))[0]
+    assert top["kind"] == "hbar" and "donut" not in top["allowed_views"]
+    assert revise_view(top, "donut", block_id="b2") is None
+
+
+def test_a_dishonest_stored_view_is_never_rebuilt() -> None:
+    """``mK.bJ``: even a stored block that (wrongly) lists ``stacked_bar`` cannot be
+    turned into a stack of values that do not add up."""
+    stored = to_blocks(_series("minutes", [[12, 40], [3, 4]]), MaterialiseOptions(block_id="b1"))[0]
+    forged = dict(stored, allowed_views=["line", "area", "bar", "stacked_bar", "table"])
+    assert revise_view(forged, "stacked_bar", block_id="b2") is None
+    assert revise_view(forged, "bar", block_id="b2")["allowed_views"] == ["line", "area", "bar", "table"]
+
+
 def test_series_order_is_deterministic_with_other_last() -> None:
     block = to_blocks(ARTIFACTS["series"], MaterialiseOptions(block_id="b1"))[0]
     assert [s["key"] for s in block["series"]] == ["big", "small", "other"]

@@ -25,11 +25,14 @@ import type {
   ChatConversationsResponse,
   ChatConversationUpdateRequest,
   ChatRates,
+  ChatPrompt,
   ChatRequest,
   ChatResponse,
   ChatScope,
+  ChatStarter,
   ChatTimeRange,
   ChatToolInfo,
+  ChatTopicQuestion,
   Report,
   ReportCreateRequest,
   ReportItem,
@@ -260,6 +263,32 @@ function normaliseBudget(raw: unknown): ChatBudgetInfo | null {
   };
 }
 
+/** The backend `ChatStarter.id` grammar (`^[a-z0-9_]+$`, ≤ 40). */
+const STARTER_ID_RE = /^[a-z0-9_]{1,40}$/;
+/** Bounds mirrored from backend `models.ChatStarter` (SPEC §10.5). */
+export const CHAT_STARTER_LIMITS = { starters: 12, label_chars: 40, description_chars: 120, prompt_chars: 400, tools: 8 } as const;
+
+/**
+ * One empty-state starter (SPEC §10.5), or `null` when unusable. The prompt is SENT
+ * as the user's message (origin `starter`), so it is never clamped with an ellipsis:
+ * an over-long prompt drops the card instead of sending a mangled question. Starter
+ * prompts are server-built from live context (a case id, a source name), so they are
+ * still display-sanitised like every other server string (#9).
+ */
+function normaliseStarter(raw: unknown): ChatStarter | null {
+  if (!isObj(raw) || typeof raw.id !== 'string' || !STARTER_ID_RE.test(raw.id)) return null;
+  const label = text(raw.label, CHAT_STARTER_LIMITS.label_chars);
+  const prompt = typeof raw.prompt === 'string' ? displayText(raw.prompt, 0, { multiline: true }).trim() : '';
+  if (!label || !prompt || Array.from(prompt).length > CHAT_STARTER_LIMITS.prompt_chars) return null;
+  return {
+    id: raw.id,
+    label,
+    description: text(raw.description, CHAT_STARTER_LIMITS.description_chars),
+    prompt,
+    tools: strings(raw.tools, CHAT_STARTER_LIMITS.tools, (name) => TOOL_NAME_RE.test(name)),
+  };
+}
+
 /** Lenient `ChatContextInfo`: safe defaults everywhere, money fields only when sent. */
 export function normaliseChatContext(raw: unknown): ChatContextInfo {
   const src = isObj(raw) ? raw : {};
@@ -274,6 +303,14 @@ export function normaliseChatContext(raw: unknown): ChatContextInfo {
   }
   const calibration = amount(src.calibration);
   const remaining = typeof src.remaining === 'number' && Number.isFinite(src.remaining) ? src.remaining : null;
+  const starters: ChatStarter[] = [];
+  if (Array.isArray(src.starters)) {
+    for (const item of src.starters) {
+      const starter = normaliseStarter(item);
+      if (starter && !starters.some((s) => s.id === starter.id)) starters.push(starter);
+      if (starters.length >= CHAT_STARTER_LIMITS.starters) break;
+    }
+  }
   return {
     model: optText(src.model, 120),
     context_window: optCount(src.context_window),
@@ -295,6 +332,7 @@ export function normaliseChatContext(raw: unknown): ChatContextInfo {
     budget: normaliseBudget(src.budget),
     spent_today: amount(src.spent_today),
     remaining,
+    starters,
   };
 }
 
@@ -323,6 +361,132 @@ export async function getChatContext(query: ChatContextQuery = {}, signal?: Abor
 /** The org bounds a `Preferences.chat_agent` carries, as public context bounds. */
 export function boundsFromAgentConfig(config: ChatAgentConfig | null | undefined): ChatContextBounds {
   return normaliseBounds(config ?? null);
+}
+
+/* -------------------------------------------------------------------------- */
+/* "Ask about this" topics: GET /api/chat/topics/{topic_id} (SPEC §10.7, D2).  */
+/* -------------------------------------------------------------------------- */
+
+/** A `console_map` topic id (the same grammar the chat route accepts in NavOpts). */
+export const CHAT_TOPIC_RE = /^[a-z0-9][a-z0-9_.:-]{0,79}$/;
+const TOPIC_QUESTION_CHARS = 400;
+
+/**
+ * Resolve a topic id to its templated question. The page sends the returned question
+ * (origin `starter`) and never free text from the link (SPEC §10.7). An id outside
+ * the grammar is refused locally (no request); 404 for an unknown topic is the
+ * server's usual `ApiError`.
+ */
+export async function getChatTopic(topicId: string, signal?: AbortSignal): Promise<ChatTopicQuestion> {
+  if (typeof topicId !== 'string' || !CHAT_TOPIC_RE.test(topicId)) {
+    throw new ApiError(400, 'This topic is not available.', null);
+  }
+  const raw = await request<unknown>('GET', `chat/topics/${encodeURIComponent(topicId)}`, { signal });
+  const src = isObj(raw) ? raw : {};
+  // The question is sent verbatim as a message, so an over-long one is refused rather
+  // than clamped with an ellipsis.
+  const question = typeof src.question === 'string' ? displayText(src.question, 0).trim() : '';
+  if (!question || Array.from(question).length > TOPIC_QUESTION_CHARS) {
+    throw new ApiError(502, 'This topic could not be read.', raw);
+  }
+  const topic = typeof src.topic === 'string' && CHAT_TOPIC_RE.test(src.topic) ? src.topic : topicId;
+  return { topic, question };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Saved prompts: UserPrefs.chat_prompts over the existing prefs routes.       */
+/* -------------------------------------------------------------------------- */
+
+/** Backend `CHAT_PROMPT_ID_PATTERN`. */
+export const SAVED_PROMPT_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+export const SAVED_PROMPT_LIMITS = {
+  prompts: CHAT_LIMITS.chat_prompts,
+  title_chars: CHAT_LIMITS.chat_prompt_title_chars,
+  text_chars: CHAT_LIMITS.chat_prompt_text_chars,
+} as const;
+
+/**
+ * One saved prompt shaped the way the backend repairs it (`_repair_chat_prompts`):
+ * multiline text clamped to 2,000, a single-line title clamped to 60 (derived from
+ * the text when blank), `null` when the id or text is unusable.
+ */
+function normaliseSavedPrompt(raw: unknown): ChatPrompt | null {
+  if (!isObj(raw) || typeof raw.id !== 'string' || !SAVED_PROMPT_ID_RE.test(raw.id)) return null;
+  const body = text(raw.text, SAVED_PROMPT_LIMITS.text_chars, true).trim();
+  if (!body) return null;
+  const title = text(raw.title, SAVED_PROMPT_LIMITS.title_chars) || text(body, SAVED_PROMPT_LIMITS.title_chars);
+  return { id: raw.id, title, text: body };
+}
+
+/** The stored list, de-duplicated by id and bounded to 50 (render as text, #9). */
+export function normaliseSavedPrompts(raw: unknown): ChatPrompt[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatPrompt[] = [];
+  for (const item of raw) {
+    const prompt = normaliseSavedPrompt(item);
+    if (prompt && !out.some((p) => p.id === prompt.id)) out.push(prompt);
+    if (out.length >= SAVED_PROMPT_LIMITS.prompts) break;
+  }
+  return out;
+}
+
+/** A fresh id inside {@link SAVED_PROMPT_ID_RE}. */
+export function newSavedPromptId(): string {
+  const random = Math.random().toString(36).slice(2, 10) || '0';
+  return `p-${Date.now().toString(36)}-${random}`;
+}
+
+/** Build a new prompt from free text (the title falls back to the text's first line). */
+export function makeSavedPrompt(input: { title?: string | null; text: string }): ChatPrompt | null {
+  return normaliseSavedPrompt({ id: newSavedPromptId(), title: input.title ?? '', text: input.text });
+}
+
+/** `GET /api/prefs/user` → the caller's saved prompts (personal bucket). */
+export async function getSavedPrompts(signal?: AbortSignal): Promise<ChatPrompt[]> {
+  const raw = await request<unknown>('GET', 'prefs/user', { signal });
+  return normaliseSavedPrompts(isObj(raw) ? raw.chat_prompts : null);
+}
+
+/** Thrown when the server accepted the write but did not store the change. */
+export const SAVED_PROMPTS_UNSUPPORTED = 'Saved prompts are not available on this server yet.';
+
+/**
+ * `PUT /api/prefs/user {chat_prompts}` with the whole list (the prefs routes are
+ * replace-only for this field). Returns what the server stored.
+ */
+export async function putSavedPrompts(prompts: readonly ChatPrompt[]): Promise<ChatPrompt[]> {
+  const body = normaliseSavedPrompts(prompts);
+  const raw = await request<unknown>('PUT', 'prefs/user', { body: { chat_prompts: body } });
+  return normaliseSavedPrompts(isObj(raw) ? raw.chat_prompts : null);
+}
+
+/**
+ * Add one prompt. Re-reads the list right before writing so another tab's change is
+ * not overwritten by a stale copy. Refuses a 51st prompt; reports an older server
+ * that silently ignores `chat_prompts` instead of claiming the save worked.
+ */
+export async function addSavedPrompt(input: {
+  title?: string | null;
+  text: string;
+}): Promise<{ prompt: ChatPrompt; prompts: ChatPrompt[] }> {
+  const prompt = makeSavedPrompt(input);
+  if (!prompt) throw new ApiError(422, 'Write the prompt text first.', null);
+  const current = await getSavedPrompts();
+  if (current.length >= SAVED_PROMPT_LIMITS.prompts) {
+    throw new ApiError(409, `You have ${SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.`, null);
+  }
+  const stored = await putSavedPrompts([...current, prompt]);
+  if (!stored.some((p) => p.id === prompt.id)) throw new ApiError(501, SAVED_PROMPTS_UNSUPPORTED, null);
+  return { prompt, prompts: stored };
+}
+
+/** Delete one prompt by id (re-reads first, like {@link addSavedPrompt}). */
+export async function deleteSavedPrompt(promptId: string): Promise<ChatPrompt[]> {
+  const current = await getSavedPrompts();
+  if (!current.some((p) => p.id === promptId)) return current;
+  const stored = await putSavedPrompts(current.filter((p) => p.id !== promptId));
+  if (stored.some((p) => p.id === promptId)) throw new ApiError(501, SAVED_PROMPTS_UNSUPPORTED, null);
+  return stored;
 }
 
 /* -------------------------------------------------------------------------- */

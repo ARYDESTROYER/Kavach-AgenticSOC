@@ -62,6 +62,9 @@ describe('isDocLink', () => {
     expect(isDocLink('/docs/0.1/analyst/chat/')).toBe(true);
     expect(isDocLink('/docs/0.1/analyst/chat/#sources')).toBe(true);
     expect(isDocLink('/docs/12.34/a_b-c')).toBe(true);
+    // The Help Center home and dotted release pages are citable (shared contract vectors).
+    expect(isDocLink('/docs/0.1/')).toBe(true);
+    expect(isDocLink('/docs/0.1/releases/0.1.13/#operator-bootstrap')).toBe(true);
   });
 
   it('rejects other origins, traversal, other app paths and odd shapes', () => {
@@ -70,7 +73,9 @@ describe('isDocLink', () => {
       '//evil.example/docs/0.1/x',
       '/docs/0.1/../../admin',
       '/docs/latest/x/',
-      '/docs/0.1/',
+      '/docs/0.1',
+      '/docs/0.1/./x/',
+      '/docs/0.1/releases/0.1./',
       '/docs/0.1/Analyst/',
       '/cases',
       '#/settings',

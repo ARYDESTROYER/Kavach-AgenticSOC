@@ -319,7 +319,7 @@
     "page": "^[a-z][a-z_]{0,39}$",
     "route_token": "^[A-Za-z0-9_.:@ -]{1,128}$",
     "case_id": "^[A-Za-z0-9_.:@ /-]{1,128}$",
-    "doc_ref": "^/docs/\\d+\\.\\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$",
+    "doc_ref": "^/docs/[0-9]{1,4}\\.[0-9]{1,4}/(?:[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*(?:/[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*)*/?)?(?:#[a-z0-9_-]+)?$",
     "technique": "^T\\d{4}(\\.\\d{3})?$",
     "section_id": "^[a-z0-9][a-z0-9_-]{0,31}$",
     "artifact_ref": "^t([1-9][0-9]{0,2})\\.a([1-9][0-9]{0,2})$",
@@ -446,6 +446,458 @@
       " 2026-10-08",
       "2026-10-08\n",
       ""
+    ]
+  },
+  "doc_ref_examples": {
+    "valid": [
+      "/docs/0.1/",
+      "/docs/0.1/#release-status",
+      "/docs/0.1/analyst/chat/",
+      "/docs/0.1/analyst/chat/#sources",
+      "/docs/0.1/getting-started/first-run",
+      "/docs/0.1/releases/0.1.13/",
+      "/docs/0.1/releases/0.1.13/#operator-bootstrap",
+      "/docs/12.34/a_b-c"
+    ],
+    "invalid": [
+      "",
+      "/docs/0.1",
+      "/docs/0.1/./analyst/",
+      "/docs/0.1/../admin/",
+      "/docs/0.1/analyst/../../etc/",
+      "/docs/0.1/analyst/.",
+      "/docs/0.1/..",
+      "/docs/0.1//analyst/",
+      "/docs/0.1/a..b/",
+      "/docs/0.1/.well-known/",
+      "/docs/0.1/releases/0.1./",
+      "https://evil.example/docs/0.1/",
+      "//evil.example/docs/0.1/",
+      "javascript:alert(1)",
+      "/docs/0.1/analyst/chat/?q=1",
+      "/docs/0.1/Analyst/chat/",
+      "/DOCS/0.1/",
+      "/docs/0.1/analyst/chat/#Sources",
+      "/docs/0.1/%2e%2e/admin/",
+      "/docs/0.1/analyst%2Fchat/",
+      "/docs/0.1/analyst\\chat/",
+      "/docs/0.1/analyst/chat/#",
+      "/docs/0.1/analyst/chat/#a#b",
+      "/docs/0.1/analyst chat/",
+      " /docs/0.1/",
+      "/docs/0.1/analyst/chat/\n",
+      "/docs/x.1/",
+      "/docs/٠.١/",
+      "/docs/0.1/café/"
+    ]
+  },
+  "chart_honesty": {
+    "_comment": "Totals (a stack height, a donut centre and shares) are drawn only where the values add up: additive units always; percent/ratio only when the parts of every complete group reconcile to 100/1 within share_tolerance percentage points (and at least one group is complete); never score or durations. A stack's groups are the series per x slot, a donut's the categories of its one series. Pinned for blocks.chart_kind_fits and views.chartKindFits; x values are generated (a, b, …, or hourly ISO timestamps for x_kind time).",
+    "additive_units": [
+      "count",
+      "tokens",
+      "bytes",
+      "usd"
+    ],
+    "share_tolerance": 0.5,
+    "examples": [
+      {
+        "name": "count stack",
+        "kind": "stacked_bar",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            3,
+            4
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "tokens donut",
+        "kind": "donut",
+        "unit": "tokens",
+        "x_kind": "category",
+        "series": [
+          [
+            10,
+            20,
+            30
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "usd stack",
+        "kind": "stacked_bar",
+        "unit": "usd",
+        "x_kind": "category",
+        "series": [
+          [
+            0.5,
+            1.25
+          ],
+          [
+            2,
+            0
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "bytes donut",
+        "kind": "donut",
+        "unit": "bytes",
+        "x_kind": "category",
+        "series": [
+          [
+            1024,
+            2048
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack reconciles per slot",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            60,
+            30
+          ],
+          [
+            40,
+            70
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack does not reconcile",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            60,
+            30
+          ],
+          [
+            30,
+            30
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent stack within rounding tolerance",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            33.3,
+            50
+          ],
+          [
+            33.3,
+            25
+          ],
+          [
+            33.3,
+            25
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack beyond tolerance",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            33,
+            50
+          ],
+          [
+            33,
+            50
+          ],
+          [
+            33,
+            0
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent stack slot with a missing part is skipped",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            60,
+            null
+          ],
+          [
+            40,
+            30
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack with every slot missing a part",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            null,
+            20
+          ],
+          [
+            50,
+            null
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "ratio donut reconciles to one",
+        "kind": "donut",
+        "unit": "ratio",
+        "x_kind": "category",
+        "series": [
+          [
+            0.25,
+            0.25,
+            0.5
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "ratio donut does not reconcile",
+        "kind": "donut",
+        "unit": "ratio",
+        "x_kind": "category",
+        "series": [
+          [
+            0.5,
+            0.6
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent donut share of total",
+        "kind": "donut",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            50,
+            50
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent donut with a missing part",
+        "kind": "donut",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            50,
+            null,
+            50
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "score stack",
+        "kind": "stacked_bar",
+        "unit": "score",
+        "x_kind": "category",
+        "series": [
+          [
+            40,
+            50
+          ],
+          [
+            60,
+            50
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "minutes stack",
+        "kind": "stacked_bar",
+        "unit": "minutes",
+        "x_kind": "category",
+        "series": [
+          [
+            12,
+            40
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "seconds stack",
+        "kind": "stacked_bar",
+        "unit": "seconds",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "ms donut",
+        "kind": "donut",
+        "unit": "ms",
+        "x_kind": "category",
+        "series": [
+          [
+            100,
+            200
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "hours donut",
+        "kind": "donut",
+        "unit": "hours",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "count donut over six segments",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "count donut of two series",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "count donut over time",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "time",
+        "series": [
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent sparkline of one series",
+        "kind": "sparkline",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            10,
+            20
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "count sparkline of two series",
+        "kind": "sparkline",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "minutes line",
+        "kind": "line",
+        "unit": "minutes",
+        "x_kind": "category",
+        "series": [
+          [
+            12,
+            40
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": true
+      }
     ]
   },
   "fallback_text": "This part of the answer could not be displayed",

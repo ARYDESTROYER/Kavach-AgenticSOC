@@ -297,12 +297,33 @@ def test_doc_hrefs_are_validated_and_version_matched():
         href = doc_href(chunk, knowledge)
         if href is not None:
             assert DOC_REF_RE.match(href) and href.startswith(f"/docs/{line}/")
+    # Wave-3 integration: the relaxed wire pattern expresses the Help Center home and
+    # dotted release paths, so EVERY bundled section is citable with a D id.
+    assert all(doc_href(c, knowledge) is not None for c in knowledge.chunks)
+    home = [c for c in knowledge.chunks if c.page == "index.md"]
+    assert f"/docs/{line}/" in {doc_href(c, knowledge) for c in home}
+    assert all(DOC_REF_RE.fullmatch(doc_href(c, knowledge) or "") for c in home)
+    release = [c for c in knowledge.chunks if c.page == f"releases/{app.__version__}.md"]
+    assert release
+    for chunk in release:
+        href = doc_href(chunk, knowledge) or ""
+        assert href.startswith(f"/docs/{line}/releases/{app.__version__}/"), href
+
+
+def test_doc_href_fails_closed_for_a_path_the_grammar_refuses(monkeypatch: pytest.MonkeyPatch):
+    """``None`` stays the answer for an inexpressible path (here: under the stricter
+    first-round grammar), so no section is ever cited with a broken link."""
+    knowledge = get_app_knowledge()
+    strict = re.compile(r"^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$")
+    monkeypatch.setattr(render_module, "_DOC_REF_RE", strict)
     home = next(c for c in knowledge.chunks if c.page == "index.md")
-    # The wire pattern cannot express the bare Help Center home or a dotted release
-    # path, so those sections are never cited with a broken link.
     assert doc_href(home, knowledge) is None
-    release = [c for c in knowledge.chunks if c.page.startswith("releases/0.")]
-    assert all(doc_href(c, knowledge) is None for c in release)
+    assert render_module.doc_citation(home, "D1", knowledge) is None
+    # A trailing newline never passes (``fullmatch``, not Python's ``$``).
+    monkeypatch.setattr(render_module, "_DOC_REF_RE", re.compile(DOC_REF_PATTERN))
+    page = knowledge.pages[home.page]
+    assert render_module._DOC_REF_RE.match(f"/docs/0.1/{page.path}\n")
+    assert not render_module._DOC_REF_RE.fullmatch(f"/docs/0.1/{page.path}\n")
 
 
 def test_console_links_come_from_the_allowlist_with_allowed_from_grants():
@@ -392,16 +413,16 @@ def test_reserved_labels_are_not_trusted_rag_sources():
         assert rag.is_trusted_knowledge(label) is False
 
 
-# strict: once tools/rag.py refuses the reserved labels this XPASSes and FAILS, which
-# forces the marker's removal so CI enforces the requirement from then on.
-@pytest.mark.xfail(
-    strict=True,
-    reason="SPEC §5.4 anti-minting: tools/rag._sanitise_source_label (owned by WP-D) must "
-    "store an import labelled app_docs/app_help/product_docs as 'imported'",
-)
 def test_rag_import_cannot_mint_the_app_docs_label():
-    for label in sorted(RESERVED_SOURCE_LABELS) + ["App_Docs", " app_docs "]:
-        assert rag._sanitise_source_label(label) == "imported"
+    """SPEC §5.4 anti-minting: an import labelled with a reserved app-knowledge label is
+    stored as ``imported`` (case- and whitespace-insensitively), so imported text can
+    never pose as the trusted Product reference."""
+    for label in sorted(RESERVED_SOURCE_LABELS) + ["App_Docs", " app_docs ", "PRODUCT_DOCS", "\tapp_help\n"]:
+        assert rag._sanitise_source_label(label) == "imported", label
+    # Ordinary labels are unchanged, and a label that merely CONTAINS a reserved one is
+    # an ordinary (untrusted) label.
+    assert rag._sanitise_source_label("threat_intel") == "threat_intel"
+    assert rag._sanitise_source_label("app_docs_mirror") == "app_docs_mirror"
 
 
 # --------------------------------------------------------------------------- #
@@ -715,13 +736,31 @@ def test_every_alias_key_is_reachable_from_a_query():
     assert "webhook" in knowledge.index.query_weights("teams notifications")
 
 
-async def test_uncitable_sections_get_no_citable_id_and_rebase_stays_unique():
+async def test_release_pages_are_cited_with_d_ids():
+    """Wave-3 integration: the dotted release page now has an expressible Help Center
+    link, so it is cited with a ``D*`` id instead of shown as reference only."""
+    outcome = await AppHelpTool().run(_ctx(), query="release notes 0.1.13 known limitations", top_k=4)
+    results = outcome.observation["results"]
+    release = [r for r in results if "/releases/" in (r["href"] or "")]
+    assert release, results
+    assert all(r["ref"] and r["href"] for r in results)
+    docs = {c.doc for c in outcome.citations}
+    assert any(f"/releases/{app.__version__}/" in (d or "") for d in docs)
+    assert "[reference only, not citable]" not in render_app_docs(outcome.observation)
+
+
+async def test_uncitable_sections_get_no_citable_id_and_rebase_stays_unique(monkeypatch: pytest.MonkeyPatch):
+    # The bundled corpus is fully citable now, so the fail-closed path is exercised
+    # under the stricter first-round grammar, which refuses the dotted release page.
+    monkeypatch.setattr(
+        render_module, "_DOC_REF_RE", re.compile(r"^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$"),
+    )
     first = await AppHelpTool().run(_ctx(), query="release notes 0.1.13 known limitations", top_k=4)
     second = await AppHelpTool().run(_ctx(), query="what changed in version 0.1.13", top_k=4)
     for outcome in (first, second):
         results = outcome.observation["results"]
         uncitable = [r for r in results if r["ref"] is None]
-        assert uncitable, "the 0.1.13 release page has no expressible Help Center link"
+        assert uncitable, "the 0.1.13 release page has no expressible link under the strict grammar"
         assert all(r["href"] is None for r in uncitable)
         # Every offered id is backed by a Citation, numbered without gaps.
         refs = observation_refs(outcome.observation)

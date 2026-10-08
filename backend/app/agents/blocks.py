@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -57,6 +58,7 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    field_validator,
     model_validator,
 )
 
@@ -238,9 +240,33 @@ KEY_PATTERN = r"^[A-Za-z0-9_.:@-]{1,64}$"
 PAGE_PATTERN = r"^[a-z][a-z_]{0,39}$"
 ROUTE_TOKEN_PATTERN = r"^[A-Za-z0-9_.:@ -]{1,128}$"     # webui isSafeRouteToken
 CASE_ID_PATTERN = r"^[A-Za-z0-9_.:@ /-]{1,128}$"        # webui isSafeCaseId
-DOC_REF_PATTERN = r"^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$"   # amendment 5
+# A same-origin Help Center path (BLOCKS.md amendment 5, relaxed in wave 3): the
+# version line, then zero or more lowercase segments, an optional trailing slash and an
+# optional anchor. A segment is dot-separated runs of ``[a-z0-9_-]`` so dotted release
+# pages (``releases/0.1.13/``) and the home (``/docs/0.1/``) are citable, while ``.`` and
+# ``..`` segments, empty segments (``//``), schemes, hosts, queries, uppercase,
+# percent-encoding and backslashes can never match. No look-around: Pydantic validates
+# ``pattern`` with the Rust regex engine, and the webui compiles the same source. Every
+# repetition is separator-led, so matching is linear. ``[0-9]`` rather than ``\d`` so
+# Python and Rust (Unicode digits) accept exactly what JavaScript does. Accept/reject
+# vectors are pinned in the shared contract file (``doc_ref_examples``).
+DOC_REF_PATTERN = (
+    r"^/docs/[0-9]{1,4}\.[0-9]{1,4}/"
+    r"(?:[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:/[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)*/?)?"
+    r"(?:#[a-z0-9_-]+)?$"
+)
 TECHNIQUE_PATTERN = r"^T\d{4}(\.\d{3})?$"
 SECTION_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
+# Logs deep-link opts (SPEC §10.7, "Open in Logs"): EXACTLY the webui router's
+# ``DEEP_LINK_KEYS.logs`` grammar (``soc/router.tsx``), ASCII classes spelled out so
+# Python, Rust (Pydantic) and JavaScript agree. A source id is the backend's plain-id
+# grammar; a time bound is ``now``, ``now-<n>[mhdw]`` or an ISO-8601 shape with no
+# space (a hand-typed ``+05:00`` reaching URLSearchParams as a space must fail closed);
+# a log query is 1..512 code points with no control, format, unassigned, private-use or
+# surrogate character and no line/paragraph separator (``[^\p{C}\u2028\u2029]``).
+NAV_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
+NAV_TIME_PATTERN = r"^(?:now(?:-[0-9]{1,5}[mhdw])?|[0-9]{4}-[0-9]{2}-[0-9]{2}[0-9Tt:.Zz+-]{0,24})$"
+MAX_LOG_QUERY_CHARS = 512
 # An ISO-8601 calendar date, optionally with a time, optionally with a zone (a zone
 # needs a time). ``[0-9]`` rather than ``\d`` so Python, which matches any Unicode
 # digit with ``\d``, accepts exactly what JavaScript does. Pinned for both sides: on
@@ -521,8 +547,19 @@ class _Strict(BaseModel):
 # --------------------------------------------------------------------------- #
 # Typed in-app / Help Center references (never URLs; the client re-validates).
 # --------------------------------------------------------------------------- #
+def is_safe_log_query(value: Any) -> bool:
+    """The router's log-query rule: 1..512 code points, none of them in Unicode
+    category C (control, format, surrogate, private use, unassigned) or a line or
+    paragraph separator. Never trimmed: the query is the exact filter text."""
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_LOG_QUERY_CHARS:
+        return False
+    return not any(ch in "\u2028\u2029" or unicodedata.category(ch).startswith("C") for ch in value)
+
+
 class NavRefOpts(_Strict):
-    """The validated ``NavOpts`` subset a block may carry (BLOCKS.md InternalRef)."""
+    """The validated ``NavOpts`` subset a block may carry (BLOCKS.md InternalRef),
+    including the Logs deep-link keys ``logQuery``/``from``/``to``/``sourceId`` that
+    "Open in Logs" needs (validated exactly like the router's deep links)."""
 
     caseId: str | None = Field(default=None, pattern=CASE_ID_PATTERN)
     severity: SeverityKey | None = None
@@ -531,6 +568,25 @@ class NavRefOpts(_Strict):
     tab: str | None = Field(default=None, pattern=ROUTE_TOKEN_PATTERN)
     section: str | None = Field(default=None, pattern=ROUTE_TOKEN_PATTERN)
     anchor: str | None = Field(default=None, pattern=ROUTE_TOKEN_PATTERN)
+    logQuery: str | None = Field(default=None, min_length=1, max_length=MAX_LOG_QUERY_CHARS)
+    # ``from`` on the wire (a Python keyword here): only the wire name is accepted,
+    # and :func:`dump_block` dumps ``by_alias`` so it is also the name written.
+    from_: str | None = Field(default=None, alias="from", pattern=NAV_TIME_PATTERN)
+    to: str | None = Field(default=None, pattern=NAV_TIME_PATTERN)
+    sourceId: str | None = Field(default=None, pattern=NAV_ID_PATTERN)
+
+    @field_validator("logQuery")
+    @classmethod
+    def _log_query(cls, value: str | None) -> str | None:
+        if value is not None and not is_safe_log_query(value):
+            raise ValueError("log query must be plain single-line text")
+        return value
+
+
+# Python attribute → wire key, in declaration order.
+_NAV_OPT_ATTRS: dict[str, str] = {
+    name: (info.alias or name) for name, info in NavRefOpts.model_fields.items()
+}
 
 
 class InternalRef(_Strict):
@@ -579,7 +635,8 @@ OptNavRef = Annotated[Union[InternalRef, None], BeforeValidator(_internal_ref_or
 OptAnyRef = Annotated[Union[DocRef, InternalRef, None], BeforeValidator(parse_ref)]
 AnyRef = Annotated[Union[DocRef, InternalRef], BeforeValidator(_required_ref)]
 
-_NAV_OPT_KEYS = ("caseId", "severity", "status", "window", "tab", "section", "anchor")
+_NAV_OPT_KEYS = tuple(_NAV_OPT_ATTRS.values())   # the wire keys, ``from`` included
+LOG_NAV_KEYS = ("logQuery", "from", "to", "sourceId")
 
 
 def clean_nav_opts(raw: Any) -> dict[str, str | int]:
@@ -588,14 +645,14 @@ def clean_nav_opts(raw: Any) -> dict[str, str | int]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, str | int] = {}
-    for key in _NAV_OPT_KEYS:
+    for attr, key in _NAV_OPT_ATTRS.items():
         if key not in raw:
             continue
         try:
             parsed = NavRefOpts.model_validate({key: raw[key]})
         except Exception:  # noqa: BLE001
             continue
-        value = getattr(parsed, key)
+        value = getattr(parsed, attr)
         if value is not None:
             out[key] = value
     return out
@@ -632,6 +689,11 @@ class _BlockBase(_Strict):
     from_step: Annotated[Union[int, None], BeforeValidator(_pos_int_or_none)] = None
     fallback_text: _opt_text_type(MAX_FALLBACK, multiline=True) = None
     downsampled_for_storage: bool = False
+    # The EXACT console view of this block's data ("Open in Logs": the same filter,
+    # window and source the tool ran with), built by deterministic code from the
+    # tool's own input, never by the model: an ``ai`` block never carries one, and an
+    # invalid ref is dropped rather than failing the block.
+    open_in: OptNavRef = None
 
     @model_validator(mode="before")
     @classmethod
@@ -642,6 +704,8 @@ class _BlockBase(_Strict):
             return data
         out = dict(data)
         out["provenance"] = _enum_or(out.get("provenance"), PROVENANCES, "ai")
+        if out["provenance"] == "ai":
+            out.pop("open_in", None)   # navigation targets are never model-made
         out["artifact_kind"] = _enum_or(out.get("artifact_kind"), ARTIFACT_KINDS, None)
         views = out.get("allowed_views")
         out["allowed_views"] = [
@@ -1441,8 +1505,9 @@ def dump_block(block: BaseModel) -> dict[str, Any]:
     false/empty flags are omitted (absent = default), while a KPI ``value: null``
     (= not measured, G3) and every enum stay explicit. Re-validating the result is a
     no-op, so the live path and the replay path converge on the same bytes. Always
-    dump a block through here, never with a bare ``exclude_none`` dump."""
-    return _prune(block.model_dump(mode="json", exclude_none=True))
+    dump a block through here, never with a bare ``exclude_none`` dump (and never
+    without ``by_alias``: a Logs ref's ``from`` is the alias of ``NavRefOpts.from_``)."""
+    return _prune(block.model_dump(mode="json", exclude_none=True, by_alias=True))
 
 
 def _type_of(raw: Any) -> str | None:
@@ -1567,6 +1632,7 @@ def _as_model_authored(raw: Any) -> Any:
     if not isinstance(raw, dict):
         return raw
     out = {**raw, "provenance": "ai", "artifact_kind": None, "allowed_views": []}
+    out.pop("open_in", None)
     sections = raw.get("sections")
     if out.get("type") == "report" and isinstance(sections, (list, tuple)):
         out["sections"] = [
@@ -1720,6 +1786,107 @@ def allowed_views_for(artifact_kind: str, *, categories: int | None = None) -> l
     views = list(ALLOWED_VIEWS.get(artifact_kind, ()))
     if "donut" in views and categories is not None and categories > MAX_DONUT_SEGMENTS:
         views.remove("donut")
+    return views
+
+
+# --- honest views: totals only where the values add up ------------------------ #
+# A stack draws a slot total and a donut a centre total plus shares. A total of
+# medians, rates, scores or durations is meaningless ("median 12 min + p90 40 min =
+# 52 min" reads as a fact and is not one), so those two views are offered only for
+# additive units, or for percentages/ratios whose parts reconcile to the whole (a 100 %
+# stack, a share-of-total donut). The exact twin of the webui ``views.isAdditive`` /
+# ``chartKindFits`` (same units, same tolerance, same grouping); the client keeps the
+# rule as its last guard, the server keeps it so it never OFFERS a view (to the model in
+# the tool-call header and replay digest, or to the "Show as" menu) the client refuses.
+ADDITIVE_UNITS: tuple[str, ...] = ("count", "tokens", "bytes", "usd")
+SHARE_TOLERANCE = 0.5          # percentage points a set of parts may drift from 100
+TOTAL_VIEWS: frozenset[str] = frozenset({"stacked_bar", "donut"})
+
+
+def _parts_make_whole(groups: Iterable[Iterable[Any]], unit: str) -> bool:
+    """Do the parts of every complete group reconcile to 100 (or 1 for ``ratio``)? A
+    group with a missing part says nothing either way (the renderer hatches it or
+    withholds the total), but at least one group must reconcile, so an all-missing set
+    is never waved through."""
+    whole = 1.0 if unit == "ratio" else 100.0
+    tolerance = SHARE_TOLERANCE / 100 if unit == "ratio" else SHARE_TOLERANCE
+    checked = 0
+    for group in groups:
+        parts = [finite_number(v) for v in group]
+        if not parts or any(p is None for p in parts):
+            continue
+        if abs(sum(parts) - whole) > tolerance:   # type: ignore[arg-type]
+            return False
+        checked += 1
+    return checked > 0
+
+
+def values_are_additive(unit: Any, groups: Iterable[Iterable[Any]]) -> bool:
+    """Can these values be summed into a total that means something? ``groups`` are
+    the parts of each total: per x slot across the series for a stack, the categories
+    of the one series for a donut. Score and the duration units never add up."""
+    unit = _unit(unit)
+    if unit in ADDITIVE_UNITS:
+        return True
+    if unit in ("percent", "ratio"):
+        return _parts_make_whole(list(groups), unit)
+    return False
+
+
+def _stack_groups(x: list[Any], series: list[Any]) -> list[list[Any]]:
+    """The parts of each stacked slot: every series' value at that x (missing = None)."""
+    columns = [s.get("values") if isinstance(s, dict) and isinstance(s.get("values"), (list, tuple)) else []
+               for s in series]
+    return [[col[i] if i < len(col) else None for col in columns] for i in range(len(x))]
+
+
+def chart_kind_fits(block: dict[str, Any], kind: str) -> bool:
+    """Can this CHART block's data honestly be drawn as ``kind``? The twin of the webui
+    ``views.chartKindFits``: a donut is one series of at most six categories whose
+    values add up (and, server-side only, a complete population: a donut of a clipped
+    top-N would draw a whole that is not one); a stack needs additive values; a
+    sparkline or funnel draws exactly one series; every other kind fits."""
+    series = [s for s in (block.get("series") or []) if isinstance(s, dict)]
+    x = block.get("x") if isinstance(block.get("x"), dict) else {}
+    x_values = list(x.get("values") or [])
+    single = len(series) == 1
+    if kind == "donut":
+        return (single and len(x_values) <= MAX_DONUT_SEGMENTS and x.get("kind", "category") == "category"
+                and not block.get("truncated")
+                and values_are_additive(block.get("unit"), [series[0].get("values") or []]))
+    if kind == "stacked_bar":
+        return values_are_additive(block.get("unit"), _stack_groups(x_values, series))
+    if kind in ("sparkline", "funnel"):
+        return single
+    return True
+
+
+def artifact_views(artifact: Any) -> list[str]:
+    """The views an artifact can HONESTLY be shown in (SPEC §7.3 row, narrowed by its
+    data): ``donut`` only for a complete population of at most six additive categories,
+    ``sparkline`` only for one series, ``stacked_bar`` only for additive series values.
+    The tool-call header should list exactly these (``chat_tools.base.Artifact.views``
+    may delegate here); :func:`to_blocks` never materialises a view outside them."""
+    kind = str(getattr(artifact, "kind", "") or "")
+    views = list(ALLOWED_VIEWS.get(kind, ()))
+    data = getattr(artifact, "data", None)
+    if not isinstance(data, dict):
+        return views
+    if kind == "categories":
+        labels = data.get("labels") if isinstance(data.get("labels"), (list, tuple)) else []
+        values = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
+        complete = (not getattr(artifact, "truncated", False) and not finite_number(data.get("other"))
+                    and len(labels) <= MAX_DONUT_SEGMENTS)
+        parts = [values[i] if i < len(values) else None for i in range(len(labels))]
+        if not (complete and values_are_additive(data.get("unit"), [parts])):
+            views = [v for v in views if v != "donut"]
+    elif kind == "series":
+        x = data.get("x") if isinstance(data.get("x"), (list, tuple)) else []
+        series = [s for s in (data.get("series") or []) if isinstance(s, dict)]
+        if len(series) > 1:
+            views = [v for v in views if v != "sparkline"]
+        if not values_are_additive(data.get("unit"), _stack_groups(list(x), series)):
+            views = [v for v in views if v != "stacked_bar"]
     return views
 
 
@@ -2067,13 +2234,17 @@ def _caption(
 
 
 def _views_of(artifact: Any) -> list[str]:
+    """The artifact's own view list (``Artifact.views()``, else the §7.3 row) narrowed
+    to the views its data can honestly support (:func:`artifact_views`), so a requested
+    stack or donut of values that do not add up falls back to the default view."""
+    honest = artifact_views(artifact)
     views = getattr(artifact, "views", None)
     if callable(views):
         try:
-            return [v for v in views() if v in BLOCK_VIEWS]
+            return [v for v in views() if v in BLOCK_VIEWS and v in honest]
         except Exception:  # noqa: BLE001 -- a duck-typed artifact falls back to the table
             pass
-    return allowed_views_for(str(getattr(artifact, "kind", "")))
+    return honest
 
 
 def _top_n(options: MaterialiseOptions, available: int) -> int:
@@ -2517,6 +2688,17 @@ def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[st
     view = options.view if options.view in views else DEFAULT_VIEW[kind]
     try:
         raw = builder(artifact, options, view, list(views))
+        if raw.get("type") == "chart" and not chart_kind_fits(raw, str(raw.get("kind"))):
+            # The CLIPPED block no longer supports its kind (a top-N cut that breaks a
+            # 100 % stack, say): draw the honest default instead of an invented total.
+            raw = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
+        if raw.get("type") == "chart":
+            # Offer only the chart views the block AS SHOWN supports, judged exactly as
+            # the client's "Show as" menu judges them (it re-renders this same data).
+            raw["allowed_views"] = [
+                v for v in raw.get("allowed_views") or []
+                if v not in CHART_KINDS or chart_kind_fits(raw, v)
+            ]
     except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
         return []
     block, _drop = _validate_one(raw, "1", allow_ai_data=False, adapter=_LEAF_BLOCK)

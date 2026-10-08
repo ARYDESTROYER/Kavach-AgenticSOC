@@ -64,12 +64,18 @@ def _one_line(value: Any, limit: int = 200) -> str:
 # --------------------------------------------------------------------------- #
 def doc_href(chunk: DocChunk, knowledge: AppKnowledge | None = None) -> str | None:
     """The same-origin Help Center link for ``chunk``, or ``None`` when it cannot be
-    expressed by the wire pattern (the pattern admits no bare ``/docs/<line>/`` home
-    and no dotted path such as a release page)."""
+    expressed by the wire pattern (``blocks.DOC_REF_PATTERN``).
+
+    The pattern admits the Help Center home (``/docs/<line>/``, the page path of
+    ``index.md`` is empty) and dotted release pages (``releases/0.1.13/``), so every
+    section of the bundled corpus gets a ``D*`` id. ``None`` remains the fail-closed
+    answer for a path the grammar refuses (uppercase, a ``.``/``..`` segment, an
+    encoded or non-ASCII character), which the tool then shows as reference only.
+    ``fullmatch`` so a stray trailing newline can never pass Python's ``$``."""
     knowledge = knowledge or get_app_knowledge()
     page = knowledge.pages[chunk.page]
     href = f"/docs/{knowledge.docs_version}/{page.path}" + (f"#{chunk.anchor}" if chunk.anchor else "")
-    return href if _DOC_REF_RE.match(href) else None
+    return href if _DOC_REF_RE.fullmatch(href) else None
 
 
 def chunk_title(chunk: DocChunk, knowledge: AppKnowledge | None = None) -> str:
@@ -335,7 +341,7 @@ def _render_help(observation: Mapping[str, Any], keep: int | None = None,
             # No valid Help Center link exists for this section, so it has no id to cite.
             lines.append(f"[reference only, not citable] {title}{where}")
         href = result.get("href")
-        if isinstance(href, str) and _DOC_REF_RE.match(href):
+        if isinstance(href, str) and _DOC_REF_RE.fullmatch(href):
             lines.append(f"Link: {href}")
         lines.append(_clip_excerpt(_neutralise(result.get("text")), excerpt_chars))
         console = [c for c in result.get("console") or [] if isinstance(c, str)]

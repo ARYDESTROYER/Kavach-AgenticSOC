@@ -105,3 +105,16 @@ def test_citation_id_without_and_with_an_ordinal() -> None:
 
     assert citation_id("K", 3, Ctx()) == "K73"
     assert citation_id("K", 30, Ctx()) == "K79"  # index clamped to 1..9
+
+
+def test_one_observation_shrinker_only() -> None:
+    """WP-INT item 4: the engine shrinks observations with ``chat_protocol``'s
+    alignment-safe ``shrink_observation``. The tool-side duplicate (which cut parallel
+    series arrays independently) is gone and must not come back as a second, divergent
+    implementation a tool could call."""
+    from app.agents import chat_protocol
+    from app.agents.chat_tools import common
+
+    assert not hasattr(common, "shrink_observation")
+    assert not hasattr(common, "observation_chars")
+    assert callable(chat_protocol.shrink_observation)

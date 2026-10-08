@@ -9,8 +9,17 @@
  * identical to the backend `Citation.doc` rule).
  */
 
-/** The ONLY link target a model may write: `/docs/<major.minor>/<path>[/][#anchor]`. */
-export const DOC_LINK_RE = /^\/docs\/\d+\.\d+\/[a-z0-9/_-]+\/?(#[a-z0-9_-]+)?$/;
+/**
+ * The ONLY link target a model may write: `/docs/<major.minor>/[<path>][/][#anchor]`.
+ * The same grammar as the backend `DOC_REF_PATTERN` and `schema.ts` `doc_ref` (both
+ * run the shared `doc_ref_examples` vectors): lowercase segments made of dot-joined
+ * `[a-z0-9_-]` runs, so the Help Center home (`/docs/0.1/`) and dotted release pages
+ * (`/docs/0.1/releases/0.1.13/`) are citable while a `.`/`..`/empty segment, a scheme
+ * or host, a query, uppercase, `%`-encoding and backslashes never match. Every
+ * repetition is separator-led, so matching stays linear on hostile input.
+ */
+export const DOC_LINK_RE =
+  /^\/docs\/[0-9]{1,4}\.[0-9]{1,4}\/(?:[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\/[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)*\/?)?(?:#[a-z0-9_-]+)?$/;
 
 /** True for a same-origin Help Center path (see {@link DOC_LINK_RE}); rejects `..`. */
 export function isDocLink(target: unknown): target is string {

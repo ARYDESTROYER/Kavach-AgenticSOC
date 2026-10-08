@@ -40,6 +40,9 @@ from ..engine.precedent import (
     unavailable_distribution,
 )
 from ..engine.runbooks import corpus_items as runbook_corpus_items
+# Light by design: the package defines only the reserved labels at import time (its
+# public names load lazily), so this import cannot form a cycle through app.knowledge.
+from ..knowledge import RESERVED_SOURCE_LABELS
 from ..llm.gateway import FAILURE_NOT_CONFIGURED, LLMGateway
 from ..models import RagChunk
 from ..stores.precedent_exclusions import normalise_reason as normalise_exclusion_reason
@@ -649,6 +652,12 @@ def _sanitise_source_label(source: str | None) -> str:
     # server-assigned. Never let a caller mint a TRUSTED seed source by submitting
     # source="runbook"/"mitre"/"suppression".
     if value in TRUSTED_KNOWLEDGE_SOURCES:
+        return "imported"
+    # Nor a label that names the bundled Help Center corpus (chat revamp SPEC §5.4
+    # anti-minting): the app-knowledge corpus is trusted behind its own boundary, so an
+    # import claiming "app_docs" (in any case or padding) must not even LOOK like it in
+    # a provenance label or the chat's per-chunk trust split.
+    if value.strip().casefold() in RESERVED_SOURCE_LABELS:
         return "imported"
     return value
 

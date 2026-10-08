@@ -1,108 +1,29 @@
 /**
  * Copy / download helpers for answer blocks (BLOCKS.md amendment 9, SPEC §9.3).
  *
- * TEMPORARY HOME: SPEC §9.3 puts `csvField`/`tsvField` in `lib/csv.ts`, `defang` in
- * `lib/defang.ts` and `downloadText` in `lib/download.ts` (WP-K). They live here until
- * those modules land so the two packages never edit one file at the same time; WP-K
- * should consolidate and re-point these imports (see the WP-J report).
+ * The field encoders, the defang rule and the download helper live in `lib/`
+ * (`lib/csv.ts`, `lib/defang.ts`, `lib/download.ts`) since the reports package
+ * consolidated the console's copies there; they are re-exported here unchanged so the
+ * blocks kit and its tests keep one import site. This module keeps only the block →
+ * table projection and the TSV / CSV / JSON encoders built on those primitives.
  *
- * Rules:
+ * Rules (enforced by the lib modules):
  *   - STRING cells are formula-defused (a leading `= + - @ TAB CR` gets a `'` prefix,
- *     the KpiDrilldownPanel rule, also when only spaces precede it): a source-controlled
- *     rule named `=HYPERLINK(…)` must land in a spreadsheet as text, not as a live
- *     formula. TSV (the clipboard) also defuses a leading `"`: a paste target treats it
- *     as a text qualifier, strips it and would then evaluate `"=HYPERLINK(…)"` as a
- *     formula. NUMERIC cells stay numeric — a negative count is a number, not a formula,
- *     and defusing it would turn it into text.
+ *     also when only spaces precede it); TSV also defuses a leading `"`. NUMERIC cells
+ *     stay numeric — a negative count is a number, not a formula.
  *   - `null` is an empty field (G3: not measured is not 0).
  *   - IOCs are defanged by default for the clipboard (`hxxp`, `[.]`, `[@]`); never in the
  *     live UI and never in JSON.
- *   - Everything is a pure string transform; nothing here touches the DOM except
- *     {@link downloadText}, which is feature-detected (jsdom has no object-URL store).
  */
+import { csvField, tsvField } from '@/lib/csv';
+import { defang } from '@/lib/defang';
 import { formatUtc, formatValue } from './format';
 import type { AnswerBlock, Cell, ChartBlock, ColumnType, TableBlock, ValueUnit } from './schema';
 import { leafBlocks } from './schema';
 
-/* -------------------------------------------------------------------------- */
-/* Field encoders.                                                             */
-/* -------------------------------------------------------------------------- */
-const FORMULA_LEAD = /^(?:[=+\-@\t\r]| +[=+\-@])/;
-/** TSV also treats a leading double quote as dangerous (a paste-time text qualifier). */
-const TSV_LEAD = /^"/;
-
-/** Neutralise a spreadsheet formula lead in a STRING cell. */
-export function defuseFormula(text: string): string {
-  return FORMULA_LEAD.test(text) ? `'${text}` : text;
-}
-
-/** One CSV field: numbers raw, strings defused then RFC-4180 quoted, null empty. */
-export function csvField(value: Cell): string {
-  if (value === null) return '';
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  return `"${defuseFormula(value).replace(/"/g, '""')}"`;
-}
-
-/**
- * One TSV field (Copy data → paste into a spreadsheet): numbers raw, strings defused
- * with tabs and line breaks folded to spaces (TSV has no quoting a paste target honours
- * reliably), null empty. Defusing runs on the RAW text first, so a leading TAB/CR — itself
- * a formula lead — is neutralised before it is folded into a space.
- */
-export function tsvField(value: Cell): string {
-  if (value === null) return '';
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  const safe = TSV_LEAD.test(value) ? `'${value}` : defuseFormula(value);
-  return safe.replace(/[\t\r\n]+/g, ' ');
-}
-
-/* -------------------------------------------------------------------------- */
-/* Defang.                                                                     */
-/* -------------------------------------------------------------------------- */
-const URL_SCHEME_RE = /\b(h)(tt)(ps?)(:\/\/)/gi;
-const FTP_SCHEME_RE = /\b(f)(t)(p)(:\/\/)/gi;
-const IPV4_RE = /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g;
-const EMAIL_RE = /\b([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\b/g;
-// A dotted host name ending in a letter TLD (`evil.example.com`), not a version number.
-const DOMAIN_RE = /\b((?:[A-Za-z0-9-]+\.)+)([A-Za-z]{2,24})\b/g;
-/**
- * File extensions that are NOT top-level domains, so `svchost.exe`, `cmd.exe` and
- * `report.docx` are left readable. Extensions that ARE delegated TLDs (`.zip`, `.mov`,
- * `.sh`, `.py`) are deliberately absent: a missed defang is worse than an extra `[.]`.
- */
-const NOT_A_TLD = new Set([
-  'exe', 'dll', 'sys', 'drv', 'ocx', 'cpl', 'scr', 'bat', 'cmd', 'vbs', 'vbe', 'wsf', 'wsh', 'hta', 'lnk',
-  'msi', 'msp', 'jar', 'class', 'pyc', 'bin', 'dat', 'tmp', 'log', 'txt', 'ini', 'cfg', 'conf', 'json',
-  'xml', 'yaml', 'yml', 'csv', 'tsv', 'doc', 'docx', 'docm', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'pdf',
-  'rtf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'ico', 'iso', 'img', 'vhd', 'vhdx', 'rar', 'gz',
-  'tgz', 'tar', 'xz', 'evtx', 'etl', 'reg', 'inf', 'sqlite', 'db',
-]);
-
-/**
- * Is `tld` plausibly a top-level domain? Not a known non-TLD file extension, and
- * single-cased: DNS names in logs are lower (or upper) case, while `Mr.Smith` or
- * `end.Next` are prose.
- */
-function plausibleTld(tld: string): boolean {
-  if (NOT_A_TLD.has(tld.toLowerCase())) return false;
-  return tld === tld.toLowerCase() || tld === tld.toUpperCase();
-}
-
-/**
- * Defang indicators in free text so a pasted IOC cannot be clicked or resolved:
- * `http://` → `hxxp://`, dots in IPv4 addresses and host names → `[.]`, `@` in e-mail
- * addresses → `[@]`. Idempotent (an already defanged value is left alone).
- */
-export function defang(text: string): string {
-  let out = text.replace(URL_SCHEME_RE, (_m, _h, _tt, p: string, sep: string) => `hxx${p}${sep}`);
-  out = out.replace(FTP_SCHEME_RE, (_m, _f, _t, _p, sep: string) => `fxp${sep}`);
-  out = out.replace(EMAIL_RE, (_m, user: string, host: string) => `${user}[@]${host}`);
-  out = out.replace(IPV4_RE, '$1[.]$2[.]$3[.]$4');
-  out = out.replace(DOMAIN_RE, (m: string, _host: string, tld: string) => (plausibleTld(tld) ? m.replace(/\./g, '[.]') : m));
-  return out;
-}
+export { csvField, defuseFormula, tsvField } from '@/lib/csv';
+export { defang } from '@/lib/defang';
+export { downloadText } from '@/lib/download';
 
 /* -------------------------------------------------------------------------- */
 /* Tabular projection of a block.                                              */
@@ -252,26 +173,4 @@ export function tabularLeaves(blocks: readonly AnswerBlock[]): Array<{ block: An
     const table = blockTabular(b);
     return table ? [{ block: b as AnswerBlock, table }] : [];
   });
-}
-
-/* -------------------------------------------------------------------------- */
-/* Download.                                                                   */
-/* -------------------------------------------------------------------------- */
-/**
- * Save `text` as a file. Feature-DETECTED, not assumed: `URL.createObjectURL` is absent
- * in some environments (jsdom), and an unguarded call there would throw out of a click
- * handler. Returns whether a download was started; the object URL is revoked at once.
- */
-export function downloadText(filename: string, mime: string, text: string): boolean {
-  if (typeof document === 'undefined') return false;
-  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false;
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.rel = 'noopener';
-  a.click();
-  URL.revokeObjectURL?.(url);
-  return true;
 }
