@@ -673,7 +673,7 @@ async def test_a_digest_that_keeps_no_item_is_refused_before_any_spend(monkeypat
             resp = await h.client.post(url, json={})
             assert resp.status_code == 409 and resp.json()["detail"]["code"] == "report_too_large_to_summarise"
         assert len(h.mock.calls) == calls and await report_usage_rows(h.state) == []
-        assert bucket.take("default") is None  # the refused call's token was given back
+        assert bucket.take("default") is None  # the refused call never used the allowance
 
 
 async def test_summary_with_no_text_is_502_but_still_metered_once():

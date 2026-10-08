@@ -860,6 +860,12 @@ async def _generate_summary(
         return report
     if not report.items:
         raise _http(409, "report_empty", "Add something to the report before summarising it.")
+    digest = bounded_digest(report)
+    if digest.empty:
+        # The bounded digest could keep none of the report's items: a call over it would
+        # bill a summary of nothing and store it as current. Refused before any spend
+        # (and before the caller's allowance is touched).
+        raise _too_large()
     bucket_key = normalize_user_id(owner)
     if not demo:
         retry_after = guard.bucket.take(bucket_key)
@@ -872,13 +878,6 @@ async def _generate_summary(
                         "retry_after": seconds},
                 headers={"Retry-After": str(seconds)},
             )
-    digest = bounded_digest(report)
-    if digest.empty:
-        # The bounded digest could keep none of the report's items: a call over it would
-        # bill a summary of nothing and store it as current. Refused before any spend.
-        if not demo:
-            guard.bucket.refund(bucket_key)
-        raise _too_large()
     messages = report_summary_messages(report, digest=digest.text)
     receipt = UsageReceipt()
     step_timeout = getattr(getattr(state.execution_prefs, "chat_agent", None), "model_step_timeout_s", 30)
