@@ -325,7 +325,11 @@ class _KnowledgeAdapter:
         fallback = coerce_fallback_answer(value)
         if fallback is None or not entry.console:
             return fallback
-        lead = coerce_console_links(self.resolve_console_links([entry.console], grants=grants))
+        try:
+            lead = coerce_console_links(self.resolve_console_links([entry.console], grants=grants))
+        except Exception as exc:  # noqa: BLE001 -- the answer is already built: keep its own links
+            logger.info("topic console link unavailable (%s)", type(exc).__name__)
+            return fallback
         fallback.console_links = (lead + [link for link in fallback.console_links if link.id != entry.console])
         return fallback
 

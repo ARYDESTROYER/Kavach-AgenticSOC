@@ -2403,9 +2403,16 @@ CHAT_REQUEST_FINGERPRINT_EXCLUDE: frozenset[str] = frozenset(
 CHAT_REQUEST_REVAMP_FIELDS: frozenset[str] = frozenset(
     {"scopes", "time_range", "origin", "continue_of", "topic"}
 )
-# An "Ask about this" topic id (``kpi:mtta``, ``settings:models``): the console_map
-# topic grammar, bounded. An unknown well-formed id is ignored by its consumers.
-CHAT_TOPIC_PATTERN = r"^[a-z0-9_:.-]{1,64}$"
+# A console_map topic id (``kpi:mtta``, ``settings:detection.detection-autoclose``):
+# ``<family>:<anchor>``, at most 40 + 1 + 80 characters: the console link id grammar
+# (one definition, also used by the ``GET /api/chat/topics/{topic_id}`` path).
+CONSOLE_TOPIC_ID_PATTERN = _CONSOLE_LINK_ID_PATTERN
+CHAT_TOPIC_MAX_CHARS = 121
+# ``ChatRequest.topic`` accepts a SUPERSET of that grammar (same characters, same
+# length bound, colon not required). The field is only a retrieval hint whose
+# unknown ids are ignored, while a 422 would fail the whole turn: every console_map
+# id must pass, and so must anything a client's own sender filter lets through.
+CHAT_TOPIC_PATTERN = rf"^[a-z0-9_:.-]{{1,{CHAT_TOPIC_MAX_CHARS}}}$"
 
 
 class ChatRequest(BaseModel):
@@ -2456,7 +2463,7 @@ class ChatRequest(BaseModel):
     # retrieval) but, like the other revamp fields, only when set, so a body without
     # it fingerprints exactly as before. A malformed id is 422; a well-formed id the
     # corpus does not know is ignored.
-    topic: str | None = Field(default=None, max_length=64, pattern=CHAT_TOPIC_PATTERN)
+    topic: str | None = Field(default=None, max_length=CHAT_TOPIC_MAX_CHARS, pattern=CHAT_TOPIC_PATTERN)
 
     @field_validator("topic", mode="before")
     @classmethod
@@ -2949,6 +2956,10 @@ class ChatToolInfo(BaseModel):
     kind_requires: dict[str, str] = Field(default_factory=dict)
     # The kinds the caller may use (starters/popover show the rest as locked).
     kinds_allowed: list[str] = Field(default_factory=list)
+    # False when this deployment switched the tool off by configuration (e.g.
+    # ``max_indicator_lookups == 0``): no grant unlocks it, an administrator can turn
+    # it back on in Settings. Independent of ``allowed`` (that is grants only).
+    available: bool = True
 
 
 class TextStreamingInfo(BaseModel):

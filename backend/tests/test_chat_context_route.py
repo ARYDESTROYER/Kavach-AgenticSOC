@@ -154,6 +154,21 @@ def test_text_streaming_reason_disabled_by_admin() -> None:
         assert body["text_streaming"] == {"available": False, "reason": "disabled_by_admin"}
 
 
+def test_configuration_disabled_tool_is_marked_unavailable_not_ungranted() -> None:
+    # "What can the assistant access?" must agree with the prompt/answer ("turned off
+    # on this deployment"): still allowed by grants, but not available.
+    with _client() as client:
+        assert all(t["available"] for t in client.get("/api/chat/context").json()["tools"])
+    with _client() as client:                     # a fresh app: /chat/context is cached 30 s
+        state = client.app.state.tlsoc
+        cfg = state.prefs.chat_agent.model_copy(update={"max_indicator_lookups": 0})
+        client.portal.call(state.update_prefs, state.prefs.model_copy(update={"chat_agent": cfg}))
+        tools = {t["name"]: t for t in client.get("/api/chat/context").json()["tools"]}
+        assert tools["lookup_indicator"]["available"] is False
+        assert tools["lookup_indicator"]["allowed"] is True and tools["lookup_indicator"]["missing"] == []
+        assert all(t["available"] for name, t in tools.items() if name != "lookup_indicator")
+
+
 def test_topics_endpoint_returns_templates_only() -> None:
     with _client() as client:
         known = client.get("/api/chat/topics/kpi:mtta")

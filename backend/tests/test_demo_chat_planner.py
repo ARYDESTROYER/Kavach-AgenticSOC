@@ -1096,7 +1096,22 @@ def test_report_summary_says_when_blocks_inside_items_were_left_out() -> None:
                 {"role": "user", "content": fence_block(digest, source="report")}]
     summary, _ = parse_report_summary(summarise_report(messages))
     assert summary.startswith("This shift report holds 2 items")
-    assert "3 charts or tables inside the items did not fit the digest" in summary
+    # Blocks and whole sections are counted separately (a section holds several
+    # blocks, and a block is not necessarily a chart or table).
+    assert "2 blocks and 1 answer section inside the items did not fit the digest" in summary
+    assert "chart or table" not in summary and "charts or tables" not in summary
     plain, _ = parse_report_summary(summarise_report([messages[0], {"role": "user", "content": fence_block(
         build_digest(_report()), source="report")}]))
-    assert "did not fit the digest" not in plain
+    assert "did not fit the digest" not in plain and "query block" not in plain
+
+    def summary_for(omitted: dict[str, int]) -> str:
+        changed = {**build_digest(_report()), "omitted": omitted}
+        text, _ = parse_report_summary(summarise_report([messages[0], {"role": "user", "content": fence_block(
+            changed, source="report")}]))
+        return text
+
+    assert "1 answer section inside the items did not fit the digest and was left out" in summary_for(
+        {"sections": 1})
+    assert "1 block inside" in summary_for({"blocks": 1})
+    queries = summary_for({"query_blocks": 2})
+    assert "2 query blocks are not summarised" in queries and "did not fit" not in queries

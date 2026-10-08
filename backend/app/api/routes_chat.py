@@ -63,6 +63,8 @@ from ..config import ModelConfig, Preferences
 from ..constants import OPEN_CASE_STATUSES, ActionType
 from ..engine.mutation_gate import MutationAdmissionClosed
 from ..models import (
+    CHAT_TOPIC_MAX_CHARS,
+    CONSOLE_TOPIC_ID_PATTERN,
     ChatBudgetInfo,
     ChatContextBounds,
     ChatContextInfo,
@@ -114,7 +116,7 @@ ESTIMATE_KEY = "estimate_prompt_tokens"
 
 _SAFE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 _SAFE_ID_RE = re.compile(_SAFE_ID_PATTERN)
-_TOPIC_ID_PATTERN = r"^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$"
+_TOPIC_ID_PATTERN = CONSOLE_TOPIC_ID_PATTERN
 _CASE_REF_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _PROVIDERS = frozenset({"anthropic", "openai", "mock", "azure", "bedrock", "vertex", "openai_compatible"})
 _RESET_MESSAGE = "A maintenance reset stopped this answer before it was saved. Try again shortly."
@@ -1353,7 +1355,7 @@ async def chat_context(
         "static_prompt_tokens": estimate_message_tokens([{"role": "system", "content": system}]),
         "history_tokens": history_tokens,
         "history_exchanges": history_exchanges,
-        "tools": catalogue_infos(grants),
+        "tools": catalogue_infos(grants, ctx),
         "text_streaming": text_streaming,
         "bounds": ChatContextBounds.from_config(cfg),
         "calibration": _calibration(conversation),
@@ -1388,7 +1390,7 @@ async def chat_context(
 # --------------------------------------------------------------------------- #
 @router.get("/chat/topics/{topic_id}", response_model=ChatTopicQuestion)
 async def chat_topic(
-    topic_id: str = Path(..., max_length=121, pattern=_TOPIC_ID_PATTERN),
+    topic_id: str = Path(..., max_length=CHAT_TOPIC_MAX_CHARS, pattern=_TOPIC_ID_PATTERN),
     _=Depends(require_permission("cases", "read")),
 ) -> ChatTopicQuestion:
     """The server's templated question for a console-map topic (``kpi:mtta``,

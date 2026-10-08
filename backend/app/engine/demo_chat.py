@@ -3797,12 +3797,22 @@ def _summarise_report(messages: Sequence[Mapping[str, Any]]) -> str:
     if _num(_dig(digest, "omitted", "items")):
         parts.append(f"{_plural(_dig(digest, 'omitted', 'items'), 'item')} did not fit the digest and "
                      "are not reflected here.")
-    # The bounded digest may also drop blocks or whole-answer sections inside kept
-    # items (report_digest's ``omitted.blocks``/``omitted.sections``).
-    dropped_parts = (_num(_dig(digest, "omitted", "blocks")) or 0) + (_num(_dig(digest, "omitted", "sections")) or 0)
-    if dropped_parts:
-        parts.append(f"{_plural(int(dropped_parts), 'chart or table', 'charts or tables')} inside the items "
-                     "did not fit the digest and are not reflected here.")
+    # The bounded digest may also drop blocks (any kind: charts, tables, callouts,
+    # text ...) or whole-answer sections (each holding several blocks) inside kept
+    # items (report_digest's ``omitted.blocks``/``omitted.sections``): named
+    # separately, never as one "charts or tables" count. Query blocks are never in a
+    # digest (a native query is not summarised), which is a rule, not a lack of room.
+    dropped_blocks = int(_num(_dig(digest, "omitted", "blocks")) or 0)
+    dropped_sections = int(_num(_dig(digest, "omitted", "sections")) or 0)
+    if dropped_blocks or dropped_sections:
+        left = _join([_plural(dropped_blocks, "block") if dropped_blocks else "",
+                      _plural(dropped_sections, "answer section") if dropped_sections else ""])
+        verb = "was" if dropped_blocks + dropped_sections == 1 else "were"
+        parts.append(f"{left} inside the items did not fit the digest and {verb} left out of this summary.")
+    queries = int(_num(_dig(digest, "omitted", "query_blocks")) or 0)
+    if queries:
+        parts.append(f"{_plural(queries, 'query block')} {'is' if queries == 1 else 'are'} "
+                     "not summarised; queries are never part of the digest.")
     summary = " ".join(parts)
     if len(summary) > 1200:
         summary = summary[:1199].rstrip() + "\u2026"

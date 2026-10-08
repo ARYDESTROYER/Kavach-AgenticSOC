@@ -150,9 +150,12 @@ class LookupIndicatorTool(ChatTool):
 
     @staticmethod
     def consumes_budget(outcome: ToolOutcome) -> bool:
-        """Whether a finished call spends one of the turn's lookups: only when at
-        least one provider answered. A kind no enabled provider covers, or a lookup
-        every provider failed, gave the analyst nothing and is given back."""
+        """Whether a finished call spends one of the turn's PER-TURN lookups: only
+        when at least one provider answered. A kind no enabled provider covers, or a
+        lookup every provider failed, gave the analyst nothing, so its per-turn slot is
+        given back. That is not the conversation egress cap: a call that may still
+        have sent the indicator out keeps its conversation slot (``left_deployment``,
+        ``TaintLedger.release_lookup(egressed=True)``)."""
         answered = (outcome.observation or {}).get("providers_answered")
         return bool(outcome.ok and outcome.status == "ok" and isinstance(answered, int) and answered > 0)
 

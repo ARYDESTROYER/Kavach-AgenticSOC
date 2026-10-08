@@ -126,10 +126,21 @@ def catalogue_grant_pairs() -> frozenset[Grant]:
     return frozenset(pairs)
 
 
-def catalogue_infos(grants: Iterable[Grant]) -> list[ChatToolInfo]:
-    """The ``/api/chat/context`` catalogue rows for a caller (no audit writes)."""
+def catalogue_infos(grants: Iterable[Grant], ctx: ChatToolContext | None = None) -> list[ChatToolInfo]:
+    """The ``/api/chat/context`` catalogue rows for a caller (no audit writes).
+
+    With ``ctx``, a tool this deployment switched off by configuration (see
+    :func:`tool_available`) is marked ``available=False``, so "What can the assistant
+    access?" says what the prompt and the answer say instead of listing it as usable.
+    It is configuration, not a grant: ``allowed``/``missing`` are unchanged."""
     held = frozenset(grants)
-    return [tool.info(held) for tool in catalogue()]
+    rows: list[ChatToolInfo] = []
+    for tool in catalogue():
+        info = tool.info(held)
+        if ctx is not None and not tool_available(tool, ctx):
+            info = info.model_copy(update={"available": False})
+        rows.append(info)
+    return rows
 
 
 def tool_available(tool: ChatTool, ctx: ChatToolContext) -> bool:

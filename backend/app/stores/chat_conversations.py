@@ -38,17 +38,27 @@ Chat revamp storage form (SPEC §7.5):
 * **Compact receipts.** An idempotency receipt keeps the assistant message id, a
   bounded copy of the answer text and the scalar whitelist only — never the full
   response — so 256 receipts cannot outgrow the transcript they protect.
-* **Mapping-safe partition (storage form 3).** On the Elasticsearch state backend
-  every KV namespace shares ONE dynamically mapped config index (default limit 1,000
-  fields). Form 2 keyed the partition by conversation id and idempotency key
-  (``conversations.<cid>.messages.…``, ``requests.<key>.…``), so every new
-  conversation or request minted ~20 new mapped fields until writes failed for
-  every namespace. Form 3 stores each conversation and each request record as ONE
-  opaque canonical-JSON string in two arrays (:data:`CONVERSATION_ROWS_KEY`,
-  :data:`REQUEST_ROWS_KEY`): the document's field paths are a fixed handful whatever
-  it holds, and no stored value (a date-like title, a mixed-type legacy table row)
-  can ever conflict with a dynamic mapping. Reads still accept form 2 rows; the next
-  write re-encodes them.
+* **Partition storage form, per backend.** Both forms are always READ; which one is
+  WRITTEN depends on the KV backend (:func:`app.stores.case_thread.opaque_rows_for`).
+
+  - *Form 2, keyed* (``conversations.<cid>``, ``requests.<key>``) on the SQL backend
+    (PostgreSQL / SQLite). Every released build reads exactly this, and the PostgreSQL
+    Compose profile's supported image-only rollback never rewrites state, so the
+    previous build must keep reading AND writing the partition: it rewrites the whole
+    document in form 2 and, had it found form 3, would have read no history and erased
+    it with its next turn.
+  - *Form 3, opaque rows* everywhere else (the Elasticsearch KV adapter). There every
+    KV namespace shares ONE dynamically mapped config index (default limit 1,000
+    fields), and form 2 mints ~20 mapped fields per conversation or request until
+    writes fail for every namespace. Form 3 stores each conversation and each request
+    record as ONE opaque canonical-JSON string in two arrays
+    (:data:`CONVERSATION_ROWS_KEY`, :data:`REQUEST_ROWS_KEY`): the document's field
+    paths are a fixed handful whatever it holds, and no stored value (a date-like
+    title, a mixed-type legacy table row) can conflict with a dynamic mapping. It is
+    ONE-WAY: a build released before it reads an empty history and its next write
+    drops the rows, so an image rollback on the Elasticsearch backend after this build
+    has written loses the chat history written since (that backend has no supervised
+    rollback; the trade is a bounded mapping vs. failing every KV write).
 """
 
 from __future__ import annotations
@@ -86,6 +96,7 @@ from ..models import (
 )
 from ..utils import iso_now, new_id
 from .base import KVStore
+from .case_thread import opaque_rows_for
 
 _T = TypeVar("_T")
 
@@ -113,7 +124,10 @@ MAX_RECEIPT_CONTENT_CHARS = 2_000
 MAX_SEARCH_CHARS = 200
 MAX_SNIPPET_CHARS = 160
 
-_SCHEMA_VERSION = 3
+# The ``schema`` a partition document records: the storage form it was written in.
+KEYED_STORAGE_FORM = 2
+OPAQUE_STORAGE_FORM = 3
+_SCHEMA_VERSION = OPAQUE_STORAGE_FORM
 _PARTITION_PREFIX = "user-"
 # Storage form 3: one opaque canonical-JSON string per conversation / request record
 # (see the module docstring). Distinct names, because the form 2 keys are already
@@ -121,6 +135,7 @@ _PARTITION_PREFIX = "user-"
 # written to an object field would be refused.
 CONVERSATION_ROWS_KEY = "chat_conversation_rows"
 REQUEST_ROWS_KEY = "chat_request_rows"
+# Storage form 2 (keyed by conversation id / idempotency key).
 _LEGACY_CONVERSATIONS_KEY = "conversations"
 _LEGACY_REQUESTS_KEY = "requests"
 
@@ -741,27 +756,46 @@ def stored_request_rows(doc: Any) -> dict[str, dict[str, Any]]:
     } if isinstance(legacy, dict) else {}
 
 
+def is_opaque_form(doc: Any) -> bool:
+    """Whether a stored partition document is in storage form 3 (opaque rows)."""
+    return isinstance(doc, dict) and (
+        isinstance(doc.get(CONVERSATION_ROWS_KEY), list) or isinstance(doc.get(REQUEST_ROWS_KEY), list)
+    )
+
+
 def with_stored_rows(
     doc: Any,
     *,
     conversations: dict[str, dict[str, Any]] | None = None,
     requests: dict[str, dict[str, Any]] | None = None,
+    opaque: bool | None = None,
 ) -> dict[str, Any]:
-    """A copy of a partition document in storage form 3 with its raw rows replaced
-    (``None`` keeps the document's own). For repair tools and tests that patch a row;
-    the rows are written exactly as the store writes them."""
+    """A copy of a partition document with its raw rows replaced (``None`` keeps the
+    document's own), in storage form 3 when ``opaque`` and form 2 otherwise (``None``
+    keeps the document's own form; a document in neither form gets form 3). For
+    repair tools and tests that patch a row; rows are written exactly as the store
+    writes them."""
     base = copy.deepcopy(doc) if isinstance(doc, dict) else {}
     conv = stored_conversation_rows(base) if conversations is None else conversations
     reqs = stored_request_rows(base) if requests is None else requests
-    for key in (_LEGACY_CONVERSATIONS_KEY, _LEGACY_REQUESTS_KEY):
+    if opaque is None:
+        opaque = is_opaque_form(base) or not (
+            isinstance(base.get(_LEGACY_CONVERSATIONS_KEY), dict)
+            or isinstance(base.get(_LEGACY_REQUESTS_KEY), dict)
+        )
+    for key in (_LEGACY_CONVERSATIONS_KEY, _LEGACY_REQUESTS_KEY, CONVERSATION_ROWS_KEY, REQUEST_ROWS_KEY):
         base.pop(key, None)
-    base["schema"] = _SCHEMA_VERSION
-    base[CONVERSATION_ROWS_KEY] = [
-        canonical_json({**row, "id": cid}) for cid, row in conv.items() if isinstance(row, dict)
-    ]
+    conv = {cid: {**row, "id": cid} for cid, row in conv.items() if isinstance(row, dict)}
+    reqs = {key: record for key, record in reqs.items() if isinstance(record, dict)}
+    if not opaque:
+        base["schema"] = KEYED_STORAGE_FORM
+        base[_LEGACY_CONVERSATIONS_KEY] = copy.deepcopy(conv)
+        base[_LEGACY_REQUESTS_KEY] = copy.deepcopy(reqs)
+        return base
+    base["schema"] = OPAQUE_STORAGE_FORM
+    base[CONVERSATION_ROWS_KEY] = [canonical_json(row) for row in conv.values()]
     base[REQUEST_ROWS_KEY] = [
         canonical_json({"key": key, "record": record}) for key, record in reqs.items()
-        if isinstance(record, dict)
     ]
     return base
 
@@ -832,25 +866,43 @@ def _decode_partition(doc: dict[str, Any] | None) -> dict[str, Any]:
     return decoded
 
 
-def _encode_partition(data: dict[str, Any]) -> dict[str, Any]:
-    """Storage form 3: every conversation and request record is ONE opaque string,
-    so the document's mapped field paths never depend on what it holds."""
+def _encode_partition(data: dict[str, Any], *, opaque: bool = True) -> dict[str, Any]:
+    """Storage form 3 when ``opaque`` (every conversation and request record is ONE
+    opaque string, so the document's mapped field paths never depend on what it
+    holds), else form 2, exactly as released builds write it (see the module
+    docstring for which backend gets which)."""
+    requests = {
+        key: record for key, record in (data.get("requests") or {}).items()
+        if isinstance(record, dict)
+    }
+    scalars = {
+        "history_truncated": bool(data.get("history_truncated", False)),
+        "total_conversation_count": max(
+            len(data["conversations"]),
+            int(data.get("total_conversation_count", 0) or 0),
+        ),
+    }
+    if not opaque:
+        return {
+            "schema": KEYED_STORAGE_FORM,
+            _LEGACY_CONVERSATIONS_KEY: {
+                cid: conversation.model_dump(mode="json")
+                for cid, conversation in data["conversations"].items()
+            },
+            _LEGACY_REQUESTS_KEY: copy.deepcopy(requests),
+            **scalars,
+        }
     return {
-        "schema": _SCHEMA_VERSION,
+        "schema": OPAQUE_STORAGE_FORM,
         CONVERSATION_ROWS_KEY: [
             canonical_json(conversation.model_dump(mode="json"))
             for conversation in data["conversations"].values()
         ],
         REQUEST_ROWS_KEY: [
             canonical_json({"key": key, "record": record})
-            for key, record in (data.get("requests") or {}).items()
-            if isinstance(record, dict)
+            for key, record in requests.items()
         ],
-        "history_truncated": bool(data.get("history_truncated", False)),
-        "total_conversation_count": max(
-            len(data["conversations"]),
-            int(data.get("total_conversation_count", 0) or 0),
-        ),
+        **scalars,
     }
 
 
@@ -964,12 +1016,21 @@ def _match(conversation: ChatConversation, needle: str) -> ChatConversationMatch
 
 
 class ChatConversationStore:
-    """Strict CRUD and retry-safe sends over per-principal KV partitions."""
+    """Strict CRUD and retry-safe sends over per-principal KV partitions.
 
-    def __init__(self, kv: KVStore) -> None:
+    ``opaque_rows`` overrides the per-backend storage form (see the module docstring);
+    tests use it, production lets the backend decide."""
+
+    def __init__(self, kv: KVStore, *, opaque_rows: bool | None = None) -> None:
         self._kv = kv
         self._locks: dict[str, asyncio.Lock] = {}
         self._index_lock = asyncio.Lock()
+        self._opaque_rows = opaque_rows_for(kv) if opaque_rows is None else bool(opaque_rows)
+        self._storage_form = OPAQUE_STORAGE_FORM if self._opaque_rows else KEYED_STORAGE_FORM
+
+    def _encode(self, data: dict[str, Any]) -> dict[str, Any]:
+        """A decoded partition in this backend's storage form."""
+        return _encode_partition(data, opaque=self._opaque_rows)
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -1036,7 +1097,7 @@ class ChatConversationStore:
             doc = copy.deepcopy(current or {})
             partitions = {str(item) for item in (doc.get("partitions") or [])}
             partitions.add(partition_key)
-            doc["schema"] = _SCHEMA_VERSION
+            doc["schema"] = self._storage_form
             doc["partitions"] = sorted(partitions)
             return doc, None
 
@@ -1065,7 +1126,7 @@ class ChatConversationStore:
             if not data["conversations"]:
                 data["conversations"] = dict(migrated_rows)
                 data["total_conversation_count"] = len(migrated_rows)
-            return _encode_partition(data), data
+            return self._encode(data), data
 
         migrated = await self._strict_mutate(partition_key, _create)
 
@@ -1079,7 +1140,7 @@ class ChatConversationStore:
             partitions = {str(item) for item in (doc.get("partitions") or [])}
             partitions.add(partition_key)
             doc["partitions"] = sorted(partitions)
-            doc["schema"] = _SCHEMA_VERSION
+            doc["schema"] = self._storage_form
             return doc, None
 
         await self._strict_mutate(
@@ -1363,7 +1424,7 @@ class ChatConversationStore:
                 now=now,
                 user_origin=user_origin,
             )
-            return _encode_partition(data), stored
+            return self._encode(data), stored
 
         return _decoded(await self._strict_mutate(key, _change))
 
@@ -1452,7 +1513,7 @@ class ChatConversationStore:
                     )
                 request_cid = str(request.get("conversation_id") or cid)
                 if request.get("status") == "completed":
-                    return _encode_partition(data), self._completed_reservation(
+                    return self._encode(data), self._completed_reservation(
                         data, request, idempotency_key=idempotency_key,
                         conversation_id=request_cid, now=now,
                     )
@@ -1467,7 +1528,7 @@ class ChatConversationStore:
                 request["status"] = "in_progress"
                 request["lease_token"] = lease_token
                 data["requests"][idempotency_key] = request
-                return _encode_partition(data), ChatExchangeReservation(
+                return self._encode(data), ChatExchangeReservation(
                     status="reserved",
                     idempotency_key=idempotency_key,
                     conversation_id=request_cid,
@@ -1491,7 +1552,7 @@ class ChatConversationStore:
                 raise ChatRequestCapacityBusy(
                     "Too many chat requests are in progress; retry shortly."
                 )
-            return _encode_partition(data), ChatExchangeReservation(
+            return self._encode(data), ChatExchangeReservation(
                 status="reserved",
                 idempotency_key=idempotency_key,
                 conversation_id=cid,
@@ -1535,7 +1596,7 @@ class ChatConversationStore:
             if str(request.get("conversation_id") or "") != conversation_id:
                 raise ChatIdempotencyConflict("The chat reservation target changed.")
             if request.get("status") == "completed":
-                return _encode_partition(data), self._completed_reservation(
+                return self._encode(data), self._completed_reservation(
                     data, request, idempotency_key=idempotency_key,
                     conversation_id=conversation_id, now=now,
                 )
@@ -1575,7 +1636,7 @@ class ChatConversationStore:
                 "source_name": assistant.source_name,
             }
             self._prune_requests(data)
-            return _encode_partition(data), ChatExchangeReservation(
+            return self._encode(data), ChatExchangeReservation(
                 status="completed",
                 idempotency_key=idempotency_key,
                 conversation_id=conversation_id,
@@ -1607,7 +1668,7 @@ class ChatConversationStore:
                 and request.get("lease_token") == lease_token
             ):
                 data["requests"].pop(idempotency_key, None)
-            return _encode_partition(data), None
+            return self._encode(data), None
 
         await self._strict_mutate(key, _change)
 
@@ -1632,7 +1693,7 @@ class ChatConversationStore:
             data = _decode_partition(current)
             existing = data["conversations"].get(cid)
             if existing is None:
-                return _encode_partition(data), None
+                return self._encode(data), None
             updates: dict[str, Any] = {}
             if pinned is not None and bool(pinned) != existing.pinned:
                 if pinned:
@@ -1647,7 +1708,7 @@ class ChatConversationStore:
                 updates["updated_at"] = iso_now()
             stored = existing.model_copy(update=updates) if updates else existing
             data["conversations"][cid] = stored
-            return _encode_partition(data), stored
+            return self._encode(data), stored
 
         return _decoded(await self._strict_mutate(key, _change))
 
@@ -1673,9 +1734,9 @@ class ChatConversationStore:
             data = _decode_partition(current)
             existing = data["conversations"].get(cid)
             if existing is None:
-                return _encode_partition(data), False
+                return self._encode(data), False
             data["conversations"][cid] = existing.model_copy(update={"report_id": report_id or None})
-            return _encode_partition(data), True
+            return self._encode(data), True
 
         return await self._strict_mutate(key, _change)
 
@@ -1686,7 +1747,7 @@ class ChatConversationStore:
         def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
             data = _decode_partition(current)
             if cid not in data["conversations"]:
-                return _encode_partition(data), False
+                return self._encode(data), False
             data["conversations"].pop(cid, None)
             # This count means retained + retention-evicted conversations, not a
             # lifetime audit counter. An explicit delete therefore decrements it,
@@ -1700,7 +1761,7 @@ class ChatConversationStore:
                 for key, value in data["requests"].items()
                 if value.get("conversation_id") != cid
             }
-            return _encode_partition(data), True
+            return self._encode(data), True
 
         return await self._strict_mutate(key, _change)
 
@@ -1710,7 +1771,7 @@ class ChatConversationStore:
 
         def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
             current_count = len(_decode_partition(current)["conversations"])
-            return _encode_partition(_empty_partition()), current_count
+            return self._encode(_empty_partition()), current_count
 
         return await self._strict_mutate(key, _change) if count else 0
 
@@ -1722,12 +1783,12 @@ class ChatConversationStore:
         for key in keys:
             def _clear(current: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
                 count = len(_decode_partition(current)["conversations"])
-                return _encode_partition(_empty_partition()), count
+                return self._encode(_empty_partition()), count
 
             cleared += await self._strict_mutate(key, _clear)
 
         def _clear_index(current: dict[str, Any] | None) -> tuple[dict[str, Any], None]:
-            return {"schema": _SCHEMA_VERSION, "partitions": [], "conversations": {}}, None
+            return {"schema": self._storage_form, "partitions": [], "conversations": {}}, None
 
         await self._strict_mutate(
             CHAT_CONVERSATIONS_KEY, _clear_index, lock=self._index_lock

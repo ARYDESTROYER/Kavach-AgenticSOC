@@ -972,6 +972,19 @@ async def test_zero_cost_answer_pins_the_turns_topic():
     unknown = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic="kpi:nope")
     assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
 
+    # A failure resolving the topic's lead link keeps the built answer (never worse
+    # than the plain answer): its own citations and links, unpinned link order.
+    def broken_links(*_a, **_k):
+        raise RuntimeError("console map unavailable")
+
+    adapter.resolve_console_links = broken_links  # instance attribute: this adapter only
+    kept = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_AUTO_CLOSED)
+    assert kept is not None and [c.doc for c in kept.citations] == [c.doc for c in pinned.citations]
+    # The answer's own links, without the lead the failed lookup would have added.
+    assert [link.id for link in kept.console_links if link.id != console] == [
+        link.id for link in pinned.console_links if link.id != console]
+    del adapter.resolve_console_links
+
     # End to end through the engine: a legacy-mock deployment answers at $0 with the
     # topic's section cited first.
     es = InMemoryESClient()

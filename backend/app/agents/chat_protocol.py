@@ -888,14 +888,17 @@ NOTICE_MESSAGES: dict[str, str] = {
     "unsupported": "Chat cannot read that data. Use the linked console page instead.",
     "denied": "Some lookups were not run because they need permissions you do not have.",
     # A POLICY refusal (a private/reserved/internal indicator, a value that did not
-    # come from the analyst or this turn's evidence, an invalid kind): no grant would
-    # help, so the notice must not send the analyst to ask for one. Same wire kind
-    # ("denied": "Some lookups were not allowed"), so older clients keep working.
-    "policy": ("Some lookups were not run because policy does not allow them: private or "
-               "internal values, and values that did not come from you or this turn's results, "
-               "are never sent to outside services."),
+    # come from the analyst or this turn's evidence, e-mail lookups turned off, an
+    # invalid kind): no grant would help, so the notice must not send the analyst to
+    # ask for one. The reasons differ per lookup, so the notice names none of them
+    # (the run log shows each); it must never call an e-mail address "private". Same
+    # wire kind ("denied": "Some lookups were not allowed"), so older clients keep
+    # working.
+    "policy": ("Some lookups were not run because policy does not allow them: some values are "
+               "never sent to outside services on this deployment. The run log shows the "
+               "reason for each one."),
     "denied_policy": ("Some lookups were not run: some need permissions you do not have, and "
-                      "policy does not allow the others."),
+                      "policy does not allow the others. The run log shows the reason for each one."),
     "not_saved": "Not saved to the case thread",
 }
 

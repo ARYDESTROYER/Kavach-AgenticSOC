@@ -272,9 +272,14 @@ def test_topic_is_a_validated_console_map_id_and_part_of_the_identity_only_when_
     assert ChatRequest(message="x", topic="kpi:mtta").topic == "kpi:mtta"
     assert ChatRequest(message="x", topic="settings:detection.detection-autoclose").topic
     assert ChatRequest(message="x", topic="  ").topic is None
-    for bad in ("Kpi:MTTA", "kpi mtta", "kpi:<<<APP_DOCS>>>", "x" * 65, "kpi:mtta\n"):
+    for bad in ("Kpi:MTTA", "kpi mtta", "kpi:<<<APP_DOCS>>>", "x" * 122, "kpi:mtta\n"):
         with pytest.raises(ValidationError):
             ChatRequest(message="x", topic=bad)
+    # The longest id the console link grammar allows (40 + ":" + 80) is accepted, as is
+    # a colon-less id a client filter might let through (unknown, so ignored, not 422).
+    longest = "s" * 40 + ":" + "a" * 80
+    assert ChatRequest(message="x", topic=longest).topic == longest
+    assert ChatRequest(message="x", topic="kpimtta").topic == "kpimtta"
     base = ChatRequest(message="What does MTTA measure?")
     # Absent topic: byte-identical to a pre-revamp body (exclude_defaults).
     assert "topic" not in base.fingerprint_payload()
@@ -1424,3 +1429,23 @@ def test_kind_gated_tools_need_at_least_one_kind() -> None:
     info = _LogStats.info(frozenset({("sources", "read")}))
     assert info.allowed is True and info.kind_requires == {"detail": "settings:read"}
     assert info.kinds_allowed == []
+
+
+def test_every_console_map_topic_and_link_id_is_a_valid_request_topic() -> None:
+    """The topics endpoint, the console link contract and ``ChatRequest.topic`` agree:
+    an "Ask about this" send of any console_map id can never 422 the turn."""
+    import json
+    import re
+    from pathlib import Path
+
+    from app.models import CHAT_TOPIC_MAX_CHARS, CHAT_TOPIC_PATTERN, CONSOLE_TOPIC_ID_PATTERN
+
+    corpus = json.loads((Path(__file__).resolve().parents[1] / "app/knowledge/console_map.json").read_text())
+    ids = [t["id"] for t in corpus["topics"]] + [t["id"] for t in corpus["targets"]]
+    assert ids
+    for topic_id in ids:
+        assert re.fullmatch(CONSOLE_TOPIC_ID_PATTERN, topic_id), topic_id
+        assert ChatRequest(message="x", topic=topic_id).topic == topic_id
+    # The request grammar is a superset of the console id grammar, with its length bound.
+    assert CHAT_TOPIC_MAX_CHARS == 40 + 1 + 80
+    assert re.fullmatch(CHAT_TOPIC_PATTERN, "a" * 40 + ":" + "b" * 80)

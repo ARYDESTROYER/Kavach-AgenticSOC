@@ -117,6 +117,20 @@ def test_disabled_lists_only_tools_the_caller_could_otherwise_use() -> None:
     assert build_toolbox(make_ctx(prefs=prefs), scopes=["intel"]).disabled == ("lookup_indicator",)
 
 
+def test_catalogue_marks_configuration_disabled_tools_unavailable() -> None:
+    prefs = Preferences(chat_agent=ChatAgentConfig(max_indicator_lookups=0))
+    grants = make_ctx().grants
+    plain = {i.name: i for i in catalogue_infos(grants)}
+    assert all(i.available for i in plain.values())                 # no ctx: grants only
+    rows = {i.name: i for i in catalogue_infos(grants, make_ctx(prefs=prefs))}
+    assert rows["lookup_indicator"].available is False and rows["lookup_indicator"].allowed
+    assert [n for n, i in rows.items() if not i.available] == ["lookup_indicator"]
+    # A caller without the grant sees both facts: not allowed AND turned off.
+    ungranted = make_ctx(prefs=prefs, grants=frozenset({("cases", "read")}))
+    row = {i.name: i for i in catalogue_infos(ungranted.grants, ungranted)}["lookup_indicator"]
+    assert row.available is False and not row.allowed
+
+
 def test_system_prompt_names_configuration_disabled_tools_on_one_trusted_line() -> None:
     from app.agents.prompts import DISABLED_TOOLS_LINE_PREFIX, render_chat_agent_system
 

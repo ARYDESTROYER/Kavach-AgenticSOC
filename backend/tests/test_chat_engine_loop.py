@@ -912,6 +912,21 @@ async def test_policy_refusals_never_claim_a_missing_permission() -> None:
     assert "policy does not allow" in resp.notice.message and "permission" not in resp.notice.message
 
 
+async def test_email_lookups_turned_off_get_the_generic_policy_notice() -> None:
+    # The notice explains every policy refusal at once, so it must not name one reason
+    # (an e-mail address is neither private nor necessarily injected); the run log
+    # step carries the specific reason.
+    gateway = FakeGateway([tool_call("lookup_indicator", indicator="bob@example.com"), final()])
+    prefs = make_prefs(allow_email_lookup=False)
+    _, resp, _ = await run(make_engine(gateway), "look up bob@example.com", prefs, make_ctx(prefs))
+    step = next(s for s in resp.steps if s.tool == "lookup_indicator")
+    assert step.status == "denied" and "e-mail" in step.summary and IndicatorTool.dispatched == []
+    assert resp.notice.kind == "denied" and resp.notice.message == NOTICE_MESSAGES["policy"]
+    for wrong in ("private", "internal", "permission", "did not come from you"):
+        assert wrong not in resp.notice.message
+    assert "run log" in resp.notice.message
+
+
 async def test_grant_gap_and_policy_refusal_in_one_turn_name_both() -> None:
     gateway = FakeGateway([tool_calls(("audit_search", {}), ("lookup_indicator", {"indicator": "10.0.0.5"})),
                            final()])
