@@ -565,7 +565,7 @@ groups with a small delay (0 ms under tests via a module constant).
 |---|---|
 | brute force / failed logins | `log_stats` (auth failures by source IP) ∥ `search_cases` (brute-force rules) → hbar + case_list |
 | posture / how are we doing | `soc_metrics(posture)` ∥ `soc_metrics(trends)` → kpi_group (gauge for the risk index) + line |
-| top hosts / most alerts | `log_stats` (by host, 7 d) → hbar + table |
+| top hosts / most alerts | `log_stats` (by host, 7 d) → hbar (the view switcher offers the table) |
 | summarise true positives / today | `search_cases(verdict=true_positive, 24h)` ∥ `soc_metrics(case_mix)` → kpis + donut + case_list |
 | shift / handoff / report / `/shift-brief` | `shift_report` ∥ `soc_metrics(posture)` → `report` envelope (template shift: Summary, Open work, Key metrics, Next steps) |
 | noise / funnel | `soc_metrics(noise_funnel)` → funnel |
@@ -799,8 +799,8 @@ UI:
    when no budget; warn at `soft_warn_pct`, critical at 100%, always with text; `role="meter"` with
    `aria-valuetext` "42% of today's AI budget used, $4.20 of $10.00"). Hover card: next request
    ≈ N (system S + history H "last 12 exchanges; older are not sent" + draft D); up to ≈ M for the
-   whole turn (M = min(ceiling, N × max_model_calls + max_tool_calls × observation_chars / 4)) with
-   the projected cost range; context window W (N/W shown when ≥ 50%); per-turn limit; this
+   whole question (M = min(ceiling, N × max_model_calls + max_tool_calls × observation_chars / 4))
+   with the projected cost range; context window W (N/W shown when ≥ 50%); per-question limit; this
    conversation's tokens and cost; today's spend with "Chat shares this budget with automatic
    investigations; at the limit new investigations route to Needs human."
 2. **During a turn**: running totals in the run-log header only ("Working · 3 lookups · 1.2k
@@ -972,8 +972,11 @@ composer-level alert. A spent blocking budget never disables Send, for any role 
 alert says AI answers are paused until the budget resets and that product questions are still
 answered from the Help Center at no cost, and the server answers a help question at $0
 (§5.4.1) or returns the `budget` notice before any model call. Without `models:read` the
-`budget` policy is absent, so the alert says AI answers *may* be paused. A $0 product-help
-answer that carries the `budget` (or provider) notice shows the callout but no "Failed" outcome.
+`budget` policy is absent, so the alert says AI answers *may* be paused. The deterministic $0
+Help Center answer (`answer_kind: "product_help"`, `usage.calls = 0`) that carries the `budget`,
+`provider` or `breaker` notice shows the callout but no "Failed" outcome; a billed product-help
+answer keeps every outcome word (Stopped, Partial, Failed), since an older capped answer has no
+Continue chip and the word is its only signal.
 
 Scrolling: on send, scroll so the user turn sits at the lane top with a 48 px peek of the previous
 turn; follow-latest (≤ 72 px from the bottom) only until the turn's top reaches the lane top;
@@ -1630,8 +1633,12 @@ the wave-5 browser review.
   ATT&CK list, citation list or guide with nothing in it. `blocks._materialise` returns no block
   for such an artifact in every view, and `materialise_final_blocks` lists the ref in `empty`
   rather than `unresolved`, so no "could not be shown" notice line is added: the prose says the
-  lookup found nothing. Zero is a value: a chart of zero counts is kept; `null` is "not measured"
-  (G3), so an all-`null` chart is empty. Prose, callouts, entity cards, queries and report
+  lookup found nothing. Emptiness is judged on the artifact's whole data before any view clips
+  it; an artifact whose data a requested view clips to nothing falls back to the default view and
+  then its other allowed views, and only when none can show it (or validation drops every item,
+  or it is malformed) is the ref `unshowable` and counted in the "could not be shown" notice.
+  Zero is a value: a chart of zero counts is kept; `null` is "not measured" (G3), so an
+  all-`null` chart is empty. Prose, callouts, entity cards, queries and report
   envelopes are never empty under this rule (a report is judged by its resolved leaves). The
   client applies the same rule to every parsed block, stored answers and report leaves included
   (`schema.ts` `isEmptyDataBlock`, dropped with reason `empty` and no fallback; a report whose
@@ -1648,9 +1655,15 @@ the wave-5 browser review.
   names a campaign by its name or shared entity and a case by its id plus what happened to whom;
   long machine ids stay in blocks and links. A block whose numbers another block already shows,
   or a lookup that found nothing, gets no block. Durations keep the unit their result states.
+- **Report prose order.** A wrapped report's prose is the lead, then one coverage note per
+  partial lookup (skipped when the lead already says it), then the access, failure and window
+  notes, then the one "ready to add" sentence last.
 - **Units.** `KpiItem.delta.value` is in the item's own unit (cases for a count, percentage points
-  for a `percent`, minutes for a `minutes` duration), never the relative `delta_pct`; its
-  `period_label` is "vs previous window". A zero duration reads in its unit ("0 min"), and a
+  for a `percent`, minutes for a `minutes` duration), never the relative percentage; its
+  `period_label` is "vs previous window". In the `soc_metrics` posture observation each
+  `compare_previous` entry carries `change` (in `change_unit`) and `relative_change_pct` (renamed
+  from `delta_pct`) with a top-level `period_label`; the `shift_report` headline delta label is
+  "vs previous window". A zero duration reads in its unit ("0 min"), and a
   positive minutes or hours value under one second reads "< 1 min".
 - **Help Center link labels.** A `guide` link to a `DocRef` carries the section title alone; the
   client adds the "Read:" verb once (`format.ts` `plainDocTitle` removes a stored prefix from
@@ -1674,16 +1687,22 @@ for anything else. The composer therefore blocks Send only for a host reason (`d
 restoring a thread, history unavailable); `composer/format.ts` `budgetPausesAnswers` (formerly
 `budgetSendBlockReason`) only chooses the alert copy. The one composer-level alert is
 window-neutral, since the limit hit may be the daily or the monthly one: "The AI budget is nearly
-used." / "The AI budget is used up.", with today's figures labelled "Today: $x of $y used." when
-the viewer may see them (the ring measures today's spend against the daily limit). Blocking
-copy: "AI answers are paused until the budget resets or an administrator raises it. Questions
-about this app are still answered from the Help Center at no cost. New investigations route to
-Needs human." Without `models:read` the policy is unknown, so: "AI answers may be paused until
-the budget resets." plus the same Help Center sentence; warn-only: "Questions still run because
-the budget is set to warn only." The answer callout for the `budget` notice is titled "AI budget
-reached", and a `product_help` answer never shows the "Failed" outcome word in its meta row:
-its notice explains why AI was not used, but it did answer. The Case Manager composer follows
-the same rule (it has no budget alert; the answer's notice says why).
+used." / "The AI budget is used up." Today's figures, labelled "Today: $x of $y used.", lead the
+body only when the viewer may see them AND they explain the state (today's spend at or past the
+soft-warn share for approaching, at or past the daily limit for reached, mirroring the gate's
+rounded bands); otherwise the monthly window drove the state and the figures are left out, so
+"used up" never sits beside "$2.00 of $10.00 used". Blocking copy (short, it cannot be
+dismissed): "AI answers are paused until the budget resets. Questions about this app are still
+answered from the Help Center at no cost." The note that new investigations route to Needs human
+stays in the TokenMeter hover card. Without `models:read` the policy is unknown, so: "AI answers
+may be paused until the budget resets." plus the same Help Center sentence; warn-only: "Questions
+still run because the budget is set to warn only." The answer callout for the `budget` notice is
+titled "AI budget reached", and the deterministic $0 Help Center answer (`usage.calls = 0`, a
+`budget`, `provider` or `breaker` notice) never shows the "Failed" outcome word in its meta row:
+its notice explains why AI was not used, but it did answer. A billed product-help answer (the
+model's header said so, or only Help Center lookups ran) keeps Stopped, Partial and Failed. The
+Case Manager composer follows the same rule (it has no budget alert; the answer's notice says
+why).
 
 **A36 — Wave-5 frontend behaviours, recorded (§7.5, §10.3, §10.6, §10.7, §10.10, A22, A26,
 A34).**
@@ -1707,16 +1726,17 @@ A34).**
 - **Generate summary.** The report panel's "Generate summary" button (and "Regenerate") shows the
   server's dry-run estimate ("≈ 1.4k tokens · ≈ $0.001"; the cost only when the dry run returns
   one, which needs `models:read`) as a quiet caption beside it that is also its accessible
-  description, so the action never truncates; the caption hides while the summary is written.
+  description, so the action never truncates; on both buttons the caption (and the description)
+  hides while the summary is written.
 - **"Ask about this" entry points** are exactly those listed in A33. The analyst guide says "an
   Overview KPI", not "a dashboard KPI".
 - **Durations.** A zero duration reads in its block's unit ("0 min", "0 h"), and a positive
   minutes or hours value under one second reads "< 1 min" (`blocks/format.ts` `formatDuration`).
-- **Live tail in the linked Logs view.** "Open in Logs" opens the Logs sheet on the block's
+- **Live tail in the linked Logs view.** "Open in Logs" opens the Logs page on the block's
   window; Live tail there is blocked only while the selected window ENDS at an absolute instant
-  in the past (re-reading it can find nothing new; `UnifiedLogsSheet` `endsInPast`). A window
-  that ends `now`, ends relative to now, or has no end keeps Live tail, and choosing a preset
-  range re-enables it.
+  in the past (re-reading it can find nothing new; `endsInPast` in `UnifiedLogsSheet.tsx`,
+  whose body the Logs page renders). A window that ends `now`, ends relative to now, or has no
+  end keeps Live tail, and choosing a preset range re-enables it.
 - **Entry baseline.** §10.10: 05a40d1 measures 396,537 B as committed and 391,893 B with only
   the fail-soft lazy MFA QR chunk applied; the baseline is the latter and the revamp stays
   capped at +1,024 B over it.

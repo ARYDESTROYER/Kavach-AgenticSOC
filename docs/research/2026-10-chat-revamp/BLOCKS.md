@@ -104,7 +104,13 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     an all-`null` series is "not measured" and is empty. The client applies the rule to live,
     stored and report content alike and drops a `report` envelope whose every leaf is empty; a
     report item whose block was empty keeps its saved title and reads "The lookup found
-    nothing." instead of a card (SPEC A36).
+    nothing." instead of a card (SPEC A36). Emptiness is judged on the artifact's whole data
+    before any view clips it. When the requested view clips non-empty data to nothing, the
+    default view and then the artifact's other allowed views are tried; if none can show it,
+    validation drops every item, or the artifact is malformed, the ref is `unshowable` and IS
+    counted in the "N requested items could not be shown" notice. "Not available from this
+    turn's results" stays for unknown or missing refs, artifacts that are not tool-produced, and
+    failed stored-ref view changes.
 21. **One figure shown once (SPEC A34).** A `kpi_group` from a `kpis` artifact that only restates
     an `entity` card of the same tool call is left out (`blocks.drop_restated_kpis`), so a
     reputation score appears once, in the card's gauge.
@@ -241,7 +247,7 @@ interface KpiItem {
   value: number | null; unit: ValueUnit;
   bound?: 'lower';                            // renders "≥"
   context?: string;                           // "of 43 cases", ≤ 60
-  delta?: { value: number; period_label: string; good_direction: 'up' | 'down' | 'none' };
+  delta?: { value: number; period_label: string; good_direction: 'up' | 'down' | 'none' };  // value in the item's own unit; label "vs previous window" (amendment 22)
   semantic?: SemanticKey;                     // accent chip + SEMANTIC_ICON
   trend?: { points: Array<number | null>; window_label: string };  // ≤ 60 points
   ref?: InternalRef;                          // tile becomes a nav button
@@ -499,7 +505,9 @@ JSON.
 
 - **Renderer:** numbered steps, then a row of quiet link buttons, for example
   "Open Settings › Sources" built as `{page:'settings', opts:{section:'sources'}}` and
-  "Read: Chat in the Help Center" built as `{doc:'/docs/0.1/analyst/chat/'}`.
+  "Read: Chat in the Help Center", where the server sends the bare label "Chat in the Help
+  Center" with `{doc:'/docs/0.1/analyst/chat/'}` and the renderer adds "Read:" once
+  (amendment 22).
 - **Safety:** `NavOpts` already supports `section`/`anchor`, so deep links into
   Settings cards work with no router change. Every ref is validated (`isPageId`,
   `isSafeRouteToken`).
