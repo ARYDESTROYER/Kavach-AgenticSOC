@@ -49,6 +49,8 @@ import {
 import { token, SEVERITY_COLOR, VERDICT_COLOR } from './palette';
 import { CountUp } from './CountUp';
 import { HelpTip } from './HelpTip';
+import { AskAboutThis } from './AskAboutThis';
+import { KPI_TOPICS } from './ask-topics';
 import { NoiseLineageView } from './NoiseLineage';
 import { SegmentedControl } from './SegmentedControl';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
@@ -1292,6 +1294,7 @@ function Header({
         <HelpTip
           label="What the noise-reduction funnel means"
           text={view === 'detailed' ? LEGACY_NOISE_FUNNEL_HELP_TEXT : NOISE_FUNNEL_HELP_TEXT}
+          footer={<AskAboutThis topic={KPI_TOPICS['noise-reduction']} subject="Noise reduction" className="pt-1" />}
         />
       </div>
       <div className="flex flex-wrap items-center justify-end gap-1">

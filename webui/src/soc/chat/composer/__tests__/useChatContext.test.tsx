@@ -43,6 +43,23 @@ const mount = (props: UseChatContextArgs) =>
   renderHook((p: UseChatContextArgs) => useChatContext(p), { initialProps: props });
 
 describe('useChatContext', () => {
+  it('reports the default model only from a read without a model override', async () => {
+    respond = (url) => {
+      const model = new URLSearchParams(url.split('?')[1] ?? '').get('model');
+      return json({ model: model || 'gpt-default' });
+    };
+    const view = mount({ conversationId: null, model: null, principal: 'alice' });
+    await waitFor(() => expect(view.result.current.defaultModel).toBe('gpt-default'));
+    // An override's context reports THAT model; the default stays the default.
+    view.rerender({ conversationId: null, model: 'gpt-other', principal: 'alice' });
+    await waitFor(() => expect(view.result.current.context?.model).toBe('gpt-other'));
+    expect(view.result.current.defaultModel).toBe('gpt-default');
+    // Back to no override: the cached default read is served again.
+    view.rerender({ conversationId: null, model: null, principal: 'alice' });
+    await waitFor(() => expect(view.result.current.context?.model).toBe('gpt-default'));
+    expect(view.result.current.defaultModel).toBe('gpt-default');
+  });
+
   it('loads once and serves a remount from the 30 s cache', async () => {
     const first = mount({ conversationId: null, model: null, principal: 'alice' });
     await waitFor(() => expect(first.result.current.context?.model).toBe('m-1'));

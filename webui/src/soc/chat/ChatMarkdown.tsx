@@ -670,6 +670,9 @@ function DefangedUrl({ defanged }: { defanged: string }) {
   );
 }
 
+/** Inline code up to this length stays on one line (identifiers, hosts, case ids). */
+const INLINE_CODE_NOWRAP_CHARS = 32;
+
 /**
  * Inline nodes → React. Inside a docs link (`inLink`) nothing interactive is nested
  * (an `<a>` may not contain a button or another link): URLs stay defanged text,
@@ -685,7 +688,15 @@ function renderInline(nodes: MdInline[], ctx: RenderContext, key = 'i', inLink =
         return <br key={k} />;
       case 'code':
         return (
-          <code key={k} className="rounded-sm border border-border bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
+          <code
+            key={k}
+            className={cn(
+              'rounded-sm border border-border bg-muted px-1 py-0.5 font-mono text-xs text-foreground [box-decoration-break:clone]',
+              // A short identifier (a case id, a host) never splits at its hyphen across
+              // lines; a long one may wrap anywhere rather than overflow the lane.
+              node.v.length <= INLINE_CODE_NOWRAP_CHARS ? 'whitespace-nowrap' : '[overflow-wrap:anywhere]',
+            )}
+          >
             {node.v}
           </code>
         );

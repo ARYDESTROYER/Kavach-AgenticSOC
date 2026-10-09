@@ -56,6 +56,7 @@ import {
   normaliseTurnUsage,
   type ChatStreamEvent,
 } from './stream-events';
+import { CONSOLE_TOPIC_RE } from './topic';
 
 /* -------------------------------------------------------------------------- */
 /* Lenient field helpers.                                                      */
@@ -229,6 +230,8 @@ function normaliseTool(raw: unknown): ChatToolInfo | null {
     missing: strings(raw.missing, 8, (g) => GRANT_RE.test(g)),
     kind_requires: kindRequires,
     kinds_allowed: strings(raw.kinds_allowed, 20, (k) => KIND_RE.test(k)),
+    // Only an explicit `false` marks a tool switched off (absent = on, SPEC A30).
+    ...(raw.available === false ? { available: false } : {}),
   };
 }
 
@@ -367,8 +370,11 @@ export function boundsFromAgentConfig(config: ChatAgentConfig | null | undefined
 /* "Ask about this" topics: GET /api/chat/topics/{topic_id} (SPEC §10.7, D2).  */
 /* -------------------------------------------------------------------------- */
 
-/** A `console_map` topic id (the same grammar the chat route accepts in NavOpts). */
-export const CHAT_TOPIC_RE = /^[a-z0-9][a-z0-9_.:-]{0,79}$/;
+/**
+ * A `console_map` topic id (`topic.ts` CONSOLE_TOPIC_RE, the server's console-link
+ * grammar): the same pattern NavOpts and `GET /chat/topics/{id}` accept.
+ */
+export const CHAT_TOPIC_RE = CONSOLE_TOPIC_RE;
 const TOPIC_QUESTION_CHARS = 400;
 
 /**

@@ -23,6 +23,8 @@ lookup results, never from model text; each block switches between the views its
 honestly supports, copies or downloads its data, and opens **Open in Logs** or **Open in
 Cases** on exactly the same filter. Citations link the version-matched Help Center, and
 product questions are answered at no cost from the Help Center when no model can run.
+**Ask about this**, at the end of a dashboard KPI's help and beside the section name in
+Settings, opens a new chat that asks a fixed question about that metric or section.
 The page has three calm zones: searchable, pinnable history (50 conversations, 10 pins,
 Markdown/HTML/PDF export), the conversation with a one-row composer (scope chip, `@`
 scopes, `/` commands, saved prompts, a calibrated next-request estimate and today's budget
@@ -48,6 +50,21 @@ need `models:read`; case-thread saves need `cases:comment`; reports and conversa
 owner-scoped, server-resolved from saved answers (case content is unaddable), audited, and
 stored so they can never grow the shared Elasticsearch mapping. Every model call, including
 streamed, cancelled and summary calls, records exactly one usage row.
+
+Upgrade and rollback: on the **Elasticsearch** state backend, this release stores case
+discussion threads and Workspace Chat history in a new mapping-safe form that older builds
+cannot read. The first write converts the whole document, entries from before the upgrade
+included, and the change is one-way: after a manual rollback to an older image, case threads
+and the affected users' chat history appear empty, and the older build's next write to them
+removes the converted entries. **PostgreSQL and SQLite** keep the previous form, so the
+supervised image-only rollback keeps threads and transcripts, with two losses. The older
+build's first chat write for a user drops that user's conversation pins, linked reports,
+time ranges and usage totals (the reports themselves remain). And because this release lets
+up to 10 pinned conversations sit beyond the 50-conversation limit, the older build's first
+saved answer for a user with more than 50 conversations deletes that user's oldest
+conversations (by last activity, pinned ones included) until 50 remain. Before rolling back,
+users with more than 50 conversations should export the extras they want to keep and delete
+them. See DEPLOY.md, the upgrades page and the known limitations.
 
 Also in this change: the ATT&CK heatmap's tactic and cell labels move from 10 px to the
 11 px `text-2xs` token when the heatmap became its own module, and the flaky

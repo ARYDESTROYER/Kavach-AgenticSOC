@@ -16,6 +16,8 @@
  *   fallback, duplicate ids suffixed) exactly like the backend;
  * - replaces a block it cannot keep with a quiet fallback callout at the same
  *   position, and reports it in `dropped`;
+ * - drops a data block with nothing to show (no rows, points or items) without any
+ *   fallback: an empty shell is never rendered, the prose carries it (D3);
  * - validates every in-app ref with the router's own guards (`isPageId`,
  *   `isSafeRouteToken`, `isSafeCaseId`, `isSafeCaseResultStatus`) and every Help
  *   Center ref against the docs path pattern. No string ever becomes a URL, a style,
@@ -1379,6 +1381,42 @@ function uniqueId(candidate: unknown, fallback: string, used: Set<string>): stri
   return out;
 }
 
+/** A report whose every leaf had nothing to show: dropped whole, never a fallback. */
+class EmptyBlock extends Error {}
+
+/**
+ * A data block with nothing to show (browser-QA D3): a table with no rows, a chart or
+ * heatmap with no measured value, an empty case list, timeline, ATT&CK list, citation
+ * list, KPI group or guide. Such a block is never rendered as an empty shell ("Table —
+ * No values to show."); the prose already says the search found nothing. Parsing drops
+ * it (listed in `dropped` as `empty`), so saved answers and report leaves benefit too.
+ * Prose, query, callout and entity blocks always carry something and are kept.
+ */
+export function isEmptyDataBlock(block: LeafBlock): boolean {
+  switch (block.type) {
+    case 'table':
+      return block.rows.length === 0;
+    case 'chart':
+      return block.x.values.length === 0 || block.series.every((s) => s.values.every((v) => v === null));
+    case 'heatmap':
+      return block.cells.every((row) => row.every((v) => v === null));
+    case 'case_list':
+      return block.items.length === 0;
+    case 'timeline':
+      return block.events.length === 0;
+    case 'mitre':
+      return block.techniques.length === 0;
+    case 'citations':
+      return block.items.length === 0;
+    case 'kpi_group':
+      return block.items.length === 0;
+    case 'guide':
+      return block.steps.length === 0 && block.links.length === 0;
+    default:
+      return false;
+  }
+}
+
 const typeOf = (raw: unknown): string | null =>
   isObj(raw) && typeof raw.type === 'string' ? displayText(raw.type, 32) : null;
 const reasonOf = (err: unknown): string => (err instanceof Invalid ? err.message : 'invalid');
@@ -1391,6 +1429,7 @@ function parseReport(raw: Obj, id: string, path: string, used: Set<string>, drop
   const sectionsRaw = clip(raw.sections, LIMITS.report_sections);
   let truncated = base.truncated || sectionsRaw.clipped;
   let leaves = 0;
+  let emptyLeaves = 0;
   const sections: ReportSection[] = [];
   sectionsRaw.items.forEach((section, si) => {
     const sPath = `${path}.s${si + 1}`;
@@ -1416,7 +1455,14 @@ function parseReport(raw: Obj, id: string, path: string, used: Set<string>, drop
         blocks.push(fallbackBlock(leafId, leaf.fallback_text));
       } else {
         try {
-          blocks.push(parseLeaf(leaf, leafId));
+          const parsed = parseLeaf(leaf, leafId);
+          if (isEmptyDataBlock(parsed)) {
+            // Nothing to show: no shell, no fallback (D3).
+            dropped.push({ path: lPath, type: parsed.type, reason: 'empty' });
+            emptyLeaves += 1;
+          } else {
+            blocks.push(parsed);
+          }
         } catch (err) {
           dropped.push({ path: lPath, type: typeOf(leaf), reason: reasonOf(err) });
           blocks.push(fallbackBlock(leafId, leaf.fallback_text));
@@ -1435,6 +1481,8 @@ function parseReport(raw: Obj, id: string, path: string, used: Set<string>, drop
     if (summary) out.summary = summary;
     sections.push(out);
   });
+  // Every leaf was empty: the report has nothing to show, so it goes too (D3).
+  if (sections.length === 0 && emptyLeaves > 0 && emptyLeaves === leaves) throw new EmptyBlock('empty');
   if (sections.length === 0) fail('value_error:sections');
   const scope: ReportBlock['scope'] = {
     sources: clip(raw.scope.sources, LIMITS.sources)
@@ -1469,7 +1517,9 @@ export interface ParseBlocksOptions {
  * Validate untrusted blocks for rendering. NEVER throws. Invalid blocks are
  * replaced IN PLACE by a {@link fallbackBlock} (positions stay stable for `mK.bJ`
  * references and "Add to report") and listed in `dropped`; blocks past the limit
- * are dropped. Report leaves are validated one by one.
+ * are dropped. A data block with nothing to show ({@link isEmptyDataBlock}) is
+ * dropped without a fallback (reason `empty`); ids are positional on the RAW list,
+ * so the blocks after it keep theirs. Report leaves are validated one by one.
  */
 export function parseBlocks(raw: unknown, options: ParseBlocksOptions = {}): ParseBlocksResult {
   const limit =
@@ -1497,8 +1547,19 @@ export function parseBlocks(raw: unknown, options: ParseBlocksOptions = {}): Par
         return;
       }
       try {
-        blocks.push(item.type === 'report' ? parseReport(item, id, path, used, dropped) : parseLeaf(item, id));
+        if (item.type === 'report') {
+          blocks.push(parseReport(item, id, path, used, dropped));
+          return;
+        }
+        const leaf = parseLeaf(item, id);
+        // A data block with nothing to show is never rendered as an empty shell (D3).
+        if (isEmptyDataBlock(leaf)) dropped.push({ path, type: leaf.type, reason: 'empty' });
+        else blocks.push(leaf);
       } catch (err) {
+        if (err instanceof EmptyBlock) {
+          dropped.push({ path, type: item.type, reason: 'empty' });
+          return;
+        }
         dropped.push({ path, type: item.type, reason: reasonOf(err) });
         blocks.push(fallbackBlock(id, item.fallback_text));
       }

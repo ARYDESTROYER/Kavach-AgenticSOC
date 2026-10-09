@@ -15,7 +15,7 @@
  * write carries the report's `expected_version`.
  */
 import * as React from 'react';
-import { ArrowLeft, Download, ExternalLink, FileText, MoreHorizontal, Pencil, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, Download, FileText, MessageSquare, MoreHorizontal, Pencil, Search, Trash2 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
@@ -287,7 +287,7 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
         <DropdownMenuContent align="end" className="w-48">
           {report.conversation_id && !sources.unavailable.has(report.conversation_id) ? (
             <DropdownMenuItem onSelect={() => navigate('chat', { conversationId: report.conversation_id ?? undefined })}>
-              <ExternalLink className="size-3.5" aria-hidden />
+              <MessageSquare className="size-3.5" aria-hidden />
               Open conversation
             </DropdownMenuItem>
           ) : null}
@@ -503,7 +503,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
             aria-label={`Open the source conversation of ${r.title}${known ? `: ${known}` : ''}`}
             title={known}
           >
-            <ExternalLink className="size-3 shrink-0" aria-hidden />
+            <MessageSquare className="size-3 shrink-0" aria-hidden />
             <span className="truncate">{known ?? 'Open conversation'}</span>
           </button>
         );
@@ -580,8 +580,9 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
                 onChange={(e) => setQuery(e.target.value)}
               />
             </div>
-            <span className="text-xs text-muted-foreground">
-              <span className="tabular-nums">{rows.length}</span> of 100 reports
+            {/* The stored count against the per-user cap (a new report is refused at 100). */}
+            <span className="text-xs text-muted-foreground" title="You can keep up to 100 reports.">
+              <span className="tabular-nums">{rows.length}</span> {rows.length === 1 ? 'report' : 'reports'} · limit 100
             </span>
           </div>
           {notice ? <p className="text-sm text-critical-text">{notice}</p> : null}

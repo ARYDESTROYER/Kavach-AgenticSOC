@@ -15,7 +15,7 @@ import { BlockBody } from '../BlockCard';
 import { ChartBlockView } from '../charts/ChartBlockView';
 import { placeTooltip } from '../charts/ChartTooltipPortal';
 import { galleryBlock } from '../__fixtures__/gallery';
-import { parseBlock } from '../schema';
+import { parseBlock, parseBlocks } from '../schema';
 import type { AnswerBlock, ChartBlock, InternalRef } from '../schema';
 
 function show(block: AnswerBlock, onNavigate?: (ref: InternalRef) => void) {
@@ -364,9 +364,20 @@ describe('tooltip placement (WCAG 1.4.13: beside the mark, inside the viewport)'
 });
 
 describe('empty chart', () => {
-  it('says there is nothing to draw instead of drawing an empty frame', () => {
-    const block = parseBlock({ ...(galleryBlock('mtta-trend') as object), x: { kind: 'time', values: [] }, series: [{ key: 'a', label: 'A', values: [] }] });
-    show(block);
+  it('is never materialised from untrusted input (D3: no empty shell)', () => {
+    const raw = { ...(galleryBlock('mtta-trend') as object), x: { kind: 'time', values: [] }, series: [{ key: 'a', label: 'A', values: [] }] };
+    const { blocks, dropped } = parseBlocks([raw]);
+    expect(blocks).toEqual([]);
+    expect(dropped).toEqual([{ path: '1', type: 'chart', reason: 'empty' }]);
+    const { container } = render(<AnswerBlocks blocks={blocks} messageId="m1" />);
+    expect(screen.queryByTestId('chart-empty')).toBeNull();
+    expect(container.querySelector('[data-block-type]')).toBeNull();
+  });
+
+  it('the renderer still says there is nothing to draw if handed one directly (defence in depth)', () => {
+    const base = parseBlock(galleryBlock('mtta-trend')) as ChartBlock;
+    const block: ChartBlock = { ...base, x: { ...base.x, values: [] }, series: base.series.map((s) => ({ ...s, values: [] })) };
+    render(<ChartBlockView block={block} />);
     expect(screen.getByTestId('chart-empty')).toHaveTextContent('No data points in this window.');
   });
 });

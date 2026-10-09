@@ -48,6 +48,7 @@ import {
 } from './chat-api';
 import { clampAsk } from './ask';
 import { displayText } from './stream-events';
+import { consoleTopic } from './topic';
 
 /** The cross-tab history signal (unchanged from the pre-revamp page). */
 export const HISTORY_CHANNEL = 'agentic-soc-workspace-chat-history';
@@ -61,7 +62,6 @@ export const MAX_PINNED_CONVERSATIONS = 10;
 /** Server search input bound and debounce. */
 export const MAX_SEARCH_CHARS = 200;
 const SEARCH_DEBOUNCE_MS = 250;
-const TOPIC_RE = /^[a-z0-9][a-z0-9_.:-]{0,79}$/;
 
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError || error instanceof Error) return error.message || fallback;
@@ -113,7 +113,7 @@ export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRe
   if (!opts) return null;
   const conversationId = isSafeChatId(opts.conversationId) ? opts.conversationId : null;
   const messageId = conversationId && isSafeChatId(opts.messageId) ? opts.messageId : null;
-  const topic = typeof opts.topic === 'string' && TOPIC_RE.test(opts.topic) ? opts.topic : null;
+  const topic = consoleTopic(opts.topic);
   const ask = topic ? null : clampAsk(opts.ask);
   const newChat = !conversationId && (opts.newChat === true || topic !== null || ask !== null);
   if (!conversationId && !newChat) return null;
@@ -163,24 +163,24 @@ export interface ChatThreadRetention {
   removed: boolean;
   retained: number | null;
   total: number | null;
-  /** The removed-turns note above the transcript (null when nothing was removed). */
-  note: string | null;
   /**
-   * A quieter line when the thread was only shortened in place (an answer tightened to
-   * fit storage, clipped text) and no turn was removed; null otherwise.
+   * The removed-turns note above the transcript (null when nothing was removed). A
+   * thread that was only shortened in place gets no thread-level line: each restored
+   * answer whose snapshot was compacted carries its own quiet hint (SPEC A22), and
+   * clipped text ends with its own "[truncated in saved history]" marker.
    */
-  trimmedHint: string | null;
+  note: string | null;
 }
 
 /** The per-conversation message window (`MAX_MESSAGES_PER_CONVERSATION`, SPEC §7.5). */
 export const MAX_THREAD_MESSAGES = 100;
-export const TRIMMED_TO_FIT_HINT = 'Some saved text in this conversation was trimmed to fit storage.';
 
 /**
  * The thread retention copy from the stored counts. Turns were removed exactly when the
  * lifetime count exceeds the retained count; below the 100-message window that can only
  * be the storage bound, at the window it is the 100-message limit. `history_truncated`
- * alone (no turn missing) means an answer or prompt was shortened in place.
+ * alone (no turn missing) means an answer or prompt was shortened in place, which the
+ * transcript shows per answer, not here.
  */
 export function threadRetentionInfo(
   retained: number | null,
@@ -195,14 +195,7 @@ export function threadRetentionInfo(
         ? `Showing the latest ${retained} of ${total} messages. Conversations keep their newest ${MAX_THREAD_MESSAGES} messages.`
         : `Showing the latest ${retained} of ${total} messages. Older turns were removed to stay within the storage limit.`;
   }
-  return {
-    truncated,
-    removed,
-    retained,
-    total,
-    note,
-    trimmedHint: !removed && truncated ? TRIMMED_TO_FIT_HINT : null,
-  };
+  return { truncated, removed, retained, total, note };
 }
 
 export interface ChatConversationsController {

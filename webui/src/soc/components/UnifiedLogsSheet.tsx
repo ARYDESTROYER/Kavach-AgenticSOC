@@ -204,7 +204,12 @@ export interface UnifiedLogsBodyProps {
   sourceId?: string;
   /** Rendered above the controls (e.g. the linked query's summary). */
   header?: React.ReactNode;
+  /** Every successful read's per-source status (a host names a linked source with it). */
+  onSources?: (sources: UnifiedLogSourceStatus[]) => void;
 }
+
+/** Why Live tail is off while a linked query's fixed past window is selected. */
+export const LIVE_TAIL_FIXED_WINDOW_REASON = 'This linked window is fixed in the past, so it never changes. Pick a time range to follow new events.';
 
 interface StartWindow {
   /** A preset value, or {@link LINKED_WINDOW} for the starting one-off window. */
@@ -228,6 +233,7 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
   initialWindowLabel,
   sourceId,
   header = null,
+  onSources,
 }) => {
   const [query, setQuery] = React.useState(initialQuery);
   // The COMMITTED search term the fetch actually uses. Kept separate from the live
@@ -239,7 +245,12 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
   const [initialWindow] = React.useState(() => startWindow(initialFrom, initialTo, initialWindowLabel));
   const [start, setStart] = React.useState(initialWindow.start);
   const linkedWindow = start === LINKED_WINDOW ? initialWindow.linked : null;
-  const [liveTail, setLiveTail] = React.useState(false);
+  const [liveTailPref, setLiveTail] = React.useState(false);
+  // Re-polling a fixed past window every 10 s would only re-read the same rows.
+  const liveTailBlocked = start === LINKED_WINDOW;
+  const liveTail = liveTailPref && !liveTailBlocked;
+  const onSourcesRef = React.useRef(onSources);
+  onSourcesRef.current = onSources;
 
   const [rows, setRows] = React.useState<UnifiedLogRow[]>([]);
   const [sources, setSources] = React.useState<UnifiedLogSourceStatus[]>([]);
@@ -277,6 +288,7 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
         const logs = res.logs || [];
         setRows(logs);
         setSources(res.sources || []);
+        onSourcesRef.current?.(res.sources || []);
         setPartial(Boolean(res.partial));
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
@@ -376,16 +388,26 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
             ))}
           </SelectContent>
         </Select>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" title={liveTailBlocked ? LIVE_TAIL_FIXED_WINDOW_REASON : undefined}>
           <Switch
             id="unified-live-tail"
             checked={liveTail}
             onCheckedChange={setLiveTail}
+            disabled={liveTailBlocked}
             aria-label="Auto-refresh every 10 seconds"
+            aria-describedby={liveTailBlocked ? 'unified-live-tail-reason' : undefined}
           />
-          <Label htmlFor="unified-live-tail" className="cursor-pointer text-xs">
+          <Label
+            htmlFor="unified-live-tail"
+            className={cn('text-xs', liveTailBlocked ? 'cursor-not-allowed text-muted-foreground' : 'cursor-pointer')}
+          >
             Live tail
           </Label>
+          {liveTailBlocked ? (
+            <span id="unified-live-tail-reason" className="sr-only">
+              {LIVE_TAIL_FIXED_WINDOW_REASON}
+            </span>
+          ) : null}
         </div>
         <Button
           variant="outline"
@@ -460,7 +482,10 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
               description={
                 sources.length === 0
                   ? 'No browse-capable sources are enabled. Configure a source to see its logs here.'
-                  : 'No log events matched this window across your sources.'
+                  : linkedWindow
+                    ? // A link reopened later may point at events the source no longer keeps.
+                      'No log events matched this window across your sources. Older events may have aged out of the source since this link was made.'
+                    : 'No log events matched this window across your sources.'
               }
             />
           ) : (

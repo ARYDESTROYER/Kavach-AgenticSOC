@@ -147,6 +147,29 @@ describe('Logs page', () => {
     expect(screen.getAllByRole('table')).toHaveLength(1);
   });
 
+  it('names the linked source in sans once the read resolves it', async () => {
+    show('#/logs?logQuery=failed&from=now-24h&sourceId=wazuh-prod');
+    const header = await screen.findByTestId('linked-logs');
+    await waitFor(() => expect(header).toHaveTextContent('Wazuh prod'));
+    const name = Array.from(header.querySelectorAll('dd')).find((dd) => dd.textContent === 'Wazuh prod')!;
+    expect(name).toHaveAttribute('title', 'wazuh-prod');
+    expect(name.querySelector('.font-mono')).toBeNull();
+  });
+
+  it('turns Live tail off for a fixed past window, with the reason, and keeps the aged-out hint', async () => {
+    fetchUnifiedLogs.mockResolvedValue({ ...RESPONSE, count: 0, logs: [] });
+    show('#/logs?logQuery=failed&from=2026-10-01T12%3A00%3A00Z&to=2026-10-02T12%3A00%3A00Z');
+    const live = await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' });
+    expect(live).toBeDisabled();
+    expect(live).toHaveAccessibleDescription(/fixed in the past/);
+    expect(await screen.findByText(/Older events may have aged out of the source since this link was made/)).toBeInTheDocument();
+  });
+
+  it('keeps Live tail available for a relative linked window', async () => {
+    show('#/logs?logQuery=failed&from=now-24h');
+    expect(await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' })).toBeEnabled();
+  });
+
   it('drops the link on "Browse all logs"', async () => {
     const user = userEvent.setup();
     show('#/logs?logQuery=failed');

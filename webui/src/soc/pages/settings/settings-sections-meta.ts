@@ -224,7 +224,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Chat assistant',
     blurb: 'Live answer mode, per-question limits, and which indicators chat may send to enrichment.',
     icon: MessageSquare,
-    keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'internal domains', 'email'],
+    keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'internal domains', 'email', 'e-mail'],
     ownedKeys: ['chat_agent'],
   },
   {

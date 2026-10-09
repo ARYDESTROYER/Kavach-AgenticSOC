@@ -86,6 +86,10 @@ describe('getChatTopic', () => {
     await expect(getChatTopic('Has Spaces')).rejects.toBeInstanceOf(ApiError);
     expect(calls).toHaveLength(0);
     expect(CHAT_TOPIC_RE.test('settings:data_export')).toBe(true);
+    // The longest console-link id (121 chars) is accepted and requested.
+    const longest = `${'k'.repeat(40)}:${'x'.repeat(80)}`;
+    expect(CHAT_TOPIC_RE.test(longest)).toBe(true);
+    expect(CHAT_TOPIC_RE.test(`${longest}x`)).toBe(false);
   });
 
   it('surfaces 404 and refuses an unreadable or over-long question', async () => {

@@ -15,6 +15,7 @@ import {
   blockView,
   fallbackBlock,
   isDocRef,
+  isEmptyDataBlock,
   isExpiredBlock,
   isInternalRef,
   leafBlocks,
@@ -31,6 +32,7 @@ import {
   type GuideBlock,
   type HeatmapBlock,
   type KpiGroupBlock,
+  type LeafBlock,
   type ReportBlock,
   type TableBlock,
   type TimelineBlock,
@@ -239,8 +241,13 @@ describe('parseBlocks — strings, numbers and provenance', () => {
   });
 
   it('turns non-finite numbers, booleans and numeric strings into null (not measured)', () => {
-    const c = one<ChartBlock>(chart({ series: [{ key: 's', label: 'S', values: [Number.NaN, true] }] }));
-    expect(c.series[0].values).toEqual([null, null]);
+    const c = one<ChartBlock>(
+      chart({
+        x: { kind: 'category', values: ['a', 'b', 'c'] },
+        series: [{ key: 's', label: 'S', values: [Number.NaN, true, 4] }],
+      }),
+    );
+    expect(c.series[0].values).toEqual([null, null, 4]);
     const k = one<KpiGroupBlock>({
       ...VALID.kpi_group,
       items: [
@@ -479,3 +486,52 @@ describe('parseBlocks — limits per container', () => {
   });
 });
 
+describe('parseBlocks — empty data blocks are dropped, never rendered as shells (D3)', () => {
+  const empties: Array<[string, Record<string, unknown>]> = [
+    ['table', { ...VALID.table, rows: [] }],
+    ['chart', chart({ series: [{ key: 's', label: 'S', values: [null, Number.NaN] }] })],
+    ['chart', chart({ x: { kind: 'time', values: [] }, series: [{ key: 's', label: 'S', values: [] }] })],
+    ['heatmap', { ...VALID.heatmap, cells: [] }],
+    ['case_list', { ...VALID.case_list, items: [] }],
+    ['timeline', { ...VALID.timeline, events: [] }],
+    ['mitre', { ...VALID.mitre, techniques: [] }],
+    ['citations', { ...VALID.citations, items: [] }],
+    ['guide', { ...VALID.guide, steps: [], links: [] }],
+  ];
+
+  it.each(empties)('drops an empty %s with reason "empty" and no fallback', (type, raw) => {
+    const { blocks, dropped } = parseBlocks([VALID.markdown, raw, VALID.query]);
+    expect(blocks.map((b) => b.type)).toEqual(['markdown', 'query']);
+    expect(dropped).toEqual([{ path: '2', type, reason: 'empty' }]);
+    expect(isEmptyDataBlock(one<LeafBlock>(VALID[type]))).toBe(false);
+  });
+
+  it('keeps the ids of the blocks after a dropped one (positional on the raw list)', () => {
+    const { blocks } = parseBlocks([{ ...VALID.table, id: undefined, rows: [] }, { ...VALID.query, id: undefined }]);
+    expect(blocks.map((b) => b.id)).toEqual(['b2']);
+  });
+
+  it('drops an empty report leaf, and a report whose every leaf is empty', () => {
+    const report = (leaves: unknown[]) => ({
+      type: 'report',
+      id: 'r1',
+      provenance: 'code',
+      title: 'Hunt report',
+      scope: { sources: [], generated_at: '2026-10-08T10:00:00Z' },
+      sections: [{ id: 's1', heading: 'Evidence', blocks: leaves }],
+    });
+    const mixed = parseBlocks([report([{ ...VALID.table, rows: [] }, VALID.query])]);
+    expect(mixed.blocks).toHaveLength(1);
+    const kept = mixed.blocks[0];
+    expect(kept.type === 'report' && kept.sections[0].blocks.map((b) => b.type)).toEqual(['query']);
+    expect(mixed.dropped).toEqual([{ path: '1.s1.1', type: 'table', reason: 'empty' }]);
+
+    const allEmpty = parseBlocks([report([{ ...VALID.table, rows: [] }, { ...VALID.case_list, items: [] }])]);
+    expect(allEmpty.blocks).toEqual([]);
+    expect(allEmpty.dropped.map((d) => d.reason)).toEqual(['empty', 'empty', 'empty']);
+  });
+
+  it('a legacy table with no rows is not a block', () => {
+    expect(legacyTableBlock({ columns: ['ip'], rows: [], truncated: false })).toBeNull();
+  });
+});

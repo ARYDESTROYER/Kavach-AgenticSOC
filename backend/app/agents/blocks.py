@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import TYPE_CHECKING, Annotated, Any, Iterable, Literal, Union, get_args
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Iterable, Literal, Union, get_args
 
 from pydantic import (
     BaseModel,
@@ -2703,21 +2703,88 @@ _BUILDERS: dict[str, Any] = {
 }
 
 
-def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[str, Any]]:
-    """Materialise ``artifact`` into validated block dicts (one, or none when the
-    artifact cannot form a valid block) in the requested view.
+def _measured(values: Any) -> bool:
+    """Whether a list (or a list of rows) holds at least one finite number."""
+    if not isinstance(values, (list, tuple)):
+        return False
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            if _measured(value):
+                return True
+        elif finite_number(value) is not None:
+            return True
+    return False
 
-    Deterministic; never invents numbers: numbers come only from ``artifact.data``
-    and carry ``artifact.provenance`` (``code``/``source``, never ``ai``). A view the
-    artifact does not offer falls back to the kind's default view; ``top_n`` and
-    ``title`` arrive clamped and display-sanitised from :class:`BlockRefRequest`."""
+
+def _has_items(block: dict[str, Any], key: str) -> bool:
+    items = block.get(key)
+    return isinstance(items, (list, tuple)) and len(items) > 0
+
+
+#: Artifact kinds whose table view is a projection of measured numbers: with no
+#: measured number left, that table is as empty as the chart it stands in for.
+_MEASURED_KINDS = frozenset({"categories", "series", "funnel", "heatmap"})
+
+
+def is_empty_block(block: Any) -> bool:
+    """True for a data block that would show nothing (browser-QA D3): a table with no
+    rows (or, for a projection of measured numbers, no measured number); a chart with
+    no x value, no series or no measured point (``null`` is "not measured", G3, so an
+    all-``null`` chart draws no mark); a heatmap with no row, column or measured cell;
+    a KPI row, case list, timeline, ATT&CK list or citation list with no item; a
+    guide with neither steps nor links. Such a block is never materialised: the
+    answer prose already says the lookup found nothing, and an empty card ("No
+    values to show") only adds noise. The rule gives the same answer in every view
+    of one artifact.
+
+    Zero is a value, not emptiness: a chart of zero counts is data and is kept.
+    Prose, callouts, entity cards, queries and report envelopes are never empty here
+    (a report's emptiness is decided by its resolved leaves)."""
+    if not isinstance(block, dict):
+        return False
+    btype = block.get("type")
+    if btype == "table":
+        if not _has_items(block, "rows"):
+            return True
+        if block.get("artifact_kind") not in _MEASURED_KINDS:
+            return False
+        columns = block.get("columns") if isinstance(block.get("columns"), (list, tuple)) else []
+        numeric = [i for i, c in enumerate(columns) if isinstance(c, dict) and c.get("type") in ("number", "risk")]
+        return not any(
+            i < len(row) and finite_number(row[i]) is not None
+            for row in block["rows"] if isinstance(row, (list, tuple)) for i in numeric)
+    if btype == "chart":
+        x = block.get("x") if isinstance(block.get("x"), dict) else {}
+        series = [s for s in block.get("series") or [] if isinstance(s, dict)]
+        return not _has_items(x, "values") or not any(_measured(s.get("values")) for s in series)
+    if btype == "heatmap":
+        x = block.get("x") if isinstance(block.get("x"), dict) else {}
+        y = block.get("y") if isinstance(block.get("y"), dict) else {}
+        return not _has_items(x, "values") or not _has_items(y, "values") or not _measured(block.get("cells"))
+    if btype in ("kpi_group", "case_list"):
+        return not _has_items(block, "items")
+    if btype == "timeline":
+        return not _has_items(block, "events")
+    if btype == "mitre":
+        return not _has_items(block, "techniques")
+    if btype == "citations":
+        return not _has_items(block, "items")
+    if btype == "guide":
+        return not _has_items(block, "steps") and not _has_items(block, "links")
+    return False
+
+
+def _materialise(artifact: "Artifact", options: MaterialiseOptions) -> tuple[list[dict[str, Any]], bool]:
+    """:func:`to_blocks` plus whether nothing came out because the artifact held no
+    data (``True``: an EMPTY result, left out silently) rather than because it could
+    not form a valid block (``False``: the caller counts it as not available)."""
     kind = getattr(artifact, "kind", None)
     builder = _BUILDERS.get(kind) if isinstance(kind, str) else None
     data = getattr(artifact, "data", None)
     if builder is None or not isinstance(data, dict):
-        return []
+        return [], False
     if getattr(artifact, "provenance", None) not in ("code", "source"):
-        return []  # G5: only a tool-produced artifact can carry numbers
+        return [], False  # G5: only a tool-produced artifact can carry numbers
     views = _views_of(artifact)
     view = options.view if options.view in views else DEFAULT_VIEW[kind]
     try:
@@ -2728,9 +2795,140 @@ def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[st
             raw = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
         raw["allowed_views"] = _honest_block_views(raw, kind)
     except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
-        return []
+        return [], False
+    if is_empty_block(raw):
+        return [], True
     block, _drop = _validate_one(raw, "1", allow_ai_data=False, adapter=_LEAF_BLOCK)
-    return [dump_block(block)] if block is not None else []
+    if block is None:
+        return [], False
+    dumped = dump_block(block)
+    if is_empty_block(dumped):
+        # Validation dropped every item (each one was malformed): nothing to show.
+        return [], True
+    return [dumped], False
+
+
+def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[str, Any]]:
+    """Materialise ``artifact`` into validated block dicts (one, or none when the
+    artifact cannot form a valid block or holds no data) in the requested view.
+
+    Deterministic; never invents numbers: numbers come only from ``artifact.data``
+    and carry ``artifact.provenance`` (``code``/``source``, never ``ai``). A view the
+    artifact does not offer falls back to the kind's default view; ``top_n`` and
+    ``title`` arrive clamped and display-sanitised from :class:`BlockRefRequest`.
+    An artifact with zero rows, points or items (:func:`is_empty_block`) yields no
+    block at all, never an empty shell."""
+    return _materialise(artifact, options)[0]
+
+
+# --- one figure shown once (browser-QA D4) ------------------------------------ #
+_FACT_FIGURES_RE = re.compile(r"^\s*(\d[\d,]*(?:\.\d+)?)(?:\s+of\s+(\d[\d,]*(?:\.\d+)?))?(?:\s|$)")
+
+
+def _figure(value: Any) -> float | None:
+    number = finite_number(value)
+    return None if number is None else round(float(number), 6)
+
+
+def _entity_figures(block: dict[str, Any]) -> set[float]:
+    """Every number an entity card shows: its risk gauge, count tiles, provider
+    scores, and the leading figures of an engine-written fact ("1 of 1 answered").
+    Log-derived (untrusted) facts are not read: they are values, not figures."""
+    figures: set[float] = set()
+    for value in [block.get("risk"),
+                  *(c.get("value") for c in block.get("counts") or [] if isinstance(c, dict)),
+                  *(r.get("score") for r in block.get("reputation") or [] if isinstance(r, dict))]:
+        number = _figure(value)
+        if number is not None:
+            figures.add(number)
+    for fact in block.get("facts") or []:
+        if not isinstance(fact, dict) or fact.get("untrusted") or not isinstance(fact.get("value"), str):
+            continue
+        match = _FACT_FIGURES_RE.match(fact["value"])
+        if match:
+            for group in match.groups():
+                number = _figure(float(group.replace(",", ""))) if group else None
+                if number is not None:
+                    figures.add(number)
+    return figures
+
+
+def kpis_restate_entity(kpis: dict[str, Any], entity: dict[str, Any]) -> bool:
+    """Whether the KPI block ``kpis`` (a ``kpis`` artifact in any view) only repeats
+    figures the entity card ``entity`` already shows: every measured item's value is
+    one of the card's figures and no item adds a delta or a trend. Items that are not
+    measured add nothing either (the card shows the same absence)."""
+    if kpis.get("artifact_kind") != "kpis" or entity.get("type") != "entity":
+        return False
+    data = _artifact_data_from_block(kpis)
+    items = [i for i in (data or {}).get("items") or [] if isinstance(i, dict)]
+    if not items:
+        return False
+    figures = _entity_figures(entity)
+    for item in items:
+        if item.get("delta") or item.get("trend"):
+            return False
+        value = _figure(item.get("value"))
+        if value is not None and value not in figures:
+            return False
+    return True
+
+
+def _step_of(block: dict[str, Any]) -> Any:
+    step = block.get("from_step")
+    return step if isinstance(step, int) and not isinstance(step, bool) else None
+
+
+def drop_restated_kpis(
+    blocks: list[dict[str, Any]], *, call_of: Callable[[dict[str, Any]], Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """``(blocks, dropped ids)`` without the ``kpis`` blocks that only restate an
+    entity card materialised from the SAME tool call in this answer, wherever either
+    sits (top level or a report section): a reputation lookup's score gauge next to
+    its entity card's own gauge shows one number twice. ``call_of`` names a block's
+    tool call (``None`` = unknown, never suppressed); by default its ``from_step``,
+    which is unique within one turn. A report section left with no leaf is removed;
+    a report would never be emptied (its kpis leaves are then kept)."""
+    call_of = call_of or _step_of
+    entities: dict[Any, list[dict[str, Any]]] = {}
+    for leaf in iter_leaf_blocks(blocks):
+        key = call_of(leaf)
+        if leaf.get("type") == "entity" and key is not None:
+            entities.setdefault(key, []).append(leaf)
+    if not entities:
+        return blocks, []
+
+    def restated(block: dict[str, Any]) -> bool:
+        key = call_of(block)
+        return (block.get("artifact_kind") == "kpis" and key is not None
+                and any(kpis_restate_entity(block, e) for e in entities.get(key, ())))
+
+    out: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            out.append(block)
+            continue
+        if block.get("type") == "report":
+            sections = []
+            gone: list[str] = []
+            for section in block.get("sections") or []:
+                leaves = [leaf for leaf in (section or {}).get("blocks") or []]
+                kept = [leaf for leaf in leaves if not (isinstance(leaf, dict) and restated(leaf))]
+                gone.extend(str(leaf.get("id")) for leaf in leaves if isinstance(leaf, dict) and leaf not in kept)
+                if kept:
+                    sections.append({**section, "blocks": kept})
+            if sections and gone:
+                out.append({**block, "sections": sections})
+                dropped.extend(gone)
+            else:
+                out.append(block)
+            continue
+        if restated(block):
+            dropped.append(str(block.get("id")))
+            continue
+        out.append(block)
+    return out, dropped
 
 
 # --- stored blocks back to artifact data (for ``mK.bJ`` view changes) ---------- #
@@ -2941,6 +3139,12 @@ class MaterialisedFinal:
     unresolved: list[str] = field(default_factory=list)
     expired: list[str] = field(default_factory=list)
     resolved_refs: list[str] = field(default_factory=list)
+    #: Refs whose data was empty (zero rows, points or items): left out silently, the
+    #: prose already says the lookup found nothing (no notice line, unlike ``unresolved``).
+    empty: list[str] = field(default_factory=list)
+    #: Refs whose ``kpis`` block only restated an entity card of the same call
+    #: (:func:`drop_restated_kpis`): left out silently, the card shows the figures.
+    restated: list[str] = field(default_factory=list)
 
 
 UNAVAILABLE_NOTICE_ONE = "1 requested item was not available from this turn's results."
@@ -2989,6 +3193,10 @@ def materialise_final_blocks(
     * Model-written ``callout``/``markdown`` become ``provenance: "ai"`` blocks.
     * A ``report`` envelope's leaves are resolved the same way; an envelope with no
       resolved leaf is dropped (the caller adds one notice line).
+    * A ref whose data is empty (zero rows, points or items, :func:`is_empty_block`)
+      yields no block and no notice (``empty``): the prose says the lookup found
+      nothing. A ``kpis`` block that only restates an entity card of the same call is
+      left out the same way (``restated``, :func:`drop_restated_kpis`).
     * Unknown or expired refs never produce numbers: they are counted and ONE quiet
       engine callout says so. ``dropped_requests`` (the parser's drops from
       :func:`parse_final_block_requests`) and the leaves an envelope could not keep
@@ -3017,6 +3225,8 @@ def materialise_final_blocks(
         seen.add(key)
         return False
 
+    origin: dict[str, str] = {}   # block id -> the ref it was materialised from
+
     def resolve(request: Any) -> list[dict[str, Any]]:
         if isinstance(request, BlockRefRequest):
             if request.is_stored:
@@ -3027,6 +3237,9 @@ def materialise_final_blocks(
                 if block is None:
                     out.unresolved.append(request.ref)
                     return []
+                if is_empty_block(block):
+                    out.empty.append(request.ref)   # an older build stored an empty shell
+                    return []
                 block_id = next_id()
                 views = [request.view] if request.view else []
                 views.append(block_view(block) or "")
@@ -3034,6 +3247,7 @@ def materialise_final_blocks(
                     revised = revise_view(block, view, block_id=block_id, title=request.title)
                     if revised is not None:
                         out.resolved_refs.append(request.ref)
+                        origin[block_id] = request.ref
                         return [revised]
                 out.unresolved.append(request.ref)
                 return []
@@ -3041,14 +3255,19 @@ def materialise_final_blocks(
             if entry is None:
                 out.unresolved.append(request.ref)
                 return []
-            made = to_blocks(entry.artifact, MaterialiseOptions(
-                block_id=next_id(), view=request.view, title=request.title,
+            block_id = next_id()
+            made, empty = _materialise(entry.artifact, MaterialiseOptions(
+                block_id=block_id, view=request.view, title=request.title,
                 top_n=request.top_n, from_step=entry.from_step,
             ))
-            if not made:
-                out.unresolved.append(request.ref)
-            else:
+            if made:
                 out.resolved_refs.append(request.ref)
+                origin[block_id] = request.ref
+            elif empty:
+                # Zero rows/points/items: no block and no notice line (browser-QA D3).
+                out.empty.append(request.ref)
+            else:
+                out.unresolved.append(request.ref)
             return made
         if isinstance(request, ModelCalloutRequest):
             block = {"type": "callout", "id": next_id(), "provenance": "ai",
@@ -3106,6 +3325,22 @@ def materialise_final_blocks(
             blocks.append(report)
         elif not duplicate(request, seen_top):
             blocks.extend(resolve(request))
+    # One figure shown once (browser-QA D4): a KPI row that only repeats the entity
+    # card of the same lookup is left out silently. A call is named by the turn its
+    # block came from (this one, or the stored answer ``mK``) and its step there.
+    def call_of(block: dict[str, Any]) -> Any:
+        ref, step = origin.get(str(block.get("id"))), _step_of(block)
+        if ref is None or step is None:
+            return None
+        return (ref.split(".", 1)[0] if ref.startswith("m") else "t", step)
+
+    blocks, restated = drop_restated_kpis(blocks, call_of=call_of)
+    for block_id in restated:
+        ref = origin.get(block_id)
+        if ref is not None:
+            out.restated.append(ref)
+            if ref in out.resolved_refs:
+                out.resolved_refs.remove(ref)
     notes: list[str] = []
     missing = sum(1 for ref in out.unresolved if ref != "report")
     report_failed += len(out.unresolved) - missing

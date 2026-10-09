@@ -464,11 +464,36 @@ export function Transcript({
         </div>
       </div>
       {showJump ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
-          <Button type="button" size="sm" variant="outline" className="pointer-events-auto h-7 shadow-sm" onClick={jumpToLatest}>
-            <ArrowDown aria-hidden />
-            Jump to latest
-          </Button>
+        // At the lane's bottom edge, right-aligned to the prose column (browser-QA D9):
+        // it never sits mid-line over an answer. The overlay reserves the lane's
+        // scrollbar gutters (an overflow box with no overflow), so the grid tracks line
+        // up with the transcript and the composer, and the fade stops at the scrollbar.
+        // In the workspace a short fade from the page background keeps text from being
+        // cut by the control; it is static (nothing animates, so reduced motion holds).
+        <div
+          className={cn(
+            'pointer-events-none absolute inset-x-0 bottom-0 overflow-hidden [scrollbar-gutter:stable_both-edges]',
+            compact ? 'px-1' : 'px-4 sm:px-6',
+          )}
+          data-testid="jump-to-latest-bar"
+        >
+          {compact ? null : (
+            <div aria-hidden className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-background via-background/80 to-transparent" />
+          )}
+          <div className={LANE_GRID}>
+            <div className={cn(CONTENT_COL, 'relative flex justify-end', compact ? 'pb-2' : 'pb-3')}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="pointer-events-auto h-7 gap-1.5 rounded-full bg-background px-3 text-xs shadow-sm"
+                onClick={jumpToLatest}
+              >
+                <ArrowDown aria-hidden />
+                Jump to latest
+              </Button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

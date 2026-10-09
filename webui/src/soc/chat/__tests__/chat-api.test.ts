@@ -225,6 +225,24 @@ describe('GET /api/chat/context', () => {
     expect(context.calibration).toBe(1.2);
 
     calls = [];
+    stubFetch(() =>
+      json({
+        tools: [
+          { name: 'lookup_indicator', label: 'Lookup', scope: 'intel', requires: ['enrichment:read'], allowed: true, available: false },
+          { name: 'mitre_lookup', label: 'ATT&CK', scope: 'intel', requires: [], allowed: true, available: 'no' },
+          { name: 'app_help', label: 'Help', scope: 'docs', requires: [], allowed: true, available: true },
+        ],
+      }),
+    );
+    // Only an explicit `false` marks a tool switched off (SPEC A30); absent = on.
+    const switched = await getChatContext({});
+    expect(switched.tools.map((t) => [t.name, t.allowed, t.available])).toEqual([
+      ['lookup_indicator', true, false],
+      ['mitre_lookup', true, undefined],
+      ['app_help', true, undefined],
+    ]);
+
+    calls = [];
     stubFetch(() => json(null));
     const empty = await getChatContext({ conversationId: 'bad id!' });
     expect(calls[0].url).toBe('/api/chat/context');

@@ -263,15 +263,12 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
         <p className="border-l-2 border-warning px-3 py-1 text-xs leading-relaxed text-muted-foreground" role="note">
           {conv.threadRetention.note}
         </p>
-      ) : conv.threadRetention.trimmedHint ? (
-        // Shortened in place only (no turn missing): a quiet line, not a warning.
-        <p className="text-xs text-muted-foreground" role="note" data-testid="thread-trimmed-hint">
-          {conv.threadRetention.trimmedHint}
-        </p>
       ) : null}
     </>
   );
-  const hasHeader = conv.requestedUnavailable || !!conv.threadRetention.note || !!conv.threadRetention.trimmedHint;
+  // A thread only shortened in place has no thread-level line: each compacted answer
+  // carries its own quiet "Trimmed to fit storage" hint (SPEC A22).
+  const hasHeader = conv.requestedUnavailable || !!conv.threadRetention.note;
 
   const replace = conv.restoring && !engine.items.length ? (
     <LoadingState label="Restoring conversation" description="Loading the saved answers and their evidence." layout="panel" />
@@ -452,6 +449,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
                 contextError={context.error}
                 onRetryContext={context.refresh}
                 canChooseModel={canChooseModel}
+                defaultModel={context.defaultModel}
                 conversationTotals={summary ? { tokens: summary.total_tokens ?? null, cost: summary.total_cost ?? null } : null}
               />
             </div>

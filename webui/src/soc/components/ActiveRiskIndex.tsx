@@ -25,6 +25,8 @@ import { Card } from '@/ui/card';
 import { Skeleton } from '@/ui/skeleton';
 import { RiskGauge } from '@/soc/components/RiskGauge';
 import { HelpTip } from '@/soc/components/HelpTip';
+import { AskAboutThis } from './AskAboutThis';
+import { KPI_TOPICS } from './ask-topics';
 import { ACTIVE_RISK_HELP_TEXT } from '@/soc/components/riskCopy';
 
 /** Comfortable instrument-size bounds for the responsive gauge (bug #5). */
@@ -59,7 +61,11 @@ const Caption: React.FC = () => (
     <h2 className="text-2xs font-semibold uppercase tracking-widest text-foreground">
       Active Risk Index
     </h2>
-    <HelpTip text={ACTIVE_RISK_HELP_TEXT} label="What the Active Risk Index means" />
+    <HelpTip
+      text={ACTIVE_RISK_HELP_TEXT}
+      label="What the Active Risk Index means"
+      footer={<AskAboutThis topic={KPI_TOPICS['active-risk-index']} subject="Active Risk Index" className="pt-1" />}
+    />
   </div>
 );
 

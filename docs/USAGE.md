@@ -658,9 +658,11 @@ ambiguous turn with the same key returns the committed result (or `409
 chat_request_in_progress` while it runs) instead of a second billed turn; Stop is
 `POST /api/chat/turns/{turn_id}/cancel`. An explicit source is strict
 (`422 chat_source_unavailable`, never a silent fallback to Primary), and an unverifiable
-history read or write returns `503 chat_history_unavailable`. Case-scoped turns save only
-their final answer to the case thread (with `cases:comment`) and never enter personal
-history. See `docs/reference/api.md` for the full wire contract.
+history read or write returns `503 chat_history_unavailable`. Case-scoped turns save their
+question and final answer text (no blocks or run log) to the case's discussion thread,
+visible to everyone who can read the case; this needs `cases:comment`, and without it the
+answer reports that it was not saved. They never enter personal history. See
+`docs/reference/api.md` for the full wire contract.
 
 ---
 

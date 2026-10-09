@@ -7,6 +7,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { CountUp } from './CountUp';
+import { AskAboutThis } from './AskAboutThis';
 import { HelpTip } from './HelpTip';
 
 /**
@@ -261,6 +262,12 @@ export interface KpiTileProps {
   /** Accessible label for the help trigger (default `About <label>`). */
   helpLabel?: string;
   /**
+   * A `console_map` KPI topic (`ask-topics.ts`): the help popover then ends with "Ask
+   * about this", which opens a new chat asking that topic's templated question (SPEC
+   * §10.7). Shown only with `help`, and only to a caller who can use chat.
+   */
+  askTopic?: string;
+  /**
    * Told when this tile's help popover opens or closes.
    *
    * A tile can be wrapped in a hover trend card, and the help trigger is INSIDE that
@@ -414,6 +421,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       sparkMinPoints = 5,
       help,
       helpLabel,
+      askTopic,
       onHelpOpenChange,
       breakdown,
       className,
@@ -522,6 +530,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         label={helpLabel ?? `About ${label}`}
         alwaysPopover
         onOpenChange={onHelpOpenChange}
+        footer={askTopic ? <AskAboutThis topic={askTopic} subject={label} className="pt-1" /> : undefined}
         className={clickable ? 'text-muted-foreground/70' : '-my-1 text-muted-foreground/70'}
       />
     ) : null;

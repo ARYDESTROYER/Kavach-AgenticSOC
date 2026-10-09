@@ -205,14 +205,21 @@ def _minutes(stat: Any, key: str = "p50") -> float | None:
     return finite(stat.get(key))
 
 
-def _delta(compare: dict[str, Any], key: str, good: str) -> dict[str, Any] | None:
+def _delta(compare: dict[str, Any], key: str, good: str, *, unit: str = "count") -> dict[str, Any] | None:
+    """A KPI's change versus the previous window, IN THE ITEM'S OWN UNIT (the client
+    formats a delta with the tile's unit, BLOCKS.md ``KpiItem.delta``): a count moves
+    by a count, a rate (stored as a 0..1 ratio, shown in ``percent``) by percentage
+    points, a duration by minutes. Never the relative ``delta_pct``: "+25" next to a
+    count of cases must mean 25 cases, not 25 %. ``None`` when either side is not
+    measured (G3)."""
     entry = compare.get(key) if isinstance(compare, dict) else None
     if not isinstance(entry, dict):
         return None
-    value = finite(entry.get("delta_pct"))
-    if value is None:
+    current, previous = finite(entry.get("value")), finite(entry.get("prev"))
+    if current is None or previous is None:
         return None
-    return {"value": value, "period_label": "% vs previous window", "good_direction": good}
+    change = (current - previous) * (100 if unit == "percent" else 1)
+    return {"value": round(change, 2), "period_label": "vs previous window", "good_direction": good}
 
 
 class SocMetricsTool(ChatTool):
@@ -322,10 +329,13 @@ class SocMetricsTool(ChatTool):
             kpi("open_now", "Open now", open_now.get("count"), bound=not open_now.get("complete", True),
                 context="not windowed"),
             kpi("fp_rate", "False-positive rate", ratio_to_pct(quality.get("false_positive_rate")), "percent",
-                delta=_delta(compare, "false_positive_rate", "down")),
+                delta=_delta(compare, "false_positive_rate", "down", unit="percent")),
             kpi("automation_rate", "Automation rate", ratio_to_pct(quality.get("automation_rate")), "percent",
-                delta=_delta(compare, "automation_rate", "up")),
-            kpi("mttr_p50", "MTTR (median)", _minutes(lifecycle.get("mttr_minutes")), "minutes"),
+                delta=_delta(compare, "automation_rate", "up", unit="percent")),
+            # Lifecycle percentiles are minutes end to end (engine.metrics
+            # ``lifecycle_intervals``): the tile says so, and a 0-minute median is 0 min.
+            kpi("mttr_p50", "MTTR (median)", _minutes(lifecycle.get("mttr_minutes")), "minutes",
+                delta=_delta(compare, "mttr_p50", "down", unit="minutes")),
         ]
         sev = p.get("severity_counts") or {}
         artifacts = [

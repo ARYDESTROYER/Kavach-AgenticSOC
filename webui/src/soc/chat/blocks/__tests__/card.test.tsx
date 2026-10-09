@@ -52,8 +52,22 @@ describe('header', () => {
   });
 
   it('always discloses truncation as top N of M (G4)', () => {
-    show([galleryBlock('top-hosts')]);
+    show([{ ...galleryBlock('top-hosts'), caption: 'Last 24h' } as AnswerBlock]);
     expect(screen.getByTestId('block-truncation')).toHaveTextContent('Showing top 8 of 1,240');
+  });
+
+  it('states truncation once: no footer when the caption already gives the shown-of-total figure', () => {
+    const top = galleryBlock('top-hosts');
+    show([{ ...top, caption: 'Top 8 of 1,240 hosts' } as AnswerBlock]);
+    expect(screen.getByTestId('block-caption')).toHaveTextContent('Top 8 of 1,240 hosts');
+    expect(screen.queryByTestId('block-truncation')).toBeNull();
+  });
+
+  it('frames an entity once: the card draws the border, the entity body does not', () => {
+    show([galleryBlock('ioc')]);
+    const entity = screen.getByTestId('block-entity');
+    expect(entity).not.toHaveClass('border');
+    expect(entity.closest('figure')).toHaveClass('border');
   });
 
   it('captions model-stated data (G5) but not prose', () => {

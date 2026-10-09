@@ -55,6 +55,8 @@ export interface ComposerOptionsProps {
   context: ChatContextInfo | null;
   model: string | null;
   setModel: (model: string | null) => void;
+  /** The configured default model: listed once, as "Default model", never twice. */
+  defaultModel?: string | null;
   streamMode: ChatStreamMode;
   setStreamMode: (mode: ChatStreamMode) => void;
   /** The caller may pick a non-default model (`models:read`). */
@@ -76,6 +78,7 @@ export function ComposerOptions(props: ComposerOptionsProps) {
     context,
     model,
     setModel,
+    defaultModel = null,
     streamMode,
     setStreamMode,
     canChooseModel,
@@ -102,6 +105,9 @@ export function ComposerOptions(props: ComposerOptionsProps) {
   };
 
   const modelLabel = model ? displayText(model, 40) : 'Default';
+  // The default is listed once, as "Default model" (with its name when known).
+  const defaultName = displayText(defaultModel ?? (model ? '' : (context?.model ?? '')), 60);
+  const otherModels = defaultModel ? models.filter((option) => option.value !== defaultModel) : models;
 
   return (
     <DropdownMenu onOpenChange={onOpenChange}>
@@ -135,11 +141,11 @@ export function ComposerOptions(props: ComposerOptionsProps) {
               >
                 <DropdownMenuRadioItem value={DEFAULT_MODEL}>
                   <span className="flex-1">Default model</span>
-                  {context?.model && !model ? (
-                    <span className="ml-2 max-w-[9rem] truncate text-xs text-muted-foreground">{context.model}</span>
+                  {defaultName ? (
+                    <span className="ml-2 max-w-[9rem] truncate text-xs text-muted-foreground">{defaultName}</span>
                   ) : null}
                 </DropdownMenuRadioItem>
-                {models.map((option) => (
+                {otherModels.map((option) => (
                   <DropdownMenuRadioItem key={option.value} value={option.value}>
                     <span className="min-w-0 flex-1 truncate">{displayText(option.value, 60)}</span>
                     {option.provider ? (

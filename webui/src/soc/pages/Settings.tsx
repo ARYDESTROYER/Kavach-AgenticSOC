@@ -56,6 +56,8 @@ import {
 import { LoadingState } from '@/design-system';
 
 import { PageHeader } from '@/soc/components/PageHeader';
+import { AskAboutThis } from '@/soc/components/AskAboutThis';
+import { settingsTopic } from '@/soc/components/ask-topics';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
@@ -771,9 +773,14 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
               <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" aria-hidden />
               <span className="truncate font-medium text-foreground">{activeDef.title}</span>
             </div>
-            <span className={cn('text-xs', activeSectionDirty ? 'text-warning-text' : 'text-muted-foreground')}>
-              {activeSectionDirty ? 'Modified in this section' : 'No unsaved changes in this section'}
-            </span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              {/* "Ask about this" (SPEC §10.7): a new chat asks this section's templated
+                  question; shown only to a caller who can use chat. */}
+              <AskAboutThis topic={settingsTopic(activeDef.id)} subject={activeDef.title} />
+              <span className={cn('text-xs', activeSectionDirty ? 'text-warning-text' : 'text-muted-foreground')}>
+                {activeSectionDirty ? 'Modified in this section' : 'No unsaved changes in this section'}
+              </span>
+            </div>
           </div>
 
           <section className={cn('min-w-0', !isGrid && 'border-b border-border pb-6')}>

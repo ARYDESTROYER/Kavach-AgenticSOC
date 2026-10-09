@@ -23,6 +23,7 @@ import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { UnifiedLogsBody } from '@/soc/components/UnifiedLogsSheet';
 import { useNavigateOptional, useRoute } from '@/soc/router';
+import type { UnifiedLogSourceStatus } from '@/soc/UnifiedLogs.api';
 
 /* -------------------------------------------------------------------------- */
 /* The deep link.                                                              */
@@ -122,7 +123,16 @@ export function windowLabel(from: string | null, to: string | null): string {
  * What the linked view was opened with, above the ONE shared log browser (which starts
  * on exactly this query, window and source and stays editable).
  */
-export function LinkedQueryHeader({ link, onClear }: { link: LogsDeepLink; onClear: () => void }) {
+export function LinkedQueryHeader({
+  link,
+  onClear,
+  sourceName = null,
+}: {
+  link: LogsDeepLink;
+  onClear: () => void;
+  /** The linked source's configured name, once a read has resolved it. */
+  sourceName?: string | null;
+}) {
   return (
     <section
       aria-label="Linked query"
@@ -144,8 +154,18 @@ export function LinkedQueryHeader({ link, onClear }: { link: LogsDeepLink; onCle
           <dt className="text-muted-foreground">Window</dt>
           <dd className="tabular-nums">{windowLabel(link.from, link.to)}</dd>
           <dt className="text-muted-foreground">Source</dt>
-          <dd className="min-w-0 truncate">
-            {link.sourceId ? <span className="font-mono text-xs">{link.sourceId}</span> : 'All browse-capable sources'}
+          <dd className="min-w-0 truncate" title={link.sourceId ?? undefined}>
+            {/* The operator's name for the source (plain text, #9); its id only until a
+                read resolves it, or if the source is no longer listed. */}
+            {link.sourceId ? (
+              sourceName ? (
+                sourceName
+              ) : (
+                <span className="font-mono text-xs">{link.sourceId}</span>
+              )
+            ) : (
+              'All browse-capable sources'
+            )}
           </dd>
         </dl>
       </div>
@@ -183,6 +203,19 @@ export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps
   const [dismissed, setDismissed] = React.useState(false);
   React.useEffect(() => setDismissed(false), [link]);
   const active = link && !dismissed ? link : null;
+  // The linked source's name, from the browser's own per-source status.
+  const [sourceName, setSourceName] = React.useState<string | null>(null);
+  const linkedSourceId = active?.sourceId ?? null;
+  React.useEffect(() => setSourceName(null), [linkedSourceId]);
+  const onSources = React.useCallback(
+    (sources: UnifiedLogSourceStatus[]) => {
+      if (!linkedSourceId) return;
+      const match = sources.find((s) => s.source_id === linkedSourceId);
+      const name = match?.source_name?.trim();
+      if (name) setSourceName(name.slice(0, 120));
+    },
+    [linkedSourceId],
+  );
 
   return (
     <PageContainer variant="wide" className="space-y-6">
@@ -205,9 +238,11 @@ export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps
           initialTo={active.to ?? undefined}
           initialWindowLabel={windowLabel(active.from, active.to)}
           sourceId={active.sourceId ?? undefined}
+          onSources={onSources}
           header={
             <LinkedQueryHeader
               link={active}
+              sourceName={sourceName}
               onClear={() => {
                 setDismissed(true);
                 // Drop the deep link from the hash so a refresh shows the normal browser.

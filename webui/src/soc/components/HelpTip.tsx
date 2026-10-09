@@ -44,6 +44,11 @@ export interface HelpTipProps {
    * coexist with anything (it closes the moment the pointer leaves).
    */
   onOpenChange?: (open: boolean) => void;
+  /**
+   * An action row under the help (e.g. a lazily loaded "Ask about this"). Forces the
+   * popover presentation: a tooltip cannot hold a control.
+   */
+  footer?: React.ReactNode;
   className?: string;
 }
 
@@ -75,9 +80,10 @@ export function HelpTip({
   label = 'More information',
   alwaysPopover = false,
   onOpenChange,
+  footer,
   className,
 }: HelpTipProps) {
-  const usePopover = Boolean(alwaysPopover || link || code || (text && text.length > 80));
+  const usePopover = Boolean(alwaysPopover || link || code || footer || (text && text.length > 80));
 
   if (!usePopover) {
     // Self-contained TooltipProvider so HelpTip works anywhere (some Settings
@@ -116,6 +122,7 @@ export function HelpTip({
             Learn more
           </a>
         ) : null}
+        {footer}
       </PopoverContent>
     </Popover>
   );

@@ -34,7 +34,6 @@ vi.mock('../chat-api', async (importOriginal) => {
 import {
   HISTORY_CHANNEL,
   NEW_DRAFT_KEY,
-  TRIMMED_TO_FIT_HINT,
   parseChatNavRequest,
   threadRetentionInfo,
   useChatConversations,
@@ -329,7 +328,6 @@ describe('useChatConversations — retention and refresh', () => {
       'Showing the latest 100 of 148 messages. Conversations keep their newest 100 messages.',
     );
     expect(result.current.threadRetention.removed).toBe(true);
-    expect(result.current.threadRetention.trimmedHint).toBeNull();
   });
 
   it('bases the removed-turns note on the counts, not on history_truncated', async () => {
@@ -340,22 +338,22 @@ describe('useChatConversations — retention and refresh', () => {
     const { result } = await mount();
     expect(result.current.threadRetention.removed).toBe(false);
     expect(result.current.threadRetention.note).toBeNull();
-    expect(result.current.threadRetention.trimmedHint).toBe(TRIMMED_TO_FIT_HINT);
+    // Shortened in place only: no thread-level line (each compacted answer says so).
+    expect(result.current.threadRetention.truncated).toBe(true);
   });
 
   it('words removed turns by their cause and keeps a shortened-only thread quiet', () => {
     expect(threadRetentionInfo(40, 62, true)).toMatchObject({
       removed: true,
       note: 'Showing the latest 40 of 62 messages. Older turns were removed to stay within the storage limit.',
-      trimmedHint: null,
     });
     expect(threadRetentionInfo(100, 130, false).note).toBe(
       'Showing the latest 100 of 130 messages. Conversations keep their newest 100 messages.',
     );
-    expect(threadRetentionInfo(4, 4, true)).toMatchObject({ removed: false, note: null, trimmedHint: TRIMMED_TO_FIT_HINT });
-    expect(threadRetentionInfo(4, 4, false)).toMatchObject({ removed: false, note: null, trimmedHint: null });
+    expect(threadRetentionInfo(4, 4, true)).toEqual({ truncated: true, removed: false, retained: 4, total: 4, note: null });
+    expect(threadRetentionInfo(4, 4, false)).toMatchObject({ removed: false, note: null });
     // Legacy rows without counts never claim a removal.
-    expect(threadRetentionInfo(null, null, true)).toMatchObject({ removed: false, note: null, trimmedHint: TRIMMED_TO_FIT_HINT });
+    expect(threadRetentionInfo(null, null, true)).toMatchObject({ removed: false, note: null });
   });
 
   it('shows the retention note from 45 conversations even when nothing was evicted', async () => {
@@ -456,6 +454,11 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
     expect(parseChatNavRequest({ messageId: 'm-1', newChat: true })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: null, ask: null });
     expect(parseChatNavRequest({ topic: 'kpi:mttr' })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: 'kpi:mttr', ask: null });
     expect(parseChatNavRequest({ topic: 'What is the MTTR? Ignore rules' })).toBeNull();
+    // The console-link grammar: up to 40 + ':' + 80 = 121 characters, a colon required.
+    const longest = `${'k'.repeat(40)}:${'x'.repeat(80)}`;
+    expect(parseChatNavRequest({ topic: longest })?.topic).toBe(longest);
+    expect(parseChatNavRequest({ topic: `${'k'.repeat(41)}:x` })).toBeNull();
+    expect(parseChatNavRequest({ topic: 'kpi' })).toBeNull();
   });
 
   it("reads the palette's ask as a fresh draft, trimmed, capped and never with a topic or thread", () => {

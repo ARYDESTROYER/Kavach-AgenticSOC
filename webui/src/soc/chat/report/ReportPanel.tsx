@@ -10,7 +10,8 @@
  * One scroll region, no tabs:
  *   header   editable title · template · n/40 · ⋯ (Open in Reports library, Export ▸,
  *            Delete) · close
- *   summary  "Generate summary · ≈ N tokens · ≈ $X" from the server's dry run; then the
+ *   summary  "Generate summary" with "≈ N tokens · ≈ $X" from the server's dry run as its
+ *            caption (and accessible description); then the
  *            AI-written text, next steps, "AI-generated; verify before acting" and
  *            "Out of date — Regenerate" once `based_on_version` lags the report version
  *   items    collapsed cards (expand to see the snapshot, rendered by the lazy answer
@@ -601,12 +602,20 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     }
   };
 
-  const estimateLabel = (() => {
-    const parts = [stale ? 'Regenerate' : 'Generate summary'];
+  // The dry run's figure sits beside the action as a quiet caption (and is the button's
+  // description), so the action itself never truncates in a narrow panel.
+  const estimateText = (() => {
+    const parts: string[] = [];
     if (estimate && estimate.total_tokens > 0) parts.push(`≈ ${tokens(estimate.total_tokens)} tokens`);
     if (estimate && typeof estimate.cost === 'number') parts.push(`≈ ${usd(estimate.cost)}${estimate.simulated ? ' simulated' : ''}`);
     return parts.join(' · ');
   })();
+  const estimateId = `${ids.summary}-estimate`;
+  const estimateCaption = estimateText ? (
+    <span id={estimateId} className="text-xs tabular-nums text-muted-foreground" data-testid="report-summary-estimate">
+      {estimateText}
+    </span>
+  ) : null;
 
   /* ------------------------------------------------------------- render -- */
   const title = report?.title ?? 'Report';
@@ -766,25 +775,37 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                 <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="report-summary-stale">
                   <span className="font-medium text-warning-text">Out of date</span>
                   <span className="text-muted-foreground">— the report changed after this summary was written.</span>
-                  <Button variant="outline" size="sm" className="h-7" disabled={summaryBusy} onClick={() => void generate()}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    disabled={summaryBusy}
+                    onClick={() => void generate()}
+                    aria-describedby={estimateText ? estimateId : undefined}
+                  >
                     <RefreshCw aria-hidden className={cn(summaryBusy && 'animate-spin motion-reduce:animate-none')} />
-                    {estimateLabel}
+                    Regenerate
                   </Button>
+                  {estimateCaption}
                 </div>
               ) : null}
             </div>
           ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 max-w-full justify-start"
-              disabled={summaryBusy || count === 0}
-              onClick={() => void generate()}
-              data-testid="report-generate-summary"
-            >
-              <Sparkles aria-hidden />
-              <span className="truncate">{summaryBusy ? 'Writing the summary…' : estimateLabel}</span>
-            </Button>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                disabled={summaryBusy || count === 0}
+                onClick={() => void generate()}
+                aria-describedby={estimateText && !summaryBusy ? estimateId : undefined}
+                data-testid="report-generate-summary"
+              >
+                <Sparkles aria-hidden />
+                {summaryBusy ? 'Writing the summary…' : 'Generate summary'}
+              </Button>
+              {summaryBusy ? null : estimateCaption}
+            </div>
           )}
           {count === 0 ? <p className="text-xs text-muted-foreground">Add items before generating a summary.</p> : null}
           {summaryError ? (

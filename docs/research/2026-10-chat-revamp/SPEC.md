@@ -366,7 +366,9 @@ from a policy refusal (A29).
 ### 4.6 Case-scoped entry point (#5)
 
 Same engine and toolbox; `case_id` defaults into `get_case`, `explain_decision` and
-`audit_search`. Only the final `answer` (≤ 8 000 chars) is persisted to the case thread. The route
+`audit_search`. The analyst's question (a `human` message) and the final `answer` text (an `ai`
+message), each ≤ 8 000 chars and without blocks, steps or usage, are persisted to the case
+thread, where every reader of the case sees them. The route
 passes `can_comment_case = cases:comment grant`; the engine kwarg defaults to True for direct
 callers. `_persist_case_turn` keeps its signature and gains keyword-only `require_existing=True`;
 it skips writing when the case is missing or the grant is absent, and the response carries
@@ -706,7 +708,8 @@ fallback, never throw; G10 interactions limited to BLOCKS.md amendment 3.
 `stacked_bar` and `donut` are offered only where the values add up (A15). Series order is
 deterministic (descending total, ties by label) so colours are stable;
 `--chart-1..7` with `--chart-8` for "Other". Model-requested `top_n`/`title` are clamped and
-display-sanitised.
+display-sanitised. An artifact with no rows, points or items materialises no block, and a KPI row
+that only restates an entity card of the same call is left out (A34).
 
 ### 7.4 Limits
 
@@ -738,6 +741,20 @@ segments; table ≤ 12 columns × ≤ 200 rows (≤ 10 rows inline, "View all" o
   The transcript distinguishes "Older turns were removed to stay within the storage limit" from
   the 100-message retention note by message counts, not by `history_truncated` (A22). Every KV
   document stays mapping-safe on Elasticsearch (A32).
+- **Partition form, per backend (A32).** Both partition forms are always read; the form written
+  depends on the KV backend (`case_thread.opaque_rows_for`). Storage form 3 (opaque rows) is
+  written on Elasticsearch only, for chat partitions and the case-thread document alike, and is
+  one-way: an older build reads an empty history and thread set there, and its next write drops
+  them. PostgreSQL and SQLite keep writing the keyed form 2, so the supervised image-only rollback
+  keeps threads and transcripts; the older build's first write to a chat partition still drops the
+  conversation-level `pinned`, `report_id`, `time_range` and usage totals, which its model does
+  not know. Nor does it know the pin exemption: its first saved answer for a user holding more
+  than 50 conversations (up to 50 unpinned + 10 pinned) re-sorts them by `updated_at` and keeps 50,
+  deleting the oldest by last activity, pinned ones included (pinning never bumps `updated_at`, so
+  old pinned threads are the likeliest victims). The release notes, `DEPLOY.md`, the upgrades page
+  and known limitations say so and tell operators to have users export and delete the extras
+  before a rollback. The frozen released codec in `test_chat_storage_rollback.py` must model that
+  50-conversation eviction, with a test that pins the outcome for a user holding pinned extras.
 - **Summary fields.** `ChatConversationSummary` gains `pinned`, `report_id`, `time_range`,
   `total_tokens`, `total_cost`, `usage_turns` (cumulative, incremented in `complete_exchange`, so
   they survive trimming; legacy rows null → "—").
@@ -924,9 +941,10 @@ While running: the run log sits expanded under the user turn with a live header 
 lookups · 1.2k tokens · $0.002"); rows are one per tool call or parallel group (status icon +
 text: Done, Failed, Timed out, Denied, Skipped, Stopped; label; param chips incl. effective window
 and source; summary; duration; rows/basis/coverage; expandable exact query as untrusted code).
-Model steps add no rows (their tokens show on the header); the final step is one "Writing the
-answer" row. When answer text starts (first `text.delta`, or `turn.done` in Live steps) the log
-collapses into the meta row.
+Model steps add no rows (their tokens show on the header) except the step the turn is waiting on
+("Thinking", or "Writing the answer" for a final-only step), the turn's last step ("Wrote the
+answer") and a failed or timed-out call ("Model call failed"). When answer text starts (first
+`text.delta`, or `turn.done` in Live steps) the log collapses into the meta row.
 
 Completed order: **answer** (Markdown subset) → **blocks** (lazy; one card chrome per block: title,
 scope caption, provenance tag, one visible "Add to report" icon and ⋯ with Expand, Show as <view>,
@@ -941,7 +959,8 @@ disclosure listing citations and console links; disallowed links as plain text w
 Right-aligned icon actions: Copy, Add to report, Ask again — always visible on the latest turn; on
 older turns shown on hover or focus-within (opacity, so they stay focusable; space reserved; A25). Under the meta row, one
 quiet line when relevant: memory echo or proposal ("Remember this" only with `memory:manage`),
-"Not saved · Run again to save" (a new, billed run; A25). Product-help answers carry a "Product help" label. Target: ≤ 40 px of
+the not-saved line ("Not saved", the notice sentence, and "Run again to save" when retryable: a
+new, billed run; A25). Product-help answers carry a "Product help" label. Target: ≤ 40 px of
 chrome per historical turn. Replayed turns always render collapsed.
 
 Notice placement: partial, denied, timeout, provider, breaker, cancelled, unsupported → one callout
@@ -949,7 +968,9 @@ at the top of the answer (Retry only if retryable); cap → a "Continue where th
 (≈ +N tokens)" chip that sends `origin: "continue"`, `continue_of`; `turn.error` without a
 response → an error turn with "Retry same request" (same key); budget approaching/reached known
 from `/chat/context` → one alert above the composer before sending (Send disabled when
-`on_exceed=block`); at most one composer-level alert.
+`on_exceed=block`, which only a `models:read` viewer can see: without it `budget` is absent,
+Send stays enabled, and the server answers a help question at $0 (§5.4.1) or returns the
+`budget` notice); at most one composer-level alert.
 
 Scrolling: on send, scroll so the user turn sits at the lane top with a 48 px peek of the previous
 turn; follow-latest (≤ 72 px from the bottom) only until the turn's top reaches the lane top;
@@ -1027,7 +1048,7 @@ A14). Chat honours `conversationId` as a
 requested selection: select it, scroll to `messageId`, highlight for 2 s; if absent, the inline
 notice "This conversation is no longer available (deleted or removed by the 50-conversation
 limit)". "Open in Cases" is offered only when the target can filter by the exact ids in the block.
-`topic` (from KPI help and Settings section headers: "Ask about this") starts a new chat with a
+`topic` (from KPI help and Settings section headers: "Ask about this", A33) starts a new chat with a
 templated question resolved from `console_map` topics through `GET /api/chat/topics/{topic_id}`
 and sent with `origin: "starter"` (A7) and the topic id itself (`ChatRequest.topic`, A28); the
 page never sends free text.
@@ -1200,7 +1221,7 @@ order. Packages report a Journal entry; the orchestrator commits.
 
 ## 13. Amendments recorded during implementation
 
-Decisions taken while building waves 1–3, recorded so the contract matches the code. Each names
+Decisions taken while building waves 1–5, recorded so the contract matches the code. Each names
 the section it amends; the inline text above points here.
 
 **A1 — Help Center links (§3.5, BLOCKS amendment 5).** The doc-link grammar is
@@ -1250,7 +1271,8 @@ value keeps its unit spelled out in `sr-only` text.
 **A7 — "Ask about this" (§10.7).** `NavOpts.topic` makes the chat page call
 `GET /api/chat/topics/{topic_id}` (`models.ChatTopicQuestion {topic, question}` from
 `app.knowledge.topic_question`; 404 for an unknown id) and send the returned question with
-`origin: "starter"` in a new chat. The page never sends free text for a topic.
+`origin: "starter"` in a new chat. The page never sends free text for a topic. The topic id
+grammars and the entry points that ship are in A28 and A33.
 
 **A8 — Starters (§8, §10.5).** `GET /api/chat/context` returns `starters: ChatStarter[]`
 (`{id, label, description, prompt, tools[]}`; ids `investigate`, `hunt`, `posture`,
@@ -1301,8 +1323,11 @@ EGRESS cap: every stored `lookup_indicator` step that may have sent the indicato
 party counts, whether or not a provider answered (an `ok` step unless `rows`, the structured
 providers-queried count, is 0; a `timeout` step; an older step without `rows`). A provider
 error, timeout or 429 still received the indicator. The rule reads the stored `rows`, never the
-summary text. Within one turn the conversation count lags by the released failures (the ledger
-releases one slot for both counts); the next turn's replay counts them.
+summary text. Within a turn, a lookup that may have left the deployment
+(`taint.lookup_left_deployment`, the same rule the replay applies) gives back only its per-turn
+slot (`TaintLedger.release_lookup(egressed=True)`); the conversation cap counts it immediately,
+by the same rule as replay. A lookup that cannot have left the deployment (refused, cancelled, or
+no provider queried) gives both back.
 
 **A14 — Open in Logs (§10.3, §10.7, BLOCKS amendment 3).** Every block may carry `open_in`, an
 `InternalRef` to the EXACT console view of its data. `InternalRef.opts` gains the Logs deep-link
@@ -1437,9 +1462,13 @@ every split reference width is 8 px narrower than first drafted: 1280/nav 64 →
   thread title → h3 turns.
 - Older turns reveal their icon actions with opacity on hover or focus-within, never
   `visibility: hidden`, so the actions stay focusable.
-- The not-saved line reads "Not saved · Run again to save": it runs the question again and
-  bills it again (there is no save-only retry, A21). A settled turn whose `not_saved` notice is
-  retryable retries with the SAME idempotency key, so the case-thread append is deduplicated.
+- The not-saved line reads "Not saved", then the `not_saved` notice sentence (which therefore
+  must not repeat the label), then, only when the notice is retryable (a store error), "Run again
+  to save · asks the model again and uses tokens again": it runs the question again and bills it
+  again (there is no save-only retry, A21). A settled turn whose `not_saved` notice is retryable
+  retries with the SAME idempotency key, so the case-thread append is deduplicated. The save
+  outcome must stay visible when the answer also carries another notice (partial, timeout, cap,
+  denied, policy); see the open item in A34.
 - The transcript is `role="log"` with an explicit `aria-live="off"`: the role is implicitly
   polite and would read every streamed delta. Announcements go through the shell announcer only.
 
@@ -1457,8 +1486,10 @@ every split reference width is 8 px narrower than first drafted: 1280/nav 64 →
   composer width "Ask… / for commands, @ to scope" (one line, so the composer stays ≤ 88 px at
   rest); the Case Manager composer, which has no menus, "Ask about this case".
 - The control row is 32 px with 28 px chips. Below 560 px the Scope and `@` chips merge into
-  "Scope · n" and a non-default model chip turns icon-only (still removable, named by its title
-  and sr-only text).
+  "Scope · n", the Read-only chip shows only its lock (its accessible name, "Read-only. What can
+  the assistant access?", is unchanged), and a non-default model chip turns icon-only (still
+  removable, named by its title and sr-only text). The access popover itself is titled "What the
+  assistant can access".
 - Options → Model lists only models whose `/api/models` capabilities include chat.
 - When `/chat/context` fails with nothing cached, the empty state and the access popover show one
   line, "Couldn't load what the assistant can access.", with Retry; never endless skeletons.
@@ -1504,19 +1535,40 @@ text: the route puts it on `ChatToolContext.topic`, `app_help` defaults its topi
 that topic's glossary sections lead retrieval, and the $0 Help Center fallback (§5.4.1) pins the
 same sections. Like the other revamp fields it joins the idempotency fingerprint only when set, so
 a body without it fingerprints exactly as before.
+Two grammars, one length bound. A console-map topic id (what `NavOpts.topic` navigates with and
+`GET /api/chat/topics/{topic_id}` accepts) is the console-link id grammar `<family>:<anchor>`
+(`models._CONSOLE_LINK_ID_PATTERN`, `^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$`, at most 121
+characters). `ChatRequest.topic` accepts a superset: at most 121 characters
+(`models.CHAT_TOPIC_MAX_CHARS`) of `[a-z0-9_:.-]` (`models.CHAT_TOPIC_PATTERN`, colon not
+required), so every console-map id passes and a 422 never fails a turn over a retrieval hint.
+The client mirrors both in `webui/src/soc/chat/topic.ts` (`CONSOLE_TOPIC_RE`,
+`REQUEST_TOPIC_RE`) and drops a value outside the request grammar rather than sending it.
 
 **A29 — Policy refusals (§4.5, §4.8).** A lookup refused by POLICY (a private, reserved or
 internal indicator, an invalid kind, or a value that came neither from the analyst nor from this
-turn's evidence) is still a `denied` step, but the turn notice says "Some lookups were not run
-because policy does not allow them…" rather than "…need permissions you do not have", because no
-grant would help. A turn with both kinds says so. The wire kind stays `denied`, so older clients
-keep working.
+turn's evidence) is still a `denied` step, but the turn notice names policy rather than missing
+permissions, because no grant would help. The templates (`chat_protocol.NOTICE_MESSAGES`) are
+generic on purpose: the reasons differ per lookup, so the notice names none of them (the run log
+shows each step's reason) and can never call an e-mail address "private".
+- `policy`: "Some lookups were not run because policy does not allow them: some values are never
+  sent to outside services on this deployment. The run log shows the reason for each one."
+- `denied_policy` (a turn with both kinds): "Some lookups were not run: some need permissions
+  you do not have, and policy does not allow the others. The run log shows the reason for each
+  one."
+- `denied` (grants only) keeps "Some lookups were not run because they need permissions you do
+  not have."
+
+All three map to the wire kind `denied`, so older clients keep working.
 
 **A30 — Tools switched off by configuration (§4.3).** A tool the caller holds the grants for but
 the deployment switched off (`lookup_indicator` with `max_indicator_lookups == 0`) is left out of
 the signatures like an ungranted tool, and the prompt adds one trusted line, "Turned off on this
 deployment: <tools>", so an answer says it is turned off rather than naming a grant the caller
-already holds. `ChatToolbox.disabled` lists them.
+already holds. `ChatToolbox.disabled` lists them. In `GET /api/chat/context`,
+`ChatToolInfo.available` (absent = true, for older servers) is false for such a tool; `allowed`
+stays grants-only, so a switched-off tool can be `allowed: true, available: false`. The access
+popover then says "Turned off on this deployment" instead of a grant message, and the `/`
+commands and starters that need it are not offered.
 
 **A31 — The Chat assistant settings section (§4.2).** `chat_agent` is edited in Settings → General
 → Chat assistant (`settings:chat_agent`): the default live mode and whether typed-out answers are
@@ -1532,6 +1584,71 @@ data (conversation ids, idempotency keys, case ids) as object keys. Both partiti
 always read; the form written depends on the KV backend (`case_thread.opaque_rows_for`). On
 Elasticsearch, chat conversation partitions and case threads write each record as one opaque
 canonical-JSON string in a fixed array (storage form 3), which is one-way: an older build reads
-an empty history there. On PostgreSQL and SQLite they keep writing the keyed form 2, which every
-released build reads, so the supported image-only rollback keeps its chat history. Report
-documents use fixed, `report_`-prefixed fields with opaque JSON strings on every backend.
+an empty history and case-thread set there, and its next write to that document drops them. The
+whole document is rewritten in form 3 on its first write, so this covers records written before
+the upgrade too. On PostgreSQL and SQLite they keep writing the keyed form 2, which every
+released build reads, so the supported image-only rollback keeps its chat history and case
+threads. An older build there re-serialises a chat partition through its older model, so its
+first write to a partition drops each conversation's `pinned`, `report_id`, `time_range`,
+`total_tokens`, `total_cost` and `usage_turns`; messages, including their opaque
+`presentation_json`, survive. Its 50-conversation eviction has no pin exemption: on its first
+saved answer for a user with more than 50 conversations (this build allows 50 unpinned plus 10
+pinned), it keeps the 50 most recent by `updated_at` and deletes the rest, pinned ones included,
+so the rollback notes ask users to export and delete the extras first. Report documents use
+fixed, `report_`-prefixed fields with opaque JSON strings on every backend.
+
+**A33 — "Ask about this" entry points (§10.7, A7, A28).** Two console surfaces send a topic, both
+through one `AskAboutThis` action (`soc/components/AskAboutThis.tsx`) that navigates
+`('chat', {newChat: true, topic})` and renders only for a caller with `cases:read` (the chat
+grant) inside the app router: the help popover of an Overview KPI (ids from `ask-topics.ts`
+`KPI_TOPICS`, `kpi:<metric>`), passed as `KpiTile.askTopic` for the KPI tiles and straight into
+`HelpTip`'s `footer` by the three cards that own their help (`ActiveRiskIndex`, `HumanVsAiCard`,
+`NoiseFunnel`), and the Settings page's active-section context line (`settings:<section id>`).
+Every id either sends must be a `console_map` topic that fits both grammars
+(`ask-topics.contract.test.ts`). `HelpTip` gains only an opaque `footer` slot, so the entry chunk
+carries no chat code for it. Analytics tiles, Settings cards and other pages carry no entry point
+in 0.1.x; a new one is added with its topic ids in the console map and named in
+`docs/analyst/chat.md`.
+
+**A34 — Wave-5 answer quality (§4.3, §7.3, §10.3, BLOCKS amendments 20–23).** Decisions from
+the wave-5 browser review.
+- **Empty blocks are never materialised.** `blocks.is_empty_block` is true for a table with no
+  rows (or, when it projects measured numbers from a `categories`, `series`, `funnel` or
+  `heatmap` artifact, no measured number), a chart with no x value, no series or no measured
+  point, a heatmap with no row, column or measured cell, and a KPI row, case list, timeline,
+  ATT&CK list, citation list or guide with nothing in it. `blocks._materialise` returns no block
+  for such an artifact in every view, and `materialise_final_blocks` lists the ref in `empty`
+  rather than `unresolved`, so no "could not be shown" notice line is added: the prose says the
+  lookup found nothing. Zero is a value: a chart of zero counts is kept; `null` is "not measured"
+  (G3), so an all-`null` chart is empty. Prose, callouts, entity cards, queries and report
+  envelopes are never empty under this rule (a report is judged by its resolved leaves). The
+  client applies the same rule to every parsed block, stored answers and report leaves included
+  (`schema.ts` `isEmptyDataBlock`, dropped with reason `empty` and no fallback; a report whose
+  every leaf is empty is dropped whole).
+- **One figure shown once.** A `kpis` block that only restates an entity card materialised from
+  the SAME tool call (every measured value is one of the card's figures, and no item adds a delta
+  or a trend) is left out, at top level or inside a report section
+  (`blocks.drop_restated_kpis`, applied in `materialise_final_blocks` and `_default_blocks`; the
+  ref is listed in `restated`, silently). A section left with no leaf is removed; a report is
+  never emptied by it.
+- **Prose rules (`CHAT_AGENT_SYSTEM` Style; the Demo planner follows them).** With a report in
+  `blocks`, the answer text is a lead of one to three sentences (the headline finding and what the
+  report covers); the Brief holds the detail and the prose never repeats its sections. Prose
+  names a campaign by its name or shared entity and a case by its id plus what happened to whom;
+  long machine ids stay in blocks and links. A block whose numbers another block already shows,
+  or a lookup that found nothing, gets no block. Durations keep the unit their result states.
+- **Units.** `KpiItem.delta.value` is in the item's own unit (cases for a count, percentage points
+  for a `percent`, minutes for a `minutes` duration), never the relative `delta_pct`; its
+  `period_label` is "vs previous window". A zero duration reads in its unit ("0 min"), and a
+  positive minutes or hours value under one second reads "< 1 min".
+- **Help Center link labels.** A `guide` link to a `DocRef` carries the section title alone; the
+  client adds the "Read:" verb once (`format.ts` `plainDocTitle` removes a stored prefix from
+  answers saved before this change). A title or doc already listed is not repeated.
+- **Captions are prose.** KPI `context` captions and entity facts render in the sans muted
+  caption style; mono is kept for identifiers and code.
+- **Open item: the case-thread save outcome.** `chat.py` attaches the `not_saved` notice only
+  when the response has no other notice, so a case answer that also carries `partial`,
+  `timeout`, `cap` or `denied` shows no not-saved line. The save outcome must be carried apart
+  from the top notice (for example an additive `ChatResponse.case_saved: false` that the
+  not-saved line reads), with a test for a denied lookup plus `can_comment=False`, and the
+  `not_saved` notice sentence must not repeat the "Not saved" label (A25).

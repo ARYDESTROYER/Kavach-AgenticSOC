@@ -22,6 +22,7 @@ import {
   fileStamp,
   formatDelta,
   formatDurationMs,
+  plainDocTitle,
   formatTick,
   formatUtc,
   formatValue,
@@ -58,6 +59,28 @@ describe('formatValue', () => {
     expect(formatValue(12840, 'count')).toBe('12,840');
     expect(formatDurationMs(250)).toBe('250 ms');
     expect(formatDurationMs(3 * 86_400_000)).toBe('3 d');
+  });
+
+  it('formats a duration in its own unit: zero and slivers never read as milliseconds (D8)', () => {
+    expect(formatValue(0, 'minutes')).toBe('0 min');
+    expect(formatValue(0, 'hours')).toBe('0 h');
+    expect(formatValue(0, 'seconds')).toBe('0 s');
+    expect(formatValue(0, 'ms')).toBe('0 ms');
+    // A positive value under one second in a minutes or hours unit.
+    expect(formatValue(0.004, 'minutes')).toBe('< 1 min');
+    expect(formatValue(0.0001, 'hours')).toBe('< 1 min');
+    // Seconds and milliseconds keep their sub-second precision.
+    expect(formatValue(0.5, 'seconds')).toBe('500 ms');
+    expect(formatValue(1.5, 'minutes')).toBe('1.5 min');
+    expect(formatValue(90, 'minutes')).toBe('1.5 h');
+    expect(formatTick(0, 'minutes')).toBe('0 min');
+  });
+
+  it('strips a stored "Read:" prefix from a Help Center title (D1)', () => {
+    expect(plainDocTitle('Read: Pull sources › Supported connectors')).toBe('Pull sources › Supported connectors');
+    expect(plainDocTitle('read:Pull sources')).toBe('Pull sources');
+    expect(plainDocTitle('Pull sources')).toBe('Pull sources');
+    expect(plainDocTitle('Reading the funnel')).toBe('Reading the funnel');
   });
 
   it('compacts axis ticks', () => {

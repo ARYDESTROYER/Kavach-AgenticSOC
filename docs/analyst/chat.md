@@ -44,16 +44,16 @@ The composer has one row of controls under the text box:
 
 | Control | What it does |
 |---|---|
-| **Read-only** | Opens *What can the assistant access?*: every lookup, its data source, the permission it needs, and whether you have it. |
-| Scope | The log source and time range in one chip, for example "Wazuh · 24h". The range applies to every windowed lookup, and the answer states the window it used. |
+| **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads "Turned off on this deployment". |
+| Scope | The log source and time range in one chip, for example "Wazuh · 24h". Lookups cover the last 24 hours unless your question names another window. A range you choose here is an outer limit: a question can narrow it but never widen it, and the run log shows the window each lookup used. |
 | `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |
 | `/` commands | Type `/` at the start for the commands below and your saved prompts. |
 | `≈ 1.2k` | The token estimate for your next request, with today's budget ring (see [Tokens and cost](#tokens-and-cost)). |
 | Options `⋯` | Model, **Type out answers**, Saved prompts, and Keyboard shortcuts. A non-default model also shows as a removable chip. |
 | Send / Stop | Send becomes Stop while an answer is being written. |
 
-On a narrow composer, the scope chips merge into one **Scope · n** chip and the model
-chip shows only its icon.
+On a narrow composer, the scope chips merge into one **Scope · n** chip, the
+**Read-only** chip shows only its lock, and the model chip shows only its icon.
 
 ### Commands
 
@@ -78,9 +78,9 @@ menus, **Enter** chooses an item; **Tab** moves focus and never sends.
 
 Keep questions you ask often. Select **Save prompt** beside any of your earlier
 questions, or choose **Save current prompt** in the Saved prompts submenu of Options for
-the text in the composer. Saved prompts appear in the `/` menu and in that submenu, where
-**Manage saved prompts…** lets you use or delete them. You can keep up to 50; they belong to
-your account.
+the text in the composer. Saved prompts appear in the `/` menu and in that submenu,
+where **Manage saved prompts…** lets you use or delete them. You can keep up to 50; they
+belong to your account.
 
 ### Source and model
 
@@ -92,7 +92,8 @@ rewrites an earlier answer. Choosing a model other than the default needs the
 
 ### Live steps and Type out answers
 
-Chat has two live modes, switched with **Options → Type out answers**:
+Chat has two live modes, switched with **Type out answers** in the composer's Options
+menu:
 
 - **Live steps** (the default): every lookup appears as it runs, and the token and cost
   counter updates after every model call. The written answer arrives whole.
@@ -109,14 +110,18 @@ running totals, for example "Working · 3 lookups · 1.2k tokens · $0.002". It 
 row per lookup, or per group of lookups that ran side by side. A row shows:
 
 - its status: Done, Failed, Timed out, Denied, Skipped, or Stopped;
-- what it did, such as "Searched logs" or "Counted cases";
+- what it did, such as "Searched logs" or "Counted log events";
 - chips for the effective parameters, including the time window and source;
 - a short result with row counts, the basis (exact, newest N, sample, or cached), and
   coverage such as "newest 200 of 1,284,113" or "3 of 4 sources answered"; and
 - the exact query behind a disclosure, shown as untrusted code.
 
-The last model call appears as one "Writing the answer" row. When the answer starts,
-the run log folds into the answer's meta row, where you can reopen it.
+Model calls add no rows of their own; their tokens tick on the header. While the
+assistant waits on the model, one row shows **Thinking**, or **Writing the answer** when
+a limit has told it to finish. When the answer is done, the last model call stays as one
+**Wrote the answer** row, and a model call that failed or timed out keeps its row. When
+the answer starts, the run log folds into the answer's meta row, where you can reopen
+it.
 
 ## Read an answer
 
@@ -148,7 +153,9 @@ Numbers in blocks come only from lookups. The model chooses which result to show
 how, but it never writes the numbers, so every chart is backed by a lookup in the run
 log. Each block shows its title, a caption with the window and source, and a provenance
 tag: **source** for values read from a connected system, **code** for values the
-platform computed. When a block shows the top N of a larger total, its caption says so.
+platform computed, and **AI** for text the assistant wrote, such as a brief's narrative
+or a callout. A chart, table, or key figure is never AI-written. When a block shows the
+top N of a larger total, its caption says so.
 
 Block types include key-figure groups (with a gauge for the Active Risk Index); bar,
 horizontal bar, stacked bar, line, area, donut, sparkline, and funnel charts; heatmaps;
@@ -168,7 +175,9 @@ Every block has **Add to report** and a `⋯` menu:
 | Copy query | Copies the exact query behind the block |
 | Open in Logs / Open in Cases | Opens the console view of exactly this data, with the same query, source, and absolute time window. Offered only when the console can show the same filter. |
 
-A table shows ten rows inline, and **View all** opens the rest. You can also ask for a
+A table shows ten rows inline, and **View all** opens the rest. A lookup that returns
+no rows adds no empty chart or table; the answer says so in words. A count of zero is
+still a figure and is shown. You can also ask for a
 different view in words, such as "show that as a donut" or "now by host": the assistant
 reuses the earlier lookup or its stored result.
 
@@ -178,8 +187,9 @@ reuses the earlier lookup or its stored result.
 
 - **Help Center citations** (`D1`, `D2`, …) open the matching section of the Help
   Center for your installed version.
-- **Case and ATT&CK citations** open the case or the technique. **Knowledge
-  citations** show the retrieved excerpt as untrusted text and never link.
+- **Case citations** open the case in Case Manager. **ATT&CK citations** show the
+  technique ID and name. **Knowledge citations** show the retrieved excerpt as
+  untrusted text and never link.
 - **Console links** open the page or Settings section the answer refers to, such as
   **Settings → Security & access → Users**. When you lack the permission for a
   destination, it appears as plain text with the permission it needs.
@@ -203,14 +213,24 @@ Chat shows token use and cost before, during, and after each question.
   a budget is set. It warns at the soft limit and turns critical at the limit.
 - **While it runs:** the run-log header updates after every model call.
 - **After it finishes:** the meta row shows the exact totals. The usage details list
-  input, cached, output, and embedding tokens, cost, time, the model, the sources
-  queried, and whether any figure was estimated (`≈`).
+  input, cached input, output, and total tokens, search-embedding calls, model calls,
+  cost, model time, the model, the sources queried, and whether any figure was
+  estimated (`≈`).
 - **For the conversation:** the toolbar shows the running total.
 
-Chat shares the AI budget with automatic investigations. When the budget is close, one
-alert appears above the composer; when it is reached and the budget blocks spending,
-**Send** is disabled. Money and budget figures need the `models:read` permission, and
-today's spend also needs `cost:view`; without them the meter shows tokens only.
+Chat shares the AI budget, daily and monthly, with automatic investigations. When
+either budget is close, one alert appears above the composer. When one is used up and
+set to block spending, what happens depends on whether you can see the budget:
+
+- With the `models:read` permission, **Send** is disabled until the budget resets or an
+  administrator raises it.
+- Without it, the alert says questions may be refused and **Send** stays available. A
+  question about the product is still answered from the Help Center at no cost; any
+  other question gets a notice that the AI budget limit has been reached.
+
+When the budget is set to warn only, questions keep running. Money and budget figures
+need `models:read`, and today's spend also needs `cost:view`; without them the meter
+shows tokens only.
 
 ## Stop, retry, and continue
 
@@ -221,8 +241,10 @@ whatever was completed.
 
 - **Retry same request** repeats a failed request without billing it twice.
 - **Ask again** sends the same question as a new request.
-- **Continue where this stopped** appears when an answer reached the lookup or token
-  limit. It shows the estimated extra tokens and picks up from there.
+- **Continue where this stopped** appears on the latest answer when the question
+  reached its lookup, model-call, or token limit. It shows the estimated extra tokens
+  and picks up from there. An answer stopped by the time limit shows what was found so
+  far and offers **Retry** instead.
 
 If the connection drops, chat checks whether the answer was saved and shows it when it
 was. Closing the tab does not stop a question: the answer is saved and appears when you
@@ -334,15 +356,25 @@ Previous 30 days, and then by month.
   report in the Reports library.
 - **Export** saves the conversation as Markdown, HTML, or Print / Save as PDF, with
   indicators defanged.
-- Unsent text is kept per conversation in this browser until you send it.
+- While the Chat page stays open, unsent text is kept separately for each
+  conversation. It is never saved: reloading or leaving the page discards it.
 
 History keeps up to **50 conversations** and **100 messages per conversation** for each
 user; up to ten pinned conversations are exempt from the 50-conversation limit. To stay
 within the storage limit, the oldest answers' charts and tables are replaced by
 "Expired from saved history" placeholders before any question or answer text is
-removed, and the transcript says when older turns were removed. Saved history is a
-navigation aid, not the audit or cost record: use **Platform → Audit log** and
-**Analytics → Cost** for governed records.
+removed, and the transcript says when older turns were removed.
+
+Saved answers are compacted. Each block keeps up to 25 table rows, cases, or timeline
+events and 100 chart points (the newest 100 of a time series), and says so in its card,
+for example "Showing top 25 of 200" or "Downsampled for saved history". An answer still
+too large after that is shortened further and shows **Trimmed to fit storage** when you
+reopen it. A report item is taken from the saved answer, so it holds the same rows;
+**Open in Logs** or **Open in Cases**, where a block offers it, opens the same filter in
+the console.
+
+Saved history is a navigation aid, not the audit or cost record: use
+**Platform → Audit log** and **Analytics → Cost** for governed records.
 
 ## What chat can read
 
@@ -352,7 +384,7 @@ Each lookup needs the same permission as the console page that shows the same da
 |---|---|
 | `logs` | Search logs (one source or every browsable source) and log statistics such as top values and counts over time |
 | `cases` | Search cases, read a case, explain a case decision, the shift report, and campaigns |
-| `metrics` | Posture, trends, the noise funnel, case mix, timing, ATT&CK coverage, auto-close health, and agent improvement |
+| `metrics` | Posture, trends, the noise funnel, case mix, timing, ATT&CK coverage, auto-close health, agent improvement, and analyst feedback |
 | `intel` | Indicator reputation from your enrichment providers, ATT&CK techniques, and the knowledge corpus |
 | `platform` | AI cost and usage, source health, automation status, and the audit log |
 | `docs` | The bundled Help Center and the status of this deployment |
@@ -382,24 +414,35 @@ mean?", or "Where do I configure SSO?". Product answers come from the Help Cente
 with this release, cite the exact section, and link the console page. The
 [KPI glossary](kpi-glossary.md) defines every dashboard metric.
 
-Product help also works when no AI model is available: before a model is configured,
-when the budget is reached, or while the provider is failing. Chat then answers at no
-cost with the most relevant Help Center excerpt and its links, and a notice says why
+**Ask about this** starts the same kind of question from where you are: it appears at the
+end of the help popover of a dashboard KPI (including the Active Risk Index, Human vs AI,
+and noise-reduction cards) and beside the section name in Settings.
+It opens a new chat that asks a fixed question about that metric or section, so the
+answer leads with the matching Help Center sections.
+
+Product help also works when no AI model can run: before a model is configured, while
+the provider is failing, or when a question is sent after the AI budget is used up
+(see [Tokens and cost](#tokens-and-cost) for who can still send then). Chat answers at
+no cost with the most relevant Help Center excerpt and its links, and a notice says why
 the AI was not used.
 
 ## Case-scoped chat
 
 The **Chat** tab in Case Manager uses the same assistant with the selected case as its
 context. It is compact: no history, no report panel, no **Add to report**, and no `/`
-or `@` menus. Only the final answer is saved to the case thread, and only when you hold
-the `cases:comment` permission; otherwise the answer says "Not saved to the case
-thread". When the save itself fails, **Run again to save** asks the question again,
-which is billed again. Case conversations never enter your personal Workspace history.
+or `@` menus.
+
+Each question and its final answer text (without charts or the run log) are posted to
+the case's discussion thread, where anyone who can read the case sees them. Posting
+needs the `cases:comment` permission; without it, the answer is marked **Not saved**
+and says it was not added to the case thread. When the save itself fails, **Run again
+to save** asks the question again, which is billed again. Case conversations never
+enter your personal Workspace history.
 
 | Surface | Use it for | Where answers are kept |
 |---|---|---|
 | **Triage → Workspace → Chat** | Questions across telemetry, cases, metrics, intelligence, and the product | Your saved conversations and reports |
-| **Case Manager → Chat** | Evidence and follow-up for the selected case | The case thread |
+| Case Manager **Chat** tab | Evidence and follow-up for the selected case | The case thread, with your question |
 
 ## Demo Mode
 
@@ -432,8 +475,9 @@ with your text in the composer for you to review and send.
 Each question is bounded so cost and time stay predictable. By default a question can
 use up to 5 model calls and 10 lookups (4 at a time), about 60,000 tokens, and 90
 seconds, and can send up to 3 indicators to enrichment providers (10 per conversation).
-Each user can run 2 questions at once. When a limit is reached, the answer says so and
-offers to continue.
+Each user can run 2 questions at once. At the lookup, model-call, or token limit the
+latest answer offers **Continue where this stopped**; at the time limit it shows what
+was found and offers **Retry**.
 
 Administrators change these limits under **Settings → General → Chat assistant**, which
 also sets the default live mode, whether answers may be typed out, internal domains, and

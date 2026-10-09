@@ -26,7 +26,8 @@ import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
 import { Transcript } from '@/soc/chat/message/Transcript';
 import { useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
 import { useChatContext } from '@/soc/chat/useChatContext';
-import { useChatEngine } from '@/soc/chat/useChatEngine';
+import { CONTINUE_PROMPT, useChatEngine } from '@/soc/chat/useChatEngine';
+import { estimateNextRequest } from '@/soc/chat/display';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   'Summarize Case': ClipboardList,
@@ -79,6 +80,18 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
   const focusComposer = React.useCallback(() => composerRef.current?.focus(), []);
   // A quick action is disabled (and a starter replaced) while the turn runs: focus
   // moves to the composer instead of dropping to <body> (SPEC §10.9).
+  // "Continue where this stopped (≈ +N tokens)": calibrated on every part, exactly
+  // like the composer meter and Workspace Chat (SPEC §10.3).
+  const continueEstimate = React.useMemo(() => {
+    if (!ctx) return null;
+    return estimateNextRequest({
+      staticPromptTokens: ctx.static_prompt_tokens,
+      historyTokens: ctx.history_tokens,
+      draft: CONTINUE_PROMPT,
+      charsPerToken: ctx.chars_per_token,
+      calibration: ctx.calibration ?? null,
+    }).total;
+  }, [ctx]);
   const send = (prompt: string) => {
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
@@ -106,6 +119,7 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
         compact
         label={`Case ${caseId} messages`}
         onFocusComposer={focusComposer}
+        continueEstimate={continueEstimate}
         empty={
           <EmptyState
             context={ctx}
@@ -156,6 +170,7 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
               contextError={context.error}
               onRetryContext={context.refresh}
               canChooseModel={canChooseModel}
+              defaultModel={context.defaultModel}
             />
           </div>
         </div>

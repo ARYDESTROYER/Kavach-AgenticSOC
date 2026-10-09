@@ -89,8 +89,9 @@ point-in-time rollback in version 0.1.
   the time limit; timeouts, the answer reserve and length, results per step, and how
   many questions may run at once sit under **More limits**.
 - **Indicator lookups:** how many indicators chat may send to enrichment providers per
-  question and per conversation (0 turns the lookup off), internal domain suffixes that
-  are never sent, and whether e-mail addresses may be sent.
+  question and per conversation (0 turns the lookup off, and chat's access list then
+  says it is turned off on this deployment), internal domain suffixes that are never
+  sent, and whether e-mail addresses may be sent.
 
 The editor accepts only values inside each knob's range, and the server clamps anything
 else, so a bad value can never reset other preferences. No setting here can let chat

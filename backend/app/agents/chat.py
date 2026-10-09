@@ -70,6 +70,7 @@ from .blocks import (
     MAX_BLOCKS_PER_MESSAGE,
     MaterialiseOptions,
     TurnArtifact,
+    drop_restated_kpis,
     materialise_final_blocks,
     parse_final_block_requests,
     to_blocks,
@@ -2090,11 +2091,15 @@ class _AgentTurn:
         yield TurnDoneEvent(response=response)
 
     def _default_blocks(self) -> list[dict[str, Any]]:
+        """Every artifact of the turn in its default view, in call order: an empty one
+        (zero rows/points/items) yields no block, and a KPI row that only restates an
+        entity card of the same call is left out (browser-QA D3/D4)."""
         made: list[dict[str, Any]] = []
         for index, entry in enumerate(self.artifacts.values(), start=1):
             if len(made) >= MAX_BLOCKS_PER_MESSAGE:
                 break
             made.extend(to_blocks(entry.artifact, MaterialiseOptions(block_id=f"b{index}", from_step=entry.from_step)))
+        made, _restated = drop_restated_kpis(made)
         blocks, _ = validate_blocks(made)
         return blocks
 

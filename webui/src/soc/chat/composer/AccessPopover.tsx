@@ -3,8 +3,9 @@
  *
  * Lists the caller's tool catalogue from `/chat/context`, grouped by scope: each
  * capability in the present tense ("Search logs", never the run log's "Searched
- * logs"), its data source, the permission it needs, and either ✓ or "Needs <perm>"
- * (any one of several for a kind-gated tool). The catalogue is the server's
+ * logs"), its data source, the permission it needs, and either ✓, "Needs <perm>"
+ * (any one of several for a kind-gated tool) or, for a tool the deployment switched
+ * off (`available: false`, SPEC A30), "Turned off on this deployment". The catalogue is the server's
  * per-principal view, so this is what the assistant can actually read for THIS user;
  * it never claims more. While the context loads it says so; when it cannot be read
  * it says that once, with Retry, instead of "Checking…" forever. Every string came
@@ -14,7 +15,7 @@
  * and the empty state's link open the same surface.
  */
 import * as React from 'react';
-import { Check, Lock, RotateCcw } from 'lucide-react';
+import { Check, CircleSlash, Lock, RotateCcw } from 'lucide-react';
 import type { ChatContextInfo, ChatScope, ChatToolInfo } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
@@ -22,7 +23,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { CHAT_SCOPES } from '../stream-events';
 import { SCOPE_LABELS } from './format';
 import { capabilityLabel } from './access-copy';
-import { missingGrant } from './commands';
+import { TURNED_OFF_COPY, missingGrant, toolTurnedOff, toolUsable } from './commands';
 
 /** The honest line shown when `/chat/context` could not be read. */
 export const ACCESS_UNAVAILABLE = "Couldn't load what the assistant can access.";
@@ -79,26 +80,34 @@ function lockedKinds(tool: ChatToolInfo): string[] {
 
 function ToolRow({ tool }: { tool: ChatToolInfo }) {
   const missing = missingGrant(tool);
-  const partly = tool.allowed ? lockedKinds(tool) : [];
+  // Switched off by configuration (SPEC A30): the grant is held, but no grant would
+  // help, so neither a check mark nor a grant message is shown.
+  const off = tool.allowed && toolTurnedOff(tool);
+  const usable = toolUsable(tool);
+  const partly = usable ? lockedKinds(tool) : [];
   const needs = tool.requires.length ? tool.requires.join(', ') : 'No permission needed';
   return (
-    <li className="flex items-start gap-2.5 py-1.5">
+    <li className="flex items-start gap-2.5 py-1.5" data-tool-state={usable ? 'allowed' : off ? 'off' : 'denied'}>
       <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden="true">
-        {tool.allowed ? (
+        {usable ? (
           <Check className="h-3.5 w-3.5 text-success" />
+        ) : off ? (
+          <CircleSlash className="h-3.5 w-3.5 text-muted-foreground" />
         ) : (
           <Lock className="h-3.5 w-3.5 text-muted-foreground" />
         )}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-3">
-          <span className={tool.allowed ? 'text-foreground' : 'text-muted-foreground'}>{capabilityLabel(tool)}</span>
+          <span className={usable ? 'text-foreground' : 'text-muted-foreground'}>{capabilityLabel(tool)}</span>
           <span className="shrink-0 text-2xs text-muted-foreground">
-            {tool.allowed ? (
+            {usable ? (
               <>
                 <span className="sr-only">Allowed. </span>
                 {needs}
               </>
+            ) : off ? (
+              TURNED_OFF_COPY
             ) : (
               <span className="font-medium text-foreground">Needs {missing ?? 'access'}</span>
             )}
@@ -129,7 +138,8 @@ export function AccessList({ context, error = null, onRetry }: AccessStateProps)
   if (!groups.length) {
     return <p className="text-xs text-muted-foreground">The assistant has no data tools for your role.</p>;
   }
-  const allowed = context.tools.filter((tool) => tool.allowed).length;
+  // Count only what will actually run: allowed AND switched on.
+  const allowed = context.tools.filter(toolUsable).length;
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">

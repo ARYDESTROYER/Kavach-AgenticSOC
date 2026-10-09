@@ -382,6 +382,58 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     # The lead names the window once; needs_human counts cases in Needs human STATUS.
     assert body.startswith("**Shift brief, last 24h.** **5 open cases**: 2 escalated, 1 in Needs human status")
     assert "Decide the 1 case in Needs human status." in steps
+    # The brief holds the detail; the prose is its lead (browser-QA D5): the headline,
+    # the first case to work, and the ready sentence.
+    assert body.split("\n\n")[1:] == ["Start with `case-0042` (x, escalated).",
+                                        "The brief below is ready to add to a report."]
+    assert "Posture:" not in body and "Needs attention first" not in body
+
+
+def test_report_answers_keep_a_short_lead_and_close_after_their_notes() -> None:
+    """Browser-QA D5: with a report envelope the prose is the lead; a note (here a
+    lookup the role cannot run) still closes the answer, before the ready sentence."""
+    q = "Build a posture report with these sections: Summary, Key metrics, Trends, Next steps."
+    msgs = prompt(q, [call("soc_metrics", POSTURE_OBS, artifacts=POSTURE_ARTS),
+                      call("soc_metrics", TRENDS_OBS, artifacts=TRENDS_ARTS)],
+                  [call("soc_metrics", status="error", summary="The case store did not answer",
+                        inp={"kind": "noise_funnel"})])
+    header, body = final_of(plan_turn(msgs))
+    assert header["blocks"][0]["type"] == "report"
+    paragraphs = body.split("\n\n")
+    assert paragraphs[0].startswith("**Active Risk Index 61**")
+    assert paragraphs[1].startswith("Lookups that did not complete:\n- `soc_metrics` error")
+    assert paragraphs[-1] == "The report below is ready to add to your Reports." and len(paragraphs) == 3
+    assert "MTTA not measured yet" not in body             # the detail is in the report
+    summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
+    assert summary.startswith("Active Risk Index 61")
+
+
+def test_case_lines_and_pivots_name_cases_in_words_not_machine_titles() -> None:
+    """Browser-QA D6: ``user:dsingh — identity_signin`` reads "identity signin on user
+    `dsingh`"; a title in another form is plain text; the id stays as the handle."""
+    machine = {"case_id": "case-1", "title": "user:dsingh — identity_signin", "severity": "high",
+               "verdict": "NEEDS_HUMAN", "risk_score": 64, "status": "escalated"}
+    assert demo_chat._case_line(machine) == ("`case-1` · identity signin on user `dsingh` — high, needs-human, "
+                                             "risk 64, escalated")
+    assert demo_chat._case_name({"title": "ip:203.0.113.9 — demo_sqli_webshell, web_shell"}) == (
+        "demo sqli webshell, web shell on IP `203.0.113.9`")
+    assert demo_chat._case_name({"title": "ip:203.0.113.9 — x"}, with_entity=False) == "x"
+    assert demo_chat._case_name({"case_id": "c", "title": "Mailbox *rule* [added]"}) == "Mailbox rule added"
+    assert demo_chat._case_name({"case_id": "c", "title": "c", "entity": "host:web-01"}) == "host `web-01`"
+    assert demo_chat._entity_phrase("file_hash:abc") == "file hash `abc`"
+
+
+def test_a_hunt_shows_the_reputation_card_without_a_duplicate_kpi_row() -> None:
+    """Browser-QA D4: the entity card already holds the score gauge and the providers;
+    the lookup's KPI row is referenced only when there is no card."""
+    lookup_arts = [art("a1", "entity", {"entity": {"kind": "ip", "value": "203.0.113.7"}}, "Indicator reputation"),
+                   art("a2", "kpis", {"items": []}, "Reputation figures")]
+    rounds = _hunt_round(0, 0)
+    rounds[0] = call("lookup_indicator", {"indicator": "203.0.113.7", "reputation_score": 80, "verdict": "malicious",
+                                          "synthetic_demo_result": True}, artifacts=lookup_arts)
+    header, _ = final_of(plan_turn(prompt("Check 203.0.113.7", rounds)))
+    refs = [b["ref"] for b in header["blocks"]]
+    assert "t1.a1" in refs and "t1.a2" not in refs
 
 
 def test_noise_final_is_a_funnel_with_the_reduction() -> None:
@@ -1081,7 +1133,14 @@ def test_tp_cost_mitre_sources_and_campaign_finals_state_their_figures() -> None
         {"name": "rdp wave", "case_count": 3, "severity": "high", "entities": ["ip:192.0.2.9"],
          "mitre": ["T1110"]}]}
     _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
-    assert body.startswith("**1 campaign** (open): `rdp wave` (3 cases; high; shared `ip:192.0.2.9`; ATT&CK T1110).")
+    # Named by its display name and the entity its cases share; no machine id (browser-QA D6).
+    assert body.startswith("**1 campaign** (open): rdp wave with 3 cases sharing IP `192.0.2.9` (high; ATT&CK T1110).")
+    unnamed = {"total": 1, "status_filter": "open", "campaigns": [
+        {"id": "campaign-1e57287ac9b19e21b96010721158e58e", "name": None, "case_count": 2, "severity": "high",
+         "entities": ["user:pnair"], "mitre": ["T1078"]}]}
+    _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", unnamed)])))
+    assert body.startswith("**1 campaign** (open): 2 cases sharing user `pnair` (high; ATT&CK T1078).")
+    assert "campaign-1e57" not in body
 
 
 def test_report_summary_says_when_blocks_inside_items_were_left_out() -> None:

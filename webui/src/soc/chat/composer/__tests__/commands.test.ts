@@ -19,9 +19,18 @@ import {
   slashAction,
   slashMenuGroups,
   toolsAllowed,
+  toolUsable,
+  TURNED_OFF_COPY,
   type ComposerMenuItem,
 } from '../commands';
-import { makeContext } from './fixtures';
+import { ALL_TOOLS, makeContext } from './fixtures';
+
+/** A context where the deployment switched these tools off (allowed stays true, SPEC A30). */
+function withTurnedOff(names: string[], tools = ALL_TOOLS) {
+  return makeContext({
+    tools: tools.map((t) => (names.includes(t.name) ? { ...t, available: false } : { ...t })),
+  });
+}
 
 const values = (groups: ReturnType<typeof slashMenuGroups>) => groups.flatMap((g) => g.items.map((i) => i.value));
 const prompts: ChatPrompt[] = [
@@ -197,6 +206,40 @@ describe('@ scopes', () => {
     expect(access.find((a) => a.scope === 'platform')).toMatchObject({ allowed: false, missing: 'cost:view' });
     expect(access.find((a) => a.scope === 'docs')).toMatchObject({ allowed: true, missing: null });
     expect(toolsAllowed(makeContext(), ['unknown_tool'])).toBe(false);
+  });
+
+  it('treats a tool the deployment switched off as unusable, though allowed (SPEC A30)', () => {
+    const ctx = withTurnedOff(['lookup_indicator']);
+    const lookup = ctx.tools.find((t) => t.name === 'lookup_indicator')!;
+    expect(lookup.allowed).toBe(true);
+    expect(toolUsable(lookup)).toBe(false);
+    expect(toolsAllowed(ctx, ['lookup_indicator'])).toBe(false);
+    expect(toolsAllowed(ctx, ['search_logs'])).toBe(true);
+    // Absent `available` means on.
+    expect(toolsAllowed(makeContext(), ['lookup_indicator'])).toBe(true);
+  });
+
+  it('keeps a scope usable while one of its tools is on, and says when all are off', () => {
+    // intel still has mitre_lookup on.
+    expect(scopeAccess(withTurnedOff(['lookup_indicator'])).find((a) => a.scope === 'intel')).toMatchObject({
+      allowed: true,
+      turnedOff: false,
+    });
+    const allOff = withTurnedOff(['lookup_indicator', 'mitre_lookup']);
+    expect(scopeAccess(allOff).find((a) => a.scope === 'intel')).toMatchObject({
+      allowed: false,
+      missing: null,
+      turnedOff: true,
+    });
+    const intel = atMenuGroups(parseAtQuery('@int', 4)!, allOff, []).flatMap((g) => g.items)[0];
+    expect(intel.kind === 'scope' && intel.disabled).toBe(true);
+    expect(intel.hint).toBe(TURNED_OFF_COPY);
+  });
+
+  it('hides a command whose tool the deployment switched off', () => {
+    const listed = values(slashMenuGroups(parseSlashQuery('/')!, withTurnedOff(['cost_usage']), []));
+    expect(listed).not.toContain('cmd:cost');
+    expect(listed).toContain('cmd:hunt');
   });
 
   it('joins a kind-gated tool\'s grants with "or" and required grants with "and"', () => {

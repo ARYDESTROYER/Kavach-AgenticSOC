@@ -45,6 +45,8 @@ import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { DASH, fmtNumber } from '@/lib/format';
 import { HelpTip } from './HelpTip';
+import { AskAboutThis } from './AskAboutThis';
+import { KPI_TOPICS } from './ask-topics';
 import {
   CloseAttributionChart,
   reconcilingShares,
@@ -255,6 +257,7 @@ export function HumanVsAiCard({
           // Radix tooltip never opens on touch, and a later copy trim under 80 characters
           // would silently demote this to one a tablet operator could not reach.
           alwaysPopover
+          footer={<AskAboutThis topic={KPI_TOPICS['human-vs-ai']} subject="Human vs AI" className="pt-1" />}
           className="-my-1 shrink-0 text-muted-foreground/70"
         />
       </div>

@@ -59,7 +59,7 @@ import { BlockBoundary } from './BlockBoundary';
 import { ChartBlockView } from './charts/ChartBlockView';
 import { BlocksContext, leafAnchorKey, useBlocks } from './context';
 import { blockTabular, downloadText, toCSV, toJSON, toTSV } from './export-helpers';
-import { fileStamp, formatUtc, slug, truncationNote } from './format';
+import { captionStatesCount, fileStamp, formatUtc, slug, truncationNote } from './format';
 import { CaseListView } from './renderers/CaseListView';
 import { EntityView } from './renderers/EntityView';
 import { HeatmapView } from './renderers/HeatmapView';
@@ -231,7 +231,7 @@ export function BlockBody({
     case 'timeline':
       return <TimelineView block={block} />;
     case 'entity':
-      return <EntityView block={block} idPrefix={`chat-${index}`} />;
+      return <EntityView block={block} idPrefix={`chat-${index}`} framed={nested} />;
     case 'mitre':
       return <MitreView block={block} title={title} />;
     case 'query':
@@ -398,6 +398,11 @@ export function BlockCard({
   const openTarget = openTargetFor(block);
   const stamp = () => `agentic-soc-${slug(title)}-${fileStamp()}Z`;
 
+  // "Showing top 5 of 20" under the body, unless the caption above already says it.
+  const shown = block.truncated ? shownCount(block) : 0;
+  const truncNote =
+    block.truncated && !captionStatesCount(block.caption, shown, block.total) ? truncationNote(shown, block.total) : null;
+
   const captionParts: string[] = [];
   if (block.type === 'report') captionParts.push(reportScopeLine(block));
   if (block.caption) captionParts.push(block.caption);
@@ -560,10 +565,10 @@ export function BlockCard({
         staticMode={staticMode}
       />
 
-      {block.truncated || block.downsampled_for_storage ? (
+      {truncNote || block.downsampled_for_storage ? (
         <p className="mt-1.5 text-xs text-muted-foreground" data-testid="block-truncation">
-          {block.truncated ? truncationNote(shownCount(block), block.total) : null}
-          {block.truncated && block.downsampled_for_storage ? ' · ' : null}
+          {truncNote}
+          {truncNote && block.downsampled_for_storage ? ' · ' : null}
           {block.downsampled_for_storage ? 'Downsampled for saved history' : null}
         </p>
       ) : null}

@@ -204,9 +204,15 @@ def _guide_artifact(chunk: Any, links: list[Any], citations: list[Any]) -> Artif
             if link.opts:
                 ref["opts"] = dict(link.opts)
             guide_links.append({"label": f"Open {link.label}", "ref": ref})
+    # A Help Center link's label is the section title alone: the client adds the
+    # presentation prefix ("Read: …") to doc links, so a server prefix would double it.
+    # Two sections of one page can share a title (and a link): each is listed once.
+    read = {link["label"] for link in guide_links}
     for citation in citations[:3]:
-        if citation.doc:
-            guide_links.append({"label": f"Read: {citation.title}", "ref": {"doc": citation.doc}})
+        if citation.doc and citation.title not in read and all(
+                link["ref"].get("doc") != citation.doc for link in guide_links):
+            read.add(citation.title)
+            guide_links.append({"label": citation.title, "ref": {"doc": citation.doc}})
     # The guide renders steps as plain text, so their Markdown is flattened here (a
     # literal ``**Settings → …**`` or a step clipped mid-token reads as broken).
     steps = [{"text": text} for step in list_steps(chunk.text) if (text := plain_inline(step))]

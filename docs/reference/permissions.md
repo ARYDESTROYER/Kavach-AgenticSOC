@@ -99,8 +99,11 @@ so a role sees the same data through chat as through the console:
 A few chat features have their own gates:
 
 - choosing a model other than the default, and seeing money and budget figures, need
-  `models:read`; today's spend also needs `cost:view`;
-- saving a case-chat answer to the case thread needs `cases:comment`;
+  `models:read`; today's spend also needs `cost:view`. When a blocking daily or
+  monthly budget is used up, the composer disables Send only for viewers with
+  `models:read`;
+- posting a case-chat question and its answer text to the case thread, where every
+  reader of the case sees them, needs `cases:comment`;
 - confirming a fact the assistant suggests remembering needs `memory:manage`.
 
 Checking these grants for the composer and the starters writes no audit rows; a lookup

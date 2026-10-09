@@ -3017,7 +3017,8 @@ export interface ChatRequest {
   continue_of?: string | null;
   /**
    * "Ask about this" (SPEC A7): the `console_map` topic the turn was started from
-   * (`^[a-z0-9_:.-]{1,64}$`). Retrieval pins that topic's sections; never prompt text.
+   * (`^[a-z0-9_:.-]{1,121}$`, the server's `CHAT_TOPIC_PATTERN`, a superset of the
+   * console-link id grammar). Retrieval pins that topic's sections; never prompt text.
    */
   topic?: string | null;
 }
@@ -3152,6 +3153,14 @@ export interface ChatToolInfo {
   kind_requires?: Record<string, string>;
   /** The kinds the caller may use. */
   kinds_allowed?: string[];
+  /**
+   * The deployment has the tool switched on (SPEC A30). Absent means true. `false` is a
+   * tool the caller holds the grants for (`allowed` stays true) that configuration
+   * turned off, e.g. `lookup_indicator` when `max_indicator_lookups` is 0: no grant
+   * would help, so the UI says "Turned off on this deployment" and offers nothing that
+   * needs it.
+   */
+  available?: boolean;
 }
 
 export interface TextStreamingInfo {

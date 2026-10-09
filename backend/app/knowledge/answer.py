@@ -385,9 +385,15 @@ def _guide_block(links: list[ConsoleLink], citations: list[Citation]) -> list[di
     for link in links:
         if link.allowed:
             guide_links.append({"label": f"Open {link.label}", "ref": {"page": link.page, "opts": link.opts or None}})
+    # A Help Center link's label is the section title alone: the client adds the
+    # presentation prefix ("Read: …") to doc links. A title or link already listed is
+    # not repeated (two sections of one page can share both).
+    read = {link["label"] for link in guide_links}
     for citation in citations[:2]:
-        if citation.doc:
-            guide_links.append({"label": f"Read: {citation.title}", "ref": {"doc": citation.doc}})
+        if citation.doc and citation.title not in read and all(
+                link["ref"].get("doc") != citation.doc for link in guide_links):
+            read.add(citation.title)
+            guide_links.append({"label": citation.title, "ref": {"doc": citation.doc}})
     if not guide_links:
         return []
     raw = {

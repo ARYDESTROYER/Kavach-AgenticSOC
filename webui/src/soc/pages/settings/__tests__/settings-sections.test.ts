@@ -24,6 +24,7 @@ import {
   isSectionId,
 } from '../settings-sections';
 import { SECTION_KEYS as DIRTY_SECTION_KEYS } from '../../settings-dirty';
+import { searchJumpTargets } from '../settings-sections-meta';
 
 /** The exact set of section ids the page must keep routable (deep-link back-compat). */
 const EXPECTED_IDS = [
@@ -236,4 +237,16 @@ describe('GRID_SECTIONS (full-width, no outer Card)', () => {
       expect(GRID_SECTIONS.has(id)).toBe(false);
     }
   });
+});
+
+describe('Chat assistant is findable (Settings search + command palette)', () => {
+  const allowAll = () => true;
+  // The words an operator types for the chat_agent knobs: the section title, its blurb
+  // and its keywords form the haystack (the console map indexes the same text).
+  for (const query of ['chat', 'assistant', 'token', 'tokens', 'email', 'e-mail', 'enrichment', 'per-question', 'internal domains', 'type out answers']) {
+    it(`"${query}" finds the Chat assistant section`, () => {
+      const hits = searchJumpTargets(query, allowAll).filter((t) => !t.anchor);
+      expect(hits.map((t) => t.section)).toContain('chat_agent');
+    });
+  }
 });

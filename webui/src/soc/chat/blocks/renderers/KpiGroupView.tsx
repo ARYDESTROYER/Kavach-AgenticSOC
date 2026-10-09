@@ -101,7 +101,16 @@ export function KpiItemCell({ item, testId }: { item: KpiItem; testId: string })
         density="compact"
         accent={accent}
         icon={icon}
-        secondary={item.context}
+        // The strip renders `secondary` in mono for numeric scale context; a chat
+        // caption ("not windowed", "of 1 queried") is prose, so it is the sans muted
+        // caption style (browser-QA D7). The shared tile is unchanged.
+        secondary={
+          item.context ? (
+            <span className="font-sans font-normal" title={item.context}>
+              {item.context}
+            </span>
+          ) : undefined
+        }
         delta={item.delta ? { value: item.delta.value, label: deltaLabel(item) } : undefined}
         goodDirection={item.delta?.good_direction ?? 'none'}
         onClick={ref ? () => navigate(ref) : undefined}

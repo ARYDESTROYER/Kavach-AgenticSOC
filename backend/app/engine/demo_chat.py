@@ -1624,10 +1624,53 @@ def _say_search_logs(r: Result, *, subject: str | None = None) -> str:
     return text
 
 
+#: Words for an entity kind in narration ("user `dsingh`", "IP `203.0.113.9`").
+_ENTITY_NOUNS = {"ip": "IP", "domain": "domain", "url": "URL", "file_hash": "file hash", "hash": "file hash",
+                 "user": "user", "host": "host", "process": "process", "email": "email"}
+#: The machine case title the pipeline writes: ``<kind>:<value> — <rule>[, <rule>…]``.
+_MACHINE_TITLE_RE = re.compile(r"^([a-z][a-z_]{0,30}):(.+?) — (.+)$")
+
+
+def _entity_phrase(raw: Any, limit: int = 80) -> str:
+    """An entity in words (browser-QA D6): ``user:dsingh`` becomes "user `dsingh`".
+    The value is log-derived, so it stays inline code; the kind is an engine word."""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    if ":" not in raw:
+        return _code(raw, limit)
+    kind, value = raw.split(":", 1)
+    kind = kind.strip().lower()
+    noun = _ENTITY_NOUNS.get(kind) or _plain(kind.replace("_", " "), 20) or "entity"
+    return f"{noun} {_code(value.strip(), limit)}"
+
+
+def _rule_words(rules: str, limit: int = 60) -> str:
+    """Detection rule ids as plain words ("identity_signin" → "identity signin"),
+    Markdown-neutral (:func:`_plain`)."""
+    return _plain(re.sub(r"[_\s]+", " ", rules), limit)
+
+
+def _case_name(case: Mapping[str, Any], *, with_entity: bool = True) -> str:
+    """A case in words for the narration (browser-QA D6): the machine title
+    ``user:dsingh — identity_signin`` reads "identity signin on user `dsingh`". The
+    case id and the exact title stay in the blocks and links; a title that is not
+    the machine form is shown as plain text."""
+    title = case.get("title") if isinstance(case.get("title"), str) else ""
+    match = _MACHINE_TITLE_RE.match(title.strip())
+    if match:
+        kind, value, rules = match.groups()
+        what = _rule_words(rules) or "activity"
+        return f"{what} on {_entity_phrase(f'{kind}:{value}')}" if with_entity else what
+    if title.strip() and title.strip() != case.get("case_id"):
+        return _plain(title, 80)
+    return _entity_phrase(case.get("entity")) if with_entity else ""
+
+
 def _case_line(case: Mapping[str, Any]) -> str:
     bits = [_code(case.get("case_id"), 60)]
-    if case.get("title"):
-        bits.append(_code(case.get("title"), 70))
+    name = _case_name(case)
+    if name:
+        bits.append(name)
     facts = []
     if case.get("severity"):
         facts.append(display_text(case.get("severity"), 20))
@@ -1730,6 +1773,14 @@ def _completeness(o: Mapping[str, Any]) -> str:
     if comp.get("window_covered") is False:
         return "The case store does not reach back over the whole window, so the figures are partial."
     return f"Computed exactly from all {_plural(fetched, 'stored case')}." if fetched else ""
+
+
+def _partial_completeness(o: Mapping[str, Any]) -> str:
+    """:func:`_completeness` only when it is a caveat (the figures are partial)."""
+    comp = o.get("completeness") if isinstance(o.get("completeness"), Mapping) else {}
+    if comp.get("truncated") or comp.get("window_covered") is False:
+        return _completeness(o)
+    return ""
 
 
 def _say_trends(r: Result) -> str:
@@ -1928,17 +1979,21 @@ def _say_campaigns(r: Result) -> str:
         return text + "."
     parts = []
     for c in rows[:3]:
-        name = c.get("name") or c.get("id")
-        bits = [f"{_plural(c.get('case_count'), 'case')}"]
-        if c.get("severity"):
-            bits.append(display_text(c.get("severity"), 20))
+        # Named by its display name, else by what ties it together (the shared
+        # entity): the content-hash id stays in the table (browser-QA D6).
+        name = _plain(c.get("name"), 60) if isinstance(c.get("name"), str) else ""
+        what = _plural(c.get("case_count"), "case")
         entities = [e for e in c.get("entities") or [] if isinstance(e, str)][:2]
         if entities:
-            bits.append("shared " + _join([_code(e, 60) for e in entities]))
+            what += " sharing " + _join([_entity_phrase(e, 60) for e in entities])
+        bits = []
+        if c.get("severity"):
+            bits.append(display_text(c.get("severity"), 20))
         mitre = [m for m in c.get("mitre") or [] if isinstance(m, str)][:3]
         if mitre:
             bits.append("ATT&CK " + ", ".join(display_text(m, 12) for m in mitre))
-        parts.append(f"{_code(name, 50)} ({'; '.join(bits)})")
+        detail = f" ({'; '.join(bits)})" if bits else ""
+        parts.append(f"{name} with {what}{detail}" if name else f"{what}{detail}")
     return f"{text}: {_join(parts)}."
 
 
@@ -1988,14 +2043,15 @@ def _say_get_case(r: Result, *, lead: bool = True) -> list[str]:
     case = o.get("case") if isinstance(o.get("case"), Mapping) else {}
     out: list[str] = []
     if lead:
-        head = (f"**{_code(case.get('case_id'), 60)}** ({_code(case.get('title'), 80)}) "
-                f"{_case_facts(case)}, status **{display_text(case.get('status'), 30).replace('_', ' ')}**")
+        name = _case_name(case)
+        head = (f"**{_code(case.get('case_id'), 60)}**" + (f" ({name})" if name else "")
+                + f" {_case_facts(case)}, status **{display_text(case.get('status'), 30).replace('_', ' ')}**")
         if case.get("decision_by"):
             head += f", last decided by {display_text(case.get('decision_by'), 30)}"
         out.append(head + ".")
     facts = []
     if case.get("entity"):
-        facts.append(f"entity {_code(case.get('entity'), 80)}")
+        facts.append(_entity_phrase(case.get("entity")))
     rules = [x for x in case.get("rules") or [] if isinstance(x, str)][:3]
     if rules:
         facts.append(("rule " if len(rules) == 1 else "rules ") + _join([_code(x, 60) for x in rules]))
@@ -2167,7 +2223,10 @@ def _say_result(r: Result) -> list[str]:
         return _say_knowledge(r)[0]
     if r.tool in _REFERENCE_TOOLS:
         return []
-    return [f"`{r.tool}` completed; its results are shown below."]
+    # No narration for this tool: state its engine summary (counts, never log text)
+    # rather than promise blocks below — a lookup that found nothing shows none (D3).
+    summary = _plain(r.summary, 200)
+    return [_sentence(summary) if summary else f"`{r.tool}` completed."]
 
 
 # --------------------------------------------------------------------------- #
@@ -2417,6 +2476,13 @@ class Final:
     memory_proposal: dict[str, Any] | None = None
     #: Ordinals of failed calls the body already explains (not listed again).
     narrated: set[int] = field(default_factory=set)
+    #: The short lead (1–2 paragraphs) that replaces ``body`` when the answer is wrapped
+    #: into a report envelope: the report holds the detail (browser-QA D5). Empty =
+    #: the first narrative paragraph of ``body``.
+    lead: list[str] = field(default_factory=list)
+    #: The closing sentence of an answer that carries a report envelope ("The report
+    #: below is ready…"), added after every note so it ends the answer.
+    closing: str = ""
 
 
 def _keep(*blocks: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -2553,7 +2619,9 @@ def _final_posture(view: PromptView, ask: Ask) -> Final | None:
                title="Cases by severity"),
         _block(noise, "funnel", view="funnel", title="Noise reduction"),
     )
-    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "posture", charts=True))
+    # As a report: the headline, plus the caveat when the figures are partial.
+    lead = body[:1] + ([caveat] if post and (caveat := _partial_completeness(post.obs)) else [])
+    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "posture", charts=True), lead=lead)
 
 
 def _final_noise(view: PromptView, ask: Ask) -> Final | None:
@@ -2618,12 +2686,12 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
         return None
     window = _window((shift or post).obs)
     body: list[str] = []
+    attention = [a for a in (shift.obs.get("attention") if shift else None) or [] if isinstance(a, Mapping)]
     if shift:
         # The brief's lead names the window once; the headline sentence then omits it.
         lines = _say_shift(shift, with_window=False)
         body.append(f"**Shift brief, {window}.** " + lines[0])
         body.extend(lines[1:])
-        attention = [a for a in shift.obs.get("attention") or [] if isinstance(a, Mapping)]
         if attention:
             body.append("Needs attention first:")
             body.extend(f"- {_case_line(a)}" for a in attention[:3])
@@ -2637,7 +2705,22 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
     if camps:
         body.append(_say_campaigns(camps))
     steps = _shift_steps(shift, post, camps)
-    body.append("The brief below is ready to add to a report.")
+    if not view.case_scoped:
+        # The brief holds the detail (headline, open work, campaigns, metrics, next
+        # steps); the prose is its 1–3 sentence lead (browser-QA D5). A Case Manager
+        # turn keeps the full narration: its brief is unwrapped into plain blocks.
+        lead = [body[0] if shift else posture_line]
+        if attention:
+            first = attention[0]
+            why = [_case_name(first)]
+            if first.get("status"):
+                why.append(display_text(first.get("status"), 20).replace("_", " "))
+            if _num(first.get("risk_score")) is not None:
+                why.append(f"risk {_count(first.get('risk_score'))}")
+            why = [w for w in why if w]
+            lead.append(f"Start with {_code(first.get('case_id'), 60)}" + (f" ({', '.join(why)})" if why else "")
+                        + ".")
+        body = [line for line in lead if line]
     summary = " ".join(s for s in (_say_shift(shift)[0] if shift else "", posture_line) if s)
     summary_section: dict[str, Any] = {
         "heading": "Summary", "items": _keep(_block(shift, "kpis", view="kpi_group", title="Shift headline"))}
@@ -2662,7 +2745,7 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
     envelope = {"type": "report", "title": "Shift brief", "template": "shift", "sections": sections}
     if window.strip():
         envelope["subtitle"] = f"Last shift · {window}"
-    return Final(body=body, blocks=[envelope], follow_ups=_follow_ups(view, "shift"))
+    return Final(body=body, blocks=[envelope], follow_ups=_follow_ups(view, "shift"), closing=_BRIEF_READY)
 
 
 def _posture_steps(post: Result | None, noise: Result | None) -> list[str]:
@@ -2772,7 +2855,14 @@ def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
         if logs:
             parts.append(f"{_plural(logs.obs.get('total'), 'log event')} matched it in the {_window(logs.obs)}.")
         if related:
-            parts.append(f"{_plural(related.obs.get('count'), 'case')} carry it as their entity.")
+            count = _num(related.obs.get("count")) or 0
+            verb, whose = ("carries", "its") if count == 1 else ("carry", "their")
+            parts.append(f"{_plural(count, 'case')} {verb} it as {whose} entity.")
+        # What the sightings mean (engine wording only: no log or case value).
+        source = _dig(view.ok("get_case").obs, "case") if ask.intent == "pivot" and view.ok("get_case") else None
+        conclusion = _hunt_conclusion(view, source if isinstance(source, Mapping) else None)
+        if conclusion:
+            parts.append(conclusion)
     elif ask.intent in ("top", "regroup", "brute"):
         stats = view.ok("log_stats")
         if stats:
@@ -2785,7 +2875,29 @@ def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
             parts.append(paragraph)
             if len(parts) == 2:
                 break
+    if ask.intent == "posture":
+        post = view.ok("soc_metrics", "posture")
+        caveat = _partial_completeness(post.obs) if post else ""
+        if caveat and caveat not in parts:
+            parts.append(caveat)
     return " ".join(p for p in parts if p) or "The findings are in the sections below."
+
+
+#: The closing sentence of an answer that carries a report envelope.
+_REPORT_READY = "The report below is ready to add to your Reports."
+_BRIEF_READY = "The brief below is ready to add to a report."
+
+
+def _report_lead(final: Final) -> list[str]:
+    """The prose of an answer whose detail moved into a report envelope (browser-QA
+    D5): the builder's ``lead`` (else the first narrative paragraph), at most two
+    paragraphs, so with the closing sentence the answer is a 1–3 sentence lead."""
+    lead = [p for p in final.lead if p][:2]
+    if not lead:
+        lead = [p for p in final.body
+                if p and not p.startswith(("- ", "Recorded")) and not p.endswith(":")
+                and not re.match(r"^\d+\. ", p)][:1]
+    return lead
 
 
 def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle: str | None,
@@ -2831,7 +2943,10 @@ def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle
     if subtitle and subtitle.strip():
         envelope["subtitle"] = subtitle.strip()[:200]
     final.blocks = [envelope]
-    final.body = final.body + ["The report below is ready to add to your Reports."]
+    # The report holds the detail; the prose is its short lead (browser-QA D5). The
+    # caller closes it with :data:`_REPORT_READY` after any notes.
+    final.body = _report_lead(final)
+    final.closing = _REPORT_READY
     return final
 
 
@@ -2853,7 +2968,7 @@ def _unwrap_report(final: Final) -> Final:
         else:
             leaves.append(block)
     final.blocks = leaves[:12]
-    final.body = [p for p in final.body if not p.startswith(("The report below is ready", "The brief below is ready"))]
+    final.closing = ""
     final.body.append(_CASE_REPORT_NOTE)
     return final
 
@@ -2967,13 +3082,16 @@ def _final_case(view: PromptView, ask: Ask) -> Final | None:
     action = _plain(_dig(case, "recommended_action"), 200)
     if action:
         body.append(f"Recorded recommendation: {action}")
+    # As a report: the case in one sentence and its recorded recommendation (case
+    # text, which the report's own leaves never carry); the decision is in the report.
+    lead = body[:1] + ([f"Recorded recommendation: {action}"] if action else [])
     return Final(body=body, blocks=_keep(
         _block(got, "entity", view="entity", title="Case entity"),
         _block(got, "timeline", view="timeline", title="Status history"),
         _block(decision, "kpis", view="kpi_group", title="Decision inputs"),
         _block(stats, "categories", view="hbar", title="Entity activity in the logs"),
         _block(got, "mitre", view="mitre", title="ATT&CK techniques"),
-    ), follow_ups=_follow_ups(view, "case", charts=bool(stats)))
+    ), follow_ups=_follow_ups(view, "case", charts=bool(stats)), lead=lead)
 
 
 def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], list[dict[str, Any]], set[int]]:
@@ -3004,9 +3122,13 @@ def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], lis
         body.append(f"Cases with it as their entity: **{_count(count)}**."
                     if count else "No case has it as its entity.")
         body.extend(_case_bullets(related))
+    # The entity card already shows the reputation gauge and the providers that
+    # answered, so the lookup's "Reputation figures" KPI row is not shown beside it
+    # (one figure shown once, browser-QA D4); it stands in only without the card.
+    card = _block(lookup, "entity", view="entity", title="Indicator reputation")
     blocks = _keep(
-        _block(lookup, "entity", view="entity", title="Indicator reputation"),
-        _block(lookup, "kpis", view="kpi_group", title="Reputation figures"),
+        card,
+        None if card else _block(lookup, "kpis", view="kpi_group", title="Reputation figures"),
         _block(logs, "table", view="table", title="Matching log events") if logs and _num(logs.obs.get("total")) else None,
         _block(related, "case_list", view="case_list", title="Related cases")
         if related and _num(related.obs.get("count")) else None,
@@ -3022,7 +3144,9 @@ def _final_hunt(view: PromptView, ask: Ask) -> Final | None:
     conclusion = _hunt_conclusion(view)
     if conclusion:
         body.append(conclusion)
-    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "hunt"), narrated=narrated)
+    # As a report: the reputation result and what the sightings mean.
+    lead = body[:1] + ([conclusion] if conclusion else [])
+    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "hunt"), narrated=narrated, lead=lead)
 
 
 _ENTITY_WORDS = {"ip": "source IP", "domain": "domain", "file_hash": "file hash", "hash": "file hash",
@@ -3074,6 +3198,9 @@ def _hunt_conclusion(view: PromptView, source_case: Mapping[str, Any] | None = N
             "check each one's containment.")
 
 
+_NAME_AN_INDICATOR = "Name an indicator (an IP, domain, URL or hash) to hunt it directly."
+
+
 def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
     search = view.ok("search_cases", where=lambda r: not _dig(r.obs, "filters", "entity"))
     got = view.ok("get_case")
@@ -3096,11 +3223,12 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
             # the riskiest open case that carries an indicator entity, and says so.
             anchor = ("The question names no indicator or known attack type, so this hunt is anchored on the "
                       "highest-risk open case with an indicator entity,")
-        body.append(f"{anchor} {_code(source.get('case_id'), 60)} ({_code(source.get('title'), 80)}), which "
-                    f"{_case_facts(source)}; its {_ENTITY_WORDS.get(entity[0], entity[0])} is "
+        name = _case_name(source, with_entity=False)
+        body.append(f"{anchor} {_code(source.get('case_id'), 60)}" + (f" ({name})" if name else "")
+                    + f", which {_case_facts(source)}; its {_ENTITY_WORDS.get(entity[0], entity[0])} is "
                     f"**{_code(entity[1])}**.")
         if not ask.keyword:
-            body.append("Name an indicator (an IP, domain, URL or hash) to hunt it directly.")
+            body.append(_NAME_AN_INDICATOR)
     elif got:
         body.extend(_say_get_case(got))
         body.append("That case has no IP, domain or hash entity to hunt.")
@@ -3117,7 +3245,10 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
         blocks += _keep(_block(got, "mitre", view="mitre", title="ATT&CK techniques"))
     if not indicator_lines and got and entity:
         body.append("The follow-up lookups did not run.")
-    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "pivot"), narrated=narrated)
+    # As a report: where the hunt started, then what it found (or, when the question
+    # named no indicator, how to aim it); the sightings and cases are in the report.
+    lead = body[:1] + ([_NAME_AN_INDICATOR] if _NAME_AN_INDICATOR in body else [conclusion] if conclusion else [])
+    return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "pivot"), narrated=narrated, lead=lead)
 
 
 def _final_mitre(view: PromptView, ask: Ask) -> Final | None:
@@ -3547,9 +3678,22 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
         return _final_no_tools(view, ask)
     builder = _FINALS.get(ask.intent)
     final = builder(view, ask) if builder is not None else None
+    generic = final is None
     if final is None:
         final = _final_generic(view, ask)
-    else:
+    if (not view.case_scoped and ask.report and ask.intent != "shift" and any("ref" in b for b in final.blocks)
+            and not any(b.get("type") == "report" for b in final.blocks)):
+        # Wrapped first, so the report's lead replaces the narration while the notes
+        # below (what is missing, what failed, the window) still close the answer.
+        if ask.report == "custom" and not re.search(r"\bcustom\b", ask.lowered):
+            # "a report on case X" names no template: the intent's own one fits best.
+            ask = replace(ask, report=_INTENT_TEMPLATES.get(ask.intent, "custom"))
+        windows = [_window(r.obs, "") for r in view.results() if r.ok and r.observation is not None]
+        final = _as_report(
+            final, view, ask, title=_TEMPLATE_TITLES.get(ask.report or "", "Report"),
+            subtitle=next((w for w in windows if w), view.analyst_window),
+            summary=_report_summary(final, view, ask), steps=_report_steps(view, ask))
+    if not generic:
         lead, advice = _missing_lead(view, ask) if ask.intent in _DATA_INTENTS else ("", "")
         primary = (_INTENT_TOOLS.get(ask.intent) or ("",))[0]
         if lead and primary and view.ok(primary) is None:
@@ -3568,20 +3712,12 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
     pending = _pending_note(view, ask)
     if pending:
         final.body.append(pending)
+    if final.closing and not view.case_scoped:
+        final.body.append(final.closing)
     if view.case_scoped:
         # A Case Manager turn can never be added to a report (SPEC §1, #5; §4.6).
         if ask.report or any(b.get("type") == "report" for b in final.blocks):
             final = _unwrap_report(final)
-    elif (ask.report and ask.intent != "shift" and any("ref" in b for b in final.blocks)
-            and not any(b.get("type") == "report" for b in final.blocks)):
-        if ask.report == "custom" and not re.search(r"\bcustom\b", ask.lowered):
-            # "a report on case X" names no template: the intent's own one fits best.
-            ask = replace(ask, report=_INTENT_TEMPLATES.get(ask.intent, "custom"))
-        windows = [_window(r.obs, "") for r in view.results() if r.ok and r.observation is not None]
-        final = _as_report(
-            final, view, ask, title=_TEMPLATE_TITLES.get(ask.report or "", "Report"),
-            subtitle=next((w for w in windows if w), view.analyst_window),
-            summary=_report_summary(final, view, ask), steps=_report_steps(view, ask))
     if view.unrun:
         final.body.append("The turn reached its time limit before the remaining lookups ran, so this answer "
                           "uses only the lookups that completed.")

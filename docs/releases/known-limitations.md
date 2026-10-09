@@ -250,6 +250,29 @@ authoritative rollback generation, carries policy holds, and commits crash-safe
 retention decisions; the updater cannot safely infer those facts from timestamps or a
 terminal status alone.
 
+### Rollback loses chat and thread data
+
+On the Elasticsearch state backend, builds with the rebuilt Workspace Chat store case
+discussion threads and Workspace Chat history in a new mapping-safe form that older
+builds cannot read. The first write after the upgrade converts the whole document,
+entries from before the upgrade included. After a manual rollback to an older image,
+case threads and the affected users' chat history appear empty, and the older build's
+next write to them removes the converted entries. That backend has no supervised
+rollback, and portable export does not cover chat or collaboration data.
+
+PostgreSQL and SQLite keep the previous form, so the supervised image-only rollback
+keeps case threads and chat transcripts. The older build does not know the
+conversation-level fields this release adds: its first chat write for a user drops that
+user's conversation pins, linked reports, time ranges, and usage totals. Transcripts
+and the reports themselves remain. Nor does it know that up to 10 pinned conversations
+may sit beyond the 50-conversation limit: its first saved answer for a user with more
+than 50 conversations deletes that user's oldest conversations (by last activity, pinned
+ones included) until 50 remain. Before rolling back, users with more than 50
+conversations should export the extra conversations they want to keep and delete them.
+
+**Required change:** a versioned, reversible data migration for KV documents, so a
+rollback can restore the form an older build reads.
+
 ### Single replica only
 
 Run exactly one backend replica. Signature locks, receiver ownership, schedulers,

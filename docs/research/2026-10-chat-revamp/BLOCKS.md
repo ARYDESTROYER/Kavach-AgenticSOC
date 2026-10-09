@@ -93,6 +93,29 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     `blocks.artifact_views`, so the header a model reads never offers `stacked_bar`, `sparkline`
     or `donut` where materialisation would fall back to the default view.
 
+### Wave-5 amendments (browser-review decisions; SPEC A34 has the full text)
+
+20. **No empty blocks (SPEC A34).** A data block with nothing to show (a table with no rows, a
+    chart or heatmap with no measured value, an empty KPI row, case list, timeline, ATT&CK list,
+    citation list or guide) is never materialised by the server (`blocks.is_empty_block`) and
+    never rendered by the client (`isEmptyDataBlock`, dropped with reason `empty` and no
+    fallback, which narrows G9's "fallback" to blocks that are invalid rather than empty). No
+    notice line counts it: the prose says the lookup found nothing. Zero is a value and is kept;
+    an all-`null` series is "not measured" and is empty.
+21. **One figure shown once (SPEC A34).** A `kpi_group` from a `kpis` artifact that only restates
+    an `entity` card of the same tool call is left out (`blocks.drop_restated_kpis`), so a
+    reputation score appears once, in the card's gauge.
+22. **Units and labels (SPEC A34).** `KpiItem.delta.value` is in the item's own `unit` (a count
+    moves by a count, a `percent` by percentage points, a duration by its unit), never a relative
+    percentage, with `period_label` "vs previous window". A zero duration reads in its unit
+    ("0 min"). A `guide` link to a `DocRef` carries the section title alone and the renderer adds
+    "Read:" once. KPI `context` captions and trusted entity facts use the sans muted caption
+    style; mono is for identifiers, code and attacker-derived values.
+23. **Neutral identifiers (AGENTS.md naming contract).** Chat and report code mints no new
+    compatibility-prefixed identifiers: the print root is `#agentic-soc-report-print` (§7.4) and
+    the in-page report sync event is `agentic-soc:report-changed`, like the
+    `agentic-soc-workspace-chat-history` BroadcastChannel. Neither is a released wire contract.
+
 ---
 
 ## 5. The answer-block schema
@@ -668,7 +691,7 @@ backslash-escaped outside code spans.
 ### 7.4 Print / Save as PDF (the PDF path)
 
 1. **Click "Print / Save as PDF".** The lazy `ReportPrintView` mounts a portal at
-   `<div id="tlsoc-report-print">` directly under `<body>`, rendering the report with
+   `<div id="agentic-soc-report-print">` directly under `<body>`, rendering the report with
    `mode="print"`:
    - fixed 680 px chart width, from `usePrintMode()`;
    - all disclosures expanded;
@@ -682,14 +705,14 @@ backslash-escaped outside code spans.
    default, so dark-mode printing would otherwise give light text on white.
 3. **CSS**, from the lazy report stylesheet:
    ```css
-   @media screen { #tlsoc-report-print { display: none; } }
+   @media screen { #agentic-soc-report-print { display: none; } }
    @media print {
      @page { size: A4; margin: 14mm 12mm; }
-     body > *:not(#tlsoc-report-print) { display: none !important; }
-     #tlsoc-report-print { display: block; }
+     body > *:not(#agentic-soc-report-print) { display: none !important; }
+     #agentic-soc-report-print { display: block; }
      .report-block, figure, table, .report-kpis { break-inside: avoid; }
      .report-section > h2 { break-after: avoid; }
-     #tlsoc-report-print * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+     #agentic-soc-report-print * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
    }
    ```
 4. **Then:** wait two `requestAnimationFrame`s (layout settles), call `window.print()`,

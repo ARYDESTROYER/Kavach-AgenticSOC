@@ -137,8 +137,10 @@ already in flight may complete slightly beyond the configured limit. Configure
 provider-side budgets and alerts as the final financial backstop.
 
 Workspace and Case Manager chat share this budget. At the soft limit the chat composer
-shows one alert; at a blocking limit **Send** is disabled, and product questions are
-still answered at no cost from the Help Center. Each chat question is also bounded by
+shows one alert. When a blocking limit is reached, **Send** is disabled for users who
+can see the budget (`models:read`). Other users can still send: a product question is
+answered at no cost from the Help Center, and any other question is refused with a
+budget notice before any model call. Each chat question is also bounded by
 its own per-question limits (model calls, lookups, tokens, and time) under
 **Settings → General → Chat assistant**; report summaries are one metered call each and
 limited to 10 an hour per user.

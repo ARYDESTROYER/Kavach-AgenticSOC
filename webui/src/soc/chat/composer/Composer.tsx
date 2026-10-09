@@ -92,6 +92,12 @@ export interface ComposerProps {
   contextError?: string | null;
   /** Retry `/chat/context` (`useChatContext().refresh`). */
   onRetryContext?: () => void;
+  /**
+   * The configured default model (`useChatContext().defaultModel`). Choosing it is the
+   * same as "Default model", so it never shows as a removable non-default chip and is
+   * never sent as an explicit override.
+   */
+  defaultModel?: string | null;
 }
 
 /** SPEC §10.4 placeholder. */
@@ -129,6 +135,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     conversationTotals = null,
     contextError = null,
     onRetryContext,
+    defaultModel = null,
   } = props;
   const isCase = variant === 'case';
   const announce = useAnnouncer();
@@ -136,6 +143,14 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const width = useElementWidth(rootRef);
   const catalog = useComposerCatalog({ loadSources: !isCase, canReadSources: sourcesReadable(context) });
+  // Only a model the analyst chose that differs from the configured default is an
+  // override: the default never shows as a removable chip (D2).
+  const chosenModel = engine.model && engine.model !== defaultModel ? engine.model : null;
+  const { setModel: setEngineModel } = engine;
+  const setModel = React.useCallback(
+    (next: string | null) => setEngineModel(next && next !== defaultModel ? next : null),
+    [defaultModel, setEngineModel],
+  );
   const prompts = useSavedPrompts();
   const inputId = React.useId();
   const hintId = React.useId();
@@ -388,8 +403,9 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     <ComposerOptions
       variant={variant}
       context={context}
-      model={engine.model}
-      setModel={engine.setModel}
+      model={chosenModel}
+      setModel={setModel}
+      defaultModel={defaultModel}
       streamMode={engine.streamMode}
       setStreamMode={engine.setStreamMode}
       canChooseModel={canChooseModel}
@@ -550,11 +566,11 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
                   merged={merged}
                   onDone={focusTextarea}
                 />
-                {engine.model ? (
+                {chosenModel ? (
                   // Narrow keeps an icon-only chip: a non-default (possibly pricier)
                   // model must stay visible and removable at every width.
                   <ModelChip
-                    model={engine.model}
+                    model={chosenModel}
                     compact={narrow}
                     onClear={() => {
                       engine.setModel(null);

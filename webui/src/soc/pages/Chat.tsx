@@ -141,13 +141,15 @@ export default function Chat({ caseId, opts }: ChatProps = {}) {
 
   // "Ask about this": once the fresh draft is in place, ask the topic's templated
   // question. The topic is consumed first, so a re-render can never ask twice.
+  // Set on (re)mount too: StrictMode's dev double-invoke runs the cleanup once, and a
+  // flag that only ever goes false would drop every topic question after it.
   const mountedRef = React.useRef(true);
-  React.useEffect(
-    () => () => {
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   const { topic, clearTopic } = conv;
   const { send } = engine;
   React.useEffect(() => {

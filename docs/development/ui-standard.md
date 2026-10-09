@@ -246,9 +246,11 @@ A turn without recorded usage reads "Usage not recorded · —", never 0, follow
 model and source it ran on when known; Demo Mode appends "simulated". Quiet lines
 follow when relevant: a memory echo or proposal (confirmable only with
 `memory:manage`; a removal first resolves its ids and lists exactly the facts it would
-forget, skipping unknown ones) and "Not saved · Run again to save" (honestly a new,
-billed run, not a save-only retry). Restored turns render collapsed. Aim for no more
-than 40 px of chrome per historical turn.
+forget, skipping unknown ones) and the not-saved line: **Not saved**, the notice's own
+sentence, and, when the save can be retried, **Run again to save** with "asks the model
+again and uses tokens again" (honestly a new, billed run, not a save-only retry).
+Restored turns render collapsed. Aim for no more than 40 px of chrome per historical
+turn.
 
 **Add to report.** The answer and block toggles keep one stable name and use
 `aria-pressed` for "In report ✓". They never unmount while a request is in flight
@@ -258,7 +260,8 @@ is refused with that reason, and an item already in the report stays removable.
 
 **Notices.** Partial, denied, timeout, provider, breaker, cancelled, unsupported and
 budget notices are one callout at the top of the answer, with Retry only when the
-notice is retryable. A capped answer offers "Continue where this stopped (≈ +N tokens)".
+notice is retryable. A capped answer offers "Continue where this stopped (≈ +N tokens)"
+when it is the latest turn; an answer stopped by the time limit offers Retry instead.
 A failed turn offers **Retry same request** (same idempotency key) or, when retrying
 cannot help, **Ask again** (a new key). A locally stopped turn says "Stopped. The saved
 version appears after refresh." Budget state appears as one alert above the composer.
@@ -269,8 +272,9 @@ opens the access popover), the Scope chip (source and time range in one popover)
 `@` scope chips; right: the token estimate with the budget ring, Options ⋯ (Model, Type out
 answers, Saved prompts, Keyboard shortcuts) and Send, which becomes Stop while a turn runs.
 Below 560 px of composer width the Scope and `@` chips merge into "Scope · n", the placeholder
-shortens to "Ask… / for commands, @ to scope" so it stays on one line, and a non-default model
-chip turns icon-only but stays visible and removable. The Case Manager composer has no menus and
+shortens to "Ask… / for commands, @ to scope" so it stays on one line, the **Read-only** chip
+shows only its lock (its accessible name is unchanged), and a non-default model chip turns
+icon-only but stays visible and removable. The Case Manager composer has no menus and
 reads "Ask about this case". In the `/` and `@` menus only Enter chooses; Tab keeps its focus
 meaning and never sends a command or adds a scope, and the `@` menu waits for the tool
 catalogue. A command that takes a value fills the composer and selects its placeholder rather

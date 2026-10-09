@@ -154,3 +154,39 @@ describe('hostile blocks', () => {
     expect(cite?.querySelector('pre')).not.toBeNull();
   });
 });
+
+describe('empty data blocks (D3)', () => {
+  it('renders no empty shell for a block with no rows, points or items', () => {
+    const empty = [
+      { id: 'e1', type: 'table', provenance: 'source', artifact_kind: 'table', columns: [{ key: 'ip', label: 'IP' }], rows: [] },
+      {
+        id: 'e2',
+        type: 'chart',
+        kind: 'bar',
+        unit: 'count',
+        provenance: 'code',
+        artifact_kind: 'categories',
+        x: { kind: 'category', values: ['a', 'b'] },
+        series: [{ key: 's', label: 'S', values: [null, Number.NaN] }],
+      },
+      { id: 'e3', type: 'timeline', provenance: 'source', artifact_kind: 'timeline', events: [] },
+      { id: 'e4', type: 'case_list', provenance: 'source', artifact_kind: 'case_list', items: [] },
+      { id: 'e5', type: 'mitre', provenance: 'source', artifact_kind: 'mitre', techniques: [] },
+      { id: 'e6', type: 'markdown', provenance: 'ai', text: 'The search matched nothing in the last 24 hours.' },
+    ];
+    const { container, blocks, dropped } = renderRaw(empty);
+    expect(blocks.map((b) => b.type)).toEqual(['markdown']);
+    expect(dropped.map((d) => [d.type, d.reason])).toEqual([
+      ['table', 'empty'],
+      ['chart', 'empty'],
+      ['timeline', 'empty'],
+      ['case_list', 'empty'],
+      ['mitre', 'empty'],
+    ]);
+    expect(screen.queryByText(/No values to show/)).toBeNull();
+    expect(screen.queryByText(/No data points/)).toBeNull();
+    // No fallback callout either: the prose carries it.
+    expect(container.querySelectorAll('[data-block-type]')).toHaveLength(1);
+    expect(screen.getByText('The search matched nothing in the last 24 hours.')).toBeInTheDocument();
+  });
+});

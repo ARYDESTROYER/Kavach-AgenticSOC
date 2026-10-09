@@ -125,10 +125,13 @@ as untrusted data.
 
 Workspace Chat is your personal, saved conversation workspace: searchable, pinnable
 history, answers with charts and tables you can add to a report, and token and cost
-figures for every question. The Case Manager **Chat** tab stays scoped to its case,
-saves only its final answers to the case thread, and never appears in personal
-history. Use Workspace Chat for a reusable line of inquiry and the case tab for evidence
-and follow-up tied to one case. See [Workspace Chat](chat.md) for the details.
+figures for every question. The Case Manager **Chat** tab stays scoped to its case and
+never appears in personal history. Each question and its final answer text (without
+charts or the run log) are posted to the case's discussion thread, where anyone who can
+read the case sees them; this needs `cases:comment`, and without it the answer says it
+was not saved to the case thread. Use Workspace Chat for a reusable line of inquiry and
+the case tab for evidence and follow-up tied to one case. See
+[Workspace Chat](chat.md) for the details.
 
 ## Failure and cost boundaries
 

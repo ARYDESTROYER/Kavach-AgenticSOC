@@ -67,6 +67,9 @@ schema, protocol, identity, privilege, or frozen-base change.
   knowledge retrieval, MITRE ATT&CK context, campaigns, baselines, and auto-tuning.
 - **Built for teams:** RBAC, MFA, SSO, sessions, notifications, case collaboration,
   audit history, saved views, and per-user chat history.
+- **Read-only Workspace Chat:** ask across logs, cases, metrics, threat intelligence,
+  and the product itself; watch each lookup run, read cited answers with charts, track
+  tokens and cost live, and collect results into exportable reports.
 - **Durable long work:** bulk case operations, exports, knowledge maintenance, resets,
   and lifecycle apply continue server-side across navigation/reload, with personal Jobs,
   audit-confirmed Inbox progress, cooperative cancellation, bounded failures, and

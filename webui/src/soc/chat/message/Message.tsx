@@ -172,6 +172,9 @@ function BlocksPlaceholder() {
   return <div className="h-20 rounded-md border border-dashed border-border" aria-hidden data-testid="blocks-loading" />;
 }
 
+/** The per-answer storage hint (SPEC A22): a restored answer compacted to fit storage. */
+export const ANSWER_TRIMMED_HINT = 'Trimmed to fit storage';
+
 function MessageView({
   item,
   latest,
@@ -392,6 +395,13 @@ function MessageView({
               consoleLinks={consoleLinks}
               hidden={!sourcesOpen}
             />
+          ) : null}
+          {item.restored && response.truncated === true ? (
+            // A saved answer whose snapshot was compacted to fit storage (SPEC A22):
+            // one quiet line under its own meta row, never a thread-level warning.
+            <p className="text-2xs text-muted-foreground" data-testid="answer-trimmed-hint">
+              {ANSWER_TRIMMED_HINT}
+            </p>
           ) : null}
           {hasMemoryLine(response) ? (
             <MemoryLine response={response} onRetrySave={() => engine.retry(item.key)} retryDisabled={busy} />

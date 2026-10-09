@@ -48,6 +48,13 @@ export interface UseChatContextArgs {
 
 export interface ChatContextController {
   context: ChatContextInfo | null;
+  /**
+   * The configured default chat model: `context.model` as last read WITHOUT a model
+   * override (a context read for an override reports that model instead). `null`
+   * until one such read lands. The composer uses it so the default never shows as a
+   * removable "non-default" chip.
+   */
+  defaultModel: string | null;
   loading: boolean;
   error: string | null;
   /** Re-read now (after a turn settles, the estimate and spend change). */
@@ -126,6 +133,9 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
   }, [instanceId]);
 
   const [context, setContext] = React.useState<ChatContextInfo | null>(() => cache.get(key)?.context ?? null);
+  const [defaultModel, setDefaultModel] = React.useState<string | null>(() =>
+    model === null ? (cache.get(key)?.context.model ?? null) : null,
+  );
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   // `force` bypasses the cache; `ifStale` re-reads only an entry past its TTL.
@@ -140,6 +150,8 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
     scopeRef.current = scopeKey;
     const cached = cache.get(key)?.context ?? null;
     if (context !== cached) setContext(cached);
+    const cachedDefault = model === null ? (cached?.model ?? null) : null;
+    if (defaultModel !== cachedDefault) setDefaultModel(cachedDefault);
   }
 
   React.useEffect(() => {
@@ -152,6 +164,7 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
     const cached = freshEntry(key, Date.now());
     if (cached && !force) {
       setContext(cached.context);
+      if (model === null) setDefaultModel(cached.context.model);
       setError(null);
       setLoading(false);
       return undefined;
@@ -163,6 +176,7 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
         if (controller.signal.aborted) return;
         remember(key, next, Date.now());
         setContext(next);
+        if (model === null) setDefaultModel(next.model);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -191,5 +205,5 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
     setRequest((r) => ({ n: r.n + 1, mode: 'ifStale' }));
   }, []);
 
-  return { context, loading, error, refresh, revalidate };
+  return { context, defaultModel, loading, error, refresh, revalidate };
 }

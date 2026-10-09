@@ -82,7 +82,7 @@ describe('Reports library', () => {
     const table = await screen.findByRole('table', { name: 'Reports' });
     expect(within(table).getByRole('button', { name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
     expect(within(table).getByText('Shift handoff')).toBeInTheDocument();
-    expect(screen.getByText('of 100 reports')).toBeInTheDocument();
+    expect(screen.getByText(/reports · limit 100/)).toBeInTheDocument();
 
     await user.type(screen.getByRole('textbox', { name: 'Search reports' }), 'night');
     expect(within(table).queryByRole('button', { name: 'Brute force on vpn-gw-2' })).toBeNull();

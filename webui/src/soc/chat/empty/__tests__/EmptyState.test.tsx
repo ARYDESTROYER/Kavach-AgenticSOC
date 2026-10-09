@@ -30,6 +30,14 @@ describe('visibleStarters', () => {
     expect(visibleStarters(ctx).map((s) => s.id)).toEqual(['investigate', 'shift_brief', 'learn_app']);
     expect(visibleStarters(null)).toEqual([]);
   });
+
+  it('hides a starter whose tool the deployment switched off (allowed, available: false)', () => {
+    const base = makeContext({ starters: STARTERS });
+    const ctx = { ...base, tools: base.tools.map((t) => (t.name === 'lookup_indicator' ? { ...t, available: false } : t)) };
+    const ids = visibleStarters(ctx).map((s) => s.id);
+    expect(ids).not.toContain('hunt');
+    expect(ids).toContain('investigate');
+  });
 });
 
 describe('EmptyState', () => {

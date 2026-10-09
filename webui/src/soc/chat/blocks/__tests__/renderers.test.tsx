@@ -14,7 +14,7 @@ import { galleryBlock } from '../__fixtures__/gallery';
 import { attackUrl } from '../renderers/MitreView';
 import { sortRows, visibleColumns } from '../renderers/TableView';
 import { parseBlock } from '../schema';
-import type { AnswerBlock, InternalRef, TableBlock } from '../schema';
+import type { AnswerBlock, EntityBlock, InternalRef, TableBlock } from '../schema';
 
 function show(block: AnswerBlock, props: Partial<React.ComponentProps<typeof AnswerBlocks>> = {}) {
   return render(<AnswerBlocks blocks={[block]} messageId="m1" {...props} />);
@@ -132,6 +132,26 @@ describe('kpi group', () => {
     expect(within(kpis).getAllByRole('listitem')).toHaveLength(3);
   });
 
+  it('renders a KPI caption in the sans muted caption style, and a zero-minute median in minutes (D7, D8)', () => {
+    show(
+      parseBlock({
+        id: 'cap',
+        type: 'kpi_group',
+        provenance: 'code',
+        artifact_kind: 'kpis',
+        items: [
+          { key: 'open', label: 'Open cases', value: 4, unit: 'count', context: 'not windowed' },
+          { key: 'mttr', label: 'MTTR (median)', value: 0, unit: 'minutes', context: 'of 1 queried' },
+        ],
+      }),
+    );
+    const caption = screen.getByText('not windowed');
+    expect(caption).toHaveClass('font-sans');
+    expect(caption).not.toHaveClass('font-mono');
+    expect(screen.getByTestId('block-kpis')).toHaveTextContent('0 min');
+    expect(screen.getByTestId('block-kpis')).not.toHaveTextContent('0 ms');
+  });
+
   it('makes a tile with a ref a navigation button', () => {
     const nav = vi.fn();
     show(galleryBlock('kpis'), { onNavigate: nav });
@@ -208,9 +228,13 @@ describe('timeline', () => {
 });
 
 describe('entity', () => {
-  it('renders third-party reputation detail mono (G7)', () => {
-    show(galleryBlock('ioc'));
-    expect(screen.getByText('314 reports in 30 days')).toHaveClass('font-mono');
+  it('renders only attacker-derived facts mono; product values and provider notes are sans (G7, D7)', () => {
+    // Even on a block marked untrusted, mono follows the per-fact flag.
+    show({ ...(galleryBlock('ioc') as EntityBlock), untrusted: true });
+    expect(screen.getByText('scan-14.example.net')).toHaveClass('font-mono');
+    expect(screen.getByText('NL')).not.toHaveClass('font-mono');
+    expect(screen.getByText('314 reports in 30 days')).not.toHaveClass('font-mono');
+    expect(screen.getByText('314 reports in 30 days')).toHaveClass('text-muted-foreground');
   });
 
   it('shows the indicator verbatim, the risk gauge, reputation and navigation', () => {
@@ -297,6 +321,28 @@ describe('query, callout, citations, guide, markdown', () => {
     show(galleryBlock('howto'));
     expect(screen.getByRole('link', { name: 'Open Settings › Sources' })).toHaveAttribute('href', '#/settings?s=sources');
     expect(screen.getByRole('link', { name: 'Read: Sources in the Help Center' })).toHaveAttribute('href', '/docs/0.1/admin/sources/');
+  });
+
+  it('prefixes a Help Center link with "Read:" exactly once, for plain and stored titles (D1)', () => {
+    const guide = (label: string) =>
+      parseBlock({
+        id: 'g',
+        type: 'guide',
+        provenance: 'code',
+        artifact_kind: 'guide',
+        steps: [],
+        links: [{ label, ref: { doc: '/docs/0.1/admin/sources/' } }],
+      });
+    const { unmount } = show(guide('Pull sources › Supported connectors'));
+    expect(screen.getByRole('link', { name: /Pull sources › Supported connectors/ })).toHaveTextContent(
+      /^Read: Pull sources › Supported connectors$/,
+    );
+    unmount();
+    // An answer saved before the server stopped prefixing.
+    show(guide('Read: Pull sources › Supported connectors'));
+    expect(screen.getByRole('link', { name: /Pull sources › Supported connectors/ })).toHaveTextContent(
+      /^Read: Pull sources › Supported connectors$/,
+    );
   });
 
   it('renders markdown with the host renderer or the safe built-in', () => {

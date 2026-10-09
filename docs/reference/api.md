@@ -446,7 +446,9 @@ as `turn.start {replayed: true}` followed by `turn.done`, with no model call.
 Additive request fields, all optional: `stream_mode` (`steps` or `text`; presentation
 only), `scopes` (`logs`, `cases`, `metrics`, `intel`, `docs`, `platform`), `time_range`
 (`{from, to}`, at most 90 days), `origin` (`user`, `follow_up`, `starter`, `command`,
-`continue`), `continue_of`, and `topic` (a console-map topic id). Only `origin: "user"`
+`continue`), `continue_of`, and `topic` (a retrieval hint naming the console-map topic an
+"Ask about this" turn started from: at most 121 characters of `a-z`, `0-9`, `_`, `:`, `.` and
+`-`; a malformed value is 422 and an unknown one is ignored). Only `origin: "user"`
 text counts as the analyst's own words for indicator lookups. Additive response fields
 include `blocks`, `steps`, `usage`, `citations`, `console_links`, `follow_ups`,
 `answer_kind`, `notice`, `turn_id`, `message_id`, and `memory_proposal`.
@@ -454,8 +456,8 @@ include `blocks`, `steps`, `usage`, `citations`, `console_links`, `follow_ups`,
 | Operation | Contract |
 |---|---|
 | `POST /api/chat/turns/{turn_id}/cancel` | Stop a running turn you own. The in-flight model call finishes and is recorded, no new step starts, and the stream ends with `turn.done` carrying a `cancelled` notice. 404 when the turn is unknown, finished, or another user's |
-| `GET /api/chat/context` | The caller's effective model, context window, prompt estimates, tool catalogue with `allowed` per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows |
-| `GET /api/chat/topics/{topic_id}` | The fixed question for an "Ask about this" topic; 404 for an unknown topic |
+| `GET /api/chat/context` | The caller's effective model, context window, prompt estimates, tool catalogue with `allowed` (the caller's grants) and `available` (false when this deployment switched the tool off; absent means true) per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows |
+| `GET /api/chat/topics/{topic_id}` | The fixed question for an "Ask about this" topic. `topic_id` is a console-map id, `<family>:<anchor>` such as `kpi:mtta` or `settings:models`; 404 for an unknown topic |
 
 Concurrency is bounded per user and per process: a turn over either bound is
 `429 chat_busy` with `Retry-After` before any work. A non-default model without

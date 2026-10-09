@@ -75,6 +75,7 @@ import {
   type StepStartInfo,
   type TurnErrorEvent,
 } from './stream-events';
+import { REQUEST_TOPIC_RE } from './topic';
 
 /* -------------------------------------------------------------------------- */
 /* Constants.                                                                  */
@@ -505,8 +506,6 @@ export interface ChatSendOptions {
   topic?: string | null;
 }
 
-/** The server's `CHAT_TOPIC_PATTERN` (models.py): a malformed topic would fail the turn. */
-const REQUEST_TOPIC_RE = /^[a-z0-9_:.-]{1,64}$/;
 
 /**
  * Whether Retry may resend a SETTLED turn with its same key: a D1 unsaved failure
@@ -538,10 +537,16 @@ export interface ChatEngine {
 
   draft: string;
   setDraft: (value: string) => void;
-  /** Per-turn model override; `null` = the configured default. */
+  /**
+   * Per-turn model override chosen by the analyst; `null` = the configured default.
+   * Never adopted from a saved conversation (see the hydration effect).
+   */
   model: string | null;
   setModel: (model: string | null) => void;
-  /** Source scope; `null` = the primary source. */
+  /**
+   * Source scope chosen by the analyst; `null` = all sources (the log tools fan out).
+   * Never adopted from a saved conversation (see the hydration effect).
+   */
   sourceId: string | null;
   setSourceId: (sourceId: string | null) => void;
   /** Composer @-scopes (empty = everything granted). */
@@ -784,8 +789,16 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     conversationIdRef.current = conversation.id;
     setConversationId(conversation.id);
     commitItems(() => restored);
-    setModel(conversation.model?.trim() || null);
-    setSourceId(conversation.source_id?.trim() || null);
+    // The stored `model` and `source_id` are what the server RESOLVED for the last turn
+    // (the effective model, normally the default, and the primary source it searched
+    // even when the analyst chose none), not the analyst's selection. Adopting them
+    // would show the default as a removable "non-default" chip, pin the scope to one
+    // source, and send both explicitly on the next turn (a later default change then
+    // 403s a caller without models:read; a disabled source 422s). A reopened thread
+    // therefore starts on the default model and "All sources"; each restored answer
+    // still names the model and source it used.
+    setModel(null);
+    setSourceId(null);
     setScopesState([]);
     setTimeRange(conversation.time_range ?? null);
   }, [conversation, abandonRun, commitItems, setBusyState]);

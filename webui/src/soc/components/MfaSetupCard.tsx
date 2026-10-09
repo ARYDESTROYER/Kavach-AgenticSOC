@@ -53,7 +53,13 @@ import { Alert, AlertDescription } from '@/ui/alert';
 import { Card, CardContent } from '@/ui/card';
 import { Badge } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
-import { QRCode } from './QRCode';
+
+/**
+ * The QR encoder (~6 kB) loads only when an enrollment actually shows a code: this card
+ * is on the eager login path, and nearly every sign-in never enrolls. The secret and URI
+ * are always shown as text, so scanning is never the only path while it loads.
+ */
+const QRCode = React.lazy(() => import('./QRCode'));
 
 export interface MfaSetupCardProps {
   /** Whether MFA is currently enabled for the signed-in user. */
@@ -342,7 +348,9 @@ export function MfaSetupCard({
                   </div>
                 ) : (
                   <div className="rounded-md border border-border bg-white p-2">
-                    <QRCode value={enroll.otpauth_uri} size={180} onError={() => setQrFailed(true)} />
+                    <React.Suspense fallback={<div className="h-[180px] w-[180px]" aria-hidden="true" />}>
+                      <QRCode value={enroll.otpauth_uri} size={180} onError={() => setQrFailed(true)} />
+                    </React.Suspense>
                   </div>
                 )}
               </div>

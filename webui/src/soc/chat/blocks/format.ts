@@ -48,6 +48,26 @@ export function formatDurationMs(ms: number): string {
   return `${num(ms / 86_400_000, 1)} d`;
 }
 
+const ZERO_DURATION: Record<'ms' | 'seconds' | 'minutes' | 'hours', string> = {
+  ms: '0 ms',
+  seconds: '0 s',
+  minutes: '0 min',
+  hours: '0 h',
+};
+
+/**
+ * A duration in its block's unit (browser-QA D8). Zero reads in that unit ("0 min",
+ * never "0 ms" for a minutes median, so it matches the prose), and a positive sliver
+ * under one second of a minutes or hours value reads "< 1 min" rather than a
+ * millisecond figure the measurement never had. Everything else is humanised.
+ */
+function formatDuration(value: number, unit: 'ms' | 'seconds' | 'minutes' | 'hours'): string {
+  if (value === 0) return ZERO_DURATION[unit];
+  const ms = value * (DURATION_MS[unit] ?? 1);
+  if ((unit === 'minutes' || unit === 'hours') && Math.abs(ms) < 1_000) return '< 1 min';
+  return formatDurationMs(ms);
+}
+
 function bytes(value: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   let v = value;
@@ -75,7 +95,7 @@ export function formatValue(value: number | null | undefined, unit: ValueUnit): 
     case 'seconds':
     case 'minutes':
     case 'hours':
-      return formatDurationMs(value * (DURATION_MS[unit] ?? 1));
+      return formatDuration(value, unit);
     case 'usd':
       return fmtMoney(value, 'USD');
     case 'tokens':
@@ -256,6 +276,15 @@ export function xLabelFull(value: string, kind: 'category' | 'time', bucket: Tim
  * Clip display text to `max` characters with an ellipsis, counting code points so a
  * clip never splits a surrogate pair into a lone (unrenderable) half.
  */
+/**
+ * A Help Center link's title without any "Read:" prefix (browser-QA D1). The server
+ * sends plain titles and the client adds its own verb once; answers saved before that
+ * change carry "Read: <title>", so a stored prefix is removed before one is added.
+ */
+export function plainDocTitle(label: string): string {
+  return label.replace(/^\s*read:\s*/i, '') || label;
+}
+
 export function clipText(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length > max ? `${chars.slice(0, Math.max(1, max - 1)).join('')}…` : text;
@@ -281,6 +310,15 @@ export function fileStamp(now: Date = new Date()): string {
 }
 
 /** "top 10 of 1,240" style disclosure for a truncated block (G4). */
+/**
+ * The block's own caption already states the shown-of-total figure ("Top 5 of 20"), so
+ * the footer's "Showing top 5 of 20" would only repeat it.
+ */
+export function captionStatesCount(caption: string | null | undefined, shown: number, total: number | null): boolean {
+  if (!caption || total === null) return false;
+  return caption.replace(/,/g, '').toLowerCase().includes(`${shown} of ${total}`);
+}
+
 export function truncationNote(shown: number, total: number | null): string {
   if (total !== null && total > shown) return `Showing top ${num(shown, 0)} of ${num(total, 0)}`;
   return `Showing the first ${num(shown, 0)}; more exist`;

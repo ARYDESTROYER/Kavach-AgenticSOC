@@ -20,7 +20,7 @@
  */
 import { maybeDefang } from '@/lib/defang';
 
-import { formatUtc, formatValue, truncationNote, unitLabel } from '../../blocks/format';
+import { formatUtc, formatValue, plainDocTitle, truncationNote, unitLabel } from '../../blocks/format';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
 import type { AnswerBlock, Cell, ColumnType, LeafBlock, TableBlock, ToneKey } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
@@ -362,7 +362,7 @@ class Walker {
         this.list(
           false,
           block.links.map((l) => [
-            { text: l.label },
+            { text: isDocRef(l.ref) ? plainDocTitle(l.label) : l.label },
             { text: isDocRef(l.ref) ? ` — Help Center ${l.ref.doc}` : ` — open ${navLabel(l.ref.page)} in the console` },
           ]),
         );

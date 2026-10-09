@@ -14,6 +14,7 @@
  * package and the report panel to the reports package; they are replaced by small
  * doubles here so this suite pins the shell's contract with them, not their insides.
  */
+import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -457,6 +458,24 @@ describe('Workspace Chat page', () => {
     expect(streamCalls()[0].body).not.toHaveProperty('conversation_id');
   });
 
+  it('asks an "Ask about this" topic exactly once under StrictMode (the app root)', async () => {
+    render(
+      <React.StrictMode>
+        <AnnouncerProvider>
+          <TooltipProvider>
+            <ConfirmProvider>
+              <Chat opts={{ newChat: true, topic: 'kpi:total_cases' }} />
+            </ConfirmProvider>
+          </TooltipProvider>
+        </AnnouncerProvider>
+      </React.StrictMode>,
+    );
+    await waitFor(() => expect(streamCalls()).toHaveLength(1));
+    expect(streamCalls()[0].body).toMatchObject({ origin: 'starter', topic: 'kpi:total_cases' });
+    await settle();
+    expect(streamCalls()).toHaveLength(1);
+  });
+
   it("prefills the palette's Ask AI text into a new chat's composer and focuses it, without sending", async () => {
     renderChat({ opts: { newChat: true, ask: 'Which hosts failed logins most today?' } });
     const box = await screen.findByRole('textbox', { name: 'Message' });
@@ -488,10 +507,16 @@ describe('Workspace Chat page', () => {
 
   it('keeps a thread that was only shortened in place quiet, and names the cause of removed turns', async () => {
     rows = [summary('c-big', 'Large answer', '2026-10-08T09:30:00Z', { history_truncated: true, message_count: 2, total_message_count: 2 })];
-    details = { 'c-big': detailOf(rows[0]) };
+    const big = detailOf(rows[0]);
+    // The compacted answer carries its own flag (`ChatResponse.truncated`).
+    big.messages[1] = { ...big.messages[1], response: { ...big.messages[1].response!, truncated: true } };
+    details = { 'c-big': big };
     const { unmount } = renderChat();
     await screen.findByText('Large answer answer');
-    expect(screen.getByTestId('thread-trimmed-hint')).toHaveTextContent('trimmed to fit storage');
+    // A quiet per-answer hint under its meta row; no thread-level line (SPEC A22).
+    expect(screen.getAllByTestId('answer-trimmed-hint')).toHaveLength(1);
+    expect(screen.getByTestId('answer-trimmed-hint')).toHaveTextContent('Trimmed to fit storage');
+    expect(screen.queryByRole('note')).toBeNull();
     expect(screen.queryByText(/Older turns were removed/)).toBeNull();
     unmount();
 
@@ -500,7 +525,7 @@ describe('Workspace Chat page', () => {
     renderChat();
     await screen.findByText('Long thread answer');
     expect(screen.getByText('Showing the latest 40 of 64 messages. Older turns were removed to stay within the storage limit.')).toBeInTheDocument();
-    expect(screen.queryByTestId('thread-trimmed-hint')).toBeNull();
+    expect(screen.queryByTestId('answer-trimmed-hint')).toBeNull();
   });
 
   it('highlights a deep-linked message and clears the link once the selection moves on', async () => {

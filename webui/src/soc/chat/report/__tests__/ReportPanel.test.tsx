@@ -189,7 +189,10 @@ describe('ReportPanel', () => {
     });
     show();
     const button = await screen.findByTestId('report-generate-summary');
-    await waitFor(() => expect(button).toHaveTextContent('Generate summary · ≈ 1.4k tokens · ≈ $0.0010'));
+    expect(button).toHaveTextContent('Generate summary');
+    // The dry-run figure is the action's caption and accessible description.
+    await waitFor(() => expect(screen.getByTestId('report-summary-estimate')).toHaveTextContent('≈ 1.4k tokens · ≈ $0.0010'));
+    expect(button).toHaveAccessibleDescription('≈ 1.4k tokens · ≈ $0.0010');
     await user.click(button);
     await waitFor(() =>
       expect(api.generateReportSummary).toHaveBeenCalledWith('rep-1', { idempotencyKey: expect.any(String), expectedVersion: 5 }),

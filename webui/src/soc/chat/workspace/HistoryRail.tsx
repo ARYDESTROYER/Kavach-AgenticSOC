@@ -555,7 +555,10 @@ export function HistoryRail({
                                 >
                                   <span className="min-w-0 flex-1 truncate">{conversation.title || UNTITLED_CONVERSATION}</span>
                                   <span
-                                    className="min-w-7 shrink-0 text-right text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible"
+                                    // Hidden whenever the ⋯ trigger shows: on hover, on focus,
+                                    // and while its menu is open (focus is then in the portalled
+                                    // menu and the pointer may have left the row).
+                                    className="min-w-7 shrink-0 text-right text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible group-has-[[data-state=open]]/row:invisible"
                                     aria-hidden
                                   >
                                     {shortAge(conversation.updated_at)}

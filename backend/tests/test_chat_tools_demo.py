@@ -114,17 +114,25 @@ async def test_demo_specific_behaviour(demo_state) -> None:
 
 async def test_every_demo_artifact_materialises_in_every_allowed_view(demo_state) -> None:
     """Contract with the materialiser (SPEC §7.3): each artifact a tool produces
-    becomes at least one valid block in EVERY view it advertises."""
-    from app.agents.blocks import MaterialiseOptions, to_blocks
+    becomes at least one valid block in EVERY view it advertises, unless it holds no
+    data at all (zero rows, points or items), which yields no block in ANY view
+    (browser-QA D3: never an empty shell)."""
+    from app.agents.blocks import MaterialiseOptions, _materialise, to_blocks
 
     box = build_toolbox(demo_context(demo_state))
     ledger = TaintLedger(["is 198.51.100.77 malicious?"])
-    count = 0
+    count = empty = 0
     for i, (name, inp) in enumerate(DEMO_CALLS, start=1):
         out = await box.execute(name, inp, ordinal=i, step=i, taint=ledger)
         for artifact in out.artifacts:
-            for view in artifact.views():
-                blocks = to_blocks(artifact, MaterialiseOptions(block_id=f"b{i}{artifact.id}", view=view))
+            outcomes = {view: _materialise(artifact, MaterialiseOptions(block_id=f"b{i}{artifact.id}", view=view))
+                        for view in artifact.views()}
+            if any(is_empty for _blocks, is_empty in outcomes.values()):
+                assert all(blocks == [] and is_empty for blocks, is_empty in outcomes.values()), (name, artifact.kind)
+                empty += 1
+                continue
+            for view, (blocks, _is_empty) in outcomes.items():
                 assert blocks, (name, artifact.kind, view)
+                assert blocks == to_blocks(artifact, MaterialiseOptions(block_id=f"b{i}{artifact.id}", view=view))
                 count += 1
-    assert count > 100
+    assert count > 100 and empty < 5

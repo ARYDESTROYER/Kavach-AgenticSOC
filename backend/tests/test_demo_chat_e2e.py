@@ -139,6 +139,8 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     assert lookup.status == "ok"
     entity = _block(hunt, type="entity", title="Indicator reputation")
     assert f"scores {int(round(entity['risk']))}/100" in hunt.answer
+    # The entity card holds the score gauge: no "Reputation figures" row repeats it (D4).
+    assert not any(b.get("artifact_kind") == "kpis" for b in hunt.blocks), [b.get("title") for b in hunt.blocks]
 
     shift = await _turn(demo_state, STARTERS["shift_brief"].prompt)
     brief = _block(shift, type="report")
@@ -147,6 +149,12 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     headline = next(b for s in brief["sections"] for b in s["blocks"] if b.get("type") == "kpi_group")
     open_cases = next(i for i in headline["items"] if i["key"] == "open")
     assert f"**{int(open_cases['value'])} open case" in shift.answer
+    # The brief holds the detail; the prose is its short lead (D5).
+    paragraphs = shift.answer.split("\n\n")
+    assert len(paragraphs) == 3 and paragraphs[-1] == "The brief below is ready to add to a report."
+    attention = next(b for s in brief["sections"] for b in s["blocks"] if b.get("type") == "case_list")
+    assert paragraphs[1].startswith(f"Start with `{attention['items'][0]['case_id']}` (")
+    assert "Needs attention first" not in shift.answer and "Posture:" not in shift.answer
 
 
 async def test_live_text_streams_the_final_body_in_word_groups(demo_state) -> None:
@@ -260,6 +268,42 @@ SWEEP = (
     ("Can we see brute force attempts?", "brute"),
     ("Build a hunt report on lateral movement", "pivot"),
 )
+
+
+_MACHINE_TITLE_CHIP = re.compile(r"`(?:user|ip|host|domain|url|hash|file_hash|process|email):[^`]* — [^`]*`")
+
+
+async def test_answers_name_things_by_human_names_and_never_show_an_empty_block(demo_state) -> None:
+    """Browser-QA D3/D6 over real demo data: no composite ``kind:value — rule`` title
+    and no campaign content-hash id in the narration (both stay in blocks and
+    links), and no block without rows, points or items."""
+    from app.agents.blocks import is_empty_block, iter_leaf_blocks
+
+    questions = [s.prompt for s in DEMO_STARTERS] + [q for q, _intent in SWEEP] + [
+        "Hunt for 198.51.100.77 across logs, cases and threat intel."]
+    for question in questions:
+        response = await _turn(demo_state, question, origin="user")
+        assert not _MACHINE_TITLE_CHIP.search(response.answer), (question, response.answer)
+        assert not re.search(r"campaign-[0-9a-f]{16,}", response.answer), (question, response.answer)
+        empty = [b.get("title") for b in iter_leaf_blocks(response.blocks) if is_empty_block(b)]
+        assert not empty, (question, empty)
+    camps = await _turn(demo_state, "Which campaigns are open?", origin="user")
+    assert " sharing user `" in camps.answer or " sharing IP `" in camps.answer, camps.answer
+
+
+async def test_report_answers_are_a_short_lead_with_the_detail_in_the_report(demo_state) -> None:
+    """D5: a final that carries a report envelope keeps its prose to the lead (at
+    most three paragraphs, closing with the ready sentence)."""
+    for question in ("Build a posture report with these sections: Summary, Key metrics, Trends, Noise reduction, "
+                     "Next steps.", "Give me a report on case demo-00000539-0004",
+                     "Build a hunt report on lateral movement", STARTERS["shift_brief"].prompt):
+        response = await _turn(demo_state, question, origin="user")
+        assert any(b.get("type") == "report" for b in response.blocks), question
+        paragraphs = [p for p in response.answer.split("\n\n") if p.strip()]
+        assert 2 <= len(paragraphs) <= 3, (question, paragraphs)
+        assert paragraphs[-1] in ("The report below is ready to add to your Reports.",
+                                  "The brief below is ready to add to a report."), question
+        assert not any(p.lstrip().startswith("- ") for p in paragraphs), question
 
 
 async def test_every_intent_answers_over_demo_data_without_the_safe_fallback(demo_state) -> None:

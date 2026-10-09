@@ -38,6 +38,25 @@ describe('AccessList', () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
+  it('says a tool is turned off on this deployment, with no grant message, and leaves it out of the count', async () => {
+    const base = makeContext();
+    const context = {
+      ...base,
+      tools: base.tools.map((t) => (t.name === 'lookup_indicator' ? { ...t, available: false } : t)),
+    };
+    const { container } = render(<AccessList context={context} />);
+    const intel = screen.getByRole('region', { name: 'Threat intel' });
+    const row = within(intel).getByText(capabilityLabel(context.tools.find((t) => t.name === 'lookup_indicator')!))
+      .closest('li') as HTMLElement;
+    expect(row).toHaveAttribute('data-tool-state', 'off');
+    expect(row).toHaveTextContent('Turned off on this deployment');
+    expect(row).not.toHaveTextContent('Allowed.');
+    expect(row).not.toHaveTextContent('enrichment:read');
+    expect(row).not.toHaveTextContent('Needs');
+    expect(screen.getByText(`${context.tools.length - 1} of ${context.tools.length} lookups are available to you.`)).toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
   it('flags a kind-gated tool that is only partly available', () => {
     const automation: ChatToolInfo = {
       name: 'automation_status',

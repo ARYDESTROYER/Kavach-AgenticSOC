@@ -585,6 +585,30 @@ restore application images only; none rewrites PostgreSQL. The verified quiesced
 is retained solely for explicit break-glass recovery so rollback cannot erase a
 post-snapshot write. V1 therefore accepts only `migration.strategy=none` plans.
 
+**Rollback note: case threads and chat history.** On the Elasticsearch state backend
+(Mode B), builds with the rebuilt Workspace Chat store case discussion threads and chat
+history in a mapping-safe form that older builds cannot read. The first write converts
+the whole document, entries from before the upgrade included, and the change is one-way:
+after a manual rollback to an older image, case threads and the affected users' chat
+history appear empty, and the older build's next write to them removes the converted
+entries. Portable export does not cover chat or collaboration data, so plan for that
+loss before rolling back.
+
+PostgreSQL and SQLite keep the previous form, so the supervised image-only rollback
+keeps threads and transcripts, with two losses:
+
+- The older build's first chat write for a user drops that user's conversation pins,
+  linked reports, time ranges, and usage totals (the reports themselves stay stored).
+- This release lets up to 10 pinned conversations sit beyond the 50-conversation
+  limit. The older build does not know that exemption: its first saved answer for a
+  user with more than 50 conversations deletes that user's oldest conversations (by
+  last activity, pinned ones included) until 50 remain. Pinned conversations are the
+  likeliest to be old.
+
+Before rolling back, ask users with more than 50 conversations to export the extra
+conversations they want to keep (history row menu → **Export**) and delete them, so
+the older build has nothing to evict.
+
 Durable job state survives browser/backend reconnects and ordinary supervisor-process
 restarts. Updater self-replacement uses a restartable helper with an idempotent
 name-swap transaction: after an ordinary helper-process, Docker-daemon, or host restart,

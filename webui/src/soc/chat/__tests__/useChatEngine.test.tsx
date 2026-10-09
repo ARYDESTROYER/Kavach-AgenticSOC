@@ -575,6 +575,24 @@ describe('useChatEngine — transports, retries and origins', () => {
     expect(streams[2].body).not.toHaveProperty('topic');
   });
 
+  it('sends the longest topic the server accepts (121 chars) and drops a 122-char one', async () => {
+    // The longest console-link id: 40 + ':' + 80 = 121 (CHAT_TOPIC_MAX_CHARS).
+    const longest = `${'k'.repeat(40)}:${'x'.repeat(80)}`;
+    expect(longest).toHaveLength(121);
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Long topic', { origin: 'starter', topic: longest });
+    });
+    await settle();
+    expect(streams[0].body).toMatchObject({ topic: longest });
+    await push(streams[0], start(), done({ answer: 'ok', message_id: 'm1', conversation_id: 'c1' }));
+    act(() => {
+      result.current.send('Too long', { origin: 'starter', topic: `${longest}x` });
+    });
+    await settle();
+    expect(streams[1].body).not.toHaveProperty('topic');
+  });
+
   it('Continue sends origin continue with continue_of', async () => {
     const { result } = await mountEngine();
     act(() => {
@@ -668,29 +686,42 @@ describe('useChatEngine — hydration, guards and preferences', () => {
     ],
   };
 
-  it('hydrates a saved conversation and resumes it with its scope', async () => {
+  it('hydrates a saved conversation and resumes it with its time window', async () => {
     const { result } = await mountEngine({ conversation: saved });
     expect(result.current.items).toMatchObject([
       { kind: 'user', key: 'm1', messageId: 'm1', content: 'Earlier question' },
       { kind: 'assistant', key: 'm2', restored: true, status: 'done', model: 'gpt-y', source: 'Elastic production' },
     ]);
     expect(result.current.conversationId).toBe('conv-7');
-    expect(result.current.model).toBe('gpt-y');
-    expect(result.current.sourceId).toBe('elastic-prod');
+    expect(result.current.timeRange).toEqual({ from: 'now-24h', to: 'now' });
     act(() => {
       result.current.send('Follow on');
     });
     await settle();
     expect(streams[0].body).toMatchObject({
       conversation_id: 'conv-7',
-      model: 'gpt-y',
-      source_id: 'elastic-prod',
       time_range: { from: 'now-24h', to: 'now' },
       history: [
         { role: 'user', content: 'Earlier question' },
         { role: 'assistant', content: 'Earlier answer' },
       ],
     });
+  });
+
+  it('never adopts the stored (server-resolved) model or source as the analyst\'s selection', async () => {
+    // The server stores the EFFECTIVE model (normally the default) and the primary
+    // source it resolved even when the analyst chose none (D2 regression).
+    const { result } = await mountEngine({ conversation: saved });
+    expect(result.current.model).toBeNull();
+    expect(result.current.sourceId).toBeNull();
+    act(() => {
+      result.current.send('Follow on');
+    });
+    await settle();
+    expect(streams[0].body).not.toHaveProperty('model');
+    expect(streams[0].body).not.toHaveProperty('source_id');
+    // The restored answer still names what it used.
+    expect(result.current.items[1]).toMatchObject({ model: 'gpt-y', source: 'Elastic production' });
   });
 
   it('a null conversation is a fresh draft; resetKey resets even when it stays null', async () => {

@@ -27,7 +27,7 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Markdown } from '@/soc/components/Markdown';
 
 import { RefLink, citationAnchorId, useBlocks } from '../context';
-import { formatValue } from '../format';
+import { formatValue, plainDocTitle } from '../format';
 import type { CalloutBlock, CitationsBlock, GuideBlock, MarkdownBlock, QueryBlock, ToneKey } from '../schema';
 import { EXPIRED_TEXT, FALLBACK_TEXT, isDocRef } from '../schema';
 
@@ -151,7 +151,7 @@ export function GuideView({ block }: { block: GuideBlock }) {
                 refValue={l.ref}
                 className="inline-flex h-7 items-center rounded-md border border-input px-2.5 text-xs text-foreground no-underline hover:bg-muted hover:no-underline"
               >
-                {isDocRef(l.ref) ? `Read: ${l.label}` : l.label}
+                {isDocRef(l.ref) ? `Read: ${plainDocTitle(l.label)}` : l.label}
               </RefLink>
             </li>
           ))}

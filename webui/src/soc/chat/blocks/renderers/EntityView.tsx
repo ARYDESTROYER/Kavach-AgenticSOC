@@ -4,7 +4,8 @@
  * a risk was measured, a facts list, enrichment reputation rows, counts as compact KPI
  * tiles, related cases as router links, and an "Investigate" navigation. The indicator is
  * attacker-influenced text: it is shown verbatim (never defanged in the live UI), always
- * mono, and never turned into a link (G7).
+ * mono, and never turned into a link (G7). Facts are mono only when the server marks
+ * that fact attacker-derived; product values and provider notes are sans captions.
  */
 import * as React from 'react';
 import { Check, Copy, Search } from 'lucide-react';
@@ -67,32 +68,58 @@ function CopyValue({ value }: { value: string }) {
   );
 }
 
-export function EntityView({ block, idPrefix }: { block: EntityBlock; idPrefix: string }) {
+export function EntityView({ block, idPrefix, framed = false }: { block: EntityBlock; idPrefix: string; framed?: boolean }) {
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const canInvestigate = isPageId('investigate');
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-md border border-border/70 p-3" data-testid="block-entity">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="shrink-0 text-2xs">
-              {KIND_LABEL[block.entity.kind]}
-            </Badge>
-            {block.verdict ? <VerdictBadge verdict={block.verdict} /> : null}
+    // The block card already frames it; only a report leaf (no card of its own) draws
+    // the entity's border, so the transcript never shows a card inside a card.
+    <div
+      className={cn('flex min-w-0 flex-col gap-3', framed && 'rounded-md border border-border/70 p-3')}
+      data-testid="block-entity"
+    >
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        {/* At least 16rem before the gauge wraps below it, so the facts never squeeze. */}
+        <div className="min-w-[min(100%,16rem)] flex-1 space-y-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="shrink-0 text-2xs">
+                {KIND_LABEL[block.entity.kind]}
+              </Badge>
+              {block.verdict ? <VerdictBadge verdict={block.verdict} /> : null}
+            </div>
+            <div className="mt-1.5 flex min-w-0 items-start gap-1">
+              <InlineCode id={valueId} className="min-w-0 text-sm">
+                {block.entity.value}
+              </InlineCode>
+              <CopyValue value={block.entity.value} />
+            </div>
+            {block.first_seen || block.last_seen ? (
+              <p className="mt-1 text-2xs tabular-nums text-muted-foreground">
+                {block.first_seen ? `First seen ${formatUtc(block.first_seen)}` : ''}
+                {block.first_seen && block.last_seen ? ' · ' : ''}
+                {block.last_seen ? `Last seen ${formatUtc(block.last_seen)}` : ''}
+              </p>
+            ) : null}
           </div>
-          <div className="mt-1.5 flex min-w-0 items-start gap-1">
-            <InlineCode id={valueId} className="min-w-0 text-sm">
-              {block.entity.value}
-            </InlineCode>
-            <CopyValue value={block.entity.value} />
-          </div>
-          {block.first_seen || block.last_seen ? (
-            <p className="mt-1 text-2xs tabular-nums text-muted-foreground">
-              {block.first_seen ? `First seen ${formatUtc(block.first_seen)}` : ''}
-              {block.first_seen && block.last_seen ? ' · ' : ''}
-              {block.last_seen ? `Last seen ${formatUtc(block.last_seen)}` : ''}
-            </p>
+
+          {/* Facts sit beside the gauge rather than below it, so the card has no dead
+              band under the indicator. */}
+          {block.facts.length ? (
+            <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+              {block.facts.map((f, i) => (
+                <React.Fragment key={i}>
+                  <dt className="truncate text-muted-foreground" title={f.label}>
+                    {f.label}
+                  </dt>
+                  {/* Mono only for a fact the server marked attacker-derived (G7); product
+                      values ("ip", "1 of 1 answered") are prose (browser-QA D7). The
+                      indicator itself is already InlineCode above. */}
+                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground')}>{f.value}</dd>
+                </React.Fragment>
+              ))}
+            </dl>
           ) : null}
         </div>
         {typeof block.risk === 'number' ? (
@@ -101,19 +128,6 @@ export function EntityView({ block, idPrefix }: { block: EntityBlock; idPrefix: 
           </div>
         ) : null}
       </div>
-
-      {block.facts.length ? (
-        <dl className="grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-          {block.facts.map((f, i) => (
-            <React.Fragment key={i}>
-              <dt className="truncate text-muted-foreground" title={f.label}>
-                {f.label}
-              </dt>
-              <dd className={cn('min-w-0 break-words', (f.untrusted || block.untrusted) && 'font-mono text-xs')}>{f.value}</dd>
-            </React.Fragment>
-          ))}
-        </dl>
-      ) : null}
 
       {block.reputation.length ? (
         <div>
@@ -130,8 +144,9 @@ export function EntityView({ block, idPrefix }: { block: EntityBlock; idPrefix: 
                     {meta.label}
                   </span>
                   {typeof r.score === 'number' ? <span className="text-2xs tabular-nums text-muted-foreground">score {r.score}</span> : null}
-                  {/* Provider detail is third-party text about an attacker-influenced value (G7): mono. */}
-                  {r.detail ? <span className="w-full break-words font-mono text-2xs text-muted-foreground">{r.detail}</span> : null}
+                  {/* The provider's own note (not log-derived): plain text, never a link,
+                      in the card's muted caption style rather than mono (D7). */}
+                  {r.detail ? <span className="w-full break-words text-xs text-muted-foreground">{r.detail}</span> : null}
                 </li>
               );
             })}

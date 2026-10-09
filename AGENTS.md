@@ -154,7 +154,10 @@ backend/app/
                      Stable plans on the supported PostgreSQL Compose profile +
                      storage_lifecycle desired policy (Hot 180d + Warm 90d + desired
                      Glacier from day 270; deletion always off; capability-aware) +
-                     caps.max_concurrent + BrandingConfig.login_*
+                     caps.max_concurrent + chat_agent (chat loop bounds +
+                     indicator-lookup policy; repaired/clamped on load, never
+                     rejected; curated editor Settings → General → Chat assistant)
+                     + BrandingConfig.login_*
                      bounded plain-text white-label [validator rejects any `<`, #9];
                      AutomationRule → CaseAutomationRule (alias kept, wire key
                      `threshold_automation` unchanged))
@@ -366,7 +369,9 @@ backend/app/
                      approved/pending review state; only approved entries are trusted;
                      EsKVStore/SqlKVStore adapters, no new index) · chat_conversations
                      (bounded per-user Workspace transcripts; server history is
-                     authoritative on resume; no new index/table) · reports (owner-
+                     authoritative on resume; no new index/table; on Elasticsearch
+                     it and case_thread write one-way opaque rows, keyed on SQL —
+                     see the DEPLOY.md rollback note) · reports (owner-
                      scoped chat reports: one strict-CAS KV doc per report + a per-user
                      index, opaque report_-prefixed fields; no new index/table) ·
                      proposals ·

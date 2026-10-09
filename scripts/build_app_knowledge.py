@@ -179,8 +179,6 @@ BREADCRUMB_RE = re.compile(r"\*\*([^*\n]+?(?:[ \t]+→[ \t]+[^*\n]+?)+)\*\*")
 # or Settings section cannot leave the Help Center pointing at a place that is gone.
 # Partial resolutions (a tab inside a page) stay warnings: the page itself is right.
 UNRESOLVED_BREADCRUMB_ALLOWLIST = frozenset({
-    "Options → Type out answers",     # a menu inside the chat composer, not a page
-    "Case Manager → Chat",            # a tab of the Case Manager detail pane
     "Open source → Edit",             # buttons on the Playbooks page
     "Settings → Pages → Source",      # GitHub's repository settings (release procedure)
 })

@@ -19,10 +19,23 @@ import { SCOPE_DESCRIPTIONS, SCOPE_LABELS } from './format';
 /* Tool access.                                                                */
 /* -------------------------------------------------------------------------- */
 
-/** True when every named tool is in the catalogue and allowed (fail closed). */
+/** The copy for a tool (or scope) the deployment switched off (SPEC A30). */
+export const TURNED_OFF_COPY = 'Turned off on this deployment';
+
+/** The deployment switched this tool off (SPEC A30): no grant would help. */
+export function toolTurnedOff(tool: ChatToolInfo): boolean {
+  return tool.available === false;
+}
+
+/** The caller holds the grants AND the deployment has the tool on. */
+export function toolUsable(tool: ChatToolInfo): boolean {
+  return tool.allowed && !toolTurnedOff(tool);
+}
+
+/** True when every named tool is in the catalogue, allowed and on (fail closed). */
 export function toolsAllowed(context: ChatContextInfo | null | undefined, tools: readonly string[]): boolean {
   if (!context) return false;
-  return tools.every((name) => context.tools.some((tool) => tool.name === name && tool.allowed));
+  return tools.every((name) => context.tools.some((tool) => tool.name === name && toolUsable(tool)));
 }
 
 /**
@@ -41,17 +54,19 @@ export interface ScopeAccess {
   scope: ChatScope;
   label: string;
   description: string;
-  /** At least one tool of this scope is allowed. */
+  /** At least one tool of this scope is allowed and on. */
   allowed: boolean;
   /** A grant that would unlock it, when known. */
   missing: string | null;
+  /** Every tool of this scope the caller holds is switched off by the deployment. */
+  turnedOff: boolean;
 }
 
 /** Per-scope access derived from the catalogue (a scope is usable when any tool is). */
 export function scopeAccess(context: ChatContextInfo | null | undefined): ScopeAccess[] {
   return CHAT_SCOPES.map((scope) => {
     const tools = context?.tools.filter((tool) => tool.scope === scope) ?? [];
-    const allowed = tools.some((tool) => tool.allowed);
+    const allowed = tools.some(toolUsable);
     let missing: string | null = null;
     if (!allowed) {
       for (const tool of tools) {
@@ -59,7 +74,9 @@ export function scopeAccess(context: ChatContextInfo | null | undefined): ScopeA
         if (missing) break;
       }
     }
-    return { scope, label: SCOPE_LABELS[scope], description: SCOPE_DESCRIPTIONS[scope], allowed, missing };
+    // Held but switched off: say so instead of "Not available to you".
+    const turnedOff = !allowed && !missing && tools.some((tool) => tool.allowed && toolTurnedOff(tool));
+    return { scope, label: SCOPE_LABELS[scope], description: SCOPE_DESCRIPTIONS[scope], allowed, missing, turnedOff };
   });
 }
 
@@ -367,7 +384,13 @@ export function atMenuGroups(
       value: `scope:${access.scope}`,
       access,
       label: `@${access.scope}`,
-      hint: access.allowed ? access.description : access.missing ? `Needs ${access.missing}` : 'Not available to you',
+      hint: access.allowed
+        ? access.description
+        : access.missing
+          ? `Needs ${access.missing}`
+          : access.turnedOff
+            ? TURNED_OFF_COPY
+            : 'Not available to you',
       disabled: !access.allowed,
     }));
   return items.length ? [{ heading: 'Limit the next answers to', items }] : [];
