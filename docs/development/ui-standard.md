@@ -305,8 +305,12 @@ by the send — a starter, a quick action, a follow-up, Continue, Ask again, Ret
 to latest — hands focus to the composer instead of dropping it to the page.
 
 **Truth and persistence.** A new conversation is a local draft until its first answer
-is saved; selecting a thread restores the server transcript and its source and model in
-the still-mounted frame, with **Retry** and **Start new chat** on a restore failure.
+is saved; selecting a thread restores the server transcript and its time range in the
+still-mounted frame, with **Retry** and **Start new chat** on a restore failure. The model
+returns to the default and the source to **All sources**, and `@` scopes are cleared:
+the stored model and source are what the server resolved for the last turn, not the
+analyst's choice, so adopting them would pin both on the next question. Each restored
+answer still names the model and source it ran on.
 Drafts are kept per thread and never written to the server. Every persisted turn
 carries one stable idempotency key; a turn whose first model call failed is shown but
 never enters model history. A deep link (`#/chat?conversationId=&messageId=`) selects,

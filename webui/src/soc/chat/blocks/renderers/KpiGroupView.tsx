@@ -71,6 +71,8 @@ function valueNode(item: KpiItem): React.ReactNode {
 function deltaLabel(item: KpiItem): string {
   const d = item.delta;
   if (!d) return '';
+  // A zero change has no direction: say so in words (no "0" with an arrow).
+  if (d.value === 0) return `no change ${d.period_label}`.trim();
   const sign = d.value > 0 ? '+' : d.value < 0 ? '−' : '';
   return `${sign}${formatDelta(Math.abs(d.value), item.unit)} ${d.period_label}`;
 }
@@ -129,17 +131,23 @@ export function KpiItemCell({ item, testId }: { item: KpiItem; testId: string })
 export function KpiGroupView({ items, idPrefix, className }: { items: KpiItem[]; idPrefix: string; className?: string }) {
   return (
     <div className={cn('@container min-w-0', className)} data-testid="block-kpis">
-      <div
-        role="list"
-        className={cn(
-          'grid overflow-hidden rounded-md border-l border-t border-border/70',
-          'grid-cols-2 @[40rem]:grid-cols-3 @[60rem]:grid-cols-6',
-          '[&>*]:border-b [&>*]:border-r [&>*]:border-border/70',
-        )}
-      >
-        {items.map((item, i) => (
-          <KpiItemCell key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} />
-        ))}
+      {/* The outer frame is the wrapper's own border, so a partial last row (2 items
+          in 3 columns, 5 in 2) is still a closed box. The cells draw only the inner
+          hairlines; the grid overhangs the frame by 1 px right and bottom, where the
+          clip hides the outermost cells' edges under the frame. */}
+      <div className="overflow-hidden rounded-md border border-border/70" data-testid="block-kpis-frame">
+        <div
+          role="list"
+          className={cn(
+            '-mb-px -mr-px grid',
+            'grid-cols-2 @[40rem]:grid-cols-3 @[60rem]:grid-cols-6',
+            '[&>*]:border-b [&>*]:border-r [&>*]:border-border/70',
+          )}
+        >
+          {items.map((item, i) => (
+            <KpiItemCell key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} />
+          ))}
+        </div>
       </div>
     </div>
   );

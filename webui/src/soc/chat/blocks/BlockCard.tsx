@@ -286,6 +286,11 @@ export interface BlockCardProps {
   leafKey?: string;
   /** Print / static rendering (see {@link BlockBodyProps.staticMode}). */
   staticMode?: boolean;
+  /**
+   * Drop the card's own frame (border, rounding, padding) and nothing else: for a host
+   * that already frames the block (a report panel item), so cards never nest.
+   */
+  bare?: boolean;
 }
 
 const HEADINGS = { 4: 'h4', 5: 'h5', 6: 'h6' } as const;
@@ -360,6 +365,7 @@ export function BlockCard({
   addDisabledReason = null,
   leafKey,
   staticMode = false,
+  bare = false,
 }: BlockCardProps) {
   const ctx = useBlocks();
   const { navigate, queryForStep } = ctx;
@@ -520,7 +526,7 @@ export function BlockCard({
       data-block-type={block.type}
       className={cn(
         'min-w-0 [contain-intrinsic-size:auto_320px] [content-visibility:auto]',
-        nested ? 'pt-1' : 'rounded-lg border border-border/70 px-3 pb-3 pt-2',
+        nested || bare ? 'pt-1' : 'rounded-lg border border-border/70 px-3 pb-3 pt-2',
       )}
     >
       <figcaption className="mb-2 flex items-start gap-2">

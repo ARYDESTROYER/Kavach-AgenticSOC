@@ -15,6 +15,7 @@ import { cn } from '@/lib/cn';
 import { LoadingState } from '@/design-system/loading';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { PANEL_DEFAULT, PANEL_MIN, SPLIT_HANDLE_PX } from './useChatGeometry';
+import { useOpenerFocus } from './useOpenerFocus';
 
 const ReportPanel = React.lazy(() => import('../report/ReportPanel'));
 
@@ -133,9 +134,14 @@ export interface ReportOverlayProps extends PanelSource {
   onOpenChange: (open: boolean) => void;
 }
 
-/** The overlay Sheet (focus moves to the panel heading; Radix returns it on close). */
+/**
+ * The overlay Sheet: focus moves to the panel heading and returns to the control that
+ * opened it on close (SPEC §10.9). The Sheet has no Radix trigger (it opens from the
+ * toolbar), so the opener is recorded here rather than left to Radix (→ `<body>`).
+ */
 export function ReportOverlay({ open, onOpenChange, conversationId, reportId, onCountChange }: ReportOverlayProps) {
   const contentRef = React.useRef<HTMLDivElement>(null);
+  const opener = useOpenerFocus();
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -145,11 +151,13 @@ export function ReportOverlay({ open, onOpenChange, conversationId, reportId, on
         // The panel has its own close control; hide the Sheet's duplicate X.
         className="gap-0 p-0 [&>button[aria-label='Close']]:hidden"
         onOpenAutoFocus={(event) => {
+          opener.capture();
           // Not the first button: the panel moves focus to its own heading once it has
           // loaded (SPEC §10.9); until then the dialog itself holds focus.
           event.preventDefault();
           contentRef.current?.focus();
         }}
+        onCloseAutoFocus={opener.restore}
       >
         <SheetTitle className="sr-only">Report</SheetTitle>
         <SheetDescription className="sr-only">This conversation's report: its items, notes and summary.</SheetDescription>

@@ -128,7 +128,8 @@ export default function Chat({ caseId, opts }: ChatProps = {}) {
           draft: conv.draft,
           onDraftChange: conv.setDraft,
           blocked: conv.restoring || !!conv.threadError,
-          resetKey: conv.newDraftEpoch,
+          // Every New chat AND every thread switch (see `transcriptEpoch`).
+          resetKey: conv.transcriptEpoch,
           onBusyChange,
           onConversationPersisted: conv.conversationPersisted,
           textStreamingAvailable: ctx?.text_streaming.available ?? true,

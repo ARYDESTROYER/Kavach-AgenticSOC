@@ -16,7 +16,14 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 import type { ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
-import { HistoryRail, HistoryStrip, groupConversations, shortAge, type HistoryRailProps } from '../HistoryRail';
+import {
+  HistoryRail,
+  HistoryStrip,
+  distinctSnippet,
+  groupConversations,
+  shortAge,
+  type HistoryRailProps,
+} from '../HistoryRail';
 
 expect.extend(toHaveNoViolations);
 
@@ -191,7 +198,9 @@ describe('HistoryRail', () => {
     expect(props.onOpenReport).toHaveBeenCalledWith(ROWS[3]);
 
     await user.click(screen.getByRole('button', { name: 'Actions for Phishing wave' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Export' }));
+    const exportTrigger = await screen.findByRole('menuitem', { name: 'Export' });
+    expect(exportTrigger.querySelector('svg')).toHaveClass('size-4', 'text-muted-foreground');
+    await user.click(exportTrigger);
     // Radix sub-menu items are driven by keyboard here (jsdom has no pointer geometry).
     const markdown = await screen.findByRole('menuitem', { name: 'Markdown (.md)' });
     act(() => markdown.focus());
@@ -237,6 +246,18 @@ describe('HistoryRail', () => {
       </TooltipProvider>,
     );
     expect(screen.getByText('No matching conversations')).toBeInTheDocument();
+  });
+
+  it('never repeats a hit\'s title as its snippet (on screen or in its name)', () => {
+    const title = 'Hunt the source IP behind the newest SQL injection case: check its reputation,…';
+    const hit: ChatConversationSearchHit = { ...ROWS[1], title, match: { message_id: null, snippet: title } };
+    renderRail({ search: { query: 'sql injection', setQuery: vi.fn(), results: [hit], searching: false, error: null, openHit: vi.fn() } });
+    expect(screen.getAllByText(title)).toHaveLength(1);
+    expect(screen.getByRole('button', { name: title })).toBeInTheDocument();
+    expect(distinctSnippet('Posture check', 'Posture check')).toBe('');
+    // A first question the title was cut from is still a repeat.
+    expect(distinctSnippet('How is our posture right n…', 'How is our posture right now? Include the trend')).toBe('');
+    expect(distinctSnippet('Posture check', '…failed logins from 10.0.0.5…')).toBe('…failed logins from 10.0.0.5…');
   });
 
   it('discloses bounded retention without implying infinite history', () => {

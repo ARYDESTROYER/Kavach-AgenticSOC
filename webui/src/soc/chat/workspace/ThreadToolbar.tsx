@@ -299,7 +299,8 @@ export function ThreadToolbar({
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
-                <Download aria-hidden />
+                {/* A sub-trigger does not size its icon like a menu item does (16 px, muted). */}
+                <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                 Export conversation
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>

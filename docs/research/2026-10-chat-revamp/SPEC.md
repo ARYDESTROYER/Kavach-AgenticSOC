@@ -116,6 +116,8 @@ stream_mode: Literal["steps", "text"] | None = None
 turn_id: str | None = None
 message_id: str | None = None      # assistant message id when persisted
 memory_proposal: MemoryProposal | None = None   # §4.8; replaces model-driven memory_action
+case_saved: bool | None = None     # §4.6, A37; None when no case thread applied
+case_save_notice: TurnNotice | None = None      # A37; the not_saved notice when case_saved is False
 ```
 
 `answer`, `table`, `query`, `discover`, `cost`, `memory_action` (now only the echo of an explicit
@@ -371,8 +373,8 @@ message), each ≤ 8 000 chars and without blocks, steps or usage, are persisted
 thread, where every reader of the case sees them. The route
 passes `can_comment_case = cases:comment grant`; the engine kwarg defaults to True for direct
 callers. `_persist_case_turn` keeps its signature and gains keyword-only `require_existing=True`;
-it skips writing when the case is missing or the grant is absent, and the response carries
-`notice {kind: "not_saved", message: "Not saved to the case thread"}` (still HTTP 200). Case-scoped
+it skips writing when the case is missing or the grant is absent, and the response reports the
+outcome in `case_saved` and `case_save_notice`, still HTTP 200 (A37 has the full rule). Case-scoped
 turns accept `idempotency_key`; the thread append is deduplicated by it. Case turns never enter
 Workspace history and cannot be added to reports (by construction, §9.2).
 
@@ -1477,8 +1479,8 @@ every split reference width is 8 px narrower than first drafted: 1280/nav 64 →
   to save · asks the model again and uses tokens again": it runs the question again and bills it
   again (there is no save-only retry, A21). A settled turn whose `not_saved` notice is retryable
   retries with the SAME idempotency key, so the case-thread append is deduplicated. The save
-  outcome must stay visible when the answer also carries another notice (partial, timeout, cap,
-  denied, policy); see the open item in A34.
+  outcome stays visible when the answer also carries another notice (partial, timeout, cap,
+  denied, policy): the line and the retry rule read `case_save_notice` first (A37).
 - The transcript is `role="log"` with an explicit `aria-live="off"`: the role is implicitly
   polite and would read every streamed delta. Announcements go through the shell announcer only.
 
@@ -1670,12 +1672,8 @@ the wave-5 browser review.
   answers saved before this change). A title or doc already listed is not repeated.
 - **Captions are prose.** KPI `context` captions and entity facts render in the sans muted
   caption style; mono is kept for identifiers and code.
-- **Open item: the case-thread save outcome.** `chat.py` attaches the `not_saved` notice only
-  when the response has no other notice, so a case answer that also carries `partial`,
-  `timeout`, `cap` or `denied` shows no not-saved line. The save outcome must be carried apart
-  from the top notice (for example an additive `ChatResponse.case_saved: false` that the
-  not-saved line reads), with a test for a denied lookup plus `can_comment=False`, and the
-  `not_saved` notice sentence must not repeat the "Not saved" label (A25).
+- **The case-thread save outcome** (raised here as an open item in wave 5) travels apart from
+  the top notice; A37 records the shipped contract.
 
 **A35 — A spent budget never disables Send (§8, §10.3, §10.4, §5.4.1).** Product decision
 (wave 6). Under a blocking budget (`budget_state: "reached"` with `on_exceed: "block"`, daily or
@@ -1745,3 +1743,59 @@ A34).**
   never the internal "turn" ("Per-question limit", "Whole question", "Older messages were
   removed…"), and a chosen time range reads "<range>. Questions can narrow this range, not widen
   it." while the default reads "Last 24 hours, unless your question names another window."
+
+**A37 — The case-thread save outcome (§3.2, §4.6, §10.3, A25; resolves the A34 open item).**
+A case-scoped answer reports whether it reached the case thread in two additive `ChatResponse`
+fields, apart from the top `notice`.
+- `case_saved: bool | None` is `None` when no case thread applied (a Workspace answer, a legacy
+  row, a D1 failure, a turn stopped before it produced or billed an answer, no thread store);
+  otherwise it says whether the question and answer were written. A non-boolean value reads as
+  `None`. `TurnOutcome.case_saved` carries the same value for the route.
+- `case_save_notice: TurnNotice | None` is the `not_saved` notice whenever `case_saved` is
+  `False`, and `None` otherwise. Its sentence is "The answer was not added to the case thread.",
+  which does not repeat the "Not saved" label the client renders (A25). `retryable` is `True` only
+  for a store failure or an unconfirmed write (`store_error`); a missing `cases:comment` grant or a
+  missing case would fail the same way again, so a re-run, which bills again, is not offered.
+- The same notice is copied into `notice` only when the answer carries no other notice. A
+  `partial`, `timeout`, `cap`, `denied`, `cancelled`, `budget`, `provider` or `breaker` notice
+  keeps the top slot, so a client that reads only `notice` still sees the not-saved outcome
+  whenever it is the only notice.
+- Agent mode sets both fields in `ChatEngine._with_case_save`, the $0 Help Center fallback
+  included; compatibility mode sets them the same way (its `notice` is the not-saved notice).
+- The client reads `case_save_notice` first and falls back to a `not_saved` top notice from older
+  servers: `MemoryLine.tsx` `notSavedNotice` renders the not-saved line, and `useChatEngine.ts`
+  `retriesWithSameKey` re-runs a retryable one with the SAME idempotency key.
+- Tests: `test_chat_engine_loop.py` (a denied lookup with `can_comment_case=False`, a store error
+  under a denied notice, the budget and breaker Help Center fallbacks), `test_chat_context_route.py`,
+  `Message.test.tsx` and `useChatEngine.test.tsx`.
+
+**A38 — Final whole-branch review decisions (§3.1, §4.3, §4.8.2, §4.8.3, §6.4, §7.5, A13).**
+- **Client history is never user-authored by default.** `ChatTurn` gains an optional `origin`
+  (`user`, `follow_up`, `starter`, `command`, `continue`; an unknown value reads as `None`, never a
+  422, and the field stays out of the request fingerprint). `PriorExchange.from_turns` counts a
+  client-history user turn as user-authored only when it says `origin: "user"`; a missing or
+  other origin is non-user, so a model-written follow-up replayed as client history can never
+  authorise an indicator lookup (§4.8.3). The web client sends each history turn's real origin,
+  and a reopened Workspace thread keeps the stored origin on its user items, so Ask again and ↑
+  recall resend a follow-up as a follow-up.
+- **Known limitation: the per-conversation indicator cap.** `max_indicator_lookups_per_conversation`
+  (A13) applies to persisted Workspace conversations, whose stored steps record what left the
+  deployment. Case-scoped and stateless turns carry no stored steps, so only the per-question cap
+  applies there; a client-reported count would be forgeable, and a server-side per-(user, case)
+  counter is left for a later change.
+- **Reservation lease.** A Workspace idempotency reservation lasts at least
+  `turn_timeout_s + model_step_timeout_s + max(model_step_timeout_s, tool_timeout_s) + 120 s`
+  (and never less than 10 minutes), so a same-key retry receives 409 `chat_request_in_progress`
+  while the original turn can still be running rather than reclaiming the key.
+- **Time precedence (§3.1).** The composer chip (`ChatRequest.time_range`) is the outer bound;
+  `context.time_range` is only a default when no chip is set and never clamps a tool window.
+- **Steps cap.** When a turn produces more than 64 steps, steps that did not run are dropped
+  first (skipped, then denied, error and cancelled, newest first within each kind), then ordinary
+  lookups; indicator lookups and model steps are kept longest, so the run log and the stored
+  egress count never lose a lookup that left the deployment (`models._bounded_steps`).
+- **Copy.** The shift brief headline labels the status KPI "Status: Needs human", which counts
+  cases in that status, not cases with a needs-human verdict; the posture trend says "in hourly
+  buckets" (a 24-hour window spans 25 hourly buckets) instead of "24h (25 hours)"; case facts show friendly labels next to badges, not raw enum values; Help Center
+  citation snippets are plain text and a section is cited once.
+- **History rail.** The rail requests 60 rows so up to ten pinned conversations never fall off
+  the first page (§7.5 pins are exempt from the 50-conversation eviction).

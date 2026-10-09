@@ -788,6 +788,7 @@ class AppState:
             "case_id": effective_case or None,
             "user": current_username(request) or "default",
             "time_range": getattr(body, "time_range", None),
+            "context_time_range": _context_time_range(body),
             "app_version": __version__,
             "source_health_rows": self._chat_source_health_rows,
             "scheduler_health": self.scheduler_health,
@@ -3718,6 +3719,27 @@ def chat_grant_pairs() -> frozenset[tuple[str, str]]:
     except Exception:  # noqa: BLE001 -- no corpus: no console targets to grant
         pass
     return frozenset(pairs)
+
+
+def _context_time_range(body: Any) -> Any:
+    """``body.context.time_range`` as a validated ``TimeRange`` (the §3.1 default
+    below the chip), or ``None`` when absent or invalid. The screen context is
+    best-effort, so a malformed window is ignored rather than failing the turn."""
+    from .models import TimeRange
+
+    context = getattr(body, "context", None)
+    raw = getattr(context, "time_range", None)
+    if not isinstance(raw, dict):
+        return None
+    start, end = raw.get("from"), raw.get("to")
+    if not isinstance(start, str) or not start.strip():
+        return None
+    try:
+        return TimeRange.model_validate({
+            "from": start, "to": end if isinstance(end, str) and end.strip() else "now",
+        })
+    except Exception:  # noqa: BLE001 -- a malformed screen window is no window
+        return None
 
 
 def _coerce_bool(v: Any, default: bool = True) -> bool:

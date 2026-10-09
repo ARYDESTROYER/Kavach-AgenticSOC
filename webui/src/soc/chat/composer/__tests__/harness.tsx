@@ -50,6 +50,10 @@ export interface HarnessProps extends Omit<ComposerProps, 'engine' | 'context'> 
   streamMode?: ChatStreamMode;
   /** The engine's initial time range (a reopened thread's, or a custom one). */
   timeRange?: ChatTimeRange | null;
+  /** The engine-held history the next turn replays (case chat). */
+  historySize?: ChatEngine['historySize'];
+  /** `false` = the engine owns its history (case chat). Default true. */
+  persist?: boolean;
   handleRef?: React.Ref<ComposerHandle>;
   /** Whether `send` reports success (the engine refuses while blocked). */
   sendResult?: boolean;
@@ -72,6 +76,8 @@ export function Harness(props: HarnessProps) {
     controlledDraft,
     onDraftChange,
     timeRange: initialTimeRange = null,
+    historySize,
+    persist = true,
     ...rest
   } = props;
   const [localDraft, setLocalDraft] = React.useState(props.draft ?? '');
@@ -92,7 +98,7 @@ export function Harness(props: HarnessProps) {
     busy,
     canStop: busy && canStop,
     conversationId: null,
-    persist: true,
+    persist,
     draft,
     setDraft,
     model,
@@ -112,6 +118,7 @@ export function Harness(props: HarnessProps) {
       spies.setTimeRange(value);
       setTimeRange(value);
     },
+    historySize: historySize ?? { exchanges: 0, chars: 0 },
     streamMode,
     effectiveStreamMode: streamMode,
     setStreamMode: (value) => {

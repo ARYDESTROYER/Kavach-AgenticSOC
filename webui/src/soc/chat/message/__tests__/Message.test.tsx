@@ -118,6 +118,9 @@ describe('Message — completed', () => {
     fireEvent.click(within(list as HTMLElement).getByRole('button', { name: 'Query' }));
     expect(screen.getByText('event.outcome:failure AND source.ip:10.0.0.5')).toBeInTheDocument();
     expect(within(meta).getByRole('button', { name: /2\.1k tokens · \$0\.004\. Usage details/ })).toBeInTheDocument();
+    // The duration hides in a narrow lane; the lookup count never truncates there.
+    expect(disclosure).toHaveClass('shrink-0');
+    expect(within(disclosure).getByText(/^· 2\.4 s$/)).toHaveClass('hidden', '@[30rem]/meta:inline');
   });
 
   it('reads "Answered in" without lookups, "Usage not recorded" for legacy turns and "simulated" in Demo', () => {
@@ -127,6 +130,15 @@ describe('Message — completed', () => {
     const meta = screen.getByTestId('meta-row');
     expect(meta).toHaveTextContent('Answered in 1.8 s');
     expect(meta).toHaveTextContent('simulated');
+    // In a narrow lane the cost drops (the name and card keep it) and the Demo marker
+    // sits outside the truncating figure, so it can never be cut away (390 px).
+    expect(meta).toHaveClass('@container/meta');
+    const figure = within(meta).getByRole('button', { name: /simulated\. Usage details$/ });
+    expect(figure).not.toHaveTextContent('simulated');
+    expect(within(figure).getByText(/· \$0\.004/)).toHaveClass('hidden', '@[30rem]/meta:inline');
+    const marker = within(meta).getByText('simulated');
+    expect(marker).toHaveClass('shrink-0');
+    expect(marker).toHaveAttribute('aria-hidden', 'true');
     unmount();
 
     renderMessage({ item: assistantItem({ restored: true, response: { answer: 'Legacy answer' } }) });

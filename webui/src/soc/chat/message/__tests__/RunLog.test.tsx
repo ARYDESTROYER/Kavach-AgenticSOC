@@ -70,6 +70,38 @@ describe('RunLogList', () => {
     expect(within(region).getByText(/untrusted text/)).toBeInTheDocument();
   });
 
+  it('shows a parameter in both maps once (as untrusted text), with readable names and values', () => {
+    render(
+      <RunLogList
+        id="log-3"
+        steps={stepsFromResponse([
+          step(1, {
+            label: 'Searched logs',
+            params: { ip: '203.0.113.93', time_from: 'now-7d', size: 5 },
+            untrusted_params: { ip: '203.0.113.93' },
+          }),
+          step(2, {
+            label: 'Searched cases',
+            params: { sort_field: 'created_at', window_hours: 168, case_id: 'demo-1' },
+            untrusted_params: { case_id: 'demo-1' },
+          }),
+        ])}
+      />,
+    );
+    // Each value once, and that one is the untrusted (mono) chip.
+    expect(screen.getAllByText('203.0.113.93')).toHaveLength(1);
+    expect(screen.getByText('203.0.113.93')).toHaveClass('font-mono');
+    expect(screen.getAllByText('demo-1')).toHaveLength(1);
+    expect(screen.getAllByText('IP')).toHaveLength(1);
+    expect(screen.getByText('Case')).toBeInTheDocument();
+    expect(screen.getByText('From')).toBeInTheDocument();
+    expect(screen.getAllByText('last 7 days')).toHaveLength(2);
+    expect(screen.getByText('Sorted by')).toBeInTheDocument();
+    expect(screen.getByText('creation time')).toBeInTheDocument();
+    expect(screen.queryByText('now-7d')).toBeNull();
+    expect(screen.queryByText('created_at')).toBeNull();
+  });
+
   it('says so when nothing has run yet', () => {
     render(<RunLogList id="log-2" steps={[]} />);
     expect(screen.getByText('No lookups yet.')).toBeInTheDocument();

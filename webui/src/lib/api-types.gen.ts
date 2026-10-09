@@ -7254,6 +7254,8 @@ export interface components {
         ChatTurn: {
             /** Content */
             content: string;
+            /** Origin */
+            origin?: ("user" | "follow_up" | "starter" | "command" | "continue") | null;
             /** Role */
             role: string;
         };

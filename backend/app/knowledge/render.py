@@ -96,7 +96,11 @@ def doc_citation(chunk: DocChunk, citation_id: str, knowledge: AppKnowledge | No
         kind="doc",
         title=display_text(chunk_title(chunk, knowledge), 200) or knowledge.pages[chunk.page].title,
         doc=href,
-        snippet=display_text(first_sentences(chunk.text, 2), SNIPPET_CHARS, multiline=False) or None,
+        # Plain text: the client renders a snippet as text, so inline Markdown
+        # (``**strong**``, code ticks, link syntax) would show literally.
+        snippet=display_text(
+            plain_inline(first_sentences(chunk.text, 2), SNIPPET_CHARS), SNIPPET_CHARS, multiline=False,
+        ) or None,
     )
 
 

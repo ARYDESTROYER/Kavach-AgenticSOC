@@ -409,6 +409,37 @@ async def test_concurrent_reservation_and_stale_recovery(app_state: AppState) ->
         await store.reserve_exchange("race-user", **kwargs)
 
 
+async def test_a_reservation_keeps_its_requested_lease(app_state: AppState) -> None:
+    """A turn configured to run longer than the default lease asks for a longer one;
+    a same-key retry inside it is still told the request is in progress."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.constants import CHAT_CONVERSATIONS_NS
+
+    store = app_state.chat_conversations
+    kwargs = {
+        "idempotency_key": "chat-long-lease-0001",
+        "request_fingerprint": "c" * 64,
+        "conversation_id": None,
+    }
+    await store.reserve_exchange("lease-user", lease_seconds=1_320, **kwargs)
+    key = partition_key_for_user("lease-user")
+
+    async def age(seconds: int) -> None:
+        doc = await app_state.kv.get(CHAT_CONVERSATIONS_NS, key)
+        rows = stored_request_rows(doc)
+        stamp = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        rows[kwargs["idempotency_key"]]["updated_at"] = stamp.isoformat().replace("+00:00", "Z")
+        await app_state.kv.put(CHAT_CONVERSATIONS_NS, key, with_stored_rows(doc, requests=rows))
+
+    await age(700)                              # past the 10-minute default, inside 22 min
+    with pytest.raises(ChatRequestInProgress):
+        await store.reserve_exchange("lease-user", **kwargs)
+    await age(1_400)                            # past the requested lease: reclaimable
+    reclaimed = await store.reserve_exchange("lease-user", **kwargs)
+    assert reclaimed.status == "reserved"
+
+
 async def test_completed_receipt_survives_transcript_retention(app_state: AppState) -> None:
     store = app_state.chat_conversations
     key = "chat-old-completed-replay-001"

@@ -46,6 +46,7 @@ import { readChatStream, type ChatStreamOutcome } from './ndjson';
 import {
   CHAT_BUDGET_STATES,
   CHAT_LIMITS,
+  CHAT_ORIGINS,
   CHAT_SCOPES,
   CHAT_STREAM_MODES,
   REPORT_ITEM_KINDS,
@@ -584,7 +585,7 @@ export function normaliseConversationMessage(raw: unknown): ChatConversationMess
       normaliseChatResponse({ answer: raw.content });
     if (response && !response.message_id) response.message_id = id;
   }
-  return {
+  const out: ChatConversationMessage = {
     id,
     role: raw.role,
     content: raw.role === 'assistant' && response ? response.answer : raw.content,
@@ -595,6 +596,14 @@ export function normaliseConversationMessage(raw: unknown): ChatConversationMess
     source_id: optStr(raw.source_id, 128),
     source_name: optText(raw.source_name, 120),
   };
+  // A user message stores only a non-default origin as `response: {origin}` (SPEC
+  // §4.8). Keep it: a reopened thread's Ask again must resend a model-authored
+  // follow-up as `follow_up`, never as user-authored text.
+  if (raw.role === 'user' && isObj(raw.response)) {
+    const origin = enumOr(raw.response.origin, CHAT_ORIGINS, 'user');
+    if (origin !== 'user') out.origin = origin;
+  }
+  return out;
 }
 
 export function normaliseConversation(raw: unknown): ChatConversation | null {

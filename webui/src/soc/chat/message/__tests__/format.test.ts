@@ -93,5 +93,18 @@ describe('message format helpers', () => {
     expect(paramValue(true)).toBe('yes');
     expect(paramValue(1200)).toBe((1200).toLocaleString());
     expect(paramValue('last 24h')).toBe('last 24h');
+    // Acronyms, ids and query syntax read as words.
+    expect(paramKeyLabel('ip')).toBe('IP');
+    expect(paramKeyLabel('case_id')).toBe('Case');
+    expect(paramKeyLabel('sort_field')).toBe('Sorted by');
+    expect(paramValue('now-7d', 'time_from')).toBe('last 7 days');
+    expect(paramValue('now-1h', 'time_from')).toBe('last hour');
+    expect(paramValue('now', 'time_to')).toBe('now');
+    expect(paramValue('2026-10-01T00:00:00Z', 'time_from')).toBe('2026-10-01T00:00:00Z');
+    expect(paramValue('created_at', 'sort_field')).toBe('creation time');
+    expect(paramValue(24, 'window_hours')).toBe('last 24 hours');
+    expect(paramValue(168, 'window_hours')).toBe('last 7 days');
+    // The same string under another key is left alone.
+    expect(paramValue('now-7d')).toBe('now-7d');
   });
 });

@@ -29,6 +29,13 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 export interface UsageCardProps {
   usage: TurnUsage;
+  /**
+   * Classes for the cost segment of the figure (the meta row hides it in a narrow lane;
+   * the accessible name and the details always carry it).
+   */
+  costClassName?: string;
+  /** The host shows the Demo "simulated" marker itself (so it never truncates away). */
+  simulatedOutside?: boolean;
   /** Source names the lookups queried (display text). */
   sources?: readonly string[];
 }
@@ -65,8 +72,9 @@ const HOVER_OPEN_MS = 250;
 const HOVER_CLOSE_MS = 150;
 
 /** The meta row's token figure: a button that opens the usage details. */
-export function UsageCard({ usage, sources }: UsageCardProps) {
+export function UsageCard({ usage, sources, costClassName, simulatedOutside = false }: UsageCardProps) {
   const summary = usageSummary(usage);
+  const approx = usage.estimated ? '≈ ' : '';
   const [open, setOpen] = React.useState(false);
   /** Opened by a hovering mouse (not pinned): closes when the pointer leaves. */
   const hoverRef = React.useRef(false);
@@ -119,7 +127,9 @@ export function UsageCard({ usage, sources }: UsageCardProps) {
             }
           }}
         >
-          {summary}
+          {usageSummary(usage, { withCost: false, withSimulated: false })}
+          <span className={costClassName}>{` · ${approx}${formatCost(usage.cost)}`}</span>
+          {usage.simulated && !simulatedOutside ? ' · simulated' : null}
         </button>
       </PopoverTrigger>
       <PopoverContent

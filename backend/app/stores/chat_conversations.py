@@ -817,13 +817,33 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
 
-def _is_stale(value: Any) -> bool:
+def _is_stale(value: Any, ttl_seconds: Any = None) -> bool:
     timestamp = _parse_time(value)
     if timestamp is None:
         return True
-    return (datetime.now(timezone.utc) - timestamp).total_seconds() >= (
-        IDEMPOTENCY_PENDING_TTL_SECONDS
-    )
+    return (datetime.now(timezone.utc) - timestamp).total_seconds() >= _lease_ttl(ttl_seconds)
+
+
+# The longest lease a reservation may ask for (a turn's configured worst case is far
+# below it; the bound only keeps a corrupt record from pinning a key for ever).
+MAX_IDEMPOTENCY_LEASE_SECONDS = 2 * 60 * 60
+
+
+def _lease_ttl(value: Any) -> float:
+    """A reservation's lease length: its stored ``lease_seconds`` (never shorter than
+    the default, never longer than the bound), else the default."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return float(IDEMPOTENCY_PENDING_TTL_SECONDS)
+    if seconds != seconds:  # NaN
+        return float(IDEMPOTENCY_PENDING_TTL_SECONDS)
+    return min(max(seconds, float(IDEMPOTENCY_PENDING_TTL_SECONDS)), float(MAX_IDEMPOTENCY_LEASE_SECONDS))
+
+
+def _request_stale(request: dict[str, Any]) -> bool:
+    """Whether an ``in_progress`` reservation's lease has expired."""
+    return _is_stale(request.get("updated_at"), request.get("lease_seconds"))
 
 
 def _normalize_conversation(raw: Any, cid: str) -> ChatConversation | None:
@@ -1252,7 +1272,7 @@ class ChatConversationStore:
                 if value.get("status") == "completed"
                 or (
                     value.get("status") == "in_progress"
-                    and _is_stale(value.get("updated_at"))
+                    and _request_stale(value)
                 )
             ),
             key=lambda item: (
@@ -1495,10 +1515,17 @@ class ChatConversationStore:
         idempotency_key: str,
         request_fingerprint: str,
         conversation_id: str | None,
+        lease_seconds: float | None = None,
     ) -> ChatExchangeReservation:
+        """Reserve ``idempotency_key`` for one exchange. ``lease_seconds`` is how long
+        the reservation stays owned without completing: the caller passes its turn's
+        configured worst-case duration so a slow, still-running turn is never
+        reclaimed (and billed again) by a same-key retry. It is never shorter than
+        :data:`IDEMPOTENCY_PENDING_TTL_SECONDS`."""
         key, _data = await self._ensure_partition(user_id)
         cid = str(conversation_id or new_id("chat-"))
         now = iso_now()
+        lease = _lease_ttl(lease_seconds)
 
         def _change(
             current: dict[str, Any] | None,
@@ -1519,7 +1546,7 @@ class ChatConversationStore:
                     )
                 if conversation_id is not None and request_cid not in rows:
                     raise ChatConversationMissing("conversation not found")
-                if not _is_stale(request.get("updated_at")):
+                if not _request_stale(request):
                     raise ChatRequestInProgress("This chat request is already in progress.")
                 # A crashed worker's bounded lease may be reclaimed only by the exact
                 # same request fingerprint and conversation target.
@@ -1527,6 +1554,7 @@ class ChatConversationStore:
                 request["updated_at"] = now
                 request["status"] = "in_progress"
                 request["lease_token"] = lease_token
+                request["lease_seconds"] = lease
                 data["requests"][idempotency_key] = request
                 return self._encode(data), ChatExchangeReservation(
                     status="reserved",
@@ -1546,6 +1574,7 @@ class ChatConversationStore:
                 "created_at": now,
                 "updated_at": now,
                 "lease_token": lease_token,
+                "lease_seconds": lease,
             }
             self._prune_requests(data)
             if len(data["requests"]) > MAX_IDEMPOTENCY_RECORDS:

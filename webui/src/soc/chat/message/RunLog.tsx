@@ -172,10 +172,17 @@ function StepRow({ step, idPrefix }: { step: RunLogStep; idPrefix: string }) {
   const result = step.result;
   const summary = result?.summary ?? '';
   const scope = scopeLine(result);
-  const params = Object.entries(result?.params ?? step.params);
-  const untrusted = Object.entries(result?.untrusted_params ?? {});
+  const untrustedMap = result?.untrusted_params ?? {};
+  const untrusted = Object.entries(untrustedMap);
+  // Most tools put the same input in both maps: a key shown as untrusted text (mono) is
+  // shown ONCE, never also as a plain chip (it read as if applied twice).
+  const params = Object.entries(result?.params ?? step.params).filter(
+    ([key]) => !Object.prototype.hasOwnProperty.call(untrustedMap, key),
+  );
   const sources = result?.sources ?? [];
-  const sourceInParams = params.some(([key]) => key === 'source' || key === 'sources');
+  const sourceInParams = [...params, ...untrusted].some(
+    ([key]) => key === 'source' || key === 'sources' || key === 'source_id',
+  );
   const duration = result && step.status !== 'running' ? formatDuration(result.duration_ms) : null;
   return (
     <div className="flex min-w-0 items-start gap-2" data-step-status={step.status}>
@@ -186,7 +193,7 @@ function StepRow({ step, idPrefix }: { step: RunLogStep; idPrefix: string }) {
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-sm text-foreground">{step.label}</span>
           {params.map(([key, value]) => (
-            <Chip key={key} name={paramKeyLabel(key)} value={paramValue(value)} />
+            <Chip key={key} name={paramKeyLabel(key)} value={paramValue(value, key)} />
           ))}
           {!sourceInParams && sources.length ? <Chip name="Source" value={sources.join(', ')} /> : null}
           {untrusted.map(([key, value]) => (

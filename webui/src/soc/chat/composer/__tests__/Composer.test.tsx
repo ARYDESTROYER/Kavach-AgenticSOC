@@ -425,6 +425,19 @@ describe('Composer — meter', () => {
     expect(screen.getByText(/Chat shares this budget with automatic investigations/)).toBeInTheDocument();
   });
 
+  it('counts a case chat\'s own history (the context cannot see it, SPEC §4.3)', async () => {
+    // /chat/context reports 0 history for a case scope; the engine holds 2 exchanges
+    // of 8,000 chars: 1,000 static + 2,000 history + 0 draft = 3,000.
+    const context = makeContext({ history_tokens: 0, history_exchanges: 0 });
+    stubServer();
+    render(
+      <Harness spies={spies} context={context} variant="case" persist={false} historySize={{ exchanges: 2, chars: 8_000 }} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Estimated next request: ≈ 3k tokens' }));
+    expect(await screen.findByText('History · last 2 exchanges')).toBeInTheDocument();
+    expect(screen.getByText('2,000')).toBeInTheDocument();
+  });
+
   it('hides the ring without a budget and the whole meter until the context loads', () => {
     setup();
     expect(screen.queryByRole('meter')).toBeNull();

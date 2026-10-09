@@ -125,7 +125,10 @@ describe('ThreadToolbar', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Pin conversation' }));
     expect(props.onTogglePin).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Export conversation' }));
+    const exportTrigger = await screen.findByRole('menuitem', { name: 'Export conversation' });
+    // Sized and muted like the other menu icons (a sub-trigger does not do it for us).
+    expect(exportTrigger.querySelector('svg')).toHaveClass('size-4', 'text-muted-foreground');
+    await user.click(exportTrigger);
     // Radix sub-menu items are driven by keyboard here (jsdom has no pointer geometry).
     const html = await screen.findByRole('menuitem', { name: 'HTML (.html)' });
     act(() => html.focus());

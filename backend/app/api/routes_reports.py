@@ -371,6 +371,10 @@ def _window_of(params: Mapping[str, Any]) -> str | None:
     return None
 
 
+# The chat tools that query the turn's log source (``effective_source_name``).
+_LOG_TOOLS: frozenset[str] = frozenset({"search_logs", "log_stats"})
+
+
 def _scope_for(answer: _Answer, conversation: Any, *, block: dict[str, Any] | None,
                demo: bool) -> dict[str, Any]:
     """SPEC §9.1 scope, captured SERVER-side at add time: the effective window and
@@ -400,7 +404,11 @@ def _scope_for(answer: _Answer, conversation: Any, *, block: dict[str, Any] | No
         for name in step.sources:
             if name and name not in sources:
                 sources.append(name)
-    if not sources and answer.response.effective_source_name:
+    # The turn's resolved log source is credited only when a lookup behind the item
+    # actually searched logs (an older step that did not record its sources). Case,
+    # metric, cost and knowledge lookups read the app's own store, never that feed.
+    if (not sources and answer.response.effective_source_name
+            and any(step.tool in _LOG_TOOLS for step in relevant)):
         sources.append(answer.response.effective_source_name)
     usage = answer.response.usage
     generated_by = (

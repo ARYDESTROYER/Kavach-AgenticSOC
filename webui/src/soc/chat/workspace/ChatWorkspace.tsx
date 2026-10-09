@@ -44,6 +44,7 @@ import { HistoryRail, HistoryStrip, type ConversationExportFormat } from './Hist
 import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
 import { useConversationReport } from './useConversationReport';
+import { useOpenerFocus } from './useOpenerFocus';
 import {
   C_MIN,
   PANEL_MAX,
@@ -80,6 +81,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const [panelOpen, setPanelOpen] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [historySearchFocus, setHistorySearchFocus] = React.useState(false);
+  const historyOpener = useOpenerFocus();
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
   const geometry = useChatGeometry(panelOpen && !caseScoped);
@@ -100,8 +102,12 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   panelOpenRef.current = panelOpen;
   const geometryRef = React.useRef(geometry);
   geometryRef.current = geometry;
+  const { noteReport } = conv;
   const onAdded = React.useCallback(
-    (count: number) => {
+    (count: number, reportId: string) => {
+      // The row learns its report now (the first add created it), so the rail's "Open
+      // report" and the toolbar count survive switching away before the next refresh.
+      if (activeId) noteReport(activeId, reportId);
       announce(`Added to report (${count} ${count === 1 ? 'item' : 'items'})`);
       if (panelOpenRef.current) return;
       const g = geometryRef.current;
@@ -116,7 +122,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       }
       toast('Added to report', { action: { label: 'Open', onClick: () => setPanelOpen(true) } });
     },
-    [activeId, announce],
+    [activeId, announce, noteReport],
   );
   const report = useConversationReport({
     conversationId: activeId,
@@ -270,7 +276,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   // carries its own quiet "Trimmed to fit storage" hint (SPEC A22).
   const hasHeader = conv.requestedUnavailable || !!conv.threadRetention.note;
 
-  const replace = conv.restoring && !engine.items.length ? (
+  // Restoring replaces the transcript unless the engine already holds THIS thread (a
+  // retry of the same thread keeps its answers in place). A transcript that belongs to
+  // another thread never shows under this one's title.
+  const restoringOther = conv.restoring && (!engine.items.length || engine.conversationId !== activeId);
+  const replace = restoringOther ? (
     <LoadingState label="Restoring conversation" description="Loading the saved answers and their evidence." layout="panel" />
   ) : conv.threadError ? (
     <div className="space-y-3 pt-4">
@@ -388,7 +398,14 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
             if (!open) setHistorySearchFocus(false);
           }}
         >
-          <SheetContent side="left" size="sm" className="max-w-[20rem] gap-0 p-0">
+          <SheetContent
+            side="left"
+            size="sm"
+            className="max-w-[20rem] gap-0 p-0"
+            // No Radix trigger (History, the strip's buttons): return focus to the opener.
+            onOpenAutoFocus={historyOpener.capture}
+            onCloseAutoFocus={historyOpener.restore}
+          >
             <SheetTitle className="sr-only">Conversations</SheetTitle>
             <SheetDescription className="sr-only">Search and open your saved chats.</SheetDescription>
             <HistoryRail {...railProps} inSheet autoFocusSearch={historySearchFocus} />

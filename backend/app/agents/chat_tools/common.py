@@ -228,10 +228,12 @@ def resolve_window(
 
     Precedence (SPEC §3.1): a window in the tool input (``time_from``/``time_to``
     or ``window_hours``, which the model sets from the user's own words) → the
-    request's ``time_range`` chip (``ctx.time_range``) → ``default_hours``.
-    §4.8.4: when the request selected a range, a tool window is CLAMPED into it —
-    nothing a model reads in a tool result can widen what the user selected —
-    and ``clamped`` says so. A window is at most 90 days (the start moves)."""
+    request's ``time_range`` chip (``ctx.time_range``) → the screen context's
+    ``context.time_range`` (``ctx.context_time_range``) → ``default_hours``.
+    §4.8.4: when the request selected a range (the chip), a tool window is CLAMPED
+    into it — nothing a model reads in a tool result can widen what the user
+    selected — and ``clamped`` says so. The screen context is only a default, never
+    a clamp. A window is at most 90 days (the start moves)."""
     ref = now or datetime.now(timezone.utc)
     chip = ctx.time_range
     from_expr = none_if_blank(time_from)
@@ -256,9 +258,10 @@ def resolve_window(
         from_expr, to_expr = f"now-{hours}h", "now"
         start, end = ref - timedelta(hours=hours), ref
         source = "tool"
-    elif chip is not None:
-        start, end = chip.resolve(ref)
-        from_expr, to_expr = chip.from_, chip.to
+    elif ctx.default_range is not None:
+        selected = ctx.default_range
+        start, end = selected.resolve(ref)
+        from_expr, to_expr = selected.from_, selected.to
         source = "request"
     else:
         from_expr, to_expr = f"now-{default_hours}h", "now"

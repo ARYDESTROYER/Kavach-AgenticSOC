@@ -227,9 +227,11 @@ def test_time_range_helpers() -> None:
 
 
 def _legacy_fingerprint(body: ChatRequest) -> str:
-    """The pre-revamp ``_chat_request_fingerprint`` over the pre-revamp fields."""
-    legacy_fields = {
-        "message", "case_id", "history", "context", "model", "source_id", "conversation_id",
+    """The pre-revamp ``_chat_request_fingerprint`` over the pre-revamp fields (a
+    pre-revamp history turn was ``role`` + ``content`` only)."""
+    legacy_fields: dict[str, Any] = {
+        "message": True, "case_id": True, "history": {"__all__": {"role", "content"}},
+        "context": True, "model": True, "source_id": True, "conversation_id": True,
     }
     payload = body.model_dump(mode="json", include=legacy_fields)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -247,6 +249,8 @@ def test_fingerprint_is_byte_identical_for_pre_revamp_bodies() -> None:
         conversation_id="conv-1", idempotency_key="key-12345678", persist_conversation=True,
     )
     assert _fingerprint(body) == _legacy_fingerprint(body)
+    # Pinned: the optional ``ChatTurn.origin`` (absent here) never enters the hash.
+    assert _fingerprint(body) == "6cbddc5c41f6511a10b03720f3bcca85b84bb4804e24b00791b043b66651a6d1"
 
 
 def test_fingerprint_ignores_stream_mode_but_not_revamp_inputs() -> None:

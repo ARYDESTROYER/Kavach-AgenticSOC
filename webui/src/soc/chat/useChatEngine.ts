@@ -249,6 +249,48 @@ export function boundHistory(history: readonly ChatTurn[]): ChatTurn[] {
   return history.length > max ? history.slice(history.length - max) : [...history];
 }
 
+/** The replay character bound the server applies to client history (SPEC §4.3). */
+export const CHAT_HISTORY_MAX_CHARS = 24_000;
+
+/** What the server will replay of client-sent `history` (SPEC §4.3). */
+export interface ChatHistorySize {
+  /** Exchanges kept (user + answer pairs). */
+  exchanges: number;
+  /** Their user + answer characters (the server's chars ÷ 4 estimate input). */
+  chars: number;
+}
+
+/**
+ * The size of what `select_replay` keeps of `history`: the newest
+ * {@link CHAT_HISTORY_EXCHANGES} exchanges whose text fits in
+ * {@link CHAT_HISTORY_MAX_CHARS} (oldest dropped first). The case composer's meter
+ * uses it, since `/chat/context` cannot see a case chat's client-held history.
+ */
+export function replayHistorySize(history: readonly ChatTurn[]): ChatHistorySize {
+  const pairs: number[] = [];
+  let pendingUser: number | null = null;
+  for (const turn of history) {
+    if (turn.role === 'user') {
+      pendingUser = turn.content.length;
+    } else if (pendingUser !== null) {
+      pairs.push(pendingUser + turn.content.length);
+      pendingUser = null;
+    }
+  }
+  const kept = pairs.slice(-CHAT_HISTORY_EXCHANGES);
+  let chars = kept.reduce((sum, size) => sum + size, 0);
+  while (kept.length && chars > CHAT_HISTORY_MAX_CHARS) chars -= kept.shift() ?? 0;
+  return { exchanges: kept.length, chars };
+}
+
+const EMPTY_HISTORY_SIZE: ChatHistorySize = { exchanges: 0, chars: 0 };
+
+/** One model-history turn and the request it belongs to (a same-key retry replaces it). */
+interface HistoryEntry {
+  turn: ChatTurn;
+  requestKey: string | null;
+}
+
 function failureFromError(error: unknown, fallback: string): ChatTurnFailure {
   if (error instanceof ApiError) {
     const status = error.status;
@@ -312,6 +354,18 @@ function stoppedResponse(live: ChatLiveTurn | null): ChatResponse {
   };
 }
 
+/**
+ * The answer a restored Continue prompt at `userIndex` resumed: Continue is offered on
+ * an answer and asks right after it, so it is the nearest saved answer before it.
+ */
+function continuedAnswerId(items: readonly ChatTranscriptItem[], userIndex: number): string | null {
+  for (let i = userIndex - 1; i >= 0; i -= 1) {
+    const entry = items[i];
+    if (entry.kind === 'assistant') return entry.messageId ?? entry.response?.message_id ?? null;
+  }
+  return null;
+}
+
 /** The assistant item with `key`, if any. */
 function findItem(items: readonly ChatTranscriptItem[], key: string): ChatAssistantItem | null {
   const item = items.find((entry) => entry.key === key);
@@ -334,7 +388,9 @@ export function itemsFromConversation(conversation: ChatConversation): ChatTrans
         messageId: message.id,
         content: displayText(message.content, 0, { multiline: true }),
         prompt: message.content,
-        origin: 'user',
+        // The stored origin (SPEC §4.8): a reopened follow-up / starter / command stays
+        // non-user, so Ask again and ↑ recall treat it exactly as the live session did.
+        origin: message.origin ?? 'user',
         at: parseTime(message.created_at),
         requestKey: message.idempotency_key ?? null,
         failed: false,
@@ -467,7 +523,7 @@ export interface UseChatEngineOptions {
   blocked?: boolean;
   /**
    * When this value changes (after mount) the engine resets to an empty draft, as
-   * `reset()` does. Wire `useChatConversations().newDraftEpoch` here.
+   * `reset()` does. Wire `useChatConversations().transcriptEpoch` here.
    */
   resetKey?: string | number | null;
   /** `/chat/context.text_streaming.available`; `false` forces Live steps. */
@@ -556,6 +612,12 @@ export interface ChatEngine {
   /** Composer time chip; `null` = the tool default (24 h). */
   timeRange: ChatTimeRange | null;
   setTimeRange: (range: ChatTimeRange | null) => void;
+  /**
+   * What the server will replay of the history this engine sends with the next turn.
+   * Only meaningful when the engine owns its history (case chat); a Workspace thread's
+   * history is the server's stored one (`/chat/context.history_tokens`).
+   */
+  historySize: ChatHistorySize;
 
   /** The viewer's preference. */
   streamMode: ChatStreamMode;
@@ -653,13 +715,14 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
   const [sourceId, setSourceId] = React.useState<string | null>(null);
   const [scopes, setScopesState] = React.useState<ChatScope[]>([]);
   const [timeRange, setTimeRange] = React.useState<ChatTimeRange | null>(null);
+  const [historySize, setHistorySize] = React.useState<ChatHistorySize>(EMPTY_HISTORY_SIZE);
   const streamPref = useChatStreamMode(orgDefaultStreamMode);
   const effectiveStreamMode: ChatStreamMode =
     streamPref.mode === 'text' && textStreamingAvailable ? 'text' : 'steps';
 
   // Refs mirror state so callbacks stay stable and never act on a stale render.
   const generationRef = React.useRef(0);
-  const historyRef = React.useRef<ChatTurn[]>([]);
+  const historyRef = React.useRef<HistoryEntry[]>([]);
   const itemsRef = React.useRef<ChatTranscriptItem[]>([]);
   const runRef = React.useRef<RunState | null>(null);
   const busyRef = React.useRef(false);
@@ -688,6 +751,13 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     if (next === itemsRef.current) return;
     itemsRef.current = next;
     setItems(next);
+  }, []);
+
+  /** Model history is only ever replaced through here, so its size stays in step. */
+  const writeHistory = React.useCallback((next: HistoryEntry[]) => {
+    historyRef.current = next;
+    const size = replayHistorySize(next.map((entry) => entry.turn));
+    setHistorySize((prev) => (prev.exchanges === size.exchanges && prev.chars === size.chars ? prev : size));
   }, []);
 
   const updateAssistant = React.useCallback(
@@ -738,16 +808,25 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     run?.controller.abort();
   }, [cancelFrame]);
 
-  /** Drop the transcript and any in-flight turn (New chat, another case). */
+  /**
+   * Drop the transcript and any in-flight turn, and start the composer on the defaults
+   * (New chat, another case). The ONE fresh-draft reset: a New chat entered from a
+   * draft saved this session (the host's `conversation` stays `null`, so only
+   * `resetKey` moves) must match one entered from a reopened thread (SPEC A36).
+   */
   const resetTranscript = React.useCallback(() => {
     generationRef.current += 1;
     abandonRun();
-    historyRef.current = [];
+    writeHistory([]);
     conversationIdRef.current = null;
     setConversationId(null);
     commitItems(() => []);
     setBusyState(false);
-  }, [abandonRun, commitItems, setBusyState]);
+    setModel(null);
+    setSourceId(null);
+    setScopesState([]);
+    setTimeRange(null);
+  }, [abandonRun, commitItems, setBusyState, writeHistory]);
 
   // A deliberate New-chat transition from the host (see `resetKey`).
   const resetKeyRef = React.useRef(options.resetKey);
@@ -771,22 +850,20 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
   // same object while a just-persisted thread stays live, so no re-hydration flash.
   React.useEffect(() => {
     if (conversation === undefined) return;
+    if (conversation === null) {
+      resetTranscript();
+      return;
+    }
     generationRef.current += 1;
     abandonRun();
     setBusyState(false);
-    if (conversation === null) {
-      historyRef.current = [];
-      conversationIdRef.current = null;
-      setConversationId(null);
-      commitItems(() => []);
-      setModel(null);
-      setSourceId(null);
-      setScopesState([]);
-      setTimeRange(null);
-      return;
-    }
     const restored = itemsFromConversation(conversation);
-    historyRef.current = (conversation.messages ?? []).map(({ role, content }) => ({ role, content }));
+    writeHistory(
+      (conversation.messages ?? []).map(({ role, content, idempotency_key, origin }) => ({
+        turn: role === 'user' ? { role, content, origin: origin ?? 'user' } : { role, content },
+        requestKey: idempotency_key ?? null,
+      })),
+    );
     conversationIdRef.current = conversation.id;
     setConversationId(conversation.id);
     commitItems(() => restored);
@@ -802,7 +879,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     setSourceId(null);
     setScopesState([]);
     setTimeRange(conversation.time_range ?? null);
-  }, [conversation, abandonRun, commitItems, setBusyState]);
+  }, [conversation, abandonRun, commitItems, resetTranscript, setBusyState, writeHistory]);
 
   React.useEffect(() => {
     callbacksRef.current.onBusyChange?.(busy);
@@ -836,6 +913,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       const unsaved = isUnsavedTurn(response);
       const current = findItem(itemsRef.current, run.key);
       const userContent = current?.request?.message ?? '';
+      const userOrigin: ChatOrigin = current?.request?.origin ?? 'user';
       const settled: ChatAssistantItem | null = current
         ? {
             ...current,
@@ -859,11 +937,15 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
         }),
       );
       if (!unsaved) {
-        historyRef.current = [
-          ...historyRef.current,
-          { role: 'user', content: userContent },
-          { role: 'assistant', content: response.answer },
-        ];
+        // Keyed by the request: a same-key retry ("Run again to save") replaces this
+        // exchange instead of sending it to the model twice.
+        writeHistory([
+          ...historyRef.current.filter((entry) => entry.requestKey !== run.requestKey),
+          // The prompt's author travels with it: client history counts as
+          // user-authored only when it says so (SPEC §4.8.2).
+          { turn: { role: 'user', content: userContent, origin: userOrigin }, requestKey: run.requestKey },
+          { turn: { role: 'assistant', content: response.answer }, requestKey: run.requestKey },
+        ]);
         // An answer delivered with a `not_saved` notice and no message id was never
         // stored: `turn.start` may have named a conversation that was never created (a
         // new thread), and adopting it would make the next turn 404. Nothing is promoted.
@@ -882,7 +964,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       finishRun(run);
       if (settled) callbacksRef.current.onTurnSettled?.(settled);
     },
-    [commitItems, finishRun],
+    [commitItems, finishRun, writeHistory],
   );
 
   /**
@@ -1234,11 +1316,16 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
         userItem,
         assistantItem,
       ]);
+      // The replaced pair leaves model history with the transcript (a retried
+      // `not_saved` answer had entered it); its retry settles back in as one exchange.
+      if (replaceRequestKey && historyRef.current.some((entry) => entry.requestKey === replaceRequestKey)) {
+        writeHistory(historyRef.current.filter((entry) => entry.requestKey !== replaceRequestKey));
+      }
       setBusyState(true);
       void runTurn(run, { ...request, idempotency_key: requestKey });
       return true;
     },
-    [cancelFrame, commitItems, runTurn, setBusyState],
+    [cancelFrame, commitItems, runTurn, setBusyState, writeHistory],
   );
 
   const buildRequest = React.useCallback((message: string, origin: ChatOrigin, continueOf: string | null, topic: string | null): ChatRequest => {
@@ -1246,7 +1333,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     const body: ChatRequest = {
       message,
       // Only earlier successful exchanges; the current message is sent separately.
-      history: boundHistory(historyRef.current),
+      history: boundHistory(historyRef.current.map((entry) => entry.turn)),
     };
     if (s.caseId) body.case_id = s.caseId;
     if (s.model) body.model = s.model;
@@ -1286,10 +1373,17 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       const list = itemsRef.current;
       const index = list.findIndex((entry) => entry.key === itemKey);
       if (index < 0) return false;
+      const target = list[index];
       for (let i = index - 1; i >= 0; i -= 1) {
         const entry = list[i];
-        // The exact prompt, not its display form (see ChatUserItem.prompt).
-        if (entry.kind === 'user') return send(entry.prompt, { origin: entry.origin });
+        if (entry.kind !== 'user') continue;
+        // The exact prompt, not its display form (see ChatUserItem.prompt), with the
+        // hints that shaped the original request: an "Ask about this" topic (SPEC A28)
+        // and the answer a Continue turn resumes. Only the key is new.
+        const request = target.kind === 'assistant' ? target.request : null;
+        let continueOf = request?.continue_of ?? null;
+        if (!continueOf && entry.origin === 'continue') continueOf = continuedAnswerId(list, i);
+        return send(entry.prompt, { origin: entry.origin, topic: request?.topic ?? null, continueOf });
       }
       return false;
     },
@@ -1377,6 +1471,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     setScopes,
     timeRange,
     setTimeRange,
+    historySize,
     streamMode: streamPref.mode,
     effectiveStreamMode,
     setStreamMode: streamPref.setMode,

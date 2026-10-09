@@ -647,7 +647,7 @@ class SocMetricsTool(ChatTool):
         from ...engine.metrics import _window_filter
         from ...engine.mitre_coverage import compute_mitre_coverage
 
-        all_time = args.window_hours is None and ctx.time_range is None
+        all_time = args.window_hours is None and ctx.default_range is None
         if all_time:
             scoped = cases
         else:
@@ -795,7 +795,7 @@ class SocMetricsTool(ChatTool):
         }
         summary = f"Agent improvement ({label}): {text(headline.get('state'), 40) or 'unknown'}"
         coverage = None
-        if args.window_hours is not None or ctx.time_range is not None:
+        if args.window_hours is not None or ctx.default_range is not None:
             coverage = "fixed comparison windows; the selected range does not apply"
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            basis="exact", coverage=coverage)

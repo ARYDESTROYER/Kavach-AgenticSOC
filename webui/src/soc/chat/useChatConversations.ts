@@ -3,7 +3,7 @@
  * §10.2, §10.7, §10.8), ported from the pre-revamp `pages/Chat.tsx` with its
  * behavioural guarantees intact:
  *
- *  - the list (`GET /api/chat/conversations?limit=50`) newest-first by `updated_at`;
+ *  - the list (`GET /api/chat/conversations?limit=60`) newest-first by `updated_at`;
  *  - the selection tri-state: `undefined` = the first load has not chosen yet,
  *    `null` = a deliberate New-chat draft that survives list refreshes, a string = a
  *    selected thread (the first load selects the newest);
@@ -26,9 +26,11 @@
  * from the route (`NavOpts` `conversationId` / `messageId` / `newChat` / `topic` / the
  * palette's `ask`).
  *
- * The list is one page (the server caps it at 50), and pinned or older threads may sit
- * beyond it. So a thread missing from the page is CHECKED (`GET …/{id}`) before it is
- * called unavailable or the selection falls back: only a 404 means it is gone.
+ * The list is one page of 60: the server keeps the newest 50 unpinned conversations plus
+ * up to 10 pin-exempt ones, so every kept thread fits (SPEC A9). A thread can still be
+ * missing from the page (another tab's newer threads, a deep link to one the server
+ * just evicted), so it is CHECKED (`GET …/{id}`) before it is called unavailable or the
+ * selection falls back: only a 404 means it is gone.
  *
  * Case-scoped chat passes `enabled: false`: no list, no detail, no persistence.
  */
@@ -54,11 +56,18 @@ import { consoleTopic } from './topic';
 export const HISTORY_CHANNEL = 'agentic-soc-workspace-chat-history';
 /** Draft key of the New-chat draft. */
 export const NEW_DRAFT_KEY = '__new_workspace_chat__';
+/** Unpinned conversations the server keeps (the retention footer's figure). */
 export const DEFAULT_HISTORY_LIMIT = 50;
 /** The rail shows its retention footer from this many conversations (SPEC §10.2). */
 export const RETENTION_NOTE_THRESHOLD = 45;
 /** Pinned conversations are exempt from eviction, up to this many (SPEC §7.5). */
 export const MAX_PINNED_CONVERSATIONS = 10;
+/**
+ * One rail page: the kept unpinned conversations plus every pin-exempt one (the
+ * server's `limit` maximum, SPEC A9), so a user with pins never loses the oldest kept
+ * threads off the page.
+ */
+export const CONVERSATION_PAGE_LIMIT = DEFAULT_HISTORY_LIMIT + MAX_PINNED_CONVERSATIONS;
 /** Server search input bound and debounce. */
 export const MAX_SEARCH_CHARS = 200;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -125,7 +134,7 @@ export interface UseChatConversationsOptions {
   enabled?: boolean;
   /** The route's `NavOpts` (identity-keyed: each navigation is applied once). */
   requested?: NavOpts | null;
-  /** Conversations to load (the server's retention window). Default 50. */
+  /** Conversations to request per page (and per search). Default 60 (SPEC A9). */
   limit?: number;
   /**
    * Asked before a delete; resolve `false` to cancel. The host owns the dialog copy
@@ -143,7 +152,7 @@ export interface ChatHighlightRequest {
 }
 
 export interface ChatRetentionInfo {
-  /** The server's conversation limit (50). */
+  /** The server's unpinned-conversation retention (50), not the page size. */
   limit: number;
   /** Older conversations were evicted. */
   truncated: boolean;
@@ -237,6 +246,15 @@ export interface ChatConversationsController {
    * the engine cannot detect this transition by identity.
    */
   newDraftEpoch: number;
+  /**
+   * Increments on EVERY deliberate transcript change: a New-chat draft (as
+   * `newDraftEpoch`) and a selection of another thread. Pass THIS to
+   * `useChatEngine({ resetKey })`: a draft saved this session keeps `conversation`
+   * at `null` (skip-hydration), so selecting another thread is `null` → `null` and,
+   * without it, the old transcript would stay under the next thread's title (and
+   * its report bindings) until that thread's detail loads.
+   */
+  transcriptEpoch: number;
 
   /** A turn is in flight: selection and refresh wait. Wire to the engine. */
   busy: boolean;
@@ -264,6 +282,12 @@ export interface ChatConversationsController {
    * the prompt for a brand-new thread, or '' to keep the row's title.
    */
   conversationPersisted: (id: string, title: string) => void;
+  /**
+   * The conversation's draft report is now `reportId` (the first Add to report created
+   * it): its row learns the link at once, so "Open report" and the toolbar count
+   * survive switching away and back before the next list refresh.
+   */
+  noteReport: (id: string, reportId: string | null) => void;
   rename: (item: ChatConversationSummary, title: string) => Promise<boolean>;
   setPinned: (item: ChatConversationSummary, pinned: boolean) => Promise<boolean>;
   remove: (item: ChatConversationSummary) => Promise<boolean>;
@@ -275,7 +299,7 @@ export interface ChatConversationsController {
 }
 
 export function useChatConversations(options: UseChatConversationsOptions = {}): ChatConversationsController {
-  const { enabled = true, requested = null, limit = DEFAULT_HISTORY_LIMIT, confirmDelete } = options;
+  const { enabled = true, requested = null, limit = CONVERSATION_PAGE_LIMIT, confirmDelete } = options;
 
   const [conversations, setConversations] = React.useState<ChatConversationSummary[]>([]);
   const [activeId, setActiveId] = React.useState<string | null | undefined>(undefined);
@@ -295,6 +319,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [topic, setTopic] = React.useState<string | null>(null);
   const [ask, setAsk] = React.useState<string | null>(null);
   const [newDraftEpoch, setNewDraftEpoch] = React.useState(0);
+  const [transcriptEpoch, setTranscriptEpoch] = React.useState(0);
   const [searchQuery, setSearchQueryState] = React.useState('');
   const [searchResults, setSearchResults] = React.useState<ChatConversationSearchHit[] | null>(null);
   const [searching, setSearching] = React.useState(false);
@@ -338,6 +363,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     setThreadError(null);
     setThreadLoading(true);
     setActiveId(id);
+    // `conversation` may already be null (a just-persisted draft keeps it null): the
+    // engine resets on the epoch, so the old transcript never shows under B's title.
+    setTranscriptEpoch((epoch) => epoch + 1);
   }, []);
 
   const enterNewDraft = React.useCallback(() => {
@@ -352,6 +380,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     // `conversation` may already be null (a just-persisted draft keeps it null), so
     // the engine cannot see this transition by identity: hosts reset on the epoch.
     setNewDraftEpoch((epoch) => epoch + 1);
+    setTranscriptEpoch((epoch) => epoch + 1);
   }, []);
 
   /** Activate a resolved request target (no re-entry when it is already active). */
@@ -458,7 +487,13 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       const next = kept ? [...rows, kept].sort(newestConversationFirst) : rows;
       setConversations(next);
       conversationsRef.current = next;
-      setHistoryLimit(typeof response.limit === 'number' && response.limit > 0 ? response.limit : DEFAULT_HISTORY_LIMIT);
+      // The echoed `limit` is the PAGE size (60 = 50 kept + 10 pin-exempt); the footer's
+      // retention figure is the 50-conversation eviction bound, never the page.
+      setHistoryLimit(
+        typeof response.limit === 'number' && response.limit > 0
+          ? Math.min(response.limit, DEFAULT_HISTORY_LIMIT)
+          : DEFAULT_HISTORY_LIMIT,
+      );
       setHistoryTruncated(response.history_truncated === true);
       setHistoryTotal(
         typeof response.total_conversation_count === 'number'
@@ -719,6 +754,15 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     );
   }, []);
 
+  const noteReport = React.useCallback(
+    (id: string, reportId: string | null) => {
+      const row = conversationsRef.current.find((entry) => entry.id === id);
+      if (!row || (row.report_id ?? null) === reportId) return;
+      replaceRow({ ...row, report_id: reportId });
+    },
+    [replaceRow],
+  );
+
   const rename = React.useCallback(
     async (item: ChatConversationSummary, title: string): Promise<boolean> => {
       try {
@@ -900,6 +944,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     ask,
     clearAsk: React.useCallback(() => setAsk(null), []),
     newDraftEpoch,
+    transcriptEpoch,
     busy,
     setBusy,
     searchQuery,
@@ -914,6 +959,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     select,
     retryThread,
     conversationPersisted,
+    noteReport,
     rename,
     setPinned,
     remove,

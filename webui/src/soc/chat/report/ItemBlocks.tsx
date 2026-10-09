@@ -25,9 +25,18 @@ export interface ItemBlocksProps {
   compact?: boolean;
   /** The item's stored block had nothing to show (dropped as `empty`): say so plainly. */
   foundNothing?: boolean;
+  /** The item is already a card (the report panel): the blocks drop their own frame. */
+  bare?: boolean;
 }
 
-export function ItemBlocks({ blocks, messageId, headingBase = 4, compact = false, foundNothing = false }: ItemBlocksProps) {
+export function ItemBlocks({
+  blocks,
+  messageId,
+  headingBase = 4,
+  compact = false,
+  foundNothing = false,
+  bare = false,
+}: ItemBlocksProps) {
   const renderMarkdown = React.useCallback(
     (text: string) => <ChatMarkdown text={text} headingBase={headingBase} />,
     [headingBase],
@@ -37,7 +46,14 @@ export function ItemBlocks({ blocks, messageId, headingBase = 4, compact = false
   }
   return (
     <React.Suspense fallback={<LoadingState label="Loading report item" layout="inline" />}>
-      <AnswerBlocks blocks={blocks} messageId={messageId} compact={compact} canAddToReport={false} renderMarkdown={renderMarkdown} />
+      <AnswerBlocks
+        blocks={blocks}
+        messageId={messageId}
+        compact={compact}
+        canAddToReport={false}
+        renderMarkdown={renderMarkdown}
+        bareCards={bare}
+      />
     </React.Suspense>
   );
 }

@@ -45,7 +45,7 @@ import {
 } from './commands';
 import { ComposerMenu } from './ComposerMenu';
 import { ComposerOptions, ModelChip } from './ComposerOptions';
-import { SCOPE_LABELS } from './format';
+import { SCOPE_LABELS, withClientHistory } from './format';
 import { ManagePromptsDialog, SavePromptDialog, useSavedPrompts } from './SavedPrompts';
 import { ScopeControls } from './ScopeControls';
 import { TokenMeter, type ConversationTotals } from './TokenMeter';
@@ -143,6 +143,14 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const width = useElementWidth(rootRef);
   const catalog = useComposerCatalog({ loadSources: !isCase, canReadSources: sourcesReadable(context) });
+  // An engine that does not persist (case chat) sends its own history, which the
+  // server's context figure cannot include: the meter counts it from the engine.
+  const ownsHistory = !engine.persist;
+  const historySize = engine.historySize;
+  const meterContext = React.useMemo(
+    () => (context && ownsHistory ? withClientHistory(context, historySize) : context),
+    [context, ownsHistory, historySize],
+  );
   // Only a model the analyst chose that differs from the configured default is an
   // override: the default never shows as a removable chip (D2).
   const chosenModel = engine.model && engine.model !== defaultModel ? engine.model : null;
@@ -505,7 +513,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
         >
           {textarea}
           <div className="flex h-8 shrink-0 items-center gap-0.5">
-            {context ? <TokenMeter context={context} draft={draft} showRing={false} /> : null}
+            {meterContext ? <TokenMeter context={meterContext} draft={draft} showRing={false} /> : null}
             {options}
             {sendStop}
           </div>
@@ -582,8 +590,8 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
                 ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-1">
-                {context ? (
-                  <TokenMeter context={context} draft={draft} conversationTotals={conversationTotals} />
+                {meterContext ? (
+                  <TokenMeter context={meterContext} draft={draft} conversationTotals={conversationTotals} />
                 ) : null}
                 {options}
                 {sendStop}

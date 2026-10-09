@@ -92,6 +92,18 @@ async def test_search_cases_in_memory_filters_report_scanned(store: CaseStore) -
     assert windowed.observation["count"] == 3
 
 
+def test_entity_fact_labels_are_console_wording() -> None:
+    from app.agents.chat_tools import cases as cases_mod
+    from app.constants import CaseStatus, DecisionBy, Verdict
+
+    assert cases_mod._label(cases_mod._STATUS_LABELS, CaseStatus.NEEDS_HUMAN, "Unknown") == "Open · awaiting analyst"
+    assert cases_mod._label(cases_mod._STATUS_LABELS, CaseStatus.ESCALATED, "Unknown") == "Escalated"
+    assert cases_mod._label(cases_mod._VERDICT_LABELS, Verdict.TRUE_POSITIVE, "No verdict yet") == "True positive"
+    assert cases_mod._label(cases_mod._VERDICT_LABELS, None, "No verdict yet") == "No verdict yet"
+    assert cases_mod._label(cases_mod._DECIDED_BY_LABELS, DecisionBy.SYSTEM, "Not decided") == "System"
+    assert cases_mod._label(cases_mod._STATUS_LABELS, "some_new_state", "Unknown") == "Some new state"
+
+
 async def test_search_cases_rejects_status_and_group_together(store: CaseStore) -> None:
     out = await SearchCasesTool().run(make_ctx(cases=store), status="open", status_group="active")
     assert not out.ok and "not both" in (out.error or "")
@@ -112,6 +124,15 @@ async def test_get_case_never_leaks_internal_fields(store: CaseStore) -> None:
     assert "entity" in kinds and "kpis" in kinds and "mitre" in kinds
     entity = next(a for a in out.artifacts if a.kind == "entity")
     assert entity.provenance == "code" and entity.data["entity"] == {"kind": "ip", "value": "203.0.113.7"}
+    # Facts are prose: console labels, never internal enum constants, and the verdict
+    # is the card's badge rather than a second, raw "TRUE_POSITIVE" row.
+    facts = {f["label"]: f["value"] for f in entity.data["facts"]}
+    raw = {"TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_HUMAN", "needs_human", "escalated", "open",
+           "closed", "system", "agent", "analyst"}
+    assert not raw & set(facts.values()), facts
+    if entity.data["verdict"] is not None:
+        assert "Verdict" not in facts
+    assert facts["Status"][:1].isupper() and facts["Decided by"][:1].isupper()
     assert_artifacts_render(out)
 
 
@@ -245,6 +266,10 @@ async def test_shift_report_uses_the_snapshot_only() -> None:
     assert out.ok and standup.calls == [12]
     assert out.observation["headline"]["open"] == 3
     assert [a.kind for a in out.artifacts] == ["kpis", "case_list", "categories", "table"]
+    # The needs_human headline counts a STATUS; its label says so, so it never reads
+    # as the needs-human VERDICT badges in the case list beside it.
+    labels = [item.get("label") for item in out.artifacts[0].data.get("items", [])]
+    assert "Status: Needs human" in labels and "Needs a human" not in labels
     assert out.summary.startswith("Shift snapshot (last 12h)") and out.coverage is None
     assert_artifacts_render(out)
     # The snapshot always ends now: a past chip is refused (it would read outside the

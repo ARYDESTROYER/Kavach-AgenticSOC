@@ -123,23 +123,32 @@ class AppHelpTool(ChatTool):
         results: list[dict[str, Any]] = []
         citations = []
         console_ids: list[str] = []
+        # One Help Center section can be split into several chunks that share its
+        # link: they share ONE ``D*`` id and one citation, so the Sources list never
+        # shows the same section twice.
+        ref_by_href: dict[str, str] = {}
         for chunk, _score in hits:
             # Only a section with a valid Help Center link gets a ``D*`` id: an id the
             # model can cite must resolve to a Citation (the Help Center home and the
             # dotted release pages cannot be expressed by the wire pattern), and a
             # later call's renumbering only renames ids that have one.
-            ref: str | None = f"D{len(citations) + 1}"
-            citation = doc_citation(chunk, ref, knowledge)
-            if citation is not None:
-                citations.append(citation)
-            else:
-                ref = None
+            href = doc_href(chunk, knowledge)
+            ref: str | None = ref_by_href.get(href) if href else None
+            if ref is None:
+                ref = f"D{len(citations) + 1}"
+                citation = doc_citation(chunk, ref, knowledge)
+                if citation is not None:
+                    citations.append(citation)
+                    if citation.doc:
+                        ref_by_href[citation.doc] = ref
+                else:
+                    ref = None
             page = knowledge.pages[chunk.page]
             results.append({
                 "ref": ref,
                 "title": chunk_title(chunk, knowledge),
                 "breadcrumb": " › ".join(page.nav),
-                "href": doc_href(chunk, knowledge),
+                "href": href,
                 "text": chunk.text,
                 "console": list(chunk.console),
             })

@@ -3226,6 +3226,24 @@
             "title": "Content",
             "type": "string"
           },
+          "origin": {
+            "anyOf": [
+              {
+                "enum": [
+                  "user",
+                  "follow_up",
+                  "starter",
+                  "command",
+                  "continue"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
           "role": {
             "title": "Role",
             "type": "string"

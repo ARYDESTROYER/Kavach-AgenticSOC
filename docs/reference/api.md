@@ -451,7 +451,14 @@ only), `scopes` (`logs`, `cases`, `metrics`, `intel`, `docs`, `platform`), `time
 `-`; a malformed value is 422 and an unknown one is ignored). Only `origin: "user"`
 text counts as the analyst's own words for indicator lookups. Additive response fields
 include `blocks`, `steps`, `usage`, `citations`, `console_links`, `follow_ups`,
-`answer_kind`, `notice`, `turn_id`, `message_id`, and `memory_proposal`.
+`answer_kind`, `notice`, `turn_id`, `message_id`, `memory_proposal`, `case_saved`, and
+`case_save_notice`. On a case-scoped answer, `case_saved` says whether the question and
+answer were posted to the case's discussion thread (`null` when no case thread applied),
+and `case_save_notice` is the `not_saved` notice whenever `case_saved` is `false`, even
+when another notice such as `denied` or `partial` holds `notice`. Its `retryable` is true
+only when the thread store failed, so asking again with the same `idempotency_key` can
+add the answer; a missing `cases:comment` grant or a missing case is not retryable. The
+`not_saved` notice is also the `notice` when the answer has no other one.
 
 | Operation | Contract |
 |---|---|

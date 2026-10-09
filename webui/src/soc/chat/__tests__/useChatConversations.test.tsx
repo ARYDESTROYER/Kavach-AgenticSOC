@@ -117,7 +117,7 @@ afterEach(() => {
 describe('useChatConversations — list and selection', () => {
   it('sorts newest first, selects the newest and hydrates it', async () => {
     const { result } = await mount();
-    expect(listMock).toHaveBeenCalledWith({ limit: 50 });
+    expect(listMock).toHaveBeenCalledWith({ limit: 60 });
     expect(result.current.conversations.map((c) => c.id)).toEqual([NEWEST.id, OLDER.id]);
     expect(result.current.activeId).toBe(NEWEST.id);
     expect(getMock).toHaveBeenCalledWith(NEWEST.id);
@@ -133,10 +133,16 @@ describe('useChatConversations — list and selection', () => {
     const { result } = await mount();
     expect(result.current.restoring).toBe(true);
 
+    const transcriptEpoch = result.current.transcriptEpoch;
+    const draftEpoch = result.current.newDraftEpoch;
     act(() => result.current.select(OLDER));
     expect(result.current.activeId).toBe(OLDER.id);
     expect(result.current.conversation).toBeNull();
     expect(result.current.restoring).toBe(true);
+    // A selection resets the engine even when `conversation` stays null; it is not
+    // a New-chat draft.
+    expect(result.current.transcriptEpoch).toBe(transcriptEpoch + 1);
+    expect(result.current.newDraftEpoch).toBe(draftEpoch);
 
     await act(async () => {
       olderDetail.resolve(detail(OLDER));
@@ -151,6 +157,16 @@ describe('useChatConversations — list and selection', () => {
     expect(result.current.conversation?.id).toBe(OLDER.id);
   });
 
+  it('links a row to the report an add just created (no wait for the next refresh)', async () => {
+    const { result } = await mount();
+    expect(result.current.conversations.find((c) => c.id === OLDER.id)?.report_id ?? null).toBeNull();
+    act(() => result.current.noteReport(OLDER.id, 'r-9'));
+    expect(result.current.conversations.find((c) => c.id === OLDER.id)?.report_id).toBe('r-9');
+    // Unknown rows are ignored.
+    act(() => result.current.noteReport('c-missing', 'r-1'));
+    expect(result.current.conversations.map((c) => c.id)).toEqual([NEWEST.id, OLDER.id]);
+  });
+
   it('keeps a deliberate New chat across list refreshes, and bumps the draft epoch', async () => {
     const { result } = await mount();
     const epoch = result.current.newDraftEpoch;
@@ -158,6 +174,7 @@ describe('useChatConversations — list and selection', () => {
     expect(result.current.activeId).toBeNull();
     expect(result.current.conversation).toBeNull();
     expect(result.current.newDraftEpoch).toBe(epoch + 1);
+    expect(result.current.transcriptEpoch).toBeGreaterThan(0);
     await act(async () => {
       await result.current.reload();
     });
@@ -356,6 +373,13 @@ describe('useChatConversations — retention and refresh', () => {
     expect(threadRetentionInfo(null, null, true)).toMatchObject({ removed: false, note: null });
   });
 
+  it('asks for the full 60-row page (50 kept + 10 pinned) but keeps the footer at the 50 retention', async () => {
+    listMock.mockResolvedValueOnce({ conversations: [NEWEST, OLDER], limit: 60, total: 60, history_truncated: false });
+    const { result } = await mount();
+    expect(listMock).toHaveBeenCalledWith({ limit: 60 });
+    expect(result.current.retention.limit).toBe(50);
+  });
+
   it('shows the retention note from 45 conversations even when nothing was evicted', async () => {
     const rows = Array.from({ length: 45 }, (_, i) => ({ ...OLDER, id: `c-${i}`, updated_at: `2026-07-26T08:${String(i).padStart(2, '0')}:00Z` }));
     listMock.mockResolvedValueOnce({ conversations: rows });
@@ -421,7 +445,7 @@ describe('useChatConversations — search', () => {
     act(() => result.current.setSearchQuery('failed logins'));
     expect(result.current.searching).toBe(true);
     await settle(320);
-    expect(listMock.mock.calls.filter(([query]) => query.q)).toEqual([[{ limit: 50, q: 'failed logins' }]]);
+    expect(listMock.mock.calls.filter(([query]) => query.q)).toEqual([[{ limit: 60, q: 'failed logins' }]]);
     expect(result.current.searchResults).toEqual([hit]);
     expect(result.current.searching).toBe(false);
 

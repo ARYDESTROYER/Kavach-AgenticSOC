@@ -83,6 +83,44 @@ def test_chat_with_context_uses_time_range_default(client, mock_provider):
     assert body["discover"]["data_view_pattern"] == "fosstlsoc-logs-*"
 
 
+def test_agent_tools_default_to_the_context_window_and_discover_names_it(client, mock_provider):
+    """SPEC §3.1 precedence in agent mode: tool input → chip → ``context.time_range``
+    → 24 h. The search really runs over the context window, and the Discover link
+    names the window the search used (never a default it did not use)."""
+    from app.agents.chat_events import ANSWER_SEPARATOR
+
+    final = f"{json.dumps({'action': 'final'})}\n{ANSWER_SEPARATOR}\nHere are the events."
+    context = {"app": "discover", "time_range": {"from": "now-7d", "to": "now"}}
+    mock_provider.push("chat", json.dumps({"action": "tool", "tool": "search_logs",
+                                           "input": {"ip": "10.0.0.9"}}))
+    mock_provider.push("chat", final)
+    r = client.post("/api/chat", json={"message": "show events for 10.0.0.9", "context": context})
+    assert r.status_code == 200
+    body = r.json()
+    step = next(s for s in body["steps"] if s["tool"] == "search_logs")
+    assert "last 7d" in step["summary"]
+    assert body["discover"]["time_from"] == "now-7d" and body["discover"]["time_to"] == "now"
+    # The chip outranks the screen context, and clamps a wider tool window into itself.
+    mock_provider.push("chat", json.dumps({"action": "tool", "tool": "search_logs",
+                                           "input": {"ip": "10.0.0.9", "time_from": "now-30d"}}))
+    mock_provider.push("chat", final)
+    r2 = client.post("/api/chat", json={"message": "show events for 10.0.0.9", "context": context,
+                                        "time_range": {"from": "now-2d", "to": "now"}})
+    body2 = r2.json()
+    step2 = next(s for s in body2["steps"] if s["tool"] == "search_logs")
+    assert "last 2d" in step2["summary"]
+    assert body2["discover"]["time_from"] == "now-2d"
+    # A malformed screen window is ignored (24 h), never a failed turn.
+    mock_provider.push("chat", json.dumps({"action": "tool", "tool": "search_logs",
+                                           "input": {"ip": "10.0.0.9"}}))
+    mock_provider.push("chat", final)
+    r3 = client.post("/api/chat", json={"message": "show events for 10.0.0.9",
+                                        "context": {"time_range": {"from": "yesterday-ish"}}})
+    assert r3.status_code == 200
+    step3 = next(s for s in r3.json()["steps"] if s["tool"] == "search_logs")
+    assert "last 24h" in step3["summary"]
+
+
 # ---------- Feature 3: trigger reason ----------
 def _prefs_threshold(n=5, window=120):
     p = Preferences()

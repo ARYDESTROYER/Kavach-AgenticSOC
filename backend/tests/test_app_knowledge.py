@@ -604,6 +604,36 @@ async def test_app_help_topic_pins_the_glossary_anchor():
     assert outcome.console_links[0] == "page:metrics"
 
 
+async def test_app_help_cites_one_section_once_with_a_plain_text_snippet():
+    """A section split into several chunks is ONE citation (one ``D*`` id, shared by
+    its results), and snippets carry no inline Markdown the client would show raw."""
+    for kwargs in ({"topic": "kpi:noise_reduction"},
+                   {"query": "How is the noise reduction funnel computed?"}):
+        outcome = await AppHelpTool().run(_ctx(), **kwargs)
+        assert outcome.ok and outcome.citations
+        docs = [c.doc for c in outcome.citations]
+        assert len(docs) == len(set(docs)), docs
+        refs = {c.id for c in outcome.citations}
+        assert {r["ref"] for r in outcome.observation["results"] if r["ref"]} <= refs
+        for citation in outcome.citations:
+            snippet = citation.snippet or ""
+            assert "**" not in snippet and "`" not in snippet and "](" not in snippet, snippet
+    noise = await AppHelpTool().run(_ctx(), topic="kpi:noise_reduction")
+    assert noise.citations[0].snippet.startswith("The Noise Reduction funnel")
+
+
+def test_every_corpus_citation_snippet_is_plain_text():
+    from app.knowledge import get_app_knowledge
+    from app.knowledge.render import doc_citation
+
+    knowledge = get_app_knowledge()
+    for chunk in knowledge.chunks:
+        citation = doc_citation(chunk, "D1", knowledge)
+        if citation is None or not citation.snippet:
+            continue
+        assert "**" not in citation.snippet and "`" not in citation.snippet and "](" not in citation.snippet
+
+
 async def test_app_help_abstains_and_validates_input():
     abstained = await AppHelpTool().run(_ctx(), query="weather in Paris")
     assert abstained.ok and abstained.rows == 0 and abstained.observation["abstained"] is True

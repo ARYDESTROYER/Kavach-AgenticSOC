@@ -83,11 +83,19 @@ export function useConversationReport({
 
   const knownRef = React.useRef(knownReportId);
   knownRef.current = knownReportId;
+  // The report each conversation was linked to HERE (an add created or used it; a
+  // delete unlinked it). The rail row learns the link only on its next refresh, so
+  // switching away and back must not fall back to its stale `null` ("Report · 0").
+  const learnedRef = React.useRef(new Map<string, string | null>());
+  const learn = React.useCallback((thread: string | null, id: string | null) => {
+    if (thread) learnedRef.current.set(thread, id);
+  }, []);
   // Another conversation: forget the previous report at once (no stale "In report").
   React.useEffect(() => {
     generationRef.current += 1;
     setReport(null);
-    setReportId(enabled ? knownRef.current : null);
+    const learned = conversationId ? learnedRef.current.get(conversationId) : null;
+    setReportId(enabled ? (learned ?? knownRef.current) : null);
   }, [conversationId, enabled]);
 
   // The rail learnt the thread's report id (e.g. after a refresh): adopt it without
@@ -97,6 +105,8 @@ export function useConversationReport({
     if (enabled && knownReportId && knownReportId !== currentIdRef.current) setReportId(knownReportId);
   }, [enabled, knownReportId]);
 
+  const threadRef = React.useRef(conversationId);
+  threadRef.current = conversationId;
   const load = React.useCallback(async (id: string) => {
     const generation = generationRef.current;
     try {
@@ -106,11 +116,12 @@ export function useConversationReport({
       if (generation !== generationRef.current) return;
       // A deleted report: the next add creates a fresh draft.
       if (error instanceof ApiError && error.status === 404) {
+        learn(threadRef.current, null);
         setReport(null);
         setReportId(null);
       }
     }
-  }, []);
+  }, [learn]);
 
   React.useEffect(() => {
     if (!enabled || !reportId || !isSafeChatId(reportId) || report?.id === reportId) return;
@@ -129,12 +140,14 @@ export function useConversationReport({
           (current && detail.reportId === current) || (!!thread && detail.conversationId === thread);
         if (!mine) return;
         if (detail.report === null) {
+          learn(thread, null);
           setReport(null);
           setReportId(null);
           return;
         }
         if (detail.report) {
           const next = detail.report;
+          learn(thread, next.id);
           setReportId(next.id);
           // Never step back to an older copy than the one already shown.
           setReport((prev) => (prev && prev.id === next.id && prev.version > next.version ? prev : next));
@@ -143,7 +156,7 @@ export function useConversationReport({
         const id = current ?? detail.reportId;
         if (id) void load(id);
       }),
-    [load],
+    [learn, load],
   );
 
   currentIdRef.current = report?.id ?? reportId;
@@ -172,6 +185,7 @@ export function useConversationReport({
         if (generation !== generationRef.current) return;
         setReport(result.report);
         setReportId(result.report.id);
+        learn(conversationId, result.report.id);
         emitReportChanged({ reportId: result.report.id, conversationId, report: result.report, origin: ORIGIN });
         callbacksRef.current.onAdded?.(result.report.items.length, result.report.id);
       } catch (error) {
@@ -180,7 +194,7 @@ export function useConversationReport({
         pendingRef.current = false;
       }
     },
-    [conversationId, report?.id, reportId],
+    [conversationId, learn, report?.id, reportId],
   );
 
   const remove = React.useCallback(

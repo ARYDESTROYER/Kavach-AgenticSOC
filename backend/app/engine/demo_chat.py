@@ -2110,24 +2110,28 @@ def _say_trends(r: Result) -> str:
     if not measured:
         return ""
     bucket = _num(o.get("bucket_minutes"))
+    # ``size`` measures a distance between buckets ("1 hour before the latest");
+    # ``kind`` names the buckets themselves. The bucket COUNT is never written as a
+    # duration: a trailing 24 h window touches 25 hourly buckets (its first and last
+    # are partial), and "last 24h (25 hours)" would contradict itself.
     if bucket == 60:
-        size = "hour"
+        size, kind = "hour", "hourly bucket"
     elif bucket == 1440:
-        size = "day"
+        size, kind = "day", "daily bucket"
     elif bucket and bucket % 60 == 0:
-        size = f"{_dec(bucket / 60, 0)}-hour bucket"
+        size = kind = f"{_dec(bucket / 60, 0)}-hour bucket"
     else:
-        size = f"{_dec(bucket, 0)}-minute bucket"
+        size = kind = f"{_dec(bucket, 0)}-minute bucket"
     peak = max(measured)
     peak_at = max(i for i, v in enumerate(new) if v == peak)
     where = (f"the latest {size}" if peak_at == len(new) - 1
              else f"{_plural(len(new) - 1 - peak_at, size)} before the latest")
-    text = (f"Trend over the {_window(o)} ({_plural(len(new), size)}): {_count(sum(measured))} new and "
+    text = (f"Trend over the {_window(o)} in {kind}s: {_count(sum(measured))} new and "
             f"{_count(sum(v for v in closed if v is not None))} closed cases; the peak was {where}, with "
             f"{_plural(peak, 'new case')}.")
     alerts = [v for v in (_num(a) for a in o.get("alerts") or []) if v is not None]
     if alerts:
-        text += (f" Alert ingest was recorded for {len(alerts)} of {len(new)} {size}s "
+        text += (f" Alert ingest was recorded in {len(alerts)} of the {len(new)} {kind}s "
                  f"({_count(sum(alerts))} alerts).")
     return text
 
@@ -2340,8 +2344,10 @@ def _verdict_adjective(value: Any) -> str:
 
 def _case_facts(case: Mapping[str, Any]) -> str:
     """The case's verdict as a predicate with its verb: "is a true positive at 99%
-    confidence, risk 88 (critical)", "has a needs-human verdict at 88% confidence, …"
-    (needs-human is a routing verdict, not a kind of case), "has no verdict yet, …"."""
+    confidence, risk 88/100, severity critical", "has a needs-human verdict at 88%
+    confidence, …" (needs-human is a routing verdict, not a kind of case), "has no
+    verdict yet, …". Risk and severity are separate axes, so each is named: a bare
+    "risk 7 (critical)" reads as a critical risk band beside a LOW risk gauge."""
     verdict = _verdict_word(case.get("verdict"))
     if not verdict:
         text = "has no verdict yet"
@@ -2352,9 +2358,10 @@ def _case_facts(case: Mapping[str, Any]) -> str:
     confidence = _num(case.get("confidence"))
     if confidence is not None:
         text += f" at {_pct(confidence, ratio=True)} confidence"
-    text += f", risk {_count(case.get('risk_score'))}"
+    if _num(case.get("risk_score")) is not None:
+        text += f", risk {_count(case.get('risk_score'))}/100"
     if case.get("severity"):
-        text += f" ({display_text(case.get('severity'), 20)})"
+        text += f", severity {display_text(case.get('severity'), 20)}"
     return text
 
 
@@ -3052,13 +3059,26 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
             lead.append(f"Start with {_code(first.get('case_id'), 60)}" + (f" ({', '.join(why)})" if why else "")
                         + ".")
         body = [line for line in lead if line]
-    summary = " ".join(s for s in (_say_shift(shift)[0] if shift else "", posture_line) if s)
-    summary_section: dict[str, Any] = {
-        "heading": "Summary", "items": _keep(_block(shift, "kpis", view="kpi_group", title="Shift headline"))}
+    # One figure shown once (A34): the Summary's own text states only what no block
+    # of the brief already shows. The Shift headline KPIs (beside it) carry the five
+    # headline counts and the Security posture KPIs (under Key metrics) the posture
+    # figures, so each sentence is the fallback for its missing block, never a repeat.
+    headline_kpis = _block(shift, "kpis", view="kpi_group", title="Shift headline")
+    posture_kpis = _block(post, "kpis", view="kpi_group", title="Security posture")
+    summary = " ".join(s for s in (
+        _say_shift(shift)[0] if shift and headline_kpis is None else "",
+        posture_line if posture_kpis is None else "",
+    ) if s)
+    summary_section: dict[str, Any] = {"heading": "Summary", "items": _keep(headline_kpis)}
     plain_summary = _plain(summary.replace("**", ""), 1100)
     if plain_summary:
         # A blank summary is left out: the section validator rejects an empty string.
-        summary_section["summary"] = plain_summary
+        # A section is shown only with a block, so with no headline KPIs the text is
+        # the Summary's own block.
+        if summary_section["items"]:
+            summary_section["summary"] = plain_summary
+        else:
+            summary_section["items"] = [{"type": "markdown", "text": plain_summary}]
     sections = [
         summary_section,
         {"heading": "Open work", "items": _keep(
@@ -3066,7 +3086,7 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
             _block(shift, "categories", view="hbar", title="Open cases by analyst"),
             _block(camps, "table", view="table", title="Open campaigns"))},
         {"heading": "Key metrics", "items": _keep(
-            _block(post, "kpis", view="kpi_group", title="Security posture"),
+            posture_kpis,
             _block(post, "categories", view=_first_view(post, "categories", ("donut", "hbar")),
                    title="Cases by severity"))},
         {"heading": "Next steps", "items": [

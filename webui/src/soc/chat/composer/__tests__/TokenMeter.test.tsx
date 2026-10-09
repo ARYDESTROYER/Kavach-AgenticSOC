@@ -95,4 +95,28 @@ describe('TokenMeter', () => {
     render(<TokenMeter context={makeContext({ budget, spent_today: 1 })} draft="" showRing={false} />);
     expect(screen.queryByRole('meter')).toBeNull();
   });
+
+  it('mentions the shared budget only when one is in force', () => {
+    // Demo / budget disabled: budget_state is always the string 'ok', never a test.
+    const { unmount } = render(
+      <TokenMeter context={makeContext({ budget: { enabled: false }, budget_state: 'ok', spent_today: null })} draft="" />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Estimated next request/ }));
+    expect(screen.queryByText(/Chat shares this budget/)).toBeNull();
+    unmount();
+    // A viewer without models:read sees no budget object, only a non-ok state.
+    const second = render(<TokenMeter context={makeContext({ budget: null, budget_state: 'approaching' })} draft="" />);
+    fireEvent.click(screen.getByRole('button', { name: /Estimated next request/ }));
+    expect(screen.getByText(/Chat shares this budget/)).toBeInTheDocument();
+    second.unmount();
+    render(<TokenMeter context={makeContext({ budget, budget_state: 'ok' })} draft="" />);
+    fireEvent.click(screen.getByRole('button', { name: /Estimated next request/ }));
+    expect(screen.getByText(/Chat shares this budget/)).toBeInTheDocument();
+  });
+
+  it('pluralises the history row', () => {
+    render(<TokenMeter context={makeContext({ history_exchanges: 1 })} draft="" />);
+    fireEvent.click(screen.getByRole('button', { name: /Estimated next request/ }));
+    expect(screen.getByText('History · last 1 exchange')).toBeInTheDocument();
+  });
 });

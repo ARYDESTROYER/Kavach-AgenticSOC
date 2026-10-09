@@ -2815,6 +2815,12 @@ export interface CaseIdFormatConfig {
 export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Who authored a USER turn's text (SPEC §4.8.2). The server counts a client-history
+   * user turn as user-authored ONLY when it says `user`; absent or any other origin
+   * never authorises an indicator lookup on a later turn.
+   */
+  origin?: ChatOrigin;
 }
 
 /** One durably stored Workspace-chat message. Assistant rows retain the original
@@ -2824,6 +2830,13 @@ export interface ChatConversationMessage extends ChatTurn {
   id: string;
   created_at: string;
   response?: ChatResponse | null;
+  /**
+   * Client-derived (user messages only): who authored the stored prompt (SPEC §4.8),
+   * read from the stored `response.origin`. Absent = `user`. Ask again and the
+   * composer's ↑ recall must keep a follow-up / starter / command / continue origin
+   * after a reload, exactly as they do in the live session.
+   */
+  origin?: ChatOrigin;
   idempotency_key?: string | null;
   model?: string | null;
   source_id?: string | null;

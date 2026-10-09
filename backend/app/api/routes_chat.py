@@ -85,6 +85,7 @@ from ..stores.chat_conversations import (
     ChatIdempotencyConflict,
     ChatRequestCapacityBusy,
     ChatRequestInProgress,
+    IDEMPOTENCY_PENDING_TTL_SECONDS,
     normalize_user_id,
 )
 from ..utils import new_id
@@ -565,6 +566,40 @@ async def _close_owned(plan: _TurnPlan) -> None:
         pass
 
 
+# Headroom on a reservation lease beyond the turn's configured worst case: the
+# preflight before the engine starts and the save after it ends.
+TURN_LEASE_MARGIN_S = 120
+
+
+def turn_lease_seconds(cfg: Any) -> int:
+    """How long a Workspace reservation stays owned without completing: the turn's
+    configured worst case, never less than the store's default lease.
+
+    The engine only stops starting NEW steps at ``turn_timeout_s``: a model step or a
+    lookup batch started just before it still runs to its own timeout, and the
+    answer is then written by one more final-only model step (SPEC A2). A lease
+    shorter than that would let a same-key retry reclaim a turn that is still running
+    and bill the question a second time (SPEC §6.4)."""
+    def bound(name: str, default: int) -> int:
+        try:
+            return max(0, int(getattr(cfg, name, default)))
+        except (TypeError, ValueError):
+            return default
+
+    model_step = bound("model_step_timeout_s", 30)
+    worst = (bound("turn_timeout_s", 90) + model_step + max(model_step, bound("tool_timeout_s", 15))
+             + TURN_LEASE_MARGIN_S)
+    return max(IDEMPOTENCY_PENDING_TTL_SECONDS, worst)
+
+
+def _running_with_key(state: AppState, owner: str, key: str) -> bool:
+    """Whether one of ``owner``'s turns holding ``key`` is still running here."""
+    return any(
+        handle.owner == owner and handle.idempotency_key == key and not handle.finished.is_set()
+        for handle in state.chat_turns.running()
+    )
+
+
 async def _prepare(
     request: Request, body: ChatRequest, state: AppState, *,
     author: str, owner: str, grants: frozenset[tuple[str, str]],
@@ -589,10 +624,18 @@ async def _prepare(
         if plan.existing is None:
             raise HTTPException(status_code=404, detail="conversation not found")
     if persist_workspace:
+        if body.idempotency_key and _running_with_key(state, owner, body.idempotency_key):
+            # The turn holding this key is still running in this process: a same-key
+            # retry waits for it, whatever the age of its lease (SPEC §6.4, A21).
+            raise _conflict_http(
+                "chat_request_in_progress", "This chat request is already in progress.",
+                retry_after=IN_PROGRESS_RETRY_AFTER_S,
+            )
         try:
             plan.reservation = await plan.store.reserve_exchange(
                 author, idempotency_key=plan.request_key,
                 request_fingerprint=plan.fingerprint, conversation_id=body.conversation_id,
+                lease_seconds=turn_lease_seconds(prefs.chat_agent),
             )
         except ChatHistoryUnavailable as exc:
             raise _history_http(exc) from exc
@@ -698,9 +741,14 @@ def _replay_messages(conversation: ChatConversation | None) -> list[dict[str, An
     return out
 
 
-def _with_legacy_discover(response: ChatResponse, body: ChatRequest, prefs: Preferences) -> ChatResponse:
+def _with_legacy_discover(
+    response: ChatResponse, body: ChatRequest, prefs: Preferences, ctx: Any = None,
+) -> ChatResponse:
     """``discover`` keeps its pre-revamp meaning (SPEC §3.2): the first successful
-    log search of the turn as a Discover link over its effective window."""
+    log search of the turn as a Discover link over its effective window — resolved
+    exactly as the search resolved it (``resolve_window`` over the step's own window
+    input and the turn's tool context: chip clamp, then context, then 24 h), so the
+    link never names a window the search did not use."""
     if response.discover is not None or not response.query:
         return response
     step = next(
@@ -710,11 +758,15 @@ def _with_legacy_discover(response: ChatResponse, body: ChatRequest, prefs: Pref
     if step is None:
         return response
     params = step.params
-    context_range = body.context.time_range if body.context and isinstance(body.context.time_range, dict) else {}
-    default_from = body.time_range.from_ if body.time_range else (context_range.get("from") or "now-24h")
-    default_to = body.time_range.to if body.time_range else (context_range.get("to") or "now")
-    time_from = params.get("time_from") if isinstance(params.get("time_from"), str) else default_from
-    time_to = params.get("time_to") if isinstance(params.get("time_to"), str) else default_to
+    raw_from = params.get("time_from") if isinstance(params.get("time_from"), str) else None
+    raw_to = params.get("time_to") if isinstance(params.get("time_to"), str) else None
+    time_from, time_to = raw_from or "now-24h", raw_to or "now"
+    if ctx is not None:
+        from ..agents.chat_tools.common import resolve_window
+
+        window = resolve_window(ctx, time_from=raw_from, time_to=raw_to)
+        if not isinstance(window, str):
+            time_from, time_to = window.time_from, window.time_to
     data_view = body.context.data_view if body.context and body.context.data_view else prefs.data_view_pattern
     try:
         link = DiscoverLink(
@@ -845,7 +897,7 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
     response = outcome.response
     if response is None:
         raise RuntimeError("the chat engine ended without a response")
-    response = _with_legacy_discover(response, body, plan.prefs)
+    response = _with_legacy_discover(response, body, plan.prefs, plan.ctx)
     provenance = {
         "effective_source_id": plan.source_id,
         "effective_source_name": plan.source_name,

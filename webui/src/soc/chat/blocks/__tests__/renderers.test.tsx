@@ -152,6 +152,29 @@ describe('kpi group', () => {
     expect(screen.getByTestId('block-kpis')).not.toHaveTextContent('0 ms');
   });
 
+  it('closes the frame around a partial last row and says "no change" for a zero delta (no rising arrow)', () => {
+    show(
+      parseBlock({
+        id: 'flat',
+        type: 'kpi_group',
+        provenance: 'code',
+        artifact_kind: 'kpis',
+        items: [
+          { key: 'nh', label: 'Needs a human', value: 0, unit: 'count', delta: { value: 0, period_label: 'vs previous window', good_direction: 'down' } },
+          { key: 'sla', label: 'SLA breached', value: 10, unit: 'count', delta: { value: 2, period_label: 'vs previous window', good_direction: 'down' } },
+        ],
+      }),
+    );
+    // The frame is the wrapper's own four-sided border; cells only draw inner hairlines.
+    const frame = screen.getByTestId('block-kpis-frame');
+    expect(frame).toHaveClass('border', 'rounded-md', 'overflow-hidden');
+    expect(within(frame).getByRole('list')).toHaveClass('-mr-px', '-mb-px');
+    const kpis = screen.getByTestId('block-kpis');
+    expect(kpis).toHaveTextContent('no change vs previous window');
+    expect(within(kpis).getByRole('img', { name: 'no change vs previous window' }).querySelector('svg')).toBeNull();
+    expect(within(kpis).getByRole('img', { name: /^changed up by \+2 vs previous window, worse$/ })).toBeInTheDocument();
+  });
+
   it('makes a tile with a ref a navigation button', () => {
     const nav = vi.fn();
     show(galleryBlock('kpis'), { onNavigate: nav });

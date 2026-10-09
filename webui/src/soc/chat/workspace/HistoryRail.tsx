@@ -297,7 +297,8 @@ function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: 
         {actions.onExport ? (
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
-              <Download aria-hidden />
+              {/* A sub-trigger does not size its icon like a menu item does (16 px, muted). */}
+              <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden />
               Export
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
@@ -600,6 +601,21 @@ export function HistoryRail({
   );
 }
 
+const foldText = (text: string) => text.replace(/\u2026/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * The match snippet worth showing under a hit's title: none when it only repeats the
+ * title (a hit in the title, or in the first question the title was made from), so a
+ * result never shows, or a screen reader never reads, the same sentence twice.
+ */
+export function distinctSnippet(title: string, snippet: string | null | undefined): string {
+  if (!snippet) return '';
+  const a = foldText(snippet);
+  const b = foldText(title);
+  if (!a || a === b || b.startsWith(a) || a.startsWith(b)) return '';
+  return snippet;
+}
+
 function SearchResults({ search, busy, headingPrefix }: { search: HistoryRailSearch; busy: boolean; headingPrefix: string }) {
   const results = search.results;
   const headingId = `${headingPrefix}-results`;
@@ -620,22 +636,24 @@ function SearchResults({ search, busy, headingPrefix }: { search: HistoryRailSea
         </div>
       ) : null}
       <ul className="space-y-px">
-        {(results ?? []).map((hit) => (
-          <li key={hit.id}>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => search.openHit(hit)}
-              aria-label={`${hit.title || UNTITLED_CONVERSATION}${hit.match?.snippet ? ` — ${hit.match.snippet}` : ''}`}
-              className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
-            >
-              <span className="block truncate text-sm text-foreground">{hit.title || UNTITLED_CONVERSATION}</span>
-              {hit.match?.snippet ? (
-                <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{hit.match.snippet}</span>
-              ) : null}
-            </button>
-          </li>
-        ))}
+        {(results ?? []).map((hit) => {
+          const title = hit.title || UNTITLED_CONVERSATION;
+          const snippet = distinctSnippet(title, hit.match?.snippet);
+          return (
+            <li key={hit.id}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => search.openHit(hit)}
+                aria-label={`${title}${snippet ? ` — ${snippet}` : ''}`}
+                className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
+              >
+                <span className="block truncate text-sm text-foreground">{title}</span>
+                {snippet ? <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{snippet}</span> : null}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

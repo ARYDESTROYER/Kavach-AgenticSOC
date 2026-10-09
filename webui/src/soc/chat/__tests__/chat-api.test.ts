@@ -331,6 +331,28 @@ describe('conversations', () => {
     expect(conversation.messages[2].response?.steps).toHaveLength(1);
   });
 
+  it('keeps a stored non-user origin on a restored user message (SPEC §4.8)', async () => {
+    stubFetch(() =>
+      json({
+        id: 'conv-2',
+        title: 'T',
+        created_at: '2026-10-08T09:00:00Z',
+        updated_at: '2026-10-08T09:30:00Z',
+        message_count: 3,
+        messages: [
+          { id: 'u1', role: 'user', content: 'Look up 203.0.113.7', created_at: 'x', response: { origin: 'follow_up' } },
+          { id: 'u2', role: 'user', content: 'Mine', created_at: 'x', response: null },
+          { id: 'u3', role: 'user', content: 'Odd', created_at: 'x', response: { origin: 'admin' } },
+        ],
+      }),
+    );
+    const conversation = await getConversation('conv-2');
+    expect(conversation.messages[0]).toMatchObject({ origin: 'follow_up', response: null });
+    expect(conversation.messages[1]).not.toHaveProperty('origin');
+    // An unknown origin is never trusted as anything: it reads as absent (user).
+    expect(conversation.messages[2]).not.toHaveProperty('origin');
+  });
+
   it('patches title and/or pin only, and deletes', async () => {
     stubFetch((call) => (call.method === 'DELETE' ? json({ ok: true, id: 'conv-1' }) : json({ id: 'conv-1', title: 'New', pinned: true, created_at: 'a', updated_at: 'b', message_count: 2 })));
     const updated = await updateConversation('conv-1', { pinned: true, extra: 'no' } as never);

@@ -134,7 +134,11 @@ export function DonutChart({ block, title, size = 160, staticMode = false }: Don
         shape="rect"
         untrusted={block.untrusted}
         values={labels.map((_, i) => `${formatValue(values[i] ?? null, unit)} · ${shareText(i)}`)}
-        className="min-w-0 flex-1 flex-col items-start"
+        // A real basis (11rem), not flex-1's 0: when the lane cannot fit the donut AND a
+        // readable legend side by side (a phone, the report panel), the legend wraps
+        // under the donut instead of squeezing every label out (BLOCKS.md: the legend
+        // is the direct label).
+        className="min-w-0 flex-[1_1_11rem] flex-col items-start"
         ariaLabel="Parts"
       />
     </div>

@@ -7,7 +7,8 @@
  * width persist in localStorage and fail soft when storage throws.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import * as React from 'react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 
 vi.mock('../../report/ReportPanel', async () => {
   const React = await import('react');
@@ -22,6 +23,7 @@ vi.mock('../../report/ReportPanel', async () => {
 });
 
 import { ReportOverlay, ReportSplit } from '../ReportPanelHost';
+import { useOpenerFocus } from '../useOpenerFocus';
 import { PANEL_DEFAULT, PANEL_MAX, PANEL_MIN, SPLIT_HANDLE_PX, useChatGeometry } from '../useChatGeometry';
 
 function renderSplit(width = 360, maxWidth = 440) {
@@ -105,6 +107,51 @@ describe('ReportOverlay', () => {
     expect(dialog.className).toContain("[&>button[aria-label='Close']]:hidden");
     fireEvent.click(screen.getByRole('button', { name: 'Close report' }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('returns focus to the control that opened it when it closes (Esc), not to <body>', async () => {
+    function Host() {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Report · 3
+          </button>
+          <ReportOverlay open={open} onOpenChange={setOpen} conversationId="c-1" reportId="r-1" />
+        </>
+      );
+    }
+    render(<Host />);
+    const toggle = screen.getByRole('button', { name: 'Report · 3' });
+    toggle.focus();
+    fireEvent.click(toggle);
+    const dialog = await screen.findByRole('dialog', { name: 'Report' });
+    await screen.findByTestId('report-panel');
+    expect(document.activeElement).not.toBe(toggle);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(toggle);
+  });
+});
+
+describe('useOpenerFocus', () => {
+  it('refocuses the recorded opener on close, and leaves Radix alone when it is gone', () => {
+    const { result } = renderHook(() => useOpenerFocus());
+    const button = document.createElement('button');
+    document.body.append(button);
+    button.focus();
+    result.current.capture();
+    button.blur();
+    const event = new Event('focusScope.autoFocusOnUnmount', { cancelable: true });
+    result.current.restore(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(button);
+
+    result.current.capture();
+    button.remove();
+    const gone = new Event('focusScope.autoFocusOnUnmount', { cancelable: true });
+    result.current.restore(gone);
+    expect(gone.defaultPrevented).toBe(false);
   });
 });
 

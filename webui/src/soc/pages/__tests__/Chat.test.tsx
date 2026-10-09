@@ -434,6 +434,49 @@ describe('Workspace Chat page', () => {
     expect(calls.some((call) => call.url === '/api/chat/conversations/c-new')).toBe(false);
   });
 
+  it('never shows a just-saved draft\'s transcript under the next thread while it loads', async () => {
+    rows = [];
+    details = { [OLDER.id]: detailOf(OLDER) };
+    renderChat();
+    expect(await screen.findByTestId('empty-state')).toBeInTheDocument();
+    await send('First question');
+    const saved = summary('c-new', 'First question', '2026-10-08T10:00:00Z');
+    rows = [saved, OLDER];
+    details['c-new'] = detailOf(saved);
+    await streams[0].push(start('c-new'), {
+      type: 'turn.done',
+      response: { answer: 'X answer', conversation_id: 'c-new', conversation_title: 'First question', message_id: 'c-new-a' },
+    });
+    expect(await screen.findByText('X answer')).toBeInTheDocument();
+    await screen.findByRole('button', { name: /^Older endpoint review — / });
+
+    // Hold the older thread's detail open, as on a slow backend.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scripted = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).startsWith('/api/chat/conversations/c-older')) await held;
+        return scripted(input, init);
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review — / }));
+    await settle();
+    expect(screen.getByRole('heading', { level: 2, name: 'Older endpoint review' })).toBeInTheDocument();
+    // The old thread's turns are gone (no Add to report on a message of another thread).
+    expect(screen.queryByText('X answer')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Add answer to report/ })).toBeNull();
+    expect(screen.getByText('Restoring conversation')).toBeInTheDocument();
+    await act(async () => {
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(await screen.findByText('Older endpoint review answer')).toBeInTheDocument();
+  });
+
   it('retries a failed turn with the same idempotency key', async () => {
     rows = [];
     details = {};
@@ -605,6 +648,21 @@ describe('Workspace Chat page', () => {
     expect(screen.queryByRole('dialog', { name: 'Conversations' })).toBeNull();
     shortcut('S');
     expect(await screen.findByRole('dialog', { name: 'Conversations' })).toBeInTheDocument();
+  });
+
+  it('returns focus to the History button when the history Sheet closes', async () => {
+    frameWidth(600);
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const history = screen.getByRole('button', { name: /^History/ });
+    await user.click(history);
+    await screen.findByRole('dialog', { name: 'Conversations' });
+    // The focused New chat button's tooltip is the top layer: the first Esc closes it.
+    await user.keyboard('{Escape}');
+    if (screen.queryByRole('dialog', { name: 'Conversations' })) await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Conversations' })).toBeNull());
+    expect(document.activeElement).toBe(history);
   });
 
   it('confirms a delete and keeps the report', async () => {

@@ -473,7 +473,12 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
         <button
           type="button"
           onClick={() => onOpen(r.id)}
-          className={cn('max-w-full truncate rounded-sm text-left font-medium text-foreground hover:underline', focusRing)}
+          // A rem cap, not max-w-full: in an auto-layout table a percentage never caps
+          // the column, so a long title pushed Updated and the actions off-screen.
+          className={cn(
+            'block max-w-[18rem] truncate rounded-sm text-left font-medium text-foreground hover:underline 2xl:max-w-[28rem]',
+            focusRing,
+          )}
           title={r.title}
         >
           {r.title}
@@ -495,16 +500,22 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
         if (!r.conversation_id) return <span className="text-muted-foreground">—</span>;
         const known = conversations?.titles.get(r.conversation_id);
         if (!known && conversations?.complete) return <span className="text-muted-foreground">{SOURCE_UNAVAILABLE}</span>;
+        // A report started from a conversation is titled after it: never print the same
+        // sentence twice side by side; the link (and its accessible name) still names it.
+        const label = !known || known === r.title ? 'Open conversation' : known;
         return (
           <button
             type="button"
             onClick={() => navigate('chat', { conversationId: r.conversation_id ?? undefined })}
-            className={cn('inline-flex max-w-full items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
+            className={cn(
+              'inline-flex max-w-[12rem] items-center gap-1 rounded-sm text-primary hover:underline 2xl:max-w-[16rem]',
+              focusRing,
+            )}
             aria-label={`Open the source conversation of ${r.title}${known ? `: ${known}` : ''}`}
             title={known}
           >
             <MessageSquare className="size-3 shrink-0" aria-hidden />
-            <span className="truncate">{known ?? 'Open conversation'}</span>
+            <span className="truncate">{label}</span>
           </button>
         );
       },
@@ -513,6 +524,8 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
       id: 'updated',
       header: 'Updated (UTC)',
       sortable: true,
+      className: 'whitespace-nowrap',
+      headerClassName: 'whitespace-nowrap',
       cell: (r) => <span className="tabular-nums text-muted-foreground">{formatUtc(r.updated_at)}</span>,
     },
     {

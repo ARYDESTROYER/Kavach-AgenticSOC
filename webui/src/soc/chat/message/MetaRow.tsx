@@ -33,6 +33,9 @@ export type TurnOutcomeWord = 'Stopped' | 'Partial' | 'Failed';
 const DISCLOSURE =
   'inline-flex min-h-6 min-w-0 items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
+/** Shown only when the meta row is at least 30rem wide. */
+const WIDE_ONLY = 'hidden @[30rem]/meta:inline';
+
 function Dot() {
   return (
     <span className="shrink-0 text-muted-foreground/60" aria-hidden>
@@ -81,21 +84,37 @@ export function MetaRow({
         Boolean,
       );
 
-  const lead = (() => {
+  // In a narrow lane (a phone, a slim case panel) the row drops the duration and the
+  // cost (both stay in the run log, the usage card and its accessible name) so the
+  // lookup count, the token figure, the Demo marker and Sources stay whole on its ONE
+  // line (SPEC §10.3) instead of every item being cut mid-word.
+  const lead: React.ReactNode = (() => {
     const prefix = outcome ? `${outcome} · ` : '';
-    if (lookups > 0) return `${prefix}${lookupsLabel(lookups)}${timeText ? ` · ${timeText}` : ''}`;
+    if (lookups > 0) {
+      return (
+        <>
+          {prefix}
+          {lookupsLabel(lookups)}
+          {timeText ? <span className={WIDE_ONLY}>{` · ${timeText}`}</span> : null}
+        </>
+      );
+    }
     if (timeText) return `${prefix}${outcome ? '' : 'Answered in '}${timeText}`;
     return outcome ?? '';
   })();
+  const simulated = usage?.simulated === true && !(usage.calls === 0 && usage.total_tokens === 0);
 
   return (
-    <div className={cn('flex min-h-7 items-center gap-2 text-xs text-muted-foreground', className)} data-testid="meta-row">
+    <div
+      className={cn('@container/meta flex min-h-7 items-center gap-2 text-xs text-muted-foreground', className)}
+      data-testid="meta-row"
+    >
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
         {lead ? (
           log ? (
             <button
               type="button"
-              className={DISCLOSURE}
+              className={cn(DISCLOSURE, 'shrink-0 @[30rem]/meta:shrink')}
               aria-expanded={log.open}
               aria-controls={log.controls}
               onClick={log.onToggle}
@@ -115,7 +134,18 @@ export function MetaRow({
           usage.calls === 0 && usage.total_tokens === 0 ? (
             <span className="truncate">No model call · $0</span>
           ) : (
-            <UsageCard usage={usage} sources={sourceNames} />
+            <>
+              <UsageCard usage={usage} sources={sourceNames} costClassName={WIDE_ONLY} simulatedOutside />
+              {simulated ? (
+                <>
+                  <Dot />
+                  {/* Spoken in the usage figure's name; here so it never truncates away. */}
+                  <span className="shrink-0" aria-hidden>
+                    simulated
+                  </span>
+                </>
+              ) : null}
+            </>
           )
         ) : (
           <span className="truncate">Usage not recorded · —</span>
@@ -133,7 +163,7 @@ export function MetaRow({
             <Dot />
             <button
               type="button"
-              className={DISCLOSURE}
+              className={cn(DISCLOSURE, 'shrink-0')}
               aria-expanded={sources.open}
               aria-controls={sources.controls}
               onClick={sources.onToggle}

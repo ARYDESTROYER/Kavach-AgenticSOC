@@ -387,6 +387,24 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     assert body.split("\n\n")[1:] == ["Start with `case-0042` (`x`, escalated).",
                                         "The brief below is ready to add to a report."]
     assert "Posture:" not in body and "Needs attention first" not in body
+    # One figure shown once (A34): the Shift headline KPIs carry the five counts and
+    # the Security posture KPIs the posture figures, so the Summary text restates
+    # neither (it would repeat the KPI group right beside it).
+    summary_section = envelope["sections"][0]
+    assert [i.get("title") for i in summary_section["items"]] == ["Shift headline"]
+    assert "summary" not in summary_section
+    # Without the KPI groups the sentences are the Summary's fallback.
+    bare = prompt("/shift-brief", [call("shift_report", shift_obs, artifacts=shift_arts[1:]),
+                                   call("soc_metrics", POSTURE_OBS, artifacts=[
+                                       a for a in POSTURE_ARTS if a.kind != "kpis"]),
+                                   call("list_campaigns", {"total": 0, "campaigns": []},
+                                        artifacts=[art("a1", "table", {"columns": [], "rows": []}, "Campaigns")])])
+    bare_header, _ = final_of(plan_turn(bare))
+    bare_summary = bare_header["blocks"][0]["sections"][0]
+    assert bare_summary["heading"] == "Summary"
+    (fallback,) = bare_summary["items"]
+    assert fallback["type"] == "markdown"
+    assert "5 open cases" in fallback["text"] and "Posture: Active Risk Index" in fallback["text"]
 
 
 def test_report_answers_keep_a_short_lead_and_close_after_their_notes() -> None:
@@ -466,7 +484,7 @@ def test_case_final_explains_the_decision_from_the_policy_table() -> None:
     assert_valid_final(header, manifest(msgs))
     # The id is the handle; the free-form title names the case (inline code, D6).
     assert body.startswith("**`case-0042`** (`user:amy - phishing`) is a true positive at 90% confidence, "
-                           "risk 80 (critical)")
+                           "risk 80/100, severity critical")
     assert ("Why it is still open: the deterministic auto-close policy sends a case with a true-positive verdict "
             "at 90% confidence and risk 80 to a human, because true-positive auto-close is turned off in the "
             "policy.") in body
@@ -840,7 +858,7 @@ def test_a_case_report_without_any_windowed_lookup_keeps_its_envelope() -> None:
     assert not dropped and requests[0].type == "report" and requests[0].invalid_items == 0
     # The Summary leaf is rebuilt from numbers and enums: no log or case value in the header.
     summary = envelope["sections"][0]["items"][0]["text"]
-    assert summary.startswith("The case is a true positive at 90% confidence, risk 80 (critical)")
+    assert summary.startswith("The case is a true positive at 90% confidence, risk 80/100, severity critical")
     assert "`" not in summary and "amy" not in summary and "lure" not in summary
     assert body.endswith("The report below is ready to add to your Reports.")
 
@@ -1228,8 +1246,13 @@ def test_a_behaviour_hunt_says_how_it_chose_its_anchor_case() -> None:
 
 def test_wording_fixes() -> None:
     case = {"verdict": "NEEDS_HUMAN", "confidence": 0.88, "risk_score": 64, "severity": "high"}
-    assert demo_chat._case_facts(case) == "has a needs-human verdict at 88% confidence, risk 64 (high)"
-    assert demo_chat._case_facts({"risk_score": 5}) == "has no verdict yet, risk 5"
+    assert demo_chat._case_facts(case) == "has a needs-human verdict at 88% confidence, risk 64/100, severity high"
+    assert demo_chat._case_facts({"risk_score": 5}) == "has no verdict yet, risk 5/100"
+    # Risk and severity are separate axes: a low risk on a critical case names both.
+    assert demo_chat._case_facts({"verdict": "TRUE_POSITIVE", "confidence": 0.93, "risk_score": 7,
+                                  "severity": "critical"}) == (
+        "is a true positive at 93% confidence, risk 7/100, severity critical")
+    assert demo_chat._case_facts({"severity": "low"}) == "has no verdict yet, severity low"
     msgs = prompt("Check 203.0.113.7", _hunt_round(0, 0))
     _, body = final_of(plan_turn(msgs))
     assert "(a labelled Demo Mode synthetic result; no provider was queried)" in body
@@ -1240,7 +1263,16 @@ def test_wording_fixes() -> None:
         "SOC metrics (needs metrics:view)", "automation status (needs automation:read or rules:read)",
         "AI cost data (needs cost:view)", "the audit trail (needs audit:view)", "1 more"]
     trends = {**TRENDS_OBS, "bucket_minutes": 360}
-    assert "(4 6-hour buckets)" in demo_chat._say_trends(demo_chat.Result(1, "soc_metrics", "ok", "", (), trends))
+    assert "Trend over the last 24h in 6-hour buckets:" in demo_chat._say_trends(
+        demo_chat.Result(1, "soc_metrics", "ok", "", (), trends))
+    # A trailing 24 h window touches 25 hourly buckets: the count is never written as
+    # a duration ("last 24h (25 hours)" contradicted itself).
+    hourly = {"kind": "trends", "window": "last 24h", "bucket_minutes": 60,
+              "new_cases": [1.0] * 25, "closed": [0.0] * 25, "alerts": [None] * 24 + [5.0]}
+    said = demo_chat._say_trends(demo_chat.Result(1, "soc_metrics", "ok", "", (), hourly))
+    assert said.startswith("Trend over the last 24h in hourly buckets: 25 new and 0 closed cases")
+    assert "25 hours" not in said
+    assert "Alert ingest was recorded in 1 of the 25 hourly buckets (5 alerts)." in said
 
 
 def test_explain_metric_verbs_agree_with_plural_topics() -> None:

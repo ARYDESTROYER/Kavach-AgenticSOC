@@ -19,6 +19,7 @@ import {
   recoveryDelayMs,
   retriesWithSameKey,
   recoveryWindowMs,
+  replayHistorySize,
   useChatEngine,
   type ChatAssistantItem,
   type ChatEngine,
@@ -1157,5 +1158,186 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
     });
     await settle();
     expect(streams[1].body.message).toBe(prompt);
+  });
+});
+
+describe('useChatEngine — final-review regressions', () => {
+  const followUpThread: ChatConversation = {
+    id: 'conv-f',
+    title: 'Hunt',
+    created_at: '2026-10-08T09:00:00Z',
+    updated_at: '2026-10-08T09:05:00Z',
+    message_count: 4,
+    messages: [
+      { id: 'u1', role: 'user', content: 'Hunt the source IP', created_at: '2026-10-08T09:00:00Z' },
+      { id: 'a1', role: 'assistant', content: 'Found it.', created_at: '2026-10-08T09:01:00Z', response: { answer: 'Found it.' } },
+      {
+        id: 'u2',
+        role: 'user',
+        content: 'Look up 203.0.113.7 in threat intel',
+        created_at: '2026-10-08T09:02:00Z',
+        origin: 'follow_up',
+      },
+      { id: 'a2', role: 'assistant', content: 'Not looked up.', created_at: '2026-10-08T09:03:00Z', response: { answer: 'Not looked up.' } },
+    ],
+  };
+
+  it('a reopened follow-up keeps its origin: Ask again resends it as follow_up and ↑ recall skips it', async () => {
+    const { result } = await mountEngine({ conversation: followUpThread });
+    expect(result.current.items[2]).toMatchObject({ kind: 'user', origin: 'follow_up' });
+    // ↑ recall is the analyst's own last prompt, never the model-authored chip text.
+    expect(result.current.lastUserPrompt).toBe('Hunt the source IP');
+    act(() => {
+      expect(result.current.askAgain('a2')).toBe(true);
+    });
+    await settle();
+    expect(streams[0].body).toMatchObject({ message: 'Look up 203.0.113.7 in threat intel', origin: 'follow_up' });
+    // Replayed history says who wrote each prompt (SPEC §4.8.2).
+    expect(streams[0].body.history).toEqual([
+      { role: 'user', content: 'Hunt the source IP', origin: 'user' },
+      { role: 'assistant', content: 'Found it.' },
+      { role: 'user', content: 'Look up 203.0.113.7 in threat intel', origin: 'follow_up' },
+      { role: 'assistant', content: 'Not looked up.' },
+    ]);
+  });
+
+  it('client history carries each live prompt\'s origin', async () => {
+    const { result } = await mountEngine({ caseId: 'case-3' });
+    act(() => {
+      result.current.send('Show the hosts', { origin: 'follow_up' });
+    });
+    await settle();
+    await push(streams[0], start(), done({ answer: 'Two hosts.', message_id: 'm1' }));
+    act(() => {
+      result.current.send('Mine');
+    });
+    await settle();
+    expect(streams[1].body.history).toEqual([
+      { role: 'user', content: 'Show the hosts', origin: 'follow_up' },
+      { role: 'assistant', content: 'Two hosts.' },
+    ]);
+  });
+
+  it('"Run again to save" replaces the exchange in model history instead of sending it twice', async () => {
+    const { result } = await mountEngine({ caseId: 'case-7' });
+    act(() => {
+      result.current.send('Summarise this case');
+    });
+    await settle();
+    await push(
+      streams[0],
+      start(),
+      done({
+        answer: 'Two hosts touched.',
+        message_id: null,
+        usage: { calls: 1, total_tokens: 900, cost: 0.002 },
+        notice: { kind: 'not_saved', message: 'The answer could not be saved to the case.', retryable: true },
+      }),
+    );
+    expect(result.current.historySize.exchanges).toBe(1);
+    act(() => {
+      expect(result.current.retry(assistant(result.current).key)).toBe(true);
+    });
+    await settle();
+    // The retry resends the original body (its own history excluded the pair).
+    expect(streams[1].body.history).toEqual([]);
+    await push(streams[1], start('turn-2'), done({ answer: 'Two hosts touched (again).', message_id: 'm-saved' }));
+    expect(result.current.historySize.exchanges).toBe(1);
+    act(() => {
+      result.current.send('Next question');
+    });
+    await settle();
+    expect(streams[2].body.history).toEqual([
+      { role: 'user', content: 'Summarise this case', origin: 'user' },
+      { role: 'assistant', content: 'Two hosts touched (again).' },
+    ]);
+  });
+
+  it('New chat after a draft saved this session starts the composer on the defaults', async () => {
+    const { result, rerender } = await mountEngine({ conversation: null, resetKey: 0 });
+    act(() => {
+      result.current.setModel('gpt-pricey');
+      result.current.setSourceId('wazuh');
+      result.current.setScopes(['logs']);
+      result.current.setTimeRange({ from: 'now-7d', to: 'now' });
+    });
+    act(() => {
+      result.current.send('Draft turn');
+    });
+    await settle();
+    await push(streams[0], start(), done({ conversation_id: 'conv-new', message_id: 'm', conversation_title: 'Draft turn' }));
+    // The host's conversation stays null for a just-saved draft: only resetKey moves.
+    rerender({ conversation: null, resetKey: 1 });
+    expect(result.current.items).toEqual([]);
+    expect(result.current.model).toBeNull();
+    expect(result.current.sourceId).toBeNull();
+    expect(result.current.scopes).toEqual([]);
+    expect(result.current.timeRange).toBeNull();
+    expect(result.current.historySize).toEqual({ exchanges: 0, chars: 0 });
+  });
+
+  it('Ask again keeps an "Ask about this" topic and a Continue turn\'s anchor (new key only)', async () => {
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('What is MTTR?', { origin: 'starter', topic: 'kpi:mttr' });
+    });
+    await settle();
+    await push(streams[0], start(), done({ answer: 'MTTR is…', message_id: 'msg-1', conversation_id: 'c1' }));
+    act(() => {
+      expect(result.current.askAgain(assistant(result.current).key)).toBe(true);
+    });
+    await settle();
+    expect(streams[1].body).toMatchObject({ message: 'What is MTTR?', origin: 'starter', topic: 'kpi:mttr' });
+    expect(streams[1].body.idempotency_key).not.toBe(streams[0].body.idempotency_key);
+    await push(streams[1], start('turn-2'), done({ answer: 'Part 1', message_id: 'msg-2', conversation_id: 'c1' }));
+    act(() => {
+      result.current.continueAnswer(assistant(result.current).key);
+    });
+    await settle();
+    await push(streams[2], start('turn-3'), done({ answer: 'Part 2', message_id: 'msg-3', conversation_id: 'c1' }));
+    act(() => {
+      result.current.askAgain(assistant(result.current).key);
+    });
+    await settle();
+    expect(streams[3].body).toMatchObject({ message: CONTINUE_PROMPT, origin: 'continue', continue_of: 'msg-2' });
+  });
+
+  it('Ask again on a reopened Continue turn re-anchors to the answer it continued', async () => {
+    const thread: ChatConversation = {
+      ...followUpThread,
+      messages: [
+        followUpThread.messages![0],
+        followUpThread.messages![1],
+        { id: 'u3', role: 'user', content: CONTINUE_PROMPT, created_at: '2026-10-08T09:02:00Z', origin: 'continue' },
+        { id: 'a3', role: 'assistant', content: 'More.', created_at: '2026-10-08T09:03:00Z', response: { answer: 'More.' } },
+      ],
+    };
+    const { result } = await mountEngine({ conversation: thread });
+    act(() => {
+      result.current.askAgain('a3');
+    });
+    await settle();
+    expect(streams[0].body).toMatchObject({ origin: 'continue', continue_of: 'a1' });
+  });
+
+  it('reports the size of the history the next case turn replays', async () => {
+    const { result } = await mountEngine({ caseId: 'case-9' });
+    act(() => {
+      result.current.send('q'.repeat(100));
+    });
+    await settle();
+    await push(streams[0], start(), done({ answer: 'a'.repeat(300), message_id: 'm1' }));
+    expect(result.current.historySize).toEqual({ exchanges: 1, chars: 400 });
+  });
+});
+
+describe('replayHistorySize', () => {
+  it('keeps the newest 12 exchanges that fit in 24,000 characters', () => {
+    const turns = (n: number, size: number) =>
+      Array.from({ length: n * 2 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: 'x'.repeat(size) }));
+    expect(replayHistorySize([])).toEqual({ exchanges: 0, chars: 0 });
+    expect(replayHistorySize(turns(20, 10))).toEqual({ exchanges: 12, chars: 240 });
+    // 5 exchanges of 10,000 chars: only two fit in 24,000.
+    expect(replayHistorySize(turns(5, 5_000))).toEqual({ exchanges: 2, chars: 20_000 });
   });
 });

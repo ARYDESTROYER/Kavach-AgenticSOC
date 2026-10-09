@@ -292,6 +292,10 @@ describe('ReportPanel', () => {
     expect(await screen.findByRole('heading', { name: 'Recent sign-in failures' }, { timeout: 15_000 })).toBeInTheDocument();
     // A report item is read-only: no Add to report control inside it.
     expect(screen.queryByTestId('block-add-to-report')).toBeNull();
+    // The item is the card: its block drops its own frame (no card nested in a card).
+    const figure = screen.getByRole('heading', { name: 'Recent sign-in failures' }).closest('figure')!;
+    expect(figure).not.toHaveClass('border');
+    expect(figure).not.toHaveClass('rounded-lg');
   }, 20_000);
 
   it('exports with the source turns read on demand and the defang preference', async () => {

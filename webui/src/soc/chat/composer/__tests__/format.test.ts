@@ -19,6 +19,7 @@ import {
   presetForRange,
   projectedCostRange,
   sourceChipLabel,
+  withClientHistory,
   timeRangeLongLabel,
   timeRangeShortLabel,
 } from '../format';
@@ -165,3 +166,13 @@ describe('projectedCostRange', () => {
     expect(range?.high).toBeCloseTo(0.018 + 0.06, 6);
   });
 });
+
+describe('withClientHistory', () => {
+  it('replaces the context history with the engine-held history (chars ÷ chars_per_token)', () => {
+    const base = makeContext({ history_tokens: 0, history_exchanges: 0 });
+    expect(withClientHistory(base, { exchanges: 0, chars: 0 })).toBe(base);
+    expect(withClientHistory(base, { exchanges: 3, chars: 1_001 })).toMatchObject({ history_tokens: 250, history_exchanges: 3 });
+    expect(withClientHistory(base, { exchanges: 1, chars: 2 })).toMatchObject({ history_tokens: 1, history_exchanges: 1 });
+  });
+});
+

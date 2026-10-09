@@ -79,4 +79,34 @@ describe('report surfaces a11y', () => {
     expect(await axe(container)).toHaveNoViolations();
     expect(duplicateIds(container)).toEqual([]);
   }, 30_000);
+
+  it('the library list caps its text columns and never repeats the title as the source', async () => {
+    const title = 'How is our security posture right now? Include the risk index and how things trend';
+    api.listReports.mockResolvedValue([
+      { id: 'rep-1', title, template: 'custom', conversation_id: 'conv-1', item_count: 3, updated_at: '2026-10-08T10:00:00Z', version: 1 },
+      { id: 'rep-2', title: 'Shift brief', template: 'custom', conversation_id: 'conv-2', item_count: 1, updated_at: '2026-10-08T09:00:00Z', version: 1 },
+    ]);
+    api.listConversations.mockResolvedValue({
+      conversations: [
+        { id: 'conv-1', title, created_at: 'x', updated_at: 'x', message_count: 2 },
+        { id: 'conv-2', title: 'Night shift questions', created_at: 'x', updated_at: 'x', message_count: 2 },
+      ],
+    });
+    render(
+      <TooltipProvider>
+        <RouterProvider>
+          <ReportsLibrary />
+        </RouterProvider>
+      </TooltipProvider>,
+    );
+    const open = await screen.findByRole('button', { name: title });
+    expect(open.className).toMatch(/max-w-\[18rem\]/);
+    const same = await screen.findByRole('button', { name: `Open the source conversation of ${title}: ${title}` });
+    await waitFor(() => expect(same).toHaveTextContent('Open conversation'));
+    expect(same.className).toMatch(/max-w-\[12rem\]/);
+    expect(screen.getByRole('button', { name: 'Open the source conversation of Shift brief: Night shift questions' })).toHaveTextContent(
+      'Night shift questions',
+    );
+  });
 });
+

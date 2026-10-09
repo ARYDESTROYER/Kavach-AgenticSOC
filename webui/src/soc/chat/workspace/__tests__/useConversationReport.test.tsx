@@ -137,4 +137,26 @@ describe('useConversationReport', () => {
     expect(setup({ conversationId: null, reportId: null }).result.current.bindingFor(message)).toBeNull();
     expect(setup({ reportId: null }).result.current.bindingFor(assistantItem({ messageId: null }))).toBeNull();
   });
+
+  it('remembers a report created here across a switch away and back, before the rail row learns it', async () => {
+    getReportMock.mockImplementation((id: string) => Promise.resolve({ ...report([item('i-1', 'm-1', null)], 4), id }));
+    addToReportMock.mockResolvedValue({ report: report([item('i-1', 'm-1', null)], 4), itemId: 'i-1' });
+    const onAdded = vi.fn();
+    const { result, rerender } = setup({ reportId: null, onAdded });
+    expect(result.current.reportId).toBeNull();
+    await act(async () => {
+      result.current.bindingFor(message)!.onToggleAnswer();
+    });
+    expect(onAdded).toHaveBeenCalledWith(1, 'r-1');
+    expect(result.current.count).toBe(1);
+
+    // Away to another thread, then back; the rail row still says report_id: null.
+    rerender({ conversationId: 'c-2', reportId: null, enabled: true, onAdded });
+    expect(result.current.reportId).toBeNull();
+    expect(result.current.count).toBe(0);
+    rerender({ conversationId: 'c-1', reportId: null, enabled: true, onAdded });
+    expect(result.current.reportId).toBe('r-1');
+    await waitFor(() => expect(result.current.count).toBe(1));
+    expect(result.current.bindingFor(message)).toMatchObject({ answerInReport: true });
+  });
 });

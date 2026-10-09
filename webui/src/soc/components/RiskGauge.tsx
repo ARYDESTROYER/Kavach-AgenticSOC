@@ -45,6 +45,18 @@ const TEXT_CLASS: Record<ScoreBand, string> = {
 };
 
 /**
+ * The value and band WORD use the AA `-text` companions: the fill tokens are tuned for
+ * the arc and fall short of 4.5:1 as small text on a light card (Medium 3.26:1, High
+ * 3.98:1; ui-standard: small copy uses `*-text`). The swatch keeps the fill colour.
+ */
+const LABEL_CLASS: Record<ScoreBand, string> = {
+  critical: 'text-critical-text',
+  high: 'text-high-text',
+  medium: 'text-medium-text',
+  low: 'text-low-text',
+};
+
+/**
  * Human-readable band label for non-color signaling (a11y §6.1: the gauge shows a
  * numeric value AND a text band label, never color-only). Keyed by the canonical
  * `scoreBand` so the WORD, the arc colour, RiskBadge and posture all agree on the
@@ -180,7 +192,7 @@ export const RiskGauge = React.forwardRef<HTMLDivElement, RiskGaugeProps>(
           >
             <div className="flex items-baseline">
               <span
-                className={cn('font-semibold leading-none tracking-tight tabular-nums', TEXT_CLASS[band])}
+                className={cn('font-semibold leading-none tracking-tight tabular-nums', LABEL_CLASS[band])}
                 style={{ fontSize: valueFont }}
               >
                 {Math.round(clamped)}
@@ -204,14 +216,14 @@ export const RiskGauge = React.forwardRef<HTMLDivElement, RiskGaugeProps>(
           <span
             className={cn(
               'flex items-center gap-1 text-xs font-semibold uppercase tracking-wider',
-              TEXT_CLASS[band],
+              LABEL_CLASS[band],
             )}
           >
             <svg
               width={10}
               height={10}
               viewBox="0 0 10 10"
-              className="shrink-0"
+              className={cn('shrink-0', TEXT_CLASS[band])}
               aria-hidden
               focusable="false"
             >

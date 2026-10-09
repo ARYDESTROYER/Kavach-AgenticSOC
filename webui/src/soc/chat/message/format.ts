@@ -78,11 +78,14 @@ export function turnDurationMs(
 }
 
 /** "2.1k tokens · $0.004" with the honest qualifiers ("≈", "simulated"). */
-export function usageSummary(usage: TurnUsage, { withCost = true }: { withCost?: boolean } = {}): string {
+export function usageSummary(
+  usage: TurnUsage,
+  { withCost = true, withSimulated = true }: { withCost?: boolean; withSimulated?: boolean } = {},
+): string {
   const approx = usage.estimated ? '≈ ' : '';
   const parts = [`${approx}${compactTokens(usage.total_tokens)} tokens`];
   if (withCost) parts.push(`${approx}${formatCost(usage.cost)}`);
-  if (usage.simulated) parts.push('simulated');
+  if (withSimulated && usage.simulated) parts.push('simulated');
   return parts.join(' · ');
 }
 
@@ -112,16 +115,81 @@ export const BASIS_LABEL: Record<NonNullable<ChatStep['basis']>, string> = {
   cached: 'cached',
 };
 
-/** "query" → "Query", "group_by" → "Group by" (chip keys are engine-whitelisted). */
+/**
+ * Display names for the engine's chip keys that a generic "snake_case → Sentence"
+ * reading gets wrong (acronyms, ids, the time window, sort fields).
+ */
+const PARAM_KEY_LABELS: Record<string, string> = {
+  ip: 'IP',
+  ids: 'IDs',
+  case_id: 'Case',
+  campaign_id: 'Campaign',
+  rule_id: 'Rule',
+  source_id: 'Source',
+  all_sources: 'All sources',
+  time_from: 'From',
+  time_to: 'To',
+  window_hours: 'Window',
+  sort_field: 'Sorted by',
+  sort_order: 'Order',
+  severity_gte: 'Severity at least',
+  top_k: 'Top',
+  top_n: 'Top',
+  size: 'Limit',
+  compare_previous: 'Compare with previous',
+};
+
+/** "query" → "Query", "group_by" → "Group by", "ip" → "IP" (keys are engine-whitelisted). */
 export function paramKeyLabel(key: string): string {
+  const known = PARAM_KEY_LABELS[key];
+  if (known) return known;
   const spaced = key.replace(/[_-]+/g, ' ').trim();
   return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : key;
 }
 
-/** A chip value as text (booleans and nulls read as words, never as blanks). */
-export function paramValue(value: string | number | boolean | null): string {
+const UNIT_WORDS: Record<string, [string, string]> = {
+  m: ['minute', 'minutes'],
+  h: ['hour', 'hours'],
+  d: ['day', 'days'],
+  w: ['week', 'weeks'],
+  M: ['month', 'months'],
+  y: ['year', 'years'],
+};
+
+/** "now-7d" → "last 7 days", "now" → "now"; anything else unchanged. */
+export function relativeTimeLabel(value: string): string {
+  const text = value.trim();
+  if (text === 'now') return 'now';
+  const match = /^now-(\d{1,5})([mhdwMy])$/.exec(text);
+  if (!match) return value;
+  const n = Number(match[1]);
+  const [one, many] = UNIT_WORDS[match[2]];
+  return n === 1 ? `last ${one}` : `last ${n.toLocaleString()} ${many}`;
+}
+
+/** 24 → "last 24 hours", 168 → "last 7 days". */
+function windowHoursLabel(hours: number): string {
+  if (hours > 0 && hours % 24 === 0 && hours >= 48) return `last ${(hours / 24).toLocaleString()} days`;
+  return hours === 1 ? 'last hour' : `last ${hours.toLocaleString()} hours`;
+}
+
+const SORT_FIELD_LABELS: Record<string, string> = {
+  created_at: 'creation time',
+  updated_at: 'last update',
+  risk_score: 'risk score',
+};
+
+/**
+ * A chip value as text (booleans and nulls read as words, never as blanks). With its
+ * `key`, the time window, relative times and sort fields read as words ("last 7 days",
+ * "creation time") instead of query syntax ("now-7d", "created_at").
+ */
+export function paramValue(value: string | number | boolean | null, key?: string): string {
   if (value === null) return 'none';
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
-  if (typeof value === 'number') return value.toLocaleString();
+  if (typeof value === 'number') return key === 'window_hours' ? windowHoursLabel(value) : value.toLocaleString();
+  if (key === 'time_from' || key === 'time_to') return relativeTimeLabel(value);
+  if (key === 'sort_field') return SORT_FIELD_LABELS[value] ?? value.replace(/_/g, ' ');
+  if (key === 'sort_order') return value === 'asc' ? 'oldest first' : value === 'desc' ? 'newest first' : value;
   return value;
 }

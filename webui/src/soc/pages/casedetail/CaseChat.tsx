@@ -21,6 +21,7 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { useAuth } from '@/soc/auth';
 import { Composer, type ComposerHandle } from '@/soc/chat/composer/Composer';
+import { withClientHistory } from '@/soc/chat/composer/format';
 import { EmptyState } from '@/soc/chat/empty/EmptyState';
 import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
 import { Transcript } from '@/soc/chat/message/Transcript';
@@ -82,16 +83,19 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
   // moves to the composer instead of dropping to <body> (SPEC §10.9).
   // "Continue where this stopped (≈ +N tokens)": calibrated on every part, exactly
   // like the composer meter and Workspace Chat (SPEC §10.3).
+  // The history part is the engine's own (case history travels with the request).
+  const historySize = engine.historySize;
   const continueEstimate = React.useMemo(() => {
     if (!ctx) return null;
+    const withHistory = withClientHistory(ctx, historySize);
     return estimateNextRequest({
-      staticPromptTokens: ctx.static_prompt_tokens,
-      historyTokens: ctx.history_tokens,
+      staticPromptTokens: withHistory.static_prompt_tokens,
+      historyTokens: withHistory.history_tokens,
       draft: CONTINUE_PROMPT,
-      charsPerToken: ctx.chars_per_token,
-      calibration: ctx.calibration ?? null,
+      charsPerToken: withHistory.chars_per_token,
+      calibration: withHistory.calibration ?? null,
     }).total;
-  }, [ctx]);
+  }, [ctx, historySize]);
   const send = (prompt: string) => {
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };

@@ -1215,7 +1215,7 @@ class _AgentTurn:
     # --- prompt -------------------------------------------------------------- #
     async def _build_messages(self) -> None:
         signatures = render_tool_signatures(self.granted)
-        window = self.ctx.time_range.label() if self.ctx.time_range is not None else None
+        window = self.ctx.default_range.label() if self.ctx.default_range is not None else None
         # Tools the caller may use but configuration switched off: named only when the
         # turn offers tools at all (a one-call turn lists none).
         disabled = [n for n in (getattr(self.toolbox, "disabled", ()) or ()) if isinstance(n, str)]
@@ -2024,7 +2024,7 @@ class _AgentTurn:
     async def _finish(self, reply: ParsedReply | None, answer: str | None, result: Any) -> AsyncIterator[BaseModel]:
         header = reply.header if reply is not None and isinstance(reply.header, dict) else None
         stored = self.replay.stored
-        window = self.ctx.time_range.label() if self.ctx.time_range is not None else None
+        window = self.ctx.default_range.label() if self.ctx.default_range is not None else None
         sources = sorted({s for step in self.steps for s in step.sources})
         blocks: list[dict[str, Any]] = []
         protocol_header = header is not None and reply is not None and not reply.legacy
@@ -2118,7 +2118,7 @@ class _AgentTurn:
 
     async def _with_case_save(self, response: ChatResponse) -> ChatResponse:
         """Persist a case-scoped answer (:meth:`_persist_case`) and report the outcome
-        on the response: ``case_saved`` always carries it (SPEC §4.6, A34 open item),
+        on the response: ``case_saved`` always carries it (SPEC §4.6, A37),
         apart from the top notice, with ``case_save_notice`` (the ``not_saved`` notice
         and whether a re-run can help) whenever it was not saved. The ``not_saved``
         notice also becomes the top ``notice`` when the answer carries no other one (a

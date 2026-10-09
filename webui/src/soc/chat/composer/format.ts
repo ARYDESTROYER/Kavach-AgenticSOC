@@ -75,6 +75,25 @@ export interface CalibratedEstimate {
  * `history_tokens` are uncalibrated chars ÷ 4 estimates, so the factor applies to
  * every part, not just the draft. Never negative, never NaN.
  */
+/**
+ * `context` with the history part the ENGINE will send with the next turn. A case
+ * chat holds its history on the client (SPEC §4.3: replayed from the request's
+ * `history`), which `/chat/context` cannot see and reports as 0; without this the
+ * case meter would leave out every earlier exchange. Plain chars ÷ chars_per_token,
+ * like the server's own history figure, so the calibration applies the same way.
+ */
+export function withClientHistory(
+  context: ChatContextInfo,
+  size: { exchanges: number; chars: number },
+): ChatContextInfo {
+  const cpt = Number.isFinite(context.chars_per_token) && context.chars_per_token > 0 ? context.chars_per_token : 4;
+  const chars = Number.isFinite(size.chars) && size.chars > 0 ? size.chars : 0;
+  const tokens = chars > 0 ? Math.max(1, Math.floor(chars / cpt)) : 0;
+  const exchanges = Number.isFinite(size.exchanges) && size.exchanges > 0 ? Math.floor(size.exchanges) : 0;
+  if (context.history_tokens === tokens && context.history_exchanges === exchanges) return context;
+  return { ...context, history_tokens: tokens, history_exchanges: exchanges };
+}
+
 export function calibratedNextRequest(
   context: Pick<ChatContextInfo, 'static_prompt_tokens' | 'history_tokens' | 'chars_per_token' | 'calibration'>,
   draft: string,

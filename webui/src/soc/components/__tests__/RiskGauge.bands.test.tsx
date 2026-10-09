@@ -38,4 +38,17 @@ describe('RiskGauge — canonical scoreBand ladder', () => {
     const { container } = render(<RiskGauge score={76} />);
     expect(container.querySelector('title')?.textContent).toContain('Critical');
   });
+
+  it('draws the value and band word in the AA text tokens; only the arc and swatch use the fill', () => {
+    // Medium's fill is 3.26:1 on a light card (fails 4.5:1 for 12 px text).
+    const { getByText, container } = render(<RiskGauge score={30} />);
+    const word = getByText('Medium');
+    expect(word.className).toContain('text-medium-text');
+    expect(word.className).not.toMatch(/(^|\s)text-medium(\s|$)/);
+    expect(getByText('30').className).toContain('text-medium-text');
+    expect(word.querySelector('svg')!.getAttribute('class')).toContain('text-medium');
+    const arc = Array.from(container.querySelectorAll('path')).find((p) => p.getAttribute('stroke-dasharray') != null);
+    expect(arc!.getAttribute('class')).toContain('stroke-medium');
+  });
 });
+

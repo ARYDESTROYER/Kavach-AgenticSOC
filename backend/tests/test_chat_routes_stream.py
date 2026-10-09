@@ -425,6 +425,42 @@ async def test_disconnect_does_not_stop_the_turn_and_retry_waits_then_replays(ga
     assert state.chat_turns.active == 0
 
 
+async def test_a_running_turn_keeps_its_key_after_its_lease_ages(gated_state) -> None:
+    """A slow turn that outlives the store's default lease is never reclaimed by a
+    same-key retry: that would run and bill the question twice (SPEC §6.4, A21)."""
+    from app.stores.chat_conversations import with_stored_rows
+
+    state, provider = gated_state
+    start, _body = await _start(state, idempotency_key="slow-lease-key-0001")
+    handle = start.handle
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    key = partition_key_for_user("")
+    doc = await state.kv.get(CHAT_CONVERSATIONS_NS, key)
+    rows = stored_request_rows(doc)
+    rows["slow-lease-key-0001"]["updated_at"] = "2000-01-01T00:00:00Z"   # the lease aged out
+    await state.kv.put(CHAT_CONVERSATIONS_NS, key, with_stored_rows(doc, requests=rows))
+    with pytest.raises(HTTPException) as busy:
+        await _start(state, idempotency_key="slow-lease-key-0001")
+    assert busy.value.status_code == 409
+    assert busy.value.detail["code"] == "chat_request_in_progress"
+    provider.gate.set()
+    events = await asyncio.wait_for(reader, 10)
+    assert events[-1].type == "turn.done"
+    assert _chat_calls(provider) == 1
+    assert state.chat_turns.active == 0
+
+
+def test_the_reservation_lease_covers_the_configured_worst_case_turn() -> None:
+    from app.config import ChatAgentConfig
+    from app.stores.chat_conversations import IDEMPOTENCY_PENDING_TTL_SECONDS
+
+    assert routes_chat.turn_lease_seconds(ChatAgentConfig()) == IDEMPOTENCY_PENDING_TTL_SECONDS
+    slow = ChatAgentConfig(turn_timeout_s=600, model_step_timeout_s=300, tool_timeout_s=120)
+    # A step started just before the deadline, then the final-only step, then a margin.
+    assert routes_chat.turn_lease_seconds(slow) == 600 + 300 + 300 + routes_chat.TURN_LEASE_MARGIN_S
+
+
 async def test_factory_reset_cancels_running_turns_before_drain(gated_state) -> None:
     state, provider = gated_state
     start, _body = await _start(state, idempotency_key="reset-key-0001")
@@ -722,9 +758,11 @@ async def test_case_thread_append_if_absent_reports_an_unconfirmed_write(error: 
 # Fingerprint compatibility (§3.1).
 # --------------------------------------------------------------------------- #
 def _pre_revamp_fingerprint(body: ChatRequest) -> str:
-    """The exact pre-revamp route formula over the pre-revamp fields."""
+    """The exact pre-revamp route formula over the pre-revamp fields (a pre-revamp
+    history turn was ``role`` + ``content`` only)."""
     payload = body.model_dump(mode="json", include={
-        "message", "case_id", "history", "context", "model", "source_id", "conversation_id",
+        "message": True, "case_id": True, "history": {"__all__": {"role", "content"}}, "context": True,
+        "model": True, "source_id": True, "conversation_id": True,
     })
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

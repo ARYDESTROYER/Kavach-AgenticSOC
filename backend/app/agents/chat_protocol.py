@@ -447,6 +447,11 @@ class AnswerStreamer:
 # --------------------------------------------------------------------------- #
 # §4.3 history replay.
 # --------------------------------------------------------------------------- #
+# The origin recorded for a client-``history`` user turn that does not say who wrote
+# it. Not ``"user"``, so it never counts as user-authored for the taint rule (§4.8).
+CLIENT_HISTORY_ORIGIN = "history"
+
+
 @dataclass(frozen=True)
 class PriorExchange:
     """One retained earlier exchange the caller replays into the prompt.
@@ -467,22 +472,30 @@ class PriorExchange:
     @classmethod
     def from_turns(cls, turns: Iterable[ChatTurn | Mapping[str, Any]] | None) -> list["PriorExchange"]:
         """Pair a flat ``role``/``content`` history into exchanges (a user turn without
-        a reply, or a reply without a prompt, is still one exchange)."""
+        a reply, or a reply without a prompt, is still one exchange).
+
+        Client history is caller-supplied text with no stored provenance, so a user
+        turn is user-authored (§4.8.2) only when it carries ``origin: "user"``. A turn
+        without an origin (an older client) or with any other origin is recorded as
+        :data:`CLIENT_HISTORY_ORIGIN` and never authorises an indicator: otherwise a
+        model-written follow-up chip, replayed as history on the next turn, would be
+        laundered into user text and bypass the §4.8.3 taint rule."""
         out: list[PriorExchange] = []
-        pending: str | None = None
+        pending: tuple[str, str] | None = None
         for turn in turns or ():
-            role = getattr(turn, "role", None) if not isinstance(turn, Mapping) else turn.get("role")
-            content = getattr(turn, "content", None) if not isinstance(turn, Mapping) else turn.get("content")
+            get = turn.get if isinstance(turn, Mapping) else (lambda k, t=turn: getattr(t, k, None))
+            role, content, origin = get("role"), get("content"), get("origin")
             text = content if isinstance(content, str) else ""
             if role == "assistant":
-                out.append(cls(user=pending or "", answer=text))
+                user, user_origin = pending if pending is not None else ("", CLIENT_HISTORY_ORIGIN)
+                out.append(cls(user=user, answer=text, origin=user_origin))
                 pending = None
             else:
                 if pending is not None:
-                    out.append(cls(user=pending, answer=""))
-                pending = text
+                    out.append(cls(user=pending[0], answer="", origin=pending[1]))
+                pending = (text, origin if isinstance(origin, str) and origin else CLIENT_HISTORY_ORIGIN)
         if pending is not None:
-            out.append(cls(user=pending, answer=""))
+            out.append(cls(user=pending[0], answer="", origin=pending[1]))
         return out
 
     @classmethod

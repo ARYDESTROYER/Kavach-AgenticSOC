@@ -51,6 +51,8 @@ export interface AnswerBlocksProps {
    * `[n]` markers. Sanitised; generated from `React.useId()` when omitted.
    */
   domId?: string;
+  /** The host frames these blocks already (a report panel item): cards drop their frame. */
+  bareCards?: boolean;
   className?: string;
 }
 
@@ -101,6 +103,7 @@ export function AnswerBlocks({
   renderMarkdown,
   queryForStep,
   domId,
+  bareCards = false,
   className,
 }: AnswerBlocksProps) {
   const routerNavigate = useRouterNavigate();
@@ -124,6 +127,7 @@ export function AnswerBlocks({
         canAddToReport={canAddToReport && b.type !== 'callout' && b.type !== 'markdown'}
         onAddToReport={onAddToReport ? () => onAddToReport(b.id) : undefined}
         addDisabledReason={addDisabledReason}
+        bare={bareCards}
       />
     </BlockBoundary>
   );

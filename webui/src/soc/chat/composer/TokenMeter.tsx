@@ -75,6 +75,11 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
   const simulated = context.simulated === true;
   const spend = context.spent_today;
   const limit = context.budget?.enabled ? context.budget.daily_limit : null;
+  // The shared-budget note only when a budget is actually in force: an enabled budget
+  // (models:read), or a non-ok state for a viewer who cannot see the budget itself.
+  // `budget_state` is always a string ('ok' when no budget is enabled), never a test.
+  const budgetInForce =
+    context.budget?.enabled === true || (!context.budget && !!context.budget_state && context.budget_state !== 'ok');
 
   const openTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -158,7 +163,11 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
         <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
           <Row label="Next request" value={`≈ ${formatExactTokens(next.total)}`} />
           <Row sub label="System and tools" value={formatExactTokens(next.system)} />
-          <Row sub label={`History · last ${exchanges} exchanges`} value={formatExactTokens(next.history)} />
+          <Row
+            sub
+            label={`History · last ${exchanges} ${exchanges === 1 ? 'exchange' : 'exchanges'}`}
+            value={formatExactTokens(next.history)}
+          />
           <Row sub label="Your draft" value={formatExactTokens(next.draft)} />
           {next.factor !== 1 ? (
             <Row sub label="Calibrated to this conversation" value={formatFactor(next.factor)} />
@@ -201,7 +210,7 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
           ) : null}
         </dl>
         <p className="mt-2 text-2xs text-muted-foreground">Older exchanges are not sent.</p>
-        {context.budget?.enabled || typeof spend === 'number' || context.budget_state ? (
+        {budgetInForce ? (
           <p className="mt-1 text-2xs text-muted-foreground">
             Chat shares this budget with automatic investigations; at the limit new investigations route to Needs
             human.

@@ -1995,11 +1995,6 @@ class Cursor(BaseModel):
 # --------------------------------------------------------------------------- #
 # API request/response shapes (plugin contract)
 # --------------------------------------------------------------------------- #
-class ChatTurn(BaseModel):
-    role: str  # "user" | "assistant"
-    content: str
-
-
 # --------------------------------------------------------------------------- #
 # Chat revamp contracts (docs/research/2026-10-chat-revamp/SPEC.md §3, §4.5, §8,
 # §9.1). Mirrored in webui/src/lib/types.ts; the shared enums are pinned to
@@ -2043,6 +2038,25 @@ MEMORY_PROPOSAL_OPS: tuple[str, ...] = get_args(MemoryProposalOp)
 CHAT_BUDGET_STATES: tuple[str, ...] = get_args(ChatBudgetState)
 TEXT_STREAMING_REASONS: tuple[str, ...] = get_args(TextStreamingReason)
 REPORT_TEMPLATE_NAMES: tuple[str, ...] = get_args(ReportTemplateName)
+
+
+class ChatTurn(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+    # Who authored a USER turn's text (SPEC §4.8.2; additive, optional). Client
+    # ``history`` is replayed text only, so the server cannot know who wrote it: a
+    # history turn counts as user-authored for the indicator taint rule ONLY when it
+    # says ``origin: "user"``. Absent (an older client), unknown, or any other origin
+    # (a follow-up chip, a starter, a slash command) is NOT user-authored, so a
+    # model-written follow-up never becomes authorising user text on a later turn.
+    # An unknown value is dropped, never a 422.
+    origin: ChatOrigin | None = None
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def _lenient_origin(cls, value: Any) -> Any:
+        return value if isinstance(value, str) and value in CHAT_ORIGINS else None
+
 
 # Bounds on chat presentation strings (display chips, labels, summaries).
 _STEP_LABEL_CHARS = 120
@@ -2107,6 +2121,55 @@ def _lenient_models(model: type[BaseModel], value: Any, limit: int) -> list[Any]
         if len(out) >= limit:
             break
     return out
+
+
+# A turn may plan more steps than an answer keeps (an oversized ``tools`` batch is
+# one step per call, most of them ``skipped``). The bound trims by WEIGHT, never by
+# position: placeholders that ran nothing go first (newest first within a class), so
+# every model step and every executed tool call (at most ``max_tool_calls`` +
+# ``max_model_calls``, below the bound) survives, the run log stays complete, and
+# the per-conversation egress count (A13), derived from the stored indicator steps,
+# never loses a lookup that left the deployment.
+_STEP_INPUT_LIMIT = 4_096
+
+
+def _step_trim_rank(step: Any) -> int:
+    """Lower ranks are dropped first when a turn's steps exceed ``_MAX_STEPS``."""
+    if step.kind == "model":
+        return 6
+    if step.status == "skipped":
+        return 0
+    if step.status == "denied":
+        return 1
+    if step.status == "error":
+        return 2
+    if step.status == "cancelled":
+        return 3
+    if step.tool == "lookup_indicator":
+        return 5
+    return 4
+
+
+def _bounded_steps(value: Any) -> list[Any]:
+    """``ChatResponse.steps``: validated leniently, at most ``_MAX_STEPS`` kept."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    steps = [s for s in (_lenient_model(ChatStep, item) for item in list(value)[:_STEP_INPUT_LIMIT]) if s is not None]
+    excess = len(steps) - _MAX_STEPS
+    if excess <= 0:
+        return steps
+    ranks = [_step_trim_rank(step) for step in steps]
+    dropped: set[int] = set()
+    for rank in range(7):
+        for position in range(len(steps) - 1, -1, -1):
+            if excess <= 0:
+                break
+            if ranks[position] == rank:
+                dropped.add(position)
+                excess -= 1
+        if excess <= 0:
+            break
+    return [step for position, step in enumerate(steps) if position not in dropped]
 
 
 def _display_list(value: Any, limit: int, chars: int) -> list[str]:
@@ -2495,6 +2558,11 @@ class ChatRequest(BaseModel):
             mode="json",
             exclude=set(CHAT_REQUEST_FINGERPRINT_EXCLUDE | CHAT_REQUEST_REVAMP_FIELDS),
         )
+        # A history turn's ``origin`` is part of the identity only when the client set
+        # it, so a body whose history carries no origins hashes exactly as before.
+        for turn in payload.get("history") or ():
+            if isinstance(turn, dict) and turn.get("origin") is None:
+                turn.pop("origin", None)
         payload.update(self.model_dump(
             mode="json", include=set(CHAT_REQUEST_REVAMP_FIELDS), exclude_defaults=True,
         ))
@@ -2898,7 +2966,7 @@ class ChatResponse(BaseModel):
     @field_validator("steps", mode="before")
     @classmethod
     def _steps(cls, value: Any) -> list[Any]:
-        return _lenient_models(ChatStep, value, _MAX_STEPS)
+        return _bounded_steps(value)
 
     @field_validator("usage", mode="before")
     @classmethod

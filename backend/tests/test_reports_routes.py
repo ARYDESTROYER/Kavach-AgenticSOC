@@ -164,6 +164,27 @@ def summary_reply(text: str = "Brute force from three IPs; contained.") -> str:
 # --------------------------------------------------------------------------- #
 # Add by reference.
 # --------------------------------------------------------------------------- #
+async def test_scope_never_credits_a_log_source_a_store_lookup_did_not_query():
+    """A metrics/cases answer (steps without sources) is not attributed to the turn's
+    resolved log source; a log tool step without recorded sources still is."""
+    metrics_step = {
+        "index": 1, "ordinal": 1, "kind": "tool", "tool": "soc_metrics", "label": "Read posture",
+        "params": {}, "status": "ok", "duration_ms": 5, "summary": "Posture", "sources": [],
+    }
+    async with harness() as h:
+        cid, mid = await seed_answer(h.state, steps=[metrics_step],
+                                     effective_source_name="Splunk Enterprise Security — HEC")
+        block = (await add(h.client, cid, mid, block_id="b1")).json()
+        assert block["report"]["items"][0]["scope"]["sources"] == []
+        whole = (await add(h.client, cid, mid)).json()
+        assert all(item["scope"]["sources"] == [] for item in whole["report"]["items"])
+    log_step = {**tool_step(), "sources": []}
+    async with harness() as h:
+        cid, mid = await seed_answer(h.state, steps=[log_step])
+        block = (await add(h.client, cid, mid, block_id="b1")).json()
+        assert block["report"]["items"][0]["scope"]["sources"] == ["wazuh-prod"]
+
+
 async def test_add_block_creates_the_draft_and_returns_report_and_item_id():
     async with harness() as h:
         cid, mid = await seed_answer(h.state)

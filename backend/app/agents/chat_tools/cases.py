@@ -238,7 +238,7 @@ class SearchCasesTool(ChatTool):
         if ctx.cases is None:
             return ToolOutcome.failure("The case store is not available")
         window = None
-        if args.window_hours is not None or ctx.time_range is not None:
+        if args.window_hours is not None or ctx.default_range is not None:
             window = resolve_window(ctx, window_hours=args.window_hours)
             if isinstance(window, str):
                 return ToolOutcome.failure(window)
@@ -486,7 +486,7 @@ class GetCaseTool(ChatTool):
         status = enum_value(case.status) or "unknown"
         summary = (
             f"Case read: status {status}, verdict {verdict}, risk {fmt_int(case.risk_score)}"
-            f", {len(case.evidence or [])} evidence items"
+            f", {len(case.evidence or [])} evidence {'item' if len(case.evidence or []) == 1 else 'items'}"
         )
         citation = None
         try:
@@ -553,12 +553,16 @@ class GetCaseTool(ChatTool):
         artifacts: list[Artifact] = []
         entity_type = enum_value(getattr(case.entity, "type", None)) or ""
         kind = _ENTITY_KIND.get(entity_type)
+        # Facts are prose captions (BLOCKS.md rule 22): enum values as the console
+        # labels them, never internal constants. The verdict is the card's own badge,
+        # so it is a fact row only when there is no verdict to badge.
         facts = [
             {"label": "Case", "value": str(case.case_number or case.case_id)},
-            {"label": "Status", "value": enum_value(case.status) or "unknown"},
-            {"label": "Verdict", "value": enum_value(case.verdict) or "none"},
-            {"label": "Decided by", "value": enum_value(case.decision_by) or "not decided"},
+            {"label": "Status", "value": _label(_STATUS_LABELS, case.status, "Unknown")},
         ]
+        if verdict_semantic(case.verdict) is None:
+            facts.append({"label": "Verdict", "value": _label(_VERDICT_LABELS, case.verdict, "No verdict yet")})
+        facts.append({"label": "Decided by", "value": _label(_DECIDED_BY_LABELS, case.decision_by, "Not decided")})
         if case.rule_ids:
             facts.append({"label": "Rules", "value": ", ".join(str(r) for r in case.rule_ids[:5]), "untrusted": True})
         if case.source_name or case.source_id:
@@ -626,8 +630,34 @@ class ShiftReportInput(ToolInput):
         return none_if_blank(value)
 
 
+# ``needs_human`` counts cases whose lifecycle STATUS is ``needs_human`` (the
+# shift_report headline), not cases with a needs-human VERDICT, which the case list
+# beside it badges as "Needs human": the label names the status so the two never read
+# as the same count.
+# Console display labels for the case enums an entity card states as facts (the
+# status wording matches the console's status badge: ``needs_human`` is the legacy
+# alias of "Open · awaiting analyst").
+_STATUS_LABELS = {
+    "new": "New", "open": "Open", "needs_human": "Open · awaiting analyst",
+    "investigating": "Investigating", "escalated": "Escalated", "on_hold": "On hold",
+    "resolved": "Resolved", "closed": "Closed",
+}
+_VERDICT_LABELS = {"TRUE_POSITIVE": "True positive", "FALSE_POSITIVE": "False positive", "NEEDS_HUMAN": "Needs human"}
+_DECIDED_BY_LABELS = {
+    "agent": "Agent", "analyst": "Analyst", "system": "System", "analyst_policy": "Analyst policy",
+}
+
+
+def _label(labels: dict[str, str], value: Any, missing: str) -> str:
+    """``value``'s display label; an unknown value humanised, never the raw token."""
+    raw = enum_value(value)
+    if not raw:
+        return missing
+    return labels.get(raw) or display(raw.replace("_", " ").strip().capitalize()) or missing
+
+
 _HEADLINE_LABELS = {
-    "open": "Open cases", "escalated": "Escalated", "needs_human": "Needs a human",
+    "open": "Open cases", "escalated": "Escalated", "needs_human": "Status: Needs human",
     "unassigned": "Unassigned", "sla_breached": "SLA breached",
 }
 

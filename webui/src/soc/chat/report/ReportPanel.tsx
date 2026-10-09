@@ -900,6 +900,9 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                           messageId={item.source.message_id}
                           headingBase={4}
                           compact
+                          // The item is the card: its blocks drop their own frame, so a
+                          // 360 px column never nests card in card (ui-standard).
+                          bare
                           foundNothing={!!parsed.emptyType}
                         />
                         {parsed.truncated ? (

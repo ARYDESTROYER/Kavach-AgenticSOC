@@ -288,6 +288,10 @@ describe('donut', () => {
     expect(legend).toHaveTextContent('61 · 59%');
     expect(legend).toHaveTextContent('7 · 7%');
     expect(screen.getByTestId('chart-donut-plot')).toHaveTextContent('104');
+    // A real flex basis (not flex-1's 0): in a narrow lane the legend wraps under the
+    // donut instead of being squeezed until its labels vanish (390 px, report panel).
+    expect(legend).toHaveClass('flex-[1_1_11rem]');
+    expect(legend).not.toHaveClass('flex-1');
   });
 
   it('walks segments with ←/→', () => {

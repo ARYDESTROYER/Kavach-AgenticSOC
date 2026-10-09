@@ -239,6 +239,10 @@ class ChatToolContext:
     case_id: str | None = None
     user: str = "default"              # the actor; "default" when auth is off
     time_range: TimeRange | None = None
+    # The screen-context window (``ChatRequest.context.time_range``), validated. A
+    # DEFAULT below the chip (SPEC §3.1: tool input → chip → context → 24 h), never a
+    # clamp: only the composer chip is a selection a tool window is clamped into.
+    context_time_range: TimeRange | None = None
     app_version: str = ""
     source_health_rows: Callable[..., Any] | None = None
     scheduler_health: Callable[..., Any] | None = None
@@ -258,6 +262,13 @@ class ChatToolContext:
     # ``app_help`` defaults its ``topic`` input to it, so the topic's own glossary
     # sections lead. Never prompt text; an unknown id is ignored.
     topic: str | None = None
+
+    @property
+    def default_range(self) -> TimeRange | None:
+        """The window a tool uses when its input names none (SPEC §3.1): the request's
+        ``time_range`` chip, else the screen ``context.time_range``, else ``None`` (the
+        tool's own default)."""
+        return self.time_range if self.time_range is not None else self.context_time_range
 
     def has(self, resource: str, action: str) -> bool:
         return (resource, action) in self.grants
