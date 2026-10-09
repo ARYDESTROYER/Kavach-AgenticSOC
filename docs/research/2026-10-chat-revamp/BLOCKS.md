@@ -101,14 +101,18 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     never rendered by the client (`isEmptyDataBlock`, dropped with reason `empty` and no
     fallback, which narrows G9's "fallback" to blocks that are invalid rather than empty). No
     notice line counts it: the prose says the lookup found nothing. Zero is a value and is kept;
-    an all-`null` series is "not measured" and is empty.
+    an all-`null` series is "not measured" and is empty. The client applies the rule to live,
+    stored and report content alike and drops a `report` envelope whose every leaf is empty; a
+    report item whose block was empty keeps its saved title and reads "The lookup found
+    nothing." instead of a card (SPEC A36).
 21. **One figure shown once (SPEC A34).** A `kpi_group` from a `kpis` artifact that only restates
     an `entity` card of the same tool call is left out (`blocks.drop_restated_kpis`), so a
     reputation score appears once, in the card's gauge.
 22. **Units and labels (SPEC A34).** `KpiItem.delta.value` is in the item's own `unit` (a count
     moves by a count, a `percent` by percentage points, a duration by its unit), never a relative
     percentage, with `period_label` "vs previous window". A zero duration reads in its unit
-    ("0 min"). A `guide` link to a `DocRef` carries the section title alone and the renderer adds
+    ("0 min", "0 h"), and a positive minutes or hours value under one second reads "< 1 min",
+    never a millisecond figure the measurement never had. A `guide` link to a `DocRef` carries the section title alone and the renderer adds
     "Read:" once. KPI `context` captions and trusted entity facts use the sans muted caption
     style; mono is for identifiers, code and attacker-derived values.
 23. **Neutral identifiers (AGENTS.md naming contract).** Chat and report code mints no new

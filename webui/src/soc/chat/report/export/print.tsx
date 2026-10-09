@@ -5,7 +5,7 @@
  *   1. Preload the static block renderer (`BlockCard`, through `import()`: the blocks kit
  *      is its own lazy chunk), so the portal renders SYNCHRONOUSLY and is complete
  *      before the dialog opens.
- *   2. Mount a print root DIRECTLY under `<body>` (`#tlsoc-report-print`) carrying the
+ *   2. Mount a print root DIRECTLY under `<body>` (`#agentic-soc-report-print`) carrying the
  *      light-theme tokens as inline custom properties: every `hsl(var(--x))` inside it
  *      resolves to the paper-friendly light value even when the operator is in dark mode,
  *      and the theme provider is never touched.
@@ -32,7 +32,7 @@ import { ReportDocument } from '../ReportDocument';
 import { defangBlocks } from './defang-blocks';
 import { tokenStyle } from './report-tokens';
 
-export const PRINT_ROOT_ID = 'tlsoc-report-print';
+export const PRINT_ROOT_ID = 'agentic-soc-report-print';
 
 /** The print stylesheet (BLOCKS.md §7.4). */
 export const PRINT_CSS = `

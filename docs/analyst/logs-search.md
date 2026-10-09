@@ -57,7 +57,9 @@ unbounded raw-event search engine.
 
 **Open in Logs** on a Workspace Chat result opens this page with the exact query,
 source, and absolute time window behind that result, so you can inspect the events
-yourself. It is offered only when the Logs page can apply the same filter.
+yourself. It is offered only when the Logs page can apply the same filter. **Live tail**
+is unavailable only while that window ends at a fixed time in the past, because nothing
+new can arrive in it; choose another time range to follow new events.
 
 ## Treat log content as data
 

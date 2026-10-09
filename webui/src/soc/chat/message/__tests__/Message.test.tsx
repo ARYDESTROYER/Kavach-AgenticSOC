@@ -252,6 +252,88 @@ describe('Message — completed', () => {
 });
 
 describe('Message — notices and failures', () => {
+  // The deterministic §5.4.1 answer: no model call, so usage.calls is 0.
+  const FALLBACK_USAGE = { ...USAGE, calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, cost: 0, model: null, pricing_source: null };
+
+  it('shows a budget-paused Help Center answer with its notice, never as Failed', () => {
+    const message = 'AI answers are paused: the AI budget is reached. This answer comes from the Help Center at no cost.';
+    renderMessage({
+      item: assistantItem({
+        response: response({
+          answer: 'Open Settings › Sources and choose Add source.',
+          answer_kind: 'product_help',
+          steps: [],
+          usage: FALLBACK_USAGE,
+          cost: 0,
+          notice: { kind: 'budget', message, retryable: false },
+        }),
+      }),
+    });
+    expect(screen.getByText('Product help')).toBeInTheDocument();
+    expect(screen.getByRole('note', { name: 'AI budget reached' })).toHaveTextContent(message);
+    expect(screen.getByText('Open Settings › Sources and choose Add source.')).toBeInTheDocument();
+    expect(screen.getByTestId('meta-row')).not.toHaveTextContent(/Failed/);
+  });
+
+  it('never calls the $0 Help Center answer Failed when the provider breaker is open', () => {
+    const message = 'AI answers are paused while the model provider is failing. This answer comes from the Help Center at no cost.';
+    renderMessage({
+      item: assistantItem({
+        response: response({
+          answer: 'Open Settings › Sources and choose Add source.',
+          answer_kind: 'product_help',
+          steps: [],
+          usage: FALLBACK_USAGE,
+          cost: 0,
+          notice: { kind: 'breaker', message, retryable: true },
+        }),
+      }),
+    });
+    expect(screen.getByRole('note', { name: 'The model is paused after repeated failures' })).toHaveTextContent(message);
+    expect(screen.getByTestId('meta-row')).not.toHaveTextContent(/Failed/);
+  });
+
+  it('keeps Partial on an older capped product answer the model wrote', () => {
+    renderMessage({
+      latest: false,
+      item: assistantItem({
+        response: response({
+          answer: 'Sources are added from Settings › Sources.',
+          answer_kind: 'product_help',
+          notice: { kind: 'cap', message: 'Reached this question’s limit.', retryable: false },
+        }),
+      }),
+    });
+    // The Continue chip belongs to the latest answer only: the outcome word is the signal.
+    expect(screen.queryByRole('button', { name: /Continue where this stopped/ })).toBeNull();
+    expect(screen.getByTestId('meta-row')).toHaveTextContent(/^Partial ·/);
+  });
+
+  it('keeps Stopped and Failed on a billed product answer', () => {
+    const { unmount } = renderMessage({
+      item: assistantItem({
+        response: response({
+          answer: 'Sources are added from',
+          answer_kind: 'product_help',
+          notice: { kind: 'cancelled', message: 'Stopped before the answer finished.', retryable: false },
+        }),
+      }),
+    });
+    expect(screen.getByTestId('meta-row')).toHaveTextContent(/^Stopped/);
+    unmount();
+
+    renderMessage({
+      item: assistantItem({
+        response: response({
+          answer: 'Sources are added from',
+          answer_kind: 'product_help',
+          notice: { kind: 'provider', message: 'The model provider stopped responding.', retryable: true },
+        }),
+      }),
+    });
+    expect(screen.getByTestId('meta-row')).toHaveTextContent(/^Failed/);
+  });
+
   it('puts a partial notice at the top with Retry only when retryable', () => {
     const { engine } = renderMessage({
       item: assistantItem({ response: response({ notice: { kind: 'partial', message: '2 of 3 sources answered', retryable: true } }) }),

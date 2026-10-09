@@ -163,7 +163,7 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
           {next.factor !== 1 ? (
             <Row sub label="Calibrated to this conversation" value={formatFactor(next.factor)} />
           ) : null}
-          <Row label="Whole turn" value={`up to ≈ ${formatExactTokens(turnMax)}`} />
+          <Row label="Whole question" value={`up to ≈ ${formatExactTokens(turnMax)}`} />
           {cost ? (
             <Row
               sub
@@ -181,7 +181,7 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
               }
             />
           ) : null}
-          <Row label="Per-turn limit" value={formatExactTokens(context.bounds.turn_token_ceiling)} />
+          <Row label="Per-question limit" value={formatExactTokens(context.bounds.turn_token_ceiling)} />
           {conversationTotals && (conversationTotals.tokens !== null || conversationTotals.cost !== null) ? (
             <Row
               label="This conversation"

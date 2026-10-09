@@ -13,7 +13,7 @@ import type { ChatConversation, Report } from '@/lib/types';
 const api = vi.hoisted(() => ({ getConversation: vi.fn() }));
 vi.mock('@/soc/chat/chat-api', () => api);
 
-import { emitReportChanged, reportErrorMessage } from '../report-sync';
+import { REPORT_CHANGED_EVENT, emitReportChanged, reportErrorMessage } from '../report-sync';
 import { MAX_SOURCE_CONVERSATIONS, clearSourceTurnCache, loadReportSourceContext } from '../useSourceTurns';
 import { sampleConversation, sampleReport } from './fixtures';
 
@@ -72,6 +72,8 @@ describe('loadReportSourceContext', () => {
     await loadReportSourceContext(report);
     await loadReportSourceContext(report);
     expect(api.getConversation).toHaveBeenCalledTimes(1);
+    // One product-named window event (AGENTS.md naming contract).
+    expect(REPORT_CHANGED_EVENT).toBe('agentic-soc:report-changed');
     emitReportChanged({ reportId: 'rep-1', conversationId: 'c-b' });
     await loadReportSourceContext(report);
     expect(api.getConversation).toHaveBeenCalledTimes(2);

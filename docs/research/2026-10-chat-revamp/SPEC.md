@@ -738,7 +738,7 @@ segments; table ≤ 12 columns × ≤ 200 rows (≤ 10 rows inline, "View all" o
   their steps' params/query; drop whole exchanges only after that, and never drop prompt/answer
   text before older blocks. Guaranteed capacity: at least 12 rich exchanges (acceptance test: 15
   consecutive demo posture + top-hosts turns keep all 15 exchanges on SQLite, Postgres and ES).
-  The transcript distinguishes "Older turns were removed to stay within the storage limit" from
+  The transcript distinguishes "Older messages were removed to stay within the storage limit" from
   the 100-message retention note by message counts, not by `history_truncated` (A22). Every KV
   document stays mapping-safe on Elasticsearch (A32).
 - **Partition form, per backend (A32).** Both partition forms are always read; the form written
@@ -967,10 +967,13 @@ Notice placement: partial, denied, timeout, provider, breaker, cancelled, unsupp
 at the top of the answer (Retry only if retryable); cap → a "Continue where this stopped
 (≈ +N tokens)" chip that sends `origin: "continue"`, `continue_of`; `turn.error` without a
 response → an error turn with "Retry same request" (same key); budget approaching/reached known
-from `/chat/context` → one alert above the composer before sending (Send disabled when
-`on_exceed=block`, which only a `models:read` viewer can see: without it `budget` is absent,
-Send stays enabled, and the server answers a help question at $0 (§5.4.1) or returns the
-`budget` notice); at most one composer-level alert.
+from `/chat/context` → one window-neutral alert above the composer before sending; at most one
+composer-level alert. A spent blocking budget never disables Send, for any role (A35): the
+alert says AI answers are paused until the budget resets and that product questions are still
+answered from the Help Center at no cost, and the server answers a help question at $0
+(§5.4.1) or returns the `budget` notice before any model call. Without `models:read` the
+`budget` policy is absent, so the alert says AI answers *may* be paused. A $0 product-help
+answer that carries the `budget` (or provider) notice shows the callout but no "Failed" outcome.
 
 Scrolling: on send, scroll so the user turn sits at the lane top with a 48 px peek of the previous
 turn; follow-latest (≤ 72 px from the bottom) only until the turn's top reaches the lane top;
@@ -1026,8 +1029,8 @@ conversations use **Pin**; the in-chat `report` block is labelled **Brief**.
 Opening: in split mode the first add opens the panel without moving focus and announces "Added to
 report (1 item)"; in overlay mode it never auto-opens (toast "Added to report · Open", toolbar count
 bumps). Panel (no tabs, one scroll region): header with editable title, template, "n/40", ⋯ (Open in
-Reports library, Export ▸, Delete); summary section ("Generate summary · ≈ 1.4k tokens · ≈ $0.001"
-from dry-run; after generation an "AI-written summary" label, text, next steps, and "Out of date —
+Reports library, Export ▸, Delete); summary section ("Generate summary" with the dry-run estimate
+"≈ 1.4k tokens · ≈ $0.001" as its caption and accessible description, A36; after generation an "AI-written summary" label, text, next steps, and "Out of date —
 Regenerate" when `based_on_version` lags); items as collapsed cards with a note field (autosave
 800 ms after typing stops, sent with `expected_version`; on 409 "This report changed elsewhere —
 Reload", keeping the typed note) and an item menu (Move up, Move down, Move to top, Remove; moves
@@ -1048,7 +1051,8 @@ A14). Chat honours `conversationId` as a
 requested selection: select it, scroll to `messageId`, highlight for 2 s; if absent, the inline
 notice "This conversation is no longer available (deleted or removed by the 50-conversation
 limit)". "Open in Cases" is offered only when the target can filter by the exact ids in the block.
-`topic` (from KPI help and Settings section headers: "Ask about this", A33) starts a new chat with a
+`topic` (from Overview KPI help popovers and the Settings section context line: "Ask about this",
+A33) starts a new chat with a
 templated question resolved from `console_map` topics through `GET /api/chat/topics/{topic_id}`
 and sent with `origin: "starter"` (A7) and the topic id itself (`ChatRequest.topic`, A28); the
 page never sends free text.
@@ -1100,7 +1104,10 @@ report panel, document renderer and exporters a second; the Reports page its own
 Workspace tabs become lazy so Chat stops downloading the CaseDetail chunk. A source-guard test
 forbids `recharts`, `charts.tsx` and `charts-soc.tsx` imports under `src/soc/chat/**`;
 `MitreHeatmap` moves to its own module (re-exported from `charts-soc.tsx`). `bundle-first-paint`
-asserts the entry grows ≤ 1 024 B against a recorded baseline.
+asserts the entry grows ≤ 1 024 B against a recorded baseline. The baseline is the entry chunk at
+the branch point 05a40d1, measured with `vite build`: 396,537 B as committed, and 391,893 B with
+only the fail-soft lazy MFA QR chunk applied (pre-revamp code leaving the entry is not chat
+headroom). The test records the latter, so the revamp stays capped at 392,917 B (A36).
 
 ---
 
@@ -1420,7 +1427,7 @@ presentation's stored, string-escaped bytes (`stored_presentation_size`), which 
 keeps its pre-revamp meaning (something in the thread was shortened: clipped text, a tightened
 answer, or removed turns) and is not the "turns were removed" signal. Removed turns are
 `total_message_count > message_count` (`stores.chat_conversations.turns_removed`): below 100
-messages the transcript says "Older turns were removed to stay within the storage limit", at 100
+messages the transcript says "Older messages were removed to stay within the storage limit", at 100
 it shows the 100-message window note, and a thread that was only tightened gets at most a quiet
 per-answer hint.
 
@@ -1604,6 +1611,10 @@ grant) inside the app router: the help popover of an Overview KPI (ids from `ask
 `KPI_TOPICS`, `kpi:<metric>`), passed as `KpiTile.askTopic` for the KPI tiles and straight into
 `HelpTip`'s `footer` by the three cards that own their help (`ActiveRiskIndex`, `HumanVsAiCard`,
 `NoiseFunnel`), and the Settings page's active-section context line (`settings:<section id>`).
+On Overview that is the KPI strip tiles and the MTTA, MTTR and Dwell lifecycle tiles (their
+`KpiTile` help), plus the Active Risk Index, Human vs AI and Noise reduction cards; the MTTD and
+Respond timing stats have only a native tooltip and no help popover, so they carry none, although
+`kpi:mttd` and `kpi:respond` exist in the console map.
 Every id either sends must be a `console_map` topic that fits both grammars
 (`ask-topics.contract.test.ts`). `HelpTip` gains only an opaque `footer` slot, so the entry chunk
 carries no chat code for it. Analytics tiles, Settings cards and other pages carry no entry point
@@ -1652,3 +1663,65 @@ the wave-5 browser review.
   from the top notice (for example an additive `ChatResponse.case_saved: false` that the
   not-saved line reads), with a test for a denied lookup plus `can_comment=False`, and the
   `not_saved` notice sentence must not repeat the "Not saved" label (A25).
+
+**A35 — A spent budget never disables Send (§8, §10.3, §10.4, §5.4.1).** Product decision
+(wave 6). Under a blocking budget (`budget_state: "reached"` with `on_exceed: "block"`, daily or
+monthly) Send stays enabled for every role. The server already answers a product-help question
+at $0 from the Help Center (the first model call raises `BudgetBlocked` in the gateway preflight,
+`fallback_reason` maps it to `budget`, and `_finish_fallback` returns the `product_help` answer
+with the knowledge package's budget notice) and returns the `budget` notice, unsaved and unbilled,
+for anything else. The composer therefore blocks Send only for a host reason (`disabledReason`:
+restoring a thread, history unavailable); `composer/format.ts` `budgetPausesAnswers` (formerly
+`budgetSendBlockReason`) only chooses the alert copy. The one composer-level alert is
+window-neutral, since the limit hit may be the daily or the monthly one: "The AI budget is nearly
+used." / "The AI budget is used up.", with today's figures labelled "Today: $x of $y used." when
+the viewer may see them (the ring measures today's spend against the daily limit). Blocking
+copy: "AI answers are paused until the budget resets or an administrator raises it. Questions
+about this app are still answered from the Help Center at no cost. New investigations route to
+Needs human." Without `models:read` the policy is unknown, so: "AI answers may be paused until
+the budget resets." plus the same Help Center sentence; warn-only: "Questions still run because
+the budget is set to warn only." The answer callout for the `budget` notice is titled "AI budget
+reached", and a `product_help` answer never shows the "Failed" outcome word in its meta row:
+its notice explains why AI was not used, but it did answer. The Case Manager composer follows
+the same rule (it has no budget alert; the answer's notice says why).
+
+**A36 — Wave-5 frontend behaviours, recorded (§7.5, §10.3, §10.6, §10.7, §10.10, A22, A26,
+A34).**
+- **Reopened threads.** Opening or switching to a saved conversation restores only its
+  `time_range`. The model returns to the default and the source to "All sources" (and the `@`
+  scopes are cleared): a conversation's stored `model` and `source_id` are what the server
+  RESOLVED for its last turn (the effective model, the primary source it searched when none was
+  chosen), not the analyst's selection, so adopting them would show the default as a removable
+  chip, pin one source, and send both explicitly (a later default change would then 403 a caller
+  without `models:read`, a disabled source 422). Each restored answer still names the model and
+  source it used.
+- **Empty data blocks on the client.** The client parser drops a data block with nothing to show
+  (`isEmptyDataBlock`, reason `empty`, no fallback card, not counted in a notice line), in live,
+  stored and report content alike, and drops a report envelope whose every leaf is empty. A
+  report item whose block was empty keeps its saved title and says "The lookup found nothing."
+  (`report/model.ts` `EMPTY_LOOKUP_TEXT`) instead of a block shell.
+- **Trimmed answers.** An answer tightened at storage (`ChatResponse.truncated`) carries its own
+  quiet "Trimmed to fit storage" line when reopened, and that line replaces any thread-level
+  line: a thread that was only tightened in place shows no thread-level note (only removed
+  messages or the 100-message window do).
+- **Generate summary.** The report panel's "Generate summary" button (and "Regenerate") shows the
+  server's dry-run estimate ("≈ 1.4k tokens · ≈ $0.001"; the cost only when the dry run returns
+  one, which needs `models:read`) as a quiet caption beside it that is also its accessible
+  description, so the action never truncates; the caption hides while the summary is written.
+- **"Ask about this" entry points** are exactly those listed in A33. The analyst guide says "an
+  Overview KPI", not "a dashboard KPI".
+- **Durations.** A zero duration reads in its block's unit ("0 min", "0 h"), and a positive
+  minutes or hours value under one second reads "< 1 min" (`blocks/format.ts` `formatDuration`).
+- **Live tail in the linked Logs view.** "Open in Logs" opens the Logs sheet on the block's
+  window; Live tail there is blocked only while the selected window ENDS at an absolute instant
+  in the past (re-reading it can find nothing new; `UnifiedLogsSheet` `endsInPast`). A window
+  that ends `now`, ends relative to now, or has no end keeps Live tail, and choosing a preset
+  range re-enables it.
+- **Entry baseline.** §10.10: 05a40d1 measures 396,537 B as committed and 391,893 B with only
+  the fail-soft lazy MFA QR chunk applied; the baseline is the latter and the revamp stays
+  capped at +1,024 B over it.
+- **Naming contract.** The print root is `#agentic-soc-report-print` and the report sync event
+  `agentic-soc:report-changed` (BLOCKS amendment 23); user-visible chat copy says "question",
+  never the internal "turn" ("Per-question limit", "Whole question", "Older messages were
+  removed…"), and a chosen time range reads "<range>. Questions can narrow this range, not widen
+  it." while the default reads "Last 24 hours, unless your question names another window."

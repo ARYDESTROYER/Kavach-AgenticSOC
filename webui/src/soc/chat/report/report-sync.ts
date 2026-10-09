@@ -19,7 +19,7 @@
 import { ApiError } from '@/lib/api';
 import type { Report } from '@/lib/types';
 
-export const REPORT_CHANGED_EVENT = 'tlsoc:report-changed';
+export const REPORT_CHANGED_EVENT = 'agentic-soc:report-changed';
 
 export interface ReportChangedDetail {
   reportId: string | null;

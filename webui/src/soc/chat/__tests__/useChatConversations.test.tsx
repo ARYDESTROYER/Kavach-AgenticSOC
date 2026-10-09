@@ -345,7 +345,7 @@ describe('useChatConversations — retention and refresh', () => {
   it('words removed turns by their cause and keeps a shortened-only thread quiet', () => {
     expect(threadRetentionInfo(40, 62, true)).toMatchObject({
       removed: true,
-      note: 'Showing the latest 40 of 62 messages. Older turns were removed to stay within the storage limit.',
+      note: 'Showing the latest 40 of 62 messages. Older messages were removed to stay within the storage limit.',
     });
     expect(threadRetentionInfo(100, 130, false).note).toBe(
       'Showing the latest 100 of 130 messages. Conversations keep their newest 100 messages.',

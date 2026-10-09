@@ -45,11 +45,11 @@ The composer has one row of controls under the text box:
 | Control | What it does |
 |---|---|
 | **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads "Turned off on this deployment". |
-| Scope | The log source and time range in one chip, for example "Wazuh · 24h". Lookups cover the last 24 hours unless your question names another window. A range you choose here is an outer limit: a question can narrow it but never widen it, and the run log shows the window each lookup used. |
+| Scope | The log source and time range in one chip, for example "Wazuh · 24h". Lookups cover the last 24 hours unless your question names another window. A range you choose here is an outer limit: a question can narrow it but never widen it, and the run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
 | `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |
 | `/` commands | Type `/` at the start for the commands below and your saved prompts. |
 | `≈ 1.2k` | The token estimate for your next request, with today's budget ring (see [Tokens and cost](#tokens-and-cost)). |
-| Options `⋯` | Model, **Type out answers**, Saved prompts, and Keyboard shortcuts. A non-default model also shows as a removable chip. |
+| Options `⋯` | Model, **Type out answers**, Saved prompts, and Keyboard shortcuts. A non-default model also shows as a removable chip. A reopened conversation starts on the default model; each saved answer still names the model it used. |
 | Send / Stop | Send becomes Stop while an answer is being written. |
 
 On a narrow composer, the scope chips merge into one **Scope · n** chip, the
@@ -177,7 +177,8 @@ Every block has **Add to report** and a `⋯` menu:
 
 A table shows ten rows inline, and **View all** opens the rest. A lookup that returns
 no rows adds no empty chart or table; the answer says so in words. A count of zero is
-still a figure and is shown. You can also ask for a
+still a figure and is shown, and a duration of zero reads in its unit, such as "0 min";
+a duration under one second reads "< 1 min". You can also ask for a
 different view in words, such as "show that as a donut" or "now by host": the assistant
 reuses the earlier lookup or its stored result.
 
@@ -220,13 +221,12 @@ Chat shows token use and cost before, during, and after each question.
 
 Chat shares the AI budget, daily and monthly, with automatic investigations. When
 either budget is close, one alert appears above the composer. When one is used up and
-set to block spending, what happens depends on whether you can see the budget:
-
-- With the `models:read` permission, **Send** is disabled until the budget resets or an
-  administrator raises it.
-- Without it, the alert says questions may be refused and **Send** stays available. A
-  question about the product is still answered from the Help Center at no cost; any
-  other question gets a notice that the AI budget limit has been reached.
+set to block spending, the alert says AI answers are paused until the budget resets or
+an administrator raises it, and **Send** stays available to everyone: a question about
+the product is still answered from the Help Center at no cost, and any other question
+gets a notice that the AI budget limit has been reached, without a model call. Without
+the `models:read` permission the composer cannot tell whether the budget blocks, so the
+alert says AI answers may be paused.
 
 When the budget is set to warn only, questions keep running. Money and budget figures
 need `models:read`, and today's spend also needs `cost:view`; without them the meter
@@ -268,8 +268,10 @@ conversation without taking focus; on a narrower screen it stays closed and a no
 offers **Open**.
 
 An item is a snapshot the server takes from the saved answer, so its numbers never
-change afterwards. An answer whose charts have expired from saved history cannot be
-added, and neither can anything from the case-scoped chat in Case Manager.
+change afterwards. An item whose lookup found nothing keeps its title and reads "The
+lookup found nothing." instead of an empty chart or table. An answer whose charts have
+expired from saved history cannot be added, and neither can anything from the
+case-scoped chat in Case Manager.
 
 ### The report panel
 
@@ -291,8 +293,8 @@ review**, or **Custom**. To have the assistant draft a report-shaped answer, typ
 ### AI summary
 
 **Generate summary** writes an executive summary and up to five next steps for the whole
-report in one metered model call. The button shows the estimated tokens first, and the
-estimated cost when you hold `models:read`.
+report in one metered model call. Beside the button, a caption shows the estimated
+tokens before you generate, and the estimated cost when you hold `models:read`.
 
 - The summary reads a bounded digest of the report: key figures, top values, trends,
   table columns with a few identity values, case ids, and your notes as untrusted text.
@@ -363,15 +365,15 @@ History keeps up to **50 conversations** and **100 messages per conversation** f
 user; up to ten pinned conversations are exempt from the 50-conversation limit. To stay
 within the storage limit, the oldest answers' charts and tables are replaced by
 "Expired from saved history" placeholders before any question or answer text is
-removed, and the transcript says when older turns were removed.
+removed, and the transcript says when older messages were removed.
 
 Saved answers are compacted. Each block keeps up to 25 table rows, cases, or timeline
 events and 100 chart points (the newest 100 of a time series), and says so in its card,
 for example "Showing top 25 of 200" or "Downsampled for saved history". An answer still
-too large after that is shortened further and shows **Trimmed to fit storage** when you
-reopen it. A report item is taken from the saved answer, so it holds the same rows;
-**Open in Logs** or **Open in Cases**, where a block offers it, opens the same filter in
-the console.
+too large after that is shortened further and shows **Trimmed to fit storage** under that
+answer when you reopen it; the conversation shows no separate note for it. A report item
+is taken from the saved answer, so it holds the same rows; **Open in Logs** or **Open in
+Cases**, where a block offers it, opens the same filter in the console.
 
 Saved history is a navigation aid, not the audit or cost record: use
 **Platform → Audit log** and **Analytics → Cost** for governed records.
@@ -415,14 +417,15 @@ with this release, cite the exact section, and link the console page. The
 [KPI glossary](kpi-glossary.md) defines every dashboard metric.
 
 **Ask about this** starts the same kind of question from where you are: it appears at the
-end of the help popover of a dashboard KPI (including the Active Risk Index, Human vs AI,
-and noise-reduction cards) and beside the section name in Settings.
+end of the help popover of an Overview KPI (the KPI strip, MTTA, MTTR, and Dwell, plus
+the Active Risk Index, Human vs AI, and noise-reduction cards) and beside the section
+name in Settings.
 It opens a new chat that asks a fixed question about that metric or section, so the
 answer leads with the matching Help Center sections.
 
 Product help also works when no AI model can run: before a model is configured, while
-the provider is failing, or when a question is sent after the AI budget is used up
-(see [Tokens and cost](#tokens-and-cost) for who can still send then). Chat answers at
+the provider is failing, or after a blocking AI budget is used up (**Send** stays
+available to everyone then; see [Tokens and cost](#tokens-and-cost)). Chat answers at
 no cost with the most relevant Help Center excerpt and its links, and a notice says why
 the AI was not used.
 

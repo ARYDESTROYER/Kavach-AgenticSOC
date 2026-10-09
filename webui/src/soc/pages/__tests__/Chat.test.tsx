@@ -517,14 +517,14 @@ describe('Workspace Chat page', () => {
     expect(screen.getAllByTestId('answer-trimmed-hint')).toHaveLength(1);
     expect(screen.getByTestId('answer-trimmed-hint')).toHaveTextContent('Trimmed to fit storage');
     expect(screen.queryByRole('note')).toBeNull();
-    expect(screen.queryByText(/Older turns were removed/)).toBeNull();
+    expect(screen.queryByText(/Older messages were removed/)).toBeNull();
     unmount();
 
     rows = [summary('c-long', 'Long thread', '2026-10-08T09:30:00Z', { history_truncated: true, message_count: 40, total_message_count: 64 })];
     details = { 'c-long': detailOf(rows[0]) };
     renderChat();
     await screen.findByText('Long thread answer');
-    expect(screen.getByText('Showing the latest 40 of 64 messages. Older turns were removed to stay within the storage limit.')).toBeInTheDocument();
+    expect(screen.getByText('Showing the latest 40 of 64 messages. Older messages were removed to stay within the storage limit.')).toBeInTheDocument();
     expect(screen.queryByTestId('answer-trimmed-hint')).toBeNull();
   });
 

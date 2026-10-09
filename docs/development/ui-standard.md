@@ -264,7 +264,9 @@ notice is retryable. A capped answer offers "Continue where this stopped (≈ +N
 when it is the latest turn; an answer stopped by the time limit offers Retry instead.
 A failed turn offers **Retry same request** (same idempotency key) or, when retrying
 cannot help, **Ask again** (a new key). A locally stopped turn says "Stopped. The saved
-version appears after refresh." Budget state appears as one alert above the composer.
+version appears after refresh." Budget state appears as one window-neutral alert above the
+composer; a spent budget never disables Send, because product questions still get the $0
+Help Center answer and every other question gets the budget notice.
 
 **Composer.** A textarea over ONE 32 px control row of 28 px chips, about 86 px at rest and
 never more than 88 px; there is no permanent footer line. Left: the **Read-only** chip (it

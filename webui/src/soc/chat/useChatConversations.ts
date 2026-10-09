@@ -193,7 +193,7 @@ export function threadRetentionInfo(
     note =
       (retained as number) >= MAX_THREAD_MESSAGES
         ? `Showing the latest ${retained} of ${total} messages. Conversations keep their newest ${MAX_THREAD_MESSAGES} messages.`
-        : `Showing the latest ${retained} of ${total} messages. Older turns were removed to stay within the storage limit.`;
+        : `Showing the latest ${retained} of ${total} messages. Older messages were removed to stay within the storage limit.`;
   }
   return { truncated, removed, retained, total, note };
 }

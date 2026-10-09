@@ -45,7 +45,7 @@ import {
 } from './commands';
 import { ComposerMenu } from './ComposerMenu';
 import { ComposerOptions, ModelChip } from './ComposerOptions';
-import { budgetSendBlockReason, SCOPE_LABELS } from './format';
+import { SCOPE_LABELS } from './format';
 import { ManagePromptsDialog, SavePromptDialog, useSavedPrompts } from './SavedPrompts';
 import { ScopeControls } from './ScopeControls';
 import { TokenMeter, type ConversationTotals } from './TokenMeter';
@@ -169,7 +169,9 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
 
   const draft = engine.draft;
   const running = engine.busy;
-  const blockReason = disabledReason || budgetSendBlockReason(context);
+  // Only the host blocks Send. A spent budget never does (SPEC §10.3): the server still
+  // answers product questions from the Help Center at $0 and says why for the rest.
+  const blockReason = disabledReason || null;
   const canSend = !running && !blockReason && draft.trim().length > 0;
   const canChooseModel =
     props.canChooseModel ?? Boolean(context && (context.rates || context.budget || context.simulated !== null));

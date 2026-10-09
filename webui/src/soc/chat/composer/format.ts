@@ -230,11 +230,14 @@ export function budgetValueText(value: BudgetMeterValue): string {
   return `${pct}% of today's AI budget used, ${formatMoney(value.spent)} of ${formatMoney(value.limit)}${sim}`;
 }
 
-/** Send is refused before a request when the budget is spent and set to block. */
-export function budgetSendBlockReason(context: ChatContextInfo | null | undefined): string | null {
-  if (context?.budget_state !== 'reached') return null;
-  if (context.budget?.on_exceed !== 'block') return null;
-  return "Today's AI budget is used up.";
+/**
+ * The budget (daily or monthly) is spent and set to block, so AI answers are paused.
+ * Send stays enabled for every role (SPEC §10.3): the server answers a product question
+ * from the Help Center at $0 (§5.4.1) and returns the `budget` notice for anything else.
+ * Only a `models:read` viewer receives `on_exceed`, so this is false without it.
+ */
+export function budgetPausesAnswers(context: ChatContextInfo | null | undefined): boolean {
+  return context?.budget_state === 'reached' && context.budget?.on_exceed === 'block';
 }
 
 /** A cost range "≈ $0.003–$0.08" for the projected turn, or null without rates. */

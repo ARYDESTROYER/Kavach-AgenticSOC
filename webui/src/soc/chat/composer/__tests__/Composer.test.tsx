@@ -328,10 +328,15 @@ describe('Composer — @ scopes and the scope chip', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Scope' });
     await user.click(within(dialog).getByRole('radio', { name: /Elastic prod/ }));
     expect(spies.setSourceId).toHaveBeenLastCalledWith('e');
+    expect(within(dialog).getByText('Last 24 hours, unless your question names another window.')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('radio', { name: '7d' }));
     expect(spies.setTimeRange).toHaveBeenLastCalledWith({ from: 'now-7d' });
+    // A chosen range is an outer bound: a question can narrow it, never widen it.
+    expect(within(dialog).getByText('Last 7 days. Questions can narrow this range, not widen it.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/unless your question names another window/)).toBeNull();
     await user.click(within(dialog).getByRole('radio', { name: '24h' }));
     expect(spies.setTimeRange).toHaveBeenLastCalledWith(null);
+    expect(within(dialog).getByText('Last 24 hours, unless your question names another window.')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Metrics' }));
     expect(screen.getByTestId('scopes')).toHaveTextContent('metrics');
     expect(screen.getByRole('button', { name: /^Scope: Elastic prod/ })).toHaveTextContent('Elastic prod · 24h');
@@ -370,7 +375,8 @@ describe('Composer — meter', () => {
     expect(await screen.findByText('Next request')).toBeInTheDocument();
     expect(screen.getByText('≈ 1,300')).toBeInTheDocument();
     expect(screen.getByText('History · last 12 exchanges')).toBeInTheDocument();
-    expect(screen.getByText('Whole turn')).toBeInTheDocument();
+    expect(screen.getByText('Whole question')).toBeInTheDocument();
+    expect(screen.getByText('Per-question limit')).toBeInTheDocument();
     expect(screen.queryByText(/Projected cost/)).toBeNull();
     expect(screen.queryByText(/Today's AI spend/)).toBeNull();
   });
@@ -481,20 +487,19 @@ describe('Composer — Options', () => {
 });
 
 describe('Composer — blocked sending', () => {
-  it('disables Send when the budget is reached and set to block', async () => {
+  it('keeps Send when the budget is reached and set to block (Help Center answers still run)', async () => {
     const context = makeContext({
       budget_state: 'reached',
       budget: { enabled: true, daily_limit: 10, soft_warn_pct: 0.8, on_exceed: 'block' },
     });
-    const { user, textarea } = setup({ context, draft: 'hello' });
-    expect(textarea).toHaveAttribute('placeholder', "Today's AI budget is used up.");
+    const { user, textarea } = setup({ context, draft: 'How do I add a source?' });
+    expect(textarea).not.toHaveAttribute('placeholder', expect.stringMatching(/budget/i));
     const send = screen.getByRole('button', { name: 'Send' });
-    expect(send).toHaveAttribute('aria-disabled', 'true');
-    expect(send).toHaveAccessibleDescription("Today's AI budget is used up.");
+    expect(send).not.toHaveAttribute('aria-disabled');
+    expect(send).not.toHaveAccessibleDescription(expect.stringMatching(/budget/i));
     act(() => textarea.focus());
     await user.keyboard('{Enter}');
-    await user.click(send);
-    expect(spies.send).not.toHaveBeenCalled();
+    expect(spies.send).toHaveBeenCalledTimes(1);
   });
 
   it('keeps Send when the budget only warns', () => {
@@ -660,23 +665,20 @@ describe('Composer — context not loaded or unreadable', () => {
 });
 
 describe('Composer — blocked Enter', () => {
-  const reached = () =>
-    makeContext({
-      budget_state: 'reached',
-      budget: { enabled: true, daily_limit: 10, soft_warn_pct: 0.8, on_exceed: 'block' },
-    });
+  // Only the host blocks Send (a spent budget never does, SPEC §10.3).
+  const reason = 'Restoring this conversation…';
 
   it('describes the field with the reason and speaks it when Enter is refused', async () => {
-    const { user, textarea } = setup({ context: reached(), draft: 'hello' });
-    expect(textarea).toHaveAccessibleDescription(/Today's AI budget is used up\.$/);
+    const { user, textarea } = setup({ disabledReason: reason, draft: 'hello' });
+    expect(textarea).toHaveAccessibleDescription(/Restoring this conversation…$/);
     act(() => textarea.focus());
     await user.keyboard('{Enter}');
     expect(spies.send).not.toHaveBeenCalled();
-    expect(announce).toHaveBeenCalledWith("Today's AI budget is used up.");
+    expect(announce).toHaveBeenCalledWith(reason);
   });
 
   it('stays quiet on an empty draft or while a turn runs', async () => {
-    const { user, textarea } = setup({ context: reached() });
+    const { user, textarea } = setup({ disabledReason: reason });
     act(() => textarea.focus());
     await user.keyboard('{Enter}');
     expect(announce).not.toHaveBeenCalled();

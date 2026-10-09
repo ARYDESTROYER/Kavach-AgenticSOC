@@ -32,6 +32,8 @@ describe('printDocument', () => {
     });
     expect(ok).toBe(true);
     expect(print).toHaveBeenCalledTimes(1);
+    // The product-named id (AGENTS.md naming contract): never a compatibility prefix.
+    expect(PRINT_ROOT_ID).toBe('agentic-soc-report-print');
     const root = document.getElementById(PRINT_ROOT_ID)!;
     expect(root.parentElement).toBe(document.body);
     expect(root.style.getPropertyValue('--background')).toBe(REPORT_LIGHT_TOKENS.background);

@@ -31,7 +31,7 @@ type Tone = 'warning' | 'critical' | 'info' | 'neutral';
 const NOTICE_TITLE: Record<TurnNoticeKind, string> = {
   partial: 'Partial answer',
   cap: 'Answer limit reached',
-  budget: 'Daily AI budget reached',
+  budget: 'AI budget reached',
   provider: 'The model could not answer',
   breaker: 'The model is paused after repeated failures',
   denied: 'Some lookups were not allowed',

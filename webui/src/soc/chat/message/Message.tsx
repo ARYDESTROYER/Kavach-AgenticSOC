@@ -246,7 +246,15 @@ function MessageView({
   // A D1 turn's answer IS its notice message: say it once, in the callout.
   const showAnswer = !!answer && !(notice && answer.trim() === notice.message.trim());
   const calloutNotice = notice && CALLOUT_NOTICE_KINDS.has(notice.kind) ? notice : null;
-  const outcome: TurnOutcomeWord | null = notice ? (OUTCOME[notice.kind] ?? null) : null;
+  // The deterministic $0 Help Center answer (§5.4.1: no model call, usage.calls = 0)
+  // did answer: its notice explains why AI was unavailable, but the turn is not
+  // "Failed". A billed product answer keeps every outcome word (Stopped, Partial,
+  // Failed): it is the only signal on an older capped or interrupted answer.
+  const helpFallback =
+    response?.answer_kind === 'product_help' &&
+    response.usage?.calls === 0 &&
+    (notice?.kind === 'budget' || notice?.kind === 'provider' || notice?.kind === 'breaker');
+  const outcome: TurnOutcomeWord | null = notice && !helpFallback ? (OUTCOME[notice.kind] ?? null) : null;
   const persistedMessageId = isSafeChatId(item.messageId) ? item.messageId : null;
   const blocksMessageId = persistedMessageId ?? item.key;
   const busy = engine.busy;
