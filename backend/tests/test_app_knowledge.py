@@ -468,6 +468,10 @@ def test_no_key_install_answers_how_to_add_a_model_at_zero_cost():
 def test_zero_cost_answer_names_why_ai_is_unavailable_and_skips_data_questions():
     budget = answer_app_question("what does MTTA mean?", reason="budget")
     assert budget is not None and budget.notice.kind == "budget" and budget.notice.retryable is False
+    # The budget can be daily or monthly: the notice names neither window.
+    assert budget.notice.message == ("AI answers are paused until the AI budget resets. "
+                                     "This answer comes from the Help Center at no cost.")
+    assert not any(word in budget.notice.message.lower() for word in ("today", "daily", "month"))
     assert budget.citations[0].doc.endswith("/analyst/kpi-glossary/#mtta")
     breaker = answer_app_question("where is MFA?", reason="breaker")
     assert breaker is not None and breaker.notice.kind == "breaker" and breaker.notice.retryable

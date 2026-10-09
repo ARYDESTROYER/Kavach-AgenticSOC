@@ -372,7 +372,7 @@ def test_unknown_refs_become_one_quiet_notice_never_numbers() -> None:
     assert [b["type"] for b in out.blocks] == ["chart", "callout"]
     notice = out.blocks[-1]
     assert notice["provenance"] == "code" and notice["tone"] == "info"
-    assert notice["text"] == "2 requested items were not available from this turn's results."
+    assert notice["text"] == "2 requested items were not available from this question's results."
     assert _numbers(notice) == set()
 
 

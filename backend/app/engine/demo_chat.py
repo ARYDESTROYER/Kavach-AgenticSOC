@@ -832,6 +832,7 @@ class Ask:
     headings: tuple[str, ...] = ()                # requested report sections
     memory: str | None = None
     definition: bool = False                      # a "what does X count/measure" question
+    log_filter: tuple[tuple[str, str], ...] = ()  # explicit log search: (("contains", "x"),)
 
 
 _IPV4_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
@@ -924,6 +925,49 @@ _UNSUPPORTED_RE = re.compile(
     r"jobs|notification channels?|notifications|dashboards?|secrets?|api keys?|passwords?)\b")
 _LIST_CUE_RE = re.compile(r"\b(list|show|which|who|how many|what are)\b")
 _SECTIONS_RE = re.compile(r"sections?:\s*(.{3,300}?)\s*\.?\s*$", re.IGNORECASE)
+_BRUTE_RE = re.compile(r"\b(brute[- ]?forc\w*|password spray\w*|credential stuffing|failed (?:log ?ins?|logins?|"
+                       r"sign[- ]?ins?|auth\w*)|(?:authentication|login|sign-?in) failures?)\b")
+# Explicit log-search phrasing (wave-6 B5): "search logs for X", "find events containing
+# X", "show me the logs mentioning X", "grep the logs for X", "search for X in the logs"
+# run a log search for X, and "how many (log) events mention X" counts them; neither is
+# ever answered with a case search. Matched on the original text (IGNORECASE) so the
+# searched value keeps its casing.
+_LOG_NOUN = r"(?:logs?|log events?|log entries|log lines|log records|events)"
+_LOG_SEARCH_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would) (?:you|we|i)\s+)?(?:please\s+)?"
+    r"(?:search|grep|query|scan|filter|find|look|check|show|see|list|get|pull)(?:\s+me)?"
+    r"(?:\s+(?:in|through|at|into|across))?\s+(?:the\s+|our\s+|all\s+(?:the\s+)?)?(?:raw\s+)?"
+    rf"{_LOG_NOUN}\s+"
+    r"(?:for|containing|that contain|which contain|mentioning|that mention|which mention|matching|"
+    r"that match|which match|with|about|including|that include)\s+(?P<term>.+?)\s*$",
+    re.IGNORECASE)
+_LOG_SEARCH_FOR_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:search|grep|look)\s+for\s+"
+    r"(?P<term>.+?)\s+(?:in|across|through)\s+(?:the\s+|our\s+|all\s+(?:the\s+)?)?"
+    rf"{_LOG_NOUN}(?P<rest>(?:\s+(?:in|over|for|during|from|within)\s+(?:the\s+)?(?:last|past|previous)\b"
+    r"[^,;]*|\s+(?:today|yesterday|this week|this month))?)\s*[?.!]*\s*$",
+    re.IGNORECASE)
+_LOG_COUNT_RE = re.compile(
+    r"^\s*(?:how many|count(?: the)?|number of)\s+(?:log\s+)?(?:events?|logs?|log entries|log lines)\s+"
+    r"(?:contain|mention|match|include|have|with|containing|mentioning|matching|including|that contain|"
+    r"that mention|that match|that include)\s+(?P<term>.+?)\s*$",
+    re.IGNORECASE)
+# The words of a log search that are not part of the searched value.
+_LOG_TERM_WINDOW_RE = re.compile(
+    r"\s+(?:(?:in|over|for|during|from|within)\s+(?:the\s+)?(?:last|past|previous)\b.*|today|yesterday|"
+    r"this (?:week|month)|overnight)$", re.IGNORECASE)
+_LOG_TERM_GROUP_RE = re.compile(r"\s+(?:by|per)\s+((?:source |src )?[a-z]+(?: [a-z]+)?)$", re.IGNORECASE)
+_LOG_TERM_FIELD_RE = re.compile(
+    r"^(?:the\s+)?(?P<field>host(?:name)?|machine|server|endpoint|user(?:name)?|account|(?:source |src )?ip"
+    r"(?: address)?|rule)\s+(?P<value>\S{1,200})$", re.IGNORECASE)
+_LOG_TERM_FIELDS = {"host": "host", "hostname": "host", "machine": "host", "server": "host", "endpoint": "host",
+                    "user": "user", "username": "user", "account": "user", "rule": "rule"}
+# A back-reference ("logs for this case") is about the conversation's subject, not a
+# value to search for.
+_LOG_TERM_BACKREF_RE = re.compile(
+    r"^(?:it|this|that|them|these|those|here|there)$|\b(?:this|that|the|its|these|those)\s+"
+    r"(?:case|cases|alert|alerts|incident|incidents|entity)\b", re.IGNORECASE)
+_LOG_FIELD_NOUNS = {"ip": "IP", "user": "user", "host": "host", "rule": "rule"}
 _REPORT_TEMPLATES = ("shift", "posture", "investigation", "hunt", "ioc", "custom")
 
 
@@ -1079,6 +1123,45 @@ def _content_words(text: str) -> set[str]:
     return set(re.findall(r"[a-z]{3,}", text.lower())) - _RESHAPE_STOP_WORDS
 
 
+def _log_search(question: str) -> tuple[str, tuple[tuple[str, str], ...], str | None] | None:
+    """``(intent, filter, group field)`` for explicit log-search phrasing, else None.
+
+    ``intent`` is ``logs`` (``search_logs``) or ``log_count`` (``log_stats``, for "how
+    many events mention X"). The filter is the searched value: a ``host``/``user``/
+    ``ip``/``rule`` filter when the value is named by its field ("logs for host web-01")
+    or is an IPv4 address, else a ``contains`` text filter. A window or a "by <field>"
+    grouping the question names is taken off the value (the window is read separately);
+    a back-reference ("logs for this case") is not a value, so it is not a log search."""
+    intent = "logs"
+    match = _LOG_COUNT_RE.match(question)
+    if match:
+        intent = "log_count"
+    else:
+        match = _LOG_SEARCH_RE.match(question) or _LOG_SEARCH_FOR_RE.match(question)
+    if match is None:
+        return None
+    term = match.group("term").strip()
+    term = re.sub(r"[?!.]+$", "", term).strip()
+    term = _LOG_TERM_WINDOW_RE.sub("", term).strip()
+    group: str | None = None
+    grouped = _LOG_TERM_GROUP_RE.search(term)
+    if grouped:
+        group = _group_field(f"by {grouped.group(1).lower()}")
+        if group is not None:
+            term = term[:grouped.start()].strip()
+    term = _LOG_TERM_WINDOW_RE.sub("", term).strip().strip("\"'`\u201c\u201d\u2018\u2019").strip()
+    if not term or _LOG_TERM_BACKREF_RE.search(term):
+        return None
+    named = _LOG_TERM_FIELD_RE.match(term)
+    if named:
+        word = named.group("field").lower()
+        fld = "ip" if word.endswith(("ip", "address")) else _LOG_TERM_FIELDS.get(word, "host")
+        return intent, ((fld, named.group("value").strip("\"'`")[:200]),), group
+    if _IPV4_RE.fullmatch(term):
+        return intent, (("ip", term),), group
+    return intent, (("contains", term[:200]),), group
+
+
 def classify(question: str, view: PromptView | None = None) -> Ask:
     """The intent of ``question`` (deterministic regex rules; order matters)."""
     view = view or PromptView()
@@ -1129,6 +1212,16 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     case_id = _case_id(q)
     if case_id:
         return ask("case", case_id=case_id)
+    # Explicit log-search phrasing runs a log lookup (wave-6 B5), ahead of the hunt (a
+    # typed IP is a log filter here, not a reputation lookup the analyst did not ask
+    # for) and of the case-scoped default; a how-to question ("can I search logs for
+    # a user?") stays a help question, and failed sign-ins keep their brute-force plan.
+    searched = None if (_HELP_RE.search(low) and not _DATA_ASK_RE.match(low)) else _log_search(q)
+    if searched is not None:
+        intent, log_filter, group = searched
+        if any(key == "contains" and _BRUTE_RE.search(value.lower()) for key, value in log_filter):
+            return ask("brute")
+        return ask(intent, log_filter=log_filter, field=group)
     indicator = _indicator(q, low)
     if indicator:
         return ask("hunt", indicator=indicator)
@@ -1176,8 +1269,7 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("noise")
     if re.search(r"\b(cost|costs|spend|spent|spending|tokens?|budget|billing|money)\b|\$", low):
         return ask("cost")
-    if re.search(r"\b(brute[- ]?forc\w*|password spray\w*|credential stuffing|failed (?:log ?ins?|logins?|"
-                 r"sign[- ]?ins?|auth\w*)|(?:authentication|login|sign-?in) failures?)\b", low):
+    if _BRUTE_RE.search(low):
         return ask("brute")
     if re.search(r"\bhunt\w*\b|\bpivot\b", low):
         found = _keyword(low)
@@ -1437,6 +1529,11 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     ],
     "top": lambda v, a: [Call("log_stats", {"group_by": [a.field or "host"], "top_n": 10,
                                             **_log_window(a, v, default=168)})],
+    # An explicit log search: the tool's own window (the chip, else 24 h) unless the
+    # question names one.
+    "logs": lambda v, a: [Call("search_logs", {**dict(a.log_filter), **_log_window(a, v)})],
+    "log_count": lambda v, a: [Call("log_stats", {**dict(a.log_filter), "group_by": [a.field or "host"],
+                                                  "top_n": 10, **_log_window(a, v)})],
     "tp": lambda v, a: [
         Call("search_cases", {"verdict": "TRUE_POSITIVE", "limit": 10, **_windowed(a, v, default=24)}),
         Call("soc_metrics", {"kind": "case_mix", **_metric_window(a, v)}),
@@ -1494,7 +1591,7 @@ _INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     "case": ("get_case", "explain_decision"), "mitre": ("mitre_lookup",), "sources": ("source_health",),
     "campaigns": ("list_campaigns",), "audit": ("audit_search",), "automation": ("automation_status",),
     "knowledge": ("search_knowledge",), "explain_metric": ("soc_metrics",), "cases": ("search_cases",),
-    "regroup": ("log_stats",), "rerun": (),
+    "regroup": ("log_stats",), "rerun": (), "logs": ("search_logs",), "log_count": ("log_stats",),
 }
 _DATA_INTENTS = frozenset(_INTENT_TOOLS) - {"rerun"}
 _TOOL_NAMES = {
@@ -2491,6 +2588,8 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "cost": ("posture", "noise", "access"),
     "brute": ("pivot", "mitre", "by_user"),
     "top": ("by_user", "case", "sources"),
+    "logs": ("by_user", "week", "top", "sources"),
+    "log_count": ("by_user", "week", "top", "sources"),
     "regroup": ("as_table", "case", "posture"),
     "tp": ("case", "shift", "posture"),
     "hunt": ("case", "mitre", "campaigns"),
@@ -2749,7 +2848,7 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
     if shift is None:
         # "Nothing needs attention" is a finding only when the shift snapshot ran: an
         # @-scope or a missing grant that kept it out says nothing about the queue.
-        steps.insert(0, "The shift snapshot was not read in this turn, so open work is unknown here; check the "
+        steps.insert(0, "The shift snapshot was not read for this question, so open work is unknown here; check the "
                         "case queue in the console before handing over.")
     elif not steps:
         if _num(head.get("open")):
@@ -2853,7 +2952,7 @@ def _posture_steps(post: Result | None, noise: Result | None) -> list[str]:
         return steps[:5]
     if post is None:
         # No posture figures ran (an @-scope or a missing grant): no step can follow from them.
-        return ["The posture figures were not read in this turn, so no next step can be derived from them; "
+        return ["The posture figures were not read for this question, so no next step can be derived from them; "
                 "check the Overview in the console."]
     return ["No follow-up is needed right now; re-run this report at the next handoff."]
 
@@ -2980,11 +3079,16 @@ def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
             parts.append(f"{figures[:1].upper()}{figures[1:]}" + (f", {meaning}" if meaning else "") + ".")
         if logs:
             parts.append(_partial_sources(logs.obs))
-    elif ask.intent in ("top", "regroup", "brute"):
+    elif ask.intent in ("top", "regroup", "brute", "log_count"):
         stats = view.ok("log_stats")
         if stats:
             figure = _log_figure(stats.obs)
             parts.extend([f"{figure[:1].upper()}{figure[1:]}.", _partial_sources(stats.obs)])
+    elif ask.intent == "logs":
+        logs = view.ok("search_logs")
+        if logs:
+            figure = _log_figure(logs.obs, "matched the search")
+            parts.extend([f"{figure[:1].upper()}{figure[1:]}.", _partial_sources(logs.obs)])
     if not parts:
         for paragraph in final.body[:4]:
             if ("`" in paragraph or paragraph.startswith(("- ", "Recorded", "From the Help"))
@@ -3140,6 +3244,49 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
     ), follow_ups=_follow_ups(view, intent, charts=True, field=fld))
 
 
+def _log_subject(ask: Ask) -> str:
+    """The searched value in words: "`zzqq`" for text, "host `web-01`" for a field."""
+    return _join([_code(value) if key == "contains" else f"{_LOG_FIELD_NOUNS.get(key, key)} {_code(value)}"
+                  for key, value in ask.log_filter])
+
+
+def _log_follow_ups(view: PromptView, ask: Ask, total: float, field: str | None) -> list[str]:
+    """A breakdown only when something matched; "the last 7 days" only for a shorter window."""
+    skip = [] if total else ["by_user"]
+    if ask.hours is not None and ask.hours >= 168:
+        skip.append("week")
+    return _follow_ups(view, ask.intent, charts=True, field=field, skip=skip)
+
+
+def _final_logs(view: PromptView, ask: Ask) -> Final | None:
+    """An explicit log search (``search_logs``): what matched, and the matching rows."""
+    logs = view.ok("search_logs")
+    if logs is None:
+        return None
+    total = _num(logs.obs.get("total")) or 0
+    body = [_say_search_logs(logs, subject=_log_subject(ask) or None)]
+    named = next((key for key, _value in ask.log_filter if key in ("user", "host")), None)
+    return Final(body=body, blocks=_keep(
+        _block(logs, "table", view="table", title="Matching log events") if total else None,
+    ), follow_ups=_log_follow_ups(view, ask, total, named))
+
+
+def _final_log_count(view: PromptView, ask: Ask) -> Final | None:
+    """A log count (``log_stats``) for a searched value, broken down by one field."""
+    stats = view.ok("log_stats")
+    if stats is None:
+        return None
+    total = _num(stats.obs.get("total")) or 0
+    fld = (stats.obs.get("group_by") or [ask.field or "host"])[0]
+    subject = _log_subject(ask)
+    body = [_say_log_stats(stats, subject=f"matching {subject}" if subject else None)]
+    label = _FIELD_LABEL.get(fld, fld)
+    return Final(body=body, blocks=_keep(
+        _block(stats, "categories", view="hbar", title=f"Matching events by {label} ({_window(stats.obs)})")
+        if total else None,
+    ), follow_ups=_log_follow_ups(view, ask, total, fld))
+
+
 def _final_brute(view: PromptView, ask: Ask) -> Final | None:
     stats, cases = view.ok("log_stats"), view.ok("search_cases")
     if stats is None and cases is None:
@@ -3252,7 +3399,7 @@ def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], lis
                 # Only the taint refusal is about where the value came from; a private
                 # address or an unknown kind was typed by the user and refused for that.
                 text += (" Indicator lookups run only for a value you typed yourself or one a lookup found as "
-                         "evidence this turn.")
+                         "evidence for this question.")
             body.append(text)
     if logs:
         body.append(_say_search_logs(logs, subject=_code(value) if value else None))
@@ -3810,6 +3957,7 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
 _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "posture": _final_posture, "noise": _final_noise, "metric": _final_metric, "shift": _final_shift,
     "cost": _final_cost, "top": _final_top, "brute": _final_brute, "tp": _final_tp, "case": _final_case,
+    "logs": _final_logs, "log_count": _final_log_count,
     "hunt": _final_hunt, "pivot": _final_pivot, "mitre": _final_mitre, "sources": _final_sources,
     "campaigns": _final_campaigns, "cases": _final_cases, "help": _final_help,
     "explain_metric": _final_explain_metric, "change": _final_change, "unsupported": _final_unsupported,
@@ -3886,7 +4034,7 @@ def _pending_note(view: PromptView, ask: Ask) -> str:
     names = list(dict.fromkeys(_TOOL_NAMES.get(c.tool, c.tool) for c in pending))
     if not names:
         return ""
-    return (f"Not run within this turn's {MAX_PLAN_ROUNDS} lookup rounds (at most "
+    return (f"Not run within this question's {MAX_PLAN_ROUNDS} lookup rounds (at most "
             f"{_plural(view.max_parallel, 'lookup')} at a time here): {_join(names)}. Ask again to include "
             + ("it." if len(names) == 1 else "them."))
 
@@ -3956,10 +4104,10 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
         if ask.report or any(b.get("type") == "report" for b in final.blocks):
             final = _unwrap_report(final)
     if view.unrun:
-        final.body.append("The turn reached its time limit before the remaining lookups ran, so this answer "
+        final.body.append("The question reached its time limit before the remaining lookups ran, so this answer "
                           "uses only the lookups that completed.")
     elif view.final_only and not view.results() and ask.intent in _DATA_INTENTS:
-        final.body.append("Tool use was closed for this turn before any lookup ran, so no data backs this "
+        final.body.append("Tool use was closed for this question before any lookup ran, so no data backs this "
                           "answer. Ask again or narrow the question.")
     window_note = _window_note(view, ask)
     if window_note:

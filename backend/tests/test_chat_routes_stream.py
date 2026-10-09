@@ -650,7 +650,7 @@ def test_case_scoped_turn_never_enters_workspace_history_and_dedupes_by_key() ->
         payload = response.json()
         assert payload["conversation_id"] is None and payload["message_id"] is None
         # The case does not exist: nothing is written, the notice says so.
-        assert payload["notice"]["kind"] == "not_saved"
+        assert payload["notice"]["kind"] == "not_saved" and payload["case_saved"] is False
         assert client.get("/api/chat/conversations").json()["total"] == 0
         threads = client.portal.call(state.case_threads.list_for_case, "case-missing")
         assert threads == []

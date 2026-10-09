@@ -267,6 +267,8 @@ SWEEP = (
     ("What is a true positive?", "help"),
     ("Can we see brute force attempts?", "brute"),
     ("Build a hunt report on lateral movement", "pivot"),
+    ("Search logs for zzqq-no-such-thing", "logs"),
+    ("How many events mention sql in the last 7 days by host?", "log_count"),
 )
 
 
@@ -394,6 +396,30 @@ async def test_an_unknown_indicator_hunt_does_not_invent_a_case(demo_state) -> N
             "the only signal") in response.answer
 
 
+async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_state) -> None:
+    """Browser-QA (wave 6, B5): "Search logs for X" was answered with a case search."""
+    response = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
+    assert [(s.tool, s.params, s.status) for s in _tool_steps(response)] == [
+        ("search_logs", {"contains": "zzqq-no-such-thing"}, "ok")]
+    assert response.answer.startswith("No log events match `zzqq-no-such-thing` in the last 24h")
+    assert response.blocks == [] and "case" not in response.answer.lower()
+
+    found = await _turn(demo_state, "Search logs for sql in the last 7 days", origin="user")
+    assert [(s.tool, s.status) for s in _tool_steps(found)] == [("search_logs", "ok")]
+    assert re.match(r"\*\*\d+ log events?\*\* match `sql` in the last 7d", found.answer), found.answer
+    assert _block(found, type="table", title="Matching log events")
+    # The breakdown follow-up regroups the same search (same text filter and window).
+    question = "Break that down by user instead"
+    assert question in found.follow_ups
+    regrouped = await _turn(demo_state, question, origin="user",
+                            prior=[_prior("Search logs for sql in the last 7 days", found, 1)])
+    (step,) = _tool_steps(regrouped)
+    assert step.tool == "log_stats" and step.status == "ok"
+    assert step.params["contains"] == "sql" and step.params["group_by"] in ("user", ["user"])
+    again = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
+    assert _shape(again) == _shape(response)                         # deterministic
+
+
 async def test_a_report_on_a_case_materialises_and_case_manager_reports_do_not(demo_state) -> None:
     case_id = "demo-00000539-0004"
     workspace = await _turn(demo_state, f"Give me a report on case {case_id}", origin="user")
@@ -431,7 +457,7 @@ async def test_scopes_are_reported_as_scopes_not_as_missing_permissions(demo_sta
     envelope = _block(brief, type="report")
     steps = next(b for s in envelope["sections"] if s["heading"] == "Next steps" for b in s["blocks"])
     assert "No open work needs attention" not in str(steps)
-    assert "The shift snapshot was not read in this turn" in str(steps)
+    assert "The shift snapshot was not read for this question" in str(steps)
 
 
 @pytest.mark.parametrize("topic_id", ["kpi:total_cases", "kpi:human_vs_ai", "kpi:llm_spend", "settings:sessions",

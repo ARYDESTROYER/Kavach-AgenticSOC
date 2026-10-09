@@ -317,7 +317,7 @@ class ChatToolbox:
         budgeted = tool.name in BUDGETED_TOOLS and taint is not None
         if budgeted and not taint.reserve_lookup():
             return ToolOutcome.failure(
-                "Not looked up: the indicator lookup limit for this turn or conversation is reached",
+                "Not looked up: the indicator lookup limit for this question or conversation is reached",
                 status="skipped",
             )
         started = time.monotonic()

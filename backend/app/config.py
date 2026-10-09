@@ -1550,10 +1550,10 @@ class ChatAgentConfig(BaseModel):
 
     max_model_calls: int = Field(
         default=5, ge=1, le=12,
-        description="Model calls per chat turn, including the final answer.",
+        description="Model calls per chat question, including the final answer.",
     )
     max_tool_calls: int = Field(
-        default=10, ge=1, le=40, description="Lookups (tool calls) per chat turn.",
+        default=10, ge=1, le=40, description="Lookups (tool calls) per chat question.",
     )
     max_parallel: int = Field(
         default=4, ge=1, le=8, description="Lookups the assistant may run at once in one step.",
@@ -1567,11 +1567,11 @@ class ChatAgentConfig(BaseModel):
     )
     turn_timeout_s: int = Field(
         default=90, ge=10, le=600,
-        description="Wall-clock seconds per turn; stops new steps, never an in-flight model call.",
+        description="Wall-clock seconds per question; stops new steps, never an in-flight model call.",
     )
     turn_token_ceiling: int = Field(
         default=60_000, ge=4_000, le=1_000_000,
-        description="Input plus output tokens one turn may use across all its model calls.",
+        description="Input plus output tokens one question may use across all its model calls.",
     )
     final_reserve_tokens: int = Field(
         default=12_000, ge=1_000, le=200_000,
@@ -1586,14 +1586,14 @@ class ChatAgentConfig(BaseModel):
         description="Output tokens for the final answer (at least the chat model's own limit).",
     )
     max_concurrent_turns_per_user: int = Field(
-        default=2, ge=1, le=10, description="Chat turns one user may run at the same time.",
+        default=2, ge=1, le=10, description="Chat questions one user may have running at the same time.",
     )
     max_concurrent_turns_global: int = Field(
-        default=8, ge=1, le=100, description="Chat turns this backend runs at the same time.",
+        default=8, ge=1, le=100, description="Chat questions this backend runs at the same time.",
     )
     max_indicator_lookups: int = Field(
         default=3, ge=0, le=10,
-        description="Third-party indicator lookups per turn (0 turns the lookup tool off).",
+        description="Third-party indicator lookups per question (0 turns the lookup tool off).",
     )
     max_indicator_lookups_per_conversation: int = Field(
         default=10, ge=0, le=50, description="Third-party indicator lookups per conversation.",

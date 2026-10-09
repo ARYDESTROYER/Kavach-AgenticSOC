@@ -2864,6 +2864,12 @@ class ChatResponse(BaseModel):
     message_id: str | None = None
     # A model-proposed memory change awaiting human confirmation (§4.8).
     memory_proposal: MemoryProposal | None = None
+    # Case-scoped turns (§4.6): whether the answer reached the case thread, apart from
+    # the top ``notice`` (which a partial/timeout/cap/denied/policy notice can hold).
+    # ``None`` when no case thread applied (Workspace, legacy rows, a D1 failure, a
+    # turn stopped before it answered). The ``not_saved`` notice is still attached
+    # when no other notice exists, so a client that ignores this field keeps working.
+    case_saved: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2928,6 +2934,12 @@ class ChatResponse(BaseModel):
     @classmethod
     def _memory_proposal(cls, value: Any) -> Any:
         return _lenient_model(MemoryProposal, value)
+
+    @field_validator("case_saved", mode="before")
+    @classmethod
+    def _case_saved(cls, value: Any) -> bool | None:
+        # Lenient like the other presentation fields: only a real bool is kept.
+        return value if isinstance(value, bool) else None
 
     @model_validator(mode="after")
     def _cost_matches_usage(self) -> "ChatResponse":

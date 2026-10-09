@@ -43,7 +43,7 @@ from app.constants import ActionType, UNTRUSTED_OPEN
 from app.es.fake import InMemoryESClient
 from app.llm.gateway import BreakerOpen, BudgetBlocked, GatewayError, UsageReceipt
 from app.llm.providers import CompletionResult
-from app.models import ChatTurn, Citation, ConsoleLink, StepUsage, TimeRange
+from app.models import ChatResponse, ChatTurn, Citation, ConsoleLink, StepUsage, TimeRange
 from app.stores.cases import CaseStore
 
 
@@ -431,7 +431,7 @@ async def test_parallel_limit_and_tool_cap_skip_calls() -> None:
     prefs = make_prefs(max_parallel=2, max_tool_calls=1)
     _, resp, outcome = await run(make_engine(gateway), "q", prefs, make_ctx(prefs))
     statuses = [(s.status, s.summary) for s in resp.steps if s.kind == "tool"]
-    assert statuses == [("ok", "2 cases"), ("skipped", "Lookup limit for this turn reached"),
+    assert statuses == [("ok", "2 cases"), ("skipped", "Lookup limit for this question reached"),
                         ("skipped", "Too many lookups in one step")]
     assert outcome.tool_calls == 1 and resp.notice.kind == "cap"
     assert FINAL_ONLY_INSTRUCTION in last_user(gateway.calls[1])
@@ -1088,6 +1088,35 @@ async def test_case_turn_not_saved_without_grant_or_case(app_state) -> None:
     engine = _case_engine(app_state, FakeGateway([_failure(BudgetBlocked)]))
     await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77")
     assert await app_state.case_threads.list_for_case("case-77") == []
+
+
+async def test_case_turn_with_another_notice_still_reports_not_saved(app_state) -> None:
+    """SPEC §4.6 / A34 open item: a case answer that also carries another notice (here
+    a denied lookup) keeps that notice on top and still says it was not saved, through
+    the additive ``case_saved`` field, so the not-saved line never goes missing."""
+    await _seed_case(app_state)
+    prefs = make_prefs()
+    engine = _case_engine(app_state, FakeGateway([tool_call("audit_search"), final("Partial view.")]))
+    _, resp, outcome = await run(engine, "who touched it?", prefs, make_ctx(prefs, case_id="case-77"),
+                                 case_id="case-77", can_comment_case=False)
+    assert next(s for s in resp.steps if s.kind == "tool").status == "denied"
+    assert resp.notice.kind == "denied" and resp.notice.message == NOTICE_MESSAGES["denied"]
+    assert resp.case_saved is False and outcome.case_saved is False
+    assert await app_state.case_threads.list_for_case("case-77") == []
+    # Without another notice the not-saved notice is still attached (current clients),
+    # and its sentence does not repeat the "Not saved" label the client renders.
+    engine = _case_engine(app_state, FakeGateway([final("x")]))
+    _, resp, _ = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77",
+                           can_comment_case=False)
+    assert resp.notice.kind == "not_saved" and resp.case_saved is False
+    assert resp.notice.message == NOTICE_MESSAGES["not_saved"] == "The answer was not added to the case thread."
+    # A saved case answer says so; a Workspace answer has no case outcome at all.
+    engine = _case_engine(app_state, FakeGateway([final("Saved.")]))
+    _, resp, _ = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77")
+    assert resp.notice is None and resp.case_saved is True
+    _, resp, _ = await run(make_engine(FakeGateway([final()])), "q", prefs, make_ctx(prefs))
+    assert resp.case_saved is None
+    assert ChatResponse.model_validate({"answer": "x", "case_saved": "no"}).case_saved is None
 
 
 async def test_case_turn_store_error_is_retryable(app_state, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -180,15 +180,15 @@ _UNKNOWN_TOOL = "Unknown lookup"
 _DENIED_GRANT = "Not permitted for your role"
 _DENIED_SCOPE = "Outside the selected scopes"
 _SKIPPED_PARALLEL = "Too many lookups in one step"
-_SKIPPED_CAP = "Lookup limit for this turn reached"
+_SKIPPED_CAP = "Lookup limit for this question reached"
 _SKIPPED_INDICATOR_CAP = "Indicator lookup limit reached"
 _TOOL_FAILED = "The lookup failed"
 _LEGACY_LABEL = "Searched logs"
 _LEGACY_FAILED = "The log search failed"
 # §4.8.1 compatibility carve-out: the caller may manage memory, but the turn read log
 # data, so the change waits for an explicit confirmation.
-_MEMORY_DEFERRED_REASON = "Not saved automatically because this turn read log data; confirm to save."
-_MEMORY_REMOVE_DEFERRED = ("Memory was not changed because this turn read log data; "
+_MEMORY_DEFERRED_REASON = "Not saved automatically because this answer read log data; confirm to save."
+_MEMORY_REMOVE_DEFERRED = ("Memory was not changed because this answer read log data; "
                            "remove the entry from Memory to confirm.")
 _LEGACY_CLAMPED = "Note: the requested time window was limited to the selected range ({window})."
 # The legacy query's run-log/audit keys when the build has no search_logs tool (the
@@ -705,6 +705,7 @@ class ChatEngine:
             # The GatewayError fallback above intentionally leaves it ``None``.
             effective_model=prefs.chat_model.model,
             notice=make_notice("not_saved") if saved is False else None,
+            case_saved=saved,
         )
 
     async def _analyse_results(
@@ -1999,8 +2000,8 @@ class _AgentTurn:
             follow_ups=fallback.follow_ups, answer_kind="product_help", notice=notice,
             stream_mode=self.stream_mode, turn_id=self.turn_id,
         )
-        self.outcome.notice = notice
-        await self._persist_case(response)
+        response = await self._with_case_save(response)
+        self.outcome.notice = response.notice
         self.outcome.response = response
         yield TurnDoneEvent(response=response)
 
@@ -2080,12 +2081,7 @@ class _AgentTurn:
             answer_kind=answer_kind, notice=notice, stream_mode=self.stream_mode,
             turn_id=self.turn_id, memory_proposal=proposal,
         )
-        saved, why = await self._persist_case(response)
-        if saved is False and response.notice is None:
-            # "Retry save" can only help when the store failed; a missing grant or
-            # case would fail the same way again.
-            response = response.model_copy(update={
-                "notice": make_notice("not_saved", retryable=why == "store_error")})
+        response = await self._with_case_save(response)
         self.outcome.notice = response.notice
         self.outcome.response = response
         yield TurnDoneEvent(response=response)
@@ -2116,6 +2112,22 @@ class _AgentTurn:
         if self.data_tools:
             return "data"
         return "conversation"
+
+    async def _with_case_save(self, response: ChatResponse) -> ChatResponse:
+        """Persist a case-scoped answer (:meth:`_persist_case`) and report the outcome
+        on the response: ``case_saved`` always carries it (SPEC §4.6, A34 open item),
+        apart from the top notice, and the ``not_saved`` notice is attached only when
+        the answer carries no other notice (a partial, timeout, cap, denied or policy
+        notice outranks it), so clients that read only ``notice`` keep working."""
+        saved, why = await self._persist_case(response)
+        if saved is None:
+            return response
+        update: dict[str, Any] = {"case_saved": saved}
+        if saved is False and response.notice is None:
+            # "Retry save" can only help when the store failed; a missing grant or
+            # case would fail the same way again.
+            update["notice"] = make_notice("not_saved", retryable=why == "store_error")
+        return response.model_copy(update=update)
 
     async def _persist_case(self, response: ChatResponse) -> tuple[bool | None, str | None]:
         """Case-scoped turns (§4.6): only the final answer reaches the case thread,

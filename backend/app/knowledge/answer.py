@@ -166,7 +166,7 @@ UnavailableReason = Literal["not_configured", "unauthenticated", "budget", "brea
 _NOTICES: dict[str, tuple[str, str, bool]] = {
     "not_configured": ("provider", "AI answers are unavailable: no model is configured or its key was rejected. This answer comes from the Help Center at no cost.", False),
     "unauthenticated": ("provider", "AI answers are unavailable: no model is configured or its key was rejected. This answer comes from the Help Center at no cost.", False),
-    "budget": ("budget", "AI answers are paused: today's AI budget is reached. This answer comes from the Help Center at no cost.", False),
+    "budget": ("budget", "AI answers are paused until the AI budget resets. This answer comes from the Help Center at no cost.", False),
     "breaker": ("breaker", "AI answers are paused while the model provider is failing. This answer comes from the Help Center at no cost.", True),
     "quota": ("provider", "AI answers are unavailable: the model provider is not accepting requests right now. This answer comes from the Help Center at no cost.", True),
     "unavailable": ("provider", "AI answers are unavailable: the model provider is not accepting requests right now. This answer comes from the Help Center at no cost.", True),

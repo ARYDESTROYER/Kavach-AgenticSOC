@@ -94,7 +94,7 @@ class BudgetBlocked(GatewayError):
     A ``GatewayError`` subclass for the same reason as :class:`BreakerOpen`: every
     existing ``except GatewayError`` handler keeps routing it to NEEDS_HUMAN (#3), and
     the message is unchanged (``budget ceiling exceeded: …``). The distinct type lets
-    the chat engine say "daily budget reached" instead of "model unavailable".
+    the chat engine say "budget reached" (daily or monthly) instead of "model unavailable".
 
     It is NOT a provider failure: ``failure_class`` stays ``""``, nothing is recorded
     against provider health or the circuit breaker, and no ledger row is written —

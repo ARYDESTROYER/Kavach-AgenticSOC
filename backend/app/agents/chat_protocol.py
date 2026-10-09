@@ -883,7 +883,10 @@ NOTICE_MESSAGES: dict[str, str] = {
     "partial": "The answer may be incomplete because a step failed.",
     "length": "Answer cut at the output limit",
     "timeout": "Stopped at the time limit; this shows what was found so far.",
-    "cap": "Reached this turn's lookup limit; the answer uses the results gathered so far.",
+    # One sentence for every limit that sets ``cap_hit``: the lookup (tool-call) cap,
+    # the token ceiling and the model-call limit. User copy says "question", never
+    # the internal word "turn".
+    "cap": "Reached this question's limit; the answer uses the results gathered so far.",
     "cancelled": "Stopped.",
     "unsupported": "Chat cannot read that data. Use the linked console page instead.",
     "denied": "Some lookups were not run because they need permissions you do not have.",
@@ -899,7 +902,9 @@ NOTICE_MESSAGES: dict[str, str] = {
                "reason for each one."),
     "denied_policy": ("Some lookups were not run: some need permissions you do not have, and "
                       "policy does not allow the others. The run log shows the reason for each one."),
-    "not_saved": "Not saved to the case thread",
+    # The client renders the label "Not saved" before this sentence (SPEC A25), so
+    # the sentence must not repeat it.
+    "not_saved": "The answer was not added to the case thread.",
 }
 
 

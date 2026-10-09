@@ -3224,14 +3224,14 @@ class MaterialisedFinal:
     unshowable: list[str] = field(default_factory=list)
 
 
-UNAVAILABLE_NOTICE_ONE = "1 requested item was not available from this turn's results."
-UNAVAILABLE_NOTICE_MANY = "{n} requested items were not available from this turn's results."
+UNAVAILABLE_NOTICE_ONE = "1 requested item was not available from this question's results."
+UNAVAILABLE_NOTICE_MANY = "{n} requested items were not available from this question's results."
 # Requests the parser could not keep at all (malformed ref, unknown block type, a
 # leaf past a limit): counted, never echoed (the reason codes stay in ``dropped``).
 UNUSABLE_NOTICE_ONE = "1 requested item could not be shown."
 UNUSABLE_NOTICE_MANY = "{n} requested items could not be shown."
 EXPIRED_NOTICE = "Some earlier results have expired from saved history; ask again to refresh them."
-REPORT_EMPTY_NOTICE = "The requested brief could not be built from this turn's results."
+REPORT_EMPTY_NOTICE = "The requested brief could not be built from this question's results."
 
 
 def _stored_lookup(stored: Any, ref: str) -> tuple[str, dict[str, Any] | None]:

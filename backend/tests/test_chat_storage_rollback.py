@@ -13,7 +13,9 @@ release, so the thread codec uses the live model. The released chat models ignor
 fields they do not know, so a rolled-back build keeps every transcript, receipt and
 stored presentation string, while its next write of a partition drops the
 conversation-level fields the revamp added (pin, report link, window, usage totals);
-the tests pin both facts.
+the tests pin both facts. That write also applies the released 50-conversation
+eviction, which has no pin exemption, so pinned conversations held beyond the limit
+are the documented rollback loss.
 """
 
 from __future__ import annotations
@@ -156,21 +158,37 @@ def stable_encode_partition(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def stable_chat_turn(kv: Any, user: str, cid: str, text: str) -> None:
+# Released ``main``: ``MAX_CONVERSATIONS_PER_USER = 50`` with NO pin exemption.
+STABLE_MAX_CONVERSATIONS_PER_USER = 50
+
+
+async def stable_chat_turn(
+    kv: Any, user: str, cid: str, text: str, *, now: str = "2026-10-08T01:00:00Z",
+) -> None:
     """The released build's write of one new conversation: read-modify-write of the
-    whole partition through its revision-checked compare-and-set."""
+    whole partition through its revision-checked compare-and-set, including its
+    50-conversation eviction (``_append_to_data``: every row re-sorted by
+    ``(updated_at, id)`` newest first and the first 50 kept; pinned rows are not
+    exempt because the released model has no pin). ``now`` stamps the new
+    conversation so a test can make it the newest by last activity."""
     key = cc.partition_key_for_user(user)
     current = await kv.get(CHAT_CONVERSATIONS_NS, key)
     expected = int((current or {}).get("_rev", 0))
     data = stable_decode_partition(current)
     data["conversations"][cid] = StableChatConversation(
-        id=cid, title=text, created_at="2026-10-08T01:00:00Z", updated_at="2026-10-08T01:00:00Z",
+        id=cid, title=text, created_at=now, updated_at=now,
         messages=[StableChatMessage(id=f"{cid}-u", role="user", content=text),
                   StableChatMessage(id=f"{cid}-a", role="assistant", content=f"answer to {text}")],
     )
     data["requests"][f"{cid}-key"] = {"status": "completed", "fingerprint": "0" * 64, "conversation_id": cid,
-                                      "created_at": "2026-10-08T01:00:00Z", "updated_at": "2026-10-08T01:00:00Z",
+                                      "created_at": now, "updated_at": now,
                                       "assistant_message_id": f"{cid}-a"}
+    rows = data["conversations"]
+    if len(rows) > STABLE_MAX_CONVERSATIONS_PER_USER:
+        keep = sorted(rows.values(), key=lambda item: (item.updated_at, item.id),
+                      reverse=True)[:STABLE_MAX_CONVERSATIONS_PER_USER]
+        data["conversations"] = {item.id: item for item in keep}
+        data["history_truncated"] = True
     saved = stable_encode_partition(data)
     saved["_rev"] = expected + 1
     assert await kv.put_if(CHAT_CONVERSATIONS_NS, key, saved, expected)
@@ -307,6 +325,40 @@ async def test_stable_build_reads_and_extends_chat_history_this_build_wrote_on_s
         replay = await store.reserve_exchange("alice", idempotency_key="alice-key-0002",
                                               request_fingerprint="f" * 64, conversation_id=None)
         assert replay.status == "completed" and replay.conversation_id == second
+
+
+async def test_stable_build_evicts_pin_exempt_conversations_beyond_fifty_on_sql() -> None:
+    """Documented rollback loss (DEPLOY.md, upgrades, known limitations, SPEC §7.5/A32):
+    this build keeps up to 10 pinned conversations beyond the 50-conversation limit; the
+    released build's first saved answer keeps only the 50 most recent by last activity,
+    so the oldest conversations go, pinned ones included."""
+    async with sqlite_kv() as kv:
+        store = cc.ChatConversationStore(kv)
+        pinned = [await live_turn(store, "alice", n) for n in range(3)]
+        for cid in pinned:
+            await store.update("alice", cid, pinned=True)  # pinning never bumps updated_at
+        unpinned = [await live_turn(store, "alice", n) for n in range(3, 53)]
+        page = await store.list_page("alice", limit=60)
+        assert {c.id for c in page.conversations} == set(pinned) | set(unpinned)  # 53 kept live
+
+        # Rolled back: one answer in a new conversation (the newest by last activity).
+        await stable_chat_turn(kv, "alice", "chat-stable", "asked during rollback",
+                               now="2999-01-01T00:00:00Z")
+
+        seen = stable_decode_partition(await kv.get(CHAT_CONVERSATIONS_NS, cc.partition_key_for_user("alice")))
+        assert len(seen["conversations"]) == STABLE_MAX_CONVERSATIONS_PER_USER
+        assert seen["history_truncated"] is True
+        survivors = set(seen["conversations"])
+        assert "chat-stable" in survivors
+        assert not survivors & set(pinned)          # every old pinned thread was deleted
+        # 3 pinned + 50 unpinned + 1 new = 54 rows: 4 go, the 3 pinned and the oldest unpinned.
+        assert unpinned[0] not in survivors
+        assert set(unpinned[1:]) <= survivors
+
+        # Rolled forward: the deleted conversations are gone for good and nothing is pinned.
+        page = await cc.ChatConversationStore(kv).list_page("alice", limit=60)
+        assert {c.id for c in page.conversations} == survivors
+        assert not any(c.pinned for c in page.conversations)
 
 
 async def test_sql_store_reads_an_opaque_document_and_rewrites_it_keyed() -> None:

@@ -587,7 +587,7 @@ def test_after_the_deadline_an_unrun_echo_and_final_only_give_a_final() -> None:
 
 def test_final_only_without_any_round_and_the_corrective_message_answer_now() -> None:
     header, body = final_of(plan_turn(prompt("How are we doing?", final_only=True)))
-    assert "Tool use was closed for this turn before any lookup ran" in body
+    assert "Tool use was closed for this question before any lookup ran" in body
     msgs = prompt("How are we doing?")
     msgs += [{"role": "assistant", "content": "{oops"}, {"role": "user", "content": CORRECTIVE_MESSAGE}]
     assert parse_reply(plan_turn(msgs)).kind == "final"
@@ -912,8 +912,8 @@ def test_a_scoped_shift_brief_never_claims_the_queue_is_clear() -> None:
     (envelope,) = header["blocks"]
     steps = envelope["sections"][-1]["items"][0]["text"]
     assert "No open work needs attention" not in steps
-    assert "The shift snapshot was not read in this turn" in steps
-    assert demo_chat._posture_steps(None, None)[0].startswith("The posture figures were not read in this turn")
+    assert "The shift snapshot was not read for this question" in steps
+    assert demo_chat._posture_steps(None, None)[0].startswith("The posture figures were not read for this question")
 
 
 def test_missing_grants_are_named_per_tool_and_lead_a_no_data_answer() -> None:
@@ -979,6 +979,96 @@ def test_classifier_ordering_fixes(question: str, intent: str, extra: dict[str, 
         assert getattr(ask, key) == value
 
 
+# --------------------------------------------------------------------------- #
+# Explicit log searches (wave-6 B5): a log lookup, never a case search.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("question,expected", [
+    ("Search logs for zzqq-no-such-thing", [("search_logs", {"contains": "zzqq-no-such-thing"})]),
+    ("Find events containing Invoke-Mimikatz", [("search_logs", {"contains": "Invoke-Mimikatz"})]),
+    ("Can you search the logs for \"powershell -enc\"?", [("search_logs", {"contains": "powershell -enc"})]),
+    ("Search for powershell.exe in the logs over the last 3 days",
+     [("search_logs", {"contains": "powershell.exe", "time_from": "now-3d"})]),
+    ("Show me the logs for host web-01 in the last 7 days",
+     [("search_logs", {"host": "web-01", "time_from": "now-7d"})]),
+    # A typed IP in a log search is a log filter, not a reputation lookup nobody asked for.
+    ("Search logs for 203.0.113.7", [("search_logs", {"ip": "203.0.113.7"})]),
+    ("How many log events mention zzqq by user?",
+     [("log_stats", {"contains": "zzqq", "group_by": ["user"], "top_n": 10})]),
+])
+def test_explicit_log_search_phrasing_plans_a_log_lookup(question: str,
+                                                         expected: list[tuple[str, dict[str, Any]]]) -> None:
+    assert tools_of(plan_turn(prompt(question))) == expected
+
+
+@pytest.mark.parametrize("question,intent", [
+    ("Search logs for zzqq-no-such-thing", "logs"),
+    ("How many events mention zzqq?", "log_count"),
+    # Other intents keep their own phrasing.
+    ("Search logs for failed logins", "brute"),
+    ("Search logs for case-0042", "case"),
+    ("Can I search logs for a username?", "help"),
+    ("How do I search logs?", "help"),
+    ("Hunt for 203.0.113.93 across logs, cases and threat intel.", "hunt"),
+    ("Show the audit trail for the last day", "audit"),
+    ("Which hosts generated the most events in the last 7 days?", "top"),
+])
+def test_log_search_classification_leaves_other_intents_alone(question: str, intent: str) -> None:
+    assert classify(question).intent == intent, (question, classify(question).intent)
+
+
+def test_a_back_reference_is_not_searched_as_text() -> None:
+    assert classify("Show the logs for this case").log_filter == ()
+    assert classify("Show the logs for this case", read_prompt(prompt("x", case_scoped=True))).intent == "case"
+
+
+def test_a_log_search_with_no_match_says_so_without_a_case_search() -> None:
+    empty = {"window": "last 24h", "filters": {"contains": "zzqq-no-such-thing"}, "total": 0,
+             "sources": [{"name": "A", "status": "ok"}], "top_values": {}}
+    msgs = prompt("Search logs for zzqq-no-such-thing",
+                  [call("search_logs", empty, inp={"contains": "zzqq-no-such-thing"})])
+    header, body = final_of(plan_turn(msgs))
+    assert body.startswith("No log events match `zzqq-no-such-thing` in the last 24h")
+    assert header["blocks"] == [] and header["answer_kind"] == "data"
+    assert "case" not in body.lower()
+    # Nothing to break down; a longer window is the useful next question.
+    assert "Break that down by user instead" not in header["follow_ups"]
+    assert header["follow_ups"][0] == "Same for the last 7 days"
+    assert plan_turn(msgs) == plan_turn(msgs)                        # deterministic
+
+
+def test_a_log_search_with_matches_shows_the_matching_rows() -> None:
+    found = {"window": "last 24h", "filters": {"contains": "mimikatz"}, "total": 3,
+             "sources": [{"name": "A", "status": "ok"}],
+             "top_values": {"host": [{"value": "web-01", "count": 3}]}}
+    rows = art("a1", "table", {"columns": ["time", "host"], "rows": [["t", "web-01"]]}, "Matching events")
+    msgs = prompt("Search logs for mimikatz", [call("search_logs", found, artifacts=[rows],
+                                                    inp={"contains": "mimikatz"})])
+    header, body = final_of(plan_turn(msgs))
+    assert body.startswith("**3 log events** match `mimikatz` in the last 24h") and "`web-01`" in body
+    assert header["blocks"] == [{"ref": "t1.a1", "view": "table", "title": "Matching log events"}]
+    assert header["follow_ups"][0] == "Break that down by user instead"
+
+
+def test_a_log_count_states_the_total_by_the_named_field() -> None:
+    stats = {**LOG_STATS_OBS, "filters": {"contains": "zzqq"}}
+    msgs = prompt("How many events mention zzqq?", [call("log_stats", stats, artifacts=LOG_STATS_ARTS,
+                                                         inp={"contains": "zzqq", "group_by": ["host"], "top_n": 10})])
+    header, body = final_of(plan_turn(msgs))
+    assert body.startswith("**77 events** matching `zzqq` in the last 7d")
+    assert [(b["ref"], b["view"]) for b in header["blocks"]] == [("t1.a1", "hbar")]
+
+
+def test_a_log_search_without_the_log_grant_names_it() -> None:
+    plan = tools_of(plan_turn(prompt("Search logs for zzqq", tools=("search_cases", "app_help"))))
+    assert [t for t, _ in plan] == ["app_help", "search_cases"]          # degraded orientation only
+    view_tools = ("search_cases", "app_help")
+    msgs = prompt("Search logs for zzqq", [call("app_help", {"sections": []}),
+                                           call("search_cases", CASES_OBS, artifacts=CASES_ARTS)],
+                  tools=view_tools)
+    _header, body = final_of(plan_turn(msgs))
+    assert body.startswith("Not available to you in chat: log search (needs sources:read)")
+
+
 def _posture_prior() -> PriorExchange:
     return PriorExchange(
         user="How are we doing?", answer="done", message_id="msg-1",
@@ -1022,7 +1112,7 @@ def test_calls_over_the_parallel_bound_run_in_the_next_round_or_are_named() -> N
               [call("lookup_indicator", {"indicator": "192.0.2.5", "reputation_score": 70, "verdict": "suspicious"},
                     inp={"indicator": "192.0.2.5", "kind": "ip"})]]
     _, body = final_of(plan_turn(prompt(hunt, *rounds, max_parallel=1)))
-    assert ("Not run within this turn's 3 lookup rounds (at most 1 lookup at a time here): log search and case "
+    assert ("Not run within this question's 3 lookup rounds (at most 1 lookup at a time here): log search and case "
             "search. Ask again to include them.") in body
 
 

@@ -242,7 +242,7 @@ async def test_case_turn_without_comment_grant_is_not_saved(app_state: AppState,
     await asyncio.wait_for(start.handle.finished.wait(), 10)
     response = start.handle.response
     assert response.notice is not None and response.notice.kind == "not_saved"
-    assert response.notice.retryable is False
+    assert response.notice.retryable is False and response.case_saved is False
     assert await app_state.case_threads.list_for_case("case-no-comment") == []
 
 
