@@ -103,6 +103,9 @@ EMPTY_ARTIFACTS = {
     "mitre": Artifact(id="a1", kind="mitre", title="ATT&CK", provenance="code", data={"techniques": []}),
     "heatmap": Artifact(id="a1", kind="heatmap", title="Hours", provenance="code", data={
         "x": ["Mon"], "y": ["00"], "cells": [[None]], "unit": "count"}),
+    "funnel": Artifact(id="a1", kind="funnel", title="Noise", provenance="code", data={
+        "stages": ["Ingested", "Cases"], "values": [None, None], "unit": "count"}),
+    "guide": Artifact(id="a1", kind="guide", title="Steps", provenance="code", data={"steps": [], "links": []}),
 }
 
 
@@ -111,14 +114,15 @@ def test_an_artifact_without_data_yields_no_block_in_any_view(kind: str) -> None
     artifact = EMPTY_ARTIFACTS[kind]
     for view in artifact.views():
         assert to_blocks(artifact, MaterialiseOptions(block_id="b1", view=view)) == [], (kind, view)
-        made, empty = B._materialise(artifact, MaterialiseOptions(block_id="b1", view=view))
-        assert made == [] and empty is True, (kind, view)
+        made, outcome = B._materialise(artifact, MaterialiseOptions(block_id="b1", view=view))
+        assert made == [] and outcome == "empty", (kind, view)
 
 
 def test_emptiness_is_judged_on_the_whole_artifact_not_a_clipped_view() -> None:
     """A view whose clipped slice holds nothing is never mistaken for an empty
-    result: another view that shows the data is used, else the ref is not available
-    (counted, with a notice), never left out silently."""
+    result: another view that shows the data is used, else the data could not be
+    shown (counted, with that notice), never left out silently and never called
+    "not available": it WAS in this turn's results."""
     # A long time series measured only in its OLDEST points: every view keeps the
     # newest MAX_POINTS/MAX_TABLE_ROWS, so no view can show them.
     points = B.MAX_TABLE_ROWS + 20
@@ -128,11 +132,11 @@ def test_emptiness_is_judged_on_the_whole_artifact_not_a_clipped_view() -> None:
         "series": [{"key": "s", "label": "S", "values": [5] * 10 + [None] * (points - 10)}]})
     assert B._artifact_has_data(old_only)
     for view in ("table", "line"):
-        made, empty = B._materialise(old_only, MaterialiseOptions(block_id="b1", view=view))
-        assert made == [] and empty is False, view
+        made, outcome = B._materialise(old_only, MaterialiseOptions(block_id="b1", view=view))
+        assert made == [] and outcome == "unshowable", view
     out = _final([{"ref": "t1.a1", "view": "table"}], artifacts=_turn(t1_a1=(old_only, 1)))
-    assert out.empty == [] and out.unresolved == ["t1.a1"]
-    assert [b["text"] for b in out.blocks] == [B.UNAVAILABLE_NOTICE_ONE]
+    assert out.empty == [] and out.unresolved == [] and out.unshowable == ["t1.a1"]
+    assert [b["text"] for b in out.blocks] == [B.UNUSABLE_NOTICE_ONE]
     # A heatmap measured only below its drawn rows: the grid slice is empty, so the
     # table view (every measured cell) shows the data instead.
     rows = B.MAX_HEATMAP_Y + 2
@@ -143,15 +147,47 @@ def test_emptiness_is_judged_on_the_whole_artifact_not_a_clipped_view() -> None:
     assert block["type"] == "table" and block["rows"] == [[f"{rows - 1:02d}", "Mon", 4]]
 
 
-def test_items_validation_drops_are_not_available_rather_than_empty() -> None:
-    """Malformed data is counted under "could not be shown", never hidden silently."""
+def test_items_validation_drops_could_not_be_shown_rather_than_empty() -> None:
+    """Malformed data is counted under "could not be shown", never hidden silently
+    and never "not available" (the artifact was in this turn's results)."""
     malformed = Artifact(id="a1", kind="kpis", title="Figures", provenance="code", data={
         "items": [{"key": "x"}, {"label": "no key"}]})
     assert B._artifact_has_data(malformed)
-    made, empty = B._materialise(malformed, MaterialiseOptions(block_id="b1"))
-    assert made == [] and empty is False
+    made, outcome = B._materialise(malformed, MaterialiseOptions(block_id="b1"))
+    assert made == [] and outcome == "unshowable"
     out = _final([{"ref": "t1.a1"}], artifacts=_turn(t1_a1=(malformed, 1)))
-    assert out.empty == [] and out.unresolved == ["t1.a1"]
+    assert out.empty == [] and out.unresolved == [] and out.unshowable == ["t1.a1"]
+    assert [b["text"] for b in out.blocks] == [B.UNUSABLE_NOTICE_ONE]
+    # Missing refs stay "not available"; both notices are counted apart.
+    out = _final([{"ref": "t1.a1"}, {"ref": "t9.a1"}], artifacts=_turn(t1_a1=(malformed, 1)))
+    assert out.unresolved == ["t9.a1"] and out.unshowable == ["t1.a1"]
+    assert [b["text"] for b in out.blocks] == [f"{B.UNAVAILABLE_NOTICE_ONE} {B.UNUSABLE_NOTICE_ONE}"]
+
+
+def test_a_malformed_artifact_never_sinks_the_answer() -> None:
+    """Judging or building a malformed artifact never raises out of the materialiser:
+    the ref could not be shown, and the rest of the answer stands."""
+    malformed = Artifact(id="a1", kind="series", title="Over time", provenance="code",
+                         data={"x": ["a"], "series": 5})
+    assert B._materialise(malformed, MaterialiseOptions(block_id="b1")) == ([], "unshowable")
+    real = Artifact(id="a1", kind="categories", title="Top hosts", provenance="source", data={
+        "labels": ["web-01"], "values": [3], "unit": "count"})
+    out = _final([{"ref": "t1.a1"}, {"ref": "t2.a1"}], artifacts=_turn(t1_a1=(malformed, 1), t2_a1=(real, 2)))
+    assert [b["type"] for b in out.blocks] == ["chart", "callout"] and out.unshowable == ["t1.a1"]
+    assert out.blocks[-1]["text"] == B.UNUSABLE_NOTICE_ONE
+
+
+def test_a_clipped_empty_requested_view_falls_back_to_the_default_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The requested ``table`` view of a series clips to nothing (here a table that
+    holds fewer rows than a chart holds points), while the ``line`` default shows the
+    data: the default view is returned rather than no block or a notice."""
+    monkeypatch.setattr(B, "MAX_TABLE_ROWS", 5)
+    x = [f"2026-10-08T{h:02d}:00:00Z" for h in range(12)]
+    series = Artifact(id="a1", kind="series", title="Over time", provenance="code", data={
+        "x": x, "unit": "count", "series": [{"key": "s", "label": "S", "values": [3, 4] + [None] * 10}]})
+    (block,) = to_blocks(series, MaterialiseOptions(block_id="b1", view="table"))
+    assert block["type"] == "chart" and block["kind"] == "line"
+    assert block["series"][0]["values"][:2] == [3, 4]
 
 
 def test_zero_is_data_and_an_entity_card_is_never_empty() -> None:

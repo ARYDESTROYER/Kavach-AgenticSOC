@@ -793,11 +793,13 @@ def _hunt_round(cases: int, sightings: int, *, verdict: str = "TRUE_POSITIVE",
     (0, 0, "Nothing in the logs or the case store links it to activity here, so the reputation result above is "
            "the only signal; there is no case containment to keep.", "single case"),
     (1, 0, "It is quiet in the logs and tied to a single case", "Nothing in the logs"),
-    (3, 0, "It is quiet in the logs but tied to 3 cases, so treat them as one incident", "single case"),
+    # The case count is already stated ("Cases with it as their entity: **3**"), so
+    # the reading names it in words, never as the figure again.
+    (3, 0, "It is quiet in the logs but tied to several cases, so treat them as one incident", "single case"),
     (0, 4, "It is still active in the logs: review the matching events and check the hosts they touch.",
      "single case"),
     (2, 4, "It is still active in the logs: review the matching events and check the hosts they touch, and read "
-           "them alongside the 2 related cases.", "single case"),
+           "them alongside the related cases.", "single case"),
 ])
 def test_hunt_conclusion_distinguishes_zero_one_and_many_cases(cases: int, sightings: int, expected: str,
                                                                 absent: str) -> None:
@@ -1241,32 +1243,38 @@ def test_the_ready_sentence_comes_after_the_window_note() -> None:
 
 
 def test_a_hunt_report_states_the_finding_once_and_leaves_the_advice_to_next_steps() -> None:
-    """The Hypothesis keeps what the sightings mean; the advice is the first Next
-    step, and the generic "block or monitor" step is not repeated or contradicted."""
+    """The Hypothesis states each figure once and then what the figures mean (never
+    the same count again in words or digits); the advice is the first Next step, and
+    the generic "block or monitor" step is not repeated or contradicted."""
     def report(rounds: list[dict[str, Any]]) -> tuple[str, str]:
         header, _ = final_of(plan_turn(prompt("Build a hunt report on 203.0.113.7", rounds)))
         sections = {s["heading"]: s["items"] for s in header["blocks"][0]["sections"]}
         return sections["Hypothesis"][0]["text"], sections["Next steps"][-1]["text"]
 
     summary, steps = report(_hunt_round(0, 0))
-    assert summary.endswith("the reputation result above is the only signal; there is no case containment to keep.")
-    assert "Block or monitor" not in summary
+    assert summary == ("The indicator scores 80/100 (malicious). No log event matched it in the last 7d and no case "
+                       "carries it as its entity, so the reputation result is the only signal and there is no case "
+                       "containment to keep.")
     assert steps.split("\n") == ["1. Block or monitor it under your policy if its reputation warrants it.",
                                   "2. Re-run this hunt at the next shift."]
     # A false-positive finding needs no containment: no step says to block it.
     summary, steps = report(_hunt_round(1, 0, verdict="FALSE_POSITIVE"))
-    assert summary.endswith("so no containment is needed.")
+    assert summary.endswith("No log event matched it in the last 7d and 1 case carries it as its entity, so no "
+                            "containment is needed: that case has a false-positive verdict.")
     assert "Block or monitor" not in steps and steps.startswith("1. Watch for a return of the indicator.")
-    # Several cases: the finding names them, the step says what to do.
+    # Several cases: the figure is stated once, the meaning follows, the step says what to do.
     summary, steps = report(_hunt_round(3, 0))
-    assert summary.endswith("It is quiet in the logs but tied to 3 cases.")
+    assert summary.endswith("No log event matched it in the last 7d and 3 cases carry it as their entity, so they "
+                            "read as one incident.")
+    assert "tied to" not in summary and "quiet in the logs" not in summary
     assert steps.startswith("1. Treat the cases as one incident and check each one's containment.\n"
                             "2. Block or monitor the indicator under your containment policy.")
-    # Still active: the finding says so, the step says what to review.
+    # Still active: the figures, then what they mean; the step says what to review.
     summary, steps = report(_hunt_round(2, 4))
-    assert summary.endswith("It is still active in the logs and tied to 2 related cases.")
-    assert steps.startswith("1. Review the matching events and check the hosts they touch, alongside the 2 "
-                            "related cases.")
+    assert summary.endswith("4 log events matched it in the last 7d and 2 cases carry it as their entity, so it "
+                            "is still active.")
+    assert steps.startswith("1. Review the matching events and check the hosts they touch, alongside the related "
+                            "cases.")
 
 
 def test_a_behaviour_hunt_report_leads_with_what_the_hunt_found() -> None:
@@ -1286,8 +1294,15 @@ def test_a_behaviour_hunt_report_leads_with_what_the_hunt_found() -> None:
     assert anchor.startswith("The question names no indicator") and anchor.endswith(
         "Name an indicator (an IP, domain, URL or hash) to hunt it directly.")
     assert found.startswith("**`203.0.113.7` scores 80/100 (malicious)**")
-    assert found.endswith("so no containment is needed; watch for a return.")
+    # The lead ends with the finding; the advice is the report's first Next step.
+    assert found.endswith("It is quiet in the logs and every case carrying it has a false-positive verdict, so no "
+                          "containment is needed.")
+    assert "watch for a return" not in found.lower()
     assert ready == "The report below is ready to add to your Reports."
+    sections = {s["heading"]: s["items"] for s in header["blocks"][0]["sections"]}
+    assert sections["Next steps"][-1]["text"].startswith("1. Watch for a return of the indicator.")
+    # The subtitle names the sightings' window, not the anchoring case search's "all time".
+    assert header["blocks"][0]["subtitle"] == "last 7d"
 
 
 def test_a_case_report_lead_names_the_case_by_what_happened() -> None:
@@ -1312,3 +1327,146 @@ def test_narrated_rule_ids_keep_lookalike_characters_visible() -> None:
     camps = {"total": 1, "campaigns": [{"name": "ops​_wave", "case_count": 2, "entities": []}]}
     _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
     assert "`ops\\u200b_wave` with 2 cases" in body
+
+
+# --------------------------------------------------------------------------- #
+# Final-fix review: partial and lower-bound figures survive a report wrap, each
+# figure is stated once, and the report's prose and Summary keep every disclosure.
+# --------------------------------------------------------------------------- #
+PARTIAL_SOURCES = [{"name": "A", "status": "ok"}, {"name": "B", "status": "error"}, {"name": "C", "status": "error"}]
+
+
+def _partial_hunt_round() -> list[dict[str, Any]]:
+    rounds = _hunt_round(2, 4)
+    rounds[1] = call("search_logs", {"window": "last 7d", "filters": {"ip": "203.0.113.7"}, "total": 4,
+                                     "total_is_lower_bound": True, "sources": PARTIAL_SOURCES},
+                     artifacts=[art("a1", "table", {"columns": [], "rows": []})])
+    return rounds
+
+
+def test_a_hunt_report_keeps_partial_coverage_in_its_prose_and_summary() -> None:
+    """Only 1 of 3 log sources answered and the total is capped: the plain answer
+    says so, and so do the wrapped report's prose (after the lead, before the ready
+    sentence) and its Summary ("at least", and the coverage sentence)."""
+    _, plain = final_of(plan_turn(prompt("Check 203.0.113.7", _partial_hunt_round())))
+    assert "only 1 of 3 sources answered, so the counts are partial" in plain
+    header, body = final_of(plan_turn(prompt("Build a hunt report on 203.0.113.7", _partial_hunt_round())))
+    (envelope,) = header["blocks"]
+    paragraphs = body.split("\n\n")
+    assert paragraphs[0].startswith("**`203.0.113.7` scores 80/100 (malicious)**")
+    assert paragraphs[-2:] == [
+        "Log search: only 1 of 3 sources answered, so the counts are partial; the total is a lower bound.",
+        "The report below is ready to add to your Reports."]
+    summary = envelope["sections"][0]["items"][0]["text"]
+    assert envelope["sections"][0]["heading"] == "Hypothesis"
+    assert ("At least 4 log events matched it in the last 7d and 2 cases carry it as their entity, so it is still "
+            "active. Only 1 of 3 log sources answered, so the counts are partial.") in summary
+    # A behaviour (pivot) hunt keeps the same disclosures after its anchor and finding.
+    anchor = {"case": {"case_id": "case-9", "entity": "ip:192.0.2.62", "title": "web", "verdict": "TRUE_POSITIVE",
+                       "confidence": 0.88, "risk_score": 20, "severity": "low", "status": "new"}}
+    msgs = prompt("Build a hunt report on lateral movement",
+                  [call("search_cases", {"filters": {"status_group": "active"}, "count": 1, "exact": True,
+                                         "cases": [anchor["case"]]}, artifacts=CASES_ARTS,
+                        inp={"status_group": "active", "sort_field": "risk_score", "limit": 10})],
+                  [call("get_case", anchor, artifacts=GET_CASE_ARTS, inp={"case_id": "case-9"})],
+                  _partial_hunt_round())
+    header, body = final_of(plan_turn(msgs))
+    assert body.split("\n\n")[-2:] == [
+        "Log search: only 1 of 3 sources answered, so the counts are partial; the total is a lower bound.",
+        "The report below is ready to add to your Reports."]
+    assert "Only 1 of 3 log sources answered" in header["blocks"][0]["sections"][0]["items"][0]["text"]
+
+
+def test_a_top_hosts_report_states_partial_coverage_once_in_prose_and_in_its_summary() -> None:
+    partial = {**LOG_STATS_OBS, "total_is_lower_bound": True, "sources": PARTIAL_SOURCES}
+    msgs = prompt("Build a report on the hosts with the most alerts", [call("log_stats", partial,
+                                                                             artifacts=LOG_STATS_ARTS)])
+    header, body = final_of(plan_turn(msgs))
+    (envelope,) = header["blocks"]
+    # The lead (the log statistics sentence) already says it: the note is not added twice.
+    assert body.count("only 1 of 3 sources answered, so the counts are partial") == 1
+    assert body.count("total is a lower bound") == 1
+    assert body.endswith("The report below is ready to add to your Reports.")
+    summary = envelope["sections"][0]["items"][0]["text"]
+    assert summary == ("At least 77 log events in the last 7d. Only 1 of 3 log sources answered, so the counts "
+                       "are partial.")
+    # Complete coverage and an exact count read as before.
+    header, _ = final_of(plan_turn(prompt("Build a report on the hosts with the most alerts",
+                                          [call("log_stats", LOG_STATS_OBS, artifacts=LOG_STATS_ARTS)])))
+    assert header["blocks"][0]["sections"][0]["items"][0]["text"] == "77 log events in the last 7d."
+
+
+def test_a_lower_bound_case_count_is_disclosed_in_the_answer_the_note_and_the_summary() -> None:
+    rounds = _hunt_round(2, 4)
+    rounds[2] = call("search_cases", {"filters": {"entity": "203.0.113.7"}, "count": 2, "exact": False,
+                                      "scanned": 500, "cases": []}, artifacts=CASES_ARTS)
+    _, plain = final_of(plan_turn(prompt("Check 203.0.113.7", rounds)))
+    assert "Cases with it as their entity: **2** (a lower bound: the newest 500 cases were scanned)." in plain
+    header, body = final_of(plan_turn(prompt("Build a hunt report on 203.0.113.7", rounds)))
+    assert "Case search: the count is a lower bound (the newest 500 cases were scanned)." in body.split("\n\n")
+    summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
+    assert "at least 2 cases carry it as their entity" in summary
+    # None found among the scanned cases is not "no case": it covers those alone.
+    rounds[2] = call("search_cases", {"filters": {"entity": "203.0.113.7"}, "count": 0, "exact": False,
+                                      "scanned": 500, "cases": []}, artifacts=CASES_ARTS)
+    _, plain = final_of(plan_turn(prompt("Check 203.0.113.7", rounds)))
+    assert "No case among the newest 500 scanned has it as its entity." in plain
+    header, _ = final_of(plan_turn(prompt("Build a hunt report on 203.0.113.7", rounds)))
+    summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
+    assert "no case among the newest 500 scanned carries it as its entity" in summary
+
+
+def test_a_clean_indicator_needs_no_action_beyond_watching() -> None:
+    rounds = _hunt_round(0, 0)
+    rounds[0] = call("lookup_indicator", {"indicator": "185.220.101.4", "reputation_score": 17, "verdict": "clean",
+                                          "synthetic_demo_result": True},
+                     artifacts=[art("a1", "entity", {"entity": {"kind": "ip", "value": "x"}})])
+    _, body = final_of(plan_turn(prompt("Check 185.220.101.4", rounds)))
+    assert "No action is needed beyond watching for it; its reputation is clean." in body
+    assert "reputation warrants" not in body
+    header, _ = final_of(plan_turn(prompt("Build a hunt report on 185.220.101.4", rounds)))
+    sections = {s["heading"]: s["items"] for s in header["blocks"][0]["sections"]}
+    assert sections["Next steps"][-1]["text"].split("\n") == [
+        "1. No action is needed beyond watching for it; its reputation is clean.",
+        "2. Re-run this hunt at the next shift."]
+
+
+def test_an_ioc_report_keeps_its_summary_and_access_gap_without_a_summary_heading() -> None:
+    """The IOC template has no Summary heading: the Summary (with the access gap)
+    leads its first section instead of being lost from the saved report."""
+    no_lookup = tuple(t for t in ALL_TOOLS if t != "lookup_indicator")
+    rounds = _hunt_round(2, 4)[1:]
+    header, body = final_of(plan_turn(prompt("Report on 185.220.101.4", rounds, tools=no_lookup)))
+    (envelope,) = header["blocks"]
+    assert envelope["template"] == "ioc"
+    first = envelope["sections"][0]
+    assert first["heading"] == "Indicator" and first["items"][0]["type"] == "markdown"
+    assert ("Not available to you in chat: indicator reputation (needs enrichment:read)."
+            in first["items"][0]["text"])
+    assert "Not available to you in chat: indicator reputation (needs enrichment:read)" in body
+
+
+def test_rule_words_never_merge_characters_around_markdown_specials() -> None:
+    """``ad*min_login`` or ``ad<min>_login`` must not read as ``admin login``: such a
+    rule text is shown exactly, as inline code; an odd entity kind stays exact too."""
+    for rule in ("ad*min_login", "ad<min>_login", "ad[min]_login", "ad#min_login"):
+        name = demo_chat._case_name({"title": f"user:bob — {rule}"})
+        assert name == f"`{rule}` on user `bob`" and "admin login" not in name
+        assert demo_chat._rule_words(rule) == f"`{rule}`"
+    assert demo_chat._rule_words("identity_signin") == "identity signin"
+    assert demo_chat._entity_phrase("pro*cess:x") == "`pro*cess:x`"
+    assert demo_chat._entity_phrase("file_hash:abc") == "file hash `abc`"
+
+
+def test_a_case_answer_names_its_entity_once() -> None:
+    machine = {**GET_CASE_OBS, "case": {**GET_CASE_OBS["case"], "title": "user:amy — phish_click"}}
+    _, body = final_of(plan_turn(prompt("Tell me about case-0042", [
+        call("get_case", machine, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
+        call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])))
+    assert "(phish click on user `amy`)" in body and body.count("user `amy`") == 1
+    assert "It covers rule `phish`." in body
+    # A free-text title does not name the entity, so the facts still do.
+    _, body = final_of(plan_turn(prompt("Tell me about case-0042", [
+        call("get_case", GET_CASE_OBS, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
+        call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])))
+    assert "It covers user `amy` and rule `phish`." in body

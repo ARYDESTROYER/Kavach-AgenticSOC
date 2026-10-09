@@ -690,6 +690,69 @@ def _coverage_phrase(obs: Mapping[str, Any]) -> str:
     return f"only {ok} of {total} sources answered, so the counts are partial"
 
 
+def _log_total_is_lower_bound(obs: Mapping[str, Any]) -> bool:
+    """A log lookup's ``total`` is a lower bound (a capped or unknown match count).
+    A lower bound of zero says nothing, so it never qualifies."""
+    return bool(obs.get("total_is_lower_bound")) and (_num(obs.get("total")) or 0) > 0
+
+
+def _case_lower_bound(obs: Mapping[str, Any]) -> str:
+    """Why a case search's ``count`` is a lower bound ("a lower bound: the newest 500
+    cases were scanned"), or "" when the count is exact."""
+    if obs.get("exact", True) is not False:
+        return ""
+    scanned = obs.get("scanned")
+    return f"a lower bound: the newest {_count(scanned)} cases were scanned" if scanned else "a lower bound"
+
+
+#: The data tools whose ``sources`` list says which log sources ANSWERED (elsewhere,
+#: ``source_health``'s list is the sources' health, not who answered a lookup).
+_ANSWERING_SOURCE_TOOLS = frozenset({"search_logs", "log_stats"})
+
+
+def _coverage_bits(r: Result) -> list[tuple[str, str]]:
+    """``(marker, clause)`` for each way one completed lookup's figures are
+    incomplete: fewer log sources answered than were queried, or a count that is a
+    lower bound. ``marker`` is the words the narration uses for the same disclosure,
+    so a lead that already says it is not told twice."""
+    o = r.obs
+    bits: list[tuple[str, str]] = []
+    if r.tool in _ANSWERING_SOURCE_TOOLS:
+        ok, total = _sources_answered(o)
+        if total and ok < total:
+            bits.append((f"only {ok} of {total} sources answered",
+                         f"only {ok} of {total} sources answered, so the counts are partial"))
+        if _log_total_is_lower_bound(o):
+            bits.append(("total is a lower bound", "the total is a lower bound"))
+        if r.tool == "log_stats" and o.get("top_values_are_lower_bounds"):
+            bits.append(("per-value counts are lower bounds",
+                         "per-source top lists were merged, so the per-value counts are lower bounds"))
+    elif r.tool == "search_cases":
+        bound = _case_lower_bound(o)
+        if bound:
+            scanned = o.get("scanned")
+            bits.append((bound, "the count is a lower bound"
+                         + (f" (the newest {_count(scanned)} cases were scanned)" if scanned else "")))
+    return bits
+
+
+def _coverage_notes(view: PromptView, said: str = "") -> list[str]:
+    """One engine-worded sentence per completed lookup whose figures are partial or
+    a lower bound ("Log search: only 1 of 3 sources answered, so the counts are
+    partial."), leaving out what ``said`` (the lead) already discloses. A report's
+    lead keeps only its headline, so these follow it (Honesty: a partial result is
+    partial; say so)."""
+    notes: list[str] = []
+    for r in view.results():
+        if not r.ok or r.observation is None:
+            continue
+        clauses = [clause for marker, clause in _coverage_bits(r) if marker not in said]
+        if clauses:
+            name = _TOOL_NAMES.get(r.tool, r.tool)
+            notes.append(f"{name[:1].upper()}{name[1:]}: {'; '.join(clauses)}.")
+    return list(dict.fromkeys(notes))
+
+
 def _basis_phrase(obs: Mapping[str, Any]) -> str:
     basis = obs.get("basis")
     if basis == "exact" and not obs.get("total_is_lower_bound") and not obs.get("top_values_are_lower_bounds"):
@@ -1640,17 +1703,22 @@ def _entity_phrase(raw: Any, limit: int = 80) -> str:
         return _code(raw, limit)
     kind, value = raw.split(":", 1)
     kind = kind.strip().lower()
-    noun = _ENTITY_NOUNS.get(kind) or _plain(kind.replace("_", " "), 20) or "entity"
+    if kind not in _ENTITY_NOUNS and not re.fullmatch(r"[a-z][a-z_]{0,30}", kind):
+        return _code(raw, limit)   # an odd kind is shown exactly, never cleaned into a lookalike
+    noun = _ENTITY_NOUNS.get(kind) or kind.replace("_", " ")
     return f"{noun} {_code(value.strip(), limit)}"
 
 
 def _rule_words(rules: str, limit: int = 60) -> str:
     """Detection rule ids as plain words ("identity_signin" → "identity signin"),
-    Markdown-neutral. Invisible characters are written as visible ``\\uXXXX``
-    escapes (:func:`visible_text`, as :func:`_code` does), never deleted: a rule id
-    carrying a zero-width space must not read as its lookalike."""
-    words = visible_text(re.sub(r"[_\s]+", " ", rules if isinstance(rules, str) else ""), limit)
-    return _MARKDOWN_SPECIALS_RE.sub("", words).strip()
+    Markdown-neutral. Nothing is deleted, so no lookalike can form: invisible
+    characters are written as visible ``\\uXXXX`` escapes (:func:`visible_text`, as
+    :func:`_code` does), and a rule text carrying any other Markdown character
+    (``ad*min_login``, ``ad<min>_login``) is shown exactly, as inline code."""
+    text = rules if isinstance(rules, str) else ""
+    if _MARKDOWN_SPECIALS_RE.search(text.replace("_", "")):
+        return _code(text, limit)
+    return visible_text(re.sub(r"[_\s]+", " ", text), limit).strip()
 
 
 def _case_name(case: Mapping[str, Any], *, with_entity: bool = True) -> str:
@@ -1709,9 +1777,9 @@ def _say_search_cases(r: Result, *, noun: str = "case") -> str:
     window = o.get("window") if isinstance(o.get("window"), str) else "all time"
     when = "" if window == "all time" else f" in the {display_text(window, 60)}"
     text = f"**{_plural(count, _case_noun(filters, noun))}**{when}"
-    if not o.get("exact", True):
-        scanned = o.get("scanned")
-        text += f" (a lower bound: the newest {_count(scanned)} cases were scanned)" if scanned else " (a lower bound)"
+    bound = _case_lower_bound(o)
+    if bound:
+        text += f" ({bound})"
     by_status = o.get("by_status") if isinstance(o.get("by_status"), Mapping) else {}
     if by_status and count and not filters.get("status"):
         text += ": " + _join([f"{_count(n)} {display_text(s, 20).replace('_', ' ')}"
@@ -2055,8 +2123,11 @@ def _say_get_case(r: Result, *, lead: bool = True) -> list[str]:
             head += f", last decided by {display_text(case.get('decision_by'), 30)}"
         out.append(head + ".")
     facts = []
-    if case.get("entity"):
-        facts.append(_entity_phrase(case.get("entity")))
+    entity = _entity_phrase(case.get("entity"))
+    if entity and entity not in _case_name(case):
+        # The lead names the case by what happened to which entity (D6); the entity
+        # is listed here only when that name does not already show it.
+        facts.append(entity)
     rules = [x for x in case.get("rules") or [] if isinstance(x, str)][:3]
     if rules:
         facts.append(("rule " if len(rules) == 1 else "rules ") + _join([_code(x, 60) for x in rules]))
@@ -2844,6 +2915,38 @@ def _report_steps(view: PromptView, ask: Ask) -> list[str]:
     return ["Verify the figures in the console before sharing.", "Re-run this report at the next handoff."]
 
 
+def _log_figure(o: Mapping[str, Any], verb: str = "") -> str:
+    """A log lookup's match count as a Summary clause, honest about its bound:
+    "at least 4 log events matched it in the last 7d", "no log event matched it…"."""
+    total = _num(o.get("total")) or 0
+    verb = f" {verb}" if verb else ""
+    if not total:
+        return f"no log event{verb} in the {_window(o)}"
+    bound = "at least " if _log_total_is_lower_bound(o) else ""
+    return f"{bound}{_plural(total, 'log event')}{verb} in the {_window(o)}"
+
+
+def _case_figure(o: Mapping[str, Any]) -> str:
+    """The related-case count of a hunt as a Summary clause, honest about its bound."""
+    count = _num(o.get("count")) or 0
+    bound = bool(_case_lower_bound(o))
+    if not count:
+        scanned = o.get("scanned")
+        if bound and scanned:
+            return f"no case among the newest {_count(scanned)} scanned carries it as its entity"
+        return f"no {'scanned ' if bound else ''}case carries it as its entity"
+    verb, whose = ("carries", "its") if count == 1 else ("carry", "their")
+    return f"{'at least ' if bound else ''}{_plural(count, 'case')} {verb} it as {whose} entity"
+
+
+def _partial_sources(o: Mapping[str, Any]) -> str:
+    """The Summary sentence for a log lookup only some sources answered, else ""."""
+    ok, total = _sources_answered(o)
+    if total and ok < total:
+        return f"Only {ok} of {total} log sources answered, so the counts are partial."
+    return ""
+
+
 def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
     """The report's Summary leaf: numbers, enums and product wording only.
 
@@ -2867,21 +2970,21 @@ def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
         if lookup and _num(lookup.obs.get("reputation_score")) is not None:
             parts.append(f"The indicator scores {_count(lookup.obs.get('reputation_score'))}/100 "
                          f"({display_text(lookup.obs.get('verdict'), 30) or 'unknown'}).")
+        # Each figure once, honest about its bound, then what the figures mean
+        # (engine wording only: no log or case value). The advice that goes with it
+        # is the report's first Next step, never repeated here.
+        figures = _join([f for f in (_log_figure(logs.obs, "matched it") if logs else "",
+                                     _case_figure(related.obs) if related else "") if f])
+        if figures:
+            meaning = _hunt_reading(view, _pivot_source(view, ask)).meaning
+            parts.append(f"{figures[:1].upper()}{figures[1:]}" + (f", {meaning}" if meaning else "") + ".")
         if logs:
-            parts.append(f"{_plural(logs.obs.get('total'), 'log event')} matched it in the {_window(logs.obs)}.")
-        if related:
-            count = _num(related.obs.get("count")) or 0
-            verb, whose = ("carries", "its") if count == 1 else ("carry", "their")
-            parts.append(f"{_plural(count, 'case')} {verb} it as {whose} entity.")
-        # What the sightings mean (engine wording only: no log or case value). The
-        # advice that goes with it is the report's first Next step, never repeated here.
-        reading = _hunt_reading(view, _pivot_source(view, ask))
-        if reading.finding:
-            parts.append(reading.finding)
+            parts.append(_partial_sources(logs.obs))
     elif ask.intent in ("top", "regroup", "brute"):
         stats = view.ok("log_stats")
         if stats:
-            parts.append(f"{_plural(stats.obs.get('total'), 'log event')} in the {_window(stats.obs)}.")
+            figure = _log_figure(stats.obs)
+            parts.extend([f"{figure[:1].upper()}{figure[1:]}.", _partial_sources(stats.obs)])
     if not parts:
         for paragraph in final.body[:4]:
             if ("`" in paragraph or paragraph.startswith(("- ", "Recorded", "From the Help"))
@@ -2914,16 +3017,19 @@ def _is_narrative(paragraph: str) -> bool:
             and not re.match(r"^\d+\. ", paragraph))
 
 
-def _report_lead(final: Final) -> list[str]:
+def _report_lead(final: Final, view: PromptView) -> list[str]:
     """The prose of an answer whose detail moved into a report envelope (browser-QA
     D5): the builder's ``lead`` (else the first narrative paragraph), at most two
     paragraphs, so with the closing sentence the answer is a 1–3 sentence lead.
-    The builder's :attr:`Final.notes` (what is missing or failed) follow it: a
-    disclosure never moves into the report."""
+    Disclosures follow it and never move into the report alone: the lookups whose
+    figures are partial or a lower bound (:func:`_coverage_notes`, unless the lead
+    already says so), then the builder's :attr:`Final.notes` (what is missing or
+    failed)."""
     lead = [p for p in final.lead if p][:2]
     if not lead:
         lead = [p for p in final.body if _is_narrative(p)][:1]
-    return lead + [n for n in final.notes if n]
+    said = " ".join(lead + final.notes)
+    return lead + _coverage_notes(view, said) + [n for n in final.notes if n]
 
 
 def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle: str | None,
@@ -2951,11 +3057,16 @@ def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle
                 if index not in placed and (leaf.get("view") or "") in views:
                     claimed[heading].append(leaf)
                     placed.add(index)
+    # The Summary carries the finding and what the report lacks (an access gap, a
+    # partial count): with no Summary or Hypothesis heading (the IOC template, or the
+    # analyst's own list) it leads the first section, so no disclosure is lost.
+    home = next((h for h in headings if any(w in h.lower() for w in ("summary", "hypothesis"))),
+                headings[0] if headings else None)
     sections: list[dict[str, Any]] = []
     for heading in headings:
         low = heading.lower()
         items = claimed[heading]
-        if plain_summary and any(w in low for w in ("summary", "hypothesis")):
+        if plain_summary and heading == home:
             items.insert(0, {"type": "markdown", "text": plain_summary})
         if any(w in low for w in ("next", "step", "recommend")):
             items.append({"type": "markdown", "text": "\n".join(
@@ -2971,7 +3082,7 @@ def _as_report(final: Final, view: PromptView, ask: Ask, *, title: str, subtitle
     final.blocks = [envelope]
     # The report holds the detail; the prose is its short lead (browser-QA D5). The
     # caller closes it with :data:`_REPORT_READY` after any notes.
-    final.body = _report_lead(final)
+    final.body = _report_lead(final, view)
     final.closing = _REPORT_READY
     return final
 
@@ -3147,8 +3258,15 @@ def _indicator_body(view: PromptView, value: str | None) -> tuple[list[str], lis
         body.append(_say_search_logs(logs, subject=_code(value) if value else None))
     if related:
         count = _num(related.obs.get("count")) or 0
-        body.append(f"Cases with it as their entity: **{_count(count)}**."
-                    if count else "No case has it as its entity.")
+        bound, scanned = _case_lower_bound(related.obs), related.obs.get("scanned")
+        if count:
+            body.append(f"Cases with it as their entity: **{_count(count)}**" + (f" ({bound})." if bound else "."))
+        elif bound:
+            # Only the newest cases were scanned: "none found" covers those alone.
+            among = f" among the newest {_count(scanned)} scanned" if scanned else " among those scanned"
+            body.append(f"No case{among} has it as its entity.")
+        else:
+            body.append("No case has it as its entity.")
         body.extend(_case_bullets(related))
     # The entity card already shows the reputation gauge and the providers that
     # answered, so the lookup's "Reputation figures" KPI row is not shown beside it
@@ -3169,11 +3287,12 @@ def _final_hunt(view: PromptView, ask: Ask) -> Final | None:
     body, blocks, narrated = _indicator_body(view, value)
     if not body:
         return None
-    conclusion = _hunt_conclusion(view)
-    if conclusion:
-        body.append(conclusion)
-    # As a report: the reputation result and what the sightings mean.
-    lead = body[:1] + ([conclusion] if conclusion else [])
+    reading = _hunt_reading(view)
+    if reading.text:
+        body.append(reading.text)
+    # As a report: the reputation result and what the sightings mean. The advice is
+    # the report's first Next step, so the lead keeps the finding alone.
+    lead = body[:1] + ([reading.finding] if reading.finding else [])
     return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "hunt"), narrated=narrated, lead=lead)
 
 
@@ -3189,12 +3308,16 @@ def _is_false_positive(case: Any) -> bool:
 class _HuntReading:
     """What a hunt's sightings mean (engine wording, no new number).
 
-    ``text`` is the narration sentence; a report splits it into ``finding`` (its
-    Summary) and ``advice`` (its first Next step), so neither repeats the other.
-    ``contain`` says whether the generic "block or monitor" step still applies (not
-    after a false-positive or no-signal finding, nor when the advice already says it)."""
+    ``text`` is the plain answer's sentence (finding and advice). A report splits it:
+    ``finding`` leads the prose (count-free, so it never restates the report's
+    figures), ``meaning`` completes the Summary's figures sentence ("…, so they read
+    as one incident": interpretation only, the figures precede it) and ``advice`` is
+    the first Next step, so none repeats another. ``contain`` says whether the
+    generic "block or monitor" step still applies (not after a false-positive,
+    clean-reputation or no-signal finding, nor when the advice already says it)."""
     text: str = ""
     finding: str = ""
+    meaning: str = ""
     advice: str = ""
     contain: bool = True
 
@@ -3206,13 +3329,18 @@ def _pivot_source(view: PromptView, ask: Ask) -> Mapping[str, Any] | None:
     return case if isinstance(case, Mapping) and _entity_of(got.obs) else None
 
 
+#: Reputation verdicts that call for no action beyond watching.
+_CLEAN_VERDICTS = frozenset({"clean", "benign"})
+
+
 def _hunt_reading(view: PromptView, source_case: Mapping[str, Any] | None = None) -> _HuntReading:
-    """What the sightings mean (no number is new).
+    """What the sightings mean (no number is new, and none is repeated).
 
     Zero, one and several related cases are three different findings: an indicator
     no case carries has no containment to keep (the reputation result is the only
-    signal), and a case closed as a false positive needs no containment at all.
-    ``source_case`` is the case a pivot hunt started from (it carries the entity)."""
+    signal, and a clean one needs no action), and a case closed as a false positive
+    needs no containment at all. ``source_case`` is the case a pivot hunt started
+    from (it carries the entity)."""
     logs = view.ok("search_logs")
     related = view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity")))
     if logs is None or related is None:
@@ -3220,49 +3348,57 @@ def _hunt_reading(view: PromptView, source_case: Mapping[str, Any] | None = None
     sightings = _num(logs.obs.get("total")) or 0
     cases = _num(related.obs.get("count")) or 0
     linked = [c for c in related.obs.get("cases") or [] if isinstance(c, Mapping)]
-    if source_case and not any(c.get("case_id") == source_case.get("case_id") for c in linked):
+    from_source = bool(source_case) and not any(c.get("case_id") == source_case.get("case_id") for c in linked)
+    if source_case and from_source:
         linked.append(source_case)
     all_fp = bool(linked) and all(_is_false_positive(c) for c in linked)
     reputation = view.ok("lookup_indicator")
     if sightings:
-        alongside = f"the {_plural(cases, 'related case')}" if cases else ""
+        alongside = ", alongside the related cases" if cases else ""
         return _HuntReading(
             text=("It is still active in the logs: review the matching events and check the hosts they touch"
-                  + (f", and read them alongside {alongside}" if alongside else "") + "."),
-            finding="It is still active in the logs" + (f" and tied to {_plural(cases, 'related case')}"
-                                                         if cases else "") + ".",
-            advice="Review the matching events and check the hosts they touch"
-                   + (f", alongside {alongside}" if alongside else "") + ".")
+                  + (", and read them alongside the related cases" if cases else "") + "."),
+            finding="It is still active in the logs" + (", and cases already carry it" if cases else "") + ".",
+            meaning="so it is still active",
+            advice=f"Review the matching events and check the hosts they touch{alongside}.")
     if not cases and source_case is None:
         if reputation is None:
             text = ("Nothing in the logs or the case store links it to activity here, and no reputation was "
                     "read, so this hunt found no signal for it; there is no case containment to keep.")
-            return _HuntReading(text=text, finding=text, contain=False)
+            return _HuntReading(text=text, finding=text, contain=False,
+                                meaning="so this hunt found no signal for it and there is no case "
+                                        "containment to keep")
         finding = ("Nothing in the logs or the case store links it to activity here, so the reputation result "
                    "above is the only signal; there is no case containment to keep.")
-        advice = "Block or monitor it under your policy if its reputation warrants it."
-        return _HuntReading(text=f"{finding} {advice}", finding=finding, advice=advice, contain=False)
+        meaning = "so the reputation result is the only signal and there is no case containment to keep"
+        verdict = display_text(reputation.obs.get("verdict"), 30).lower()
+        if verdict in _CLEAN_VERDICTS:
+            advice = f"No action is needed beyond watching for it; its reputation is {verdict}."
+        else:
+            advice = "Block or monitor it under your policy if its reputation warrants it."
+        return _HuntReading(text=f"{finding} {advice}", finding=finding, meaning=meaning, advice=advice,
+                            contain=False)
     if all_fp:
-        which = "its only case has a false-positive verdict" if len(linked) == 1 else \
-            f"all {_plural(len(linked), 'case')} carrying it have false-positive verdicts"
-        finding = f"It is quiet in the logs and {which}, so no containment is needed"
+        if len(linked) == 1:
+            which = "its only case has" if not from_source else "the case it came from has"
+            why = "that case has" if not from_source else "the case this hunt started from has"
+        else:
+            which = why = "every case carrying it has"
+        finding = f"It is quiet in the logs and {which} a false-positive verdict, so no containment is needed"
         return _HuntReading(text=f"{finding}; watch for a return.", finding=f"{finding}.",
+                            meaning=f"so no containment is needed: {why} a false-positive verdict",
                             advice="Watch for a return of the indicator.", contain=False)
     if cases <= 1:
         finding = "It is quiet in the logs and tied to a single case, so the activity looks contained"
         return _HuntReading(text=f"{finding}; keep the case's containment in place and watch for a return.",
-                            finding=f"{finding}.",
+                            finding=f"{finding}.", meaning="so the activity looks contained",
                             advice="Keep the case's containment in place and watch for a return.")
-    finding = f"It is quiet in the logs but tied to {_plural(cases, 'case')}"
-    return _HuntReading(text=f"{finding}, so treat them as one incident and check each one's containment.",
-                        finding=f"{finding}.",
-                        advice="Treat the cases as one incident and check each one's containment.")
-
-
-def _hunt_conclusion(view: PromptView, source_case: Mapping[str, Any] | None = None) -> str:
-    """One data-driven sentence on what the sightings mean, with what to do about it
-    (:func:`_hunt_reading`)."""
-    return _hunt_reading(view, source_case).text
+    return _HuntReading(
+        text=("It is quiet in the logs but tied to several cases, so treat them as one incident and check each "
+              "one's containment."),
+        finding="It is quiet in the logs but tied to several cases, so they read as one incident.",
+        meaning="so they read as one incident",
+        advice="Treat the cases as one incident and check each one's containment.")
 
 
 _NAME_AN_INDICATOR = "Name an indicator (an IP, domain, URL or hash) to hunt it directly."
@@ -3301,9 +3437,9 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
         body.append("That case has no IP, domain or hash entity to hunt.")
     indicator_lines, blocks, narrated = _indicator_body(view, entity[1] if entity else None)
     body.extend(indicator_lines)
-    conclusion = _hunt_conclusion(view, case if entity else None)
-    if conclusion:
-        body.append(conclusion)
+    reading = _hunt_reading(view, case if entity else None)
+    if reading.text:
+        body.append(reading.text)
     if got:
         mitre = [m for m in got.obs.get("mitre") or [] if isinstance(m, Mapping) and m.get("id")]
         if mitre:
@@ -3315,10 +3451,10 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
     # As a report: where the hunt started (and, when the question named no
     # indicator, how to aim it), then its headline finding — the first indicator
     # line (the reputation, or why it was not looked up, which is narrated and so
-    # never listed again) with what the sightings mean. The sightings and cases
-    # are in the report.
+    # never listed again) with what the sightings mean. The sightings, the cases and
+    # the advice (the first Next step) are in the report.
     start = " ".join(p for p in (body[:1] + [_NAME_AN_INDICATOR if _NAME_AN_INDICATOR in body else ""]) if p)
-    found = " ".join(p for p in (indicator_lines[:1] + [conclusion]) if p)
+    found = " ".join(p for p in (indicator_lines[:1] + [reading.finding]) if p)
     lead = [p for p in (start, found or ("The follow-up lookups did not run." if got and entity else "")) if p]
     return Final(body=body, blocks=blocks, follow_ups=_follow_ups(view, "pivot"), narrated=narrated, lead=lead)
 
@@ -3755,6 +3891,24 @@ def _pending_note(view: PromptView, ask: Ask) -> str:
             + ("it." if len(names) == 1 else "them."))
 
 
+#: The lookup whose window a report's subtitle names, ahead of the intent's other
+#: data tools: a hunt's sightings, not the case search that anchored it ("all time").
+_REPORT_WINDOW_TOOLS: dict[str, tuple[str, ...]] = {"hunt": ("search_logs",), "pivot": ("search_logs",)}
+
+
+def _report_window(view: PromptView, ask: Ask) -> str | None:
+    """The report subtitle: the window of the intent's primary data lookup (then its
+    other data tools in order, then any windowed lookup), else the analyst's chip."""
+    order = _REPORT_WINDOW_TOOLS.get(ask.intent, ()) + _INTENT_TOOLS.get(ask.intent, ())
+    for tool in dict.fromkeys(order):
+        result = view.ok(tool)
+        window = _window(result.obs, "") if result is not None else ""
+        if window:
+            return window
+    windows = [_window(r.obs, "") for r in view.results() if r.ok and r.observation is not None]
+    return next((w for w in windows if w), view.analyst_window)
+
+
 def _compose_final(view: PromptView, ask: Ask) -> Final:
     if view.legacy is not None:
         return _final_legacy(view, ask)
@@ -3774,10 +3928,9 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
         if ask.report == "custom" and not re.search(r"\bcustom\b", ask.lowered):
             # "a report on case X" names no template: the intent's own one fits best.
             ask = replace(ask, report=_INTENT_TEMPLATES.get(ask.intent, "custom"))
-        windows = [_window(r.obs, "") for r in view.results() if r.ok and r.observation is not None]
         final = _as_report(
             final, view, ask, title=_TEMPLATE_TITLES.get(ask.report or "", "Report"),
-            subtitle=next((w for w in windows if w), view.analyst_window),
+            subtitle=_report_window(view, ask),
             summary=_report_summary(final, view, ask), steps=_report_steps(view, ask))
     if not generic:
         lead, advice = _missing_lead(view, ask) if ask.intent in _DATA_INTENTS else ("", "")

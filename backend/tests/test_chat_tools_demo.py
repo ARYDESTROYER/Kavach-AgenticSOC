@@ -127,11 +127,12 @@ async def test_every_demo_artifact_materialises_in_every_allowed_view(demo_state
         for artifact in out.artifacts:
             outcomes = {view: _materialise(artifact, MaterialiseOptions(block_id=f"b{i}{artifact.id}", view=view))
                         for view in artifact.views()}
-            if any(is_empty for _blocks, is_empty in outcomes.values()):
-                assert all(blocks == [] and is_empty for blocks, is_empty in outcomes.values()), (name, artifact.kind)
+            if any(outcome == "empty" for _blocks, outcome in outcomes.values()):
+                assert all(blocks == [] and outcome == "empty"
+                           for blocks, outcome in outcomes.values()), (name, artifact.kind)
                 empty += 1
                 continue
-            for view, (blocks, _is_empty) in outcomes.items():
+            for view, (blocks, _outcome) in outcomes.items():
                 assert blocks, (name, artifact.kind, view)
                 assert blocks == to_blocks(artifact, MaterialiseOptions(block_id=f"b{i}{artifact.id}", view=view))
                 count += 1

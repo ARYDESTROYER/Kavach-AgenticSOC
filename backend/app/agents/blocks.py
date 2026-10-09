@@ -2819,27 +2819,40 @@ def _artifact_has_data(artifact: Any) -> bool:
     return True
 
 
-def _materialise(artifact: "Artifact", options: MaterialiseOptions) -> tuple[list[dict[str, Any]], bool]:
-    """:func:`to_blocks` plus whether nothing came out because the artifact held no
-    data (``True``: an EMPTY result, left out silently) rather than because it could
-    not form a valid block (``False``: the caller counts it as not available).
+#: How :func:`_materialise` came out for one ref: ``made`` (one block); ``empty`` (the
+#: artifact holds no data at all: left out silently, the prose says the lookup found
+#: nothing); ``unshowable`` (it holds data, but no view could show it once clipped,
+#: validation dropped every malformed item, or it is malformed: counted under "could
+#: not be shown"); ``unavailable`` (it is not a tool-produced artifact, G5: counted
+#: under "not available from this turn's results", like a missing ref).
+MaterialiseOutcome = Literal["made", "empty", "unshowable", "unavailable"]
+
+
+def _materialise(artifact: "Artifact",
+                 options: MaterialiseOptions) -> tuple[list[dict[str, Any]], MaterialiseOutcome]:
+    """:func:`to_blocks` plus how it came out (:data:`MaterialiseOutcome`).
 
     Emptiness is decided on the artifact's whole data (:func:`_artifact_has_data`),
     never on a clipped view: when the requested view's slice holds nothing (a series
     table keeps only the newest rows, a heatmap only its first rows and columns) and
     the data lies outside it, the default view and then the artifact's other views
-    are tried; if none shows anything, or validation drops every malformed item, the
-    ref counts as not available — never as an empty result left out silently."""
+    are tried. If none shows anything, or validation drops every malformed item, the
+    data was in this turn's results but could not be shown (``unshowable``) — never
+    an empty result left out silently. A malformed artifact never sinks the answer:
+    whatever raises while it is judged or built is ``unshowable`` too."""
+    if getattr(artifact, "provenance", None) not in ("code", "source"):
+        return [], "unavailable"  # G5: only a tool-produced artifact can carry numbers
     kind = getattr(artifact, "kind", None)
     builder = _BUILDERS.get(kind) if isinstance(kind, str) else None
     data = getattr(artifact, "data", None)
     if builder is None or not isinstance(data, dict):
-        return [], False
-    if getattr(artifact, "provenance", None) not in ("code", "source"):
-        return [], False  # G5: only a tool-produced artifact can carry numbers
-    if not _artifact_has_data(artifact):
-        return [], True
-    views = _views_of(artifact)
+        return [], "unshowable"
+    try:
+        if not _artifact_has_data(artifact):
+            return [], "empty"
+        views = _views_of(artifact)
+    except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
+        return [], "unshowable"
     requested = options.view if options.view in views else DEFAULT_VIEW[kind]
     raw: dict[str, Any] | None = None
     for view in dict.fromkeys([requested, DEFAULT_VIEW[kind], *views]):
@@ -2851,21 +2864,21 @@ def _materialise(artifact: "Artifact", options: MaterialiseOptions) -> tuple[lis
                 made = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
             made["allowed_views"] = _honest_block_views(made, kind)
         except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
-            return [], False
+            return [], "unshowable"
         if not is_empty_block(made):
             raw = made
             break
     if raw is None:
-        return [], False
+        return [], "unshowable"
     block, _drop = _validate_one(raw, "1", allow_ai_data=False, adapter=_LEAF_BLOCK)
     if block is None:
-        return [], False
+        return [], "unshowable"
     dumped = dump_block(block)
     if is_empty_block(dumped):
         # Validation dropped every item (each one was malformed): the data could not
-        # be shown, which is "not available", not an empty result.
-        return [], False
-    return [dumped], False
+        # be shown, which is not an empty result.
+        return [], "unshowable"
+    return [dumped], "made"
 
 
 def to_blocks(artifact: "Artifact", options: MaterialiseOptions) -> list[dict[str, Any]]:
@@ -3205,6 +3218,10 @@ class MaterialisedFinal:
     #: Refs whose ``kpis`` block only restated an entity card of the same call
     #: (:func:`drop_restated_kpis`): left out silently, the card shows the figures.
     restated: list[str] = field(default_factory=list)
+    #: Refs whose artifact held data this turn that no view could show (clipped out,
+    #: every item malformed, or a malformed artifact): counted under "could not be
+    #: shown" (``UNUSABLE_NOTICE_*``), never as "not available from this turn's results".
+    unshowable: list[str] = field(default_factory=list)
 
 
 UNAVAILABLE_NOTICE_ONE = "1 requested item was not available from this turn's results."
@@ -3256,7 +3273,9 @@ def materialise_final_blocks(
     * A ref whose data is empty (zero rows, points or items, :func:`is_empty_block`)
       yields no block and no notice (``empty``): the prose says the lookup found
       nothing. A ``kpis`` block that only restates an entity card of the same call is
-      left out the same way (``restated``, :func:`drop_restated_kpis`).
+      left out the same way (``restated``, :func:`drop_restated_kpis`). A ref whose
+      artifact holds data that no view could show (``unshowable``) is counted with
+      the requests that "could not be shown", not as "not available".
     * Unknown or expired refs never produce numbers: they are counted and ONE quiet
       engine callout says so. ``dropped_requests`` (the parser's drops from
       :func:`parse_final_block_requests`) and the leaves an envelope could not keep
@@ -3316,16 +3335,19 @@ def materialise_final_blocks(
                 out.unresolved.append(request.ref)
                 return []
             block_id = next_id()
-            made, empty = _materialise(entry.artifact, MaterialiseOptions(
+            made, outcome = _materialise(entry.artifact, MaterialiseOptions(
                 block_id=block_id, view=request.view, title=request.title,
                 top_n=request.top_n, from_step=entry.from_step,
             ))
             if made:
                 out.resolved_refs.append(request.ref)
                 origin[block_id] = request.ref
-            elif empty:
+            elif outcome == "empty":
                 # Zero rows/points/items: no block and no notice line (browser-QA D3).
                 out.empty.append(request.ref)
+            elif outcome == "unshowable":
+                # The data was in this turn's results; it could not be shown.
+                out.unshowable.append(request.ref)
             else:
                 out.unresolved.append(request.ref)
             return made
@@ -3402,6 +3424,7 @@ def materialise_final_blocks(
             if ref in out.resolved_refs:
                 out.resolved_refs.remove(ref)
     notes: list[str] = []
+    unusable += len(out.unshowable)
     missing = sum(1 for ref in out.unresolved if ref != "report")
     report_failed += len(out.unresolved) - missing
     if missing:
