@@ -29,9 +29,11 @@ import { navLabel } from '@/soc/nav';
 import {
   AI_SUMMARY_NOTICE,
   BLOCK_TYPE_LABEL,
+  EMPTY_LOOKUP_TEXT,
   SOURCE_UNAVAILABLE,
   TEMPLATE_LABEL,
   blockTitle,
+  itemKindLabel,
   type DocItem,
   type ReportDoc,
 } from '../model';
@@ -478,7 +480,7 @@ export function summaryNodes(doc: ReportDoc, w: Walker): void {
 /** One item: its heading, scope line, blocks and the analyst's note. */
 export function itemNodes(item: DocItem, index: number, w: Walker, level = 2, verb: 'Added' | 'Asked' = 'Added'): void {
   w.heading(level, `${index + 1}. ${item.title}`);
-  const meta: string[] = [item.kind === 'section' ? 'Answer' : BLOCK_TYPE_LABEL[item.blocks[0]?.type ?? 'markdown']];
+  const meta: string[] = [itemKindLabel(item)];
   if (item.scope.window) meta.push(`Window: ${item.scope.window}`);
   if (item.scope.sources?.length) meta.push(`Sources: ${item.scope.sources.join(', ')}`);
   if (item.addedAt) meta.push(`${verb} ${utc(item.addedAt)}`);
@@ -487,6 +489,7 @@ export function itemNodes(item: DocItem, index: number, w: Walker, level = 2, ve
   // A section's own title already names it; its blocks keep their own titles.
   const titled = item.kind === 'section' || item.blocks.length !== 1;
   for (const block of item.blocks) w.block(block, level + 1, titled);
+  if (item.emptyType && !item.blocks.length) w.push({ k: 'meta', text: EMPTY_LOOKUP_TEXT });
   if (item.truncated) w.push({ k: 'meta', text: 'More blocks were offered than a report section holds; the first ones are shown.' });
   if (item.note) w.push({ k: 'callout', tone: 'info', label: 'Analyst note', text: w.f(item.note) });
 }

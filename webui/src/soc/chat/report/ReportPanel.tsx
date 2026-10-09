@@ -76,7 +76,7 @@ import { displayText } from '../stream-events';
 import { formatUtc } from '../blocks/format';
 import { ExportMenuItems, useDefangPreference } from './ExportMenu';
 import { ItemBlocks } from './ItemBlocks';
-import { BLOCK_TYPE_LABEL, TEMPLATE_LABEL, TEMPLATE_ORDER, itemBlocks, tokens, usd } from './model';
+import { TEMPLATE_LABEL, TEMPLATE_ORDER, itemBlocks, itemKindLabel, tokens, usd } from './model';
 import {
   MAX_REPORT_ITEMS,
   REPORT_CONFLICT_MESSAGE,
@@ -835,7 +835,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                 const bodyId = `${ids.items}-${index}`;
                 const note = drafts[item.id] ?? item.note ?? '';
                 const state = noteState[item.id];
-                const kindLabel = item.kind === 'section' ? 'Answer' : BLOCK_TYPE_LABEL[parsed.blocks[0]?.type ?? 'markdown'];
+                const kindLabel = itemKindLabel({ kind: item.kind, blocks: parsed.blocks, emptyType: parsed.emptyType });
                 return (
                   <li key={item.id} className="rounded-lg border border-border/70 bg-card" data-report-item={item.id}>
                     <div className="flex items-start gap-1 px-2 py-1.5">
@@ -895,7 +895,13 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                     </div>
                     {open ? (
                       <div id={bodyId} className="border-t border-border/60 px-2 py-2">
-                        <ItemBlocks blocks={parsed.blocks} messageId={item.source.message_id} headingBase={4} compact />
+                        <ItemBlocks
+                          blocks={parsed.blocks}
+                          messageId={item.source.message_id}
+                          headingBase={4}
+                          compact
+                          foundNothing={!!parsed.emptyType}
+                        />
                         {parsed.truncated ? (
                           <p className="mt-1 text-xs text-muted-foreground">More blocks were offered than a section holds; the first ones are shown.</p>
                         ) : null}

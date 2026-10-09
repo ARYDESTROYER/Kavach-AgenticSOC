@@ -55,11 +55,34 @@ import { Badge } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
 
 /**
+ * Stand-in for the QR encoder when its chunk cannot be fetched. It reports the failure
+ * through the same `onError` path as an encoding failure, so the card shows its
+ * "QR unavailable — enter the secret manually below." box and the secret, URI and
+ * recovery codes stay on screen.
+ */
+function QrChunkUnavailable({ onError }: { onError?: () => void }) {
+  const reported = React.useRef(false);
+  React.useEffect(() => {
+    if (reported.current) return;
+    reported.current = true;
+    onError?.();
+  }, [onError]);
+  return null;
+}
+
+/**
  * The QR encoder (~6 kB) loads only when an enrollment actually shows a code: this card
  * is on the eager login path, and nearly every sign-in never enrolls. The secret and URI
  * are always shown as text, so scanning is never the only path while it loads.
+ *
+ * The import fails soft. Login renders outside every error boundary, so a rejected chunk
+ * (a stale hashed file after a redeploy or supervised update, a proxy, going offline)
+ * must not throw: it resolves to {@link QrChunkUnavailable} and enrolment continues with
+ * manual entry.
  */
-const QRCode = React.lazy(() => import('./QRCode'));
+const QRCode = React.lazy(() =>
+  import('./QRCode').catch(() => ({ default: QrChunkUnavailable })),
+);
 
 export interface MfaSetupCardProps {
   /** Whether MFA is currently enabled for the signed-in user. */

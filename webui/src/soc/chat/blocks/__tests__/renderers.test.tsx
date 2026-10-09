@@ -228,11 +228,19 @@ describe('timeline', () => {
 });
 
 describe('entity', () => {
-  it('renders only attacker-derived facts mono; product values and provider notes are sans (G7, D7)', () => {
-    // Even on a block marked untrusted, mono follows the per-fact flag.
+  it('renders only attacker-derived facts mono; product values are sans (G7, D7)', () => {
+    // Even on a block marked untrusted, a fact's mono follows the per-fact flag.
     show({ ...(galleryBlock('ioc') as EntityBlock), untrusted: true });
     expect(screen.getByText('scan-14.example.net')).toHaveClass('font-mono');
     expect(screen.getByText('NL')).not.toHaveClass('font-mono');
+  });
+
+  it('keeps a reputation note mono on an untrusted block (third-party tags), sans otherwise', () => {
+    const { unmount } = show({ ...(galleryBlock('ioc') as EntityBlock), untrusted: true });
+    expect(screen.getByText('314 reports in 30 days')).toHaveClass('font-mono');
+    expect(screen.getByText('314 reports in 30 days')).toHaveClass('text-muted-foreground');
+    unmount();
+    show({ ...(galleryBlock('ioc') as EntityBlock), untrusted: false });
     expect(screen.getByText('314 reports in 30 days')).not.toHaveClass('font-mono');
     expect(screen.getByText('314 reports in 30 days')).toHaveClass('text-muted-foreground');
   });

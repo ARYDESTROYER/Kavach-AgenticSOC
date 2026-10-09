@@ -214,7 +214,24 @@ export const LIVE_TAIL_FIXED_WINDOW_REASON = 'This linked window is fixed in the
 interface StartWindow {
   /** A preset value, or {@link LINKED_WINDOW} for the starting one-off window. */
   start: string;
-  linked: { from: string | null; to: string | null; label: string } | null;
+  linked: {
+    from: string | null;
+    to: string | null;
+    label: string;
+    /** It ends at an absolute instant already past, so re-reading it finds nothing new. */
+    fixed: boolean;
+  } | null;
+}
+
+/**
+ * Whether a window ending at `to` is closed in the past: `to` is an absolute instant (not
+ * `now` or `now-…`, the same rule as the Logs page's readable range) at or before now. An
+ * open end runs to now, and a relative one moves, so both still see new events.
+ */
+function endsInPast(to: string | undefined): boolean {
+  if (!to || to === 'now' || to.startsWith('now-')) return false;
+  const ms = Date.parse(to);
+  return Number.isFinite(ms) && ms <= Date.now();
 }
 
 function startWindow(from?: string, to?: string, label?: string): StartWindow {
@@ -222,7 +239,7 @@ function startWindow(from?: string, to?: string, label?: string): StartWindow {
   if (from && (!to || to === 'now') && TIME_RANGES.some((r) => r.value === from)) return { start: from, linked: null };
   return {
     start: LINKED_WINDOW,
-    linked: { from: from ?? null, to: to ?? null, label: label || `${from ?? '…'} → ${to ?? 'now'}` },
+    linked: { from: from ?? null, to: to ?? null, label: label || `${from ?? '…'} → ${to ?? 'now'}`, fixed: endsInPast(to) },
   };
 }
 
@@ -246,8 +263,9 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
   const [start, setStart] = React.useState(initialWindow.start);
   const linkedWindow = start === LINKED_WINDOW ? initialWindow.linked : null;
   const [liveTailPref, setLiveTail] = React.useState(false);
-  // Re-polling a fixed past window every 10 s would only re-read the same rows.
-  const liveTailBlocked = start === LINKED_WINDOW;
+  // Re-polling a window closed in the past every 10 s would only re-read the same rows.
+  // A relative or open-ended linked window (`from=now-6h`) still moves, so it can tail.
+  const liveTailBlocked = start === LINKED_WINDOW && !!initialWindow.linked?.fixed;
   const liveTail = liveTailPref && !liveTailBlocked;
   const onSourcesRef = React.useRef(onSources);
   onSourcesRef.current = onSources;

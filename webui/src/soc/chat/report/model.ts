@@ -27,7 +27,7 @@ import type {
 } from '@/lib/types';
 
 import { LIMITS, isExpiredBlock, leafBlocks, legacyTableBlock, parseBlocks } from '../blocks/schema';
-import type { AnswerBlock, KpiItem, LeafBlock } from '../blocks/schema';
+import type { AnswerBlock, DroppedBlock, KpiItem, LeafBlock } from '../blocks/schema';
 import { displayText } from '../stream-events';
 
 /* -------------------------------------------------------------------------- */
@@ -73,6 +73,30 @@ export const UNTRUSTED_NOTICE =
 export const SOURCE_UNAVAILABLE = 'Conversation no longer available';
 /** At most this many source conversations are read for one report (export or view). */
 export const MAX_SOURCE_CONVERSATIONS = 10;
+
+/** Shown for a block item whose lookup found nothing (its stored block was dropped as `empty`). */
+export const EMPTY_LOOKUP_TEXT = 'The lookup found nothing.';
+
+/**
+ * Drops that left a quiet fallback notice in place. A data block with nothing to show is
+ * dropped as `empty` and shows nothing at all (BLOCKS amendment 20), so no "not
+ * displayable" line counts it.
+ */
+export function noticeDropCount(dropped: readonly DroppedBlock[]): number {
+  return dropped.filter((d) => d.reason !== 'empty').length;
+}
+
+const isBlockType = (value: unknown): value is AnswerBlock['type'] =>
+  typeof value === 'string' && Object.prototype.hasOwnProperty.call(BLOCK_TYPE_LABEL, value);
+
+/**
+ * The kind shown in an item's meta line: "Answer" for a section, else the block's type
+ * name (the empty block's own type when its lookup found nothing).
+ */
+export function itemKindLabel(item: { kind: 'block' | 'section'; blocks: readonly AnswerBlock[]; emptyType?: AnswerBlock['type'] | null }): string {
+  if (item.kind === 'section') return 'Answer';
+  return BLOCK_TYPE_LABEL[item.blocks[0]?.type ?? item.emptyType ?? 'markdown'];
+}
 
 /** A block's plain-text title (the same rule as the transcript card). */
 export function blockTitle(block: AnswerBlock): string {
@@ -155,6 +179,11 @@ export interface DocItem {
   blocks: AnswerBlock[];
   /** Blocks the client could not keep (replaced by a quiet fallback in place). */
   dropped: number;
+  /**
+   * A `block` item whose stored block had nothing to show (dropped as `empty`, D3): its
+   * type. The item keeps its stored title and says {@link EMPTY_LOOKUP_TEXT}.
+   */
+  emptyType?: AnswerBlock['type'] | null;
   /** A section snapshot offered more blocks than it holds (G4). */
   truncated: boolean;
   /** The analyst's note (untrusted for models; plain text here). */
@@ -242,24 +271,45 @@ const isoOr = (value: string | undefined | null, fallback: string): string =>
   typeof value === 'string' && value.trim() ? value : fallback;
 
 /** Parse an item snapshot into blocks (a section holds up to {@link LIMITS.section_blocks}). */
-export function itemBlocks(item: ReportItem): { blocks: AnswerBlock[]; dropped: number; truncated: boolean; title: string } {
+export function itemBlocks(item: ReportItem): {
+  blocks: AnswerBlock[];
+  dropped: number;
+  truncated: boolean;
+  title: string;
+  /** Set when a `block` item's only block was dropped as `empty` (its type). */
+  emptyType: AnswerBlock['type'] | null;
+} {
   if (item.kind === 'section') {
     const snap = (item.block && typeof item.block === 'object' ? item.block : {}) as Record<string, unknown>;
     const parsed = parseBlocks(snap.blocks, { limit: LIMITS.section_blocks });
     return {
       blocks: parsed.blocks,
-      dropped: parsed.dropped.length,
+      dropped: noticeDropCount(parsed.dropped),
       truncated: snap.truncated === true,
       title: displayText(snap.title, LIMITS.title) || 'Answer',
+      emptyType: null,
     };
   }
   const parsed = parseBlocks([item.block], { limit: 1 });
   const block = parsed.blocks[0];
+  if (!block && parsed.dropped[0]?.reason === 'empty') {
+    // The lookup found nothing: no shell, but the item keeps the title it was saved with.
+    const raw = (item.block && typeof item.block === 'object' ? item.block : {}) as Record<string, unknown>;
+    const type = isBlockType(raw.type) ? raw.type : 'markdown';
+    return {
+      blocks: [],
+      dropped: 0,
+      truncated: false,
+      title: displayText(raw.title, LIMITS.title) || BLOCK_TYPE_LABEL[type],
+      emptyType: type,
+    };
+  }
   return {
     blocks: block ? [block] : [],
-    dropped: parsed.dropped.length,
+    dropped: noticeDropCount(parsed.dropped),
     truncated: false,
     title: block ? blockTitle(block) : 'Block',
+    emptyType: null,
   };
 }
 
@@ -275,6 +325,7 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
       title: parsed.title,
       blocks: parsed.blocks,
       dropped: parsed.dropped,
+      emptyType: parsed.emptyType,
       truncated: parsed.truncated,
       note: item.note ? displayText(item.note, LIMITS.callout, { multiline: true }) || null : null,
       scope: item.scope,
@@ -386,7 +437,7 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
       kind: 'section',
       title: question?.title ?? 'Answer',
       blocks,
-      dropped: parsed.dropped.length,
+      dropped: noticeDropCount(parsed.dropped),
       truncated: false,
       note: null,
       question: question?.full ?? null,

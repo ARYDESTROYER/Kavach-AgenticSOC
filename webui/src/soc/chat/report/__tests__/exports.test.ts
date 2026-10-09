@@ -240,6 +240,33 @@ describe('conversation export', () => {
     expect(md).toContain('No answer was saved for this question.');
   });
 
+  it('does not report an empty block as a display failure (it is silently omitted)', () => {
+    const conversation = sampleConversation();
+    conversation.messages[1].response = {
+      ...conversation.messages[1].response!,
+      blocks: [{ ...rawBlock('signins'), rows: [] }, rawBlock('lookup-query')],
+    };
+    const doc = buildConversationDoc(conversation, { generatedAt: NOW.toISOString() });
+    expect(doc.items[0].dropped).toBe(0);
+    expect(doc.items[0].blocks.some((b) => b.type === 'table')).toBe(false);
+    expect(doc.methodology.some((l) => l.includes('not displayable'))).toBe(false);
+    const md = conversationToMarkdown(conversation, { now: NOW });
+    expect(md).not.toContain('not displayable');
+    expect(md).not.toContain('Recent sign-in failures');
+  });
+
+  it('keeps an empty block item titled and says the lookup found nothing', () => {
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[1], block: { ...rawBlock('signins'), rows: [] } }],
+      summary: null,
+    });
+    const md = reportToMarkdown(buildReportDoc(report, { generatedAt: NOW.toISOString() }));
+    expect(md).toContain('## 1. Recent sign-in failures');
+    expect(md).toContain('Table · Window: last 24h');
+    expect(md).toContain('The lookup found nothing.');
+    expect(md).not.toContain('not displayable');
+  });
+
   it('keeps a stopped or failed turn visible as a notice', () => {
     const conversation = sampleConversation();
     conversation.messages[1].response = {

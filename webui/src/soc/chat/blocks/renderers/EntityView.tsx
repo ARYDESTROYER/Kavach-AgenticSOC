@@ -5,7 +5,9 @@
  * tiles, related cases as router links, and an "Investigate" navigation. The indicator is
  * attacker-influenced text: it is shown verbatim (never defanged in the live UI), always
  * mono, and never turned into a link (G7). Facts are mono only when the server marks
- * that fact attacker-derived; product values and provider notes are sans captions.
+ * that fact attacker-derived; product values are sans captions. A provider's reputation
+ * note is a sans caption unless the block is marked untrusted (it can hold third-party
+ * tags), when it stays mono.
  */
 import * as React from 'react';
 import { Check, Copy, Search } from 'lucide-react';
@@ -144,9 +146,20 @@ export function EntityView({ block, idPrefix, framed = false }: { block: EntityB
                     {meta.label}
                   </span>
                   {typeof r.score === 'number' ? <span className="text-2xs tabular-nums text-muted-foreground">score {r.score}</span> : null}
-                  {/* The provider's own note (not log-derived): plain text, never a link,
-                      in the card's muted caption style rather than mono (D7). */}
-                  {r.detail ? <span className="w-full break-words text-xs text-muted-foreground">{r.detail}</span> : null}
+                  {/* The provider's note: plain text, never a link. It can carry the
+                      provider's tags, which community feeds take from third parties, so
+                      on a block marked untrusted it keeps the mono untrusted-data cue
+                      (G7); otherwise it is the card's muted sans caption (D7). */}
+                  {r.detail ? (
+                    <span
+                      className={cn(
+                        'w-full break-words text-muted-foreground',
+                        block.untrusted ? 'font-mono text-2xs' : 'text-xs',
+                      )}
+                    >
+                      {r.detail}
+                    </span>
+                  ) : null}
                 </li>
               );
             })}

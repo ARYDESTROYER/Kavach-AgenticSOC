@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildReportDoc } from '../model';
 import { PRINT_CSS, PRINT_ROOT_ID, clearPrintRoot, printDocument } from '../export/print';
 import { REPORT_LIGHT_TOKENS } from '../export/report-tokens';
-import { NOW, sampleReport } from './fixtures';
+import { NOW, rawBlock, sampleReport } from './fixtures';
 
 const doc = () => buildReportDoc(sampleReport(), { author: 'ana', appVersion: '0.1.13', generatedAt: NOW.toISOString() });
 
@@ -55,6 +55,21 @@ describe('printDocument', () => {
     expect(root.querySelector('[data-testid="block-menu-trigger"]')).toBeNull();
     expect(root.textContent).toContain('203[.]0[.]113[.]14');
     expect(root.textContent).not.toContain('203.0.113.14');
+  });
+
+  it('keeps an empty block item titled and says the lookup found nothing', async () => {
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[1], block: { ...rawBlock('signins'), rows: [] } }],
+      summary: null,
+    });
+    await act(async () => {
+      await printDocument(buildReportDoc(report, { generatedAt: NOW.toISOString() }));
+    });
+    const root = document.getElementById(PRINT_ROOT_ID)!;
+    expect(root).toHaveTextContent('1. Recent sign-in failures');
+    expect(root).toHaveTextContent('Table · Window: last 24h');
+    expect(root).toHaveTextContent('The lookup found nothing.');
+    expect(root).not.toHaveTextContent('not displayable');
   });
 
   it('keeps raw indicators when the toggle is off', async () => {

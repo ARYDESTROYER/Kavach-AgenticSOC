@@ -18,7 +18,7 @@ import { ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 
-import { BLOCK_TYPE_LABEL, SOURCE_UNAVAILABLE, type DocItem, type ReportDoc } from './model';
+import { EMPTY_LOOKUP_TEXT, SOURCE_UNAVAILABLE, itemKindLabel, type DocItem, type ReportDoc } from './model';
 import { NodesView } from './NodesView';
 import { ItemBlocks } from './ItemBlocks';
 import { formatUtc } from '../blocks/format';
@@ -85,7 +85,7 @@ export function ReportDocument({
         {doc.items.length === 0 ? <p className="text-sm text-muted-foreground">This report has no items yet.</p> : null}
         {doc.items.map((item, index) => {
           const gone = unavailableConversations?.has(item.source.conversation_id) ?? false;
-          const meta: string[] = [item.kind === 'section' ? 'Answer' : BLOCK_TYPE_LABEL[item.blocks[0]?.type ?? 'markdown']];
+          const meta: string[] = [itemKindLabel(item)];
           if (item.scope.window) meta.push(`Window: ${item.scope.window}`);
           if (item.scope.sources?.length) meta.push(`Sources: ${item.scope.sources.join(', ')}`);
           if (item.addedAt) meta.push(`${doc.kind === 'conversation' ? 'Asked' : 'Added'} ${formatUtc(item.addedAt)}`);
@@ -117,7 +117,9 @@ export function ReportDocument({
                   {item.question}
                 </div>
               ) : null}
-              {renderBlocks ? (
+              {item.emptyType && !item.blocks.length ? (
+                <p className="text-xs text-muted-foreground">{EMPTY_LOOKUP_TEXT}</p>
+              ) : renderBlocks ? (
                 renderBlocks(item, index)
               ) : (
                 <ItemBlocks blocks={item.blocks} messageId={item.source.message_id} headingBase={3 + headingShift} />

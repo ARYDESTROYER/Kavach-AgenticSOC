@@ -13,6 +13,8 @@ import {
   buildReportDoc,
   collectQueries,
   itemBlocks,
+  itemKindLabel,
+  noticeDropCount,
   notMeasuredCount,
   sourceTurnsFromConversation,
   timeRangeLabel,
@@ -53,6 +55,56 @@ describe('itemBlocks', () => {
     const parsed = itemBlocks(item);
     expect(parsed.blocks[0].type).toBe('callout');
     expect(parsed.dropped).toBe(1);
+    expect(parsed.emptyType).toBeNull();
+  });
+
+  it('keeps the stored title of a block whose lookup found nothing, and counts no drop', () => {
+    const empty = { ...rawBlock('signins'), rows: [] };
+    const parsed = itemBlocks({ ...sampleReport().items[1], block: empty });
+    expect(parsed.blocks).toEqual([]);
+    expect(parsed.dropped).toBe(0);
+    expect(parsed.title).toBe('Recent sign-in failures');
+    expect(parsed.emptyType).toBe('table');
+    expect(itemKindLabel({ kind: 'block', blocks: parsed.blocks, emptyType: parsed.emptyType })).toBe('Table');
+  });
+
+  it('names an untitled empty block by its type', () => {
+    const { title: _title, ...untitled } = { ...rawBlock('signins'), rows: [] };
+    const parsed = itemBlocks({ ...sampleReport().items[1], block: untitled });
+    expect(parsed.title).toBe('Table');
+  });
+
+  it('does not count an empty block inside a section as a display failure', () => {
+    const item: ReportItem = {
+      ...sampleReport().items[0],
+      block: { title: 'Q', blocks: [{ ...rawBlock('signins'), rows: [] }, { type: 'nope' }], truncated: false },
+    };
+    const parsed = itemBlocks(item);
+    // Only the unknown type left a notice in place; the empty table shows nothing.
+    expect(parsed.dropped).toBe(1);
+    expect(noticeDropCount([{ path: '1', type: 'table', reason: 'empty' }])).toBe(0);
+  });
+});
+
+describe('empty blocks in the methodology', () => {
+  it('writes no "not displayable" line for a block whose lookup found nothing', () => {
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[1], block: { ...rawBlock('signins'), rows: [] } }],
+      summary: null,
+    });
+    const doc = buildReportDoc(report, { generatedAt: NOW.toISOString() });
+    expect(doc.items[0].title).toBe('Recent sign-in failures');
+    expect(doc.items[0].emptyType).toBe('table');
+    expect(doc.methodology.some((l) => l.includes('not displayable'))).toBe(false);
+  });
+
+  it('still counts a block that failed validation', () => {
+    const report = sampleReport({
+      items: [{ ...sampleReport().items[1], block: { type: 'chart', provenance: 'code' } }],
+      summary: null,
+    });
+    const doc = buildReportDoc(report, { generatedAt: NOW.toISOString() });
+    expect(doc.methodology).toContain('1 block was not displayable and is shown as a notice.');
   });
 });
 

@@ -170,6 +170,23 @@ describe('Logs page', () => {
     expect(await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' })).toBeEnabled();
   });
 
+  it('keeps Live tail available for a relative window that is not a preset', async () => {
+    // `now-6h` is no time-range preset, so it opens as a one-off linked window; it is
+    // relative and open-ended, so it still sees new events.
+    show('#/logs?logQuery=failed&from=now-6h');
+    await waitFor(() =>
+      expect(fetchUnifiedLogs).toHaveBeenCalledWith(expect.objectContaining({ from: 'now-6h', to: 'now' })),
+    );
+    const live = await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' });
+    expect(live).toBeEnabled();
+    expect(live).not.toHaveAccessibleDescription(/fixed in the past/);
+  });
+
+  it('keeps Live tail available for an absolute start with an open end', async () => {
+    show('#/logs?logQuery=failed&from=2026-10-01T12%3A00%3A00Z');
+    expect(await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' })).toBeEnabled();
+  });
+
   it('drops the link on "Browse all logs"', async () => {
     const user = userEvent.setup();
     show('#/logs?logQuery=failed');

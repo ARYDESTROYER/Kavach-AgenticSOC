@@ -43,8 +43,15 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * Chat revamp entry budget (SPEC §1, §10.10): the whole revamp may add at most 1 kB to the
  * entry chunk. The baseline is the entry chunk at 05a40d1 (the revamp's branch point),
  * measured with `vite build` (file size on disk, as `statSync` reads it below).
+ *
+ * Rebased for the lazy MFA QR code. 05a40d1 as committed measures 396,537 B. Making the
+ * login card's QR encoder a fail-soft `React.lazy` chunk (MfaSetupCard.tsx) moves
+ * pre-revamp code out of the entry, and that saving must not become chat headroom. So
+ * the baseline is 05a40d1 re-measured with only that change applied (its own vite
+ * config): 391,893 B, which is 4,644 B less. The revamp stays capped at +1,024 B. Re-measure
+ * the same way if another pre-revamp module leaves or joins the entry.
  */
-const PRE_REVAMP_ENTRY_BYTES = 396_537;
+const PRE_REVAMP_ENTRY_BYTES = 391_893;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {

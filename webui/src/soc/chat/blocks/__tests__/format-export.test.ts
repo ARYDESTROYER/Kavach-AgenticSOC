@@ -18,6 +18,7 @@ import {
 } from '../export-helpers';
 import {
   bucketRangeLabel,
+  captionStatesCount,
   clipText,
   fileStamp,
   formatDelta,
@@ -126,6 +127,17 @@ describe('UTC time labels', () => {
     expect(fileStamp(new Date(Date.UTC(2026, 9, 8, 9, 5)))).toBe('20261008-0905');
     expect(truncationNote(10, 1240)).toBe('Showing top 10 of 1,240');
     expect(truncationNote(10, null)).toBe('Showing the first 10; more exist');
+  });
+
+  it('recognises a caption that already states the shown-of-total figure, whole numbers only', () => {
+    expect(captionStatesCount('Top 5 of 20 hosts', 5, 20)).toBe(true);
+    expect(captionStatesCount('Showing 1,000 of 12,500', 1000, 12500)).toBe(true);
+    expect(captionStatesCount('5 of 20', 5, 20)).toBe(true);
+    // A substring inside larger numbers is not the same figure.
+    expect(captionStatesCount('Showing 25 of 2050 events', 5, 20)).toBe(false);
+    expect(captionStatesCount('Top 15 of 200', 5, 20)).toBe(false);
+    expect(captionStatesCount('Top 5 of 20', 5, null)).toBe(false);
+    expect(captionStatesCount(null, 5, 20)).toBe(false);
   });
 });
 

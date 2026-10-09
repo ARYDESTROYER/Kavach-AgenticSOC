@@ -12,6 +12,7 @@ import { LoadingState } from '@/design-system';
 
 import { ChatMarkdown } from '../ChatMarkdown';
 import type { AnswerBlock } from '../blocks/schema';
+import { EMPTY_LOOKUP_TEXT } from './model';
 
 const AnswerBlocks = React.lazy(() => import('../blocks/AnswerBlocks'));
 
@@ -22,15 +23,17 @@ export interface ItemBlocksProps {
   /** Heading level the block titles sit under (markdown headings follow). */
   headingBase?: number;
   compact?: boolean;
+  /** The item's stored block had nothing to show (dropped as `empty`): say so plainly. */
+  foundNothing?: boolean;
 }
 
-export function ItemBlocks({ blocks, messageId, headingBase = 4, compact = false }: ItemBlocksProps) {
+export function ItemBlocks({ blocks, messageId, headingBase = 4, compact = false, foundNothing = false }: ItemBlocksProps) {
   const renderMarkdown = React.useCallback(
     (text: string) => <ChatMarkdown text={text} headingBase={headingBase} />,
     [headingBase],
   );
   if (!blocks.length) {
-    return <p className="text-xs text-muted-foreground">Nothing to show for this item.</p>;
+    return <p className="text-xs text-muted-foreground">{foundNothing ? EMPTY_LOOKUP_TEXT : 'Nothing to show for this item.'}</p>;
   }
   return (
     <React.Suspense fallback={<LoadingState label="Loading report item" layout="inline" />}>

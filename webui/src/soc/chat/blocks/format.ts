@@ -309,16 +309,18 @@ export function fileStamp(now: Date = new Date()): string {
   );
 }
 
-/** "top 10 of 1,240" style disclosure for a truncated block (G4). */
 /**
  * The block's own caption already states the shown-of-total figure ("Top 5 of 20"), so
- * the footer's "Showing top 5 of 20" would only repeat it.
+ * the footer's "Showing top 5 of 20" would only repeat it. The figures must stand alone:
+ * "25 of 2050" does not state "5 of 20".
  */
 export function captionStatesCount(caption: string | null | undefined, shown: number, total: number | null): boolean {
   if (!caption || total === null) return false;
-  return caption.replace(/,/g, '').toLowerCase().includes(`${shown} of ${total}`);
+  const figure = (n: number) => String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|\\D)${figure(shown)} of ${figure(total)}(\\D|$)`, 'i').test(caption.replace(/,/g, ''));
 }
 
+/** "top 10 of 1,240" style disclosure for a truncated block (G4). */
 export function truncationNote(shown: number, total: number | null): string {
   if (total !== null && total > shown) return `Showing top ${num(shown, 0)} of ${num(total, 0)}`;
   return `Showing the first ${num(shown, 0)}; more exist`;
