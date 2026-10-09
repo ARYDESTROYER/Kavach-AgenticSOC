@@ -105,7 +105,7 @@ def test_playbook_cannot_grant_tools_outside_registry(app_state: AppState) -> No
     # The pipeline's tool registry is fixed regardless of any playbook's
     # suggested_tools (advisory only) — a playbook can never add a tool.
     investigator, _enrich = app_state.pipeline._build_investigator(app_state.prefs)
-    assert set(investigator._tools.names()) == {"es_query", "enrich", "rag_retrieve"}
+    assert set(investigator._tools.names()) == {"es_query", "enrich", "rag_retrieve", "decode_acl"}
 
 
 def test_hot_reload_loads_seed_playbooks(app_state: AppState) -> None:

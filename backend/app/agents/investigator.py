@@ -138,6 +138,14 @@ class Investigator:
         # no per-rule override exists.
         primary_rule = cluster.primary_rule()
         model_cfg = prefs.model_for_rule(Role.INVESTIGATOR, primary_rule)
+        # Give every tool this investigation's events so a tool can read a FULL event
+        # field the model only sees truncated (e.g. an SDDL blob past the #9 fence) by
+        # referencing the event id. Optional hook — tolerate tool-like objects (stubs,
+        # future MCP transports) that don't implement it.
+        for _tool in self._tools.all():
+            _bind = getattr(_tool, "bind_events", None)
+            if callable(_bind):
+                _bind(cluster.member_events)
         try:
             # Multi-agent roster: the assigned persona specialises the system prompt
             # (focus + methodology) without relaxing any read-only / fencing rule.

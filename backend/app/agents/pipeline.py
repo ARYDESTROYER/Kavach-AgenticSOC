@@ -31,6 +31,7 @@ from ..llm.gateway import LLMGateway
 from ..models import Case, Cluster, EnrichmentResult, VerdictResult
 from ..stores.cases import CaseStore
 from ..tools.base import ToolRegistry
+from ..tools.decode_acl import DecodeAclTool
 from ..tools.enrich import EnrichTool
 from ..tools.es_query import EsQueryTool
 from ..tools.rag import RagService, RagTool
@@ -193,7 +194,7 @@ class InvestigationPipeline:
         """
         enrich = EnrichTool(self._secrets, prefs, self._cache)
         effective_source = self._source if query_source is _DEFAULT_QUERY_SOURCE else query_source
-        tools = [enrich, RagTool(self._rag)]
+        tools = [enrich, RagTool(self._rag), DecodeAclTool()]
         if effective_source is not None:
             tools.insert(0, EsQueryTool(effective_source, prefs))
         registry = ToolRegistry(tools)

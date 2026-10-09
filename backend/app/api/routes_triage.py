@@ -692,8 +692,13 @@ def _build_stages(case_id: str, case: Any, rows: Any, state: Any) -> list[Timeli
     for r in tool_rows:
         at = str(_get(r, "action_type", "") or "")
         tool = _get(r, "tool_name") or ("es_query" if at == ActionType.ES_QUERY.value else "tool")
+        # Prefer the native query (es_query shows its KQL/DSL); tools with no query —
+        # e.g. decode_acl — fall back to their result summary so the step is never blank
+        # in the Timeline. Both are untrusted (a query echoes attacker-influenced values;
+        # a summary reports parsed source data), so the fence label is unchanged.
+        body = str(_get(r, "query_text", "") or _get(r, "tool_output_summary", "") or "")
         inv_steps.append(StageStep(kind="tool", label=str(tool),
-                                   body=str(_get(r, "query_text", "") or ""), trusted=False,
+                                   body=body, trusted=False,
                                    ts=str(_get(r, "ts", "")) or None))
     inv_steps.extend(StageStep(kind="knowledge", label=(k["source"] or "knowledge"),
                                body=k["snippet"], trusted=False) for k in knowledge)

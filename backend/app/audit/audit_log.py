@@ -59,7 +59,10 @@ class AuditLogger(AuditRepository):
                 query_text=query_text,
                 tool_name=tool_name,
                 tool_input=tool_input,
-                tool_output_summary=truncate(tool_output_summary, 1000) if tool_output_summary else None,
+                # Tool outputs are evidence a human reviews (e.g. a decoded ACL) — give
+                # them more room than a one-line summary so the full detail survives for
+                # the case UI. Still bounded so a pathological tool can't bloat the audit.
+                tool_output_summary=truncate(tool_output_summary, 8000) if tool_output_summary else None,
                 result_summary=truncate(result_summary, 1000) if result_summary else None,
             )
         )

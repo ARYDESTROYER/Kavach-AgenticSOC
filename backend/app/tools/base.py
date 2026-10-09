@@ -39,6 +39,16 @@ class Tool(ABC):
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult: ...
 
+    def bind_events(self, events: list[Any]) -> None:
+        """Give the tool the current investigation's events (no-op by default).
+
+        The investigator calls this once per investigation, before the ReAct loop,
+        on every tool. A tool that must operate on a FULL event field the model can
+        only see truncated (e.g. an SDDL blob past the #9 fence cap) overrides this to
+        index the events, so the model can reference an event by id and the tool reads
+        the untruncated value server-side. Most tools ignore it."""
+        return None
+
     def definition(self) -> dict[str, Any]:
         """MCP-style tool definition for prompting / future MCP export."""
         return {
@@ -59,6 +69,9 @@ class ToolRegistry:
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
+
+    def all(self) -> list[Tool]:
+        return list(self._tools.values())
 
     def names(self) -> list[str]:
         return list(self._tools)
