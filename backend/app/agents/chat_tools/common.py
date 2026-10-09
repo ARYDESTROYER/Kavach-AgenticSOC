@@ -603,6 +603,11 @@ def verdict_semantic(value: Any) -> str | None:
     return _VERDICT_SEMANTIC.get(enum_value(value) or "")
 
 
+#: The ``KpiItem.delta.period_label`` of every "versus the previous window" change
+#: (posture KPIs, the shift headline): one wording wherever two tiles sit together.
+PREVIOUS_WINDOW_LABEL = "vs previous window"
+
+
 def kpi(
     key: str,
     label: str,

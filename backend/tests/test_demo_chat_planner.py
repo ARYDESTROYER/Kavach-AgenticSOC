@@ -384,7 +384,7 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     assert "Decide the 1 case in Needs human status." in steps
     # The brief holds the detail; the prose is its lead (browser-QA D5): the headline,
     # the first case to work, and the ready sentence.
-    assert body.split("\n\n")[1:] == ["Start with `case-0042` (x, escalated).",
+    assert body.split("\n\n")[1:] == ["Start with `case-0042` (`x`, escalated).",
                                         "The brief below is ready to add to a report."]
     assert "Posture:" not in body and "Needs attention first" not in body
 
@@ -418,7 +418,10 @@ def test_case_lines_and_pivots_name_cases_in_words_not_machine_titles() -> None:
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — demo_sqli_webshell, web_shell"}) == (
         "demo sqli webshell, web shell on IP `203.0.113.9`")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — x"}, with_entity=False) == "x"
-    assert demo_chat._case_name({"case_id": "c", "title": "Mailbox *rule* [added]"}) == "Mailbox rule added"
+    # Any other title is free case text: inline code, exact (no Markdown stripped).
+    assert demo_chat._case_name({"case_id": "c", "title": "Mailbox *rule* [added]"}) == "`Mailbox *rule* [added]`"
+    assert demo_chat._case_name({"case_id": "c", "title": "Brute force on srv_db_01"}) == (
+        "`Brute force on srv_db_01`")
     assert demo_chat._case_name({"case_id": "c", "title": "c", "entity": "host:web-01"}) == "host `web-01`"
     assert demo_chat._entity_phrase("file_hash:abc") == "file hash `abc`"
 
@@ -444,10 +447,11 @@ def test_noise_final_is_a_funnel_with_the_reduction() -> None:
     assert "**8 needed a human**" in body
 
 
-def test_top_hosts_final_is_hbar_plus_table_and_honest_about_ties() -> None:
+def test_top_hosts_final_is_one_hbar_and_honest_about_ties() -> None:
     msgs = prompt("Which hosts have the most alerts?", [call("log_stats", LOG_STATS_OBS, artifacts=LOG_STATS_ARTS)])
     header, body = final_of(plan_turn(msgs))
-    assert [(b["ref"], b["view"]) for b in header["blocks"]] == [("t1.a1", "hbar"), ("t1.a1", "table")]
+    # One block per figure set: the chart's own view switcher offers the table.
+    assert [(b["ref"], b["view"]) for b in header["blocks"]] == [("t1.a1", "hbar")]
     assert "`web-01` leads with 9 events, then `db-02` (4)" in body and "Counts are exact." in body
     tied = {**LOG_STATS_OBS, "top": {"host": [{"value": "a", "count": 1}, {"value": "b", "count": 1}]}}
     _, body = final_of(plan_turn(prompt("top hosts", [call("log_stats", tied, artifacts=LOG_STATS_ARTS)])))
@@ -460,7 +464,9 @@ def test_case_final_explains_the_decision_from_the_policy_table() -> None:
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS)])
     header, body = final_of(plan_turn(msgs))
     assert_valid_final(header, manifest(msgs))
-    assert body.startswith("**`case-0042`** is a true positive at 90% confidence, risk 80 (critical)")
+    # The id is the handle; the free-form title names the case (inline code, D6).
+    assert body.startswith("**`case-0042`** (`user:amy - phishing`) is a true positive at 90% confidence, "
+                           "risk 80 (critical)")
     assert ("Why it is still open: the deterministic auto-close policy sends a case with a true-positive verdict "
             "at 90% confidence and risk 80 to a human, because true-positive auto-close is turned off in the "
             "policy.") in body
@@ -1134,7 +1140,8 @@ def test_tp_cost_mitre_sources_and_campaign_finals_state_their_figures() -> None
          "mitre": ["T1110"]}]}
     _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
     # Named by its display name and the entity its cases share; no machine id (browser-QA D6).
-    assert body.startswith("**1 campaign** (open): rdp wave with 3 cases sharing IP `192.0.2.9` (high; ATT&CK T1110).")
+    assert body.startswith("**1 campaign** (open): `rdp wave` with 3 cases sharing IP `192.0.2.9` (high; ATT&CK "
+                           "T1110).")
     unnamed = {"total": 1, "status_filter": "open", "campaigns": [
         {"id": "campaign-1e57287ac9b19e21b96010721158e58e", "name": None, "case_count": 2, "severity": "high",
          "entities": ["user:pnair"], "mitre": ["T1078"]}]}
@@ -1174,3 +1181,134 @@ def test_report_summary_says_when_blocks_inside_items_were_left_out() -> None:
     assert "1 block inside" in summary_for({"blocks": 1})
     queries = summary_for({"query_blocks": 2})
     assert "2 query blocks are not summarised" in queries and "did not fit" not in queries
+
+
+# --------------------------------------------------------------------------- #
+# Wave-5 review fixes: report leads keep their disclosures and say the headline.
+# --------------------------------------------------------------------------- #
+NO_METRICS = tuple(t for t in ALL_TOOLS if t != "soc_metrics")
+ACTIVE_CASES_OBS = {"filters": {"status_group": "active"}, "window": "all time", "count": 7, "exact": True,
+                    "cases": []}
+
+
+@pytest.mark.parametrize("question", ["Build a posture report", "Build a noise reduction report"])
+def test_a_report_under_a_restricted_role_keeps_its_access_note_and_advice(question: str) -> None:
+    """A generic (degraded) answer wrapped into a report keeps what it lacks and how
+    to get it after the lead; the report Summary states the gap too."""
+    msgs = prompt(question, [call("app_help", {"kind": "app_help", "results": []}),
+                             call("search_cases", ACTIVE_CASES_OBS, artifacts=CASES_ARTS)], tools=NO_METRICS)
+    header, body = final_of(plan_turn(msgs))
+    (envelope,) = header["blocks"]
+    assert envelope["type"] == "report"
+    paragraphs = body.split("\n\n")
+    assert paragraphs == [
+        "Not available to you in chat: SOC metrics (needs metrics:view), so this answer uses what you can read:",
+        "**7 open cases**.",
+        "Ask an administrator for access, or open the matching console page.",
+        "The report below is ready to add to your Reports."]
+    summary = envelope["sections"][0]["items"][0]["text"]
+    assert summary == "7 open cases. Not available to you in chat: SOC metrics (needs metrics:view)."
+    assert "Ask an administrator" not in summary          # advice is for the analyst, not the report
+
+
+def test_a_report_whose_main_lookups_failed_keeps_the_failure_lines() -> None:
+    """The posture and trend lookups errored (so the generic final answers from the
+    noise funnel): the wrapped report still lists what did not complete, then ends
+    with the ready sentence."""
+    msgs = prompt("Build a posture report", [
+        call("soc_metrics", status="error", summary="The case store did not answer", inp={"kind": "posture"}),
+        call("soc_metrics", status="error", summary="The case store did not answer", inp={"kind": "trends"}),
+        call("soc_metrics", NOISE_OBS, artifacts=NOISE_ARTS, inp={"kind": "noise_funnel"})])
+    header, body = final_of(plan_turn(msgs))
+    assert header["blocks"][0]["type"] == "report"
+    paragraphs = body.split("\n\n")
+    assert paragraphs[0].startswith("**98.4% noise reduction**")
+    assert paragraphs[-2] == ("Lookups that did not complete:\n- `soc_metrics` error: The case store did not answer\n"
+                              "- `soc_metrics` error: The case store did not answer")
+    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+
+
+def test_the_ready_sentence_comes_after_the_window_note() -> None:
+    q = "Build a posture report"
+    msgs = prompt(q, [call("soc_metrics", {**POSTURE_OBS, "window": "last 1h"}, artifacts=POSTURE_ARTS),
+                      call("soc_metrics", {**TRENDS_OBS, "window": "last 1h"}, artifacts=TRENDS_ARTS),
+                      call("soc_metrics", {**NOISE_OBS, "window": "last 1h"}, artifacts=NOISE_ARTS)],
+                  window="last 1h")
+    _, body = final_of(plan_turn(msgs))
+    paragraphs = body.split("\n\n")
+    assert paragraphs[-2] == "Window: the last 1h you selected applies to the windowed lookups above."
+    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+
+
+def test_a_hunt_report_states_the_finding_once_and_leaves_the_advice_to_next_steps() -> None:
+    """The Hypothesis keeps what the sightings mean; the advice is the first Next
+    step, and the generic "block or monitor" step is not repeated or contradicted."""
+    def report(rounds: list[dict[str, Any]]) -> tuple[str, str]:
+        header, _ = final_of(plan_turn(prompt("Build a hunt report on 203.0.113.7", rounds)))
+        sections = {s["heading"]: s["items"] for s in header["blocks"][0]["sections"]}
+        return sections["Hypothesis"][0]["text"], sections["Next steps"][-1]["text"]
+
+    summary, steps = report(_hunt_round(0, 0))
+    assert summary.endswith("the reputation result above is the only signal; there is no case containment to keep.")
+    assert "Block or monitor" not in summary
+    assert steps.split("\n") == ["1. Block or monitor it under your policy if its reputation warrants it.",
+                                  "2. Re-run this hunt at the next shift."]
+    # A false-positive finding needs no containment: no step says to block it.
+    summary, steps = report(_hunt_round(1, 0, verdict="FALSE_POSITIVE"))
+    assert summary.endswith("so no containment is needed.")
+    assert "Block or monitor" not in steps and steps.startswith("1. Watch for a return of the indicator.")
+    # Several cases: the finding names them, the step says what to do.
+    summary, steps = report(_hunt_round(3, 0))
+    assert summary.endswith("It is quiet in the logs but tied to 3 cases.")
+    assert steps.startswith("1. Treat the cases as one incident and check each one's containment.\n"
+                            "2. Block or monitor the indicator under your containment policy.")
+    # Still active: the finding says so, the step says what to review.
+    summary, steps = report(_hunt_round(2, 4))
+    assert summary.endswith("It is still active in the logs and tied to 2 related cases.")
+    assert steps.startswith("1. Review the matching events and check the hosts they touch, alongside the 2 "
+                            "related cases.")
+
+
+def test_a_behaviour_hunt_report_leads_with_what_the_hunt_found() -> None:
+    q = "Build a hunt report on lateral movement"
+    active = {"filters": {"status_group": "active"}, "count": 2, "exact": True, "cases": [
+        {"case_id": "case-9", "entity": "ip:192.0.2.62", "title": "web", "verdict": "FALSE_POSITIVE",
+         "risk_score": 20}]}
+    got = {"case": {"case_id": "case-9", "entity": "ip:192.0.2.62", "title": "web", "verdict": "FALSE_POSITIVE",
+                    "confidence": 0.88, "risk_score": 20, "severity": "low", "status": "new"}}
+    msgs = prompt(q, [call("search_cases", active, artifacts=CASES_ARTS,
+                           inp={"status_group": "active", "sort_field": "risk_score", "limit": 10})],
+                  [call("get_case", got, artifacts=GET_CASE_ARTS, inp={"case_id": "case-9"})],
+                  _hunt_round(1, 0, verdict="FALSE_POSITIVE"))
+    header, body = final_of(plan_turn(msgs))
+    assert header["blocks"][0]["type"] == "report"
+    anchor, found, ready = body.split("\n\n")
+    assert anchor.startswith("The question names no indicator") and anchor.endswith(
+        "Name an indicator (an IP, domain, URL or hash) to hunt it directly.")
+    assert found.startswith("**`203.0.113.7` scores 80/100 (malicious)**")
+    assert found.endswith("so no containment is needed; watch for a return.")
+    assert ready == "The report below is ready to add to your Reports."
+
+
+def test_a_case_report_lead_names_the_case_by_what_happened() -> None:
+    machine = {**GET_CASE_OBS, "case": {**GET_CASE_OBS["case"], "title": "user:amy — phish_click"}}
+    msgs = prompt("Give me a report on case-0042", [
+        call("get_case", machine, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
+        call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])
+    header, body = final_of(plan_turn(msgs))
+    assert header["blocks"][0]["type"] == "report"
+    assert body.startswith("**`case-0042`** (phish click on user `amy`) is a true positive at 90% confidence")
+    summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
+    assert "amy" not in summary and "`" not in summary      # the Summary leaf carries no case value
+
+
+def test_narrated_rule_ids_keep_lookalike_characters_visible() -> None:
+    """D6 wording never deletes an invisible character: ``ad``+ZWSP+``min_login``
+    must not read as the rule ``admin_login``."""
+    lookalike = {"case_id": "case-1", "title": "user:bob — ad​min_login"}
+    name = demo_chat._case_name(lookalike)
+    assert name == "ad\\u200bmin login on user `bob`" and "admin login" not in name
+    assert demo_chat._rule_words("ad​min_login") == "ad\\u200bmin login"
+    camps = {"total": 1, "campaigns": [{"name": "ops​_wave", "case_count": 2, "entities": []}]}
+    _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
+    assert "`ops\\u200b_wave` with 2 cases" in body

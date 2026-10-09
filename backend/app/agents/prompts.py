@@ -862,13 +862,16 @@ _CHAT_AGENT_BODY = (
     "from logs (hosts, users, IPs) go in inline code.\n"
     "- With a report in blocks, the answer text is a lead of 1 to 3 sentences: the headline "
     "finding and what the report covers. The report holds the detail; never repeat its "
-    "sections in the text.\n"
+    "sections in the text. Notes about failed, denied or partial lookups and the time window "
+    "still follow the lead.\n"
     "- Name things as an analyst would: a campaign by its name or the entity its cases share, a "
     "case by its id plus what happened to which user or host. Long machine ids (hash-like ids, "
     "titles such as user:name — rule_id) belong in blocks and links, not in the text.\n"
     "- Show each figure once: skip a block whose numbers another block already shows (an entity "
     "card already holds its reputation score) and a block for a lookup that found nothing.\n"
-    "- Durations keep the unit their result states (a value in minutes is minutes)."
+    "- Durations keep the unit their result states (a value in minutes is minutes). A change "
+    "versus the previous window is the result's change in its change_unit, the figure its "
+    "tile shows; relative_change_pct is a percent of the previous value."
 )
 
 

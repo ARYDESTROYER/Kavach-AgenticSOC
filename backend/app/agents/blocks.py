@@ -2734,8 +2734,9 @@ def is_empty_block(block: Any) -> bool:
     a KPI row, case list, timeline, ATT&CK list or citation list with no item; a
     guide with neither steps nor links. Such a block is never materialised: the
     answer prose already says the lookup found nothing, and an empty card ("No
-    values to show") only adds noise. The rule gives the same answer in every view
-    of one artifact.
+    values to show") only adds noise. The materialiser decides emptiness on the
+    artifact's whole data first (:func:`_artifact_has_data`), so a view whose clipped
+    slice happens to hold nothing is never mistaken for an empty result.
 
     Zero is a value, not emptiness: a chart of zero counts is data and is kept.
     Prose, callouts, entity cards, queries and report envelopes are never empty here
@@ -2774,10 +2775,61 @@ def is_empty_block(block: Any) -> bool:
     return False
 
 
+def _any_rows(values: Any, row_type: type | tuple[type, ...]) -> bool:
+    return isinstance(values, (list, tuple)) and any(isinstance(v, row_type) for v in values)
+
+
+def _artifact_has_data(artifact: Any) -> bool:
+    """Whether the artifact holds anything to show, judged on ALL its data before a
+    view or a limit clips it (the :func:`is_empty_block` rule applied to the whole
+    artifact, so the answer is the same in every view): a measured number for the
+    numeric kinds, a row, item, event or technique for the list kinds, a step or a
+    link for a guide. An entity card or a query always has something to show.
+    Items count here even when malformed: dropping them is a failure to show, not
+    an empty result."""
+    kind, data = getattr(artifact, "kind", None), getattr(artifact, "data", None)
+    if not isinstance(data, dict):
+        return False
+    if kind == "categories":
+        labels, values = _sorted_categories(data)
+        return bool(labels) and _measured(values)
+    if kind == "series":
+        x, series, _is_time = _series_rows(data)
+        return bool(x) and any(_measured(s["values"]) for s in series)
+    if kind == "funnel":
+        stages = data.get("stages") if isinstance(data.get("stages"), (list, tuple)) else []
+        values = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
+        return bool(stages) and _measured(list(values)[: len(stages)])
+    if kind == "heatmap":
+        x = data.get("x") if isinstance(data.get("x"), (list, tuple)) else []
+        y = data.get("y") if isinstance(data.get("y"), (list, tuple)) else []
+        cells = data.get("cells") if isinstance(data.get("cells"), (list, tuple)) else []
+        return bool(x) and bool(y) and _measured(
+            [list(row)[: len(x)] for row in list(cells)[: len(y)] if isinstance(row, (list, tuple))])
+    if kind == "table":
+        return _any_rows(data.get("rows"), (list, tuple))
+    if kind in ("kpis", "case_list"):
+        return _any_rows(data.get("items"), dict)
+    if kind == "timeline":
+        return _any_rows(data.get("events"), dict)
+    if kind == "mitre":
+        return isinstance(data.get("techniques"), (list, tuple)) and len(data["techniques"]) > 0
+    if kind == "guide":
+        return any(isinstance(data.get(k), (list, tuple)) and len(data[k]) > 0 for k in ("steps", "links"))
+    return True
+
+
 def _materialise(artifact: "Artifact", options: MaterialiseOptions) -> tuple[list[dict[str, Any]], bool]:
     """:func:`to_blocks` plus whether nothing came out because the artifact held no
     data (``True``: an EMPTY result, left out silently) rather than because it could
-    not form a valid block (``False``: the caller counts it as not available)."""
+    not form a valid block (``False``: the caller counts it as not available).
+
+    Emptiness is decided on the artifact's whole data (:func:`_artifact_has_data`),
+    never on a clipped view: when the requested view's slice holds nothing (a series
+    table keeps only the newest rows, a heatmap only its first rows and columns) and
+    the data lies outside it, the default view and then the artifact's other views
+    are tried; if none shows anything, or validation drops every malformed item, the
+    ref counts as not available — never as an empty result left out silently."""
     kind = getattr(artifact, "kind", None)
     builder = _BUILDERS.get(kind) if isinstance(kind, str) else None
     data = getattr(artifact, "data", None)
@@ -2785,26 +2837,34 @@ def _materialise(artifact: "Artifact", options: MaterialiseOptions) -> tuple[lis
         return [], False
     if getattr(artifact, "provenance", None) not in ("code", "source"):
         return [], False  # G5: only a tool-produced artifact can carry numbers
-    views = _views_of(artifact)
-    view = options.view if options.view in views else DEFAULT_VIEW[kind]
-    try:
-        raw = builder(artifact, options, view, list(views))
-        if raw.get("type") == "chart" and not chart_kind_fits(raw, str(raw.get("kind"))):
-            # The CLIPPED block no longer supports its kind (a top-N cut that breaks a
-            # 100 % stack, say): draw the honest default instead of an invented total.
-            raw = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
-        raw["allowed_views"] = _honest_block_views(raw, kind)
-    except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
-        return [], False
-    if is_empty_block(raw):
+    if not _artifact_has_data(artifact):
         return [], True
+    views = _views_of(artifact)
+    requested = options.view if options.view in views else DEFAULT_VIEW[kind]
+    raw: dict[str, Any] | None = None
+    for view in dict.fromkeys([requested, DEFAULT_VIEW[kind], *views]):
+        try:
+            made = builder(artifact, options, view, list(views))
+            if made.get("type") == "chart" and not chart_kind_fits(made, str(made.get("kind"))):
+                # The CLIPPED block no longer supports its kind (a top-N cut that breaks a
+                # 100 % stack, say): draw the honest default instead of an invented total.
+                made = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
+            made["allowed_views"] = _honest_block_views(made, kind)
+        except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
+            return [], False
+        if not is_empty_block(made):
+            raw = made
+            break
+    if raw is None:
+        return [], False
     block, _drop = _validate_one(raw, "1", allow_ai_data=False, adapter=_LEAF_BLOCK)
     if block is None:
         return [], False
     dumped = dump_block(block)
     if is_empty_block(dumped):
-        # Validation dropped every item (each one was malformed): nothing to show.
-        return [], True
+        # Validation dropped every item (each one was malformed): the data could not
+        # be shown, which is "not available", not an empty result.
+        return [], False
     return [dumped], False
 
 

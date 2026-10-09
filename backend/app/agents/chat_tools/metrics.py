@@ -42,6 +42,7 @@ from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .cases import load_case_page
 from .common import (
     MAX_WINDOW_HOURS,
+    PREVIOUS_WINDOW_LABEL,
     ToolInput,
     Window,
     categories,
@@ -205,21 +206,65 @@ def _minutes(stat: Any, key: str = "p50") -> float | None:
     return finite(stat.get(key))
 
 
-def _delta(compare: dict[str, Any], key: str, good: str, *, unit: str = "count") -> dict[str, Any] | None:
-    """A KPI's change versus the previous window, IN THE ITEM'S OWN UNIT (the client
-    formats a delta with the tile's unit, BLOCKS.md ``KpiItem.delta``): a count moves
-    by a count, a rate (stored as a 0..1 ratio, shown in ``percent``) by percentage
-    points, a duration by minutes. Never the relative ``delta_pct``: "+25" next to a
-    count of cases must mean 25 cases, not 25 %. ``None`` when either side is not
-    measured (G3)."""
-    entry = compare.get(key) if isinstance(compare, dict) else None
+#: Each period-over-period figure of the posture rollup (``engine.metrics``
+#: ``compare``): the unit its KPI tile shows, and that unit's name for a change.
+#: Rates are 0..1 ratios shown in percent, so they move by percentage points;
+#: lifecycle percentiles are minutes end to end.
+_COMPARE_UNITS: dict[str, tuple[str, str]] = {
+    "case_count": ("count", "cases"),
+    "false_positive_rate": ("percent", "percentage points"),
+    "automation_rate": ("percent", "percentage points"),
+    "escalation_rate": ("percent", "percentage points"),
+    "alert_to_incident_ratio": ("percent", "percentage points"),
+    "mttr_p50": ("minutes", "minutes"),
+    "mtta_p50": ("minutes", "minutes"),
+}
+
+
+def _change(entry: Any, unit: str) -> float | None:
+    """The change from the previous window to this one IN THE TILE'S UNIT (a count by
+    a count, a ``percent`` rate by percentage points, a duration by minutes);
+    ``None`` when either side is not measured (G3)."""
     if not isinstance(entry, dict):
         return None
     current, previous = finite(entry.get("value")), finite(entry.get("prev"))
     if current is None or previous is None:
         return None
-    change = (current - previous) * (100 if unit == "percent" else 1)
-    return {"value": round(change, 2), "period_label": "vs previous window", "good_direction": good}
+    return round((current - previous) * (100 if unit == "percent" else 1), 2)
+
+
+def _delta(compare: dict[str, Any], key: str, good: str) -> dict[str, Any] | None:
+    """A KPI's change versus the previous window, IN THE ITEM'S OWN UNIT (the client
+    formats a delta with the tile's unit, BLOCKS.md ``KpiItem.delta``). Never the
+    relative ``delta_pct``: "+25" next to a count of cases must mean 25 cases, not
+    25 %. The observation carries the same figure (:func:`_compare_observation`)."""
+    entry = compare.get(key) if isinstance(compare, dict) else None
+    change = _change(entry, _COMPARE_UNITS.get(key, ("count", ""))[0])
+    if change is None:
+        return None
+    return {"value": change, "period_label": PREVIOUS_WINDOW_LABEL, "good_direction": good}
+
+
+def _compare_observation(compare: dict[str, Any]) -> dict[str, Any]:
+    """``compare_previous`` for the model, carrying the change each KPI tile shows.
+
+    ``value``/``prev`` stay as the rollup holds them (rates as 0..1 ratios, like
+    ``quality``); ``change`` is the tile's own delta in ``change_unit`` (cases,
+    percentage points, minutes), so the prose can state exactly the figure the tile
+    shows. The engine's relative ``delta_pct`` is renamed ``relative_change_pct``:
+    it is a percent OF the previous value, never the tile's change."""
+    out: dict[str, Any] = {"period_label": PREVIOUS_WINDOW_LABEL}
+    for key, entry in compare.items():
+        if not isinstance(entry, dict):
+            continue
+        unit, change_unit = _COMPARE_UNITS.get(key, ("count", ""))
+        relative = finite(entry.get("delta_pct"))
+        out[key] = {
+            "value": finite(entry.get("value")), "prev": finite(entry.get("prev")),
+            "change": _change(entry, unit), "change_unit": change_unit or None,
+            "relative_change_pct": relative,
+        }
+    return out
 
 
 class SocMetricsTool(ChatTool):
@@ -329,13 +374,13 @@ class SocMetricsTool(ChatTool):
             kpi("open_now", "Open now", open_now.get("count"), bound=not open_now.get("complete", True),
                 context="not windowed"),
             kpi("fp_rate", "False-positive rate", ratio_to_pct(quality.get("false_positive_rate")), "percent",
-                delta=_delta(compare, "false_positive_rate", "down", unit="percent")),
+                delta=_delta(compare, "false_positive_rate", "down")),
             kpi("automation_rate", "Automation rate", ratio_to_pct(quality.get("automation_rate")), "percent",
-                delta=_delta(compare, "automation_rate", "up", unit="percent")),
+                delta=_delta(compare, "automation_rate", "up")),
             # Lifecycle percentiles are minutes end to end (engine.metrics
             # ``lifecycle_intervals``): the tile says so, and a 0-minute median is 0 min.
             kpi("mttr_p50", "MTTR (median)", _minutes(lifecycle.get("mttr_minutes")), "minutes",
-                delta=_delta(compare, "mttr_p50", "down", unit="minutes")),
+                delta=_delta(compare, "mttr_p50", "down")),
         ]
         sev = p.get("severity_counts") or {}
         artifacts = [
@@ -368,7 +413,7 @@ class SocMetricsTool(ChatTool):
                 "truncated", "store_total", "fetched", "window_covered", "window_coverage_reason")},
         }
         if compare:
-            observation["compare_previous"] = compare
+            observation["compare_previous"] = _compare_observation(compare)
         summary = (
             f"Posture ({mw.label}): {fmt_int(p.get('case_count'))} cases, "
             f"{fmt_int(open_now.get('count'))} open now, FP rate {fmt_pct(quality.get('false_positive_rate'), ratio=True)}, "

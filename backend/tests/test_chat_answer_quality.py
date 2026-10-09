@@ -115,6 +115,45 @@ def test_an_artifact_without_data_yields_no_block_in_any_view(kind: str) -> None
         assert made == [] and empty is True, (kind, view)
 
 
+def test_emptiness_is_judged_on_the_whole_artifact_not_a_clipped_view() -> None:
+    """A view whose clipped slice holds nothing is never mistaken for an empty
+    result: another view that shows the data is used, else the ref is not available
+    (counted, with a notice), never left out silently."""
+    # A long time series measured only in its OLDEST points: every view keeps the
+    # newest MAX_POINTS/MAX_TABLE_ROWS, so no view can show them.
+    points = B.MAX_TABLE_ROWS + 20
+    x = [f"2026-10-0{1 + i // 200}T{(i // 60) % 24:02d}:{i % 60:02d}:00Z" for i in range(points)]
+    old_only = Artifact(id="a1", kind="series", title="Over time", provenance="code", data={
+        "x": x, "unit": "count",
+        "series": [{"key": "s", "label": "S", "values": [5] * 10 + [None] * (points - 10)}]})
+    assert B._artifact_has_data(old_only)
+    for view in ("table", "line"):
+        made, empty = B._materialise(old_only, MaterialiseOptions(block_id="b1", view=view))
+        assert made == [] and empty is False, view
+    out = _final([{"ref": "t1.a1", "view": "table"}], artifacts=_turn(t1_a1=(old_only, 1)))
+    assert out.empty == [] and out.unresolved == ["t1.a1"]
+    assert [b["text"] for b in out.blocks] == [B.UNAVAILABLE_NOTICE_ONE]
+    # A heatmap measured only below its drawn rows: the grid slice is empty, so the
+    # table view (every measured cell) shows the data instead.
+    rows = B.MAX_HEATMAP_Y + 2
+    deep = Artifact(id="a1", kind="heatmap", title="Hours", provenance="code", data={
+        "x": ["Mon"], "y": [f"{h:02d}" for h in range(rows)],
+        "cells": [[None]] * (rows - 1) + [[4]], "unit": "count"})
+    (block,) = to_blocks(deep, MaterialiseOptions(block_id="b1", view="heatmap"))
+    assert block["type"] == "table" and block["rows"] == [[f"{rows - 1:02d}", "Mon", 4]]
+
+
+def test_items_validation_drops_are_not_available_rather_than_empty() -> None:
+    """Malformed data is counted under "could not be shown", never hidden silently."""
+    malformed = Artifact(id="a1", kind="kpis", title="Figures", provenance="code", data={
+        "items": [{"key": "x"}, {"label": "no key"}]})
+    assert B._artifact_has_data(malformed)
+    made, empty = B._materialise(malformed, MaterialiseOptions(block_id="b1"))
+    assert made == [] and empty is False
+    out = _final([{"ref": "t1.a1"}], artifacts=_turn(t1_a1=(malformed, 1)))
+    assert out.empty == [] and out.unresolved == ["t1.a1"]
+
+
 def test_zero_is_data_and_an_entity_card_is_never_empty() -> None:
     zeros = Artifact(id="a1", kind="categories", title="By severity", provenance="code", data={
         "labels": ["critical", "high"], "values": [0, 0], "unit": "count"})
@@ -262,6 +301,57 @@ async def test_the_reputation_lookup_shows_its_score_once_end_to_end() -> None:
     assert [b["type"] for b in final.blocks] == ["entity"], [b["type"] for b in final.blocks]
 
 
+async def test_the_header_less_default_shows_neither_an_empty_shell_nor_a_restated_row(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A prose-only final (no protocol header) shows every artifact of the turn in its
+    default view (``_AgentTurn._default_blocks``): a zero-match log search adds no
+    table shell, and the reputation KPI row that only restates the entity card of the
+    same call is left out."""
+    from typing import ClassVar
+
+    from app.agents.chat_tools import registry
+    from app.agents.chat_tools.base import ChatTool, ChatToolContext, ToolOutcome
+    from tests.test_chat_engine_loop import FakeGateway, make_engine, make_prefs, run, tool_calls
+    from tests.test_chat_engine_loop import make_ctx as loop_ctx
+
+    class NoMatchLogs(ChatTool):
+        name: ClassVar[str] = "search_logs"
+        label: ClassVar[str] = "Searched logs"
+        scope: ClassVar[str] = "logs"
+        requires: ClassVar[tuple] = (("sources", "read"),)
+        signature: ClassVar[str] = "search_logs(query) -- rows"
+
+        async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
+            return ToolOutcome(ok=True, summary="0 events", observation={"total": 0},
+                               artifacts=[EMPTY_ARTIFACTS["table"]], rows=0)
+
+    class Reputation(ChatTool):
+        name: ClassVar[str] = "lookup_indicator"
+        label: ClassVar[str] = "Looked up an indicator"
+        scope: ClassVar[str] = "intel"
+        requires: ClassVar[tuple] = (("enrichment", "read"),)
+        signature: ClassVar[str] = "lookup_indicator(indicator) -- reputation"
+
+        async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
+            entity, kpis = _reputation()
+            return ToolOutcome(ok=True, summary="reputation 87", observation={"score": 87},
+                               artifacts=[entity, kpis])
+
+    monkeypatch.setattr(registry, "_CATALOGUE", (NoMatchLogs(), Reputation()))
+    question = "Hunt 185.220.101.4 in the logs"
+    gateway = FakeGateway([
+        tool_calls(("search_logs", {"query": "185.220.101.4"}), ("lookup_indicator", {"indicator": "185.220.101.4"})),
+        "It matched no log event; its reputation is 87/100.",
+    ])
+    prefs = make_prefs()
+    ctx = loop_ctx(prefs, grants=frozenset({("sources", "read"), ("enrichment", "read")}))
+    _, response, _ = await run(make_engine(gateway), question, prefs, ctx)
+    assert [s.status for s in response.steps if s.kind == "tool"] == ["ok", "ok"]
+    assert response.answer == "It matched no log event; its reputation is 87/100."
+    assert [b["type"] for b in response.blocks] == ["entity"], [b.get("title") for b in response.blocks]
+    assert not any(b.get("title") == "Reputation figures" for b in response.blocks)
+
+
 # --------------------------------------------------------------------------- #
 # D5/D6: guidance for real models.
 # --------------------------------------------------------------------------- #
@@ -269,6 +359,10 @@ def test_the_agent_prompt_asks_for_a_short_report_lead_and_human_names() -> None
     style = CHAT_AGENT_SYSTEM.split("## Style", 1)[1].split("## This conversation", 1)[0]
     assert "With a report in blocks, the answer text is a lead of 1 to 3 sentences" in style
     assert "never repeat its sections in the text" in style
+    # The lead never swallows a disclosure (what failed, was denied or partial, the window).
+    assert ("Notes about failed, denied or partial lookups and the time window still follow the lead."
+            in " ".join(style.split()))
+    assert "change_unit" in style and "relative_change_pct is a percent of the previous value" in style
     assert "a campaign by its name or the entity its cases share" in style
     assert "Long machine ids" in style and "belong in blocks and links" in style
     assert "Show each figure once" in style
@@ -334,8 +428,8 @@ async def test_posture_deltas_are_in_each_tiles_unit(timed_store: CaseStore) -> 
     cases = compare["case_count"]
     assert items["cases"]["delta"]["value"] == cases["value"] - cases["prev"]       # cases, not %
     fp = compare["false_positive_rate"]
-    if fp["value"] is not None and fp["prev"] is not None:
-        assert items["fp_rate"]["delta"]["value"] == round((fp["value"] - fp["prev"]) * 100, 2)   # points
+    assert fp["value"] is not None and fp["prev"] is not None
+    assert items["fp_rate"]["delta"]["value"] == round((fp["value"] - fp["prev"]) * 100, 2)       # points
     mttr = compare["mttr_p50"]
     assert items["mttr_p50"]["delta"]["value"] == round(mttr["value"] - mttr["prev"], 2)          # minutes
     for item in items.values():
@@ -343,3 +437,37 @@ async def test_posture_deltas_are_in_each_tiles_unit(timed_store: CaseStore) -> 
             assert item["delta"]["period_label"] == "vs previous window"
     (block,) = to_blocks(posture.artifacts[0], MaterialiseOptions(block_id="b1"))
     assert all("%" not in (i.get("delta") or {}).get("period_label", "") for i in block["items"])
+    # The model reads the SAME change the tile shows, with its unit named, so prose and
+    # tile agree; the engine's relative percent is labelled as such, never as the change.
+    tile_of = {"case_count": "cases", "false_positive_rate": "fp_rate", "automation_rate": "automation_rate",
+               "mttr_p50": "mttr_p50"}
+    units = {"case_count": "cases", "false_positive_rate": "percentage points",
+             "automation_rate": "percentage points", "mttr_p50": "minutes"}
+    for key, tile in tile_of.items():
+        entry = compare[key]
+        assert entry["change_unit"] == units[key], key
+        assert "delta_pct" not in entry and "relative_change_pct" in entry
+        delta = items[tile].get("delta")
+        assert entry["change"] == (delta["value"] if delta else None), key
+    assert compare["period_label"] == "vs previous window"
+    assert compare["escalation_rate"]["change_unit"] == "percentage points"
+
+
+async def test_every_previous_window_delta_uses_one_label() -> None:
+    """The shift headline and the posture KPIs sit together in a Shift brief: one
+    period label for both."""
+    from app.agents.chat_tools.cases import ShiftReportTool
+    from app.agents.chat_tools.common import PREVIOUS_WINDOW_LABEL
+
+    class Standup:
+        async def shift_snapshot(self, prefs: Any, *, window_hours: Any = None, now: Any = None) -> dict[str, Any]:
+            return {"headline_counts": {"open": 3, "escalated": 1},
+                    "deltas": {"open": {"current": 3, "prior": 1, "delta": 2},
+                               "escalated": {"current": 1, "prior": 2, "delta": -1}}}
+
+    assert PREVIOUS_WINDOW_LABEL == "vs previous window"
+    shift = await ShiftReportTool().run(make_ctx(standup=Standup()), window_hours=24)
+    assert shift.ok, shift.summary
+    headline = next(a for a in shift.artifacts if a.kind == "kpis")
+    deltas = [i["delta"] for i in headline.data["items"] if i.get("delta")]
+    assert deltas and {d["period_label"] for d in deltas} == {PREVIOUS_WINDOW_LABEL}

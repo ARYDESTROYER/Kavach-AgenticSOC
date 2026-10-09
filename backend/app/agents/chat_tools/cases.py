@@ -26,6 +26,7 @@ from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus,
 from ...models import Citation
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
+    PREVIOUS_WINDOW_LABEL,
     ToolInput,
     case_list_item,
     citation_id,
@@ -717,7 +718,7 @@ class ShiftReportTool(ChatTool):
             delta = deltas.get(key) if isinstance(deltas.get(key), dict) else None
             items.append(kpi(
                 key, label, headline.get(key),
-                delta=({"value": finite(delta.get("delta")) or 0, "period_label": "vs prior window",
+                delta=({"value": finite(delta.get("delta")) or 0, "period_label": PREVIOUS_WINDOW_LABEL,
                         "good_direction": "down"} if delta and finite(delta.get("delta")) is not None else None),
             ))
         artifacts = [Artifact(

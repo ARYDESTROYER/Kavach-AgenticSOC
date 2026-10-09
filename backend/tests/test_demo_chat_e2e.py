@@ -306,6 +306,45 @@ async def test_report_answers_are_a_short_lead_with_the_detail_in_the_report(dem
         assert not any(p.lstrip().startswith("- ") for p in paragraphs), question
 
 
+async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> None:
+    """D5/D6: a behaviour hunt report leads with what the hunt found (the reputation
+    and what the sightings mean), and a case report names the case by what happened."""
+    from app.agents.blocks import iter_leaf_blocks
+
+    hunt = await _turn(demo_state, "Build a hunt report on lateral movement", origin="user")
+    entity = next(b for b in iter_leaf_blocks(hunt.blocks) if b.get("type") == "entity")
+    anchor, found = hunt.answer.split("\n\n")[:2]
+    assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
+    assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
+    case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
+    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) has a needs-human verdict",
+                    case.answer), case.answer
+
+
+@pytest.mark.parametrize("question", ["Build a posture report", "Build a noise reduction report"])
+async def test_a_report_under_a_restricted_role_keeps_its_disclosures(demo_state, question) -> None:
+    """A report built from what a role CAN read still says what it lacks and how to
+    get it (the blocker of the wave-5 review), and still ends with the ready sentence."""
+    grants = frozenset(g for g in catalogue_grant_pairs() if g != ("metrics", "view"))
+    response = await _turn(demo_state, question, grants=grants, origin="user")
+    report = _block(response, type="report")
+    paragraphs = response.answer.split("\n\n")
+    assert paragraphs[0].startswith("Not available to you in chat: SOC metrics (needs metrics:view)")
+    assert "Ask an administrator for access, or open the matching console page." in paragraphs
+    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    summary = next(b for s in report["sections"] for b in s["blocks"] if b.get("type") == "markdown")
+    assert "needs metrics:view" in summary["text"]
+
+
+async def test_the_ready_sentence_ends_a_report_after_the_window_note(demo_state) -> None:
+    response = await _turn(demo_state, "Build a posture report", origin="user",
+                           time_range={"from": "now-1h", "to": "now"})
+    assert _block(response, type="report")
+    paragraphs = response.answer.split("\n\n")
+    assert paragraphs[-2] == "Window: the last 1h you selected applies to the windowed lookups above."
+    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+
+
 async def test_every_intent_answers_over_demo_data_without_the_safe_fallback(demo_state) -> None:
     """``plan_turn`` turns any planner exception into a safe final; this sweep proves
     no intent hits it over real demo data (and that each answer is well formed)."""
@@ -337,7 +376,9 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
                                                  tool_context=ctx, origin="user")
     tools = [(s.tool, s.status) for s in _tool_steps(response)]
     assert ("get_case", "ok") in tools and ("explain_decision", "ok") in tools
-    assert response.answer.startswith(f"**`{case_id}`** is a true positive")
+    # The id is the handle and the machine title reads as what happened to which entity (D6).
+    assert re.match(rf"\*\*`{case_id}`\*\* \([a-z ]+ on [A-Za-z ]+ `[^`]+`\) is a true positive", response.answer), (
+        response.answer)
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id
 
