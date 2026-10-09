@@ -628,7 +628,7 @@ def test_all_storyline_mitre_ids_are_in_the_bundled_corpus() -> None:
     from pathlib import Path
 
     corpus = json.loads(
-        (Path(__file__).resolve().parents[1] / "app" / "threat" / "mitre_techniques.json").read_text()
+        (Path(__file__).resolve().parents[1] / "app" / "threat" / "mitre_techniques.json").read_text(encoding="utf-8")
     )
     ids = set(corpus.keys())
     used = {t for s in gen.STORYLINES for t in s.techniques}

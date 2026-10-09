@@ -189,7 +189,7 @@ def test_round4_modules_never_import_case_manager(module_path):
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    tree = ast.parse((root / module_path).read_text())
+    tree = ast.parse((root / module_path).read_text(encoding="utf-8"))
     imported: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
