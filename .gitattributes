@@ -1,0 +1,5 @@
+# Generated app-knowledge corpus (chat revamp SPEC §5.4): app_docs.json, aliases.json,
+# console_map.json and manifest.json. The manifest pins each file's sha256 and the backend
+# loader fails closed on a mismatch, so these files must be checked out byte for byte:
+# never convert their line endings (a CRLF checkout would read as a stale corpus).
+backend/app/knowledge/*.json -text

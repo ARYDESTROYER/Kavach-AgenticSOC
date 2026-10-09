@@ -3,6 +3,13 @@
 The gateway is the only caller. Providers never touch Elasticsearch, never write
 the usage ledger, and never make policy decisions — they only turn a request into
 text + token counts. This keeps the swap-in seam (LiteLLM/vLLM) trivial.
+
+Live text (chat revamp SPEC §6.3): ``complete_stream`` is the streaming twin of
+``complete``. It delivers text deltas to an ``on_text`` callback as they arrive and
+still returns ONE :class:`CompletionResult`, so the gateway meters a streamed call
+exactly like a blocking one (one UsageDoc, #6). Only OpenAI/OpenAI-compatible and
+Anthropic stream for real; every other provider inherits the default (blocking
+``complete`` followed by one ``on_text`` call with the whole text).
 """
 
 from __future__ import annotations
@@ -12,11 +19,12 @@ import contextvars
 import json
 import logging
 import random
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import httpx
 
@@ -72,6 +80,30 @@ def last_attempt_count() -> int:
         return 1
 
 
+async def _then_stage(prior_attempts: int, stage: Awaitable[Any]) -> Any:
+    """Await a FALLBACK stage of one logical provider call (Flex → standard, a
+    compatible server's stream retry, the blocking fallback) so the ledger's
+    ``attempts`` counts every HTTP request the call made.
+
+    Each :func:`with_retry` restarts the task-local count at 1, so without this a call
+    that sent three requests across three stages was ledgered as one attempt. Only the
+    COUNT is carried; the retry provenance stamped on a raised error stays the final
+    stage's, because that is what the failure classification is about.
+
+    The counter is zeroed first so a stage that fails before sending anything adds
+    nothing (rather than re-counting the previous stage's requests)."""
+    prior = max(1, int(prior_attempts))
+    _ATTEMPTS.set(0)
+    try:
+        return await stage
+    finally:
+        try:
+            made = max(0, int(_ATTEMPTS.get(0)))
+        except Exception:  # noqa: BLE001 — a ledger column must never break a call
+            made = 0
+        _ATTEMPTS.set(prior + made)
+
+
 def parse_retry_after(value: Any, *, now: "datetime | None" = None) -> float | None:
     """Parse an RFC 9110 §10.2.3 ``Retry-After`` into seconds, or ``None``.
 
@@ -122,6 +154,101 @@ class ProviderError(RuntimeError):
         self.retry_after = retry_after
 
 
+class StreamInterrupted(ProviderError):
+    """A streamed completion failed AFTER its first text delta reached the caller.
+
+    Never retryable: the caller has already shown part of an answer, and a retry would
+    produce a second, different answer behind it (and bill the input twice). The
+    gateway maps it to the closed-vocabulary failure class ``stream_interrupted``.
+    The message is our own literal; the underlying cause is kept on ``__cause__``.
+    """
+
+    def __init__(self, message: str = "model stream interrupted after the first delta") -> None:
+        super().__init__(message, retryable=False)
+
+
+#: The callback type a streamed completion delivers text deltas to.
+OnText = Callable[[str], Awaitable[None]]
+
+
+@dataclass
+class StreamProgress:
+    """What a streamed call has observed so far, for cancellation accounting.
+
+    The gateway arms one per streamed call (:func:`begin_stream_progress`) and its text
+    sink counts every delta it relays; a provider that learns the billed input early
+    (Anthropic's ``message_start``) reports it through :func:`note_stream_input_usage`.
+    If the caller cancels mid-stream the gateway ledgers these numbers instead of 0/0
+    (SPEC §6.3): the provider bills a request that was issued, waited-for or not.
+    """
+
+    received_chars: int = 0
+    prompt_tokens: int | None = None
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    #: The ContextVar token from arming this tracker, so ending it restores whatever
+    #: was armed before (see :func:`end_stream_progress`). Not part of the observation.
+    _token: Any = field(default=None, init=False, repr=False, compare=False)
+
+
+#: Task-local, like :data:`_ATTEMPTS`: concurrent gateway calls run as separate tasks
+#: with copied contexts, so they can never observe each other's progress.
+_STREAM_PROGRESS: contextvars.ContextVar[StreamProgress | None] = contextvars.ContextVar(
+    "tlsoc_stream_progress", default=None
+)
+
+
+def begin_stream_progress() -> StreamProgress:
+    """Arm a fresh :class:`StreamProgress` for the streamed call about to start.
+
+    Pair it with ``end_stream_progress(progress)``: the tracker remembers the token of
+    the value it replaced, so calls nest correctly."""
+    progress = StreamProgress()
+    progress._token = _STREAM_PROGRESS.set(progress)
+    return progress
+
+
+def end_stream_progress(progress: StreamProgress | None = None) -> None:
+    """Disarm ``progress`` so a later call in the same task never reports into a
+    finished stream's record.
+
+    It RESETS to the value armed before ``progress`` rather than to ``None``: a
+    streamed gateway call made inside another streamed call's ``on_text`` (same task)
+    must hand the outer call its own tracker back, or the outer provider's later
+    usage reports would be dropped. Without a usable token (none given, or one minted
+    in another context) it falls back to clearing the tracker."""
+    token = getattr(progress, "_token", None)
+    if token is not None:
+        progress._token = None  # a token can be used once
+        try:
+            _STREAM_PROGRESS.reset(token)
+            return
+        except (ValueError, RuntimeError):
+            pass
+    _STREAM_PROGRESS.set(None)
+
+
+def current_stream_progress() -> StreamProgress | None:
+    return _STREAM_PROGRESS.get()
+
+
+def note_stream_input_usage(
+    prompt_tokens: Any, cache_read_tokens: Any = 0, cache_write_tokens: Any = 0
+) -> None:
+    """Report the provider's billed input count as soon as it is known. Best-effort and
+    total: a malformed count is ignored (the gateway then falls back to chars/4)."""
+    progress = _STREAM_PROGRESS.get()
+    if progress is None:
+        return
+    try:
+        if prompt_tokens is not None:
+            progress.prompt_tokens = max(0, int(prompt_tokens))
+        progress.cache_read_tokens = max(0, int(cache_read_tokens or 0))
+        progress.cache_write_tokens = max(0, int(cache_write_tokens or 0))
+    except (TypeError, ValueError):
+        return
+
+
 def classify_http_error(exc: Exception) -> ProviderError:
     """Map an httpx exception to a :class:`ProviderError` with a retryable flag.
 
@@ -156,6 +283,13 @@ def _stamp_retry_provenance(error: ProviderError, *, attempts: int, spent: bool)
     error.attempts = max(1, int(attempts))
     error.retry_spent = bool(spent)
     return error
+
+
+async def _retry_sleep(delay: float) -> None:
+    """The backoff wait of :func:`with_retry`: a seam a test can replace without
+    replacing the whole ``asyncio`` module. ``asyncio.sleep`` is looked up at call time,
+    so a test that patches it globally still governs this wait too."""
+    await asyncio.sleep(delay)
 
 
 async def with_retry(coro_factory, *, attempts: int = 3, base_delay: float = 0.5,
@@ -234,7 +368,7 @@ async def with_retry(coro_factory, *, attempts: int = 3, base_delay: float = 0.5
             raise _stamp_retry_provenance(last, attempts=attempt + 1, spent=waited > 0)
         logger.info("provider call retry %d/%d in %.2fs (%s)", attempt + 1, budget, delay, last)
         waited += delay
-        await asyncio.sleep(delay)
+        await _retry_sleep(delay)
     if last is not None:  # pragma: no cover - loop always returns or raises
         raise _stamp_retry_provenance(last, attempts=budget, spent=budget > 1)
     raise ProviderError("retry exhausted", retryable=False)  # pragma: no cover
@@ -258,6 +392,20 @@ class CompletionResult:
     batch: bool = False
     # Tier ACTUALLY reported by the provider, never merely the requested tier.
     processing_tier: str = "standard"
+    # --- Chat revamp (SPEC §6.3; additive, defaulted → every constructor unchanged) ---
+    # Why generation stopped, normalised across providers by
+    # :func:`normalise_finish_reason` to stop|length|tool|other (None = not reported).
+    # ``length`` is how the chat engine knows an answer was cut at the output limit.
+    finish_reason: str | None = None
+    # True when a token count was ESTIMATED (chars/4) because the provider omitted
+    # usage, e.g. an OpenAI-compatible stream without ``include_usage``. The meter
+    # labels such figures "≈" instead of presenting them as exact.
+    usage_estimated: bool = False
+    # Stamped by the gateway after metering, like ``cost``: the ledger row's price
+    # provenance (exact|heuristic|zero|default) and the gateway-measured latency, so
+    # a caller can report per-step usage without re-deriving either.
+    pricing_source: str = ""
+    latency_ms: int = 0
 
 
 @dataclass
@@ -268,6 +416,139 @@ class EmbeddingResult:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
+
+
+# Raw provider stop reasons → the four normalised values. OpenAI/compatible use
+# stop/length/tool_calls/content_filter; Anthropic (and Anthropic-on-Bedrock) use
+# end_turn/stop_sequence/max_tokens/tool_use; Gemini sends STOP/MAX_TOKENS/SAFETY/…
+# (matched case-insensitively). Anything else non-empty is ``other``.
+_FINISH_REASONS: dict[str, str] = {
+    "stop": "stop",
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "length": "length",
+    "max_tokens": "length",
+    "tool_calls": "tool",
+    "function_call": "tool",
+    "tool_use": "tool",
+}
+
+
+def normalise_finish_reason(raw: Any) -> str | None:
+    """Map a provider's stop reason onto ``stop|length|tool|other`` (None if absent).
+
+    Total and closed: the raw value is provider-controlled text, so it is only ever
+    used as a lookup key and never returned (#9)."""
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    if not text:
+        return None
+    return _FINISH_REASONS.get(text, "other")
+
+
+def _usage_complete(usage: Any, *keys: str) -> bool:
+    """True when the provider reported every count in ``keys`` (no estimate needed)."""
+    return isinstance(usage, dict) and all(usage.get(key) is not None for key in keys)
+
+
+# --------------------------------------------------------------------------- #
+# Streaming plumbing shared by the OpenAI and Anthropic streaming paths.
+# --------------------------------------------------------------------------- #
+async def _sse_payloads(resp: httpx.Response) -> AsyncIterator[str]:
+    """Yield each Server-Sent-Events ``data:`` payload of a streamed response.
+
+    Each ``data:`` line is yielded on its own: neither API we stream from splits one
+    JSON document across lines, and treating every line independently also tolerates
+    OpenAI-compatible servers that omit the blank line between events. ``event:``,
+    ``id:``, ``retry:`` and ``:`` keep-alive lines are skipped — every payload we
+    consume describes itself (``type``/``choices``)."""
+    async for line in resp.aiter_lines():
+        if not line.startswith("data:"):
+            continue
+        value = line[5:]
+        # SSE strips exactly one leading space from a field value.
+        yield value[1:] if value.startswith(" ") else value
+
+
+def _json_object(data: str) -> dict[str, Any] | None:
+    try:
+        obj = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+async def _raise_for_stream_status(resp: httpx.Response) -> None:
+    """Raise the same ``HTTPStatusError`` a blocking call would, before any delta.
+
+    The body is read first so :func:`classify_http_error` sees the excerpt and the
+    ``Retry-After`` header exactly as it does for a non-streamed response."""
+    if resp.status_code >= 400:
+        await resp.aread()
+        resp.raise_for_status()
+
+
+#: An in-band stream ``error`` event's type/code → the HTTP status it stands for, so a
+#: failure before the first delta is classified (and retried) like its HTTP twin.
+#: Only these KEYS are ever used; the event's own message text never leaves (#9).
+_STREAM_ERROR_STATUS: dict[str, int] = {
+    "overloaded_error": 529,
+    "api_error": 500,
+    "server_error": 500,
+    "rate_limit_error": 429,
+    "rate_limit_exceeded": 429,
+    "insufficient_quota": 429,
+    "authentication_error": 401,
+    "invalid_api_key": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "invalid_request_error": 400,
+    "request_too_large": 413,
+}
+
+
+def _stream_error(error: Any) -> ProviderError:
+    kind = ""
+    if isinstance(error, dict):
+        kind = str(error.get("type") or error.get("code") or "").strip().lower()
+    status = _STREAM_ERROR_STATUS.get(kind)
+    # An unrecognised in-band error is most likely server-side, so it is treated as
+    # transient (like a transport error) and gets the bounded retry budget.
+    retryable = status is None or status in (408, 409, 429) or status >= 500
+    label = kind if kind in _STREAM_ERROR_STATUS else "unknown"
+    return ProviderError(f"stream error event ({label})", retryable=retryable, status=status)
+
+
+async def _stream_with_retry(attempt: Callable[[OnText], Awaitable[Any]], on_text: OnText) -> Any:
+    """Run one streamed request under :func:`with_retry`, retrying only before the
+    first delta (SPEC §6.3).
+
+    ``attempt(emit)`` opens the stream, calls ``emit`` per text delta and returns its
+    parsed outcome. Until the first delta a failure is an ordinary provider failure
+    (classified, retried, Retry-After honoured); from the first delta on, any failure
+    becomes :class:`StreamInterrupted`, which ``with_retry`` re-raises at once.
+    ``CancelledError`` is a ``BaseException`` and passes straight through."""
+    emitted = False
+
+    async def _emit(delta: str) -> None:
+        nonlocal emitted
+        if not delta:
+            return
+        emitted = True
+        await on_text(delta)
+
+    async def _once() -> Any:
+        try:
+            return await attempt(_emit)
+        except StreamInterrupted:
+            raise
+        except Exception as exc:
+            if emitted:
+                raise StreamInterrupted() from exc
+            raise
+
+    return await with_retry(_once)
 
 
 def _is_reasoning_or_gpt5(model: str) -> bool:
@@ -292,6 +573,11 @@ def _default_reasoning_effort(model: str) -> str | None:
 
 
 class BaseProvider:
+    #: True only when ``complete_stream`` delivers text incrementally. The default
+    #: below is a one-shot fallback, so the chat context endpoint reports Live text as
+    #: unavailable for a provider that leaves this False (SPEC §6.3).
+    streams_text: bool = False
+
     async def complete(
         self,
         role: str,
@@ -301,6 +587,31 @@ class BaseProvider:
         max_tokens: int,
     ) -> CompletionResult:
         raise NotImplementedError
+
+    async def complete_stream(
+        self,
+        role: str,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        on_text: OnText,
+    ) -> CompletionResult:
+        """Stream text deltas to ``on_text`` and return the whole result.
+
+        The default does not stream: it runs :meth:`complete` and hands the whole text
+        to ``on_text`` once (skipped when empty). Bedrock, Vertex, Azure, Mock and
+        entry-point providers rely on it, so Live text degrades to "the answer appears
+        at once" rather than failing. The completed usage is reported to the stream
+        progress first, so a cancel while ``on_text`` runs is ledgered with the
+        provider's real input count rather than an estimate."""
+        result = await self.complete(role, messages, model, temperature, max_tokens)
+        note_stream_input_usage(
+            result.prompt_tokens, result.cache_read_tokens, result.cache_write_tokens
+        )
+        if result.text:
+            await on_text(result.text)
+        return result
 
     async def embed(self, texts: list[str], model: str) -> EmbeddingResult:
         raise NotImplementedError(f"{type(self).__name__} does not support embeddings")
@@ -313,11 +624,14 @@ class BaseProvider:
 # Anthropic
 # --------------------------------------------------------------------------- #
 class AnthropicProvider(BaseProvider):
+    streams_text = True
+
     def __init__(self, api_key: str, base_url: str = "https://api.anthropic.com") -> None:
         self._key = api_key
         self._client = httpx.AsyncClient(base_url=base_url, timeout=60.0)
 
-    async def complete(self, role, messages, model, temperature, max_tokens) -> CompletionResult:
+    @staticmethod
+    def _payload(messages, model, temperature, max_tokens) -> dict[str, Any]:
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
         convo = [
             {"role": ("assistant" if m["role"] == "assistant" else "user"), "content": m["content"]}
@@ -334,24 +648,21 @@ class AnthropicProvider(BaseProvider):
         }
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
+        return payload
 
-        async def _post():
-            resp = await self._client.post(
-                "/v1/messages",
-                headers={
-                    "x-api-key": self._key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp
+    def _headers(self) -> dict[str, str]:
+        return {
+            "x-api-key": self._key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
 
-        resp = await with_retry(_post)
-        data = resp.json()
-        text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-        usage = data.get("usage", {})
+    @staticmethod
+    def _result(text, usage, messages, model, stop_reason, *, output_tokens=None) -> CompletionResult:
+        """One result shape for the blocking and streamed paths. ``output_tokens``
+        overrides ``usage`` when the stream reported it separately (``message_delta``)."""
+        if output_tokens is not None:
+            usage = {**usage, "output_tokens": output_tokens}
         return CompletionResult(
             text=text,
             prompt_tokens=int(usage.get("input_tokens", _estimate_tokens(str(messages)))),
@@ -362,7 +673,102 @@ class AnthropicProvider(BaseProvider):
             # gateway prices them via cost_for's cache dimension.
             cache_read_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
             cache_write_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            finish_reason=normalise_finish_reason(stop_reason),
+            usage_estimated=not _usage_complete(usage, "input_tokens", "output_tokens"),
         )
+
+    async def complete(self, role, messages, model, temperature, max_tokens) -> CompletionResult:
+        payload = self._payload(messages, model, temperature, max_tokens)
+
+        async def _post():
+            resp = await self._client.post(
+                "/v1/messages",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp
+
+        resp = await with_retry(_post)
+        data = resp.json()
+        text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
+        usage = data.get("usage", {})
+        return self._result(text, usage, messages, model, data.get("stop_reason"))
+
+    async def complete_stream(
+        self, role, messages, model, temperature, max_tokens, on_text: OnText
+    ) -> CompletionResult:
+        """Messages API with ``stream: true`` (SSE).
+
+        ``message_start`` carries the billed input (and cache) counts up front, so they
+        are reported to the stream progress immediately — a cancelled stream is then
+        ledgered with the real input count. ``content_block_delta``/``text_delta``
+        carries the text; ``message_delta`` carries the stop reason and the CUMULATIVE
+        output count; ``message_stop`` ends a complete stream. A stream that ends
+        without ``message_stop`` is incomplete, never silently accepted."""
+        payload = self._payload(messages, model, temperature, max_tokens)
+        payload["stream"] = True
+
+        async def _attempt(emit: OnText) -> dict[str, Any]:
+            parts: list[str] = []
+            usage: dict[str, Any] = {}
+            output_tokens: Any = None
+            stop_reason: Any = None
+            complete = False
+            async with self._client.stream(
+                "POST", "/v1/messages", headers=self._headers(), json=payload
+            ) as resp:
+                await _raise_for_stream_status(resp)
+                async for data in _sse_payloads(resp):
+                    event = _json_object(data)
+                    if event is None:
+                        continue
+                    kind = event.get("type")
+                    if kind == "content_block_delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                            text = delta.get("text")
+                            if isinstance(text, str) and text:
+                                parts.append(text)
+                                await emit(text)
+                    elif kind == "message_start":
+                        message = event.get("message")
+                        start_usage = message.get("usage") if isinstance(message, dict) else None
+                        if isinstance(start_usage, dict):
+                            # ``output_tokens`` here is a placeholder (1); the real
+                            # cumulative count arrives in ``message_delta``.
+                            usage.update({k: v for k, v in start_usage.items() if k != "output_tokens"})
+                            note_stream_input_usage(
+                                usage.get("input_tokens"),
+                                usage.get("cache_read_input_tokens"),
+                                usage.get("cache_creation_input_tokens"),
+                            )
+                    elif kind == "message_delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, dict) and delta.get("stop_reason"):
+                            stop_reason = delta.get("stop_reason")
+                        delta_usage = event.get("usage")
+                        if isinstance(delta_usage, dict):
+                            if delta_usage.get("output_tokens") is not None:
+                                output_tokens = delta_usage.get("output_tokens")
+                            # Newer API versions repeat the input/cache counts here.
+                            for key in ("input_tokens", "cache_read_input_tokens",
+                                        "cache_creation_input_tokens"):
+                                if delta_usage.get(key) is not None:
+                                    usage[key] = delta_usage[key]
+                    elif kind == "message_stop":
+                        complete = True
+                        break
+                    elif kind == "error":
+                        raise _stream_error(event.get("error"))
+            if not complete:
+                raise ProviderError("stream ended before completion", retryable=True)
+            return {"text": "".join(parts), "usage": usage,
+                    "output_tokens": output_tokens, "stop_reason": stop_reason}
+
+        out = await _stream_with_retry(_attempt, on_text)
+        return self._result(out["text"], out["usage"], messages, model, out["stop_reason"],
+                            output_tokens=out["output_tokens"])
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -371,10 +777,18 @@ class AnthropicProvider(BaseProvider):
 # --------------------------------------------------------------------------- #
 # OpenAI (chat + embeddings)
 # --------------------------------------------------------------------------- #
+#: The official OpenAI API host. Any other host is an OpenAI-COMPATIBLE server
+#: (vLLM/Ollama/LiteLLM/…) whose support for ``stream_options`` varies.
+_OPENAI_OFFICIAL_HOST = "api.openai.com"
+
+
 class OpenAIProvider(BaseProvider):
+    streams_text = True
+
     def __init__(self, api_key: str, base_url: str = "https://api.openai.com",
                  service_tier: str | None = None,
-                 fallback_to_standard: bool = True) -> None:
+                 fallback_to_standard: bool = True,
+                 compatible: bool | None = None) -> None:
         self._key = api_key
         # OpenAI recommends a longer client timeout for Flex because lower cost comes
         # with intentionally higher/variable latency. Injected test clients are
@@ -386,8 +800,16 @@ class OpenAIProvider(BaseProvider):
         # ``None`` keeps the request shape byte-identical for the default path.
         self._service_tier = (service_tier or "").strip() or None
         self._fallback_to_standard = bool(fallback_to_standard)
+        # Whether this endpoint is an OpenAI-COMPATIBLE server rather than OpenAI
+        # itself. Only the streaming path reads it: a compatible server may reject
+        # ``stream_options`` with a 400, which earns one retry without it (and then
+        # a non-streaming fallback), whereas a 400 from OpenAI is a real validation
+        # error. ``openai_compatible`` passes True; otherwise the host decides.
+        if compatible is None:
+            compatible = _OPENAI_OFFICIAL_HOST not in str(base_url or "").lower()
+        self._compatible = bool(compatible)
 
-    async def complete(self, role, messages, model, temperature, max_tokens) -> CompletionResult:
+    def _chat_payload(self, messages, model, temperature, max_tokens) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -404,39 +826,30 @@ class OpenAIProvider(BaseProvider):
             payload["max_tokens"] = max_tokens
         if self._service_tier:
             payload["service_tier"] = self._service_tier
+        return payload
 
-        async def _post():
-            resp = await self._client.post(
-                "/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self._key}", "content-type": "application/json"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._key}", "content-type": "application/json"}
 
-        try:
-            resp = await with_retry(_post)
-        except ProviderError as exc:
-            # Flex is best-effort. OpenAI can return 429 when no Flex capacity is
-            # available, and an endpoint/model mismatch is surfaced as a 400. Retry
-            # once through the normal service only when explicitly allowed. The
-            # standard result below is NOT stamped as discounted.
-            msg = str(exc).lower()
-            flex_unavailable = (
-                self._service_tier == "flex"
-                and (
-                    exc.status == 429
-                    or (exc.status == 400 and ("flex" in msg or "service_tier" in msg))
-                )
+    def _should_fall_back_from_flex(self, exc: ProviderError) -> bool:
+        # Flex is best-effort. OpenAI can return 429 when no Flex capacity is
+        # available, and an endpoint/model mismatch is surfaced as a 400. Retry
+        # once through the normal service only when explicitly allowed. The
+        # standard result is NOT stamped as discounted.
+        msg = str(exc).lower()
+        flex_unavailable = (
+            self._service_tier == "flex"
+            and (
+                exc.status == 429
+                or (exc.status == 400 and ("flex" in msg or "service_tier" in msg))
             )
-            if not (self._fallback_to_standard and flex_unavailable):
-                raise
-            logger.info("OpenAI Flex unavailable for %s; retrying at standard tier", model)
-            payload.pop("service_tier", None)
-            resp = await with_retry(_post)
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"] or ""
-        usage = data.get("usage", {})
+        )
+        return self._fallback_to_standard and flex_unavailable
+
+    @staticmethod
+    def _result(text, usage, messages, model, service_tier, finish_reason) -> CompletionResult:
+        """One result shape for the blocking and streamed paths."""
+        usage = usage if isinstance(usage, dict) else {}
         # OpenAI prompt caching is READ-only (automatic, no write surcharge): the cached
         # prefix count is nested under ``prompt_tokens_details.cached_tokens``. Unlike
         # Anthropic — whose ``input_tokens`` EXCLUDES the cached slice — OpenAI's
@@ -451,7 +864,7 @@ class OpenAIProvider(BaseProvider):
         cached = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
         prompt_tokens = int(usage.get("prompt_tokens", _estimate_tokens(str(messages))))
         uncached = max(prompt_tokens - cached, 0)
-        actual_tier = str(data.get("service_tier") or "standard").strip().lower()
+        actual_tier = str(service_tier or "standard").strip().lower()
         is_flex = actual_tier == "flex"
         return CompletionResult(
             text=text,
@@ -461,7 +874,162 @@ class OpenAIProvider(BaseProvider):
             cache_read_tokens=cached,
             batch=is_flex,
             processing_tier="flex" if is_flex else "standard",
+            finish_reason=normalise_finish_reason(finish_reason),
+            usage_estimated=not _usage_complete(usage, "prompt_tokens", "completion_tokens"),
         )
+
+    async def complete(self, role, messages, model, temperature, max_tokens) -> CompletionResult:
+        payload = self._chat_payload(messages, model, temperature, max_tokens)
+
+        async def _post():
+            resp = await self._client.post(
+                "/v1/chat/completions",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp
+
+        try:
+            resp = await with_retry(_post)
+        except ProviderError as exc:
+            if not self._should_fall_back_from_flex(exc):
+                raise
+            logger.info("OpenAI Flex unavailable for %s; retrying at standard tier", model)
+            payload.pop("service_tier", None)
+            resp = await _then_stage(last_attempt_count(), with_retry(_post))
+        data = resp.json()
+        choice = data["choices"][0]
+        text = choice["message"]["content"] or ""
+        usage = data.get("usage", {})
+        return self._result(text, usage, messages, model, data.get("service_tier"),
+                            choice.get("finish_reason"))
+
+    async def complete_stream(
+        self, role, messages, model, temperature, max_tokens, on_text: OnText
+    ) -> CompletionResult:
+        """Chat Completions with ``stream: true`` and ``stream_options.include_usage``.
+
+        Text arrives as ``choices[0].delta.content``; with ``include_usage`` the last
+        chunk before ``data: [DONE]`` carries ``usage`` (and empty ``choices``). The
+        Flex fallback mirrors :meth:`complete`. For an OpenAI-COMPATIBLE server a 400
+        is retried once without ``stream_options`` (usage then estimated, flagged
+        ``usage_estimated``), and a second 400 falls back to the non-streaming
+        default — Live text degrades, the answer never fails because of it."""
+        payload = self._chat_payload(messages, model, temperature, max_tokens)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        async def _attempt(emit: OnText) -> dict[str, Any]:
+            parts: list[str] = []
+            usage: dict[str, Any] | None = None
+            finish_reason: Any = None
+            tier: Any = None
+            done = False
+            async with self._client.stream(
+                "POST", "/v1/chat/completions", headers=self._headers(), json=payload
+            ) as resp:
+                await _raise_for_stream_status(resp)
+                if "application/json" in resp.headers.get("content-type", "").lower():
+                    # Some OpenAI-compatible servers ignore ``stream`` and answer with an
+                    # ordinary completion body. Accept it as a one-piece stream rather
+                    # than mistaking an SSE-less body for a cut-off stream.
+                    await resp.aread()
+                    body = _json_object(resp.text) or {}
+                    # Validate like the blocking path, which raises on a body without
+                    # ``choices``: a proxy's ``{"error": …}`` under HTTP 200 is a provider
+                    # failure (classified and retried like its in-band twin), never an
+                    # OK row with an empty answer.
+                    if body.get("error"):
+                        raise _stream_error(body.get("error"))
+                    choices = body.get("choices")
+                    first = choices[0] if isinstance(choices, list) and choices else None
+                    message = first.get("message") if isinstance(first, dict) else None
+                    if not isinstance(message, dict):
+                        raise ProviderError("malformed completion body", retryable=False)
+                    # ``content: null`` (e.g. a tool-call-only answer) is an empty
+                    # answer on the blocking path too.
+                    text = message.get("content")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+                        await emit(text)
+                    return {"text": "".join(parts), "usage": body.get("usage"),
+                            "finish_reason": first.get("finish_reason"),
+                            "tier": body.get("service_tier")}
+                async for data in _sse_payloads(resp):
+                    if data.strip() == "[DONE]":
+                        done = True
+                        break
+                    chunk = _json_object(data)
+                    if chunk is None:
+                        continue
+                    # Truthy, not key presence: some OpenAI-compatible proxies put
+                    # ``"error": null`` on every ordinary chunk.
+                    if chunk.get("error"):
+                        raise _stream_error(chunk.get("error"))
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
+                    if chunk.get("service_tier"):
+                        tier = chunk.get("service_tier")
+                    choices = chunk.get("choices")
+                    for choice in choices if isinstance(choices, list) else ():
+                        if not isinstance(choice, dict) or choice.get("index", 0) not in (0, None):
+                            continue
+                        delta = choice.get("delta")
+                        text = delta.get("content") if isinstance(delta, dict) else None
+                        if isinstance(text, str) and text:
+                            parts.append(text)
+                            await emit(text)
+                        if choice.get("finish_reason"):
+                            finish_reason = choice.get("finish_reason")
+            # ``[DONE]`` or a finish reason marks a complete stream. Some compatible
+            # servers omit the sentinel, so a finish reason alone is accepted; a stream
+            # with neither was cut off and must not pass for a whole answer.
+            if not done and finish_reason is None:
+                raise ProviderError("stream ended before completion", retryable=True)
+            return {"text": "".join(parts), "usage": usage,
+                    "finish_reason": finish_reason, "tier": tier}
+
+        try:
+            out = await _stream_with_retry(_attempt, on_text)
+        except StreamInterrupted:
+            raise
+        except ProviderError as exc:
+            # Every fallback stage below is the SAME logical call, so each one carries
+            # the requests already made into the ledger's ``attempts``.
+            if self._should_fall_back_from_flex(exc):
+                logger.info("OpenAI Flex unavailable for %s; retrying at standard tier", model)
+                payload.pop("service_tier", None)
+                out = await _then_stage(
+                    last_attempt_count(), _stream_with_retry(_attempt, on_text)
+                )
+            elif self._compatible and exc.status == 400:
+                logger.info(
+                    "OpenAI-compatible endpoint rejected stream_options for %s; "
+                    "retrying the stream without usage reporting", model,
+                )
+                payload.pop("stream_options", None)
+                try:
+                    out = await _then_stage(
+                        last_attempt_count(), _stream_with_retry(_attempt, on_text)
+                    )
+                except ProviderError as again:
+                    if isinstance(again, StreamInterrupted) or again.status != 400:
+                        raise
+                    logger.info(
+                        "OpenAI-compatible endpoint rejected streaming for %s; "
+                        "falling back to a blocking completion", model,
+                    )
+                    return await _then_stage(
+                        last_attempt_count(),
+                        BaseProvider.complete_stream(
+                            self, role, messages, model, temperature, max_tokens, on_text
+                        ),
+                    )
+            else:
+                raise
+        return self._result(out["text"], out["usage"], messages, model, out["tier"],
+                            out["finish_reason"])
 
     async def embed(self, texts: list[str], model: str) -> EmbeddingResult:
         async def _post():
@@ -505,11 +1073,15 @@ class MockProvider(BaseProvider):
         self.calls.append({"role": role, "messages": messages, "model": model})
         queue = self.scripts.get(role)
         text = queue.pop(0) if queue else self._default(role, messages)
+        # The chars/4 counts ARE the mock's metered usage (the deterministic definition
+        # the offline suite and the pre-send estimate share), not an approximation of a
+        # real tokenizer, so ``usage_estimated`` stays False.
         return CompletionResult(
             text=text,
             prompt_tokens=_estimate_tokens(json.dumps(messages)),
             completion_tokens=_estimate_tokens(text),
             model=model,
+            finish_reason="stop",
         )
 
     async def embed(self, texts: list[str], model: str) -> EmbeddingResult:
@@ -556,6 +1128,62 @@ class MockProvider(BaseProvider):
 # --------------------------------------------------------------------------- #
 # Demo — deterministic, $0, scenario-keyed. Powers Demo Mode investigations.
 # --------------------------------------------------------------------------- #
+#: Pause between simulated stream pieces in Demo Mode, so Live text visibly types out.
+#: Read at call time; tests set it to 0.
+DEMO_STREAM_DELAY_S = 0.03
+#: Words per simulated stream piece.
+DEMO_STREAM_WORDS_PER_GROUP = 4
+
+#: The chat-agent answer when the Demo planner cannot be imported (it never should):
+#: a valid, block-free §4.1 final, so a broken install degrades one answer only.
+_DEMO_AGENT_PLACEHOLDER_FINAL = (
+    json.dumps({
+        "action": "final", "blocks": [], "citations": [], "console_links": [],
+        "follow_ups": [], "answer_kind": "conversation", "memory_proposal": None,
+    })
+    + "\n---ANSWER---\nDemo chat response (synthetic)."
+)
+_DEMO_REPORT_SUMMARY_PLACEHOLDER = "Demo report summary (synthetic)."
+
+
+def _word_groups(text: str, words: int) -> list[str]:
+    """Split ``text`` into pieces of ``words`` words whose concatenation is ``text``
+    exactly (whitespace is kept, attached to the word that follows it)."""
+    tokens = re.findall(r"\s*\S+", text)
+    groups = ["".join(tokens[i:i + words]) for i in range(0, len(tokens), max(1, words))]
+    tail = text[sum(len(t) for t in tokens):]  # trailing whitespace, if any
+    if tail:
+        if groups:
+            groups[-1] += tail
+        else:
+            groups = [tail]
+    return groups
+
+
+def _demo_stream_chunks(text: str) -> list[str]:
+    """The simulated stream of one Demo answer.
+
+    Only prose is typed out: a final's header (everything through the separator line)
+    is one piece, and a pure JSON tool step is one piece. The engine buffers protocol
+    JSON silently anyway, so typing it out would only add seconds of artificial delay
+    to every Live-text tool step."""
+    from ..agents.chat_events import ANSWER_SEPARATOR_RE
+
+    match = ANSWER_SEPARATOR_RE.search(text)
+    if match is not None:
+        cut = match.end()
+        if text.startswith("\r\n", cut):
+            cut += 2
+        elif text.startswith("\n", cut):
+            cut += 1
+        pieces = [text[:cut], *_word_groups(text[cut:], DEMO_STREAM_WORDS_PER_GROUP)]
+    elif text.lstrip().startswith("{"):
+        pieces = [text]
+    else:
+        pieces = _word_groups(text, DEMO_STREAM_WORDS_PER_GROUP)
+    return [piece for piece in pieces if piece]
+
+
 class DemoMockProvider(MockProvider):
     """A deterministic provider whose verdict is KEYED to the storyline a cluster
     belongs to, so the SAME synthetic storyline always yields the SAME verdict /
@@ -567,6 +1195,11 @@ class DemoMockProvider(MockProvider):
     It inspects the role + the prompt text (which carries the fenced synthetic event
     summaries) to resolve the scenario by the distinctive synthetic rule names —
     no RNG, no clock — so a run is byte-reproducible."""
+
+    #: Demo Mode demos Live text too (SPEC §1: every feature at $0), so this provider
+    #: reports itself as streaming; the "stream" is the deterministic answer replayed
+    #: in word groups by :meth:`complete_stream`.
+    streams_text = True
 
     def __init__(self) -> None:
         super().__init__()
@@ -589,7 +1222,89 @@ class DemoMockProvider(MockProvider):
             prompt_tokens=_estimate_tokens(json.dumps(messages)),
             completion_tokens=_estimate_tokens(text),
             model=model,
+            finish_reason="stop",
         )
+
+    async def complete_stream(
+        self, role, messages, model, temperature, max_tokens, on_text: OnText
+    ) -> CompletionResult:
+        """Simulated streaming (SPEC §5.5): the deterministic answer, replayed.
+
+        The whole result is computed first (so the call, its script pop and its metered
+        tokens are exactly those of :meth:`complete`), its usage is reported to the
+        stream progress, then :func:`_demo_stream_chunks` pieces are delivered with
+        :data:`DEMO_STREAM_DELAY_S` between them. The delay is read at call time so a
+        test can set it to 0."""
+        result = await self.complete(role, messages, model, temperature, max_tokens)
+        note_stream_input_usage(result.prompt_tokens)
+        delay = float(DEMO_STREAM_DELAY_S)
+        for index, chunk in enumerate(_demo_stream_chunks(result.text)):
+            if index and delay > 0:
+                await asyncio.sleep(delay)
+            await on_text(chunk)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # Chat-agent delegation (SPEC §5.5). The engine's agent-mode system prompt and the
+    # report-summary system prompt each start with a marker line; only the system
+    # prompt — which no user or log value can author — is inspected for it.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _system_text(messages: list[dict[str, str]]) -> str:
+        return "\n".join(
+            str(m.get("content", "")) for m in messages if m.get("role") == "system"
+        )
+
+    def _demo_chat_route(self, role: str, messages: list[dict[str, str]]) -> str | None:
+        """The delegated answer for a marked chat-agent / report-summary prompt, or
+        None so every other prompt (incl. the LEGACY chat prompt) keeps its path."""
+        system = self._system_text(messages)
+        if not system:
+            return None
+        # Lazy: the protocol module pulls in the whole model layer, which this
+        # low-level module must not load at import time (it sits under the gateway).
+        from ..agents.chat_events import (
+            CHAT_AGENT_SYSTEM_MARKER,
+            REPORT_SUMMARY_SYSTEM_MARKER,
+        )
+
+        if REPORT_SUMMARY_SYSTEM_MARKER in system:
+            return self._demo_report_summary(messages)
+        if role == "chat" and CHAT_AGENT_SYSTEM_MARKER in system:
+            return self._demo_chat_agent_turn(messages)
+        return None
+
+    def _demo_chat_agent_turn(self, messages: list[dict[str, str]]) -> str:
+        """The deterministic Demo chat planner (SPEC §5.5, ``engine/demo_chat.py``).
+
+        Called for role ``chat`` when the system prompt carries
+        ``CHAT_AGENT_SYSTEM_MARKER``; returns one §4.1 protocol message (a lookup step
+        or a final) planned from the prompt alone, so the real engine validates,
+        audits and executes every call exactly as for a provider model. Imported
+        lazily: the planner pulls in the tool contract, which this low-level module
+        must not load at import time."""
+        try:
+            from ..engine.demo_chat import plan_turn
+        except Exception:  # noqa: BLE001 -- a broken import degrades one answer, never the turn
+            return _DEMO_AGENT_PLACEHOLDER_FINAL
+        try:
+            return plan_turn(messages)
+        except Exception:  # noqa: BLE001 -- plan_turn never raises; a regression degrades, never fails
+            return _DEMO_AGENT_PLACEHOLDER_FINAL
+
+    def _demo_report_summary(self, messages: list[dict[str, str]]) -> str:
+        """The deterministic Demo report summary (SPEC §9.2/§9.4): the
+        ``{executive_summary, next_steps}`` JSON ``REPORT_SUMMARY_SYSTEM`` asks for,
+        built only from the fenced report digest (a plain sentence when the prompt
+        holds no readable digest)."""
+        try:
+            from ..engine.demo_chat import summarise_report
+        except Exception:  # noqa: BLE001
+            return _DEMO_REPORT_SUMMARY_PLACEHOLDER
+        try:
+            return summarise_report(messages)
+        except Exception:  # noqa: BLE001 -- summarise_report never raises; a regression degrades, never fails
+            return _DEMO_REPORT_SUMMARY_PLACEHOLDER
 
     @staticmethod
     def _resolve(messages: list[dict[str, str]]):
@@ -597,13 +1312,22 @@ class DemoMockProvider(MockProvider):
         synthetic rule UID/name in the ORIGINAL investigation context. Tool results
         may legitimately contain unrelated alerts from the same source; they enrich
         the case but must never replace the cluster's incident identity on a later
-        ReAct turn. Returns the Storyline or None (benign baseline)."""
+        ReAct turn. Returns the Storyline or None (benign baseline).
+
+        Chat-agent tool results (SPEC §5.5) are skipped the same way: such a message
+        OPENS with an engine-written ``TOOL_CALL_HEADER`` line followed by the fenced
+        observation, and a storyline rule marker inside that tool DATA must never pick
+        the scenario. Only the first line is tested, so a header-shaped line inside a
+        fenced value cannot hide the original context it sits in."""
+        from ..agents.chat_events import TOOL_CALL_HEADER_RE
         from ..engine.demo_generator import _RULE_TO_STORY, _STORYLINE_BY_ID
 
         original_context: list[str] = []
         for message in messages:
             content = str(message.get("content", ""))
             if content.startswith("Tool '") and " result:" in content:
+                continue
+            if TOOL_CALL_HEADER_RE.match(content.split("\n", 1)[0]):
                 continue
             original_context.append(content)
         blob = "\n".join(original_context)
@@ -613,6 +1337,9 @@ class DemoMockProvider(MockProvider):
         return None
 
     def _demo_default(self, role: str, messages: list[dict[str, str]]) -> str:
+        delegated = self._demo_chat_route(role, messages)
+        if delegated is not None:
+            return delegated
         if role == "formatter":
             # Formatter is presentation-only: it must never replace a scenario-aware
             # investigator draft with the benign fallback merely because its compact
@@ -694,6 +1421,13 @@ class AzureOpenAIProvider(OpenAIProvider):
     (``https://<resource>.openai.azure.com``); the model id is the DEPLOYMENT name.
     Auth is the ``api-key`` header (not a Bearer token) + an ``api-version`` query."""
 
+    # Azure inherits OpenAIProvider's payload shaping but NOT its streaming: the
+    # inherited ``complete_stream`` would post to OpenAI's path with a Bearer header,
+    # and ``stream_options`` support depends on the deployment's api-version. It keeps
+    # the one-shot default until a deployment-aware streaming path exists (SPEC §6.3).
+    streams_text = False
+    complete_stream = BaseProvider.complete_stream
+
     def __init__(self, api_key: str, base_url: str,
                  api_version: str = "2024-10-21") -> None:
         if not (base_url or "").strip():
@@ -729,13 +1463,16 @@ class AzureOpenAIProvider(OpenAIProvider):
         # class. Every provider now shares one bounded, Retry-After-aware budget.
         resp = await with_retry(_post)
         data = resp.json()
-        text = data["choices"][0]["message"]["content"] or ""
+        choice = data["choices"][0]
+        text = choice["message"]["content"] or ""
         usage = data.get("usage", {})
         return CompletionResult(
             text=text,
             prompt_tokens=int(usage.get("prompt_tokens", _estimate_tokens(str(messages)))),
             completion_tokens=int(usage.get("completion_tokens", _estimate_tokens(text))),
             model=model,
+            finish_reason=normalise_finish_reason(choice.get("finish_reason")),
+            usage_estimated=not _usage_complete(usage, "prompt_tokens", "completion_tokens"),
         )
 
 
@@ -854,6 +1591,8 @@ class BedrockProvider(BaseProvider):
             prompt_tokens=int(usage.get("input_tokens", _estimate_tokens(str(messages)))),
             completion_tokens=int(usage.get("output_tokens", _estimate_tokens(text))),
             model=model,
+            finish_reason=normalise_finish_reason(data.get("stop_reason")),
+            usage_estimated=not _usage_complete(usage, "input_tokens", "output_tokens"),
         )
 
     async def aclose(self) -> None:
@@ -914,14 +1653,18 @@ class VertexProvider(BaseProvider):
         data = resp.json()
         cands = data.get("candidates", [])
         text = ""
+        finish_reason = None
         if cands:
             text = "".join(p.get("text", "") for p in cands[0].get("content", {}).get("parts", []))
+            finish_reason = cands[0].get("finishReason")
         meta = data.get("usageMetadata", {})
         return CompletionResult(
             text=text,
             prompt_tokens=int(meta.get("promptTokenCount", _estimate_tokens(str(messages)))),
             completion_tokens=int(meta.get("candidatesTokenCount", _estimate_tokens(text))),
             model=model,
+            finish_reason=normalise_finish_reason(finish_reason),
+            usage_estimated=not _usage_complete(meta, "promptTokenCount", "candidatesTokenCount"),
         )
 
     async def aclose(self) -> None:
@@ -947,6 +1690,18 @@ def _make_openai(*, api_key: str = "", base_url: str | None = None,
     return OpenAIProvider(api_key, base_url=base_url or "https://api.openai.com",
                           service_tier=service_tier,
                           fallback_to_standard=fallback_to_standard)
+
+
+def _make_openai_compatible(*, api_key: str = "", base_url: str | None = None,
+                            service_tier: str | None = None,
+                            fallback_to_standard: bool = True, **_: Any) -> BaseProvider:
+    # Same client as ``openai`` (the gateway passes identical kwargs), explicitly
+    # marked compatible so streaming tolerates a server without ``stream_options``
+    # even when its base_url happens to proxy the official host.
+    return OpenAIProvider(api_key, base_url=base_url or "https://api.openai.com",
+                          service_tier=service_tier,
+                          fallback_to_standard=fallback_to_standard,
+                          compatible=True)
 
 
 def _make_mock(**_: Any) -> BaseProvider:
@@ -980,8 +1735,29 @@ PROVIDER_REGISTRY: dict[str, Any] = {
     "azure": _make_azure,
     "bedrock": _make_bedrock,
     "vertex": _make_vertex,
-    "openai_compatible": _make_openai,
+    "openai_compatible": _make_openai_compatible,
 }
+
+#: Provider NAMES whose built-in client streams text incrementally (SPEC §6.3). Every
+#: other name — azure, bedrock, vertex, mock and entry-point providers — gets the
+#: one-shot ``complete_stream`` default, so Live text is reported unavailable for it.
+TEXT_STREAMING_PROVIDERS = frozenset({"openai", "openai_compatible", "anthropic"})
+_BUILTIN_STREAMING_FACTORIES = {name: PROVIDER_REGISTRY[name] for name in TEXT_STREAMING_PROVIDERS}
+
+
+def provider_streams_text(provider: str) -> bool:
+    """True when the client registered under ``provider`` truly streams.
+
+    A name-level answer for callers that hold only configuration. A name shadowed by
+    an entry-point plugin answers False: the plugin's client is not ours, so its
+    streaming cannot be vouched for. The gateway's
+    :meth:`LLMGateway.text_streaming_supported` additionally honours an injected
+    provider instance (tests, Demo Mode) by its own ``streams_text``."""
+    name = str(provider or "").strip().lower()
+    return (
+        name in TEXT_STREAMING_PROVIDERS
+        and PROVIDER_REGISTRY.get(name) is _BUILTIN_STREAMING_FACTORIES[name]
+    )
 
 # Entry-point group third-party LLM providers register under. A ``pip install
 # tlsoc-llm-<x>`` declaring ``[project.entry-points."tlsoc.llm_providers"]`` whose

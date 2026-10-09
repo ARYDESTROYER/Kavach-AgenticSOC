@@ -25,7 +25,7 @@ vi.mock('@/soc/UnifiedLogs.api', async () => {
   return { ...actual, fetchUnifiedLogs: fetchUnifiedLogsMock };
 });
 
-import { UnifiedLogsView } from '../UnifiedLogsSheet';
+import { UnifiedLogsBody, UnifiedLogsView } from '../UnifiedLogsSheet';
 import type { UnifiedLogsResponse } from '../../UnifiedLogs.api';
 
 const RESPONSE: UnifiedLogsResponse = {
@@ -211,5 +211,46 @@ describe('UnifiedLogsView', () => {
         screen.getByText(/No browse-capable sources are enabled/i),
       ).toBeInTheDocument(),
     );
+  });
+});
+
+describe('UnifiedLogsBody — a starting query, window and source (the Logs deep link)', () => {
+  beforeEach(() => {
+    fetchUnifiedLogsMock.mockReset();
+    fetchUnifiedLogsMock.mockResolvedValue(RESPONSE);
+  });
+
+  it('reads the exact linked bounds and source once, with the header above ONE table', async () => {
+    render(
+      <UnifiedLogsBody
+        initialQuery="failed"
+        initialFrom="2026-10-01T12:00:00Z"
+        initialTo="2026-10-08T12:00:00.250Z"
+        initialWindowLabel="2026-10-01 12:00:00 → 2026-10-08 12:00:00 UTC"
+        sourceId="src-elastic"
+        header={<p>Linked summary</p>}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('benign heartbeat')).toBeInTheDocument());
+    expect(fetchUnifiedLogsMock).toHaveBeenCalledTimes(1);
+    expect(fetchUnifiedLogsMock).toHaveBeenCalledWith({
+      limit: 150,
+      query: 'failed',
+      from: '2026-10-01T12:00:00Z',
+      to: '2026-10-08T12:00:00.250Z',
+      source_id: 'src-elastic',
+    });
+    expect(screen.getByRole('textbox', { name: 'Search log events' })).toHaveValue('failed');
+    // The one-off window reads as its label in the time-range control.
+    expect(screen.getByRole('combobox', { name: 'Time range' })).toHaveTextContent('2026-10-01 12:00:00 → 2026-10-08 12:00:00 UTC');
+    expect(screen.getByText('Linked summary')).toBeInTheDocument();
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+  });
+
+  it('selects the matching preset for an open-ended relative window', async () => {
+    render(<UnifiedLogsBody initialFrom="now-24h" />);
+    await waitFor(() => expect(fetchUnifiedLogsMock).toHaveBeenCalledWith(expect.objectContaining({ from: 'now-24h', to: 'now' })));
+    expect(screen.getByRole('combobox', { name: 'Time range' })).toHaveTextContent('Last 24 hours');
+    expect(fetchUnifiedLogsMock.mock.calls[0][0]).not.toHaveProperty('source_id');
   });
 });

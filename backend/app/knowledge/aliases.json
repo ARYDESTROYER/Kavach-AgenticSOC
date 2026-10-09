@@ -1,0 +1,223 @@
+{
+ "schema": 1,
+ "aliases": {
+  "2fa": [
+   "mfa",
+   "two-factor",
+   "totp"
+  ],
+  "account": [
+   "users"
+  ],
+  "ai": [
+   "model",
+   "agent"
+  ],
+  "anthropic": [
+   "model",
+   "provider"
+  ],
+  "assistant": [
+   "chat"
+  ],
+  "autoclose": [
+   "auto-close"
+  ],
+  "automatic": [
+   "auto-close"
+  ],
+  "automatically": [
+   "auto-close",
+   "automatic"
+  ],
+  "backup": [
+   "export",
+   "restore"
+  ],
+  "budget": [
+   "spend",
+   "cost"
+  ],
+  "chat": [
+   "workspace"
+  ],
+  "connect": [
+   "source",
+   "connector"
+  ],
+  "dashboard": [
+   "overview"
+  ],
+  "demo": [
+   "demo-mode"
+  ],
+  "email": [
+   "notifications",
+   "smtp"
+  ],
+  "export": [
+   "data",
+   "archive"
+  ],
+  "funnel": [
+   "noise",
+   "reduction"
+  ],
+  "ingest": [
+   "source",
+   "ingestion"
+  ],
+  "integrate": [
+   "source",
+   "connector"
+  ],
+  "kpi": [
+   "metric"
+  ],
+  "kpis": [
+   "metrics"
+  ],
+  "litellm": [
+   "model",
+   "self-hosted"
+  ],
+  "llm": [
+   "model",
+   "models"
+  ],
+  "login": [
+   "sign-in",
+   "authentication"
+  ],
+  "metric": [
+   "kpi"
+  ],
+  "mfa": [
+   "two-factor",
+   "totp",
+   "authenticator"
+  ],
+  "mtta": [
+   "acknowledge",
+   "response"
+  ],
+  "mttd": [
+   "detect",
+   "detection"
+  ],
+  "mttr": [
+   "resolve",
+   "resolution"
+  ],
+  "needs_human": [
+   "needs",
+   "human"
+  ],
+  "noise": [
+   "funnel",
+   "reduction"
+  ],
+  "oidc": [
+   "sso",
+   "single",
+   "sign-on"
+  ],
+  "openai": [
+   "model",
+   "provider"
+  ],
+  "pagerduty": [
+   "notifications",
+   "webhook"
+  ],
+  "permission": [
+   "permissions",
+   "rbac",
+   "role"
+  ],
+  "permissions": [
+   "rbac",
+   "role"
+  ],
+  "playbook": [
+   "playbooks"
+  ],
+  "price": [
+   "cost",
+   "pricing"
+  ],
+  "pricing": [
+   "cost",
+   "price"
+  ],
+  "report": [
+   "reports"
+  ],
+  "reset": [
+   "factory",
+   "danger"
+  ],
+  "risk": [
+   "risk-score"
+  ],
+  "role": [
+   "roles",
+   "rbac"
+  ],
+  "roles": [
+   "rbac",
+   "permissions"
+  ],
+  "runbook": [
+   "runbooks"
+  ],
+  "siem": [
+   "source",
+   "connector"
+  ],
+  "slack": [
+   "notifications",
+   "webhook"
+  ],
+  "spend": [
+   "cost",
+   "budget"
+  ],
+  "sso": [
+   "single",
+   "sign-on",
+   "oidc"
+  ],
+  "teams": [
+   "notifications",
+   "webhook"
+  ],
+  "tokens": [
+   "usage",
+   "cost"
+  ],
+  "totp": [
+   "mfa",
+   "two-factor"
+  ],
+  "two-factor": [
+   "mfa",
+   "totp"
+  ],
+  "update": [
+   "upgrades",
+   "release"
+  ],
+  "upgrade": [
+   "upgrades",
+   "update"
+  ],
+  "user": [
+   "users"
+  ],
+  "users": [
+   "rbac",
+   "accounts"
+  ]
+ }
+}

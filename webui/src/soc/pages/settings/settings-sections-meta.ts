@@ -36,6 +36,7 @@ import {
   KeyRound,
   ListChecks,
   ListTree,
+  MessageSquare,
   MonitorSmartphone,
   Network,
   Palette,
@@ -58,6 +59,15 @@ export interface SectionPerm {
   resource: string;
   action: string;
 }
+
+/*
+ * The two grants most sections share. This module ships in the first-paint entry chunk
+ * (the always-on command palette imports it), and a repeated object literal costs its
+ * full text every time it appears in minified output, so the sections reference one
+ * frozen object each instead of restating `{ resource, action }`.
+ */
+const SETTINGS_MANAGE: SectionPerm = Object.freeze({ resource: 'settings', action: 'manage' });
+const USERS_MANAGE: SectionPerm = Object.freeze({ resource: 'users', action: 'manage' });
 
 /**
  * The FIVE top-level Settings groups (Round-5 Sett-B IA regroup, 6 → 5). This is the
@@ -207,6 +217,17 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     ],
   },
   {
+    // Chat revamp SPEC §4.2: the curated `chat_agent` editor. Ungated like Models: the
+    // limits are useful to read, and saving still needs settings:manage on the server.
+    id: 'chat_agent',
+    group: 'general',
+    title: 'Chat assistant',
+    blurb: 'Live answer mode, per-question limits, and which indicators chat may send to enrichment.',
+    icon: MessageSquare,
+    keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'internal domains', 'email', 'e-mail'],
+    ownedKeys: ['chat_agent'],
+  },
+  {
     id: 'detection',
     group: 'general',
     title: 'Detection',
@@ -267,7 +288,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Cases',
     blurb: 'Human-facing case-ID nomenclature and live preview.',
     icon: Hash,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     keywords: ['case id', 'case number', 'nomenclature', 'sequence', 'prefix', 'template'],
     ownedKeys: ['case_id_format'],
   },
@@ -277,7 +298,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'SLA, priority & suppression',
     blurb: 'Advisory SLA targets and the impact × urgency priority matrix, plus operator suppression rules that drop known-benign events before triage.',
     icon: Timer,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     grid: true,
     keywords: [
       'sla',
@@ -306,7 +327,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     // section keeps only the master enable switch + the #3 explainer and links there.
     blurb: 'The master switch for threshold automation — rules that react to a case after the deterministic decision (authored in Detection & rules).',
     icon: Zap,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     keywords: ['automation', 'rules', 'threshold', 'tag', 'notify', 'playbook', 'proposal', 'enable'],
     ownedKeys: ['threshold_automation'],
     // No longer a grid section: with the embedded rule cards gone, the master toggle +
@@ -329,7 +350,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Alerting & notifications',
     blurb: 'Outbound channels, triggers, dedup, and digests.',
     icon: Bell,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     keywords: ['alerting', 'notifications', 'email', 'slack', 'teams', 'webhook', 'pagerduty', 'telegram', 'channels'],
     ownedKeys: ['notifications'],
   },
@@ -351,7 +372,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Knowledge & threat context',
     blurb: 'RAG retrieval, the threat-context panel, MITRE, and runbooks/playbooks.',
     icon: ShieldAlert,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     grid: true,
     keywords: ['rag', 'retrieval', 'knowledge', 'threat context', 'mitre', 'runbook', 'playbook', 'ioc', 'resolved cases', 'precedent', 'promotion', 'futility'],
     ownedKeys: ['rag', 'threat_context', 'precedent'],
@@ -364,7 +385,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Users',
     blurb: 'Add accounts, assign roles, reset passwords, and enable/disable users.',
     icon: UsersIcon,
-    perm: { resource: 'users', action: 'manage' },
+    perm: USERS_MANAGE,
     keywords: ['users', 'accounts', 'add user', 'reset password', 'enable', 'disable', 'admin', 'identity'],
   },
   {
@@ -382,7 +403,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Single sign-on & policy',
     blurb: 'Single sign-on (OIDC) providers and the token / session policy.',
     icon: ShieldCheck,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     keywords: ['security', 'sso', 'oidc', 'single sign-on', 'google', 'microsoft', 'session policy', 'token', 'idle', 'access ttl', 'csrf', 'rate limit'],
     ownedKeys: ['sso', 'session_policy', 'mfa'],
   },
@@ -392,7 +413,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Active sessions',
     blurb: 'Review and force-terminate sessions across all accounts.',
     icon: Network,
-    perm: { resource: 'users', action: 'manage' },
+    perm: USERS_MANAGE,
     keywords: ['sessions', 'active sessions', 'terminate', 'revoke', 'force sign out', 'admin'],
   },
   {
@@ -401,7 +422,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Secret keys',
     blurb: 'Write-only API keys for Elasticsearch, LLMs, and enrichment.',
     icon: KeyRound,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     keywords: ['api key', 'secret', 'credentials', 'token', 'anthropic', 'openai', 'abuseipdb', 'virustotal'],
   },
 
@@ -412,7 +433,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Branding',
     blurb: 'Org wordmark, logo, accent colours, and default theme.',
     icon: Brush,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     keywords: ['branding', 'appearance', 'theme', 'logo', 'favicon', 'colour', 'color', 'white-label', 'accent'],
   },
   {
@@ -421,7 +442,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Updates & releases',
     blurb: 'Public source repository, Stable/Testing refs, and read-only update discovery.',
     icon: GitBranch,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     grid: true,
     keywords: ['updates', 'release', 'repository', 'github', 'stable', 'testing', 'branch', 'version'],
     ownedKeys: ['release_updates'],
@@ -432,7 +453,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Advanced',
     blurb: 'Caps, kill switch, suppression rules, rule catalog, and the settings lock.',
     icon: SlidersHorizontal,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     grid: true,
     keywords: ['advanced', 'caps', 'kill switch', 'suppression', 'rule catalog', 'read-only', 'lock', 'budget', 'allowlist'],
     // NOTE: `excluded_rules` / `in_scope_rules` are intentionally NOT owned here — no
@@ -452,7 +473,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'All settings',
     blurb: 'Every engine preference, generated from the backend schema — the long tail of knobs.',
     icon: ListTree,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     grid: true,
     keywords: ['schema', 'all settings', 'advanced', 'generic', 'long tail', 'raw', 'every setting', 'knobs', 'reflector'],
   },
@@ -471,7 +492,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Storage & retention',
     blurb: 'Capability-aware Hot, Warm, and desired archive lifecycle for Agentic SOC-owned state.',
     icon: Archive,
-    perm: { resource: 'settings', action: 'manage' },
+    perm: SETTINGS_MANAGE,
     grid: true,
     keywords: ['storage', 'retention', 'hot', 'warm', 'archive', 'glacier', 'ilm', 'lifecycle', 'audit', 'usage'],
     ownedKeys: ['storage_lifecycle'],
@@ -491,7 +512,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     // Gate on `users:manage` to match BOTH the DangerZone body's own <Can> guard and the
     // backend `users:manage` admission/execution gate for tiered_reset Jobs — otherwise a principal with only
     // settings:manage saw the rail entry + outer guard pass but a blank (body-gated) panel.
-    perm: { resource: 'users', action: 'manage' },
+    perm: USERS_MANAGE,
     title: 'Danger zone',
     blurb: 'Tiered reset of cases, sources, or the whole tenant. Never wipes env secrets.',
     icon: Trash2,
@@ -566,6 +587,7 @@ export type SectionId =
   | 'customization'
   | 'general'
   | 'models'
+  | 'chat_agent'
   | 'keys'
   | 'detection'
   | 'detection_rules'

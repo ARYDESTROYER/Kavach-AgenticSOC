@@ -4,20 +4,26 @@
  *   - Chat:        the conversational assistant (ONE chat engine — AGENTS.md).
  *   - Entity investigation: an ad-hoc, agentic investigation on an IP / user / host.
  *
- * The redundant in-page "Chat | Investigate" segmented strip was removed (task: the
- * left-nav Workspace group already exposes a clickable child for BOTH, so an in-page
- * tab bar duplicating those buttons was clutter). The active sub-view is selected by
- * the `tab` route opt (forced by the `chat` / `investigate` routes and by
- * `navigate('chat', { tab })`). Chat is a focused conversational route and owns its
- * PageHeader/action so the reset control cannot drift into a second band. Entity
- * investigation keeps the wider operational host below.
+ * The active sub-view is selected by the `tab` route opt (forced by the `chat` /
+ * `investigate` routes and by `navigate('chat', { tab })`); the left-nav Workspace group
+ * exposes both, so there is no in-page tab strip. Chat owns its full-height frame (it
+ * bleeds the shell's vertical inset); Entity investigation keeps the wider operational
+ * host below.
+ *
+ * Both tabs are LAZY (chat revamp SPEC §10.10): Investigate pulls in the case detail
+ * views, and Chat must not download that chunk (nor Investigate the chat one).
  */
-import { Search } from "lucide-react";
-import { useNavigateOptional, type Navigate } from "@/soc/router";
-import { PageHeader } from "@/soc/components/PageHeader";
-import { PageContainer } from "@/soc/components/PageContainer";
-import Chat from "./Chat";
-import Investigate from "./Investigate";
+import * as React from 'react';
+import { Search } from 'lucide-react';
+
+import type { NavOpts } from '@/lib/types';
+import { LoadingState } from '@/design-system/loading';
+import { useNavigateOptional, type Navigate } from '@/soc/router';
+import { PageHeader } from '@/soc/components/PageHeader';
+import { PageContainer } from '@/soc/components/PageContainer';
+
+const Chat = React.lazy(() => import('./Chat'));
+const Investigate = React.lazy(() => import('./Investigate'));
 
 export interface WorkspaceProps {
   onNavigate?: Navigate;
@@ -25,20 +31,25 @@ export interface WorkspaceProps {
   tab?: string;
   /** Optional case context preserved by a Case Chat → Workspace deep-link. */
   caseId?: string;
+  /** The route's opts (chat deep links); Chat reads the router itself when absent. */
+  opts?: NavOpts;
 }
 
-export default function Workspace({ onNavigate, tab, caseId }: WorkspaceProps = {}) {
+export default function Workspace({ onNavigate, tab, caseId, opts }: WorkspaceProps = {}) {
   // Coupling-A: resolve navigate once (an explicit prop wins for tests). Call the hook
   // UNCONDITIONALLY (rules-of-hooks), then let an explicit prop win.
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
-  const isInvestigate = tab === "investigate";
+  const isInvestigate = tab === 'investigate';
 
   if (!isInvestigate) {
-    // Chat owns a fluid PageContainer because its history rail + conversation pane
-    // are a split workspace. Wrapping it in the focused 1200px container wastes a
-    // large part of desktop screens and creates two competing width authorities.
-    return <Chat caseId={caseId} />;
+    // Chat owns its frame (rail, conversation, report panel); a PageContainer here would
+    // add a second width authority and the shell's vertical inset it deliberately bleeds.
+    return (
+      <React.Suspense fallback={<LoadingState layout="page" label="Loading chat" />}>
+        <Chat caseId={caseId} opts={opts} />
+      </React.Suspense>
+    );
   }
 
   return (
@@ -49,7 +60,9 @@ export default function Workspace({ onNavigate, tab, caseId }: WorkspaceProps = 
         title="Entity investigation"
         description="Check one IP, user, or host across the selected log window. Matching evidence is correlated, investigated, and saved as a case."
       />
-      <Investigate embedded onNavigate={navigate} />
+      <React.Suspense fallback={<LoadingState layout="panel" label="Loading investigation" />}>
+        <Investigate embedded onNavigate={navigate} />
+      </React.Suspense>
     </PageContainer>
   );
 }

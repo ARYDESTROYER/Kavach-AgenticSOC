@@ -1,39 +1,43 @@
 /**
- * CaseDetail — per-case Chat panel (Coupling-D split).
+ * CaseDetail — the Chat tab's shell (chat revamp SPEC §4.6, §10.8, §10.10).
  *
- * A thin wrapper that embeds the SHARED <ChatPanel> (the ONE chat engine) in compact
- * mode, scoped to this case, plus a slim deep-link to the full Chat surface. This
- * deliberately REUSES ChatPanel instead of hand-rolling a second transcript + composer,
- * so bubbles / avatars / markdown / provenance / the "thinking" indicator / scroll all
- * stay identical to the standalone Chat page (Round-8 #6 declutter).
+ * Only the frame lives here: the Case Detail card with "Open full chat", or Case
+ * Manager's padded rail. The chat itself (`./CaseChat`: the shared engine, context,
+ * transcript and composer) is a `React.lazy` boundary, so opening a case — from the
+ * dashboard, Case Manager or Scans — never downloads the chat chunks unless the
+ * analyst opens this tab. Radix Tabs unmounts inactive panels, so the import starts
+ * on the first visit to the tab and is cached afterwards.
  *
- * SECURITY (#9): ChatPanel renders every assistant / user / model-derived value as
- * plain-text or parsed-markdown React nodes — never markup, never an href/CSS value.
+ * #9: every model- or log-derived string renders as text (shared components).
  * #3: chat is advisory; it never decides or mutates the case.
  */
 import * as React from 'react';
 import { MessageSquare } from 'lucide-react';
 
 import type { Case } from '@/lib/types';
-
+import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
-
-import { ChatPanel } from '@/soc/components/ChatPanel';
 import type { Navigate } from '@/soc/router';
 
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
 import type { CasePanelPresentation } from './shared';
 
-/** Case-scoped starter prompts surfaced in the empty state. */
-const CASE_CHAT_STARTERS = [
-  'Summarize this case',
-  'Why was this flagged?',
-  'What should I check next?',
-  'Is this a known false positive?',
-];
+/** Case-scoped quick questions in the Case Detail sheet. */
+const CASE_CHAT_STARTERS = ['Summarize this case', 'Why was this flagged?', 'What should I check next?'];
 
-/** ZIP/reference-matched actions for the embedded analyst console. */
+/** Case Manager's analyst quick actions. */
 const CASE_MANAGER_CHAT_STARTERS = ['Summarize Case', 'Check IOCs', 'Suggest Remediation'];
+
+const CaseChat = React.lazy(() => import('./CaseChat'));
+
+/** The lazy chat body with the console's one blocking-load grammar while it arrives. */
+function LazyCaseChat(props: { caseId: string; caseManager: boolean; starters: readonly string[] }) {
+  return (
+    <React.Suspense fallback={<LoadingState layout="panel" label="Loading chat" className="h-full w-full" />}>
+      <CaseChat {...props} />
+    </React.Suspense>
+  );
+}
 
 export const ChatTab: React.FC<{
   c: Case;
@@ -48,13 +52,8 @@ export const ChatTab: React.FC<{
         data-case-panel="chat"
         data-presentation="case-manager"
       >
-        <ChatPanel
-          caseId={c.case_id}
-          compact
-          presentation="case-manager"
-          starters={CASE_MANAGER_CHAT_STARTERS}
-          className="w-full overflow-hidden"
-        />
+        {/* Keyed per case: case A's transcript never shows under case B. */}
+        <LazyCaseChat key={c.case_id} caseId={c.case_id} caseManager starters={CASE_MANAGER_CHAT_STARTERS} />
       </div>
     );
   }
@@ -82,11 +81,10 @@ export const ChatTab: React.FC<{
           Case chat
         </SectionHeading>
 
-        {/* The shared chat engine, embedded compact + scoped to this case. A definite
-            height gives ChatPanel's internal transcript scroll + bottom-pinned composer
-            a frame to work in (the transcript lane is the only scrolling region). */}
+        {/* A definite height gives the transcript its own scroll lane and keeps the
+            composer docked at the bottom of the card. */}
         <div className="h-[60dvh] min-h-[24rem]">
-          <ChatPanel caseId={c.case_id} compact starters={CASE_CHAT_STARTERS} />
+          <LazyCaseChat key={c.case_id} caseId={c.case_id} caseManager={false} starters={CASE_CHAT_STARTERS} />
         </div>
       </PanelCard>
     </div>

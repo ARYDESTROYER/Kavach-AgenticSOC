@@ -11,7 +11,7 @@ saved and never determine whether a case closes or escalates.
 
 ## Configure a channel
 
-1. Open **Settings → Notifications**.
+1. Open **Settings → Integrations → Alerting & notifications**.
 2. Choose a provider/channel type.
 3. Configure non-secret routing fields and trigger conditions.
 4. Enter the channel secret or webhook URL in the secret field.

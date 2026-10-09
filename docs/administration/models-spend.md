@@ -27,6 +27,22 @@ A connectivity test is not a quality, privacy, or capacity certification. Valida
 data-processing terms, regional routing, rate limits, context limits, and failure
 behavior independently.
 
+## Add or change a model
+
+1. Supply the provider's API key in **Settings → Security & access → Secret keys** or
+   through the deployment environment. The Console only shows whether a key is
+   configured, never its value.
+2. Open **Settings → General → Models** and choose the model for each role: router,
+   investigator, formatter, standup, chat, overview, and embedding.
+3. For a self-hosted or LiteLLM-style OpenAI-compatible endpoint, open
+   **Analytics → Models**, select **Add local model** on the **Catalog** tab, and enter
+   the endpoint and model name. Local models are priced at $0 unless you set a price
+   override. Adding one requires the `models:manage` permission.
+4. Test connectivity, then watch the first calls in **Analytics → Cost**.
+
+A model change applies to new calls only; the usage ledger keeps the model each
+earlier call used.
+
 ## Cost accounting
 
 Usage records include input/output tokens and supported cache or batch adjustments.
@@ -119,6 +135,17 @@ dropped and the decision code does not auto-close it.
 The budget check is a preflight comparison rather than an atomic reservation. Calls
 already in flight may complete slightly beyond the configured limit. Configure
 provider-side budgets and alerts as the final financial backstop.
+
+Workspace and Case Manager chat share this budget. At the soft limit the chat composer
+shows one alert. When a blocking daily or monthly limit is reached, the alert says AI
+answers are paused until the budget resets ("may be paused" for users without
+`models:read`, who cannot see the budget policy), and **Send** stays available to every user,
+whatever their permissions: a product question is answered at no cost from the Help
+Center, and any other question is refused with a budget notice before any model call.
+Each chat question is also bounded by
+its own per-question limits (model calls, lookups, tokens, and time) under
+**Settings → General → Chat assistant**; report summaries are one metered call each and
+limited to 10 an hour per user.
 
 ## Change procedure
 

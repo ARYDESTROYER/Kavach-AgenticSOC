@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 
 from ..config import BrandingConfig, CustomizationConfig
 from ..constants import ActionType
-from ..models import ColumnState, SavedView
+from ..models import MAX_CHAT_PROMPTS, ChatPrompt, ColumnState, SavedView
 from ..state import AppState
 from ..stores.user_prefs import resolve_effective_prefs
 from .deps import current_user, current_username, get_state, require_admin
@@ -100,6 +100,10 @@ class UserPrefsPatchBody(BaseModel):
     last_list_state: dict[str, dict[str, Any]] | None = None
     pinned_view_ids: list[str] | None = None
     misc: dict[str, Any] | None = None
+    # The full replacement list of the user's saved chat prompts (chat revamp SPEC
+    # §10.4: <= 50 of {id, title <= 60, text <= 2000}). Plain user text; the store
+    # re-validates through UserPrefs, which sanitises and bounds it again.
+    chat_prompts: list[ChatPrompt] | None = Field(default=None, max_length=MAX_CHAT_PROMPTS)
 
 
 class SavedViewBody(BaseModel):

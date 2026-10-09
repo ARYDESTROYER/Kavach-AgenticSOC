@@ -28,6 +28,7 @@ from .audit.audit_log import AuditLogger
 from .cache import Cache
 from .config import Preferences, Secrets
 from .engine.ingest import IngestService
+from .engine.mutation_gate import MutationAdmissionGate
 from .engine.release_discovery import ReleaseDiscoveryService
 from .es.base import BaseESClient
 from .es.indices import bootstrap_indices
@@ -43,6 +44,30 @@ from .tools.rag import RagService
 logger = logging.getLogger("tlsoc.state")
 
 _ES_SECRET_FIELDS = {"es_api_key", "es_mgmt_api_key", "es_url", "es_ca_cert", "es_verify_certs"}
+
+# How long closing mutation admission waits for cancelled chat turns to unwind
+# (abort their reservation, close their source client) before the reset drains.
+_CHAT_TURN_CANCEL_TIMEOUT_S = 10.0
+
+
+class _ChatTurnAwareMutationGate(MutationAdmissionGate):
+    """The factory-reset admission gate, plus chat turns (chat revamp SPEC §6.1(b)).
+
+    A running chat turn holds ``admit()`` for its whole lifetime (it can outlive the
+    HTTP request that started it), so the reset's drain would otherwise wait for every
+    in-flight turn and time out. Closing admission therefore cancels every registered
+    turn FIRST; a reset-cancelled turn aborts its reservation and persists nothing."""
+
+    def __init__(self, on_close: Callable[[], Any]) -> None:
+        super().__init__()
+        self._on_close = on_close
+
+    async def close(self, owner: str) -> None:
+        await super().close(owner)
+        try:
+            await self._on_close()
+        except Exception as exc:  # noqa: BLE001 -- the drain still bounds the reset
+            logger.warning("cancelling chat turns on reset failed (%s)", type(exc).__name__)
 
 
 class AppState:
@@ -166,13 +191,17 @@ class AppState:
         # (not _wire) so it is a single stable lock across credential-driven rewires.
         self._prefs_lock = asyncio.Lock()
         from .engine.investigation_gate import InvestigationGate
-        from .engine.mutation_gate import MutationAdmissionGate
 
         self.investigation_gate = InvestigationGate()
+        # Process-local registry of running chat turns (chat revamp SPEC §6.1(b)):
+        # strong references to each turn task, per-user/global concurrency admission
+        # and Stop. Built lazily by ``chat_turns``.
+        self._chat_turns = None
         # Process-local half of the factory-reset write fence. The durable Jobs and
         # Batch documents protect claims/submissions across replicas; this gate drains
         # already-admitted unsafe HTTP requests in the supported single-process runtime.
-        self.mutation_gate = MutationAdmissionGate()
+        # Closing it also cancels running chat turns (they hold admission themselves).
+        self.mutation_gate = _ChatTurnAwareMutationGate(self.cancel_chat_turns)
         # Detached notification/automation work can outlive the request that spawned
         # it. Keep every tenant-writing task reachable so factory reset can cancel and
         # await it after closing HTTP admission and before clearing state.
@@ -555,6 +584,230 @@ class AppState:
         # audit rows, and an in-case chat reads the DEMO case store. Off demo, the
         # real engine — byte-for-byte as before.
         return self._demo.chat_engine if self._demo is not None else self._real_chat_engine
+
+    # ------------------------------------------------------------------ #
+    # Chat revamp wiring (SPEC §2, §5.1, §6.1, §9.1).
+    # ------------------------------------------------------------------ #
+    @property
+    def chat_turns(self):
+        """The process-local :class:`app.api.routes_chat.ChatTurnRegistry` (running
+        turns, concurrency admission, Stop). Imported lazily: the registry lives with
+        the chat routes, and this module must not import the HTTP layer at load."""
+        registry = self._chat_turns
+        if registry is None:
+            from .api.routes_chat import ChatTurnRegistry
+
+            registry = self._chat_turns = ChatTurnRegistry()
+        return registry
+
+    async def cancel_chat_turns(self) -> int:
+        """Cancel every running chat turn and wait (bounded) for each to unwind:
+        abort its reservation, persist nothing (factory reset, shutdown)."""
+        registry = self._chat_turns
+        if registry is None:
+            return 0
+        return await registry.cancel_all(timeout=_CHAT_TURN_CANCEL_TIMEOUT_S)
+
+    @property
+    def reports(self):
+        """The chat report store for the active real/demo boundary (SPEC §9.1):
+        ``stores.reports.ReportStore`` over the shared KV, or the demo stack's own
+        store over the demo KV (purged when Demo Mode is disabled)."""
+        if self._demo is not None:
+            return self._demo.reports
+        store = getattr(self, "_real_reports", None)
+        if store is None:
+            store = self._real_reports = self._build_reports(self._kv)
+        return store
+
+    @staticmethod
+    def _build_reports(kv):
+        """``ReportStore(kv)``, or None while the reports package is not installed
+        (the property retries on the next access)."""
+        try:
+            from .stores.reports import ReportStore
+        except ImportError:
+            return None
+        return ReportStore(kv)
+
+    def chat_source_connector(self, source_id: str | None):
+        """Resolve the chat request's selected source: ``(connector, owned_client,
+        effective_id, effective_name)``. ``None`` connector = the default (primary)
+        source. Raises :class:`ChatSourceUnavailable` (route: 422
+        ``chat_source_unavailable``) for an explicit id that is unknown, disabled,
+        receiver-only or cannot be built. Demo Mode resolves only demo adapters.
+
+        Also the tool context's ``source_resolver``: a tool that names a source gets
+        the same answer as the request, and closes ``owned_client`` after use."""
+        if not source_id:
+            if self.demo_active:
+                from .engine.demo_sources import DEMO_SOURCE_SPECS
+
+                spec = DEMO_SOURCE_SPECS["splunk"]
+                return None, None, spec.source_id, spec.display_name
+            primary = self.execution_prefs.primary_source()
+            return (
+                None,
+                None,
+                primary.id if primary is not None else None,
+                (primary.display_name or primary.id) if primary is not None else "Primary source",
+            )
+        if self.demo_active:
+            connector = self.demo_source_connector(source_id)
+            if connector is None:
+                raise ChatSourceUnavailable("The selected source is unavailable for chat.")
+            row = next((r for r in self.demo_sources_overlay() if r.get("id") == source_id), {})
+            return connector, None, source_id, str(row.get("display_name") or source_id)
+        src = next((s for s in self.prefs.sources if s.id == source_id and s.enabled), None)
+        if src is None:
+            raise ChatSourceUnavailable("The selected source is unknown or disabled.")
+        from .connectors.registry import get_registry
+
+        if not get_registry().is_pull(src.source_type):
+            raise ChatSourceUnavailable("The selected source does not provide a query surface.")
+        try:
+            from .connectors.elastic import ElasticConnector
+            from .connectors.opensearch import OpenSearchConnector
+            from .connectors.wazuh import WazuhConnector
+            from .constants import SourceType
+
+            es_client, owned = self.es_client_for_source(src)
+            cfg = {**(src.config or {})}
+            if src.display_name:
+                cfg.setdefault("display_name", src.display_name)
+            if src.source_type == SourceType.OPENSEARCH:
+                conn = OpenSearchConnector(es_client, config=cfg, connector_id=src.id)
+            elif src.source_type == SourceType.WAZUH:
+                conn = WazuhConnector(es_client, config=cfg, connector_id=src.id)
+            else:
+                conn = ElasticConnector(es_client, config=cfg, connector_id=src.id)
+        except Exception as exc:  # noqa: BLE001
+            raise ChatSourceUnavailable(
+                "The selected source could not be prepared for chat."
+            ) from exc
+        return conn, (es_client if owned else None), src.id, src.display_name or src.id
+
+    def _chat_browse_targets(self, prefs: Preferences | None = None) -> list:
+        """Every browse-capable source of the active tenant view (the chat
+        ``search_logs`` all-sources fan-out). Lazy: no client is opened here."""
+        from .engine.log_rows import demo_browse_targets, tenant_browse_targets
+
+        if self.demo_active:
+            return demo_browse_targets(
+                self.demo_sources_overlay(), prefs=prefs or self.prefs,
+                demo_source_connector=self.demo_source_connector,
+            )
+        from .connectors.registry import get_registry
+
+        return tenant_browse_targets(
+            self.prefs.sources, prefs=prefs or self.prefs, registry=get_registry(),
+            es_client_for_source=self.es_client_for_source, ingest_service=self.ingest_service,
+        )
+
+    async def _chat_source_health_rows(self) -> list[dict]:
+        """The ``GET /api/sources/health`` rows (demo overlay in Demo Mode)."""
+        if self.demo_active:
+            return self.demo_source_health_overlay()
+        from .engine.source_health import sources_health_rows
+
+        return await sources_health_rows(
+            self.prefs,
+            poller=getattr(self, "poller", None),
+            silent_sources=getattr(self, "silent_sources", None),
+            cursor_store=getattr(self, "cursor_store", None),
+            ingest_service=getattr(self, "ingest_service", None),
+            last_event_map=getattr(self, "_source_last_event", {}) or {},
+        )
+
+    async def chat_grants(self, request) -> frozenset[tuple[str, str]]:
+        """The caller's grants over every pair a chat turn can need: the tool
+        catalogue, the console map and the route-level grants (case comments,
+        memory, model choice, cost). Resolved once, WITHOUT audit rows (SPEC §5.1)."""
+        from .api.deps import resolve_grants
+
+        return await resolve_grants(request, chat_grant_pairs())
+
+    async def build_chat_tool_context(
+        self,
+        request,
+        body=None,
+        *,
+        grants: frozenset[tuple[str, str]] | None = None,
+        prefs: Preferences | None = None,
+        log_source: Any = None,
+        source_id: str | None = None,
+        case_id: str | None = None,
+    ):
+        """THE builder of a turn's :class:`~app.agents.chat_tools.base.ChatToolContext`
+        (SPEC §2, §5.1), shared by every chat route and Demo Mode.
+
+        Everything comes from the demo-switchable properties, so Demo Mode isolation is
+        structural; the demo stack overlays only its extras
+        (:meth:`DemoStack.chat_context_extras`). ``body`` is the ``ChatRequest`` (None
+        for ``/chat/context``): its ``time_range`` and ``scopes`` bound every tool and
+        can never be widened by a tool result (§4.8.4). ``grants`` are resolved here
+        when the caller did not already resolve them. ``log_source``/``source_id`` are
+        the request's explicitly selected source (None = the primary)."""
+        from . import __version__
+        from .agents.chat_tools.base import ChatToolContext
+        from .agents.chat_tools.intel import bind_enrichment
+        from .api.deps import current_username
+        from .engine.case_cluster import bind_cluster_for_case
+
+        if grants is None:
+            grants = await self.chat_grants(request)
+        prefs = prefs or self.execution_prefs
+        engine = self.chat_engine
+        effective_case = case_id
+        if effective_case is None and body is not None:
+            effective_case = body.case_id or (body.context.case_id if body.context else None)
+        fields: dict[str, Any] = {
+            "prefs": prefs,
+            "cases": self.cases,
+            "audit": self.execution_audit,
+            "control_audit": self.control_audit,
+            "usage": self.usage_store,
+            "rag": getattr(engine, "_rag", None) or self.rag_service,
+            "campaigns": self.campaign_store,
+            "proposals": self.proposals,
+            "tuning": self.tuning_store,
+            "baseline": self.baseline_store,
+            "noise": self.noise_counters,
+            "standup": self.standup_service,
+            "memory": self.memory,
+            "log_source": log_source if log_source is not None else getattr(engine, "_source", None),
+            "source_resolver": self.chat_source_connector,
+            "browse_sources": lambda: self._chat_browse_targets(prefs),
+            "enrich": bind_enrichment(
+                prefs=prefs, secrets=self.secrets, cache=self.cache,
+                registry=self.enrichment_registry,
+            ),
+            "budget_gate": self.budget_gate,
+            "demo_active": self.demo_active,
+            "grants": frozenset(grants),
+            "case_id": effective_case or None,
+            "user": current_username(request) or "default",
+            "time_range": getattr(body, "time_range", None),
+            "context_time_range": _context_time_range(body),
+            "app_version": __version__,
+            "source_health_rows": self._chat_source_health_rows,
+            "scheduler_health": self.scheduler_health,
+            "cluster_for_case": bind_cluster_for_case(
+                es=self.es, log_source=self.log_source, prefs=prefs,
+                query_source_for=self.active_source_for_id,
+            ),
+            "secrets_status": self.secrets.configured_status,
+            "runbooks": getattr(self, "runbooks", None),
+            "playbooks": getattr(self, "playbooks", None),
+            "rule_versions": getattr(self, "rule_versions", None),
+            "scopes": frozenset(getattr(body, "scopes", None) or ()),
+            "source_id": source_id or None,
+        }
+        if self._demo is not None:
+            fields.update(self._demo.chat_context_extras(
+                prefs=prefs, query_source_for=self.active_source_for_id,
+            ))
+        return ChatToolContext(**fields)
 
     @property
     def rag_service(self):
@@ -1099,6 +1352,10 @@ class AppState:
         self.custom_models = CustomModelStore(kv)
         # Shift-handoff action items + acknowledgements (org-scoped).
         self._real_shift_handoff = ShiftHandoffStore(kv)
+        # Chat reports (chat revamp SPEC §9.1) over the SAME shared KV: one document
+        # per report plus a per-user index, no new index/table/migration. Rebuilt with
+        # the KV so it never points at a stale backend.
+        self._real_reports = self._build_reports(kv)
 
     def _build_round4_stores(self) -> None:
         """Construct the 4 Round-4 Wave-3 KV-backed stores over the active backend's KV
@@ -3386,6 +3643,12 @@ class AppState:
 
     async def shutdown(self) -> None:
         try:
+            # A turn still running at shutdown is abandoned like a reset-cancelled
+            # one: its reservation is aborted so a retry runs fresh after restart.
+            await self.cancel_chat_turns()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             await self.job_runner.stop()
         except Exception:  # noqa: BLE001
             pass
@@ -3426,6 +3689,57 @@ class AppState:
             except Exception:  # noqa: BLE001
                 pass
             self._sql_engine = None
+
+
+class ChatSourceUnavailable(ValueError):
+    """The chat request's explicit source cannot be queried (unknown, disabled,
+    receiver-only or unbuildable). The message is an engine template."""
+
+
+# Grants a chat route needs beyond the tool catalogue and the console map.
+_CHAT_ROUTE_GRANTS: frozenset[tuple[str, str]] = frozenset({
+    ("cases", "comment"),   # a case-scoped turn may write the case thread (§4.6)
+    ("memory", "manage"),   # memory proposals / the compatibility memory carve-out (§4.8)
+    ("models", "read"),     # a non-default model, money fields of /chat/context (§3.1, §8)
+    ("cost", "view"),       # spent_today / remaining on /chat/context (§8)
+})
+
+
+def chat_grant_pairs() -> frozenset[tuple[str, str]]:
+    """Every ``(resource, action)`` a chat request is evaluated against:
+    ``registry.catalogue_grant_pairs() | app.knowledge.console_grant_pairs()`` plus
+    the route-level grants. An unavailable corpus contributes nothing."""
+    from .agents.chat_tools.registry import catalogue_grant_pairs
+
+    pairs = set(catalogue_grant_pairs()) | set(_CHAT_ROUTE_GRANTS)
+    try:
+        from .knowledge import console_grant_pairs
+
+        pairs |= set(console_grant_pairs())
+    except Exception:  # noqa: BLE001 -- no corpus: no console targets to grant
+        pass
+    return frozenset(pairs)
+
+
+def _context_time_range(body: Any) -> Any:
+    """``body.context.time_range`` as a validated ``TimeRange`` (the §3.1 default
+    below the chip), or ``None`` when absent or invalid. The screen context is
+    best-effort, so a malformed window is ignored rather than failing the turn."""
+    from .models import TimeRange
+
+    context = getattr(body, "context", None)
+    raw = getattr(context, "time_range", None)
+    if not isinstance(raw, dict):
+        return None
+    start, end = raw.get("from"), raw.get("to")
+    if not isinstance(start, str) or not start.strip():
+        return None
+    try:
+        return TimeRange.model_validate({
+            "from": start, "to": end if isinstance(end, str) and end.strip() else "now",
+        })
+    except Exception:  # noqa: BLE001 -- a malformed screen window is no window
+        return None
 
 
 def _coerce_bool(v: Any, default: bool = True) -> bool:

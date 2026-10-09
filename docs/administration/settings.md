@@ -36,7 +36,7 @@ script: another administrator may have changed a different section in the meanti
 
 The Console presents one searchable section rail, a single active-section heading,
 and flat divider-led setting groups. Theme selection is a compact **System / Light /
-Dark** control under **Account → Appearance & customization**. Personal theme changes
+Dark** control under **Settings → Account → Appearance & customization**. Personal theme changes
 apply immediately and follow the signed-in user; System follows the organization
 default when one is configured, otherwise the device preference.
 
@@ -78,6 +78,25 @@ point-in-time rollback in version 0.1.
   not discard or silently close the case.
 - **Reset:** reset actions are separate, freshly authenticated, type-to-confirm
   operations. See [Reset and recovery](reset.md).
+
+## Chat assistant
+
+**Settings → General → Chat assistant** bounds Workspace and Case Manager chat:
+
+- **Answers:** the default live mode for viewers who have not chosen one (Live steps or
+  Type out answers) and whether answers may be typed out at all.
+- **Per-question limits:** model calls, lookups, lookups at once, the token ceiling, and
+  the time limit; timeouts, the answer reserve and length, results per step, and how
+  many questions may run at once sit under **More limits**.
+- **Indicator lookups:** how many indicators chat may send to enrichment providers per
+  question and per conversation (0 turns the lookup off, and chat's access list then
+  says it is turned off on this deployment), internal domain suffixes that are never
+  sent, and whether e-mail addresses may be sent.
+
+The editor accepts only values inside each knob's range, and the server clamps anything
+else, so a bad value can never reset other preferences. No setting here can let chat
+change anything: the assistant is read-only by construction. The keys are listed in the
+[configuration reference](../reference/configuration.md#chat-assistant-bounds).
 
 ## Updates and release channels
 

@@ -1,304 +1,252 @@
 /**
- * CaseChatPanel (ChatTab) — Round-8 #6 declutter: reuse the shared <ChatPanel>.
+ * CaseChatPanel (ChatTab) + its lazy CaseChat body — the case-scoped entry point to the ONE chat engine (#5,
+ * SPEC §4.6, §10.8), ported from the pre-revamp ChatPanel embed suite:
  *
- * The tab used to hand-roll its own transcript + composer (~150 lines). It now embeds
- * the shared ChatPanel in `compact` mode, scoped to the case, wrapped in the shared
- * PanelCard, with a slim right-aligned "Open full chat" deep-link. This spec locks:
+ *   1. every turn carries THIS case id and is never saved to personal history
+ *      (no `persist_conversation`, no conversation list or report calls);
+ *   2. the quick actions send their prompt as a starter;
+ *   3. the one-line status reads Working while a turn runs and Ready after it, without
+ *      a live region (the shell announcer speaks);
+ *   4. the transcript uses the shared compact message components, with no rail, no
+ *      report panel and no Add to report;
+ *   5. "Open full chat" closes the sheet and navigates to the case-scoped chat;
+ *   6. the Case Manager frame keeps its shared content rail and bottom-docked layout;
+ *   7. axe-clean.
  *
- *   1. It renders the SHARED ChatPanel — the composer carries ChatPanel's "Chat message"
- *      label (the old hand-rolled composer never did), and ChatPanel's "Scoped to case"
- *      chip proves the caseId is threaded through.
- *   2. The case-scoped starter prompts show in the empty state.
- *   3. Sending a starter calls api.chat with THIS case id (context threading) — chat is
- *      advisory only (#3): nothing here decides or mutates the case.
- *   4. The "Open full chat" deep-link closes the sheet then navigates to the chat page
- *      scoped to the case.
- *   5. No a11y violations (jest-axe).
- *
- * `api` is mocked so the mount is hermetic (no models/sources/chat network).
+ * The composer and empty state are the composer package's; they are doubles here.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-  act,
-} from "@testing-library/react";
-import { axe, toHaveNoViolations } from "jest-axe";
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
 
-const { chatMock, getModelsMock, listSourcesMock } = vi.hoisted(() => ({
-  chatMock: vi.fn(),
-  getModelsMock: vi.fn(),
-  listSourcesMock: vi.fn(),
-}));
+vi.mock('@/soc/chat/composer/Composer', async () => {
+  const React = await import('react');
+  type Engine = import('@/soc/chat/useChatEngine').ChatEngine;
+  const Composer = React.forwardRef(function ComposerDouble(
+    props: { engine: Engine; variant?: string; contextError?: string | null },
+    ref: React.Ref<{ focus: () => void; setText: (text: string) => void; savePrompt: (text: string) => void }>,
+  ) {
+    const area = React.useRef<HTMLTextAreaElement>(null);
+    React.useImperativeHandle(ref, () => ({
+      focus: () => area.current?.focus(),
+      setText: (text: string) => props.engine.setDraft(text),
+      savePrompt: () => undefined,
+    }));
+    return React.createElement(
+      'form',
+      {
+        'data-testid': 'composer',
+        'data-variant': props.variant,
+        'data-context-error': props.contextError ?? '',
+        onSubmit: (event: React.FormEvent) => {
+          event.preventDefault();
+          props.engine.send();
+        },
+      },
+      React.createElement('textarea', {
+        ref: area,
+        'aria-label': 'Message',
+        value: props.engine.draft,
+        onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => props.engine.setDraft(event.target.value),
+      }),
+      React.createElement('button', { type: 'submit' }, 'Send'),
+    );
+  });
+  return { Composer };
+});
 
-vi.mock("@/lib/api", () => {
-  class ApiError extends Error {}
+vi.mock('@/soc/chat/empty/EmptyState', async () => {
+  const React = await import('react');
   return {
-    ApiError,
-    api: {
-      getModels: getModelsMock,
-      listSources: listSourcesMock,
-      chat: chatMock,
-      addMemory: vi.fn().mockResolvedValue({}),
-    },
+    EmptyState: (props: { variant?: string; error?: string | null; onRetry?: () => void }) =>
+      React.createElement(
+        'div',
+        { 'data-testid': 'empty-state', 'data-variant': props.variant, 'data-error': props.error ?? '' },
+        'Ask about this case. Read-only.',
+        props.error && props.onRetry ? React.createElement('button', { type: 'button', onClick: props.onRetry }, 'Retry context') : null,
+      ),
   };
 });
 
-import type { Case } from "@/lib/types";
-import { ChatTab } from "../CaseChatPanel";
+import type { Case } from '@/lib/types';
+import { TooltipProvider } from '@/ui/tooltip';
+import { clearChatContextCache } from '@/soc/chat/useChatContext';
+import { ChatTab } from '../CaseChatPanel';
 
-// jsdom doesn't implement Element.scrollTo (ChatPanel pins the transcript on update).
-if (
-  typeof Element !== "undefined" &&
-  !(Element.prototype as unknown as { scrollTo?: unknown }).scrollTo
-) {
-  (Element.prototype as unknown as { scrollTo: () => void }).scrollTo =
-    () => {};
+const encoder = new TextEncoder();
+const CASE = { case_id: 'case-9' } as unknown as Case;
+
+interface Call {
+  url: string;
+  method: string;
+  body: Record<string, unknown> | undefined;
 }
 
-const CASE = { case_id: "case-9" } as unknown as Case;
+let calls: Call[] = [];
+let controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+let contextFailures = 0;
 
-describe("ChatTab — reuses the shared ChatPanel (Round-8 #6)", () => {
-  beforeEach(() => {
-    chatMock.mockReset();
-    getModelsMock.mockReset();
-    listSourcesMock.mockReset();
-    // Keep best-effort picker discovery pending in this suite; individual tests
-    // exercise chat behavior and should not leak unrelated async effect updates.
-    getModelsMock.mockReturnValue(new Promise(() => {}));
-    listSourcesMock.mockReturnValue(new Promise(() => {}));
-    chatMock.mockResolvedValue({ answer: "hello from agent" });
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+beforeEach(() => {
+  calls = [];
+  controllers = [];
+  contextFailures = 0;
+  clearChatContextCache();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.startsWith('/api/prefs/user')) return json({});
+      if (url.startsWith('/api/chat/context')) {
+        if (contextFailures > 0) {
+          contextFailures -= 1;
+          return json({ detail: 'Chat context is temporarily unavailable.' }, 503);
+        }
+        return json({ tools: [], bounds: { max_tool_calls: 10 }, text_streaming: { available: true } });
+      }
+      if (url === '/api/chat/stream') {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controllers.push(controller);
+          },
+        });
+        return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`);
+    }),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+async function push(...events: unknown[]) {
+  await act(async () => {
+    for (const event of events) controllers[0].enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+}
+
+const settle = () =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
   });
 
-  it("embeds the shared ChatPanel, scoped to the case, with the case starters", () => {
-    render(<ChatTab c={CASE} onNavigate={vi.fn()} onClose={vi.fn()} />);
+/**
+ * Render the tab and wait for its lazy chat body (`./CaseChat`) to mount, then let the
+ * context request settle. The body is a `React.lazy` boundary so opening a case never
+ * downloads the chat chunks; the generous timeout covers the first transform of the
+ * module graph under a loaded test runner.
+ */
+async function renderTab(props: Partial<React.ComponentProps<typeof ChatTab>> = {}) {
+  const view = render(
+    <TooltipProvider>
+      <ChatTab c={CASE} onNavigate={vi.fn()} onClose={vi.fn()} {...props} />
+    </TooltipProvider>,
+  );
+  await screen.findByRole('group', { name: 'AI analyst status' }, { timeout: 5000 });
+  await settle();
+  return view;
+}
 
-    // The shared composer (only ChatPanel labels its textarea "Chat message").
-    expect(screen.getByLabelText("Chat message")).toBeInTheDocument();
-    // ChatPanel's scope chip proves the caseId is threaded in.
-    expect(screen.getByText(/Scoped to case/i)).toBeInTheDocument();
-    expect(screen.getByText("case-9")).toBeInTheDocument();
-    // The case-scoped starters render in the empty state.
-    expect(screen.getByText("Summarize this case")).toBeInTheDocument();
-    expect(screen.getByText("Why was this flagged?")).toBeInTheDocument();
+const streamBodies = () => calls.filter((call) => call.url === '/api/chat/stream').map((call) => call.body);
+
+describe('ChatTab — the case-scoped chat', () => {
+  it('scopes every turn to this case and never saves it to personal history', async () => {
+    await renderTab();
+    expect(screen.getByRole('group', { name: 'AI analyst status' })).toHaveTextContent(/Scoped to\s*case-9/);
+    expect(screen.getByTestId('empty-state')).toHaveAttribute('data-variant', 'case');
+    expect(screen.getByTestId('composer')).toHaveAttribute('data-variant', 'case');
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize this case' }));
+    await settle();
+    expect(streamBodies()[0]).toMatchObject({ message: 'Summarize this case', case_id: 'case-9', origin: 'starter' });
+    expect(streamBodies()[0]).not.toHaveProperty('persist_conversation');
+    expect(calls.some((call) => call.url.startsWith('/api/chat/conversations') || call.url.startsWith('/api/reports'))).toBe(false);
+    expect(screen.queryByRole('navigation', { name: 'Chat history' })).toBeNull();
   });
 
-  it("threads THIS case id into api.chat when a starter is sent (#3 advisory)", async () => {
-    render(<ChatTab c={CASE} onNavigate={vi.fn()} onClose={vi.fn()} />);
-
-    fireEvent.click(screen.getByText("Summarize this case"));
-    await waitFor(() => expect(chatMock).toHaveBeenCalledTimes(1));
-    // ChatPanel.send() calls api.chat(message, history, caseId, ...).
-    expect(chatMock.mock.calls[0][0]).toBe("Summarize this case");
-    expect(chatMock.mock.calls[0][2]).toBe("case-9");
+  it('shows Working while a turn runs and Ready with the compact answer after it, with no Add to report', async () => {
+    await renderTab({ presentation: 'case-manager' });
+    const status = screen.getByRole('group', { name: 'AI analyst status' });
+    expect(status).not.toHaveAttribute('aria-live');
+    expect(status).toHaveTextContent('Ready');
+    fireEvent.click(screen.getByRole('button', { name: 'Check IOCs' }));
+    await settle();
+    expect(status).toHaveTextContent('Working');
+    expect(streamBodies()[0]).toMatchObject({ message: 'Check IOCs', case_id: 'case-9' });
+    await push(
+      { type: 'turn.start', turn_id: 't-1', conversation_id: null, model: 'm', stream_mode: 'steps', replayed: false, estimate: { prompt_tokens: 10 } },
+      { type: 'turn.done', response: { answer: 'No additional malicious indicators were found.', usage: { calls: 1, total_tokens: 500, cost: 0.001 } } },
+    );
+    expect(await screen.findByText('No additional malicious indicators were found.')).toBeInTheDocument();
+    expect(status).toHaveTextContent('Ready');
+    expect(screen.getByTestId('meta-row')).toHaveTextContent('500 tokens');
+    expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Ask again' })).toBeInTheDocument();
   });
 
-  it('"Open full chat" closes the sheet then navigates to the case-scoped chat', () => {
+  it('keeps focus in the composer after a quick action and surfaces a failed context with Retry', async () => {
+    contextFailures = 1;
+    await renderTab({ presentation: 'case-manager' });
+    const empty = screen.getByTestId('empty-state');
+    expect(empty.getAttribute('data-error')).toMatch(/unavailable/i);
+    expect(screen.getByTestId('composer').getAttribute('data-context-error')).toMatch(/unavailable/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry context' }));
+    await settle();
+    expect(screen.getByTestId('empty-state')).toHaveAttribute('data-error', '');
+
+    const action = screen.getByRole('button', { name: 'Summarize Case' });
+    action.focus();
+    fireEvent.click(action);
+    await settle();
+    // The quick action is disabled while the turn runs: focus is in the composer.
+    expect(action).toBeDisabled();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
+  });
+
+  it('"Open full chat" closes the sheet then navigates to the case-scoped chat', async () => {
     const onNavigate = vi.fn();
     const onClose = vi.fn();
-    render(<ChatTab c={CASE} onNavigate={onNavigate} onClose={onClose} />);
-
-    fireEvent.click(screen.getByText("Open full chat"));
+    await renderTab({ onNavigate, onClose });
+    fireEvent.click(screen.getByRole('button', { name: /Open full chat/ }));
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledWith("chat", { caseId: "case-9" });
+    expect(onNavigate).toHaveBeenCalledWith('chat', { caseId: 'case-9' });
   });
 
-  it("omits the deep-link when no navigate handler is provided", () => {
-    render(<ChatTab c={CASE} onClose={vi.fn()} />);
-    expect(screen.queryByText("Open full chat")).not.toBeInTheDocument();
+  it('omits the deep-link when no navigate handler is provided', async () => {
+    await renderTab({ onNavigate: undefined });
+    expect(screen.queryByRole('button', { name: /Open full chat/ })).toBeNull();
   });
 
-  it("has no accessibility violations", async () => {
-    const { container } = render(
-      <ChatTab c={CASE} onNavigate={vi.fn()} onClose={vi.fn()} />,
-    );
-    expect(await axe(container)).toHaveNoViolations();
-  });
-
-  it("renders the flat analyst-console composition inside Case Manager", () => {
-    const { container } = render(
-      <ChatTab
-        c={CASE}
-        onNavigate={vi.fn()}
-        onClose={vi.fn()}
-        presentation="case-manager"
-      />,
-    );
-
-    const panel = container.querySelector(
-      '[data-case-panel="chat"][data-presentation="case-manager"]',
-    );
-    expect(panel).not.toBeNull();
-    expect(panel).toHaveClass("flex", "h-full", "min-h-0", "overflow-hidden");
-    expect(panel?.className).not.toMatch(/clamp|h-\[/);
-
-    const chatEngine = container.querySelector(
-      '[data-chat-presentation="case-manager"]',
-    );
-    expect(chatEngine).not.toBeNull();
-    expect(chatEngine).toHaveClass(
-      "h-full",
-      "min-h-0",
-      "w-full",
-      "overflow-hidden",
-    );
-
-    // Exact bottom-anchor contract: only the transcript grows/scrolls; the action
-    // rail and composer are non-shrinking siblings at the bottom of the full frame.
-    expect(container.querySelector('[data-chat-scroll-lane="true"]')).toHaveClass(
-      "min-h-0",
-      "flex-1",
-      "overflow-y-auto",
-    );
-    expect(
-      screen.getByRole("group", { name: "Analyst quick actions" }),
-    ).toHaveClass("shrink-0", "flex-nowrap", "overflow-x-auto");
-    for (const action of [
-      "Summarize Case",
-      "Check IOCs",
-      "Suggest Remediation",
-    ]) {
-      expect(screen.getByRole("button", { name: action })).toHaveClass(
-        "shrink-0",
-      );
+  it('keeps the Case Manager frame on the shared rail with the composer docked below the transcript', async () => {
+    const { container } = await renderTab({ presentation: 'case-manager' });
+    const panel = container.querySelector('[data-case-panel="chat"][data-presentation="case-manager"]');
+    expect(panel).toHaveClass('flex', 'h-full', 'min-h-0', 'overflow-hidden', 'px-4', 'py-4', 'sm:px-5', 'sm:py-5', 'lg:px-6');
+    const frame = container.querySelector('[data-chat-presentation="case-manager"]');
+    expect(frame).toHaveClass('h-full', 'min-h-0', 'w-full', 'overflow-hidden');
+    expect(container.querySelector('[data-chat-scroll-lane="true"]')).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+    expect(frame?.lastElementChild).toHaveClass('shrink-0');
+    const actions = screen.getByRole('group', { name: 'Analyst quick actions' });
+    expect(actions).toHaveClass('flex-nowrap', 'overflow-x-auto');
+    for (const action of ['Summarize Case', 'Check IOCs', 'Suggest Remediation']) {
+      expect(screen.getByRole('button', { name: action })).toHaveClass('shrink-0');
     }
-    expect(chatEngine?.lastElementChild).toHaveClass("shrink-0");
-    expect(screen.queryByRole("heading", { name: /case chat/i })).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: /open full chat/i }),
-    ).toBeNull();
-
-    const status = screen.getByRole("status", { name: "AI analyst status" });
-    expect(status).toHaveClass(
-      "grid-cols-[minmax(0,1fr)_auto]",
-      "items-center",
-      "sm:grid-cols-[auto_1fr_auto]",
-    );
-    expect(status).toHaveTextContent(/Scoped to:\s*case-9/i);
-    expect(status).toHaveTextContent(/Status:\s*Ready/i);
-    expect(screen.getByText("AI Analyst ready with case context.")).toHaveClass(
-      "hidden",
-      "sm:block",
-    );
-    expect(panel).toHaveClass(
-      "px-4",
-      "py-4",
-      "sm:px-5",
-      "sm:py-5",
-      "lg:px-6",
-    );
-    expect(screen.getByLabelText("Chat message")).toHaveClass(
-      "[field-sizing:content]",
-    );
-    expect(screen.getByPlaceholderText("Ask AI Analyst…")).toBeInTheDocument();
-    expect(
-      screen.getByRole("group", { name: "Analyst quick actions" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Summarize Case" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Check IOCs" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Suggest Remediation" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Case context is ready/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /case chat/i })).toBeNull();
   });
 
-  it("shows honest working/ready states and the analyst transcript around the shared live send flow", async () => {
-    let resolveChat: ((value: { answer: string }) => void) | undefined;
-    chatMock.mockReturnValueOnce(
-      new Promise<{ answer: string }>((resolve) => {
-        resolveChat = resolve;
-      }),
-    );
-
-    render(
-      <ChatTab
-        c={CASE}
-        onNavigate={vi.fn()}
-        onClose={vi.fn()}
-        presentation="case-manager"
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Check IOCs" }));
-    await waitFor(() => expect(chatMock).toHaveBeenCalledTimes(1));
-    expect(chatMock.mock.calls[0][0]).toBe("Check IOCs");
-    expect(chatMock.mock.calls[0][2]).toBe("case-9");
-    expect(
-      screen.getByRole("status", { name: "AI analyst status" }),
-    ).toHaveTextContent(/Status:\s*Working/i);
-    expect(screen.getByText("Operator")).toBeInTheDocument();
-    expect(screen.getAllByText("Check IOCs").length).toBeGreaterThanOrEqual(2);
-    expect(
-      screen.getByText("Searching configured sources…"),
-    ).toBeInTheDocument();
-
-    await act(async () => {
-      resolveChat?.({
-        answer: "No additional malicious indicators were found.",
-      });
-    });
-
-    expect(
-      await screen.findByText("No additional malicious indicators were found."),
-    ).toBeInTheDocument();
-    expect(screen.getByText("AI analyst")).toBeInTheDocument();
-    expect(
-      screen.getByRole("status", { name: "AI analyst status" }),
-    ).toHaveTextContent(/Status:\s*Ready/i);
-  });
-
-  it("keeps live source and model selection inside the compact analyst settings control", async () => {
-    getModelsMock.mockResolvedValueOnce({
-      providers: { local: ["soc-model"] },
-    });
-    listSourcesMock.mockResolvedValueOnce({
-      sources: [
-        {
-          id: "siem-1",
-          display_name: "Primary SIEM",
-          source_type: "elasticsearch",
-          enabled: true,
-          ingest_mode: "pull",
-          can_browse: true,
-        },
-      ],
-    });
-
-    render(
-      <ChatTab
-        c={CASE}
-        onNavigate={vi.fn()}
-        onClose={vi.fn()}
-        presentation="case-manager"
-      />,
-    );
-
-    const settings = await screen.findByRole("button", {
-      name: "Chat settings",
-    });
-    fireEvent.click(settings);
-    expect(await screen.findByLabelText("Source")).toBeInTheDocument();
-    expect(screen.getByLabelText("Model")).toBeInTheDocument();
-    expect(screen.getByText("Analyst settings")).toBeInTheDocument();
-  });
-
-  it("has no accessibility violations in the Case Manager chat frame", async () => {
-    const { container } = render(
-      <ChatTab
-        c={CASE}
-        onNavigate={vi.fn()}
-        onClose={vi.fn()}
-        presentation="case-manager"
-      />,
-    );
+  it('has no accessibility violations in either presentation', async () => {
+    const { container, unmount } = await renderTab();
     expect(await axe(container)).toHaveNoViolations();
+    unmount();
+    const second = await renderTab({ presentation: 'case-manager' });
+    expect(await axe(second.container)).toHaveNoViolations();
   });
 });

@@ -21,6 +21,11 @@
  * "Logs" page under the Triage nav group) and `UnifiedLogsSheet` (the same content in a
  * right Sheet, for an inline "browse everything" affordance). The default export is the
  * page view.
+ *
+ * `UnifiedLogsBody` also takes a STARTING query, window and source plus a header slot:
+ * the Logs page's chat deep link ("Open in Logs", SPEC §10.7) opens this same browser
+ * already set to the answer's exact filter, with its summary above the controls, so
+ * there is one log table, not a second copy for linked queries.
  */
 import * as React from 'react';
 import {
@@ -180,14 +185,90 @@ const SourceStatusStrip: React.FC<{ sources: UnifiedLogSourceStatus[] }> = ({ so
 /* Shared body — the controls + status strip + rows table                     */
 /* -------------------------------------------------------------------------- */
 
-export const UnifiedLogsBody: React.FC = () => {
-  const [query, setQuery] = React.useState('');
+/** The time-range control's value for a starting window that is not a preset. */
+const LINKED_WINDOW = 'linked';
+
+export interface UnifiedLogsBodyProps {
+  /** The search to start with (a linked query); it stays editable. */
+  initialQuery?: string;
+  /**
+   * The window to start with (a linked query's exact bounds): `now`, `now-<n><unit>` or
+   * ISO-8601. A preset with no explicit end selects that preset; anything else becomes a
+   * one-off entry in the time-range control until another range is chosen.
+   */
+  initialFrom?: string;
+  initialTo?: string;
+  /** How that one-off window reads in the control (e.g. a readable UTC range). */
+  initialWindowLabel?: string;
+  /** Read only this source (a linked query's source). */
+  sourceId?: string;
+  /** Rendered above the controls (e.g. the linked query's summary). */
+  header?: React.ReactNode;
+  /** Every successful read's per-source status (a host names a linked source with it). */
+  onSources?: (sources: UnifiedLogSourceStatus[]) => void;
+}
+
+/** Why Live tail is off while a linked query's fixed past window is selected. */
+export const LIVE_TAIL_FIXED_WINDOW_REASON = 'This linked window is fixed in the past, so it never changes. Pick a time range to follow new events.';
+
+interface StartWindow {
+  /** A preset value, or {@link LINKED_WINDOW} for the starting one-off window. */
+  start: string;
+  linked: {
+    from: string | null;
+    to: string | null;
+    label: string;
+    /** It ends at an absolute instant already past, so re-reading it finds nothing new. */
+    fixed: boolean;
+  } | null;
+}
+
+/**
+ * Whether a window ending at `to` is closed in the past: `to` is an absolute instant (not
+ * `now` or `now-…`, the same rule as the Logs page's readable range) at or before now. An
+ * open end runs to now, and a relative one moves, so both still see new events.
+ */
+function endsInPast(to: string | undefined): boolean {
+  if (!to || to === 'now' || to.startsWith('now-')) return false;
+  const ms = Date.parse(to);
+  return Number.isFinite(ms) && ms <= Date.now();
+}
+
+function startWindow(from?: string, to?: string, label?: string): StartWindow {
+  if (!from && !to) return { start: 'now-1h', linked: null };
+  if (from && (!to || to === 'now') && TIME_RANGES.some((r) => r.value === from)) return { start: from, linked: null };
+  return {
+    start: LINKED_WINDOW,
+    linked: { from: from ?? null, to: to ?? null, label: label || `${from ?? '…'} → ${to ?? 'now'}`, fixed: endsInPast(to) },
+  };
+}
+
+export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
+  initialQuery = '',
+  initialFrom,
+  initialTo,
+  initialWindowLabel,
+  sourceId,
+  header = null,
+  onSources,
+}) => {
+  const [query, setQuery] = React.useState(initialQuery);
   // The COMMITTED search term the fetch actually uses. Kept separate from the live
   // `query` input so typing does not refetch/skeleton-flash on every keystroke — the
   // search is manual (Enter / Refresh), matching the button contract below.
-  const [submittedQuery, setSubmittedQuery] = React.useState('');
-  const [start, setStart] = React.useState('now-1h');
-  const [liveTail, setLiveTail] = React.useState(false);
+  const [submittedQuery, setSubmittedQuery] = React.useState(initialQuery);
+  // The starting window is read once: a host that links somewhere else remounts the
+  // body (keyed), so a later prop change never silently swaps the analyst's range.
+  const [initialWindow] = React.useState(() => startWindow(initialFrom, initialTo, initialWindowLabel));
+  const [start, setStart] = React.useState(initialWindow.start);
+  const linkedWindow = start === LINKED_WINDOW ? initialWindow.linked : null;
+  const [liveTailPref, setLiveTail] = React.useState(false);
+  // Re-polling a window closed in the past every 10 s would only re-read the same rows.
+  // A relative or open-ended linked window (`from=now-6h`) still moves, so it can tail.
+  const liveTailBlocked = start === LINKED_WINDOW && !!initialWindow.linked?.fixed;
+  const liveTail = liveTailPref && !liveTailBlocked;
+  const onSourcesRef = React.useRef(onSources);
+  onSourcesRef.current = onSources;
 
   const [rows, setRows] = React.useState<UnifiedLogRow[]>([]);
   const [sources, setSources] = React.useState<UnifiedLogSourceStatus[]>([]);
@@ -216,13 +297,16 @@ export const UnifiedLogsBody: React.FC = () => {
         const res = await fetchUnifiedLogs({
           limit: ROW_LIMIT,
           query: submittedQuery.trim() || undefined,
-          from: start || undefined,
-          to: 'now',
+          // A linked window keeps its exact bounds; an open-ended one runs to now.
+          from: linkedWindow ? (linkedWindow.from ?? undefined) : start || undefined,
+          to: linkedWindow ? (linkedWindow.to ?? (linkedWindow.from ? 'now' : undefined)) : 'now',
+          ...(sourceId ? { source_id: sourceId } : {}),
         });
         if (seq !== seqRef.current) return; // superseded by a newer request
         const logs = res.logs || [];
         setRows(logs);
         setSources(res.sources || []);
+        onSourcesRef.current?.(res.sources || []);
         setPartial(Boolean(res.partial));
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
@@ -242,7 +326,7 @@ export const UnifiedLogsBody: React.FC = () => {
         if (showSkeleton && seq === seqRef.current) setLoading(false);
       }
     },
-    [submittedQuery, start],
+    [submittedQuery, start, linkedWindow, sourceId],
   );
 
   // Manual search: commit the live input. If the term is unchanged the load effect
@@ -290,6 +374,7 @@ export const UnifiedLogsBody: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4">
+      {header}
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-2.5">
         <div className="relative min-w-[14rem] flex-1">
@@ -309,10 +394,11 @@ export const UnifiedLogsBody: React.FC = () => {
           />
         </div>
         <Select value={start} onValueChange={setStart}>
-          <SelectTrigger className="h-9 w-[11rem]" aria-label="Time range">
+          <SelectTrigger className={cn('h-9', initialWindow.linked ? 'w-auto min-w-[11rem] max-w-full' : 'w-[11rem]')} aria-label="Time range">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            {initialWindow.linked ? <SelectItem value={LINKED_WINDOW}>{initialWindow.linked.label}</SelectItem> : null}
             {TIME_RANGES.map((r) => (
               <SelectItem key={r.value} value={r.value}>
                 {r.label}
@@ -320,16 +406,26 @@ export const UnifiedLogsBody: React.FC = () => {
             ))}
           </SelectContent>
         </Select>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" title={liveTailBlocked ? LIVE_TAIL_FIXED_WINDOW_REASON : undefined}>
           <Switch
             id="unified-live-tail"
             checked={liveTail}
             onCheckedChange={setLiveTail}
+            disabled={liveTailBlocked}
             aria-label="Auto-refresh every 10 seconds"
+            aria-describedby={liveTailBlocked ? 'unified-live-tail-reason' : undefined}
           />
-          <Label htmlFor="unified-live-tail" className="cursor-pointer text-xs">
+          <Label
+            htmlFor="unified-live-tail"
+            className={cn('text-xs', liveTailBlocked ? 'cursor-not-allowed text-muted-foreground' : 'cursor-pointer')}
+          >
             Live tail
           </Label>
+          {liveTailBlocked ? (
+            <span id="unified-live-tail-reason" className="sr-only">
+              {LIVE_TAIL_FIXED_WINDOW_REASON}
+            </span>
+          ) : null}
         </div>
         <Button
           variant="outline"
@@ -338,7 +434,7 @@ export const UnifiedLogsBody: React.FC = () => {
           disabled={loading}
           aria-label="Refresh log events"
         >
-          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden /> Refresh
+          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin motion-reduce:animate-none')} aria-hidden /> Refresh
         </Button>
       </div>
 
@@ -404,7 +500,10 @@ export const UnifiedLogsBody: React.FC = () => {
               description={
                 sources.length === 0
                   ? 'No browse-capable sources are enabled. Configure a source to see its logs here.'
-                  : 'No log events matched this window across your sources.'
+                  : linkedWindow
+                    ? // A link reopened later may point at events the source no longer keeps.
+                      'No log events matched this window across your sources. Older events may have aged out of the source since this link was made.'
+                    : 'No log events matched this window across your sources.'
               }
             />
           ) : (

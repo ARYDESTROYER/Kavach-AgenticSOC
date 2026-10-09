@@ -61,7 +61,7 @@ against, so it routes to a human every time — no matter how many prior cases o
 rule an analyst has confirmed benign. Confirming more of them cannot change that.
 
 An analyst rule policy is an explicit statement that a detection is benign in your
-environment. Open **Settings → Case policy → Declared benign**, add a declaration naming
+environment. Open **Settings → General → SLA, priority & suppression → Declared benign**, add a declaration naming
 the detection rule, and give a reason. A cluster whose detections are all declared is then closed automatically
 with the `false_positive` disposition and the `analyst_policy` decision owner, without a
 model call.

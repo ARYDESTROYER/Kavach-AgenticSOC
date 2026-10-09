@@ -13,9 +13,13 @@ each a strict SUPERSET of the previous (see the tier table in
                  the polling cursors. KEEP secrets, users, settings, the ``setup``
                  flag.
 * ``factory``  — the sources tier PLUS users/sessions/user-prefs/custom-roles/
-                 proposals/memory + branding, resets prefs to defaults with
+                 proposals/memory, Workspace chat history and chat REPORTS (the
+                 ``REPORTS_NS`` per-report and per-user index documents, SPEC §9.1) +
+                 branding, resets prefs to defaults with
                  ``setup_complete=False`` (→ fresh OOBE), and (ONLY at this tier)
                  resets the append-only audit index. KEEP env-provided secrets.
+                 Like chat history, reports are personal documents, not case state:
+                 the cases/sources tiers keep them.
 
 ⛔ HARD RULE (code-enforced): this service **NEVER reads or writes any env-provided
 secret** — ``Secrets`` (``ES_API_KEY`` / the LLM keys / ``STATE_DB_URL`` / any
@@ -254,6 +258,10 @@ async def reset_service(
         # partitions, while preserving only the exact fenced Jobs + Batch documents
         # and updater operation state. The backend primitive verifies the protected
         # bytes and the absence of all disallowed rows before it commits/returns.
+        # This is what purges the chat REPORTS namespace (``REPORTS_NS``: one doc per
+        # report plus each user's index doc, keyed by a hashed user partition): the
+        # docs are discovered by the wholesale scan, so no per-user enumeration and no
+        # pre-blanking write (which would only widen the stale-writer window) is needed.
         attempted.append("kv:tenant")
         try:
             if failed:

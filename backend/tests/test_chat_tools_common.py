@@ -1,0 +1,213 @@
+"""Shared tool plumbing: the §3.1 window precedence and clamp, input validation
+templates and the prompt-side vs visible text helpers (chat revamp SPEC §3.1, §7.6)."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from pydantic import Field
+
+from app.agents.chat_tools.common import (
+    MAX_WINDOW_DAYS,
+    ToolInput,
+    citation_id,
+    opt_text,
+    parse_input,
+    resolve_window,
+    text,
+    visible_text,
+)
+from app.agents.prompts import fence_block
+from app.models import TimeRange
+
+from tests.test_chat_tools_support import make_ctx
+
+NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+
+def test_window_precedence_tool_then_chip_then_default() -> None:
+    chip = TimeRange(**{"from": "now-6h"})
+    default = resolve_window(make_ctx(), now=NOW)
+    assert (default.time_from, default.label, default.source, default.hours) == ("now-24h", "last 24h", "default", 24)
+    request = resolve_window(make_ctx(time_range=chip), now=NOW)
+    assert (request.time_from, request.source) == ("now-6h", "request")
+    tool = resolve_window(make_ctx(time_range=chip), time_from="now-1h", now=NOW)
+    assert (tool.time_from, tool.source, tool.clamped) == ("now-1h", "tool", False)
+    hours = resolve_window(make_ctx(), window_hours=48, now=NOW)
+    assert (hours.time_from, hours.hours) == ("now-48h", 48)
+
+
+def test_window_is_clamped_into_the_request_and_bounded() -> None:
+    chip = TimeRange(**{"from": "2026-10-08T00:00:00Z", "to": "2026-10-08T06:00:00Z"})
+    wide = resolve_window(make_ctx(time_range=chip), time_from="now-30d", now=NOW)
+    assert wide.clamped and wide.start == datetime(2026, 10, 8, tzinfo=timezone.utc)
+    assert wide.end == datetime(2026, 10, 8, 6, tzinfo=timezone.utc)
+    assert wide.label == "2026-10-08 00:00 → 2026-10-08 06:00 UTC"
+    disjoint = resolve_window(make_ctx(time_range=chip), time_from="now-1h", now=NOW)
+    assert disjoint.clamped and disjoint.start == wide.start and disjoint.end == wide.end
+    huge = resolve_window(make_ctx(), time_from="now-400d", now=NOW)
+    assert huge.clamped and huge.end - huge.start == timedelta(days=MAX_WINDOW_DAYS)
+    assert huge.hours == 720
+
+
+def test_window_errors_are_engine_templates() -> None:
+    assert resolve_window(make_ctx(), time_from="last tuesday", now=NOW).startswith("Invalid time window")
+    assert "before the end" in resolve_window(make_ctx(), time_from="now", time_to="now-1h", now=NOW)
+
+
+class _Inp(ToolInput):
+    size: int = Field(default=5, ge=1, le=10)
+    name: str | None = None
+
+
+def test_parse_input_names_only_known_fields() -> None:
+    ok, err = parse_input(_Inp, {"size": "7", "unknown<<<x>>>": 1})
+    assert err is None and ok.size == 7
+    _bad, err = parse_input(_Inp, {"size": 99})
+    assert err is not None and err.error == "Invalid input: check size" and err.status == "error"
+    _bad, err = parse_input(_Inp, ["not", "an", "object"])
+    assert err is not None and "named arguments" in (err.error or "")
+
+
+def test_observation_text_keeps_invisible_characters_for_the_fence() -> None:
+    """SPEC §7.6: a lookalike must reach the model as a visible escape, never as the
+    real name (display_text would delete the ZWSP and turn it into "admin")."""
+    lookalike = "ad\u200bmin"
+    assert text(lookalike) == lookalike
+    assert text("a\nb\tc") == "a b c" and len(text("x" * 500, 20)) == 20
+    assert text("\ud800x") == "\\ud800x"  # a lone surrogate becomes escape text
+    assert text({"a": 1}) == "" and text(3) == "3" and opt_text("  ") is None
+    fenced = fence_block({"user": text(lookalike)}, source="tool", tool="search_logs")
+    assert "\\u200b" in fenced and '"admin"' not in fenced
+
+
+def test_visible_text_writes_invisible_characters_as_escape_text() -> None:
+    assert visible_text("ad\u200bmin") == "ad\\u200bmin"
+    assert visible_text("evil\u202egnp.exe") == "evil\\u202egnp.exe"
+    assert visible_text("plain") == "plain"
+
+
+def test_window_reports_trailing_and_hour_cap() -> None:
+    week = resolve_window(make_ctx(), time_from="now-7d", now=NOW)
+    assert week.trailing and not week.hours_capped and week.hours == 168
+    quarter = resolve_window(make_ctx(), time_from="now-90d", now=NOW)
+    assert quarter.trailing and quarter.hours_capped and quarter.hours == 720
+    past = resolve_window(make_ctx(time_range=TimeRange(**{"from": "2026-09-01T00:00:00Z",
+                                                           "to": "2026-09-02T00:00:00Z"})), now=NOW)
+    assert not past.trailing and past.hours == 24
+
+
+def test_citation_id_without_and_with_an_ordinal() -> None:
+    assert citation_id("K", 2) == "K2"
+
+    class Ctx:
+        ordinal = 7
+
+    assert citation_id("K", 3, Ctx()) == "K73"
+    assert citation_id("K", 30, Ctx()) == "K79"  # index clamped to 1..9
+
+
+def test_one_observation_shrinker_only() -> None:
+    """WP-INT item 4: the engine shrinks observations with ``chat_protocol``'s
+    alignment-safe ``shrink_observation``. The tool-side duplicate (which cut parallel
+    series arrays independently) is gone and must not come back as a second, divergent
+    implementation a tool could call."""
+    from app.agents import chat_protocol
+    from app.agents.chat_tools import common
+
+    assert not hasattr(common, "shrink_observation")
+    assert not hasattr(common, "observation_chars")
+    assert callable(chat_protocol.shrink_observation)
+
+
+def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
+    """"Open in Logs" (SPEC §10.7, A14): the exact view, or nothing — never a wider one."""
+    from types import SimpleNamespace
+
+    from app.agents.chat_tools.common import logs_console_view
+
+    def args(**kw: object) -> SimpleNamespace:
+        base = {k: None for k in ("ip", "user", "host", "rule", "severity_gte", "contains",
+                                  "time_from", "time_to", "source_id")}
+        base["ids"] = []
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def view(ctx, a, observation):  # type: ignore[no-untyped-def]
+        return logs_console_view(ctx, a, observation, now=NOW)
+
+    fanout = {"sources": [{"name": "A", "mode": "search"}, {"name": "B", "mode": "search"}]}
+    # The window is written as the ABSOLUTE instants the call resolved, so a stored
+    # answer reopened later still opens the window its data came from.
+    got = view(make_ctx(), args(contains="failed password", time_from="now-7d"), fanout)
+    assert got == {"page": "logs", "opts": {"logQuery": "failed password",
+                                             "from": "2026-10-01T12:00:00Z", "to": "2026-10-08T12:00:00Z"}}
+    # The request's source wins over the call's, exactly as the tool resolves it.
+    named = view(make_ctx(source_id="wazuh-prod"), args(source_id="other"), {"source": "Wazuh"})
+    assert named == {"page": "logs", "opts": {"from": "2026-10-07T12:00:00Z", "to": "2026-10-08T12:00:00Z",
+                                              "sourceId": "wazuh-prod"}}
+    assert view(make_ctx(), args(source_id="src-b"), {"source": "B"})["opts"]["sourceId"] == "src-b"
+    # The request chip is the window when the call set none; a wider call is clamped.
+    chip = make_ctx(time_range=TimeRange(**{"from": "now-6h"}))
+    assert view(chip, args(), fanout)["opts"]["from"] == "2026-10-08T06:00:00Z"
+    assert view(chip, args(time_from="now-30d"), fanout)["opts"]["from"] == "2026-10-08T06:00:00Z"
+    # The 90-day cap is the window the tool searched too: exactly 90 days, which the
+    # Logs page accepts. An ISO window from the model is written in the same grammar.
+    capped = view(make_ctx(), args(time_from="now-120d"), fanout)["opts"]
+    assert (capped["from"], capped["to"]) == ("2026-07-10T12:00:00Z", "2026-10-08T12:00:00Z")
+    iso = view(make_ctx(), args(time_from="2026-10-01 00:00", time_to="2026-10-02T00:00:00+02:00"), fanout)
+    assert iso["opts"]["from"] == "2026-10-01T00:00:00Z" and iso["opts"]["to"] == "2026-10-01T22:00:00Z"
+    # Not expressible on the Logs page: a structured filter, ids, unsafe or padded
+    # free text, an id outside the router grammar.
+    for refused in (args(ip="10.0.0.1"), args(user="alice"), args(host="web01"), args(rule="r1"),
+                    args(severity_gte=5.0), args(ids=["e1"]), args(contains="a\u200bb"),
+                    args(contains=" padded")):
+        assert view(make_ctx(), refused, fanout) is None, refused
+    assert view(make_ctx(source_id="bad id"), args(), fanout) is None
+    # The implicit primary source (id unknown), or no record of what ran: no view.
+    assert view(make_ctx(), args(), {"source": "Primary"}) is None
+    assert view(make_ctx(), args(), None) is None
+    assert view(make_ctx(source_id="src-a"), args(), None) is None
+    assert view(make_ctx(source_id="src-a"), args(), {"window": "last 24h"}) is None
+
+
+def test_logs_console_view_never_for_a_live_tail_source() -> None:
+    """Review finding (major): a push source's live-tail ring (mode ``buffer``)
+    ignores query/from/to on the Logs page, so a call that read one — in a fan-out
+    or as the named source — gets Copy query only, never a WIDER Logs view."""
+    from types import SimpleNamespace
+
+    from app.agents.chat_tools.common import logs_console_view
+
+    args = SimpleNamespace(ip=None, user=None, host=None, rule=None, severity_gte=None, ids=[],
+                           contains="zzz-no-match", time_from=None, time_to=None, source_id=None)
+    search = {"name": "A", "mode": "search"}
+    ring = {"name": "push", "mode": "buffer", "status": "ok"}
+    for observation in ({"sources": [search, ring]}, {"sources": [ring]}, {"sources": [search, {"name": "B"}]},
+                        {"sources": [search, {"name": "B", "mode": "tail"}]}, {"sources": []},
+                        {"sources": "A"}):
+        assert logs_console_view(make_ctx(), args, observation, now=NOW) is None, observation
+        assert logs_console_view(make_ctx(source_id="push"), args, observation, now=NOW) is None, observation
+    named = SimpleNamespace(**{**vars(args), "source_id": "push"})
+    assert logs_console_view(make_ctx(), named, {"sources": [ring]}, now=NOW) is None
+    # A failed search source is still a search source: the Logs page reports it too.
+    failed = {"sources": [search, {"name": "B", "mode": "search", "status": "error"}]}
+    assert logs_console_view(make_ctx(), args, failed, now=NOW) is not None
+
+
+def test_nav_instant_rounds_into_the_window_at_millisecond_precision() -> None:
+    from app.agents.chat_tools.common import nav_instant
+    from app.agents.blocks import NAV_TIME_PATTERN
+    import re
+
+    at = datetime(2026, 10, 8, 12, 0, 0, 250_400, tzinfo=timezone.utc)
+    assert nav_instant(at, round_up=True) == "2026-10-08T12:00:00.251Z"
+    assert nav_instant(at, round_up=False) == "2026-10-08T12:00:00.250Z"
+    assert nav_instant(NOW, round_up=True) == "2026-10-08T12:00:00Z"
+    ist = datetime(2026, 10, 8, 17, 30, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    assert nav_instant(ist, round_up=False) == "2026-10-08T12:00:00Z"
+    edge = datetime(2026, 10, 8, 23, 59, 59, 999_500, tzinfo=timezone.utc)
+    assert nav_instant(edge, round_up=True) == "2026-10-09T00:00:00Z"
+    for value in (at, NOW, ist, edge):
+        for up in (True, False):
+            assert re.fullmatch(NAV_TIME_PATTERN, nav_instant(value, round_up=up))

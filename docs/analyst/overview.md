@@ -70,7 +70,7 @@ changing any case or detection policy.
 5. **Check response timing** — look for changes in MTTD, MTTA, MTTR, or dwell, then
    open **Deeper analytics** for autonomy, connector coverage, workload, outcomes, top
    signatures, and top entities. For opened-versus-resolved backlog growth, open
-   **Metrics → Posture** and read **Closure vs arrival**.
+   **Analytics → Metrics → Posture** and read **Closure vs arrival**.
 
 False Positive Rate, Resolved / Closed and Auto Closed come from the server posture
 rollup rather than the bounded case list. They are keyed to the selected window and

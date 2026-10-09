@@ -20,6 +20,7 @@
     "gates:update-baseline": "node scripts/gate-grep.mjs --update",
     "gen:types": "node scripts/gen-types.mjs",
     "check:types": "node scripts/check-types.mjs",
+    "gen:console-map": "vitest run src/soc/__tests__/console-map.contract.test.ts --mode console-map-write",
     "preview": "vite preview"
   },
   "dependencies": {

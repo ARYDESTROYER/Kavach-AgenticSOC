@@ -137,6 +137,7 @@ import {
 } from '@/soc/components/TimeRangePicker';
 import { DashboardGroup } from '@/soc/components/DashboardGroup';
 import { KpiTile, type KpiAccent, type KpiBreakdownRow } from '@/soc/components/KpiTile';
+import { kpiTopic } from '@/soc/components/ask-topics';
 import {
   MetricHoverTrend,
   type MetricTrendPoint,
@@ -2827,6 +2828,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     sub={kpi.sub}
                     bound={kpi.bound}
                     help={kpi.help}
+                    askTopic={kpiTopic(kpi.testId)}
                     onHelpOpenChange={onHelpOpenChange(kpi.testId)}
                     icon={kpi.icon}
                     accent={kpi.accent}
@@ -3261,6 +3263,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     icon={Clock3}
                     goodDirection="down"
                     help={s.help}
+                    askTopic={kpiTopic(s.key)}
                   />
                 );
                 if (s.key === 'dwell') {

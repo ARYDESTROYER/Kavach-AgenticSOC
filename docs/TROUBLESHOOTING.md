@@ -463,8 +463,9 @@ subsequent `POST /api/poll` runs normally.
 
 **Likely cause.** No or invalid LLM key → the system **fails safe to a human**
 (the router defaults to UNCERTAIN; any pipeline failure yields `needs_human`
-rather than dropping the alert). Chat shows "assistant unavailable" in the same
-situation.
+rather than dropping the alert). In the same situation a chat answer carries a notice
+that the model is not configured or its key was rejected; questions about the product
+are still answered at no cost from the bundled Help Center.
 
 **Fix.** Configure a valid provider key (Settings shows `anthropic_api_key:
 configured ✓` and/or `openai_api_key: configured ✓`); confirm the per-role model
@@ -474,7 +475,7 @@ names are valid for that provider.
 > way.** If a role is pointed at a custom model whose `base_url` is unreachable,
 > whose endpoint requires a key you didn't set (`litellm_api_key` / `LITELLM_API_KEY`
 > blank), or that returns an incompatible response shape, the gateway call fails and
-> the case (or chat turn) fails safe to `needs_human` / "assistant unavailable" —
+> the case fails safe to `needs_human` (a chat turn shows the provider notice) —
 > exactly like a missing cloud key. Use **Settings → Models → "Add local model" →
 > Test** (`POST /api/llm/providers/test`, non-metered) to isolate a bad `base_url` /
 > missing key from an unrelated pipeline issue before touching anything else.

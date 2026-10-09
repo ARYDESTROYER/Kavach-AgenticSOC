@@ -221,7 +221,8 @@ Every `Preferences` field has a default. Major blocks include:
 
 - sources, feeds, OCSF field mappings, polling, and data scope;
 - correlation, risk, rules, baselines, campaigns, threshold tuning, and autopilot;
-- model routing, concurrency caps, batch processing, budgets, and pricing overlays;
+- model routing, concurrency caps, batch processing, budgets, pricing overlays, and the
+  chat assistant's bounds;
 - deterministic auto-close policy, analyst rule policies, case ID format, priority, and
   SLA targets;
 - playbooks, RAG, memory, enrichment, threat context, personas, and analyst-precedent
@@ -236,6 +237,35 @@ preferences model. Prefer small section-specific changes and re-read after updat
 A malformed value is rejected rather than persisted. General preference updates do
 not provide a universal revision history in 0.1; detection rules have their own
 version ledger and rollback endpoints.
+
+### Chat assistant bounds
+
+`chat_agent` bounds Workspace and Case Manager chat. Edit it under
+**Settings → General → Chat assistant**. Unlike most blocks, an out-of-range or malformed
+stored value is clamped into its range (or replaced by the default) instead of rejected,
+so one bad knob can never reset the whole preferences document. None of these knobs can
+widen what chat may do; the assistant is read-only by construction.
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `max_model_calls` | 5 | 1–12 | Model calls per question, including the final answer |
+| `max_tool_calls` | 10 | 1–40 | Lookups per question |
+| `max_parallel` | 4 | 1–8 | Lookups run side by side in one step (never more than `max_tool_calls`) |
+| `turn_token_ceiling` | 60,000 | 4,000–1,000,000 | Input plus output tokens across one question's model calls |
+| `final_reserve_tokens` | 12,000 | 1,000–200,000 | Tokens always kept inside the ceiling for writing the answer |
+| `final_max_tokens` | 4,000 | 256–32,000 | Output tokens for the final answer |
+| `observation_chars` | 6,000 | 1,500–60,000 | Characters of aggregated lookup results sent to the model per step |
+| `tool_timeout_s` | 15 | 1–120 | Seconds one lookup may take |
+| `model_step_timeout_s` | 30 | 5–300 | Seconds one model call may take |
+| `turn_timeout_s` | 90 | 10–600 | Wall-clock seconds per question; no new lookup starts after it |
+| `max_concurrent_turns_per_user` | 2 | 1–10 | Questions one user may run at once |
+| `max_concurrent_turns_global` | 8 | 1–100 | Questions one backend process runs at once |
+| `max_indicator_lookups` | 3 | 0–10 | Third-party indicator lookups per question; 0 turns the lookup off |
+| `max_indicator_lookups_per_conversation` | 10 | 0–50 | Third-party indicator lookups per conversation |
+| `default_stream_mode` | `steps` | `steps`, `text` | Live mode for viewers who have not chosen one |
+| `allow_text_streaming` | `true` | — | Allow answers to be typed out word by word |
+| `internal_domains` | `[]` | ≤ 100 suffixes | Domain suffixes never sent to enrichment providers |
+| `allow_email_lookup` | `false` | — | Allow e-mail addresses to be sent to enrichment providers |
 
 ### Discounted alert inference
 

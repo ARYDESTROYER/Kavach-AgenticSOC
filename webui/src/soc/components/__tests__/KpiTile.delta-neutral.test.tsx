@@ -10,7 +10,7 @@ import { render } from '@testing-library/react';
 import { KpiTile } from '../KpiTile';
 
 function chip(c: HTMLElement) {
-  return c.querySelector('[aria-label^="changed"]') as HTMLElement | null;
+  return c.querySelector('[role="img"][aria-label]') as HTMLElement | null;
 }
 function classList(el: HTMLElement | null) {
   return (el?.className || '').split(/\s+/);
@@ -65,4 +65,24 @@ describe('KpiTile delta — AA tokens + neutral zero', () => {
     expect(c!.getAttribute('role')).toBe('img');
     expect(c!.getAttribute('aria-label')).toMatch(/changed/);
   });
+
+  it('a zero delta shows no arrow and is never announced as a rise', () => {
+    const { container } = render(
+      <KpiTile
+        label="SLA breached"
+        value="10"
+        variant="strip"
+        density="compact"
+        goodDirection="down"
+        delta={{ value: 0, label: '0 vs previous window' }}
+      />,
+    );
+    const c = chip(container)!;
+    expect(c.getAttribute('aria-label')).toBe('unchanged vs previous window');
+    expect(c.querySelector('svg')).toBeNull();
+    // A word label is spoken as is.
+    const { container: fresh } = render(<KpiTile label="FP rate" value="12%" delta={{ value: 0, label: 'new' }} />);
+    expect(chip(fresh)!.getAttribute('aria-label')).toBe('new');
+  });
 });
+

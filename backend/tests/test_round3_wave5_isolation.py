@@ -303,9 +303,15 @@ async def test_stale_nrt_ledger_total_never_erases_current_run_cost(
         case2.case_id
     )
     assert actual_ledger_total is not None
-    # Until the NRT read catches up, fail-soft addition may be one display micro-dollar
-    # above the eventual raw-ledger sum; it must not be below it or lose the new run.
-    assert 0.0 <= case2.token_cost - actual_ledger_total <= 0.0000011
+    # Until the NRT read catches up, fail-soft addition matches the eventual raw-ledger
+    # sum to one display micro-dollar. It cannot be exact in either direction:
+    # ``Case.token_cost`` adds this run's RAW cost to the prior DISPLAY-ROUNDED total,
+    # and the prior's rounding lands the sum up to one micro-dollar either side (it
+    # does on the pre-streaming code too, for other cluster values). What must never
+    # happen is losing part of the run: an abandoned request's cost — which the
+    # caller learns only from the gateway's usage receipt — would be hundreds of
+    # micro-dollars, far outside this bound.
+    assert abs(case2.token_cost - actual_ledger_total) <= 0.0000011
 
     await state.shutdown()
     reset_event_bus()

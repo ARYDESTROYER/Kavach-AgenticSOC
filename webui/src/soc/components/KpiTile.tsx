@@ -7,6 +7,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { CountUp } from './CountUp';
+import { AskAboutThis } from './AskAboutThis';
 import { HelpTip } from './HelpTip';
 
 /**
@@ -261,6 +262,12 @@ export interface KpiTileProps {
   /** Accessible label for the help trigger (default `About <label>`). */
   helpLabel?: string;
   /**
+   * A `console_map` KPI topic (`ask-topics.ts`): the help popover then ends with "Ask
+   * about this", which opens a new chat asking that topic's templated question (SPEC
+   * §10.7). Shown only with `help`, and only to a caller who can use chat.
+   */
+  askTopic?: string;
+  /**
    * Told when this tile's help popover opens or closes.
    *
    * A tile can be wrapped in a hover trend card, and the help trigger is INSIDE that
@@ -372,13 +379,30 @@ function resolveDelta(delta: KpiDelta, goodDirection: KpiGoodDirection) {
         ? 'border-success/25 bg-success/10'
         : 'border-critical/25 bg-critical/10';
 
-  const Arrow = rising ? ArrowUpRight : ArrowDownRight;
+  // A zero delta has no direction: no arrow, and it is never announced as "changed up
+  // by 0" (the arrow shows the TRUE direction, and there is none).
+  const Arrow = flat ? null : rising ? ArrowUpRight : ArrowDownRight;
   const directionWord = rising ? 'up' : 'down';
   // a11y: announce BOTH the direction and the judgement (never color-only).
   const judgement = improved === null ? '' : improved ? ', improved' : ', worse';
-  const ariaLabel = `changed ${directionWord} by ${delta.label ?? Math.abs(delta.value)}${judgement}`;
+  const ariaLabel = flat
+    ? flatDeltaLabel(delta.label)
+    : `changed ${directionWord} by ${delta.label ?? Math.abs(delta.value)}${judgement}`;
 
   return { colorClass, chipClass, Arrow, ariaLabel };
+}
+
+/**
+ * The accessible name of a zero delta: a word label is spoken as is ("new"), a zero
+ * figure as "unchanged" ("0 vs previous window" → "unchanged vs previous window").
+ */
+function flatDeltaLabel(label: string | undefined): string {
+  const text = (label ?? '').trim();
+  if (!text) return 'unchanged';
+  const zero = /^[+\-\u2212\u00b1]?0+(?:[.,]0+)?\s*(?:%|pp)?(?=\s|$)/.exec(text);
+  if (!zero) return text;
+  const rest = text.slice(zero[0].length).trim();
+  return rest ? `unchanged ${rest}` : 'unchanged';
 }
 
 /**
@@ -414,6 +438,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       sparkMinPoints = 5,
       help,
       helpLabel,
+      askTopic,
       onHelpOpenChange,
       breakdown,
       className,
@@ -522,6 +547,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         label={helpLabel ?? `About ${label}`}
         alwaysPopover
         onOpenChange={onHelpOpenChange}
+        footer={askTopic ? <AskAboutThis topic={askTopic} subject={label} className="pt-1" /> : undefined}
         className={clickable ? 'text-muted-foreground/70' : '-my-1 text-muted-foreground/70'}
       />
     ) : null;
@@ -629,7 +655,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         )}
         aria-label={deltaFacts.ariaLabel}
       >
-        <deltaFacts.Arrow className="h-3.5 w-3.5" aria-hidden />
+        {deltaFacts.Arrow ? <deltaFacts.Arrow className="h-3.5 w-3.5" aria-hidden /> : null}
         <span aria-hidden>{delta!.label ?? Math.abs(delta!.value)}</span>
       </span>
     ) : null;

@@ -37,11 +37,38 @@ from ..constants import (
     SourceType,
     UserRole,
 )
+# Route-private helpers moved to engine modules by the chat revamp (SPEC §5.3) so the
+# chat tools can share them without importing the HTTP layer. Each keeps its
+# historical underscore name here (tests, ``routes_rules`` and route code use them;
+# ``noqa: F401`` marks the re-export-only ones); the ``AppState``-reading ones are
+# thin wrappers further down this module.
 from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY
+from ..engine.case_cluster import WIDEN_LADDER as _WIDEN_LADDER  # noqa: F401
+from ..engine.case_cluster import cluster_for_case, entity_events_widening
+from ..engine.case_cluster import entity_field as _entity_field  # noqa: F401
+from ..engine.case_cluster import manual_trigger_reason as _manual_trigger_reason
+from ..engine.case_cluster import (  # noqa: F401
+    reconstruct_cluster_from_case as _reconstruct_cluster_from_case,
+)
+from ..engine.case_cluster import scoped_entity_body as _scoped_entity_body  # noqa: F401
+from ..engine.case_cluster import widen_windows as _widen_windows  # noqa: F401
+from ..engine.case_rationale import audit_get as _audit_get  # noqa: F401
+from ..engine.case_rationale import build_rationale as _build_rationale
 from ..engine.correlation import cluster_from_events
+from ..engine.log_rows import browse_query, clamp_browse_limit, clamp_per_source_timeout
+from ..engine.log_rows import browse_truncated as _browse_truncated
+from ..engine.log_rows import demo_browse_targets, fan_out, tenant_browse_targets
+from ..engine.log_rows import log_message as _log_message  # noqa: F401
+from ..engine.log_rows import log_row as _log_row
+from ..engine.log_rows import source_can_browse as _source_can_browse
 from ..engine.metrics import compute_metrics, feedback_stats
 from ..engine.priority import advisory_bands
-from ..es.querybuilder import entity_query, ids_query, scope_filters, scope_must_not
+from ..engine.source_health import coverage_rollup, cursor_millis, sources_health_rows
+from ..engine.source_health import (  # noqa: F401
+    wallclock_last_event_millis as _wallclock_last_event_millis,
+)
+from ..engine.views import proposal_public as _proposal_public
+from ..es.querybuilder import ids_query
 from ..llm.pricing import (
     model_capabilities,
     model_catalog,
@@ -51,10 +78,11 @@ from ..llm.pricing import (
 from ..models import (
     Case,
     CaseComment,
-    ChatConversationRenameRequest,
+    ChatConversation,
+    ChatConversationSearchHit,
+    ChatConversationUpdateRequest,
     ChatRequest,
     ChatResponse,
-    ChatTurn,
     Cluster,
     Entity,
     FeedbackEntry,
@@ -63,7 +91,6 @@ from ..models import (
     RawEvent,
     StatusHistoryEntry,
     TraceStep,
-    TriggerReason,
     validate_avatar,
 )
 from ..playbooks.registry import (
@@ -76,17 +103,13 @@ from ..playbooks.registry import (
 from ..state import AppState
 from ..stores.base import CASE_STATUS_GROUPS
 from ..stores.chat_conversations import (
-    ChatConversationMissing,
     ChatHistoryUnavailable,
-    ChatIdempotencyConflict,
-    ChatRequestCapacityBusy,
-    ChatRequestInProgress,
+    ChatPinLimitReached,
 )
 from ..stores.proposals import (
     BULK_DECISION_LIMIT,
     MAX_DECISION_REASON_CHARS,
     evidence_summary,
-    proposal_is_expired,
     sanitize_decision_reason,
 )
 from ..tools.enrich import EnrichTool
@@ -94,7 +117,6 @@ from ..utils import (
     iso_now,
     new_id,
     now_utc,
-    parse_es_timestamp,
     relative_to_millis,
     to_millis,
 )
@@ -104,7 +126,6 @@ from .deps import (
     current_user,
     current_username,
     get_state,
-    has_permission,
     require_admin,
     require_fresh_auth,
     require_permission,
@@ -1014,53 +1035,9 @@ async def ingest_push(
 # honoring the source's field mapping + TLS; PUSH sources return the in-memory
 # live-tail buffer of recently-ingested events. Secrets are never returned.
 # --------------------------------------------------------------------------- #
-def _log_message(src: dict[str, Any]) -> str:
-    from ..utils import dotted_get
-    for f in (
-        "message", "description", "full_log", "event.original", "log.message",
-        "event.action", "rule.description",
-    ):
-        v = dotted_get(src, f)
-        if v:
-            return str(v) if not isinstance(v, list) else str(v[0])
-    return ""
-
-
-def _log_row(ev) -> dict[str, Any]:
-    """Project a RawEvent → the browse-logs row contract. _raw is the full log
-    document (log data, never secrets)."""
-    import datetime as _dt
-    ts_iso = ""
-    if getattr(ev, "timestamp_millis", 0):
-        ts_iso = _dt.datetime.fromtimestamp(ev.timestamp_millis / 1000, tz=_dt.timezone.utc).isoformat()
-    return {
-        "id": ev.id,
-        "ts": ts_iso,
-        "source_ip": ev.ip,
-        "user": ev.user,
-        "host": ev.host,
-        "rule": ev.rule or ev.rule_name,
-        "severity": ev.severity,
-        "message": _log_message(ev.source or {}),
-        "_raw": ev.source or {},
-    }
-
-
-def _browse_truncated(returned: int, limit: int, total: int | None) -> bool:
-    """Honest "there is more than this" flag for a bounded browse read.
-
-    Browse has NO pagination: every read is "the most recent ``limit`` rows". When a
-    connector reports a coherent match ``total`` we answer EXACTLY from it and stop —
-    a known total equal to the returned row count means nothing was cut, even when the
-    page is exactly saturated (``total == returned == limit`` is complete, not "more
-    exist"). Only when the total is absent or incoherent (push live-tail buffers,
-    connectors that omit or under-report ``total``) is a full page the sole evidence
-    available, and a saturated page is then reported as truncated. ``False`` never
-    means "complete" for a caller that wants completeness — it only means nothing was
-    demonstrably cut."""
-    if total is not None and total >= returned:
-        return total > returned
-    return returned >= limit
+# ``_log_message`` / ``_log_row`` / ``_browse_truncated`` live in ``engine/log_rows.py``
+# (chat revamp SPEC §5.3) and are re-exported at the top of this module under their
+# historical names; tests and ``routes_rules`` import them from here.
 
 
 @router.get("/sources/{source_id}/logs")
@@ -1197,15 +1174,9 @@ async def source_logs(
 # slow/failing source can never block the others (per-source timeout + gather with
 # return_exceptions), so a partial result is served (#11 graceful degradation).
 # --------------------------------------------------------------------------- #
-def _source_can_browse(reg, src) -> bool:
-    """True when a source advertises the ``browse`` capability (registry augments every
-    push receiver with it; pull manifests declare it explicitly). Defensive — a missing
-    manifest / odd capabilities list is treated as NOT browsable rather than raising."""
-    try:
-        manifest = reg.manifest(src.source_type)
-    except Exception:  # noqa: BLE001 — one bad manifest never breaks the scan
-        return False
-    return bool(manifest) and "browse" in (manifest.capabilities or [])
+# ``_source_can_browse`` and the scatter-gather core (per-source readers, timeout-
+# guarded gather, merge) live in ``engine/log_rows.py`` (chat revamp SPEC §5.3) so
+# the chat ``search_logs`` tool shares them; the route keeps its HTTP-only checks.
 
 
 @router.get("/logs")
@@ -1258,10 +1229,8 @@ async def unified_logs(
     with any single source being cut — so scoping to one source, or running a
     single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
     for that same read."""
-    import asyncio
-
-    limit = max(1, min(int(limit or 100), 200))  # hard cap (per source AND on the merge)
-    timeout = max(0.5, min(float(per_source_timeout or 8.0), 30.0))
+    limit = clamp_browse_limit(limit)  # hard cap (per source AND on the merge)
+    timeout = clamp_per_source_timeout(per_source_timeout)
     reg = get_registry()
     source_id = (source_id or "").strip() or None
 
@@ -1289,277 +1258,49 @@ async def unified_logs(
                     detail="Browsing logs is not supported for this source",
                 )
 
-    # Every read returns (rows, total) where `total` is the connector's match count
-    # when it supplies one and None when it cannot (live-tail rings). The pair is what
-    # lets the merged envelope apply the SAME `_browse_truncated` rule per source that
-    # `GET /sources/{id}/logs` applies, instead of only asking whether the merge itself
-    # overflowed (which one source can never do, since each is read at `limit`).
-    async def _read_pull(src) -> tuple[list[dict[str, Any]], int | None]:
-        es_client, owned = state.es_client_for_source(src)
-        try:
-            from ..connectors.base import StructuredQuery
-            from ..connectors.elastic import ElasticConnector
-            from ..connectors.opensearch import OpenSearchConnector
-            from ..connectors.wazuh import WazuhConnector
-            if src.source_type == SourceType.OPENSEARCH:
-                conn = OpenSearchConnector(es_client, config=src.config, connector_id=src.id)
-            elif src.source_type == SourceType.WAZUH:
-                conn = WazuhConnector(es_client, config=src.config, connector_id=src.id)
-            else:
-                conn = ElasticConnector(es_client, config=src.config, connector_id=src.id)
-            sq = StructuredQuery(
-                contains=(query or None), time_from=from_, time_to=to,
-                size=limit, sort_desc=True,
-            )
-            result = await conn.search(state.prefs, sq)
-            return [_log_row(ev) for ev in result.events], result.total
-        finally:
-            if owned:
-                try:
-                    await es_client.close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-    async def _read_push(src) -> tuple[list[dict[str, Any]], int | None]:
-        # A live-tail ring has no match total to report — None keeps the saturated-page
-        # heuristic in `_browse_truncated`.
-        rows = [_log_row(ev)
-                for ev in state.ingest_service.recent_events_for_source(src.id, limit)]
-        return rows, None
-
-    async def _read_demo(src) -> tuple[list[dict[str, Any]], int | None]:
-        conn = state.demo_source_connector(src.id)
-        if conn is None:
-            return [], None
-        from ..connectors.base import StructuredQuery
-
-        result = await conn.search(
-            state.prefs,
-            StructuredQuery(
-                contains=(query or None), time_from=from_, time_to=to,
-                size=limit, sort_desc=True,
-            ),
-        )
-        return [_log_row(ev) for ev in result.events], result.total
-
-    # Select the enabled + browse-capable sources and pair each read coroutine with its
-    # source (for provenance + error attribution). Unsupported sources are skipped.
-    # (src, coroutine, mode) — `mode` is carried alongside so the per-source status can
-    # report a volatile live-tail ring vs a real backing search even when the read fails.
-    targets: list[tuple[Any, Any, str]] = []
+    # Select the enabled + browse-capable sources, each paired with its reader and
+    # read mode (engine/log_rows.py). Unsupported sources are skipped.
     if state.demo_active:
-        from types import SimpleNamespace
-
-        for row in state.demo_sources_overlay():
-            sid = str(row.get("id"))
-            if not sid:
-                continue
-            if source_id is not None and sid != source_id:
-                continue
-            src = SimpleNamespace(id=sid, display_name=row.get("display_name") or sid)
-            # "search", not "buffer": the demo adapter's read is a real filtered search
-            # over its ring (from/to/query all apply, and it reports a match total).
-            targets.append((src, _read_demo(src), "search"))
+        targets = demo_browse_targets(
+            state.demo_sources_overlay(),
+            prefs=state.prefs,
+            demo_source_connector=state.demo_source_connector,
+            source_id=source_id,
+        )
     else:
-        for src in state.prefs.sources:
-            if not src.enabled or not _source_can_browse(reg, src):
-                continue
-            if source_id is not None and src.id != source_id:
-                continue
-            cls = reg.get(src.source_type)
-            if cls is None:
-                continue
-            if reg.is_receiver(src.source_type):
-                targets.append((src, _read_push(src), "buffer"))
-            elif reg.is_pull(src.source_type):
-                targets.append((src, _read_pull(src), "search"))
-
-    async def _guarded(coro):
-        return await asyncio.wait_for(coro, timeout=timeout)
-
-    results = await asyncio.gather(
-        *[_guarded(coro) for _, coro, _mode in targets], return_exceptions=True
+        targets = tenant_browse_targets(
+            state.prefs.sources,
+            prefs=state.prefs,
+            registry=reg,
+            es_client_for_source=state.es_client_for_source,
+            ingest_service=state.ingest_service,
+            source_id=source_id,
+        )
+    return await fan_out(
+        targets,
+        browse_query(limit=limit, query=query, time_from=from_, time_to=to),
+        per_source_timeout=timeout,
     )
-
-    merged: list[dict[str, Any]] = []
-    source_status: list[dict[str, Any]] = []
-    any_source_truncated = False
-    for (src, _coro, mode), outcome in zip(targets, results):
-        if isinstance(outcome, Exception):
-            source_status.append({
-                "source_id": src.id, "source_name": src.display_name or src.id,
-                "ok": False,
-                "error": ("timeout" if isinstance(outcome, asyncio.TimeoutError)
-                          else str(outcome)),
-                "count": 0,
-                "mode": mode,
-                # A read that failed returned nothing; it cut nothing either. The
-                # honest signal for "you are missing rows here" is `ok: False`.
-                "truncated": False,
-            })
-            continue
-        rows, total = outcome if isinstance(outcome, tuple) else (outcome or [], None)
-        for row in rows:
-            # MANDATORY provenance — overwrite (never trust a per-source row to self-label).
-            row["source_id"] = src.id
-            row["source_name"] = src.display_name or src.id
-        merged.extend(rows)
-        # The SAME rule the per-source sibling route applies to this identical read.
-        src_truncated = _browse_truncated(len(rows), limit, total)
-        any_source_truncated = any_source_truncated or src_truncated
-        source_status.append({
-            "source_id": src.id, "source_name": src.display_name or src.id,
-            "ok": True, "count": len(rows),
-            # "search" = a real backing query (from/to/query applied); "buffer" = a
-            # volatile process-local live-tail ring that IGNORES from/to/query.
-            "mode": mode,
-            # This source's own rows were demonstrably cut (its page saturated, or its
-            # connector reported more matches than it returned).
-            "truncated": src_truncated,
-        })
-
-    # Merge newest-first by ts (ISO strings sort lexicographically for UTC; empty ts
-    # sorts last). Then hard-cap the merged view.
-    merged.sort(key=lambda r: (r.get("ts") or ""), reverse=True)
-    gathered = len(merged)
-    merged = merged[:limit]
-    return {
-        "logs": merged,
-        "count": len(merged),
-        "sources": source_status,
-        "partial": any(not s["ok"] for s in source_status),
-        # The bound is part of the contract: this is the most recent `count` rows, not
-        # a complete result.
-        "limit": limit,
-        # True when the MERGE was cut, OR when any single source's own read was cut —
-        # each source is itself read at `limit`, so with one target the merge can never
-        # overflow and only the per-source signal is honest. Without the OR this route
-        # reported `false` for the very same read the per-source sibling reports as
-        # truncated. `false` still does not mean "complete" for a caller that wants
-        # completeness (there is no pagination) — it means nothing was demonstrably cut.
-        "truncated": gathered > limit or any_source_truncated,
-    }
 
 
 async def _cursor_millis(state: AppState, src) -> int:
-    """Newest processed timestamp across a source's feeds (0 = never polled).
-
-    Mirrors the poller's durable cursor key ``f'{source.id}:{feed.id}'`` (falling back
-    to the legacy single-source cursor). Read-only; a store hiccup fails soft to 0 rather
-    than breaking the whole health view."""
-    best = 0
-    try:
-        feeds = src.feeds()
-        keys: list[str] = []
-        if feeds:
-            keys = [f"{src.id}:{f.id}" for f in feeds]
-        else:
-            # Un-fed source: the primary uses the legacy 'primary' key; a non-primary
-            # un-fed source uses a distinct 'f{id}:primary' key (see PollerManager).
-            keys = ["primary" if src.is_primary else f"{src.id}:primary"]
-        for key in keys:
-            try:
-                cur = await state.cursor_store.load_keyed(key)
-            except Exception:  # noqa: BLE001
-                continue
-            best = max(best, int(getattr(cur, "timestamp_millis", 0) or 0))
-    except Exception:  # noqa: BLE001 — health is best-effort, never raises
-        return best
-    return best
-
-
-def _wallclock_last_event_millis(last_event_map: dict, source_id: str) -> int:
-    """Epoch-millis of the last WALL-CLOCK event arrival for a source (0 when never seen).
-
-    Reads ``state._source_last_event`` (the silence clock ``state.silent_sources`` uses,
-    updated on any tick with events) so ``last_event_millis`` / ``worst_last_event_seconds``
-    agree with the ``silent`` flag. Fails soft to 0 — advisory only (#3)."""
-    last_ev = (last_event_map or {}).get(source_id)
-    if last_ev is None:
-        return 0
-    try:
-        return int(to_millis(last_ev))
-    except Exception:  # noqa: BLE001
-        return 0
+    """Route-compat wrapper: :func:`app.engine.source_health.cursor_millis` over
+    ``state.cursor_store`` (moved there by chat revamp SPEC §5.3)."""
+    return await cursor_millis(getattr(state, "cursor_store", None), src)
 
 
 async def _sources_health_rows(state: AppState) -> list[dict[str, Any]]:
-    """Build the per-source health rows for the REAL configured sources (the demo overlay
-    is added by the ``/sources/health`` caller). Each row carries the legacy shape PLUS the
-    additive coverage-observability fields (A5.2): ``last_poll_at``/``last_poll_ok``/
-    ``last_poll_error`` (from the poller's in-memory last-tick snapshot), ``events_per_min``
-    (smoothed rate; pull from the poller, push from the ingest ring), ``last_event_millis``
-    (a wall-clock/event watermark for the coverage rollup), and ``silent`` (the v0 flat
-    silent-source flag from ``state.silent_sources``). All advisory (#3); connector error
-    strings are plain text (#9); NO secrets. Never raises — every lookup fails soft."""
-    reg = get_registry()
-    try:
-        snaps = state.poller.last_tick_by_source()
-    except Exception:  # noqa: BLE001 — the snapshot is advisory; degrade to none
-        snaps = {}
-    try:
-        silent_set = set(state.silent_sources(state.prefs))
-    except Exception:  # noqa: BLE001
-        silent_set = set()
-    last_event_map = getattr(state, "_source_last_event", {}) or {}
-    ingest_service = getattr(state, "ingest_service", None)
-
-    out: list[dict[str, Any]] = []
-    for src in state.prefs.sources:
-        is_receiver = reg.is_receiver(src.source_type)
-        is_pull = (not is_receiver) and reg.is_pull(src.source_type)
-        row: dict[str, Any] = {
-            "source_id": src.id,
-            "source_name": src.display_name or src.id,
-            "source_type": src.source_type.value,
-            "enabled": src.enabled,
-            "is_primary": src.is_primary,
-            "ingest_mode": src.ingest_mode.value,
-            "kind": "push" if is_receiver else ("pull" if is_pull else "unknown"),
-            "can_browse": _source_can_browse(reg, src),
-            "buffer_depth": 0,
-            "last_poll_millis": 0,
-            # --- Coverage observability (A5.2), additive + advisory ---
-            "last_poll_at": None,
-            "last_poll_ok": None,
-            "last_poll_error": None,
-            "last_event_millis": 0,
-            "events_per_min": 0.0,
-            "silent": bool(src.id in silent_set),
-        }
-        if is_receiver:
-            if ingest_service is not None:
-                row["buffer_depth"] = len(
-                    ingest_service.recent_events_for_source(src.id, 500)
-                )
-                try:
-                    row["events_per_min"] = float(
-                        ingest_service.events_per_min_for_source(src.id) or 0.0
-                    )
-                except Exception:  # noqa: BLE001
-                    row["events_per_min"] = 0.0
-            # PUSH last-event is a wall-clock (the arrival clock the silence check uses).
-            row["last_event_millis"] = _wallclock_last_event_millis(last_event_map, src.id)
-        elif is_pull and src.enabled:
-            lp = await _cursor_millis(state, src)
-            row["last_poll_millis"] = lp
-            # last_event = the more-recent of the cursor's event watermark and the
-            # wall-clock silence clock (state._source_last_event), so it agrees with the
-            # ``silent`` flag + drives ``worst_last_event_seconds`` even before the cursor
-            # advances (e.g. a source that reported once then went quiet).
-            row["last_event_millis"] = max(lp, _wallclock_last_event_millis(last_event_map, src.id))
-            snap = snaps.get(src.id)
-            if isinstance(snap, dict):
-                row["last_poll_at"] = snap.get("ts")
-                row["last_poll_ok"] = snap.get("ok")
-                # Plain text — a connector error is source-controlled data (#9).
-                row["last_poll_error"] = snap.get("error")
-                try:
-                    row["events_per_min"] = float(snap.get("events_per_min", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    row["events_per_min"] = 0.0
-        out.append(row)
-    return out
+    """Route-compat wrapper: :func:`app.engine.source_health.sources_health_rows` with
+    its inputs read from the ``AppState`` exactly where the original helper read them
+    (moved there by chat revamp SPEC §5.3). Real configured sources only."""
+    return await sources_health_rows(
+        state.prefs,
+        poller=getattr(state, "poller", None),
+        silent_sources=getattr(state, "silent_sources", None),
+        cursor_store=getattr(state, "cursor_store", None),
+        ingest_service=getattr(state, "ingest_service", None),
+        last_event_map=getattr(state, "_source_last_event", {}) or {},
+    )
 
 
 @router.get("/sources/health")
@@ -1610,17 +1351,9 @@ async def sources_coverage(
         if state.demo_active
         else await _sources_health_rows(state)
     )
-    now_ms = to_millis(now_utc())
-    enabled_rows = [r for r in rows if r.get("enabled")]
-    sources_silent = sum(1 for r in enabled_rows if r.get("silent"))
-    events_per_min = round(
-        sum(float(r.get("events_per_min") or 0.0) for r in enabled_rows), 2
-    )
-    worst = 0
-    for r in enabled_rows:
-        lev = int(r.get("last_event_millis") or 0)
-        if lev > 0:
-            worst = max(worst, (now_ms - lev) // 1000)
+    # The source-derived numbers live in ``engine/source_health.coverage_rollup`` (chat
+    # revamp SPEC §5.3) so the chat ``source_health`` tool reports the same rollup.
+    rollup = coverage_rollup(rows, to_millis(now_utc()))
 
     # Cases created in the last 24h — a pure repository COUNT (no 5000-document fetch
     # just to ``len()`` a window). The 24h boundary is the same cutoff the noise-
@@ -1634,13 +1367,14 @@ async def sources_coverage(
     except Exception:  # noqa: BLE001 — a store hiccup degrades to 0, never a 500
         alerts_triaged = 0
 
+    # Explicit key order: the response is byte-identical to the pre-move envelope.
     payload = {
-        "sources_total": len(rows),
-        "sources_enabled": len(enabled_rows),
-        "sources_silent": int(sources_silent),
-        "events_per_min": events_per_min,
+        "sources_total": rollup["sources_total"],
+        "sources_enabled": rollup["sources_enabled"],
+        "sources_silent": rollup["sources_silent"],
+        "events_per_min": rollup["events_per_min"],
         "alerts_triaged_24h": int(alerts_triaged),
-        "worst_last_event_seconds": int(max(0, worst)),
+        "worst_last_event_seconds": rollup["worst_last_event_seconds"],
     }
     if state.demo_active:
         payload["demo"] = True
@@ -1974,60 +1708,64 @@ def _chat_conflict_http(code: str, message: str) -> HTTPException:
 
 
 def _chat_request_fingerprint(body: ChatRequest) -> str:
-    """Stable identity over caller-controlled inputs (never over generated ids)."""
-    payload = body.model_dump(
-        mode="json", exclude={"idempotency_key", "persist_conversation"}
-    )
+    """Stable identity over caller-controlled inputs (never over generated ids).
+
+    ``fingerprint_payload`` dumps the pre-revamp fields exactly as before and the
+    revamp fields only when they differ from their defaults (``stream_mode`` never),
+    so a pre-revamp body hashes byte-identically and one key is valid across
+    ``/chat`` and ``/chat/stream`` (chat revamp SPEC §3.1)."""
+    payload = body.fingerprint_payload()
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _replayed_chat_response(reservation) -> ChatResponse:
-    conversation = reservation.conversation
-    assistant = reservation.assistant_message
-    if assistant is None:
-        raise _chat_history_http(
-            ChatHistoryUnavailable("The completed chat response could not be restored.")
-        )
-    payload = dict(assistant.response or {})
-    payload.update({
-        "answer": assistant.content,
-        "conversation_id": reservation.conversation_id,
-        "conversation_title": reservation.conversation_title
-        or (conversation.title if conversation else "Conversation"),
-        "idempotency_key": reservation.idempotency_key,
-        "effective_model": assistant.model or (conversation.model if conversation else None),
-        "effective_source_id": assistant.source_id
-        or (conversation.source_id if conversation else None),
-        "effective_source_name": assistant.source_name
-        or (conversation.source_name if conversation else None),
-        "truncated": bool(payload.get("truncated")),
-    })
-    try:
-        return ChatResponse.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001 -- corrupt durable receipt is a store failure
-        raise _chat_history_http(
-            ChatHistoryUnavailable("The completed chat response is invalid.")
-        ) from exc
+class ChatConversationPage(BaseModel):
+    """``GET /api/chat/conversations``: one page of the caller's conversation
+    summaries. With ``?q=`` each row also carries ``match {message_id, snippet}``
+    (rows of a plain listing omit it; the route serialises with
+    ``response_model_exclude_unset`` so the wire shape is unchanged)."""
+
+    conversations: list[ChatConversationSearchHit]
+    # The retained (paginatable) count, kept for compatibility.
+    total: int
+    history_truncated: bool
+    total_conversation_count: int
+    oldest_retained_at: str | None = None
+    limit: int
+    offset: int
 
 
-@router.get("/chat/conversations")
+@router.get(
+    "/chat/conversations",
+    response_model=ChatConversationPage,
+    response_model_exclude_unset=True,
+)
 async def list_chat_conversations(
     request: Request,
     state: AppState = Depends(get_state),
-    limit: int = Query(default=30, ge=1, le=50),
+    limit: int = Query(default=30, ge=1, le=60),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=200),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
-    """Newest-first Workspace conversation summaries owned by this principal.
+    """Workspace conversation summaries owned by this principal: pinned first, then
+    newest first. ``limit`` goes to 60 so the <= 10 pinned conversations (exempt
+    from the 50-conversation eviction) are never off the first page. With ``q`` the
+    rows are the conversations whose title, messages or block titles contain it,
+    each with a ``match {message_id, snippet}`` (chat revamp SPEC §7.5).
 
     Auth-disabled deployments use the same isolated ``default`` profile as user
     preferences. Case-scoped collaboration chat is intentionally not listed here.
     """
     try:
-        page = await state.chat_conversations.list_page(
-            current_username(request), limit=limit, offset=offset,
-        )
+        if q and q.strip():
+            page = await state.chat_conversations.search(
+                current_username(request), q, limit=limit, offset=offset,
+            )
+        else:
+            page = await state.chat_conversations.list_page(
+                current_username(request), limit=limit, offset=offset,
+            )
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
     return {
@@ -2042,7 +1780,11 @@ async def list_chat_conversations(
     }
 
 
-@router.get("/chat/conversations/{conversation_id}")
+@router.get(
+    "/chat/conversations/{conversation_id}",
+    response_model=ChatConversation,
+    response_model_exclude_unset=True,
+)
 async def get_chat_conversation(
     conversation_id: str,
     request: Request,
@@ -2062,29 +1804,41 @@ async def get_chat_conversation(
     return conversation.model_dump(mode="json")
 
 
-@router.patch("/chat/conversations/{conversation_id}")
-async def rename_chat_conversation(
+@router.patch(
+    "/chat/conversations/{conversation_id}",
+    response_model=ChatConversation,
+    response_model_exclude_unset=True,
+)
+async def update_chat_conversation(
     conversation_id: str,
-    body: ChatConversationRenameRequest,
+    body: ChatConversationUpdateRequest,
     request: Request,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> dict[str, Any]:
-    """Rename one owned conversation with bounded, single-line plain text."""
+    """Rename (bounded, single-line plain text) and/or pin one owned conversation
+    (chat revamp SPEC §7.5). Pinning never changes ``updated_at``; an 11th pin is
+    409 ``chat_pin_limit``."""
     user = current_username(request)
     try:
-        conversation = await state.chat_conversations.rename(
-            user, conversation_id, body.title
+        conversation = await state.chat_conversations.update(
+            user, conversation_id, title=body.title, pinned=body.pinned,
         )
+    except ChatPinLimitReached as exc:
+        raise _chat_conflict_http("chat_pin_limit", str(exc)) from exc
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
     if conversation is None:
         raise HTTPException(status_code=404, detail="conversation not found")
+    changes = [
+        *(["renamed"] if body.title is not None else []),
+        *(["pinned" if body.pinned else "unpinned"] if body.pinned is not None else []),
+    ]
     await state.audit.record(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
-        actor=user,
-        result_summary=f"conversation renamed: {conversation.id}"[:500],
+        actor=user or "default",
+        result_summary=f"conversation {' and '.join(changes)}: {conversation.id}"[:500],
     )
     return conversation.model_dump(mode="json")
 
@@ -2113,254 +1867,17 @@ async def delete_chat_conversation(
     return {"ok": True, "id": conversation_id}
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest, request: Request, state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
-) -> dict[str, Any]:
-    # The auth dependency already verified the principal; the same helper used by
-    # preferences/history defines the auth-off ``default`` partition.
-    author = current_username(request)
-    # Workspace history is opt-in and NEVER duplicates case-scoped turns. Context may
-    # carry a case id even when the top-level field does not, so resolve the effective
-    # case boundary before deciding whether this belongs in personal history.
-    effective_case_id = body.case_id or (body.context.case_id if body.context else None)
-    persist_workspace = bool(body.persist_conversation and not effective_case_id)
-    history = body.history
-    existing_conversation = None
-    if persist_workspace and body.conversation_id:
-        try:
-            existing_conversation = await state.chat_conversations.get(
-                author, body.conversation_id
-            )
-        except ChatHistoryUnavailable as exc:
-            raise _chat_history_http(exc) from exc
-        if existing_conversation is None:
-            raise HTTPException(status_code=404, detail="conversation not found")
-        # The durable transcript is authoritative for a resumed conversation. Ignore
-        # caller-supplied history so a client cannot replace another turn sequence.
-        history = [
-            ChatTurn(role=item.role, content=item.content)
-            for item in existing_conversation.messages
-        ]
+) -> ChatResponse:
+    """One chat turn, blocking (chat revamp SPEC §6): the same preflight, turn task
+    and persistence as ``POST /api/chat/stream`` (``routes_chat.run_chat_turn``),
+    awaited. Imported lazily: ``routes_chat`` imports this module."""
+    from .routes_chat import run_chat_blocking
 
-    # Per-call model override (additive): run THIS chat turn with the chat-role model
-    # swapped to body.model via a prefs copy. Unchanged when body.model is None.
-    # ``None`` means the CURRENT default. The UI resends a saved non-default
-    # selection while resuming; omitting it is how an analyst resets the thread.
-    selected_model = body.model
-    prefs_eff = _override_models(state.execution_prefs, selected_model, ("chat",))
-    selected_source_id = body.source_id
-    request_key = body.idempotency_key or new_id("chatreq-")
-    request_fingerprint = _chat_request_fingerprint(body)
-    reservation = None
-    source_conn = None
-    owned_client = None
-    effective_source_id = None
-    effective_source_name = None
-    try:
-        if persist_workspace:
-            try:
-                reservation = await state.chat_conversations.reserve_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    conversation_id=body.conversation_id,
-                )
-            except ChatHistoryUnavailable as exc:
-                raise _chat_history_http(exc) from exc
-            except ChatRequestInProgress as exc:
-                raise _chat_conflict_http("chat_request_in_progress", str(exc)) from exc
-            except ChatRequestCapacityBusy as exc:
-                raise _chat_conflict_http("chat_request_capacity_busy", str(exc)) from exc
-            except ChatIdempotencyConflict as exc:
-                raise _chat_conflict_http("chat_idempotency_conflict", str(exc)) from exc
-            except ChatConversationMissing as exc:
-                raise HTTPException(status_code=404, detail="conversation not found") from exc
-            if reservation.status == "completed":
-                return _replayed_chat_response(reservation).model_dump(mode="json")
-
-        # Resolve a live source only after durable replay had a chance to return.
-        # A historical receipt remains replayable even if its source was later
-        # disabled or removed. New executions reject an unusable explicit source.
-        source_conn, owned_client, effective_source_id, effective_source_name = (
-            _chat_source_connector(state, selected_source_id)
-        )
-        resp = await state.chat_engine.chat(
-            body.message, prefs_eff, case_id=body.case_id, history=history,
-            context=body.context, author=author, source=source_conn,
-            can_manage_memory=await has_permission(request, "memory", "manage"),
-        )
-    except HTTPException:
-        if persist_workspace and reservation is not None:
-            try:
-                await state.chat_conversations.abort_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    lease_token=reservation.lease_token or "",
-                )
-            except Exception:  # noqa: BLE001 -- preserve the typed HTTP failure
-                pass
-        raise
-    except Exception:
-        if persist_workspace and reservation is not None:
-            try:
-                await state.chat_conversations.abort_exchange(
-                    author,
-                    idempotency_key=request_key,
-                    request_fingerprint=request_fingerprint,
-                    lease_token=reservation.lease_token or "",
-                )
-            except Exception:  # noqa: BLE001 -- never hide the original model failure
-                pass
-        raise
-    finally:
-        if owned_client is not None:
-            try:
-                await owned_client.close()
-            except Exception:  # noqa: BLE001
-                pass
-    if persist_workspace:
-        assert reservation is not None
-        response_with_provenance = resp.model_copy(update={
-            "idempotency_key": request_key,
-            "effective_model": resp.effective_model,
-            "effective_source_id": effective_source_id,
-            "effective_source_name": effective_source_name,
-        })
-        try:
-            completed = await state.chat_conversations.complete_exchange(
-                author,
-                idempotency_key=request_key,
-                request_fingerprint=request_fingerprint,
-                conversation_id=reservation.conversation_id,
-                lease_token=reservation.lease_token or "",
-                requested_existing_conversation=body.conversation_id is not None,
-                user_content=body.message,
-                assistant_content=resp.answer,
-                response=response_with_provenance.model_dump(mode="json"),
-                model=resp.effective_model,
-                source_id=effective_source_id,
-                source_name=effective_source_name,
-            )
-        except ChatHistoryUnavailable as exc:
-            raise _chat_history_http(exc) from exc
-        except ChatConversationMissing as exc:
-            raise _chat_conflict_http(
-                "chat_idempotency_conflict",
-                "The conversation changed while the response was being saved.",
-            ) from exc
-        except ChatIdempotencyConflict as exc:
-            raise _chat_conflict_http("chat_idempotency_conflict", str(exc)) from exc
-        except ChatRequestInProgress as exc:
-            raise _chat_conflict_http("chat_request_in_progress", str(exc)) from exc
-        conversation = completed.conversation
-        if conversation is None:
-            raise _chat_history_http(
-                ChatHistoryUnavailable("The saved conversation could not be restored.")
-            )
-        resp = response_with_provenance.model_copy(update={
-            "conversation_id": conversation.id,
-            "conversation_title": conversation.title,
-            "truncated": bool(
-                (completed.assistant_message.response or {}).get("truncated")
-                if completed.assistant_message is not None else False
-            ),
-        })
-    else:
-        resp = resp.model_copy(update={
-            "idempotency_key": body.idempotency_key,
-            "effective_model": resp.effective_model,
-            "effective_source_id": effective_source_id,
-            "effective_source_name": effective_source_name,
-        })
-    return resp.model_dump(mode="json")
-
-
-def _chat_source_connector(state: AppState, source_id: str | None):
-    """Build the PULL connector for an explicitly-selected chat source.
-
-    Returns connector/client plus the truthful effective id/name. ``None`` connector
-    means use the engine's configured primary only when no explicit id was supplied.
-    Explicit unknown, disabled, receiver-only or unbuildable sources return 422."""
-    if not source_id:
-        if state.demo_active:
-            from ..engine.demo_sources import DEMO_SOURCE_SPECS
-
-            spec = DEMO_SOURCE_SPECS["splunk"]
-            return None, None, spec.source_id, spec.display_name
-        primary = state.execution_prefs.primary_source()
-        return (
-            None,
-            None,
-            primary.id if primary is not None else None,
-            (primary.display_name or primary.id) if primary is not None else "Primary source",
-        )
-    if state.demo_active:
-        # Demo push adapters expose the same bounded search contract as a pull
-        # connector, so chat source selection remains truthful for all four rows.
-        connector = state.demo_source_connector(source_id)
-        if connector is None:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "chat_source_unavailable",
-                    "message": "The selected source is unavailable for chat.",
-                },
-            )
-        rows = state.demo_sources_overlay()
-        row = next((item for item in rows if item.get("id") == source_id), {})
-        return connector, None, source_id, str(row.get("display_name") or source_id)
-    src = next((s for s in state.prefs.sources if s.id == source_id and s.enabled), None)
-    if src is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source is unknown or disabled.",
-            },
-        )
-    reg = get_registry()
-    if not reg.is_pull(src.source_type):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source does not provide a query surface.",
-            },
-        )
-    try:
-        from ..connectors.elastic import ElasticConnector
-        from ..connectors.opensearch import OpenSearchConnector
-        from ..connectors.wazuh import WazuhConnector
-
-        es_client, owned = state.es_client_for_source(src)
-        cfg = {**(src.config or {})}
-        if src.display_name:
-            cfg.setdefault("display_name", src.display_name)
-        if src.source_type == SourceType.OPENSEARCH:
-            conn = OpenSearchConnector(es_client, config=cfg, connector_id=src.id)
-        elif src.source_type == SourceType.WAZUH:
-            conn = WazuhConnector(es_client, config=cfg, connector_id=src.id)
-        else:
-            conn = ElasticConnector(es_client, config=cfg, connector_id=src.id)
-        return (
-            conn,
-            (es_client if owned else None),
-            src.id,
-            src.display_name or src.id,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "chat_source_unavailable",
-                "message": "The selected source could not be prepared for chat.",
-            },
-        ) from exc
+    return await run_chat_blocking(request, body, state)
 
 
 # --------------------------------------------------------------------------- #
@@ -2500,20 +2017,8 @@ async def personas(state: AppState = Depends(get_state)) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Agent PROPOSALS (HITL — agent drafts, human approves/rejects)
 # --------------------------------------------------------------------------- #
-def _proposal_public(proposal: Proposal) -> dict[str, Any]:
-    """Public projection; lease and immutable recovery identity stay internal.
-
-    Carries the derived ``evidence`` block so a review card renders exactly the claim
-    the server is willing to act on: a bulk-ratified or unverifiable basis is never
-    presented as analyst-confirmed, and ``evidence.approvable`` tells the UI in advance
-    that the approve button would be refused.
-    """
-    data = proposal.model_dump(
-        mode="json", exclude={"applying_token", "decision_actor"}
-    )
-    data["evidence"] = evidence_summary(proposal)
-    data["expired"] = proposal.status == "expired" or proposal_is_expired(proposal)
-    return data
+# ``_proposal_public`` lives in ``engine/views.py`` (chat revamp SPEC §5.3) and is
+# re-exported at the top of this module under its historical name.
 
 
 @router.get("/proposals")
@@ -6596,47 +6101,10 @@ def _millis_to_iso(millis: int) -> str:
     return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc).isoformat()
 
 
-# Auto-widen ladder (BUG-2): increasing windows tried IN ORDER on 0 hits. The
-# configured/requested start window is always tried first; ladder rungs narrower
-# than the start are skipped so we never shrink the search below what was asked.
-# ``now-365d`` is the ~1-year widest rung (the relative-time parser supports
-# s/m/h/d/w, not a ``y`` unit, so a year is expressed in days).
-_WIDEN_LADDER = ("now-7d", "now-30d", "now-365d")
-
-
-def _entity_field(prefs: Preferences, entity_type: EntityType) -> str:
-    return {
-        EntityType.IP: prefs.source_ip_field,
-        EntityType.USER: prefs.user_field,
-        EntityType.HOST: prefs.host_field,
-    }[entity_type]
-
-
-def _scoped_entity_body(prefs: Preferences, field: str, value: str, from_millis: int) -> dict[str, Any]:
-    """Entity query with the SAME scope + suppression filters the poller uses, so a
-    manual investigation never pulls out-of-scope or suppressed events."""
-    body = entity_query(
-        prefs, field, value, from_millis=from_millis, size=200,
-        extra_filters=scope_filters(prefs),
-    )
-    must_not = scope_must_not(prefs)
-    if must_not:
-        body["query"]["bool"]["must_not"] = must_not
-    return body
-
-
-def _widen_windows(start_window: str) -> list[str]:
-    """Ordered windows to try: the configured/requested start, then each ladder
-    rung that is WIDER than (i.e. reaches further back than) the start."""
-    windows = [start_window]
-    start_ms = relative_to_millis(start_window)
-    for rung in _WIDEN_LADDER:
-        # A wider window resolves to an EARLIER epoch (further in the past).
-        if relative_to_millis(rung) < start_ms:
-            windows.append(rung)
-    return windows
-
-
+# The auto-widen ladder and the entity-query helpers (``_WIDEN_LADDER``,
+# ``_entity_field``, ``_scoped_entity_body``, ``_widen_windows``) live in
+# ``engine/case_cluster.py`` (chat revamp SPEC §5.3) and are re-exported at the top
+# of this module under their historical names.
 async def _entity_events_widening(
     state: AppState,
     entity_type: EntityType,
@@ -6645,47 +6113,14 @@ async def _entity_events_widening(
     *,
     query_source=None,
 ) -> tuple[list[RawEvent], str]:
-    """Fetch an entity's in-scope events, auto-widening the lookback on 0 hits.
-
-    Returns (events, widest_window_tried). Stops at the first window that yields
-    events; if all are empty the events list is empty and widest_window_tried is
-    the broadest window attempted."""
-    prefs = state.execution_prefs
-    windows = _widen_windows(start_window)
-    widest = windows[-1]
-    for window in windows:
-        if query_source is not None:
-            from ..connectors.base import StructuredQuery
-
-            filters: dict[str, Any] = {
-                "time_from": window,
-                "time_to": "now",
-                "size": 200,
-                "sort_desc": True,
-            }
-            if entity_type == EntityType.IP:
-                filters["ip"] = value
-            elif entity_type == EntityType.USER:
-                filters["user"] = value
-            elif entity_type == EntityType.HOST:
-                filters["host"] = value
-            elif entity_type == EntityType.RULE:
-                filters["rule"] = value
-            else:
-                # The current source-neutral query IR has no hash/domain field;
-                # do not silently query a different source as a fallback.
-                return [], widest
-            result = await query_source.search(prefs, StructuredQuery(**filters))
-            events = result.events
-        else:
-            field = _entity_field(prefs, entity_type)
-            body = _scoped_entity_body(prefs, field, value, relative_to_millis(window))
-            resp = await state.es.search_logs(prefs.data_view_pattern, body)
-            hits = resp.get("hits", {}).get("hits", [])
-            events = [RawEvent.from_hit(h, prefs) for h in hits]
-        if events:
-            return events, window
-    return [], widest
+    """Route-compat wrapper: :func:`app.engine.case_cluster.entity_events_widening`
+    over ``state.es`` and the active stack's ``state.execution_prefs``."""
+    return await entity_events_widening(
+        entity_type, value, start_window,
+        es=getattr(state, "es", None),
+        prefs=state.execution_prefs,
+        query_source=query_source,
+    )
 
 
 async def _cluster_for_request(
@@ -6743,204 +6178,22 @@ async def _cluster_for_case(
     allow_stored_reconstruction: bool = False,
     query_source=None,
 ) -> Cluster | None:
-    """Rebuild a cluster from a stored case for a human-triggered re-investigation.
-
-    Prefers an exact id-based re-query of the case's member events; falls back to a
-    config-windowed (``prefs.investigate_lookback``) entity re-query using the same
-    scope filters as the manual investigate path. Read-only on the log surface.
-
-    When both live re-queries come back empty (the originating events aged out of the
-    retained log window) AND ``allow_stored_reconstruction`` is set, a MINIMAL cluster
-    is rebuilt from the case's STORED fields (see :func:`_reconstruct_cluster_from_case`)
-    so an operator-triggered re-investigation can still run the LLM over the retained
-    evidence instead of dead-ending on a 400. Callers that must NOT fabricate a cluster
-    from stale state (e.g. the read-only forwarding explainer) leave the flag off and
-    still get ``None``.
-
-    The original deterministic trigger reason (if the case has one) is PRESERVED so
-    a re-investigate never overwrites a scan-derived "Why this fired"; only a case
-    lacking one gets a synthesized MANUAL trigger reason. Nothing here touches the
-    deterministic close/escalate decision (#3)."""
-    prefs = state.execution_prefs
-    entity_type, value = case.entity.type, case.entity.value
-    has_trigger = case.trigger_reason is not None
-    # ``query_source=None`` is intentional for push/deleted sources: they have no
-    # upstream search surface. Only legacy cases without source provenance may use
-    # the implicit global ES client as a compatibility fallback.
-    implicit_legacy_source = (
-        not prefs.sources
-        and case.source_id == getattr(state.log_source, "connector_id", None)
+    """Route-compat wrapper: :func:`app.engine.case_cluster.cluster_for_case` with
+    ``state.es``, ``state.log_source`` and ``state.execution_prefs`` as its explicit
+    dependencies (moved there by chat revamp SPEC §5.3). ``query_source`` is still
+    resolved by the caller (``state.active_source_for_id(case.source_id)``)."""
+    return await cluster_for_case(
+        case,
+        es=getattr(state, "es", None),
+        log_source=getattr(state, "log_source", None),
+        prefs=state.execution_prefs,
+        allow_stored_reconstruction=allow_stored_reconstruction,
+        query_source=query_source,
     )
-    can_query_live = query_source is not None or not case.source_id or implicit_legacy_source
-
-    def _finalize(cluster: Cluster, window: str) -> Cluster:
-        # Re-investigation is an update of this exact stored case, not a fresh
-        # correlation pass. Pin identity and provenance even when live events were
-        # found; otherwise a legacy/manual case (or a source-scoping change) can
-        # compute a new signature and mint a duplicate case.
-        cluster.signature = case.cluster_signature
-        cluster.source_id = case.source_id
-        cluster.source_name = case.source_name
-        # Only synthesize a manual reason when the case lacks one; otherwise leave
-        # the cluster's reason None so the pipeline's _trigger() keeps the existing.
-        if not has_trigger:
-            cluster.trigger_reason = _manual_trigger_reason(cluster, window)
-        else:
-            cluster.trigger_reason = None
-        return cluster
-
-    # Preferred: re-fetch the exact member events by id (read-only).
-    if case.member_event_ids and can_query_live:
-        fetch_size = max(len(case.member_event_ids), len(case.member_event_keys or []))
-        if query_source is not None:
-            result = await query_source.fetch_by_ids(
-                prefs, case.member_event_ids, size=fetch_size
-            )
-            events = result.events
-        else:
-            resp = await state.es.search_logs(
-                prefs.data_view_pattern,
-                ids_query(case.member_event_ids, size=fetch_size),
-            )
-            hits = resp.get("hits", {}).get("hits", [])
-            events = [RawEvent.from_hit(h, prefs) for h in hits]
-        members = [e for e in events if e.entity_value(entity_type) == value] or events
-        if members:
-            cluster = cluster_from_events(entity_type, value, members)
-            return _finalize(cluster, prefs.investigate_lookback)
-
-    # Fallback: re-query the entity over the configured window (with auto-widen).
-    if can_query_live:
-        events, window = await _entity_events_widening(
-            state, entity_type, value, prefs.investigate_lookback,
-            query_source=query_source,
-        )
-        if events:
-            members = [e for e in events if e.entity_value(entity_type) == value] or events
-            cluster = cluster_from_events(entity_type, value, members)
-            return _finalize(cluster, window)
-
-    # Last resort: the live logs aged out of the retained window. For an operator-
-    # triggered re-investigation (reinvestigate / run-playbook), optionally rebuild a
-    # MINIMAL cluster from the case's STORED evidence so the LLM can still re-reason
-    # over what we retained. Read-only + fail-open; ``None`` only when the case carries
-    # NO stored evidence at all. #3 untouched — this only reassembles evidence.
-    if allow_stored_reconstruction:
-        reconstructed = _reconstruct_cluster_from_case(case)
-        if reconstructed is not None:
-            return _finalize(reconstructed, prefs.investigate_lookback)
-    return None
 
 
-def _reconstruct_cluster_from_case(case: Case) -> Cluster | None:
-    """Rebuild a MINIMAL cluster from a case's STORED fields when the live log
-    re-query is empty (the originating events aged out of the retained window).
-
-    Lets an operator-triggered re-investigation still run the investigator over the
-    case's retained evidence rather than dead-ending. Synthetic member events are
-    reconstructed (capped at 200) from the stored ``member_event_ids`` (falling back
-    to the ``evidence[].event_ids``), each carrying the case entity + a stored rule so
-    the investigator prompt and the deterministic risk model see faithful inputs. The
-    cluster SIGNATURE is PINNED to the case's stored ``cluster_signature`` so the
-    re-investigation updates THIS case in place and never mints a duplicate (#4).
-
-    Read-only + fail-open: returns ``None`` only when the case carries no stored
-    evidence at all. Nothing here touches the deterministic decision (#3)."""
-    entity_type = case.entity.type
-    value = case.entity.value
-
-    # Stored evidence ids: prefer the member events, else the verdict evidence ids.
-    raw_ids: list[str] = list(case.member_event_ids or [])
-    if not raw_ids:
-        for item in case.evidence:
-            raw_ids.extend(item.event_ids or [])
-    ordered_ids: list[str] = []
-    seen: set[str] = set()
-    for eid in raw_ids:
-        if eid and eid not in seen:
-            seen.add(eid)
-            ordered_ids.append(eid)
-        if len(ordered_ids) >= 200:
-            break
-    if not ordered_ids:
-        return None  # truly-empty case — nothing to reconstruct.
-
-    # Window from the stored trigger reason (else collapse to a point-in-time window).
-    tr = case.trigger_reason
-    win_start = int(tr.window_start) if (tr and tr.window_start) else 0
-    win_end = int(tr.window_end) if (tr and tr.window_end) else 0
-    if win_end < win_start:
-        win_start, win_end = win_end, win_start
-
-    rules = [r for r in (case.rule_ids or []) if r]
-    n = len(ordered_ids)
-    members: list[RawEvent] = []
-    for i, eid in enumerate(ordered_ids):
-        if win_start and win_end and n > 1:
-            ts = win_start + (win_end - win_start) * i // (n - 1)
-        else:
-            ts = win_start or win_end or 0
-        ev = RawEvent(
-            id=eid,
-            timestamp_millis=ts,
-            rule=(rules[i % len(rules)] if rules else None),
-            source={"reconstructed": True},
-        )
-        # Carry the case entity onto its projection field so the investigator prompt
-        # + reproduce query render the concrete entity (UNTRUSTED log data downstream).
-        if entity_type == EntityType.IP:
-            ev.ip = value
-        elif entity_type == EntityType.USER:
-            ev.user = value
-        elif entity_type == EntityType.HOST:
-            ev.host = value
-        members.append(ev)
-
-    cluster = cluster_from_events(entity_type, value, members)
-    # Preserve stored provenance + counts the synthetic events cannot carry, and PIN
-    # the signature so the re-investigation updates THIS case in place (#4).
-    cluster.signature = case.cluster_signature
-    if case.rule_ids:
-        cluster.rule_values = list(case.rule_ids)
-    cluster.source_id = case.source_id
-    cluster.source_name = case.source_name
-    cluster.member_event_keys = list(case.member_event_keys or cluster.member_event_keys)
-    # The stored member id list may exceed the 200-event synthetic cap — keep the
-    # faithful volume for the deterministic risk model (recomputed by the pipeline).
-    cluster.count = max(
-        len(members), len(case.member_event_keys or case.member_event_ids)
-    )
-    if case.risk_score:
-        cluster.risk_score = case.risk_score
-        cluster.risk_breakdown = case.risk_breakdown
-    return cluster
-
-
-def _manual_trigger_reason(cluster: Cluster, window: str) -> TriggerReason:
-    """Synthesize a MANUAL TriggerReason so "Why this fired" renders for manually
-    investigated cases (Feature 3 / IMPROVEMENT). Mode is ``manual``; structured
-    fields are filled from the resolved cluster."""
-    entity_type = cluster.entity.type.value
-    entity_value = cluster.entity.value
-    n = cluster.count
-    rules = ", ".join(cluster.rule_values) or "no specific rule"
-    sentence = (
-        f"Manually investigated: {n} event{'s' if n != 1 else ''} for "
-        f"{entity_type} {entity_value} in the last {window} across rules [{rules}]"
-    )
-    return TriggerReason(
-        rule_value=(cluster.rule_values[0] if cluster.rule_values else ""),
-        mode="manual",
-        n=n,
-        window_seconds=0,
-        group_by=entity_type,
-        observed_count=n,
-        window_start=cluster.first_seen_millis,
-        window_end=cluster.last_seen_millis,
-        entity=f"{entity_type}:{entity_value}",
-        rule_values=list(cluster.rule_values),
-        sentence=sentence,
-    )
+# ``_reconstruct_cluster_from_case`` and ``_manual_trigger_reason`` live in
+# ``engine/case_cluster.py`` and are re-exported at the top of this module.
 
 
 def _no_events_detail(req: InvestigateRequest, widest: str) -> str:
@@ -6955,347 +6208,8 @@ def _no_events_detail(req: InvestigateRequest, widest: str) -> str:
     return "Could not resolve events for this request"
 
 
-def _audit_get(row: Any, key: str, default: Any = None) -> Any:
-    """Read a field from an audit row that may be a dict OR a pydantic AuditDoc."""
-    if isinstance(row, dict):
-        return row.get(key, default)
-    return getattr(row, key, default)
-
-
-def _build_rationale(case_id: str, case: Any, rows: list[Any]) -> dict[str, Any]:
-    """Assemble the explainability "why" object from a case + its audit rows.
-
-    Pure + defensive: any missing audit piece degrades to an empty value. Reads the
-    CONTEXT record (knowledge/memory/enrichment), TOOL_CALL records (tools/queries),
-    the VERDICT record (reasoning excerpt), the playbook_selector DECISION (playbook
-    reason) and the case_manager DECISION (deterministic rationale)."""
-    # Audit rows are OLDEST-first.  A case can be re-investigated many times, so
-    # project only the LATEST run instead of mixing the first run's context/tools
-    # with the current Case fields.  ``playbook_selector`` is the usual durable run
-    # boundary (including the cheap path).  A failure can happen before selection,
-    # though; in that case the terminal ``pipeline error:`` row must start a new run
-    # rather than inheriting the previous run's measured retrieval or other artifacts.
-    # The prefix deliberately excludes the non-terminal timeout ERROR row: timeout
-    # handling continues to procedure provenance + the deterministic case-manager
-    # decision in the SAME run.  Legacy audit histories without either boundary fall
-    # back to their full history.
-    run_start = 0
-    run_boundary_reason = "historical_provenance_missing"
-    last_selector = -1
-    last_terminal = -1
-    for idx, row in enumerate(rows):
-        if _audit_get(row, "actor") == "playbook_selector":
-            run_start = idx
-            run_boundary_reason = "historical_provenance_missing"
-            last_selector = idx
-        elif (
-            _audit_get(row, "actor") == "pipeline"
-            and _audit_get(row, "action_type") == ActionType.ERROR.value
-            and str(_audit_get(row, "result_summary") or "").startswith("pipeline error:")
-        ):
-            # No selector has appeared since the preceding completed run: this
-            # failure itself is the latest run boundary.  If the current run DID
-            # reach selection, retain that more informative boundary so any measured
-            # retrieval completed before the later failure remains attributable.
-            if last_selector <= last_terminal:
-                run_start = idx
-                run_boundary_reason = "pipeline_failed_before_provenance"
-            last_terminal = idx
-        elif (
-            _audit_get(row, "actor") == "case_manager"
-            and _audit_get(row, "action_type") == ActionType.DECISION.value
-        ):
-            last_terminal = idx
-
-    # The fail-to-human Case is persisted before its terminal audit row. If that
-    # best-effort append was lost but older audit history remains readable, an error
-    # Case would otherwise inherit the preceding run. A newer Case timestamp is
-    # positive evidence that the bounded audit trail has no boundary for this run;
-    # fail closed to an empty/unavailable projection instead of guessing.
-    case_error = str(_audit_get(case, "error") or "").strip()
-    case_updated_at = parse_es_timestamp(_audit_get(case, "updated_at"))
-    audit_times = [
-        parsed
-        for row in rows
-        if (parsed := parse_es_timestamp(_audit_get(row, "ts"))) is not None
-    ]
-    if case_error and case_updated_at is not None and (
-        not audit_times or max(audit_times) < case_updated_at
-    ):
-        run_start = len(rows)
-        run_boundary_reason = "pipeline_failure_provenance_missing"
-    run_rows = rows[run_start:]
-
-    selector_row = next(
-        (row for row in reversed(run_rows) if _audit_get(row, "actor") == "playbook_selector"),
-        None,
-    )
-    context_row = next(
-        (
-            row
-            for row in reversed(run_rows)
-            if _audit_get(row, "action_type") == ActionType.CONTEXT.value
-            and _audit_get(row, "actor") == "context"
-        ),
-        None,
-    )
-    procedure_row = next(
-        (
-            row
-            for row in reversed(run_rows)
-            if _audit_get(row, "action_type") == ActionType.CONTEXT.value
-            and _audit_get(row, "actor") == "procedure_provenance"
-        ),
-        None,
-    )
-
-    # --- from the CONTEXT record (investigator-injected context) -------------
-    knowledge: list[dict[str, Any]] = []
-    memory_used: list[str] = []
-    enrichment: dict[str, Any] | None = None
-    playbook_id = ""
-    playbook_version = ""
-    playbook_consulted = False
-    if context_row is not None:
-        ti = _audit_get(context_row, "tool_input") or {}
-        if isinstance(ti, dict):
-            for k in (ti.get("knowledge") or []):
-                if isinstance(k, dict):
-                    knowledge.append({
-                        "source": str(k.get("source", "unknown")),
-                        "snippet": str(k.get("snippet", "")),
-                    })
-            for m in (ti.get("memory") or []):
-                if isinstance(m, str) and m.strip():
-                    memory_used.append(m)
-            enr = ti.get("enrichment")
-            if isinstance(enr, dict):
-                enrichment = {
-                    "reputation_score": enr.get("reputation_score"),
-                    "is_malicious": enr.get("is_malicious"),
-                    "country": enr.get("country"),
-                }
-            detail = ti.get("playbook_detail")
-            if isinstance(detail, dict) and str(detail.get("id") or "").strip():
-                playbook_id = str(detail.get("id") or "").strip()
-                playbook_version = str(detail.get("version") or "").strip()
-                playbook_consulted = True
-            elif ti.get("playbook"):
-                # Backward compatibility for pre-structured CONTEXT rows.  The Case
-                # id belongs to the latest run, and a truthy context value proves it
-                # was actually injected (selection alone does not).
-                playbook_id = str(getattr(case, "playbook_id", "") or "").strip()
-                playbook_consulted = bool(playbook_id)
-
-    # --- exact selected-vs-consulted procedure provenance ------------------
-    # New runs write this independently of the legacy investigator CONTEXT row,
-    # including cheap-router, kill-switch, and timeout paths where a persona or
-    # playbook may be selected but never consulted.  Keep a stable empty shape for
-    # old audit histories so consumers do not need to infer usage from Case fields.
-    procedure_provenance: dict[str, Any] = {
-        "persona": {"selected_id": "", "selection_reason": "", "consulted": False},
-        "playbook": {"selected_id": "", "selection_reason": "", "consulted": False},
-        "consultation_path": "",
-        # Missing procedure telemetry is UNKNOWN, never a measured zero.
-        "retrieval_status": "unavailable",
-        "retrieval_reason": run_boundary_reason,
-        "retrieval_query_groups": [],
-        "knowledge": [],
-    }
-    if procedure_row is not None:
-        procedure_input = _audit_get(procedure_row, "tool_input") or {}
-        if isinstance(procedure_input, dict):
-            for key in ("persona", "playbook"):
-                raw = procedure_input.get(key)
-                if not isinstance(raw, dict):
-                    continue
-                procedure_provenance[key] = {
-                    "selected_id": str(raw.get("selected_id") or ""),
-                    "selection_reason": str(raw.get("selection_reason") or ""),
-                    "consulted": bool(raw.get("consulted", False)),
-                }
-            procedure_provenance["consultation_path"] = str(
-                procedure_input.get("consultation_path") or ""
-            )
-            raw_retrieval_status = str(
-                procedure_input.get("retrieval_status") or "unavailable"
-            )
-            retrieval_status = (
-                raw_retrieval_status
-                if raw_retrieval_status
-                in {"measured", "not_attempted", "unavailable"}
-                else "unavailable"
-            )
-            procedure_provenance["retrieval_status"] = retrieval_status
-            procedure_provenance["retrieval_reason"] = str(
-                procedure_input.get("retrieval_reason")
-                or (
-                    "historical_provenance_missing"
-                    if retrieval_status == "unavailable"
-                    else ""
-                )
-            )
-            for item in procedure_input.get("retrieval_query_groups") or []:
-                if not isinstance(item, dict):
-                    continue
-                procedure_provenance["retrieval_query_groups"].append({
-                    "group": str(item.get("group") or ""),
-                    "query": str(item.get("query") or ""),
-                })
-            for item in procedure_input.get("knowledge") or []:
-                if not isinstance(item, dict):
-                    continue
-                procedure_provenance["knowledge"].append({
-                    "source": str(item.get("source") or "unknown"),
-                    "score": item.get("score"),
-                    "document_id": str(item.get("document_id") or ""),
-                    "revision": item.get("revision"),
-                    "content_hash": str(item.get("content_hash") or ""),
-                    "query_groups": [
-                        str(value)
-                        for value in (item.get("query_groups") or [])
-                        if str(value)
-                    ],
-                    "snippet": str(item.get("snippet") or ""),
-                })
-
-        # The explicit row is authoritative. A selected procedure on a cheap path
-        # must not be resurrected as "used" from mutable Case fields or an older
-        # context row. Structured knowledge also supersedes the legacy two-field list.
-        playbook_provenance = procedure_provenance["playbook"]
-        playbook_consulted = bool(playbook_provenance["consulted"])
-        if playbook_consulted:
-            playbook_id = str(playbook_provenance["selected_id"] or playbook_id)
-        else:
-            playbook_id = ""
-            playbook_version = ""
-        knowledge = list(procedure_provenance["knowledge"])
-
-    # --- platform threshold tuning snapshot (run-boundary audit row) ---------
-    platform_tuning_status = "not_recorded"
-    platform_tuning: list[dict[str, Any]] = []
-    if selector_row is not None:
-        selector_input = _audit_get(selector_row, "tool_input") or {}
-        if isinstance(selector_input, dict):
-            raw_tuning = selector_input.get("platform_tuning")
-            if isinstance(raw_tuning, dict):
-                raw_status = str(raw_tuning.get("status") or "not_recorded")
-                if raw_status in {"recorded", "not_recorded", "unavailable"}:
-                    platform_tuning_status = raw_status
-                for item in raw_tuning.get("records") or []:
-                    if not isinstance(item, dict):
-                        continue
-                    platform_tuning.append({
-                        "record_id": str(item.get("record_id") or ""),
-                        "target": str(item.get("target") or ""),
-                        "rule_id": str(item.get("rule_id") or ""),
-                        "before": item.get("before"),
-                        "after": item.get("after"),
-                        "applied_at": str(item.get("applied_at") or ""),
-                        "rationale": str(item.get("rationale") or ""),
-                    })
-
-    # --- tools / queries (TOOL_CALL + ES_QUERY rows) -------------------------
-    tools: list[dict[str, Any]] = []
-    for row in run_rows:
-        at = _audit_get(row, "action_type")
-        if at not in (ActionType.TOOL_CALL.value, ActionType.ES_QUERY.value):
-            continue
-        tools.append({
-            "tool": _audit_get(row, "tool_name") or (
-                "es_query" if at == ActionType.ES_QUERY.value else ""
-            ),
-            "query": _audit_get(row, "query_text") or "",
-            "summary": _audit_get(row, "tool_output_summary") or "",
-        })
-
-    # --- reasoning excerpt (VERDICT record, written after "reasoning=") -------
-    reasoning = ""
-    for row in reversed(run_rows):
-        if _audit_get(row, "action_type") != ActionType.VERDICT.value:
-            continue
-        rs = str(_audit_get(row, "result_summary") or "")
-        marker = "reasoning="
-        if marker in rs:
-            reasoning = rs.split(marker, 1)[1].strip()
-        break
-
-    # --- playbook reason (playbook_selector DECISION) ------------------------
-    playbook_reason = ""
-    if selector_row is not None:
-        selector_input = _audit_get(selector_row, "tool_input") or {}
-        if isinstance(selector_input, dict):
-            selection = selector_input.get("playbook_selection")
-            if isinstance(selection, dict):
-                playbook_reason = str(selection.get("reason") or "")
-        if not playbook_reason:
-            playbook_reason = str(_audit_get(selector_row, "result_summary") or "")
-
-    # --- deterministic decision rationale (case_manager DECISION, then the
-    #     case.history "decision" event as a fallback) ------------------------
-    decision_rationale = ""
-    for row in reversed(run_rows):
-        if (
-            _audit_get(row, "actor") == "case_manager"
-            and _audit_get(row, "action_type") == ActionType.DECISION.value
-        ):
-            decision_rationale = str(_audit_get(row, "result_summary") or "")
-            break
-
-    # --- case-derived fields (defensive: case may be None) -------------------
-    verdict = ""
-    confidence = 0.0
-    status = ""
-    decision_by = None
-    persona = ""
-    mitre: list[str] = []
-    evidence: list[dict[str, Any]] = []
-    if case is not None:
-        verdict = case.verdict.value if case.verdict else ""
-        confidence = case.confidence
-        status = case.status.value if case.status else ""
-        decision_by = case.decision_by.value if case.decision_by else None
-        persona = case.agent_persona or ""
-        mitre = list(case.mitre or [])
-        evidence = [
-            {
-                "summary": e.summary,
-                "event_ids": list(e.event_ids or []),
-                "query": e.query,
-            }
-            for e in (case.evidence or [])
-        ]
-        if not decision_rationale:
-            for h in reversed(case.history or []):
-                if isinstance(h, dict) and h.get("event") == "decision" and h.get("rationale"):
-                    decision_rationale = str(h.get("rationale"))
-                    break
-
-    return {
-        "case_id": case_id,
-        "verdict": verdict,
-        "confidence": confidence,
-        "status": status,
-        "decision_by": decision_by,
-        "persona": persona,
-        "procedure_provenance": procedure_provenance,
-        "playbook": {
-            "id": playbook_id,
-            "version": playbook_version,
-            "reason": playbook_reason,
-            "consulted": playbook_consulted,
-        },
-        "memory_used": memory_used,
-        "knowledge": knowledge,
-        "platform_tuning_status": platform_tuning_status,
-        "platform_tuning": platform_tuning,
-        "enrichment": enrichment,
-        "tools": tools,
-        "reasoning": reasoning,
-        "decision_rationale": decision_rationale,
-        "mitre": mitre,
-        "evidence": evidence,
-    }
+# ``_audit_get`` and ``_build_rationale`` live in ``engine/case_rationale.py`` (chat
+# revamp SPEC §5.3) and are re-exported at the top of this module.
 
 
 def _trace_step(row: dict[str, Any], include_prompts: bool) -> TraceStep:

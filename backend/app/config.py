@@ -1528,6 +1528,227 @@ class BudgetConfig(BaseModel):
     on_exceed: Literal["warn", "block"] = "block"
 
 
+_DOMAIN_SUFFIX_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,62})(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}))*$")
+
+
+class ChatAgentConfig(BaseModel):
+    """Bounds for the agentic chat loop (chat revamp SPEC §4.2). Enforced in code by
+    the chat engine and the chat routes; read-only scope is structural (the chat tools
+    cannot write), so none of these knobs can widen what chat may DO — they only bound
+    how much it may spend and how long a turn may run. Never feeds ``decide()`` (#3).
+
+    Every numeric knob carries an inclusive ``ge``/``le`` range, and
+    :meth:`_repair` CLAMPS a stored out-of-range or malformed value into that range
+    before field validation runs. This is mandatory for the same reason as
+    ``Preferences._clamp_caps``: both preference loaders answer ANY validation error by
+    returning a full default ``Preferences()``, and ``Preferences`` is one document that
+    also carries ``auto_close``, ``rule_catalog`` and ``sources``. A chat knob must
+    therefore never be able to fail validation, whatever was stored."""
+
+    # ``model_step_timeout_s`` / ``max_model_calls`` are about the LLM, not pydantic.
+    model_config = {"protected_namespaces": ()}
+
+    max_model_calls: int = Field(
+        default=5, ge=1, le=12,
+        description="Model calls per chat question, including the final answer.",
+    )
+    max_tool_calls: int = Field(
+        default=10, ge=1, le=40, description="Lookups (tool calls) per chat question.",
+    )
+    max_parallel: int = Field(
+        default=4, ge=1, le=8, description="Lookups the assistant may run at once in one step.",
+    )
+    tool_timeout_s: int = Field(
+        default=15, ge=1, le=120,
+        description="Seconds one lookup may take (log fan-out keeps per-source timeouts inside it).",
+    )
+    model_step_timeout_s: int = Field(
+        default=30, ge=5, le=300, description="Seconds one model call may take.",
+    )
+    turn_timeout_s: int = Field(
+        default=90, ge=10, le=600,
+        description="Wall-clock seconds per question; stops new steps, never an in-flight model call.",
+    )
+    turn_token_ceiling: int = Field(
+        default=60_000, ge=4_000, le=1_000_000,
+        description="Input plus output tokens one question may use across all its model calls.",
+    )
+    final_reserve_tokens: int = Field(
+        default=12_000, ge=1_000, le=200_000,
+        description="Tokens always kept for writing the final answer, inside the ceiling.",
+    )
+    observation_chars: int = Field(
+        default=6_000, ge=1_500, le=60_000,
+        description="Characters of lookup results sent to the model per step (aggregated, never raw logs).",
+    )
+    final_max_tokens: int = Field(
+        default=4_000, ge=256, le=32_000,
+        description="Output tokens for the final answer (at least the chat model's own limit).",
+    )
+    max_concurrent_turns_per_user: int = Field(
+        default=2, ge=1, le=10, description="Chat questions one user may have running at the same time.",
+    )
+    max_concurrent_turns_global: int = Field(
+        default=8, ge=1, le=100, description="Chat questions this backend runs at the same time.",
+    )
+    max_indicator_lookups: int = Field(
+        default=3, ge=0, le=10,
+        description="Third-party indicator lookups per question (0 turns the lookup tool off).",
+    )
+    max_indicator_lookups_per_conversation: int = Field(
+        default=10, ge=0, le=50, description="Third-party indicator lookups per conversation.",
+    )
+    default_stream_mode: Literal["steps", "text"] = Field(
+        default="steps",
+        description="Default live mode for viewers without a personal choice: steps only, or also type out answers.",
+    )
+    allow_text_streaming: bool = Field(
+        default=True, description="Allow answers to stream word by word (\"Type out answers\").",
+    )
+    internal_domains: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="Domain suffixes that are never sent to third-party enrichment.",
+    )
+    allow_email_lookup: bool = Field(
+        default=False, description="Allow e-mail addresses to be sent to third-party enrichment.",
+    )
+
+    _MAX_INTERNAL_DOMAINS: ClassVar[int] = 100
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """REPAIR (never reject) a stored value: clamp numbers into their declared
+        range, replace malformed numbers/enums/booleans with the field default, and
+        normalise ``internal_domains``. A non-dict (corrupt) block becomes defaults.
+
+        The ranges are read back off the field metadata (:func:`_field_bounds`), so the
+        repair can never drift from the constraints it repairs against. Like the caps
+        clamp this means a settings PUT carrying an out-of-range value is accepted as
+        the clamped value; the curated editor constrains its inputs to the same range."""
+        if isinstance(data, ChatAgentConfig):
+            return data
+        if not isinstance(data, Mapping):
+            if data is not None:
+                logger.warning("Preferences.chat_agent was %s; using defaults", type(data).__name__)
+            return {}
+        out: dict[str, Any] = dict(data)
+        for name, (lo, hi) in _CHAT_AGENT_BOUNDS.items():
+            if name not in out:
+                continue
+            raw = out[name]
+            default = cls.model_fields[name].default
+            value: int | None
+            if isinstance(raw, bool):  # bools are ints in Python; never accept one
+                value = None
+            elif isinstance(raw, int):
+                value = raw
+            elif isinstance(raw, float) and math.isfinite(raw):
+                value = int(raw)
+            elif isinstance(raw, str):
+                try:
+                    value = int(float(raw.strip()))
+                except (TypeError, ValueError, OverflowError):
+                    value = None
+            else:
+                value = None
+            if value is None:
+                repaired = default
+            else:
+                repaired = min(max(value, lo), hi)
+            if repaired != raw:
+                logger.warning(
+                    "Preferences.chat_agent.%s=%r is invalid or outside %d..%d; repaired "
+                    "to %r (the rest of the stored configuration is preserved)",
+                    name, raw, lo, hi, repaired,
+                )
+            out[name] = repaired
+        mode = out.get("default_stream_mode")
+        if "default_stream_mode" in out and mode not in ("steps", "text"):
+            normalised = str(mode).strip().lower() if isinstance(mode, str) else ""
+            out["default_stream_mode"] = normalised if normalised in ("steps", "text") else "steps"
+        for flag in ("allow_text_streaming", "allow_email_lookup"):
+            if flag in out and not isinstance(out[flag], bool):
+                raw_flag = out[flag]
+                if isinstance(raw_flag, str) and raw_flag.strip().lower() in ("true", "1", "yes", "on"):
+                    out[flag] = True
+                elif isinstance(raw_flag, str) and raw_flag.strip().lower() in ("false", "0", "no", "off"):
+                    out[flag] = False
+                elif isinstance(raw_flag, int):
+                    out[flag] = bool(raw_flag)
+                else:
+                    out[flag] = cls.model_fields[flag].default
+        if "internal_domains" in out:
+            out["internal_domains"] = cls.normalise_domains(out["internal_domains"])
+        return out
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "ChatAgentConfig":
+        """Repair cross-field incoherence instead of rejecting it: the final reserve
+        must leave room for tool rounds inside the ceiling, and a batch can never be
+        larger than the per-turn tool budget."""
+        if self.final_reserve_tokens >= self.turn_token_ceiling:
+            self.final_reserve_tokens = max(1_000, self.turn_token_ceiling // 5)
+        if self.max_parallel > self.max_tool_calls:
+            self.max_parallel = self.max_tool_calls
+        return self
+
+    @classmethod
+    def normalise_domains(cls, raw: Any) -> list[str]:
+        """Lower-case, strip a leading ``*.``/``.`` and whitespace, drop anything that
+        is not a plausible DNS suffix, de-duplicate and bound the list. Never raises."""
+        if isinstance(raw, str):
+            items: list[Any] = [part for part in re.split(r"[\s,]+", raw) if part]
+        elif isinstance(raw, (list, tuple)):
+            items = list(raw)
+        else:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            value = item.strip().lower()
+            while value.startswith("*."):
+                value = value[2:]
+            value = value.strip(".")
+            if not value or value in seen or not _DOMAIN_SUFFIX_RE.match(value):
+                continue
+            seen.add(value)
+            out.append(value)
+            if len(out) >= cls._MAX_INTERNAL_DOMAINS:
+                break
+        return out
+
+    def is_internal_domain(self, host: str) -> bool:
+        """True when ``host`` equals or ends with a configured internal suffix."""
+        value = (host or "").strip().lower().rstrip(".")
+        if not value:
+            return False
+        return any(value == d or value.endswith("." + d) for d in self.internal_domains)
+
+
+def _field_bounds(model: type[BaseModel]) -> dict[str, tuple[int, int]]:
+    """The inclusive ``(ge, le)`` range declared on every integer field of ``model``,
+    read back off the field metadata (single source of truth for the repair clamp)."""
+    out: dict[str, tuple[int, int]] = {}
+    for name, field in model.model_fields.items():
+        lo = hi = None
+        for meta in field.metadata:
+            if getattr(meta, "ge", None) is not None:
+                lo = int(meta.ge)
+            if getattr(meta, "le", None) is not None:
+                hi = int(meta.le)
+        if lo is not None and hi is not None and field.annotation is int:
+            out[name] = (lo, hi)
+    return out
+
+
+_CHAT_AGENT_BOUNDS: dict[str, tuple[int, int]] = _field_bounds(ChatAgentConfig)
+# Public alias: the settings UI and /api/chat/context render the same ranges.
+CHAT_AGENT_BOUNDS: dict[str, tuple[int, int]] = dict(_CHAT_AGENT_BOUNDS)
+
+
 class RealtimeConfig(BaseModel):
     """Live-update (SSE/websocket) plumbing config (Round 3). Defaults ON (Autopilot
     overhaul) — pure transport, the webui already falls back to polling, so ON simply
@@ -3378,6 +3599,10 @@ class Preferences(BaseModel):
     rag: RagConfig = Field(default_factory=RagConfig)
     standup: StandupConfig = Field(default_factory=StandupConfig)
     trace: TraceConfig = Field(default_factory=TraceConfig)
+    # Agentic chat loop bounds (chat revamp SPEC §4.2). Clamped on load, never
+    # rejected (see ChatAgentConfig._repair), so a bad stored value cannot reset the
+    # rest of this document.
+    chat_agent: ChatAgentConfig = Field(default_factory=ChatAgentConfig)
     # Multi-agent roster + plain-text runbooks/playbooks (Vigil-inspired). All
     # default ON and degrade to prior behaviour when disabled.
     personas: PersonaConfig = Field(default_factory=PersonaConfig)

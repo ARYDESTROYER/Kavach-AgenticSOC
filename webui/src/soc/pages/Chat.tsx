@@ -1,548 +1,177 @@
 /**
- * Workspace Chat — durable per-user conversations around the one shared chat engine.
+ * Workspace Chat — the page that wires the chat hooks to the workspace shell (chat
+ * revamp SPEC §10, §10.7, §10.8).
  *
- * The page owns only conversation discovery/selection and responsive history chrome.
- * ChatPanel remains the single transcript, composer, source/model, provenance, and
- * send implementation used here and by Case Manager. A draft is intentionally not
- * persisted until its first successful turn, so “New chat” never creates empty rows.
+ *  - `useChatConversations` owns the history (list, selection tri-state, guards,
+ *    cross-tab refresh, drafts, rename/pin/delete, retention, search, the REQUESTED
+ *    selection from the route);
+ *  - `useChatEngine` owns the transcript and the turn state machine (one engine, two
+ *    entry points: this page and the case-scoped Case Manager chat, #5);
+ *  - `useChatContext` feeds the composer meter, the starters and the turn bounds;
+ *  - `ChatWorkspace` renders the three zones.
+ *
+ * "Ask about this" (`NavOpts.topic`): the page resolves the topic to its server-side
+ * templated question and sends THAT (origin `starter`, with the topic id) in a fresh
+ * chat; it never sends free text from a link. The palette's "Ask AI: <text>"
+ * (`NavOpts.ask`) only PREFILLS a fresh chat's composer (the workspace focuses it); the
+ * analyst sends it, so it is never sent on their behalf. A deep-linked `#/chat?conversationId=` is cleared from the
+ * hash as soon as the selection moves elsewhere, so a refresh does not reopen it.
+ *
+ * With `caseId` (Case Chat → "Open full chat") the page is case-scoped: no history,
+ * no report, nothing saved to personal history.
  */
-import * as React from "react";
-import { History, MessageSquare, Plus } from "lucide-react";
+import * as React from 'react';
+import { toast } from 'sonner';
 
-import { api, ApiError } from "@/lib/api";
-import { cn } from "@/lib/cn";
-import { humanizeAge } from "@/lib/format";
-import type {
-  ChatConversation,
-  ChatConversationSummary,
-} from "@/lib/types";
-import { PageHeader } from "@/soc/components/PageHeader";
-import { PageContainer } from "@/soc/components/PageContainer";
-import {
-  ChatPanel,
-  type ChatPanelHandle,
-} from "@/soc/components/ChatPanel";
-import { ChatHistoryRail } from "@/soc/components/ChatHistoryRail";
-import { useConfirm } from "@/soc/components/ConfirmDialog";
-import { Button } from "@/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/ui/sheet";
-
-const SUGGESTED_PROMPTS = [
-  "Show failed logins for 10.0.0.5 in the last 24h",
-  "Summarize today's true positives",
-  "Any brute-force activity in the last 24h?",
-  "Which hosts had the most alerts this week?",
-];
-
-const NEW_DRAFT_KEY = "__new_workspace_chat__";
-const HISTORY_CHANNEL = "agentic-soc-workspace-chat-history";
-const DEFAULT_HISTORY_LIMIT = 50;
-
-function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiError || error instanceof Error) return error.message;
-  return fallback;
-}
-
-function newestConversationFirst(
-  a: ChatConversationSummary,
-  b: ChatConversationSummary,
-): number {
-  return Date.parse(b.updated_at) - Date.parse(a.updated_at);
-}
+import type { ChatConversationSummary, NavOpts } from '@/lib/types';
+import { useAuth } from '@/soc/auth';
+import { useConfirm } from '@/soc/components/ConfirmDialog';
+import { useRoute } from '@/soc/router';
+import { getChatTopic } from '../chat/chat-api';
+import { useChatContext } from '../chat/useChatContext';
+import { useChatConversations } from '../chat/useChatConversations';
+import { useChatEngine } from '../chat/useChatEngine';
+import { ChatWorkspace } from '../chat/workspace/ChatWorkspace';
 
 export interface ChatProps {
-  /** Additive deep-link context preserved by Workspace/registry. */
+  /** Case scope preserved by a Case Chat → Workspace deep link. */
   caseId?: string;
+  /** The route's options (else read from the router when one is mounted). */
+  opts?: NavOpts;
 }
 
-export default function Chat({ caseId }: ChatProps = {}) {
-  const panelRef = React.useRef<ChatPanelHandle>(null);
-  const detailRequestRef = React.useRef(0);
-  const listRequestRef = React.useRef(0);
-  const skipDetailIdRef = React.useRef<string | null>(null);
-  const conversationsRef = React.useRef<ChatConversationSummary[]>([]);
-  const activeIdRef = React.useRef<string | null | undefined>(undefined);
-  const chatBusyRef = React.useRef(false);
-  const refreshPendingRef = React.useRef(false);
-  const historyChannelRef = React.useRef<BroadcastChannel | null>(null);
+/**
+ * The current route's opts without requiring a router: a standalone render (tests,
+ * embeds) has none. `useRoute` always calls `useContext` first, so the hook order is
+ * the same whether or not it throws.
+ */
+function useRouteOpts(): NavOpts | undefined {
+  try {
+    return useRoute().opts;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Drop a `conversationId` deep link that no longer names the open thread. */
+function clearStaleChatHash(activeId: string | null): void {
+  if (typeof window === 'undefined') return;
+  const hash = window.location.hash || '';
+  const query = hash.indexOf('?');
+  if (!/^#\/chat(\?|$)/.test(hash) || query < 0) return;
+  const linked = new URLSearchParams(hash.slice(query + 1)).get('conversationId');
+  if (!linked || linked === activeId) return;
+  try {
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#/chat`);
+  } catch {
+    /* A sandboxed frame may refuse; the stale link only matters on a manual refresh. */
+  }
+}
+
+export default function Chat({ caseId, opts }: ChatProps = {}) {
+  const routeOpts = useRouteOpts();
+  const requested = opts ?? routeOpts ?? null;
+  const caseScoped = !!caseId;
   const confirm = useConfirm();
-  const historyEnabled = !caseId;
+  const { username } = useAuth();
 
-  const [conversations, setConversations] = React.useState<
-    ChatConversationSummary[]
-  >([]);
-  // `undefined` means the initial history load has not chosen a thread yet;
-  // `null` is an intentional New-chat draft and must survive list refreshes.
-  const [activeId, setActiveId] = React.useState<string | null | undefined>(
-    undefined,
-  );
-  const [conversation, setConversation] = React.useState<
-    ChatConversation | null
-  >(null);
-  const [listLoading, setListLoading] = React.useState(true);
-  const [threadLoading, setThreadLoading] = React.useState(false);
-  const [listError, setListError] = React.useState<string | null>(null);
-  const [threadError, setThreadError] = React.useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = React.useState(false);
-  const [threadRetryEpoch, setThreadRetryEpoch] = React.useState(0);
-  const [chatBusy, setChatBusy] = React.useState(false);
-  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
-  const [historyLimit, setHistoryLimit] = React.useState(DEFAULT_HISTORY_LIMIT);
-  const [historyTruncated, setHistoryTruncated] = React.useState(false);
-  const [historyTotal, setHistoryTotal] = React.useState(0);
-
-  // The shell no longer injects a full-width demo banner above the routed content
-  // (demo mode is a top-bar chip now), so the frame subtracts exactly one band —
-  // the sticky top bar + the content inset — in every tenant state.
-  const frameHeight = "h-[calc(100dvh-5.5rem)]";
-
-  React.useEffect(() => {
-    conversationsRef.current = conversations;
-  }, [conversations]);
-
-  React.useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
-
-  const loadConversations = React.useCallback(
-    async () => {
-      const generation = ++listRequestRef.current;
-      setListLoading(true);
-      setListError(null);
-      try {
-        const response = await api.chatConversations(50);
-        const next = [...(response.conversations || [])].sort(
-          newestConversationFirst,
-        );
-        if (generation !== listRequestRef.current) return;
-        setConversations(next);
-        setHistoryLimit(
-          typeof response.limit === "number" && response.limit > 0
-            ? response.limit
-            : DEFAULT_HISTORY_LIMIT,
-        );
-        setHistoryTruncated(response.history_truncated === true);
-        setHistoryTotal(
-          typeof response.total_conversation_count === "number"
-            ? response.total_conversation_count
-            : typeof response.total === "number"
-              ? response.total
-              : next.length,
-        );
-        setActiveId((current) => {
-          if (current && next.some((item) => item.id === current)) return current;
-          if (current === null) return null;
-          return next[0]?.id ?? null;
-        });
-      } catch (error) {
-        if (generation !== listRequestRef.current) return;
-        setListError(
-          errorMessage(error, "Could not load previous conversations."),
-        );
-        // History is helpful, not a prerequisite for a fresh investigation.
-        setActiveId((current) => (current === undefined ? null : current));
-      } finally {
-        if (generation === listRequestRef.current) setListLoading(false);
-      }
-    },
-    [],
-  );
-
-  React.useEffect(() => {
-    if (!historyEnabled) {
-      listRequestRef.current += 1;
-      detailRequestRef.current += 1;
-      setConversations([]);
-      setActiveId(null);
-      setConversation(null);
-      setListError(null);
-      setHistoryTruncated(false);
-      setHistoryTotal(0);
-      setThreadError(null);
-      setListLoading(false);
-      setThreadLoading(false);
-      return;
-    }
-    void loadConversations();
-  }, [historyEnabled, loadConversations]);
-
-  const requestHistoryRefresh = React.useCallback(() => {
-    if (!historyEnabled) return;
-    if (chatBusyRef.current) {
-      refreshPendingRef.current = true;
-      return;
-    }
-    void loadConversations();
-  }, [historyEnabled, loadConversations]);
-
-  const announceHistoryChanged = React.useCallback(() => {
-    historyChannelRef.current?.postMessage({ type: "history-changed" });
-  }, []);
-
-  React.useEffect(() => {
-    if (!historyEnabled || typeof window === "undefined") return;
-
-    const onFocus = () => requestHistoryRefresh();
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") requestHistoryRefresh();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    if (typeof window.BroadcastChannel === "function") {
-      const channel = new window.BroadcastChannel(HISTORY_CHANNEL);
-      historyChannelRef.current = channel;
-      channel.onmessage = () => requestHistoryRefresh();
-    }
-
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      historyChannelRef.current?.close();
-      historyChannelRef.current = null;
-    };
-  }, [historyEnabled, requestHistoryRefresh]);
-
-  const handleBusyChange = React.useCallback(
-    (busy: boolean) => {
-      chatBusyRef.current = busy;
-      setChatBusy(busy);
-      if (!busy && refreshPendingRef.current) {
-        refreshPendingRef.current = false;
-        void loadConversations();
-      }
-    },
-    [loadConversations],
-  );
-
-  React.useEffect(() => {
-    const generation = ++detailRequestRef.current;
-    setThreadError(null);
-    if (!activeId) {
-      setConversation(null);
-      setThreadLoading(false);
-      return;
-    }
-
-    if (skipDetailIdRef.current === activeId) {
-      // The mounted ChatPanel already owns the just-persisted transcript. Keep this
-      // marker for as long as that same thread stays active; clearing it here makes
-      // the page infer that a missing parent-level detail is still restoring even
-      // though the live answer is already visible. Switching/new-chat paths clear
-      // the marker before a future selection, which then hydrates normally.
-      setThreadLoading(false);
-      return;
-    }
-
-    setThreadLoading(true);
-    void api
-      .chatConversation(activeId)
-      .then((detail) => {
-        if (generation === detailRequestRef.current) setConversation(detail);
-      })
-      .catch((error) => {
-        if (generation !== detailRequestRef.current) return;
-        setConversation(null);
-        setThreadError(errorMessage(error, "Could not load this conversation."));
-      })
-      .finally(() => {
-        if (generation === detailRequestRef.current) setThreadLoading(false);
-      });
-  }, [activeId, threadRetryEpoch]);
-
-  const startNew = React.useCallback(() => {
-    if (chatBusy) return;
-    detailRequestRef.current += 1;
-    skipDetailIdRef.current = null;
-    activeIdRef.current = null;
-    setActiveId(null);
-    setConversation(null);
-    setThreadError(null);
-    setThreadLoading(false);
-    setHistoryOpen(false);
-    panelRef.current?.reset();
-  }, [chatBusy]);
-
-  const selectConversation = React.useCallback(
-    (item: ChatConversationSummary) => {
-      if (chatBusy) return;
-      if (activeIdRef.current === item.id) {
-        setHistoryOpen(false);
-        return;
-      }
-      // Enter the pending state before React paints the new selection. This avoids
-      // showing thread A's transcript and enabled composer under thread B's title
-      // while the detail-loading effect waits for its first turn.
-      detailRequestRef.current += 1;
-      skipDetailIdRef.current = null;
-      activeIdRef.current = item.id;
-      setConversation(null);
-      setThreadError(null);
-      setThreadLoading(true);
-      setActiveId(item.id);
-      setHistoryOpen(false);
-    },
-    [chatBusy],
-  );
-
-  const conversationPersisted = React.useCallback(
-    (id: string, title: string) => {
-      // Only a draft's first persisted response needs to suppress hydration. Later
-      // turns on the same thread must not leave a skip token that could be consumed
-      // after the analyst switches away and returns.
-      if (activeIdRef.current !== id) skipDetailIdRef.current = id;
-      activeIdRef.current = id;
-      setActiveId(id);
-      setConversations((current) => {
-        const existing = current.find((item) => item.id === id);
-        const now = new Date().toISOString();
-        const optimistic: ChatConversationSummary = existing ?? {
-          id,
-          title,
-          preview: title,
-          created_at: now,
-          updated_at: now,
-          message_count: 2,
-        };
-        return [
-          { ...optimistic, title: title || optimistic.title, updated_at: now },
-          ...current.filter((item) => item.id !== id),
-        ];
-      });
-      // The response is saved before this callback runs. Refresh metadata in the
-      // background without remounting/refetching the live panel that owns the answer.
-      requestHistoryRefresh();
-      announceHistoryChanged();
-    },
-    [announceHistoryChanged, requestHistoryRefresh],
-  );
-
-  const renameConversation = React.useCallback(
-    async (item: ChatConversationSummary, title: string) => {
-      try {
-        const updated = await api.renameChatConversation(item.id, title);
-        // A list request started before this mutation must not put the stale title
-        // back after the rename succeeds.
-        listRequestRef.current += 1;
-        setListLoading(false);
-        setConversations((current) =>
-          current
-            .map((entry) => (entry.id === item.id ? updated : entry))
-            .sort(newestConversationFirst),
-        );
-        announceHistoryChanged();
-      } catch (error) {
-        setListError(errorMessage(error, "Could not rename the conversation."));
-      }
-    },
-    [announceHistoryChanged],
-  );
-
-  const deleteConversation = React.useCallback(
-    async (item: ChatConversationSummary) => {
-      const approved = await confirm({
-        title: "Delete conversation?",
-        description: `“${item.title}” and its saved messages will be removed. This cannot be undone.`,
-        confirmLabel: "Delete",
+  const confirmDelete = React.useCallback(
+    (item: ChatConversationSummary) =>
+      confirm({
+        title: 'Delete conversation?',
+        description: `“${item.title}” and its saved messages will be removed. Its report stays in Reports.`,
+        confirmLabel: 'Delete',
         destructive: true,
-      });
-      if (!approved) return;
-      try {
-        await api.deleteChatConversation(item.id);
-        // Invalidate list/detail responses that still include the deleted thread.
-        listRequestRef.current += 1;
-        setListLoading(false);
-        const deletingActive = activeIdRef.current === item.id;
-        if (deletingActive) detailRequestRef.current += 1;
-        const remaining = conversationsRef.current.filter(
-          (entry) => entry.id !== item.id,
-        );
-        setConversations(remaining);
-        setDrafts((current) => {
-          if (!(item.id in current)) return current;
-          const next = { ...current };
-          delete next[item.id];
-          return next;
-        });
-        setActiveId((current) =>
-          current === item.id ? (remaining[0]?.id ?? null) : current,
-        );
-        if (deletingActive) {
-          setConversation(null);
-          if (remaining.length === 0) panelRef.current?.reset();
-        }
-        announceHistoryChanged();
-      } catch (error) {
-        setListError(errorMessage(error, "Could not delete the conversation."));
-      }
+      }),
+    [confirm],
+  );
+  const conv = useChatConversations({
+    enabled: !caseScoped,
+    requested: caseScoped ? null : requested,
+    confirmDelete,
+  });
+
+  // The context depends on the engine's model and busy flag, the engine on the
+  // context's bounds: the two engine values are mirrored into state.
+  const [engineModel, setEngineModel] = React.useState<string | null>(null);
+  const [engineBusy, setEngineBusy] = React.useState(false);
+  const activeId = typeof conv.activeId === 'string' ? conv.activeId : null;
+  const context = useChatContext({
+    conversationId: caseScoped ? null : activeId,
+    model: engineModel,
+    caseId: caseId ?? null,
+    principal: username ?? null,
+    busy: engineBusy,
+  });
+  const ctx = context.context;
+
+  const { setBusy: setConvBusy } = conv;
+  const onBusyChange = React.useCallback(
+    (busy: boolean) => {
+      setConvBusy(busy);
+      setEngineBusy(busy);
     },
-    [announceHistoryChanged, confirm],
+    [setConvBusy],
   );
 
-  const historyRail = (
-    autoFocusSearch = false,
-    showNewAction = false,
-  ) => (
-    <ChatHistoryRail
-      conversations={conversations}
-      activeId={activeId}
-      loading={listLoading}
-      error={listError}
-      autoFocusSearch={autoFocusSearch}
-      showNewAction={showNewAction}
-      disabled={chatBusy}
-      retentionLimit={historyLimit}
-      retentionTruncated={historyTruncated}
-      retentionTotal={historyTotal}
-      onRetry={() => void loadConversations()}
-      onNew={startNew}
-      onSelect={selectConversation}
-      onRename={(item, title) => void renameConversation(item, title)}
-      onDelete={(item) => void deleteConversation(item)}
-    />
-  );
-
-  const actions = (
-    <div className="flex items-center gap-2">
-      {historyEnabled ? (
-        <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
-          <SheetTrigger asChild>
-            <Button variant="outline" size="sm" className="lg:hidden">
-              <History className="h-4 w-4" />
-              History
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" size="sm" className="gap-0 p-0">
-            <SheetHeader className="sr-only">
-              <SheetTitle>Conversation history</SheetTitle>
-              <SheetDescription>
-                Search and open your saved Workspace conversations.
-              </SheetDescription>
-            </SheetHeader>
-            {historyRail(true, true)}
-          </SheetContent>
-        </Sheet>
-      ) : null}
-      <Button variant="outline" size="sm" onClick={startNew} disabled={chatBusy}>
-        <Plus className="h-4 w-4" />
-        New chat
-      </Button>
-    </div>
-  );
-
-  const activeSummary = conversations.find((item) => item.id === activeId);
-  const draftKey = activeId || NEW_DRAFT_KEY;
-  const activeDraft = drafts[draftKey] ?? "";
-  const updateActiveDraft = React.useCallback(
-    (value: string) => {
-      setDrafts((current) => {
-        if (!value) {
-          if (!(draftKey in current)) return current;
-          const next = { ...current };
-          delete next[draftKey];
-          return next;
+  const engine = useChatEngine(
+    caseScoped
+      ? {
+          caseId,
+          onBusyChange: setEngineBusy,
+          textStreamingAvailable: ctx?.text_streaming.available ?? true,
+          orgDefaultStreamMode: ctx?.bounds.default_stream_mode ?? null,
+          turnBounds: ctx?.bounds ?? null,
         }
-        if (current[draftKey] === value) return current;
-        return { ...current, [draftKey]: value };
+      : {
+          conversation: conv.enabled ? conv.conversation : undefined,
+          draft: conv.draft,
+          onDraftChange: conv.setDraft,
+          blocked: conv.restoring || !!conv.threadError,
+          // Every New chat AND every thread switch (see `transcriptEpoch`).
+          resetKey: conv.transcriptEpoch,
+          onBusyChange,
+          onConversationPersisted: conv.conversationPersisted,
+          textStreamingAvailable: ctx?.text_streaming.available ?? true,
+          orgDefaultStreamMode: ctx?.bounds.default_stream_mode ?? null,
+          turnBounds: ctx?.bounds ?? null,
+        },
+  );
+
+  React.useEffect(() => setEngineModel(engine.model), [engine.model]);
+
+  // "Ask about this": once the fresh draft is in place, ask the topic's templated
+  // question. The topic is consumed first, so a re-render can never ask twice.
+  // Set on (re)mount too: StrictMode's dev double-invoke runs the cleanup once, and a
+  // flag that only ever goes false would drop every topic question after it.
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const { topic, clearTopic } = conv;
+  const { send } = engine;
+  React.useEffect(() => {
+    if (!topic || conv.activeId !== null || engine.busy) return;
+    clearTopic();
+    getChatTopic(topic)
+      .then(({ question, topic: resolved }) => {
+        // The topic id travels with its question so retrieval can pin that topic's
+        // sections (SPEC A7); the server ignores it if it does not know the id.
+        if (mountedRef.current) send(question, { origin: 'starter', topic: resolved || topic });
+      })
+      .catch(() => {
+        if (mountedRef.current) toast.error('That topic is not available to ask about.');
       });
-    },
-    [draftKey],
-  );
-  const threadTitle = activeSummary?.title || conversation?.title || "New conversation";
-  const threadSubtitle = activeSummary
-    ? `${activeSummary.message_count} ${activeSummary.message_count === 1 ? "message" : "messages"} · updated ${humanizeAge(activeSummary.updated_at)}`
-    : conversation
-      ? `${conversation.message_count} ${conversation.message_count === 1 ? "message" : "messages"} · updated ${humanizeAge(conversation.updated_at)}`
-    : caseId
-      ? `Scoped to case ${caseId}`
-      : "A new conversation is saved after the first response";
-  const retainedMessages = conversation?.message_count ?? activeSummary?.message_count;
-  const totalMessages =
-    conversation?.total_message_count ?? activeSummary?.total_message_count;
-  const threadHistoryTruncated =
-    conversation?.history_truncated === true || activeSummary?.history_truncated === true;
-  const workspaceRetentionNote = threadHistoryTruncated
-    ? typeof retainedMessages === "number" && typeof totalMessages === "number"
-      ? `Showing the latest ${retainedMessages} of ${totalMessages} messages. Older turns were removed by retention.`
-      : "This conversation shows its retained message window. Older turns were removed by retention."
-    : null;
+  }, [clearTopic, conv.activeId, engine.busy, send, topic]);
 
-  const restoringThread =
-    historyEnabled &&
-    (activeId === undefined ||
-      threadLoading ||
-      (!!activeId &&
-        conversation?.id !== activeId &&
-        skipDetailIdRef.current !== activeId));
+  // A deep-linked conversation stops being the URL once the rail selection moves on.
+  React.useEffect(() => {
+    if (caseScoped || conv.activeId === undefined) return;
+    clearStaleChatHash(conv.activeId);
+  }, [caseScoped, conv.activeId]);
 
-  return (
-    <PageContainer
-      variant="fluid"
-      className={cn(
-        // The dynamic viewport height already provides the frame boundary. Fixed
-        // minimums made short desktop windows overflow and could put the one docked
-        // composer below the visible workspace.
-        "flex min-h-0 min-w-0 flex-col gap-3",
-        frameHeight,
-      )}
-      data-testid="workspace-chat-page"
-    >
-      <PageHeader
-        icon={MessageSquare}
-        title="Chat"
-        description={
-          historyEnabled
-            ? "Investigate connected telemetry with durable, per-user conversation history."
-            : `Continue an analyst conversation scoped to ${caseId}.`
-        }
-        actions={actions}
-        className="shrink-0"
-      />
-
-      <div
-        className={cn(
-          "grid min-h-0 flex-1 overflow-hidden border border-border bg-background",
-          historyEnabled && "lg:grid-cols-[264px_minmax(0,1fr)]",
-        )}
-        data-testid="workspace-chat-frame"
-      >
-        {historyEnabled ? (
-          <div
-            className="hidden min-h-0 border-r border-border lg:block"
-          >
-            {historyRail()}
-          </div>
-        ) : null}
-
-        <div className="min-h-0 min-w-0" role="region" aria-label={threadTitle}>
-          <ChatPanel
-            ref={panelRef}
-            caseId={caseId}
-            starters={SUGGESTED_PROMPTS}
-            presentation="workspace"
-            conversation={conversation}
-            persistConversation={!caseId}
-            workspaceTitle={threadTitle}
-            workspaceSubtitle={threadSubtitle}
-            draft={historyEnabled ? activeDraft : undefined}
-            onDraftChange={historyEnabled ? updateActiveDraft : undefined}
-            workspaceRetentionNote={workspaceRetentionNote}
-            restoring={restoringThread}
-            restoreError={threadError}
-            onRetryRestore={() => setThreadRetryEpoch((epoch) => epoch + 1)}
-            onStartNew={startNew}
-            onBusyChange={handleBusyChange}
-            onConversationPersisted={conversationPersisted}
-          />
-        </div>
-      </div>
-    </PageContainer>
-  );
+  return <ChatWorkspace conv={conv} engine={engine} context={context} caseId={caseId ?? null} author={username ?? null} />;
 }

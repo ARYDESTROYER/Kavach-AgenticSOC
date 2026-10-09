@@ -150,6 +150,73 @@ class SearchResult(BaseModel):
     raw: dict[str, Any] | None = None  # native response, for debugging only
 
 
+# --------------------------------------------------------------------------- #
+# Optional EXACT aggregation (chat revamp SPEC §5.3, the ``log_stats`` tool).
+#
+# Facets computed over a bounded newest-N page describe that page, not the whole
+# result (see ``app/tools/es_query.py``). A connector whose backend can count natively
+# implements :meth:`PullConnector.aggregate` and the chat tool labels its numbers
+# ``basis: exact``; every other connector inherits the ``None`` default and the tool
+# falls back to a newest-N sample that states its coverage.
+# --------------------------------------------------------------------------- #
+# Logical group-by fields the chat ``log_stats`` tool may ask for → the Preferences
+# attribute holding the source's physical field name (``None`` = a fixed ECS path).
+AGGREGATE_FIELDS: dict[str, str | None] = {
+    "ip": "source_ip_field",
+    "user": "user_field",
+    "host": "host_field",
+    "rule": "rule_field",
+    "rule_name": "rule_name_field",
+    "severity": "severity_field",
+    "action": None,
+}
+# Fields with a fixed physical path whatever the field mapping says.
+_FIXED_AGGREGATE_PATHS: dict[str, str] = {"action": "event.action"}
+# Time-bucket widths the tool may request (block ``TimeBucket`` vocabulary).
+AGGREGATE_INTERVALS: tuple[str, ...] = ("1m", "5m", "15m", "1h", "6h", "1d", "1w")
+
+
+def aggregate_field(prefs: Preferences, logical: str) -> str | None:
+    """The physical field for a logical group-by name under ``prefs`` (already the
+    source's effective prefs), or ``None`` for an unknown name."""
+    if logical in _FIXED_AGGREGATE_PATHS:
+        return _FIXED_AGGREGATE_PATHS[logical]
+    attr = AGGREGATE_FIELDS.get(logical)
+    if not attr:
+        return None
+    value = getattr(prefs, attr, None)
+    return str(value) if isinstance(value, str) and value else None
+
+
+class AggregateBucket(BaseModel):
+    """One bucket: a group value (or an ISO-8601 UTC bucket start) and its count."""
+
+    key: str
+    count: int = 0
+
+
+class AggregateResult(BaseModel):
+    """What :meth:`PullConnector.aggregate` returns.
+
+    ``total`` is the EXACT number of events matching the query. ``groups`` maps each
+    requested logical field to its top-N buckets (count descending) and ``other`` to
+    the matching events outside those buckets. ``distinct`` is the backend's distinct
+    count, which Elasticsearch/OpenSearch approximate above a few thousand values
+    (HyperLogLog), so a caller labels it approximate. ``over_time`` holds the time
+    buckets (ascending, empty buckets included where the backend supplies them) and
+    ``matrix`` optionally the over-time buckets per top value of the FIRST group-by
+    field. ``rendering`` is the native query, for audit and the UI."""
+
+    total: int = 0
+    groups: dict[str, list[AggregateBucket]] = Field(default_factory=dict)
+    other: dict[str, int] = Field(default_factory=dict)
+    distinct: dict[str, int] = Field(default_factory=dict)
+    over_time: list[AggregateBucket] = Field(default_factory=list)
+    interval: str | None = None
+    matrix: dict[str, list[AggregateBucket]] | None = None
+    rendering: QueryRendering | None = None
+
+
 # Async callback a PushReceiver invokes for each batch of normalised events.
 EmitFn = Callable[[list[RawEvent]], Awaitable[None]]
 
@@ -211,6 +278,24 @@ class PullConnector(Connector):
     @abstractmethod
     async def fetch_by_ids(self, prefs: Preferences, ids: list[str], size: int) -> SearchResult:
         """Fetch specific events by source-native id (Surface-2 row click)."""
+
+    async def aggregate(
+        self,
+        prefs: Preferences,
+        query: StructuredQuery,
+        group_by: list[str] | tuple[str, ...] = (),
+        interval: str | None = None,
+        top_n: int = 10,
+    ) -> AggregateResult | None:
+        """OPTIONAL exact counts for ``query`` (chat revamp SPEC §5.3): top-``top_n``
+        values per logical ``group_by`` field (:data:`AGGREGATE_FIELDS`), distinct
+        counts and a time histogram at ``interval``. Read-only, like ``search``.
+
+        The default returns ``None`` — "this source cannot count natively" — and the
+        caller falls back to a newest-N sample that says so. An implementation must
+        also return ``None`` (never raise) on any failure, so a broken aggregation
+        degrades to the sample path rather than failing the lookup."""
+        return None
 
 
 class PushReceiver(Connector):

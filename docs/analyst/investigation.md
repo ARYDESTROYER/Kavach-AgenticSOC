@@ -116,23 +116,22 @@ close/escalate route authority.
 
 ## Chat in context
 
-Open **Workspace → Chat** for general questions or the case's **Chat** tab for a
-case-scoped conversation. The chat engine may query logs and retrieve knowledge, but
-it cannot close a case or approve a proposal. On-screen fields and log-derived values
-are treated as untrusted data.
+Open **Triage → Workspace → Chat** for questions across your data, or a case's **Chat**
+tab in Case Manager for a conversation scoped to that case. Both use the same read-only
+assistant: for one question it can search logs, count and read cases, query metrics,
+look up an indicator, and search the knowledge corpus, and it shows every lookup as it
+runs. It cannot close a case or approve a proposal, and log-derived values are treated
+as untrusted data.
 
-Workspace Chat is the analyst's personal, saved conversation workspace. Its history is
-newest-first and searchable; select an earlier conversation to restore the server-saved
-transcript, source, and model, or use its menu to rename or delete it. On narrow screens,
-the same history opens from the **History** Sheet. A new draft is saved only after the
-first successful assistant response. Chats created before saved Workspace history was
-introduced were browser-only and cannot be recovered.
-
-The Case Manager **Chat** tab is deliberately separate: it stays scoped to that case
-and does not appear in personal Workspace history. Use Workspace Chat for a reusable
-analyst line of inquiry and the case tab for evidence and follow-up tied to one case.
-See [Workspace Chat](chat.md) for conversation history, strict source selection,
-evidence disclosure, retention, and retry behavior.
+Workspace Chat is your personal, saved conversation workspace: searchable, pinnable
+history, answers with charts and tables you can add to a report, and token and cost
+figures for every question. The Case Manager **Chat** tab stays scoped to its case and
+never appears in personal history. Each question and its final answer text (without
+charts or the run log) are posted to the case's discussion thread, where anyone who can
+read the case sees them; this needs `cases:comment`, and without it the answer says it
+was not saved to the case thread. Use Workspace Chat for a reusable line of inquiry and
+the case tab for evidence and follow-up tied to one case. See
+[Workspace Chat](chat.md) for the details.
 
 ## Failure and cost boundaries
 

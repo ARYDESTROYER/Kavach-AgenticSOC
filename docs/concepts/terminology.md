@@ -65,6 +65,34 @@ detection, and a campaign never rewrites a member case's history.
   routing. It is not the model's confidence.
 - **Confidence** is the model's confidence in its verdict. It never acts alone.
 
+### Verdict values
+
+The API, audit records, and exports spell verdicts as these exact tokens:
+
+| Value | Console label | Meaning |
+| --- | --- | --- |
+| `TRUE_POSITIVE` | True positive | The model assessed the activity as a real, actionable threat. The case routes to an analyst and, above the escalation thresholds, is flagged for priority attention. Automatic closure of true positives is an explicit opt-in that is off by default. |
+| `FALSE_POSITIVE` | False positive | The model assessed the activity as benign or noise. The deterministic auto-close policy may close the case when the confidence and risk thresholds allow it. |
+| `NEEDS_HUMAN` | Needs human | The model could not reach a safe verdict, or an error, budget block, or policy routed the case to an analyst. A `NEEDS_HUMAN` verdict never closes automatically. |
+
+`needs_human` is also a retained lifecycle **status** that the Console shows as
+"open · awaiting analyst". A verdict is a recommendation; the decision that follows it
+is made by deterministic code, as described in
+[Deterministic decisions](deterministic-decisions.md).
+
+### Decision owners
+
+The `decision_by` field records who made a case's latest decision:
+
+| Value | Meaning |
+| --- | --- |
+| `agent` | The deterministic auto-close policy closed the case after the model's verdict |
+| `analyst` | A human analyst acted on the case |
+| `system` | Deterministic routing, such as a fail-to-human route after an error or budget block |
+| `analyst_policy` | An operator "declared benign" rule policy closed the case without a model call; excluded from agent performance metrics |
+
+For how these values feed the dashboard, see the [KPI glossary](../analyst/kpi-glossary.md).
+
 ## Automation terms
 
 - **Autopilot** is the bundle of default-enabled deterministic and bounded

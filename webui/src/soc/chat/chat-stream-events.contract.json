@@ -1,0 +1,140 @@
+{
+  "_comment": "CANONICAL chat wire contract (chat revamp SPEC §3, §6.2). The webui (webui/src/soc/chat/stream-events.ts + src/lib/types.ts) and the backend (backend/app/agents/chat_events.py + backend/app/models.py) MUST both equal this file; paired tests pin both sides: webui src/soc/chat/__tests__/chat-stream-events.contract.test.ts and backend tests/test_chat_contracts.py.",
+  "protocol_version": 1,
+  "ndjson_content_type": "application/x-ndjson",
+  "ping_interval_s": 10,
+  "max_text_delta_chars": 4000,
+  "event_types": [
+    "turn.start",
+    "step.start",
+    "step.end",
+    "usage",
+    "text.delta",
+    "text.reset",
+    "turn.done",
+    "turn.error",
+    "ping"
+  ],
+  "terminal_event_types": [
+    "turn.done",
+    "turn.error"
+  ],
+  "turn_error_codes": [
+    "provider_unavailable",
+    "budget_blocked",
+    "breaker_open",
+    "history_unavailable",
+    "internal"
+  ],
+  "stream_modes": [
+    "steps",
+    "text"
+  ],
+  "origins": [
+    "user",
+    "follow_up",
+    "starter",
+    "command",
+    "continue"
+  ],
+  "scopes": [
+    "logs",
+    "cases",
+    "metrics",
+    "intel",
+    "docs",
+    "platform"
+  ],
+  "step_kinds": [
+    "tool",
+    "model"
+  ],
+  "step_statuses": [
+    "ok",
+    "error",
+    "denied",
+    "timeout",
+    "skipped",
+    "cancelled"
+  ],
+  "step_bases": [
+    "exact",
+    "newest_n",
+    "sample",
+    "cached"
+  ],
+  "answer_kinds": [
+    "data",
+    "product_help",
+    "mixed",
+    "conversation"
+  ],
+  "notice_kinds": [
+    "partial",
+    "cap",
+    "budget",
+    "provider",
+    "breaker",
+    "denied",
+    "timeout",
+    "cancelled",
+    "unsupported",
+    "not_saved"
+  ],
+  "citation_kinds": [
+    "doc",
+    "case",
+    "knowledge",
+    "mitre",
+    "query"
+  ],
+  "memory_proposal_ops": [
+    "add",
+    "remove"
+  ],
+  "budget_states": [
+    "ok",
+    "approaching",
+    "reached"
+  ],
+  "text_streaming_reasons": [
+    "disabled_by_admin",
+    "model_does_not_stream"
+  ],
+  "report_templates": [
+    "investigation",
+    "hunt",
+    "ioc",
+    "shift",
+    "posture",
+    "custom"
+  ],
+  "report_item_kinds": [
+    "block",
+    "section"
+  ],
+  "fallbacks": {
+    "step_kind": "tool",
+    "step_status": "error",
+    "answer_kind": "conversation",
+    "notice_kind": "partial",
+    "turn_error_code": "internal"
+  },
+  "limits": {
+    "follow_ups": 3,
+    "follow_up_chars": 140,
+    "notice_message_chars": 400,
+    "step_label_chars": 120,
+    "step_summary_chars": 600,
+    "step_query_chars": 4096,
+    "step_params": 12,
+    "memory_proposal_chars": 500,
+    "chat_prompts": 50,
+    "chat_prompt_title_chars": 60,
+    "chat_prompt_text_chars": 2000,
+    "time_range_max_days": 90,
+    "report_items": 40,
+    "report_note_chars": 500,
+    "report_title_chars": 120
+  }
+}

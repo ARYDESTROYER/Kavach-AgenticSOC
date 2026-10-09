@@ -78,6 +78,13 @@ async def lifespan(app: FastAPI):
     state = AppState.create(secrets=secrets)
     app.state.tlsoc = state
     await state.startup()
+    # Build the bundled Help Center index off the event loop now, so the first chat
+    # turn after a restart does not pay ~350 ms of CPU on the loop for the $0
+    # product-help path and console-link resolution (chat revamp SPEC §5.4). Never
+    # raises: an unavailable corpus only disables product help.
+    from .knowledge import warm_app_knowledge
+
+    await warm_app_knowledge()
     try:
         yield
     finally:
@@ -91,6 +98,11 @@ app = FastAPI(
     description="Vendor-neutral Agentic SOC API. It consumes source data "
                 "read-only and owns only Agentic SOC application state.",
     lifespan=lifespan,
+    # One schema per model. ``/chat/stream`` documents its NDJSON lines with an
+    # additional-response model, which FastAPI renders in validation mode; with
+    # separate input/output schemas that splits ``ChatResponse`` into -Input and
+    # -Output components for no wire difference (chat revamp SPEC §3).
+    separate_input_output_schemas=False,
 )
 
 # Always-on tenant mutation admission. It is a no-op during normal operation and

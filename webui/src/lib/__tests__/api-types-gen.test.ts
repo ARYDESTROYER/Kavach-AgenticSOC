@@ -65,9 +65,12 @@ describe('OpenAPI codegen artifacts (Coupling-F)', () => {
   it('renders Pydantic-v2 enums as literal unions (not runtime enum objects → 0 runtime bytes)', () => {
     const gen = readFileSync(GEN_TS, 'utf8');
     // Verdict is a known 3-value enum; must be a string-literal union, and there
-    // must be NO emitted `enum ` keyword anywhere (that would add runtime bytes).
+    // must be NO emitted `enum` DECLARATION (that would add runtime bytes). A doc
+    // comment may say the word ("discriminator enum property added by
+    // openapi-typescript"); only a declaration at the start of a line counts.
     expect(gen).toMatch(/Verdict:\s*"[A-Z_]+"\s*\|\s*"[A-Z_]+"/);
-    expect(gen).not.toMatch(/\benum\s+[A-Za-z]/);
+    expect(gen).not.toMatch(/^\s*(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+[A-Za-z]/m);
+    expect('export enum Verdict {').toMatch(/^\s*(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+[A-Za-z]/m);
   });
 
   it('is imported TYPE-ONLY everywhere (stays fully erased, 0 runtime bytes)', () => {

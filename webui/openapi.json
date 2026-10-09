@@ -1412,6 +1412,46 @@
         "title": "ChangePasswordBody",
         "type": "object"
       },
+      "ChatBudgetInfo": {
+        "description": "The daily budget the meter's ring measures against. ``models:read`` only.",
+        "properties": {
+          "daily_limit": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Limit"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "on_exceed": {
+            "default": "block",
+            "enum": [
+              "warn",
+              "block"
+            ],
+            "title": "On Exceed",
+            "type": "string"
+          },
+          "soft_warn_pct": {
+            "default": 0.8,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Soft Warn Pct",
+            "type": "number"
+          }
+        },
+        "title": "ChatBudgetInfo",
+        "type": "object"
+      },
       "ChatContext": {
         "description": "On-screen context snapshot the global chat flyout may attach (Feature 1).\n\nALL fields optional + best-effort. ``query``/``selection`` are\nattacker-influenceable and MUST be fenced as UNTRUSTED in prompts; the context\nis used only to DEFAULT the es_query tool (data view / time range), never as\ninstructions.",
         "properties": {
@@ -1518,19 +1558,830 @@
         "title": "ChatContext",
         "type": "object"
       },
-      "ChatConversationRenameRequest": {
+      "ChatContextBounds": {
+        "description": "The §4.2 bounds the meter and the run log display (no internal_domains).",
         "properties": {
+          "allow_text_streaming": {
+            "default": true,
+            "title": "Allow Text Streaming",
+            "type": "boolean"
+          },
+          "default_stream_mode": {
+            "default": "steps",
+            "enum": [
+              "steps",
+              "text"
+            ],
+            "title": "Default Stream Mode",
+            "type": "string"
+          },
+          "final_max_tokens": {
+            "title": "Final Max Tokens",
+            "type": "integer"
+          },
+          "final_reserve_tokens": {
+            "title": "Final Reserve Tokens",
+            "type": "integer"
+          },
+          "max_indicator_lookups": {
+            "title": "Max Indicator Lookups",
+            "type": "integer"
+          },
+          "max_model_calls": {
+            "title": "Max Model Calls",
+            "type": "integer"
+          },
+          "max_parallel": {
+            "title": "Max Parallel",
+            "type": "integer"
+          },
+          "max_tool_calls": {
+            "title": "Max Tool Calls",
+            "type": "integer"
+          },
+          "model_step_timeout_s": {
+            "title": "Model Step Timeout S",
+            "type": "integer"
+          },
+          "observation_chars": {
+            "title": "Observation Chars",
+            "type": "integer"
+          },
+          "tool_timeout_s": {
+            "title": "Tool Timeout S",
+            "type": "integer"
+          },
+          "turn_timeout_s": {
+            "title": "Turn Timeout S",
+            "type": "integer"
+          },
+          "turn_token_ceiling": {
+            "title": "Turn Token Ceiling",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_model_calls",
+          "max_tool_calls",
+          "max_parallel",
+          "tool_timeout_s",
+          "model_step_timeout_s",
+          "turn_timeout_s",
+          "turn_token_ceiling",
+          "final_reserve_tokens",
+          "observation_chars",
+          "final_max_tokens",
+          "max_indicator_lookups"
+        ],
+        "title": "ChatContextBounds",
+        "type": "object"
+      },
+      "ChatContextInfo": {
+        "description": "``GET /api/chat/context`` (SPEC §8): everything the composer meter needs.\nMoney and budget fields are present only with ``models:read``; ``spent_today`` /\n``remaining`` additionally need ``cost:view``. Without them the meter shows\ntokens only plus ``budget_state``.",
+        "properties": {
+          "bounds": {
+            "$ref": "#/components/schemas/ChatContextBounds"
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatBudgetInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "approaching",
+                  "reached"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget State"
+          },
+          "calibration": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibration"
+          },
+          "chars_per_token": {
+            "default": 4,
+            "minimum": 1.0,
+            "title": "Chars Per Token",
+            "type": "integer"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
+          },
+          "history_exchanges": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "History Exchanges",
+            "type": "integer"
+          },
+          "history_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "History Tokens",
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "rates": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRates"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remaining": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining"
+          },
+          "simulated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simulated"
+          },
+          "spent_today": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spent Today"
+          },
+          "starters": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStarter"
+            },
+            "title": "Starters",
+            "type": "array"
+          },
+          "static_prompt_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Static Prompt Tokens",
+            "type": "integer"
+          },
+          "text_streaming": {
+            "$ref": "#/components/schemas/TextStreamingInfo"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ChatToolInfo"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bounds"
+        ],
+        "title": "ChatContextInfo",
+        "type": "object"
+      },
+      "ChatConversation": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "history_truncated": {
+            "default": false,
+            "title": "History Truncated",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message_count": {
+            "default": 0,
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatConversationMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "oldest_retained_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Retained At"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "preview": {
+            "default": "",
+            "title": "Preview",
+            "type": "string"
+          },
+          "report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Id"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
+          "time_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "title": {
-            "maxLength": 80,
+            "title": "Title",
+            "type": "string"
+          },
+          "total_cost": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Cost"
+          },
+          "total_message_count": {
+            "default": 0,
+            "title": "Total Message Count",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage_turns": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Turns"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatConversation",
+        "type": "object"
+      },
+      "ChatConversationMatch": {
+        "description": "Where a ``?q=`` search hit a conversation (SPEC §7.5 Search).",
+        "properties": {
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "snippet": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Snippet",
+            "type": "string"
+          }
+        },
+        "title": "ChatConversationMatch",
+        "type": "object"
+      },
+      "ChatConversationMessage": {
+        "description": "One durable Workspace-chat message.\n\n``response`` keeps the bounded structured result needed to restore tables,\nquery links, cost and memory feedback.  It is plain JSON presentation data;\nthe authoritative chat engine still receives only ``role`` + ``content`` as\nprior model history.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatConversationMessage",
+        "type": "object"
+      },
+      "ChatConversationPage": {
+        "description": "``GET /api/chat/conversations``: one page of the caller's conversation\nsummaries. With ``?q=`` each row also carries ``match {message_id, snippet}``\n(rows of a plain listing omit it; the route serialises with\n``response_model_exclude_unset`` so the wire shape is unchanged).",
+        "properties": {
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ChatConversationSearchHit"
+            },
+            "title": "Conversations",
+            "type": "array"
+          },
+          "history_truncated": {
+            "title": "History Truncated",
+            "type": "boolean"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "oldest_retained_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Retained At"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "total_conversation_count": {
+            "title": "Total Conversation Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conversations",
+          "total",
+          "history_truncated",
+          "total_conversation_count",
+          "limit",
+          "offset"
+        ],
+        "title": "ChatConversationPage",
+        "type": "object"
+      },
+      "ChatConversationSearchHit": {
+        "description": "A conversation summary returned by a content search (never persisted).",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "history_truncated": {
+            "default": false,
+            "title": "History Truncated",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatConversationMatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message_count": {
+            "default": 0,
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "oldest_retained_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Retained At"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "preview": {
+            "default": "",
+            "title": "Preview",
+            "type": "string"
+          },
+          "report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Id"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
+          "time_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total_cost": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Cost"
+          },
+          "total_message_count": {
+            "default": 0,
+            "title": "Total Message Count",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Tokens"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage_turns": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Turns"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatConversationSearchHit",
+        "type": "object"
+      },
+      "ChatConversationUpdateRequest": {
+        "additionalProperties": false,
+        "description": "``PATCH /api/chat/conversations/{id}`` (SPEC §7.5 Pin): rename and/or pin.\nAt least one field is required; pinning never changes ``updated_at``.",
+        "properties": {
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "ChatConversationUpdateRequest",
+        "type": "object"
+      },
+      "ChatPrompt": {
+        "description": "One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered\nas text, sent as an ordinary user message (it is the user's own words).",
+        "properties": {
+          "id": {
+            "pattern": "^[A-Za-z0-9._:-]{1,64}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 60,
             "minLength": 1,
             "title": "Title",
             "type": "string"
           }
         },
         "required": [
-          "title"
+          "id",
+          "title",
+          "text"
         ],
-        "title": "ChatConversationRenameRequest",
+        "title": "ChatPrompt",
+        "type": "object"
+      },
+      "ChatRates": {
+        "description": "Effective per-million-token rates (demo-aware). ``models:read`` only.",
+        "properties": {
+          "cache_read_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Read Per Million"
+          },
+          "input_per_million": {
+            "minimum": 0.0,
+            "title": "Input Per Million",
+            "type": "number"
+          },
+          "output_per_million": {
+            "minimum": 0.0,
+            "title": "Output Per Million",
+            "type": "number"
+          }
+        },
+        "required": [
+          "input_per_million",
+          "output_per_million"
+        ],
+        "title": "ChatRates",
         "type": "object"
       },
       "ChatRequest": {
@@ -1555,6 +2406,19 @@
                 "type": "null"
               }
             ]
+          },
+          "continue_of": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continue Of"
           },
           "conversation_id": {
             "anyOf": [
@@ -1603,10 +2467,38 @@
             ],
             "title": "Model"
           },
+          "origin": {
+            "default": "user",
+            "enum": [
+              "user",
+              "follow_up",
+              "starter",
+              "command",
+              "continue"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
           "persist_conversation": {
             "default": false,
             "title": "Persist Conversation",
             "type": "boolean"
+          },
+          "scopes": {
+            "items": {
+              "enum": [
+                "logs",
+                "cases",
+                "metrics",
+                "intel",
+                "docs",
+                "platform"
+              ],
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Scopes",
+            "type": "array"
           },
           "source_id": {
             "anyOf": [
@@ -1618,6 +2510,38 @@
               }
             ],
             "title": "Source Id"
+          },
+          "stream_mode": {
+            "default": "steps",
+            "enum": [
+              "steps",
+              "text"
+            ],
+            "title": "Stream Mode",
+            "type": "string"
+          },
+          "time_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "maxLength": 121,
+                "pattern": "^[a-z0-9_:.-]{1,121}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
           }
         },
         "required": [
@@ -1626,11 +2550,699 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "ChatResponse": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "answer_kind": {
+            "default": "conversation",
+            "enum": [
+              "data",
+              "product_help",
+              "mixed",
+              "conversation"
+            ],
+            "title": "Answer Kind",
+            "type": "string"
+          },
+          "blocks": {
+            "items": {
+              "type": "object"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "blocks_version": {
+            "default": 1,
+            "title": "Blocks Version",
+            "type": "integer"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "case_save_notice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnNotice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "case_saved": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Saved"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "console_links": {
+            "items": {
+              "$ref": "#/components/schemas/ConsoleLink"
+            },
+            "title": "Console Links",
+            "type": "array"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "conversation_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Title"
+          },
+          "cost": {
+            "default": 0.0,
+            "title": "Cost",
+            "type": "number"
+          },
+          "discover": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiscoverLink"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Model"
+          },
+          "effective_source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Source Id"
+          },
+          "effective_source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Source Name"
+          },
+          "follow_ups": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Follow Ups",
+            "type": "array"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "memory_action": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Action"
+          },
+          "memory_proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoryProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory_suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemorySuggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnNotice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "stream_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "steps",
+                  "text"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream Mode"
+          },
+          "table": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Id"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "title": "ChatResponse",
+        "type": "object"
+      },
+      "ChatStarter": {
+        "description": "One empty-state starter card (SPEC §10.5).",
+        "properties": {
+          "description": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[a-z0-9_]+$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 400,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "prompt"
+        ],
+        "title": "ChatStarter",
+        "type": "object"
+      },
+      "ChatStep": {
+        "description": "One row of a turn's run log (SPEC §3.3). Every string is engine-authored or\ndisplay-sanitised; ``untrusted_params`` and ``query`` may carry model/log-derived\nvalues, which the UI renders as untrusted text/code and prompts fence.",
+        "properties": {
+          "basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exact",
+                  "newest_n",
+                  "sample",
+                  "cached"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basis"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "duration_ms": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "index": {
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "kind": {
+            "default": "tool",
+            "enum": [
+              "tool",
+              "model"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Label",
+            "type": "string"
+          },
+          "ordinal": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ordinal"
+          },
+          "params": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Params",
+            "type": "object"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "error",
+              "denied",
+              "timeout",
+              "skipped",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "maxLength": 600,
+            "title": "Summary",
+            "type": "string"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool"
+          },
+          "untrusted_params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Untrusted Params",
+            "type": "object"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "title": "ChatStep",
+        "type": "object"
+      },
+      "ChatStreamEventModel": {
+        "description": "A named wrapper so the discriminated union appears in ``openapi.json`` as one\ncomponent (``/chat/stream`` documents each NDJSON line with this schema).",
+        "discriminator": {
+          "mapping": {
+            "ping": "#/components/schemas/PingEvent",
+            "step.end": "#/components/schemas/StepEndEvent",
+            "step.start": "#/components/schemas/StepStartEvent",
+            "text.delta": "#/components/schemas/TextDeltaEvent",
+            "text.reset": "#/components/schemas/TextResetEvent",
+            "turn.done": "#/components/schemas/TurnDoneEvent",
+            "turn.error": "#/components/schemas/TurnErrorEvent",
+            "turn.start": "#/components/schemas/TurnStartEvent",
+            "usage": "#/components/schemas/UsageEvent"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TurnStartEvent"
+          },
+          {
+            "$ref": "#/components/schemas/StepStartEvent"
+          },
+          {
+            "$ref": "#/components/schemas/StepEndEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UsageEvent"
+          },
+          {
+            "$ref": "#/components/schemas/TextDeltaEvent"
+          },
+          {
+            "$ref": "#/components/schemas/TextResetEvent"
+          },
+          {
+            "$ref": "#/components/schemas/TurnDoneEvent"
+          },
+          {
+            "$ref": "#/components/schemas/TurnErrorEvent"
+          },
+          {
+            "$ref": "#/components/schemas/PingEvent"
+          }
+        ],
+        "title": "ChatStreamEventModel"
+      },
+      "ChatToolInfo": {
+        "description": "One row of the caller's tool catalogue (\"What can the assistant access?\").",
+        "properties": {
+          "allowed": {
+            "default": false,
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "available": {
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "data_source": {
+            "default": "",
+            "title": "Data Source",
+            "type": "string"
+          },
+          "kind_requires": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Kind Requires",
+            "type": "object"
+          },
+          "kinds_allowed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Kinds Allowed",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "requires": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Requires",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "logs",
+              "cases",
+              "metrics",
+              "intel",
+              "docs",
+              "platform"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "scope"
+        ],
+        "title": "ChatToolInfo",
+        "type": "object"
+      },
+      "ChatTopicQuestion": {
+        "description": "``GET /api/chat/topics/{topic_id}`` (SPEC §10.7 \"Ask about this\"): the\ntemplated question for a console_map topic. The page sends this text with\n``origin=\"starter\"``; it never sends free text of its own for a topic.",
+        "properties": {
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "question"
+        ],
+        "title": "ChatTopicQuestion",
+        "type": "object"
+      },
       "ChatTurn": {
         "properties": {
           "content": {
             "title": "Content",
             "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "enum": [
+                  "user",
+                  "follow_up",
+                  "starter",
+                  "command",
+                  "continue"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
           },
           "role": {
             "title": "Role",
@@ -1642,6 +3254,112 @@
           "content"
         ],
         "title": "ChatTurn",
+        "type": "object"
+      },
+      "ChatTurnCancelResult": {
+        "description": "``POST /api/chat/turns/{turn_id}/cancel``: the Stop was accepted.",
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn_id"
+        ],
+        "title": "ChatTurnCancelResult",
+        "type": "object"
+      },
+      "Citation": {
+        "description": "A source the answer cites by id (``D1`` doc, ``C2`` case, ``K3`` knowledge,\n``M1`` ATT&CK, ``Q1`` query). The model references ids only; the server resolves\nthem; the client re-validates every target.",
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_.:@ /-]{1,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "doc": {
+            "anyOf": [
+              {
+                "pattern": "^/docs/[0-9]{1,4}\\.[0-9]{1,4}/(?:[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*(?:/[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*)*/?)?(?:#[a-z0-9_-]+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc"
+          },
+          "id": {
+            "pattern": "^[A-Z][0-9]{1,3}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "doc",
+              "case",
+              "knowledge",
+              "mitre",
+              "query"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "maxLength": 280,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          },
+          "technique": {
+            "anyOf": [
+              {
+                "pattern": "^T\\d{4}(\\.\\d{3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technique"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "untrusted": {
+            "default": false,
+            "title": "Untrusted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title"
+        ],
+        "title": "Citation",
         "type": "object"
       },
       "ColumnState": {
@@ -1733,6 +3451,65 @@
           }
         },
         "title": "ConnectorTestRequest",
+        "type": "object"
+      },
+      "ConsoleLink": {
+        "description": "A console destination resolved from ``console_map`` (never from model text).\n``allowed`` comes from the caller's grants; a disallowed link renders as plain\ntext naming the grant it ``requires``.",
+        "properties": {
+          "allowed": {
+            "default": false,
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "opts": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Opts",
+            "type": "object"
+          },
+          "page": {
+            "pattern": "^[a-z][a-z_]{0,39}$",
+            "title": "Page",
+            "type": "string"
+          },
+          "requires": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z_]{1,40}:[a-z_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requires"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "page"
+        ],
+        "title": "ConsoleLink",
         "type": "object"
       },
       "CorrelationMode": {
@@ -2370,6 +4147,40 @@
           }
         },
         "title": "DemoIncidentBody",
+        "type": "object"
+      },
+      "DiscoverLink": {
+        "description": "Payload the plugin feeds to Kibana's locators API (Section 8.1).",
+        "properties": {
+          "data_view_pattern": {
+            "default": "all-logs-*",
+            "title": "Data View Pattern",
+            "type": "string"
+          },
+          "language": {
+            "default": "kuery",
+            "title": "Language",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "time_from": {
+            "default": "now-24h",
+            "title": "Time From",
+            "type": "string"
+          },
+          "time_to": {
+            "default": "now",
+            "title": "Time To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "DiscoverLink",
         "type": "object"
       },
       "Disposition": {
@@ -3135,6 +4946,61 @@
         "title": "MemoryListResponse",
         "type": "object"
       },
+      "MemoryProposal": {
+        "description": "A memory change the MODEL proposed (§4.8). Never executed by the engine: the\nUI confirms it through the existing memory routes under ``memory:manage``.\n``remove`` takes exact entry ids only (no text matching from chat).",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Ids",
+            "type": "array"
+          },
+          "op": {
+            "enum": [
+              "add",
+              "remove"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "title": "MemoryProposal",
+        "type": "object"
+      },
+      "MemorySuggestion": {
+        "description": "A durable fact the chat agent NOTICED and proposes to remember. The UI shows\nit for the analyst to confirm before it is saved — the agent never auto-saves a\nsuggestion (only explicit \"remember: …\" commands are executed).",
+        "properties": {
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "MemorySuggestion",
+        "type": "object"
+      },
       "MemoryUpdate": {
         "properties": {
           "active": {
@@ -3599,6 +5465,18 @@
           }
         },
         "title": "OverviewRequest",
+        "type": "object"
+      },
+      "PingEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "ping",
+            "default": "ping",
+            "title": "Type"
+          }
+        },
+        "title": "PingEvent",
         "type": "object"
       },
       "PlaybookCreateRequest": {
@@ -4302,6 +6180,723 @@
           "channels"
         ],
         "title": "ReleaseDiscoveryResponse",
+        "type": "object"
+      },
+      "Report": {
+        "description": "A per-user report document (SPEC §9.1): <= 40 items, strict-CAS ``version``.",
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "maxItems": 40,
+            "title": "Items",
+            "type": "array"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "template": {
+            "default": "custom",
+            "enum": [
+              "investigation",
+              "hunt",
+              "ioc",
+              "shift",
+              "posture",
+              "custom"
+            ],
+            "title": "Template",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "default": 1,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "title"
+        ],
+        "title": "Report",
+        "type": "object"
+      },
+      "ReportAddRequest": {
+        "additionalProperties": false,
+        "description": "``POST /api/reports/add``: add BY REFERENCE. The server loads the block (or the\nwhole answer as a ``section`` when ``block_id`` is absent) from the caller-owned\npersisted Workspace message and snapshots it; client-supplied block JSON is never\naccepted, so case-scoped content cannot be added by construction.",
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 48,
+                "pattern": "^[a-z0-9][a-z0-9_.-]{0,47}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "conversation_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "message_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "report_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Id"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "message_id"
+        ],
+        "title": "ReportAddRequest",
+        "type": "object"
+      },
+      "ReportAddResponse": {
+        "description": "``POST /api/reports/add``: the updated report and the item id. ``added`` is\nFalse when the same source was already in the report (idempotent add);\n``created_report`` is True when this add created the conversation's draft.",
+        "properties": {
+          "added": {
+            "default": true,
+            "title": "Added",
+            "type": "boolean"
+          },
+          "created_report": {
+            "default": false,
+            "title": "Created Report",
+            "type": "boolean"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/Report"
+          }
+        },
+        "required": [
+          "report",
+          "item_id"
+        ],
+        "title": "ReportAddResponse",
+        "type": "object"
+      },
+      "ReportCreateRequest": {
+        "additionalProperties": false,
+        "description": "``POST /api/reports``.",
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "template": {
+            "default": "custom",
+            "enum": [
+              "investigation",
+              "hunt",
+              "ioc",
+              "shift",
+              "posture",
+              "custom"
+            ],
+            "title": "Template",
+            "type": "string"
+          },
+          "title": {
+            "default": "Untitled report",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "ReportCreateRequest",
+        "type": "object"
+      },
+      "ReportDeleteRequest": {
+        "additionalProperties": false,
+        "description": "``DELETE /api/reports/{id}`` body (strict tombstone under ``expected_version``).",
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "ReportDeleteRequest",
+        "type": "object"
+      },
+      "ReportDeleteResponse": {
+        "description": "``DELETE /api/reports/{id}``.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ReportDeleteResponse",
+        "type": "object"
+      },
+      "ReportItem": {
+        "description": "One report item: a validated block snapshot or a whole-answer section.",
+        "properties": {
+          "added_at": {
+            "title": "Added At",
+            "type": "string"
+          },
+          "block": {
+            "title": "Block",
+            "type": "object"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "block",
+            "enum": [
+              "block",
+              "section"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ReportItemScope"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ReportItemSource"
+          }
+        },
+        "required": [
+          "id",
+          "block",
+          "source"
+        ],
+        "title": "ReportItem",
+        "type": "object"
+      },
+      "ReportItemScope": {
+        "description": "Scope captured server-side at add time (never client-supplied).",
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version"
+          },
+          "demo": {
+            "default": false,
+            "title": "Demo",
+            "type": "boolean"
+          },
+          "generated_by": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated By"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Sources",
+            "type": "array"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "title": "ReportItemScope",
+        "type": "object"
+      },
+      "ReportItemSource": {
+        "description": "Where an item came from (a caller-owned persisted Workspace message).",
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 48,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "conversation_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "message_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "message_id"
+        ],
+        "title": "ReportItemSource",
+        "type": "object"
+      },
+      "ReportListEntry": {
+        "description": "One row of the per-user report index (``GET /api/reports``).",
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "has_summary": {
+            "default": false,
+            "title": "Has Summary",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Item Count",
+            "type": "integer"
+          },
+          "template": {
+            "default": "custom",
+            "enum": [
+              "investigation",
+              "hunt",
+              "ioc",
+              "shift",
+              "posture",
+              "custom"
+            ],
+            "title": "Template",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "default": 1,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "updated_at"
+        ],
+        "title": "ReportListEntry",
+        "type": "object"
+      },
+      "ReportListResponse": {
+        "description": "``GET /api/reports``: ``{reports: [...]}`` newest first, plus the cap.",
+        "properties": {
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/components/schemas/ReportListEntry"
+            },
+            "title": "Reports",
+            "type": "array"
+          },
+          "total": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "ReportListResponse",
+        "type": "object"
+      },
+      "ReportPatchRequest": {
+        "additionalProperties": false,
+        "description": "``PATCH /api/reports/{id}``: title, template, item order, notes, removals —\nall under ``expected_version`` (409 ``report_version_conflict`` on mismatch).\n``item_order`` must be a permutation of the remaining item ids; ``notes`` maps\nitem id → note (``null`` clears it).",
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "item_order": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 40,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Order"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "maxProperties": 40,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "remove_items": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 40,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Items"
+          },
+          "template": {
+            "anyOf": [
+              {
+                "enum": [
+                  "investigation",
+                  "hunt",
+                  "ioc",
+                  "shift",
+                  "posture",
+                  "custom"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "ReportPatchRequest",
+        "type": "object"
+      },
+      "ReportSummary": {
+        "description": "The AI-written executive summary (one gateway call over the §9.4 digest).\nStale when ``based_on_version`` lags the report's ``version``.",
+        "properties": {
+          "based_on_version": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Based On Version",
+            "type": "integer"
+          },
+          "executive_summary": {
+            "default": "",
+            "maxLength": 1200,
+            "title": "Executive Summary",
+            "type": "string"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "next_steps": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Next Steps",
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/TurnUsage"
+          }
+        },
+        "title": "ReportSummary",
+        "type": "object"
+      },
+      "ReportSummaryEstimate": {
+        "description": "``POST /api/reports/{id}/summary?dry_run=1``: what generating would cost.",
+        "properties": {
+          "cost": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost"
+          },
+          "max_output_tokens": {
+            "minimum": 0.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "prompt_tokens": {
+            "minimum": 0.0,
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "simulated": {
+            "default": false,
+            "title": "Simulated",
+            "type": "boolean"
+          },
+          "total_tokens": {
+            "minimum": 0.0,
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt_tokens",
+          "max_output_tokens",
+          "total_tokens"
+        ],
+        "title": "ReportSummaryEstimate",
+        "type": "object"
+      },
+      "ReportSummaryRequest": {
+        "additionalProperties": false,
+        "description": "``POST /api/reports/{id}/summary`` body (``?dry_run=1`` is a query flag).",
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 8,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          }
+        },
+        "title": "ReportSummaryRequest",
         "type": "object"
       },
       "ResetBody": {
@@ -5211,6 +7806,196 @@
         "title": "StatusHistoryEntry",
         "type": "object"
       },
+      "StepEndEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/ChatStep"
+          },
+          "type": {
+            "const": "step.end",
+            "default": "step.end",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "step"
+        ],
+        "title": "StepEndEvent",
+        "type": "object"
+      },
+      "StepStartEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/StepStartInfo"
+          },
+          "type": {
+            "const": "step.start",
+            "default": "step.start",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "step"
+        ],
+        "title": "StepStartEvent",
+        "type": "object"
+      },
+      "StepStartInfo": {
+        "description": "What a step announces before it runs (its final shape arrives in step.end).",
+        "properties": {
+          "group": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "index": {
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "kind": {
+            "default": "tool",
+            "enum": [
+              "tool",
+              "model"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Label",
+            "type": "string"
+          },
+          "ordinal": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ordinal"
+          },
+          "params": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Params",
+            "type": "object"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool"
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "title": "StepStartInfo",
+        "type": "object"
+      },
+      "StepUsage": {
+        "description": "Usage of ONE model call (or one query-embedding call on a tool step).\n``estimated`` marks a provider that omitted usage or a call cancelled mid-stream\n(input = provider count or chars/4, output = chars/4 of what was received).",
+        "properties": {
+          "cache_read_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "cost": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Cost",
+            "type": "number"
+          },
+          "embedding_calls": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Embedding Calls",
+            "type": "integer"
+          },
+          "embedding_cost": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Embedding Cost",
+            "type": "number"
+          },
+          "embedding_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Embedding Tokens",
+            "type": "integer"
+          },
+          "estimated": {
+            "default": false,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "input_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "StepUsage",
+        "type": "object"
+      },
       "StorageLifecycleConfig": {
         "description": "Desired lifecycle for Agentic SOC's OWN application state.\n\nConnected log-source retention is intentionally excluded: those indices are\nread-only and stay operator/vendor managed.  The backend only enforces phases\nthat are safe for the selected state store.  Today that means Elasticsearch ILM\nfor the append-only audit and usage ledgers; mutable cases plus live KV/config\nstate stay hot until an index-aware archive/restore path exists.\n\nThe archive boundary is derived as ``hot_days + warm_days`` so independently\nentered dates cannot drift.  Glacier is a desired archive target, not a claim\nthat the active state backend can restore directly from it.  This policy never\ndeletes active data.",
         "properties": {
@@ -5450,6 +8235,67 @@
         "title": "TerminologyBody",
         "type": "object"
       },
+      "TextDeltaEvent": {
+        "additionalProperties": false,
+        "description": "Answer text (Live text mode only, after the header parsed as ``final``).\n\nLone surrogate halves are dropped (a delta can split nothing valid in two: the\nengine slices Python strings, whose astral characters are single code points, so\na surrogate here came from a JSON escape in the model output). ``ChatResponse``\ndrops them the same way, so the streamed text and the final answer agree.",
+        "properties": {
+          "text": {
+            "maxLength": 4000,
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "text.delta",
+            "default": "text.delta",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TextDeltaEvent",
+        "type": "object"
+      },
+      "TextResetEvent": {
+        "additionalProperties": false,
+        "description": "Discard all text streamed so far for this turn.",
+        "properties": {
+          "type": {
+            "const": "text.reset",
+            "default": "text.reset",
+            "title": "Type"
+          }
+        },
+        "title": "TextResetEvent",
+        "type": "object"
+      },
+      "TextStreamingInfo": {
+        "description": "Whether \"Type out answers\" can work for the effective chat model (§6.3).",
+        "properties": {
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disabled_by_admin",
+                  "model_does_not_stream"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "TextStreamingInfo",
+        "type": "object"
+      },
       "ThreadEditBody": {
         "properties": {
           "body": {
@@ -5602,6 +8448,30 @@
         "title": "ThresholdTuningConfig",
         "type": "object"
       },
+      "TimeRange": {
+        "additionalProperties": false,
+        "description": "The composer time window ``{from, to}`` (SPEC §3.1).\n\nEach bound is ``now``, ``now-<n>[mhdw]`` or ISO-8601; ``from`` must be strictly\nbefore ``to`` and the window at most :attr:`MAX_SPAN_DAYS` days, else 422. It\napplies to every windowed chat tool; precedence is the model's explicit window\nfrom the user's words, then this, then ``context.time_range``, then 24 h.\nSerialises as ``{\"from\", \"to\"}`` (both keys, always) regardless of ``by_alias``\nor ``exclude_defaults``, so stored and wire shapes never diverge.",
+        "properties": {
+          "from": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "default": "now",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "title": "TimeRange",
+        "type": "object"
+      },
       "TriggerReason": {
         "description": "Deterministic explanation of WHY a cluster was triggered (Feature 3).\n\nComputed in code by correlation, copied onto the Case, and surfaced in the UI\n(\"Why this fired\"). Records the PRIMARY triggering rule for a multi-rule entity.",
         "properties": {
@@ -5686,6 +8556,291 @@
           }
         },
         "title": "TriggerReason",
+        "type": "object"
+      },
+      "TurnDoneEvent": {
+        "additionalProperties": false,
+        "description": "The persisted response: the client renders this, not its streamed state.",
+        "properties": {
+          "response": {
+            "$ref": "#/components/schemas/ChatResponse"
+          },
+          "type": {
+            "const": "turn.done",
+            "default": "turn.done",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "response"
+        ],
+        "title": "TurnDoneEvent",
+        "type": "object"
+      },
+      "TurnErrorEvent": {
+        "additionalProperties": false,
+        "description": "A turn that produced no response after the stream started.",
+        "properties": {
+          "code": {
+            "enum": [
+              "provider_unavailable",
+              "budget_blocked",
+              "breaker_open",
+              "history_unavailable",
+              "internal"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "maxLength": 400,
+            "title": "Message",
+            "type": "string"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnNotice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "type": {
+            "const": "turn.error",
+            "default": "turn.error",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "TurnErrorEvent",
+        "type": "object"
+      },
+      "TurnEstimate": {
+        "properties": {
+          "prompt_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Prompt Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "TurnEstimate",
+        "type": "object"
+      },
+      "TurnNotice": {
+        "description": "Why a turn is partial, stopped, refused or not saved. ``message`` is an engine\ntemplate; ``retryable`` decides whether the UI offers Retry.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "partial",
+              "cap",
+              "budget",
+              "provider",
+              "breaker",
+              "denied",
+              "timeout",
+              "cancelled",
+              "unsupported",
+              "not_saved"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "maxLength": 400,
+            "title": "Message",
+            "type": "string"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TurnNotice",
+        "type": "object"
+      },
+      "TurnStartEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/TurnEstimate"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "stream_mode": {
+            "default": "steps",
+            "enum": [
+              "steps",
+              "text"
+            ],
+            "title": "Stream Mode",
+            "type": "string"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "turn.start",
+            "default": "turn.start",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "turn_id"
+        ],
+        "title": "TurnStartEvent",
+        "type": "object"
+      },
+      "TurnUsage": {
+        "description": "Running/final usage of one turn: the sum of its model calls plus any\nquery-embedding calls. ``cost`` includes embedding cost; ``simulated`` marks Demo\nMode synthetic pricing; ``estimated`` is true when any part was estimated.",
+        "properties": {
+          "cache_read_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "calls": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
+          },
+          "cost": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Cost",
+            "type": "number"
+          },
+          "embedding_calls": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Embedding Calls",
+            "type": "integer"
+          },
+          "estimated": {
+            "default": false,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "input_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "output_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "peak_prompt_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Peak Prompt Tokens",
+            "type": "integer"
+          },
+          "pricing_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Source"
+          },
+          "simulated": {
+            "default": false,
+            "title": "Simulated",
+            "type": "boolean"
+          },
+          "total_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "TurnUsage",
         "type": "object"
       },
       "UpdateBackup": {
@@ -6550,6 +9705,25 @@
         "title": "UpdateStatus",
         "type": "object"
       },
+      "UsageEvent": {
+        "additionalProperties": false,
+        "description": "Running totals after a model call (the meter ticks on every one).",
+        "properties": {
+          "totals": {
+            "$ref": "#/components/schemas/TurnUsage"
+          },
+          "type": {
+            "const": "usage",
+            "default": "usage",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "totals"
+        ],
+        "title": "UsageEvent",
+        "type": "object"
+      },
       "UserCreateBody": {
         "properties": {
           "custom_roles": {
@@ -6610,6 +9784,21 @@
       "UserPrefsPatchBody": {
         "description": "Partial update of the caller's PERSONAL prefs bucket. Every field optional —\nonly provided (non-None) fields are written. ``saved_views``/``tables`` accept\nthe full replacement lists/maps (use the dedicated /views + /tables routes for\ngranular edits).",
         "properties": {
+          "chat_prompts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatPrompt"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Prompts"
+          },
           "last_list_state": {
             "anyOf": [
               {
@@ -10479,6 +13668,7 @@
     },
     "/api/chat": {
       "post": {
+        "description": "One chat turn, blocking (chat revamp SPEC §6): the same preflight, turn task\nand persistence as ``POST /api/chat/stream`` (``routes_chat.run_chat_turn``),\nawaited. Imported lazily: ``routes_chat`` imports this module.",
         "operationId": "chat_api_chat_post",
         "requestBody": {
           "content": {
@@ -10495,8 +13685,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response Chat Api Chat Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ChatResponse"
                 }
               }
             },
@@ -10516,9 +13705,92 @@
         "summary": "Chat"
       }
     },
+    "/api/chat/context": {
+      "get": {
+        "description": "Everything the composer meter needs (SPEC §8): the effective model and its\nlimits, the static prompt and history estimates, the caller's tool catalogue,\nthe live-text availability, the §4.2 bounds, calibration and the starters.\nMoney and budget fields need ``models:read``; ``spent_today``/``remaining`` also\n``cost:view``. Cached per principal for 30 s (dropped when one of the caller's\nturns ends) and resolved without audit rows.",
+        "operationId": "chat_context_api_chat_context_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            }
+          },
+          {
+            "in": "query",
+            "name": "case_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatContextInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Context"
+      }
+    },
     "/api/chat/conversations": {
       "get": {
-        "description": "Newest-first Workspace conversation summaries owned by this principal.\n\nAuth-disabled deployments use the same isolated ``default`` profile as user\npreferences. Case-scoped collaboration chat is intentionally not listed here.",
+        "description": "Workspace conversation summaries owned by this principal: pinned first, then\nnewest first. ``limit`` goes to 60 so the <= 10 pinned conversations (exempt\nfrom the 50-conversation eviction) are never off the first page. With ``q`` the\nrows are the conversations whose title, messages or block titles contain it,\neach with a ``match {message_id, snippet}`` (chat revamp SPEC §7.5).\n\nAuth-disabled deployments use the same isolated ``default`` profile as user\npreferences. Case-scoped collaboration chat is intentionally not listed here.",
         "operationId": "list_chat_conversations_api_chat_conversations_get",
         "parameters": [
           {
@@ -10527,7 +13799,7 @@
             "required": false,
             "schema": {
               "default": 30,
-              "maximum": 50,
+              "maximum": 60,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -10543,6 +13815,23 @@
               "title": "Offset",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
           }
         ],
         "responses": {
@@ -10550,8 +13839,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response List Chat Conversations Api Chat Conversations Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ChatConversationPage"
                 }
               }
             },
@@ -10630,8 +13918,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response Get Chat Conversation Api Chat Conversations  Conversation Id  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ChatConversation"
                 }
               }
             },
@@ -10651,8 +13938,8 @@
         "summary": "Get Chat Conversation"
       },
       "patch": {
-        "description": "Rename one owned conversation with bounded, single-line plain text.",
-        "operationId": "rename_chat_conversation_api_chat_conversations__conversation_id__patch",
+        "description": "Rename (bounded, single-line plain text) and/or pin one owned conversation\n(chat revamp SPEC §7.5). Pinning never changes ``updated_at``; an 11th pin is\n409 ``chat_pin_limit``.",
+        "operationId": "update_chat_conversation_api_chat_conversations__conversation_id__patch",
         "parameters": [
           {
             "in": "path",
@@ -10668,7 +13955,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChatConversationRenameRequest"
+                "$ref": "#/components/schemas/ChatConversationUpdateRequest"
               }
             }
           },
@@ -10679,8 +13966,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response Rename Chat Conversation Api Chat Conversations  Conversation Id  Patch",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ChatConversation"
                 }
               }
             },
@@ -10697,7 +13983,130 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Rename Chat Conversation"
+        "summary": "Update Chat Conversation"
+      }
+    },
+    "/api/chat/stream": {
+      "post": {
+        "description": "The streaming twin of ``POST /api/chat`` (same body, same preflight errors).",
+        "operationId": "chat_stream_api_chat_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatStreamEventModel"
+                }
+              }
+            },
+            "description": "NDJSON: one ChatStreamEvent per line. turn.start first; turn.done (the persisted response) or turn.error last; ping every idle 10 s."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Stream"
+      }
+    },
+    "/api/chat/topics/{topic_id}": {
+      "get": {
+        "description": "The server's templated question for a console-map topic (``kpi:mtta``,\n``settings:models``). The page sends it with ``origin: \"starter\"``; client text\nnever stands in for it. 404 for an unknown topic.",
+        "operationId": "chat_topic_api_chat_topics__topic_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "topic_id",
+            "required": true,
+            "schema": {
+              "maxLength": 121,
+              "pattern": "^[a-z0-9_]{1,40}:[a-z0-9_.-]{1,80}$",
+              "title": "Topic Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatTopicQuestion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Topic"
+      }
+    },
+    "/api/chat/turns/{turn_id}/cancel": {
+      "post": {
+        "description": "Stop the caller's own running turn. The in-flight step finishes and is\nrecorded, no new step starts, and the stream ends with ``turn.done`` carrying a\n``cancelled`` notice. 404 when unknown, finished or not the caller's (ownership\nis indistinguishable from absence).",
+        "operationId": "cancel_chat_turn_api_chat_turns__turn_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatTurnCancelResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Chat Turn"
       }
     },
     "/api/connectors": {
@@ -14608,6 +18017,342 @@
         "tags": [
           "replay"
         ]
+      }
+    },
+    "/api/reports": {
+      "get": {
+        "description": "The caller's reports, newest first (no items; open one with GET by id).",
+        "operationId": "list_reports_api_reports_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Reports"
+      },
+      "post": {
+        "description": "Create an empty report. With ``conversation_id`` it becomes that (caller-owned)\nconversation's draft; a conversation has at most one (409 with its id).",
+        "operationId": "create_report_api_reports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReportCreateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Report"
+      }
+    },
+    "/api/reports/add": {
+      "post": {
+        "description": "Add one block (``block_id``) or the whole answer (a ``section``) of a persisted\nWorkspace answer the caller owns. The server resolves and snapshots the content;\nwith no ``report_id`` the conversation's draft is used (created on first add).",
+        "operationId": "add_to_report_api_reports_add_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAddResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add To Report"
+      }
+    },
+    "/api/reports/{report_id}": {
+      "delete": {
+        "description": "Strict tombstone under ``expected_version`` (body, or the query parameter for\nclients whose DELETE cannot carry a body), then removal from the index.",
+        "operationId": "delete_report_api_reports__report_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Version"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReportDeleteRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Report"
+      },
+      "get": {
+        "operationId": "get_report_api_reports__report_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Report"
+      },
+      "patch": {
+        "description": "Title, template, item order, notes and removals in one strict-CAS write under\n``expected_version`` (409 ``report_version_conflict`` with ``current_version``).",
+        "operationId": "patch_report_api_reports__report_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Report"
+      }
+    },
+    "/api/reports/{report_id}/summary": {
+      "post": {
+        "description": "Generate (or estimate) the AI executive summary: ONE ``gateway.complete`` call\nwith ``surface=\"report\"`` over the §9.4 digest, so exactly one UsageDoc. Repeats\nare bounded by the idempotency key (same key → the stored result, no call), a\nper-report single-flight lock (a concurrent second click → 409) and a per-user\ntoken bucket (10 per hour; Demo exempt). A report whose bounded digest could keep\nnone of its items is refused (409 ``report_too_large_to_summarise``) before any\nspend, for the estimate too. Failure messages describe the summary, not a chat\nturn (:data:`SUMMARY_FAILURE_MESSAGES`).",
+        "operationId": "summarise_report_api_reports__report_id__summary_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dry_run",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Dry Run",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReportSummaryRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Report"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ReportSummaryEstimate"
+                    }
+                  ],
+                  "title": "Response Summarise Report Api Reports  Report Id  Summary Post"
+                }
+              }
+            },
+            "description": "The report with its new summary, or with ``dry_run=1`` the ReportSummaryEstimate (no model call)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarise Report"
       }
     },
     "/api/roles": {

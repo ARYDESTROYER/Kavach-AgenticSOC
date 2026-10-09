@@ -281,7 +281,7 @@ release is public, the workflow treats it as immutable. A missing, partial, dupl
 or unexpected published asset set is never repaired under that tag; publish a new patch
 release instead.
 
-Changing **Settings → Updates & releases** changes the public source observation;
+Changing **Settings → Organization → Updates & releases** changes the public source observation;
 it does not silently change the updater's trusted publisher. A fork must be
 explicitly bootstrapped with its own trusted repository and release-workflow
 identity on the host.
@@ -377,6 +377,23 @@ rollback contract is safe only inside the v1 `migration.strategy=none` compatibi
 boundary. If a release changes persisted state incompatibly, one-click installation
 and image rollback are both the wrong procedure; ship a forward fix or follow a
 release-specific, operator-controlled restore plan.
+
+**Upgrade and rollback: case threads and chat history.** Builds with the rebuilt
+Workspace Chat keep that boundary on PostgreSQL: after an image-only rollback the older
+build still reads and writes case discussion threads and chat transcripts. It does not
+know the conversation-level fields those builds add, so its first chat write for a user
+drops that user's conversation pins, linked reports, time ranges, and usage totals; the
+transcripts and the reports themselves remain. It does not know the pin exemption
+either: those builds let up to 10 pinned conversations sit beyond the 50-conversation
+limit, so the older build's first saved answer for a user with more than 50
+conversations deletes that user's oldest conversations (by last activity, pinned ones
+included) until 50 remain. Before rolling back, ask users with more than 50
+conversations to export the extra conversations they want to keep (history row menu →
+**Export**) and delete them. On the Elasticsearch state backend, which has no
+supervised rollback, the new storage form is one-way: after a manual rollback, case
+threads and chat history appear empty and the older build's next write removes them.
+See
+[Known limitations](../releases/known-limitations.md#rollback-loses-chat-and-thread-data).
 
 No updater can make a host power loss, full disk failure, corrupt storage device, or
 external registry/network outage literally fail-proof. The supported contract is

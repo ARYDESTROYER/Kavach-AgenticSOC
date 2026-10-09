@@ -57,6 +57,7 @@ import {
 // Section renderers (each keeps its exact former markup + behaviour).
 import { GeneralSection } from './general';
 import { ModelsSection } from './models';
+import { ChatAgentSection } from './chat-agent';
 import { KeysSection } from './keys';
 import { DetectionSection } from './detection';
 import { DetectionRulesSection } from './detection-rules';
@@ -188,6 +189,7 @@ const SECTION_COMPONENTS: Record<string, SectionRenderer> = {
       models: ctx.models,
       onNavigate: ctx.onNavigate,
     }),
+  chat_agent: (ctx) => h(ChatAgentSection, { prefs: ctx.prefs, update: ctx.update }),
   detection: (ctx) => h(DetectionSection, { prefs: ctx.prefs, update: ctx.update }),
   detection_rules: (ctx) => h(DetectionRulesSection, { prefs: ctx.prefs, update: ctx.update }),
   cases: (ctx) => h(CaseIdSection, { prefs: ctx.prefs, update: ctx.update }),

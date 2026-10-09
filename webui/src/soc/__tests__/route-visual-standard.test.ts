@@ -114,19 +114,26 @@ describe("Console route visual standard", () => {
     }
   });
 
-  it("lets Workspace Chat own one fluid route container without a detached embedded toolbar", () => {
+  it("lets Workspace Chat own its full-height frame instead of a page container (chat revamp §10.1a)", () => {
     const workspace = source("soc/pages/Workspace.tsx");
     const chat = source("soc/pages/Chat.tsx");
-    const history = source("soc/components/ChatHistoryRail.tsx");
+    const frame = source("soc/chat/workspace/ChatWorkspace.tsx");
+    const history = source("soc/chat/workspace/HistoryRail.tsx");
 
+    // Both Workspace tabs are lazy so Chat never downloads the case-detail chunk.
+    expect(workspace).toContain("const Chat = React.lazy(() => import('./Chat'));");
+    expect(workspace).toContain("const Investigate = React.lazy(() => import('./Investigate'));");
+    expect(workspace).toContain("<Chat caseId={caseId} opts={opts} />");
     expect(workspace).not.toContain('<PageContainer variant="fixed">');
-    expect(workspace).toContain("return <Chat caseId={caseId} />");
-    expect(chat).toContain('variant="fluid"');
-    expect(workspace).not.toContain("<Chat embedded");
-    expect(chat).toContain("actions={actions}");
-    expect(chat).toContain("<ChatHistoryRail");
-    expect(history).toContain('aria-label="Conversation history"');
-    expect(chat).toContain('presentation="workspace"');
+    expect(chat).toContain("<ChatWorkspace");
+    expect(chat).not.toContain("<PageHeader");
+    expect(chat).not.toContain("<PageContainer");
+    // The frame bleeds the shell's vertical inset: `-my-6` is the matched pair of
+    // CONTENT_INSET's `py-6` (pinned above), and the height is the viewport minus the
+    // 3.5rem top bar, so the document never scrolls.
+    expect(frame).toContain('className="-my-6 flex h-[calc(100dvh-3.5rem)] min-h-0 min-w-0 overflow-hidden bg-background"');
+    expect(frame).toContain('<h1 className="sr-only">Chat</h1>');
+    expect(history).toContain('aria-label="Chat history"');
   });
 
   it("uses one shared blocking-load grammar across case evidence panels", () => {
@@ -161,9 +168,11 @@ describe("Console route visual standard", () => {
    *
    * So the enforced grammar removes the tie instead of describing it: every declared
    * column count owns a MUTUALLY EXCLUSIVE breakpoint range containing exactly one
-   * ENABLE (`[&>*]:border-l`, specificity (0,1,0)) and one ROW-START RESET
-   * (`[&>*:nth-child(Nn+1)]:border-l-0`, (0,2,0)) whose N is that range's own
-   * `grid-cols-N`. The reset then wins on specificity alone, so the rendered result is
+   * ENABLE (`[&>*]:border-l`, specificity (0,1,0)) and one ROW-START RESET (the
+   * `nth-child` arbitrary variant stepping by N from 1, applying `border-l-0`; (0,2,0))
+   * whose N is that range's own `grid-cols-N`. (The reset is described rather than
+   * spelled out here: Tailwind scans this file, and a literal class with a placeholder
+   * N makes Vite's CSS minifier warn about an invalid selector.) The reset then wins on specificity alone, so the rendered result is
    * independent of emission order, and a strip that grows a tile changes only its
    * column count.
    */
@@ -233,7 +242,7 @@ describe("Console route visual standard", () => {
       }
 
       // Order-dependent forms, banned outright: `:first-child` states the contract only
-      // for a strip that never wraps, and an `odd`/`Nn+1` pair is a (0,2,0) tie whose
+      // for a strip that never wraps, and an odd / every-Nth-from-1 pair is a (0,2,0) tie whose
       // winner is decided by Tailwind's emission order rather than by this grammar.
       expect(chunk, `${file} strip must not gate a divider on :first-child`).not.toMatch(
         /\[&>\*:first-child\]:border-l/,

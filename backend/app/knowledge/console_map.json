@@ -1,0 +1,2622 @@
+{
+  "schema": 1,
+  "generated_by": "webui/src/soc/__tests__/console-map.contract.test.ts (npm run gen:console-map)",
+  "nav_groups": [
+    {
+      "id": "overview",
+      "label": "Overview"
+    },
+    {
+      "id": "triage",
+      "label": "Triage"
+    },
+    {
+      "id": "intelligence",
+      "label": "Intelligence"
+    },
+    {
+      "id": "analytics",
+      "label": "Analytics"
+    },
+    {
+      "id": "notifications",
+      "label": "Notifications"
+    },
+    {
+      "id": "platform",
+      "label": "Platform"
+    }
+  ],
+  "settings_groups": [
+    {
+      "id": "account",
+      "label": "Account"
+    },
+    {
+      "id": "general",
+      "label": "General"
+    },
+    {
+      "id": "integrations",
+      "label": "Integrations"
+    },
+    {
+      "id": "security_access",
+      "label": "Security & access"
+    },
+    {
+      "id": "organization",
+      "label": "Organization"
+    }
+  ],
+  "targets": [
+    {
+      "id": "page:overview",
+      "kind": "page",
+      "label": "Overview",
+      "crumb": [
+        "Overview"
+      ],
+      "page": "overview",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "home",
+        "dashboard",
+        "posture",
+        "cyber defence center",
+        "kpi"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:dashboard",
+      "kind": "page",
+      "label": "Dashboard",
+      "crumb": [
+        "Overview",
+        "Dashboard"
+      ],
+      "page": "dashboard",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "home",
+        "posture",
+        "kpi",
+        "active risk",
+        "noise reduction"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:dashboards",
+      "kind": "page",
+      "label": "Dashboards",
+      "crumb": [
+        "Overview",
+        "Dashboards"
+      ],
+      "page": "dashboards",
+      "opts": {},
+      "requires": "metrics:view",
+      "blurb": "",
+      "keywords": [
+        "custom dashboard",
+        "widgets",
+        "layout"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:standup",
+      "kind": "page",
+      "label": "Standup",
+      "crumb": [
+        "Overview",
+        "Standup"
+      ],
+      "page": "standup",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "shift",
+        "handoff",
+        "daily summary",
+        "attention queue"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:cases",
+      "kind": "page",
+      "label": "Cases",
+      "crumb": [
+        "Triage",
+        "Cases"
+      ],
+      "page": "cases",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "triage",
+        "queue",
+        "alerts",
+        "incidents"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:case_manager",
+      "kind": "page",
+      "label": "Case Manager",
+      "crumb": [
+        "Triage",
+        "Case Manager"
+      ],
+      "page": "case_manager",
+      "opts": {},
+      "requires": "cases:read",
+      "blurb": "",
+      "keywords": [
+        "split pane",
+        "queue",
+        "bulk",
+        "case detail"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:campaigns",
+      "kind": "page",
+      "label": "Campaigns",
+      "crumb": [
+        "Triage",
+        "Campaigns"
+      ],
+      "page": "campaigns",
+      "opts": {},
+      "requires": "cases:read",
+      "blurb": "",
+      "keywords": [
+        "campaign",
+        "related cases",
+        "shared entity"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:logs",
+      "kind": "page",
+      "label": "Logs",
+      "crumb": [
+        "Triage",
+        "Logs"
+      ],
+      "page": "logs",
+      "opts": {},
+      "requires": "sources:read",
+      "blurb": "",
+      "keywords": [
+        "log search",
+        "events",
+        "telemetry",
+        "unified logs"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:chat",
+      "kind": "page",
+      "label": "Chat",
+      "crumb": [
+        "Triage",
+        "Workspace",
+        "Chat"
+      ],
+      "page": "chat",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "assistant",
+        "ask",
+        "question",
+        "conversation",
+        "reports"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:investigate",
+      "kind": "page",
+      "label": "Entity investigation",
+      "crumb": [
+        "Triage",
+        "Workspace",
+        "Entity investigation"
+      ],
+      "page": "investigate",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "entity",
+        "hunt",
+        "ip",
+        "host",
+        "user"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:reports",
+      "kind": "page",
+      "label": "Reports",
+      "crumb": [
+        "Triage",
+        "Workspace",
+        "Reports"
+      ],
+      "page": "reports",
+      "opts": {},
+      "requires": "cases:read",
+      "blurb": "",
+      "keywords": [],
+      "owned_keys": []
+    },
+    {
+      "id": "page:approvals",
+      "kind": "page",
+      "label": "Approvals",
+      "crumb": [
+        "Triage",
+        "Approvals"
+      ],
+      "page": "approvals",
+      "opts": {},
+      "requires": "proposals:read",
+      "blurb": "",
+      "keywords": [
+        "proposals",
+        "pending",
+        "approve",
+        "human in the loop"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:intelligence",
+      "kind": "page",
+      "label": "Intelligence",
+      "crumb": [
+        "Intelligence"
+      ],
+      "page": "intelligence",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "knowledge",
+        "runbooks",
+        "playbooks",
+        "memory"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:knowledge",
+      "kind": "page",
+      "label": "Knowledge corpus",
+      "crumb": [
+        "Intelligence",
+        "Knowledge corpus"
+      ],
+      "page": "knowledge",
+      "opts": {},
+      "requires": "rag:read",
+      "blurb": "",
+      "keywords": [
+        "rag",
+        "corpus",
+        "documents",
+        "import"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:runbooks",
+      "kind": "page",
+      "label": "Reference runbooks",
+      "crumb": [
+        "Intelligence",
+        "Reference runbooks"
+      ],
+      "page": "runbooks",
+      "opts": {},
+      "requires": "runbooks:read",
+      "blurb": "",
+      "keywords": [
+        "runbook",
+        "procedure",
+        "guidance"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:memory",
+      "kind": "page",
+      "label": "Operator memory",
+      "crumb": [
+        "Intelligence",
+        "Operator memory"
+      ],
+      "page": "memory",
+      "opts": {},
+      "requires": "memory:read",
+      "blurb": "",
+      "keywords": [
+        "operator memory",
+        "facts",
+        "remember"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:playbooks",
+      "kind": "page",
+      "label": "Response playbooks",
+      "crumb": [
+        "Intelligence",
+        "Response playbooks"
+      ],
+      "page": "playbooks",
+      "opts": {},
+      "requires": "playbooks:read",
+      "blurb": "",
+      "keywords": [
+        "playbook",
+        "response",
+        "procedure"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:personas",
+      "kind": "page",
+      "label": "Agent personas",
+      "crumb": [
+        "Intelligence",
+        "Agent personas"
+      ],
+      "page": "personas",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "agents",
+        "roster",
+        "personas"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:metrics",
+      "kind": "page",
+      "label": "Metrics",
+      "crumb": [
+        "Analytics",
+        "Metrics"
+      ],
+      "page": "metrics",
+      "opts": {},
+      "requires": "metrics:view",
+      "blurb": "",
+      "keywords": [
+        "analytics",
+        "posture",
+        "mttr",
+        "mtta",
+        "false positive rate",
+        "mitre coverage"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:effectiveness",
+      "kind": "page",
+      "label": "Agent effectiveness",
+      "crumb": [
+        "Analytics",
+        "Agent effectiveness"
+      ],
+      "page": "effectiveness",
+      "opts": {},
+      "requires": "metrics:view",
+      "blurb": "",
+      "keywords": [
+        "agent health",
+        "precedent",
+        "auto-close health",
+        "agent improvement"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:cost",
+      "kind": "page",
+      "label": "Cost",
+      "crumb": [
+        "Analytics",
+        "Cost"
+      ],
+      "page": "cost",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "spend",
+        "tokens",
+        "budget",
+        "usage",
+        "ledger",
+        "price"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:models",
+      "kind": "page",
+      "label": "Models",
+      "crumb": [
+        "Analytics",
+        "Models"
+      ],
+      "page": "models",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "llm",
+        "model catalog",
+        "providers",
+        "pricing"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:baseline",
+      "kind": "page",
+      "label": "Baseline",
+      "crumb": [
+        "Analytics",
+        "Baseline"
+      ],
+      "page": "baseline",
+      "opts": {},
+      "requires": "settings:read",
+      "blurb": "",
+      "keywords": [
+        "baseline",
+        "anomaly",
+        "silent source"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:batchjobs",
+      "kind": "page",
+      "label": "Jobs",
+      "crumb": [
+        "Analytics",
+        "Jobs"
+      ],
+      "page": "batchjobs",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "jobs",
+        "background jobs",
+        "export download",
+        "batch"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:inbox",
+      "kind": "page",
+      "label": "Inbox",
+      "crumb": [
+        "Notifications",
+        "Inbox"
+      ],
+      "page": "inbox",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "notifications",
+        "alerts",
+        "mentions"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:sources",
+      "kind": "page",
+      "label": "Sources",
+      "crumb": [
+        "Platform",
+        "Sources"
+      ],
+      "page": "sources",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "connectors",
+        "siem",
+        "edr",
+        "ingest",
+        "data source",
+        "connect",
+        "coverage"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:audit",
+      "kind": "page",
+      "label": "Audit log",
+      "crumb": [
+        "Platform",
+        "Audit log"
+      ],
+      "page": "audit",
+      "opts": {},
+      "requires": "audit:view",
+      "blurb": "",
+      "keywords": [
+        "audit log",
+        "activity",
+        "who did what"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:tuning",
+      "kind": "page",
+      "label": "Auto-tuning",
+      "crumb": [
+        "Platform",
+        "Auto-tuning"
+      ],
+      "page": "tuning",
+      "opts": {},
+      "requires": "automation:read",
+      "blurb": "",
+      "keywords": [
+        "auto-tuning",
+        "threshold",
+        "false positives",
+        "rule tuning"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:settings",
+      "kind": "page",
+      "label": "Settings",
+      "crumb": [
+        "Platform",
+        "Settings"
+      ],
+      "page": "settings",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "preferences",
+        "configuration"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "page:docs",
+      "kind": "page",
+      "label": "Documentation",
+      "crumb": [
+        "Platform",
+        "Documentation"
+      ],
+      "page": "docs",
+      "opts": {},
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "help",
+        "documentation",
+        "help center",
+        "manual"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:profile",
+      "kind": "settings",
+      "label": "Profile",
+      "crumb": [
+        "Settings",
+        "Account",
+        "Profile"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "profile"
+      },
+      "requires": null,
+      "blurb": "Your display name, avatar, secondary email, timezone, and language.",
+      "keywords": [
+        "profile",
+        "account",
+        "display name",
+        "avatar",
+        "photo",
+        "email",
+        "timezone",
+        "locale",
+        "language"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:account_security",
+      "kind": "settings",
+      "label": "Security & two-factor",
+      "crumb": [
+        "Settings",
+        "Account",
+        "Security & two-factor"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "account_security"
+      },
+      "requires": null,
+      "blurb": "Enroll TOTP two-factor authentication for your own account.",
+      "keywords": [
+        "security",
+        "mfa",
+        "2fa",
+        "two factor",
+        "totp",
+        "authenticator",
+        "password"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:sessions",
+      "kind": "settings",
+      "label": "Sessions & activity",
+      "crumb": [
+        "Settings",
+        "Account",
+        "Sessions & activity"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "sessions"
+      },
+      "requires": null,
+      "blurb": "Where you are signed in, and your recent account activity.",
+      "keywords": [
+        "sessions",
+        "devices",
+        "activity",
+        "sign out",
+        "revoke",
+        "login history"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:customization",
+      "kind": "settings",
+      "label": "Appearance & customization",
+      "crumb": [
+        "Settings",
+        "Account",
+        "Appearance & customization"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "customization"
+      },
+      "requires": null,
+      "blurb": "Your theme, saved views, and (admin) terminology + org defaults.",
+      "keywords": [
+        "theme",
+        "dark mode",
+        "light mode",
+        "appearance",
+        "saved views",
+        "views",
+        "terminology",
+        "labels",
+        "rename",
+        "customize",
+        "customization",
+        "columns"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:general",
+      "kind": "settings",
+      "label": "Data scope",
+      "crumb": [
+        "Settings",
+        "General",
+        "Data scope"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "general"
+      },
+      "requires": null,
+      "blurb": "Index pattern, entity fields, severity threshold, and polling.",
+      "keywords": [
+        "data view",
+        "index",
+        "fields",
+        "polling",
+        "poll",
+        "lookback",
+        "timestamp",
+        "severity"
+      ],
+      "owned_keys": [
+        "data_view_pattern",
+        "time_field",
+        "source_ip_field",
+        "user_field",
+        "host_field",
+        "rule_field",
+        "rule_name_field",
+        "severity_field",
+        "severity_threshold",
+        "investigate_lookback",
+        "evidence_fields",
+        "evidence_max_chars_per_event",
+        "polling_enabled",
+        "poll_interval_seconds",
+        "poll_batch_size",
+        "cold_start_lookback_minutes"
+      ]
+    },
+    {
+      "id": "settings:models",
+      "kind": "settings",
+      "label": "Models",
+      "crumb": [
+        "Settings",
+        "General",
+        "Models"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "models"
+      },
+      "requires": null,
+      "blurb": "The model used for each agent role.",
+      "keywords": [
+        "llm",
+        "model",
+        "router",
+        "investigator",
+        "formatter",
+        "chat",
+        "embedding",
+        "anthropic",
+        "openai"
+      ],
+      "owned_keys": [
+        "router_model",
+        "investigator_model",
+        "formatter_model",
+        "standup_model",
+        "chat_model",
+        "overview_model",
+        "embedding_model"
+      ]
+    },
+    {
+      "id": "settings:chat_agent",
+      "kind": "settings",
+      "label": "Chat assistant",
+      "crumb": [
+        "Settings",
+        "General",
+        "Chat assistant"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "chat_agent"
+      },
+      "requires": null,
+      "blurb": "Live answer mode, per-question limits, and which indicators chat may send to enrichment.",
+      "keywords": [
+        "chat",
+        "assistant",
+        "lookups",
+        "tokens",
+        "type out answers",
+        "internal domains",
+        "email",
+        "e-mail"
+      ],
+      "owned_keys": [
+        "chat_agent"
+      ]
+    },
+    {
+      "id": "settings:detection",
+      "kind": "settings",
+      "label": "Detection",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection"
+      },
+      "requires": null,
+      "blurb": "Clustering, risk weights, escalation, auto-close, and cross-source correlation.",
+      "keywords": [
+        "correlation",
+        "risk",
+        "weights",
+        "escalation",
+        "auto-close",
+        "autonomy",
+        "false positive",
+        "cross-source",
+        "entity",
+        "asset criticality",
+        "asset",
+        "cidr",
+        "crown jewel"
+      ],
+      "owned_keys": [
+        "default_correlation",
+        "risk_weights",
+        "escalation_confidence",
+        "critical_severity",
+        "fp_auto_close",
+        "auto_close",
+        "cross_source_correlation",
+        "asset_networks",
+        "asset_criticality"
+      ]
+    },
+    {
+      "id": "settings:detection_rules",
+      "kind": "settings",
+      "label": "Detection & rules",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection & rules"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection_rules"
+      },
+      "requires": "rules:read",
+      "blurb": "Author detection rules (match/threshold, anomaly) and case-automation rules in one place.",
+      "keywords": [
+        "rules",
+        "detection rule",
+        "detection & rules",
+        "match",
+        "threshold",
+        "correlation",
+        "suppression",
+        "anomaly",
+        "baseline",
+        "case automation",
+        "automation",
+        "rule catalog",
+        "condition",
+        "predicate",
+        "mitre"
+      ],
+      "owned_keys": [
+        "rule_catalog",
+        "threshold_automation"
+      ]
+    },
+    {
+      "id": "settings:cases",
+      "kind": "settings",
+      "label": "Cases",
+      "crumb": [
+        "Settings",
+        "General",
+        "Cases"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "cases"
+      },
+      "requires": "settings:manage",
+      "blurb": "Human-facing case-ID nomenclature and live preview.",
+      "keywords": [
+        "case id",
+        "case number",
+        "nomenclature",
+        "sequence",
+        "prefix",
+        "template"
+      ],
+      "owned_keys": [
+        "case_id_format"
+      ]
+    },
+    {
+      "id": "settings:case_policy",
+      "kind": "settings",
+      "label": "SLA, priority & suppression",
+      "crumb": [
+        "Settings",
+        "General",
+        "SLA, priority & suppression"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "case_policy"
+      },
+      "requires": "settings:manage",
+      "blurb": "Advisory SLA targets and the impact × urgency priority matrix, plus operator suppression rules that drop known-benign events before triage.",
+      "keywords": [
+        "sla",
+        "service level",
+        "response time",
+        "resolution",
+        "priority",
+        "priority matrix",
+        "impact",
+        "urgency",
+        "suppression",
+        "suppress",
+        "drop event",
+        "mute",
+        "noise",
+        "analyst policy",
+        "declared benign"
+      ],
+      "owned_keys": [
+        "sla",
+        "priority_matrix",
+        "suppression_rules",
+        "analyst_rule_policies"
+      ]
+    },
+    {
+      "id": "settings:automation",
+      "kind": "settings",
+      "label": "Automation",
+      "crumb": [
+        "Settings",
+        "General",
+        "Automation"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "automation"
+      },
+      "requires": "settings:manage",
+      "blurb": "The master switch for threshold automation — rules that react to a case after the deterministic decision (authored in Detection & rules).",
+      "keywords": [
+        "automation",
+        "rules",
+        "threshold",
+        "tag",
+        "notify",
+        "playbook",
+        "proposal",
+        "enable"
+      ],
+      "owned_keys": [
+        "threshold_automation"
+      ]
+    },
+    {
+      "id": "settings:standup",
+      "kind": "settings",
+      "label": "Standup",
+      "crumb": [
+        "Settings",
+        "General",
+        "Standup"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "standup"
+      },
+      "requires": null,
+      "blurb": "The daily aggregate summary window and cadence.",
+      "keywords": [
+        "standup",
+        "summary",
+        "digest",
+        "aggregate",
+        "report"
+      ],
+      "owned_keys": [
+        "standup"
+      ]
+    },
+    {
+      "id": "settings:notifications",
+      "kind": "settings",
+      "label": "Alerting & notifications",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Alerting & notifications"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "notifications"
+      },
+      "requires": "settings:manage",
+      "blurb": "Outbound channels, triggers, dedup, and digests.",
+      "keywords": [
+        "alerting",
+        "notifications",
+        "email",
+        "slack",
+        "teams",
+        "webhook",
+        "pagerduty",
+        "telegram",
+        "channels"
+      ],
+      "owned_keys": [
+        "notifications"
+      ]
+    },
+    {
+      "id": "settings:enrichment",
+      "kind": "settings",
+      "label": "Enrichment",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Enrichment"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "enrichment"
+      },
+      "requires": null,
+      "blurb": "Threat-intel lookups (AbuseIPDB / VirusTotal / GeoIP), cached in Redis.",
+      "keywords": [
+        "enrichment",
+        "abuseipdb",
+        "virustotal",
+        "geoip",
+        "reputation",
+        "cache",
+        "ttl",
+        "circl",
+        "hashlookup",
+        "dshield",
+        "onionoo",
+        "tor",
+        "spamhaus",
+        "cymru",
+        "robtex",
+        "crt.sh",
+        "crowdsec",
+        "safe browsing",
+        "ipqualityscore",
+        "ipdata",
+        "apivoid",
+        "maltiverse",
+        "securitytrails",
+        "criminal ip",
+        "netlas",
+        "hybrid analysis",
+        "metadefender",
+        "emailrep"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:knowledge",
+      "kind": "settings",
+      "label": "Knowledge & threat context",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Knowledge & threat context"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "knowledge"
+      },
+      "requires": "settings:manage",
+      "blurb": "RAG retrieval, the threat-context panel, MITRE, and runbooks/playbooks.",
+      "keywords": [
+        "rag",
+        "retrieval",
+        "knowledge",
+        "threat context",
+        "mitre",
+        "runbook",
+        "playbook",
+        "ioc",
+        "resolved cases",
+        "precedent",
+        "promotion",
+        "futility"
+      ],
+      "owned_keys": [
+        "rag",
+        "threat_context",
+        "precedent"
+      ]
+    },
+    {
+      "id": "settings:admin_users",
+      "kind": "settings",
+      "label": "Users",
+      "crumb": [
+        "Settings",
+        "Security & access",
+        "Users"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "admin_users"
+      },
+      "requires": "users:manage",
+      "blurb": "Add accounts, assign roles, reset passwords, and enable/disable users.",
+      "keywords": [
+        "users",
+        "accounts",
+        "add user",
+        "reset password",
+        "enable",
+        "disable",
+        "admin",
+        "identity"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:roles",
+      "kind": "settings",
+      "label": "Roles & permissions",
+      "crumb": [
+        "Settings",
+        "Security & access",
+        "Roles & permissions"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "roles"
+      },
+      "requires": "roles:manage",
+      "blurb": "Custom roles, the permission matrix, inheritance, and explicit denies.",
+      "keywords": [
+        "roles",
+        "rbac",
+        "permissions",
+        "matrix",
+        "grants",
+        "denies",
+        "custom role",
+        "inherit"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:security",
+      "kind": "settings",
+      "label": "Single sign-on & policy",
+      "crumb": [
+        "Settings",
+        "Security & access",
+        "Single sign-on & policy"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "security"
+      },
+      "requires": "settings:manage",
+      "blurb": "Single sign-on (OIDC) providers and the token / session policy.",
+      "keywords": [
+        "security",
+        "sso",
+        "oidc",
+        "single sign-on",
+        "google",
+        "microsoft",
+        "session policy",
+        "token",
+        "idle",
+        "access ttl",
+        "csrf",
+        "rate limit"
+      ],
+      "owned_keys": [
+        "sso",
+        "session_policy",
+        "mfa"
+      ]
+    },
+    {
+      "id": "settings:admin_sessions",
+      "kind": "settings",
+      "label": "Active sessions",
+      "crumb": [
+        "Settings",
+        "Security & access",
+        "Active sessions"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "admin_sessions"
+      },
+      "requires": "users:manage",
+      "blurb": "Review and force-terminate sessions across all accounts.",
+      "keywords": [
+        "sessions",
+        "active sessions",
+        "terminate",
+        "revoke",
+        "force sign out",
+        "admin"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:keys",
+      "kind": "settings",
+      "label": "Secret keys",
+      "crumb": [
+        "Settings",
+        "Security & access",
+        "Secret keys"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "keys"
+      },
+      "requires": "settings:manage",
+      "blurb": "Write-only API keys for Elasticsearch, LLMs, and enrichment.",
+      "keywords": [
+        "api key",
+        "secret",
+        "credentials",
+        "token",
+        "anthropic",
+        "openai",
+        "abuseipdb",
+        "virustotal"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:appearance",
+      "kind": "settings",
+      "label": "Branding",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Branding"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "appearance"
+      },
+      "requires": "settings:manage",
+      "blurb": "Org wordmark, logo, accent colours, and default theme.",
+      "keywords": [
+        "branding",
+        "appearance",
+        "theme",
+        "logo",
+        "favicon",
+        "colour",
+        "color",
+        "white-label",
+        "accent"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:release_updates",
+      "kind": "settings",
+      "label": "Updates & releases",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Updates & releases"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "release_updates"
+      },
+      "requires": "settings:manage",
+      "blurb": "Public source repository, Stable/Testing refs, and read-only update discovery.",
+      "keywords": [
+        "updates",
+        "release",
+        "repository",
+        "github",
+        "stable",
+        "testing",
+        "branch",
+        "version"
+      ],
+      "owned_keys": [
+        "release_updates"
+      ]
+    },
+    {
+      "id": "settings:advanced",
+      "kind": "settings",
+      "label": "Advanced",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced"
+      },
+      "requires": "settings:manage",
+      "blurb": "Caps, kill switch, suppression rules, rule catalog, and the settings lock.",
+      "keywords": [
+        "advanced",
+        "caps",
+        "kill switch",
+        "suppression",
+        "rule catalog",
+        "read-only",
+        "lock",
+        "budget",
+        "allowlist"
+      ],
+      "owned_keys": [
+        "caps",
+        "auto_forward_allowlist",
+        "background_scan_enabled",
+        "rag",
+        "read_only_settings_mode"
+      ]
+    },
+    {
+      "id": "settings:advanced_all",
+      "kind": "settings",
+      "label": "All settings",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "All settings"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced_all"
+      },
+      "requires": "settings:manage",
+      "blurb": "Every engine preference, generated from the backend schema — the long tail of knobs.",
+      "keywords": [
+        "schema",
+        "all settings",
+        "advanced",
+        "generic",
+        "long tail",
+        "raw",
+        "every setting",
+        "knobs",
+        "reflector"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:demo",
+      "kind": "settings",
+      "label": "Experimental & Demo",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Experimental & Demo"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "demo"
+      },
+      "requires": "demo:manage",
+      "blurb": "Populate the console with isolated, $0, reversible synthetic data (experimental).",
+      "keywords": [
+        "demo",
+        "experimental",
+        "sample",
+        "synthetic",
+        "sandbox",
+        "simulated",
+        "seed",
+        "try it",
+        "preview"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:storage",
+      "kind": "settings",
+      "label": "Storage & retention",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Storage & retention"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "storage"
+      },
+      "requires": "settings:manage",
+      "blurb": "Capability-aware Hot, Warm, and desired archive lifecycle for Agentic SOC-owned state.",
+      "keywords": [
+        "storage",
+        "retention",
+        "hot",
+        "warm",
+        "archive",
+        "glacier",
+        "ilm",
+        "lifecycle",
+        "audit",
+        "usage"
+      ],
+      "owned_keys": [
+        "storage_lifecycle"
+      ]
+    },
+    {
+      "id": "settings:data_export",
+      "kind": "settings",
+      "label": "Data export",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Data export"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "data_export"
+      },
+      "requires": "data_export:export",
+      "blurb": "Download a selectable, secret-free Agentic SOC analysis bundle.",
+      "keywords": [
+        "export",
+        "download",
+        "backup",
+        "portable",
+        "analysis bundle",
+        "cases",
+        "audit",
+        "usage",
+        "configuration"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:danger",
+      "kind": "settings",
+      "label": "Danger zone",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Danger zone"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "danger"
+      },
+      "requires": "users:manage",
+      "blurb": "Tiered reset of cases, sources, or the whole tenant. Never wipes env secrets.",
+      "keywords": [
+        "danger",
+        "reset",
+        "factory reset",
+        "wipe",
+        "delete",
+        "destructive",
+        "revoke all",
+        "kill switch"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:general.general-sources",
+      "kind": "settings_card",
+      "label": "Data sources",
+      "crumb": [
+        "Settings",
+        "General",
+        "Data scope",
+        "Data sources"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "general",
+        "anchor": "general-sources"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "sources",
+        "connectors",
+        "feeds"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:general.general-mapping",
+      "kind": "settings_card",
+      "label": "Default log scope & field mapping",
+      "crumb": [
+        "Settings",
+        "General",
+        "Data scope",
+        "Default log scope & field mapping"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "general",
+        "anchor": "general-mapping"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "index pattern",
+        "data view",
+        "field mapping",
+        "fields",
+        "entity",
+        "severity"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:general.general-evidence",
+      "kind": "settings_card",
+      "label": "Case evidence fields",
+      "crumb": [
+        "Settings",
+        "General",
+        "Data scope",
+        "Case evidence fields"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "general",
+        "anchor": "general-evidence"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "evidence",
+        "projection",
+        "url",
+        "http",
+        "user agent",
+        "process",
+        "prompt fields",
+        "free text",
+        "contains",
+        "searchable"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:general.general-polling",
+      "kind": "settings_card",
+      "label": "Polling",
+      "crumb": [
+        "Settings",
+        "General",
+        "Data scope",
+        "Polling"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "general",
+        "anchor": "general-polling"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "poll",
+        "interval",
+        "batch size",
+        "lookback",
+        "cold start"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:detection.detection-correlation",
+      "kind": "settings_card",
+      "label": "Correlation",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection",
+        "Correlation"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection",
+        "anchor": "detection-correlation"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "clustering",
+        "group by",
+        "window",
+        "trigger after"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:detection.detection-risk",
+      "kind": "settings_card",
+      "label": "Risk weights",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection",
+        "Risk weights"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection",
+        "anchor": "detection-risk"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "risk",
+        "weights",
+        "severity weight",
+        "asset criticality"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:detection.detection-asset",
+      "kind": "settings_card",
+      "label": "Asset criticality",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection",
+        "Asset criticality"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection",
+        "anchor": "detection-asset"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "asset",
+        "criticality",
+        "cidr",
+        "network",
+        "crown jewel",
+        "high value"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:detection.detection-escalation",
+      "kind": "settings_card",
+      "label": "Escalation",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection",
+        "Escalation"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection",
+        "anchor": "detection-escalation"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "escalation",
+        "confidence",
+        "critical severity"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:detection.detection-autoclose",
+      "kind": "settings_card",
+      "label": "Auto-close policy",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection",
+        "Auto-close policy"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection",
+        "anchor": "detection-autoclose"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "auto-close",
+        "autonomy",
+        "false positive",
+        "true positive",
+        "needs human"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:detection.detection-crosssource",
+      "kind": "settings_card",
+      "label": "Cross-source correlation",
+      "crumb": [
+        "Settings",
+        "General",
+        "Detection",
+        "Cross-source correlation"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "detection",
+        "anchor": "detection-crosssource"
+      },
+      "requires": null,
+      "blurb": "",
+      "keywords": [
+        "cross-source",
+        "link",
+        "shared entity",
+        "related cases"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:case_policy.case-policy-sla",
+      "kind": "settings_card",
+      "label": "SLA targets",
+      "crumb": [
+        "Settings",
+        "General",
+        "SLA, priority & suppression",
+        "SLA targets"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "case_policy",
+        "anchor": "case-policy-sla"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "sla",
+        "response",
+        "resolution",
+        "timer",
+        "breach",
+        "mttr"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:case_policy.case-policy-priority",
+      "kind": "settings_card",
+      "label": "Priority matrix",
+      "crumb": [
+        "Settings",
+        "General",
+        "SLA, priority & suppression",
+        "Priority matrix"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "case_policy",
+        "anchor": "case-policy-priority"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "priority",
+        "impact",
+        "urgency",
+        "p1",
+        "p2",
+        "matrix"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:case_policy.case-policy-suppression",
+      "kind": "settings_card",
+      "label": "Suppression rules",
+      "crumb": [
+        "Settings",
+        "General",
+        "SLA, priority & suppression",
+        "Suppression rules"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "case_policy",
+        "anchor": "case-policy-suppression"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "suppression",
+        "suppress",
+        "drop",
+        "mute",
+        "benign",
+        "noise"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:knowledge.knowledge-rag",
+      "kind": "settings_card",
+      "label": "Retrieval (RAG)",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Knowledge & threat context",
+        "Retrieval (RAG)"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "knowledge",
+        "anchor": "knowledge-rag"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "rag",
+        "retrieval",
+        "top k",
+        "vector",
+        "bm25"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:knowledge.knowledge-threat",
+      "kind": "settings_card",
+      "label": "Threat-context panel",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Knowledge & threat context",
+        "Threat-context panel"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "knowledge",
+        "anchor": "knowledge-threat"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "threat context",
+        "ioc",
+        "mitre",
+        "reputation"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:knowledge.knowledge-corpus",
+      "kind": "settings_card",
+      "label": "Corpus & procedures",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Knowledge & threat context",
+        "Corpus & procedures"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "knowledge",
+        "anchor": "knowledge-corpus"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "runbooks",
+        "playbooks",
+        "resolved cases",
+        "knowledge corpus"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:advanced.advanced-caps",
+      "kind": "settings_card",
+      "label": "Per-case caps",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced",
+        "Per-case caps"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced",
+        "anchor": "advanced-caps"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "caps",
+        "budget",
+        "max tokens",
+        "max cost",
+        "concurrency"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:advanced.advanced-killswitch",
+      "kind": "settings_card",
+      "label": "Kill switch",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced",
+        "Kill switch"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced",
+        "anchor": "advanced-killswitch"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "kill switch",
+        "pause",
+        "stop",
+        "disable"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:advanced.advanced-allowlist",
+      "kind": "settings_card",
+      "label": "Auto-forward allowlist",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced",
+        "Auto-forward allowlist"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced",
+        "anchor": "advanced-allowlist"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "allowlist",
+        "auto-forward"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:advanced.advanced-suppression",
+      "kind": "settings_card",
+      "label": "Suppression & rule catalog",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced",
+        "Suppression & rule catalog"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced",
+        "anchor": "advanced-suppression"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "suppression",
+        "rule catalog",
+        "detection rules"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:advanced.advanced-lock",
+      "kind": "settings_card",
+      "label": "Settings lock",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced",
+        "Settings lock"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced",
+        "anchor": "advanced-lock"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "read-only",
+        "lock",
+        "settings lock"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:storage.storage-effective",
+      "kind": "settings_card",
+      "label": "Effective lifecycle",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Storage & retention",
+        "Effective lifecycle"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "storage",
+        "anchor": "storage-effective"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "effective",
+        "backend",
+        "capability",
+        "ilm",
+        "status"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:storage.storage-policy",
+      "kind": "settings_card",
+      "label": "Desired policy",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Storage & retention",
+        "Desired policy"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "storage",
+        "anchor": "storage-policy"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "hot days",
+        "warm days",
+        "180 days",
+        "90 days",
+        "glacier",
+        "archive"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:storage.storage-preview",
+      "kind": "settings_card",
+      "label": "Preview & safe scope",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Storage & retention",
+        "Preview & safe scope"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "storage",
+        "anchor": "storage-preview"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "preview",
+        "apply",
+        "source logs",
+        "cases",
+        "audit",
+        "usage",
+        "safe scope"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:release_updates.release-source",
+      "kind": "settings_card",
+      "label": "Source & channels",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Updates & releases",
+        "Source & channels"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "release_updates",
+        "anchor": "release-source"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "repository",
+        "github",
+        "stable",
+        "testing",
+        "branch",
+        "interval"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:release_updates.release-observed",
+      "kind": "settings_card",
+      "label": "Observed revisions",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Updates & releases",
+        "Observed revisions"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "release_updates",
+        "anchor": "release-observed"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "update",
+        "version",
+        "commit",
+        "check",
+        "source revision"
+      ],
+      "owned_keys": []
+    }
+  ],
+  "topics": [
+    {
+      "id": "kpi:active_risk_index",
+      "kind": "kpi",
+      "label": "Active Risk Index",
+      "question": "What is the Active Risk Index and how is it calculated?",
+      "docs": [
+        "analyst/kpi-glossary/#active-risk-index"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:risk_score",
+      "kind": "kpi",
+      "label": "Risk score",
+      "question": "How is the deterministic risk score of a case calculated?",
+      "docs": [
+        "analyst/kpi-glossary/#risk-score"
+      ],
+      "console": "settings:detection.detection-risk"
+    },
+    {
+      "id": "kpi:total_cases",
+      "kind": "kpi",
+      "label": "Total Cases",
+      "question": "What does the Total Cases KPI count?",
+      "docs": [
+        "analyst/kpi-glossary/#total-cases"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:total_critical",
+      "kind": "kpi",
+      "label": "Total Critical",
+      "question": "What does the Total Critical KPI count?",
+      "docs": [
+        "analyst/kpi-glossary/#total-critical"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:open_cases",
+      "kind": "kpi",
+      "label": "Open Cases",
+      "question": "What does the Open Cases KPI count, and why is it not filtered by the time window?",
+      "docs": [
+        "analyst/kpi-glossary/#open-cases"
+      ],
+      "console": "page:cases"
+    },
+    {
+      "id": "kpi:false_positive_rate",
+      "kind": "kpi",
+      "label": "False Positive Rate",
+      "question": "How is the False Positive Rate calculated?",
+      "docs": [
+        "analyst/kpi-glossary/#false-positive-rate"
+      ],
+      "console": "page:metrics"
+    },
+    {
+      "id": "kpi:resolved_closed",
+      "kind": "kpi",
+      "label": "Resolved / Closed",
+      "question": "What does the Resolved / Closed KPI count?",
+      "docs": [
+        "analyst/kpi-glossary/#resolved-closed"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:auto_closed",
+      "kind": "kpi",
+      "label": "Auto Closed",
+      "question": "What does Auto Closed count, and how does it relate to Resolved / Closed?",
+      "docs": [
+        "analyst/kpi-glossary/#auto-closed"
+      ],
+      "console": "settings:detection.detection-autoclose"
+    },
+    {
+      "id": "kpi:human_vs_ai",
+      "kind": "kpi",
+      "label": "Human vs AI",
+      "question": "How does the Human vs AI card attribute closed cases?",
+      "docs": [
+        "analyst/kpi-glossary/#human-vs-ai"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:mttd",
+      "kind": "kpi",
+      "label": "MTTD",
+      "question": "What does MTTD measure and how is it calculated?",
+      "docs": [
+        "analyst/kpi-glossary/#mttd"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:respond",
+      "kind": "kpi",
+      "label": "Respond",
+      "question": "What does the Respond timing measure?",
+      "docs": [
+        "analyst/kpi-glossary/#respond"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:mtta",
+      "kind": "kpi",
+      "label": "MTTA",
+      "question": "What does MTTA measure and how is it calculated?",
+      "docs": [
+        "analyst/kpi-glossary/#mtta"
+      ],
+      "console": "page:metrics"
+    },
+    {
+      "id": "kpi:mttr",
+      "kind": "kpi",
+      "label": "MTTR",
+      "question": "What does MTTR measure and how is it calculated?",
+      "docs": [
+        "analyst/kpi-glossary/#mttr"
+      ],
+      "console": "page:metrics"
+    },
+    {
+      "id": "kpi:dwell",
+      "kind": "kpi",
+      "label": "Dwell",
+      "question": "What does the Dwell time measure?",
+      "docs": [
+        "analyst/kpi-glossary/#dwell"
+      ],
+      "console": "page:metrics"
+    },
+    {
+      "id": "kpi:noise_reduction",
+      "kind": "kpi",
+      "label": "Noise Reduction",
+      "question": "How should I read the Noise Reduction funnel and its stages?",
+      "docs": [
+        "analyst/kpi-glossary/#noise-reduction-funnel"
+      ],
+      "console": "page:overview"
+    },
+    {
+      "id": "kpi:llm_spend",
+      "kind": "kpi",
+      "label": "LLM spend",
+      "question": "How is AI model spend measured and limited?",
+      "docs": [
+        "analyst/kpi-glossary/#llm-spend"
+      ],
+      "console": "page:cost"
+    },
+    {
+      "id": "settings:profile",
+      "kind": "settings",
+      "label": "Profile",
+      "question": "What does Settings › Account › Profile control, and who can change it?",
+      "docs": [],
+      "console": "settings:profile"
+    },
+    {
+      "id": "settings:account_security",
+      "kind": "settings",
+      "label": "Security & two-factor",
+      "question": "What does Settings › Account › Security & two-factor control, and who can change it?",
+      "docs": [],
+      "console": "settings:account_security"
+    },
+    {
+      "id": "settings:sessions",
+      "kind": "settings",
+      "label": "Sessions & activity",
+      "question": "What does Settings › Account › Sessions & activity control, and who can change it?",
+      "docs": [],
+      "console": "settings:sessions"
+    },
+    {
+      "id": "settings:customization",
+      "kind": "settings",
+      "label": "Appearance & customization",
+      "question": "What does Settings › Account › Appearance & customization control, and who can change it?",
+      "docs": [],
+      "console": "settings:customization"
+    },
+    {
+      "id": "settings:general",
+      "kind": "settings",
+      "label": "Data scope",
+      "question": "What does Settings › General › Data scope control, and who can change it?",
+      "docs": [],
+      "console": "settings:general"
+    },
+    {
+      "id": "settings:models",
+      "kind": "settings",
+      "label": "Models",
+      "question": "What does Settings › General › Models control, and who can change it?",
+      "docs": [],
+      "console": "settings:models"
+    },
+    {
+      "id": "settings:chat_agent",
+      "kind": "settings",
+      "label": "Chat assistant",
+      "question": "What does Settings › General › Chat assistant control, and who can change it?",
+      "docs": [],
+      "console": "settings:chat_agent"
+    },
+    {
+      "id": "settings:detection",
+      "kind": "settings",
+      "label": "Detection",
+      "question": "What does Settings › General › Detection control, and who can change it?",
+      "docs": [],
+      "console": "settings:detection"
+    },
+    {
+      "id": "settings:detection_rules",
+      "kind": "settings",
+      "label": "Detection & rules",
+      "question": "What does Settings › General › Detection & rules control, and who can change it?",
+      "docs": [],
+      "console": "settings:detection_rules"
+    },
+    {
+      "id": "settings:cases",
+      "kind": "settings",
+      "label": "Cases",
+      "question": "What does Settings › General › Cases control, and who can change it?",
+      "docs": [],
+      "console": "settings:cases"
+    },
+    {
+      "id": "settings:case_policy",
+      "kind": "settings",
+      "label": "SLA, priority & suppression",
+      "question": "What does Settings › General › SLA, priority & suppression control, and who can change it?",
+      "docs": [],
+      "console": "settings:case_policy"
+    },
+    {
+      "id": "settings:automation",
+      "kind": "settings",
+      "label": "Automation",
+      "question": "What does Settings › General › Automation control, and who can change it?",
+      "docs": [],
+      "console": "settings:automation"
+    },
+    {
+      "id": "settings:standup",
+      "kind": "settings",
+      "label": "Standup",
+      "question": "What does Settings › General › Standup control, and who can change it?",
+      "docs": [],
+      "console": "settings:standup"
+    },
+    {
+      "id": "settings:notifications",
+      "kind": "settings",
+      "label": "Alerting & notifications",
+      "question": "What does Settings › Integrations › Alerting & notifications control, and who can change it?",
+      "docs": [],
+      "console": "settings:notifications"
+    },
+    {
+      "id": "settings:enrichment",
+      "kind": "settings",
+      "label": "Enrichment",
+      "question": "What does Settings › Integrations › Enrichment control, and who can change it?",
+      "docs": [],
+      "console": "settings:enrichment"
+    },
+    {
+      "id": "settings:knowledge",
+      "kind": "settings",
+      "label": "Knowledge & threat context",
+      "question": "What does Settings › Integrations › Knowledge & threat context control, and who can change it?",
+      "docs": [],
+      "console": "settings:knowledge"
+    },
+    {
+      "id": "settings:admin_users",
+      "kind": "settings",
+      "label": "Users",
+      "question": "What does Settings › Security & access › Users control, and who can change it?",
+      "docs": [],
+      "console": "settings:admin_users"
+    },
+    {
+      "id": "settings:roles",
+      "kind": "settings",
+      "label": "Roles & permissions",
+      "question": "What does Settings › Security & access › Roles & permissions control, and who can change it?",
+      "docs": [],
+      "console": "settings:roles"
+    },
+    {
+      "id": "settings:security",
+      "kind": "settings",
+      "label": "Single sign-on & policy",
+      "question": "What does Settings › Security & access › Single sign-on & policy control, and who can change it?",
+      "docs": [],
+      "console": "settings:security"
+    },
+    {
+      "id": "settings:admin_sessions",
+      "kind": "settings",
+      "label": "Active sessions",
+      "question": "What does Settings › Security & access › Active sessions control, and who can change it?",
+      "docs": [],
+      "console": "settings:admin_sessions"
+    },
+    {
+      "id": "settings:keys",
+      "kind": "settings",
+      "label": "Secret keys",
+      "question": "What does Settings › Security & access › Secret keys control, and who can change it?",
+      "docs": [],
+      "console": "settings:keys"
+    },
+    {
+      "id": "settings:appearance",
+      "kind": "settings",
+      "label": "Branding",
+      "question": "What does Settings › Organization › Branding control, and who can change it?",
+      "docs": [],
+      "console": "settings:appearance"
+    },
+    {
+      "id": "settings:release_updates",
+      "kind": "settings",
+      "label": "Updates & releases",
+      "question": "What does Settings › Organization › Updates & releases control, and who can change it?",
+      "docs": [],
+      "console": "settings:release_updates"
+    },
+    {
+      "id": "settings:advanced",
+      "kind": "settings",
+      "label": "Advanced",
+      "question": "What does Settings › Organization › Advanced control, and who can change it?",
+      "docs": [],
+      "console": "settings:advanced"
+    },
+    {
+      "id": "settings:advanced_all",
+      "kind": "settings",
+      "label": "All settings",
+      "question": "What does Settings › Organization › All settings control, and who can change it?",
+      "docs": [],
+      "console": "settings:advanced_all"
+    },
+    {
+      "id": "settings:demo",
+      "kind": "settings",
+      "label": "Experimental & Demo",
+      "question": "What does Settings › Organization › Experimental & Demo control, and who can change it?",
+      "docs": [],
+      "console": "settings:demo"
+    },
+    {
+      "id": "settings:storage",
+      "kind": "settings",
+      "label": "Storage & retention",
+      "question": "What does Settings › Organization › Storage & retention control, and who can change it?",
+      "docs": [],
+      "console": "settings:storage"
+    },
+    {
+      "id": "settings:data_export",
+      "kind": "settings",
+      "label": "Data export",
+      "question": "What does Settings › Organization › Data export control, and who can change it?",
+      "docs": [],
+      "console": "settings:data_export"
+    },
+    {
+      "id": "settings:danger",
+      "kind": "settings",
+      "label": "Danger zone",
+      "question": "What does Settings › Organization › Danger zone control, and who can change it?",
+      "docs": [],
+      "console": "settings:danger"
+    }
+  ]
+}

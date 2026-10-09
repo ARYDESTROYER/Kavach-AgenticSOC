@@ -15,6 +15,9 @@
       crossorigin
     />
     <title>Agentic SOC</title>
+    <!-- An empty favicon: browsers stop requesting /favicon.ico (a 404 in every console).
+         A white-label favicon (Settings → Branding) replaces this link's href at runtime. -->
+    <link rel="icon" href="data:," />
     <!-- Pre-paint theme stamp (WS-F task 8c). The body background is
          `hsl(var(--canvas))`, which differs light↔dark, so a dark-preferring user
          would flash a light body before React's first commit stamps `.dark`. This

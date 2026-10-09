@@ -66,6 +66,19 @@ describe('Help Center', () => {
     );
   });
 
+  it('describes Workspace Chat as it is now and finds it by reports, tokens, cost and export', () => {
+    renderDocs();
+
+    expect(screen.getByRole('link', { name: /workspace chat/i })).toHaveTextContent(
+      'Ask read-only questions, follow each lookup, track tokens and cost, and build reports from answers.',
+    );
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' });
+    for (const term of ['report', 'reports', 'tokens', 'cost', 'export']) {
+      fireEvent.change(search, { target: { value: term } });
+      expect(screen.getByRole('link', { name: /workspace chat/i })).toHaveAttribute('href', '/docs/0.1/analyst/chat/');
+    }
+  });
+
   it('navigates categories without leaving the Help Center', () => {
     renderDocs();
 

@@ -617,88 +617,52 @@ empty-state, not a red error).
 
 ## 5. Chat (Surface)
 
-A read-only natural-language console (`POST /api/chat`), the **Chat** child under
-**Workspace** (the same left-nav host as **Entity investigation**, §4 — **ONE** chat
-engine, two entry points). Type a question; the agent may turn your intent into a single
-read-only structured query, render the first 50 hits as a table, and produce a
-**two-turn analysis**: the first model turn decides the query, then the engine
-builds a compact, fenced-UNTRUSTED aggregate of the hits and re-prompts the model
-for the analysis you read. If the second turn is unavailable, chat degrades
-gracefully (it never hard-fails). Both turns are metered through the single
-gateway.
+A read-only assistant (**Triage → Workspace → Chat**; the full guide is
+`docs/analyst/chat.md`, the Help Center's *Workspace Chat* page). **ONE** chat engine,
+two entry points: Workspace Chat and the case-scoped **Chat** tab in Case Manager.
 
-Workspace Chat keeps a bounded, per-user history on the application's selected state
-backend. On desktop, the newest conversations appear first in the searchable history
-rail; on a narrow screen, **History** opens the same list in a Sheet. Select a row to
-restore its authoritative saved transcript. A conversation can be renamed or deleted
-from its row menu. **New chat** starts an unsaved draft: it enters history only after the
-first successful assistant response has also been verified in the state backend, so
-cancelled questions, provider failures, and failed history writes do not create records
-that only look durable. The first saved exchange supplies a deterministic title that the
-operator can rename later.
+For one question the assistant runs a bounded loop of read-only lookups through a
+registry of chat tools — log search and statistics, case search and detail, decision
+explanations, metrics, shift report, campaigns, indicator reputation, ATT&CK, the
+knowledge corpus, cost, source health, automation status, the audit log, and the
+bundled Help Center — each gated by the same permission as its console page. Lookups
+return aggregates, never raw logs (#7); everything log-derived is fenced as untrusted
+(#9); numbers in charts come only from lookup results, never from model text. Every
+model call goes through the single gateway and cost ledger (#6).
 
-The workspace preserves unsent input separately for each visited conversation and for
-the new-chat draft. You can inspect an earlier thread and return without losing a query
-you were composing. These drafts stay in the current browser and are not part of server
-history until sent. Same-browser tabs announce history mutations, and summaries also
-refresh when Chat opens or its tab regains focus, so changes made in another tab or
-device appear without requiring a route reload. A history-store outage is shown as a
-retryable error, never as an empty account.
+- **Streaming.** `POST /api/chat/stream` (NDJSON) shows each lookup as it runs and the
+  token/cost counter after every model call; "Type out answers" also streams the final
+  text. `POST /api/chat` stays the blocking, backward-compatible form.
+- **Answers** carry blocks (KPI groups, charts, tables, case lists, timelines, entity and
+  ATT&CK cards, guides), citations (Help Center sections, cases, techniques, knowledge),
+  console links, follow-ups, and per-turn usage. Blocks offer view switches, Copy data,
+  CSV/JSON download, Copy query, and **Open in Logs** / **Open in Cases** when an exact
+  filter exists.
+- **History** is per user on the selected state backend: newest first, searchable by
+  content, pinnable (10 pins exempt from the 50-conversation limit), up to 100 messages
+  each, exportable as Markdown, HTML, or PDF. New chats enter history only after the first
+  answer is saved.
+- **Reports** collect blocks or whole answers into owner-scoped documents with notes, an
+  AI summary (one metered call; dry-run estimate first), and Markdown/HTML/PDF/CSV/JSON
+  exports with indicators defanged by default (`/api/reports*`).
+- **Product questions** are answered from the bundled Help Center with `D*` citations,
+  and at $0 from the Help Center alone when no model can run.
+- **Bounds** (`Preferences.chat_agent`, edited under **Settings → General → Chat
+  assistant**): 5 model calls, 10 lookups (4 at once), 60,000 tokens, and 90 s per
+  question; 2 concurrent questions per user; 3 indicator lookups per question and 10 per
+  conversation. Indicators reach enrichment providers only when they came from the
+  analyst's own words or this question's results, never private or internal values.
 
-The active thread has one title, one **Agent ready / Agent working** indicator, and one
-composer docked at the bottom. Use the sliders button beside the input to choose a
-queryable source or model; the current choices remain visible in the quiet composer
-footer. While a saved conversation is restoring, or while the agent is working, the
-composer and thread switching stay disabled so a reply cannot land in the wrong thread.
-If restore fails, use **Retry** or **Start new chat** without losing the surrounding
-history workspace.
-
-An explicit source selection is strict. If that source is disabled, removed,
-non-queryable, or unavailable when the turn runs, Chat reports the scoped failure instead
-of silently querying Primary. Primary is used only when no source was selected. Each
-saved assistant turn records the effective source and model that actually served it, so
-changing the composer controls later does not rewrite the provenance of earlier answers.
-
-Each assistant answer keeps supporting detail in one collapsed **Evidence & execution**
-row. Open it to inspect the read-only query, tools, knowledge, citations, reasoning,
-effective source/model, and metered cost that are available for that turn. A saved
-snapshot that was compacted explicitly notes that larger evidence structures may be
-omitted. The transcript follows new
-messages only when you are already near the bottom; if you scroll up to read earlier
-evidence, **Jump to latest** appears instead of moving you unexpectedly.
-
-This history begins with the version that introduced saved Workspace conversations.
-Earlier Chat turns lived only in the browser component and cannot be recovered or
-backfilled. The current navigation history retains up to **50 conversations per user**
-and **100 messages per conversation**. When that boundary removes older material, Chat
-marks the retained history as incomplete instead of presenting it as the whole thread.
-The bounded history is a navigation aid, not an audit substitute; use the usage and audit
-surfaces for metering and governed activity records.
-
-Add `case_id` to seed a case follow-up (the engine already knows the case's
-entity, verdict, confidence, risk, rules, and top evidence). Add a `context`
-object (`app` / `data_view` / `time_range` / `query` / `selection`) to supply
-es_query defaults — server-side it is fenced **UNTRUSTED** and never becomes
-instructions.
-
-Case-scoped chat remains separate. The **Chat** tab inside Case Manager uses the same
-chat engine but stays with the selected case and is never written into the operator's
-personal Workspace history—even if a caller supplies the Workspace persistence flag.
-Resume a Workspace conversation by sending its `conversation_id` with
-`persist_conversation: true`; the server-owned transcript, not caller-supplied history,
-is authoritative for that resumed turn. Workspace sends also carry an 8–128 character
-`idempotency_key`. If a connection drops after submission, retry the same turn with the
-same key: the backend returns the committed result or commits it once instead of creating
-a second billed turn. A still-running turn returns `409 chat_request_in_progress`;
-conflicting reuse returns `409 chat_idempotency_conflict`. If all 256 per-user live request
-leases are occupied, a new turn returns retryable `409 chat_request_capacity_busy` before
-the model is invoked. An unavailable explicit source
-returns `422 chat_source_unavailable`, and an unverifiable history read/write returns
-`503 chat_history_unavailable`.
-
-If no LLM provider is configured, chat replies *"The assistant is unavailable (no
-model configured). Configure an LLM provider key in Settings."* — it never
-silently errors.
+Durable Workspace sends carry an 8–128 character `idempotency_key`. Retrying an
+ambiguous turn with the same key returns the committed result (or `409
+chat_request_in_progress` while it runs) instead of a second billed turn; Stop is
+`POST /api/chat/turns/{turn_id}/cancel`. An explicit source is strict
+(`422 chat_source_unavailable`, never a silent fallback to Primary), and an unverifiable
+history read or write returns `503 chat_history_unavailable`. Case-scoped turns save their
+question and final answer text (no blocks or run log) to the case's discussion thread,
+visible to everyone who can read the case; this needs `cases:comment`, and without it the
+answer reports that it was not saved. They never enter personal history. See
+`docs/reference/api.md` for the full wire contract.
 
 ---
 
@@ -2608,6 +2572,12 @@ Press **⌘K / Ctrl-K** anywhere to open the command palette. It calls
 The endpoint is bounded (`limit` hard-capped) and degrades gracefully (a case-listing
 failure just yields no case hits). All matched text is operator/log data rendered as
 **plain** (#9).
+
+The palette also carries the chat entries, always listed after pages and settings so
+Enter on a page name still opens the page: **New chat**, **Open Reports**, **Search
+chats** (saved conversations matched by content through
+`GET /api/chat/conversations?q=`), and **Ask AI**, which opens a new chat with the typed
+text in the composer for review; it never sends on its own.
 
 ```bash
 curl -s "localhost:8088/api/search?q=10.10.1.152&limit=20"

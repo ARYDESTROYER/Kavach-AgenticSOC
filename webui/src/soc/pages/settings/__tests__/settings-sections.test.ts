@@ -24,6 +24,7 @@ import {
   isSectionId,
 } from '../settings-sections';
 import { SECTION_KEYS as DIRTY_SECTION_KEYS } from '../../settings-dirty';
+import { searchJumpTargets } from '../settings-sections-meta';
 
 /** The exact set of section ids the page must keep routable (deep-link back-compat). */
 const EXPECTED_IDS = [
@@ -33,6 +34,7 @@ const EXPECTED_IDS = [
   'customization',
   'general',
   'models',
+  'chat_agent', // NEW (chat revamp: the curated Chat assistant editor)
   'keys',
   'detection',
   'detection_rules', // NEW (Round-5 G6 R2: unified "Detection & rules" home)
@@ -109,6 +111,7 @@ describe('grouped rail derivation (Round-5 Sett-B: 5 groups, Security promoted)'
     expect(general.sections.map((s) => s.id)).toEqual([
       'general',
       'models',
+      'chat_agent',
       'detection',
       'detection_rules',
       'cases',
@@ -172,6 +175,7 @@ describe('SECTION_KEYS is derived from ownedKeys (kills the 3-file hand-sync)', 
     expect(SECTION_KEYS.advanced).toContain('rag');
     expect(SECTION_KEYS.storage).toEqual(['storage_lifecycle']);
     expect(SECTION_KEYS.release_updates).toEqual(['release_updates']);
+    expect(SECTION_KEYS.chat_agent).toEqual(['chat_agent']);
   });
 
   it('leaves the embedded / self-saving sections out of the dirty map', () => {
@@ -229,8 +233,20 @@ describe('GRID_SECTIONS (full-width, no outer Card)', () => {
   it('excludes the single-card sections (incl. automation after Round-6 de-dup)', () => {
     // Round-6: with the embedded rule cards gone, automation is a simple single-card
     // section again (master toggle + link card) — no longer a grid section.
-    for (const id of ['models', 'keys', 'cases', 'standup', 'enrichment', 'security', 'automation']) {
+    for (const id of ['models', 'chat_agent', 'keys', 'cases', 'standup', 'enrichment', 'security', 'automation']) {
       expect(GRID_SECTIONS.has(id)).toBe(false);
     }
   });
+});
+
+describe('Chat assistant is findable (Settings search + command palette)', () => {
+  const allowAll = () => true;
+  // The words an operator types for the chat_agent knobs: the section title, its blurb
+  // and its keywords form the haystack (the console map indexes the same text).
+  for (const query of ['chat', 'assistant', 'token', 'tokens', 'email', 'e-mail', 'enrichment', 'per-question', 'internal domains', 'type out answers']) {
+    it(`"${query}" finds the Chat assistant section`, () => {
+      const hits = searchJumpTargets(query, allowAll).filter((t) => !t.anchor);
+      expect(hits.map((t) => t.section)).toContain('chat_agent');
+    });
+  }
 });

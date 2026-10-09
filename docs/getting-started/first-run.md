@@ -83,7 +83,7 @@ Fresh workspaces assign `gpt-5.6-luna` to router, investigator, formatter, stand
 chat, and overview; embeddings remain on `text-embedding-3-small`. Existing stored
 assignments are never rewritten. Provider/model selection, self-hosted
 OpenAI-compatible endpoints, budgets, and per-role routing remain configurable under
-**Settings → Models** after launch. In Demo Mode, the deterministic mock runtime is
+**Settings → General → Models** after launch. In Demo Mode, the deterministic mock runtime is
 already available, so a live key is optional.
 
 Every provider call passes through the shared cost ledger. The default daily budget

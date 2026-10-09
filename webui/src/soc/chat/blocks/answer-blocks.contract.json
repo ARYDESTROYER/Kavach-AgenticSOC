@@ -1,0 +1,1023 @@
+{
+  "_comment": "CANONICAL answer-block contract (chat revamp SPEC §7, BLOCKS.md). The webui parser (webui/src/soc/chat/blocks/schema.ts) and the backend models (backend/app/agents/blocks.py) MUST both equal this file; two contract tests pin to it and fail CI on drift: webui src/soc/chat/blocks/__tests__/answer-blocks.contract.test.ts and backend tests/test_chat_contracts.py. Change a value here, in schema.ts and in blocks.py together.",
+  "blocks_version": 1,
+  "block_types": [
+    "markdown",
+    "kpi_group",
+    "chart",
+    "heatmap",
+    "table",
+    "case_list",
+    "timeline",
+    "entity",
+    "mitre",
+    "query",
+    "callout",
+    "citations",
+    "guide",
+    "report"
+  ],
+  "chart_kinds": [
+    "bar",
+    "hbar",
+    "stacked_bar",
+    "line",
+    "area",
+    "donut",
+    "sparkline",
+    "funnel"
+  ],
+  "units": [
+    "count",
+    "percent",
+    "ratio",
+    "score",
+    "ms",
+    "seconds",
+    "minutes",
+    "hours",
+    "usd",
+    "tokens",
+    "bytes"
+  ],
+  "column_types": [
+    "text",
+    "number",
+    "time",
+    "severity",
+    "verdict",
+    "status",
+    "risk",
+    "case",
+    "entity",
+    "mitre",
+    "code"
+  ],
+  "tones": [
+    "info",
+    "success",
+    "warning",
+    "critical"
+  ],
+  "provenance": [
+    "code",
+    "source",
+    "ai"
+  ],
+  "artifact_kinds": [
+    "table",
+    "kpis",
+    "series",
+    "categories",
+    "funnel",
+    "heatmap",
+    "case_list",
+    "timeline",
+    "entity",
+    "mitre",
+    "guide",
+    "query"
+  ],
+  "views": [
+    "bar",
+    "hbar",
+    "stacked_bar",
+    "line",
+    "area",
+    "donut",
+    "sparkline",
+    "funnel",
+    "kpi_group",
+    "table",
+    "heatmap",
+    "case_list",
+    "timeline",
+    "entity",
+    "mitre",
+    "guide",
+    "query"
+  ],
+  "allowed_views": {
+    "categories": [
+      "hbar",
+      "bar",
+      "donut",
+      "table"
+    ],
+    "series": [
+      "line",
+      "area",
+      "bar",
+      "stacked_bar",
+      "sparkline",
+      "table"
+    ],
+    "funnel": [
+      "funnel",
+      "hbar",
+      "table"
+    ],
+    "kpis": [
+      "kpi_group",
+      "table"
+    ],
+    "table": [
+      "table"
+    ],
+    "heatmap": [
+      "heatmap",
+      "table"
+    ],
+    "case_list": [
+      "case_list",
+      "table"
+    ],
+    "timeline": [
+      "timeline",
+      "table"
+    ],
+    "entity": [
+      "entity"
+    ],
+    "mitre": [
+      "mitre"
+    ],
+    "guide": [
+      "guide"
+    ],
+    "query": [
+      "query"
+    ]
+  },
+  "ai_authored_types": [
+    "callout",
+    "markdown",
+    "report"
+  ],
+  "kpi_displays": [
+    "value",
+    "gauge"
+  ],
+  "severity_keys": [
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "info"
+  ],
+  "status_keys": [
+    "new",
+    "investigating",
+    "escalated",
+    "on_hold",
+    "resolved",
+    "closed"
+  ],
+  "case_status_keys": [
+    "new",
+    "open",
+    "needs_human",
+    "investigating",
+    "escalated",
+    "on_hold",
+    "resolved",
+    "closed"
+  ],
+  "verdict_keys": [
+    "true_positive",
+    "false_positive",
+    "benign",
+    "needs_human",
+    "suspicious",
+    "duplicate",
+    "undetermined"
+  ],
+  "entity_kinds": [
+    "ip",
+    "domain",
+    "url",
+    "hash",
+    "host",
+    "user",
+    "email",
+    "process"
+  ],
+  "reputation_verdicts": [
+    "malicious",
+    "suspicious",
+    "clean",
+    "unknown"
+  ],
+  "timeline_kinds": [
+    "alert",
+    "detection",
+    "case",
+    "action",
+    "note"
+  ],
+  "citation_kinds": [
+    "runbook",
+    "mitre",
+    "case",
+    "docs",
+    "memory",
+    "knowledge",
+    "log"
+  ],
+  "query_languages": [
+    "kql",
+    "lucene",
+    "esql",
+    "dsl",
+    "sql"
+  ],
+  "x_kinds": [
+    "category",
+    "time"
+  ],
+  "time_buckets": [
+    "1m",
+    "5m",
+    "15m",
+    "1h",
+    "6h",
+    "1d",
+    "1w"
+  ],
+  "good_directions": [
+    "up",
+    "down",
+    "none"
+  ],
+  "report_templates": [
+    "investigation",
+    "hunt",
+    "ioc",
+    "shift",
+    "posture",
+    "custom"
+  ],
+  "nav_statuses": [
+    "active",
+    "new",
+    "open",
+    "needs_human",
+    "investigating",
+    "escalated",
+    "on_hold",
+    "resolved",
+    "closed"
+  ],
+  "limits": {
+    "blocks_per_message": 12,
+    "section_blocks": 13,
+    "report_sections": 12,
+    "report_leaves": 40,
+    "blocks_bytes_target": 40000,
+    "blocks_bytes": 48000,
+    "series": 8,
+    "points": 200,
+    "donut_segments": 6,
+    "table_columns": 12,
+    "table_rows": 200,
+    "cell_chars": 500,
+    "heatmap_x": 48,
+    "heatmap_y": 24,
+    "title": 120,
+    "label": 60,
+    "caption": 280,
+    "callout": 600,
+    "markdown": 12000,
+    "fallback": 2000,
+    "kpi_items": 6,
+    "trend_points": 60,
+    "case_list": 25,
+    "timeline": 50,
+    "entity_facts": 12,
+    "reputation": 12,
+    "entity_counts": 4,
+    "related_cases": 5,
+    "mitre": 60,
+    "query_chars": 4000,
+    "citation_items": 20,
+    "guide_steps": 10,
+    "guide_links": 6,
+    "category_chars": 200,
+    "value_chars": 512,
+    "detail_chars": 500,
+    "snippet": 280,
+    "section_summary": 1200,
+    "sources": 20,
+    "timestamp_chars": 40,
+    "stored_table_rows": 25,
+    "stored_series_points": 100,
+    "stored_query_chars": 1000
+  },
+  "patterns": {
+    "block_id": "^[a-z0-9][a-z0-9_.-]{0,47}$",
+    "key": "^[A-Za-z0-9_.:@-]{1,64}$",
+    "page": "^[a-z][a-z_]{0,39}$",
+    "route_token": "^[A-Za-z0-9_.:@ -]{1,128}$",
+    "case_id": "^[A-Za-z0-9_.:@ /-]{1,128}$",
+    "doc_ref": "^/docs/[0-9]{1,4}\\.[0-9]{1,4}/(?:[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*(?:/[a-z0-9_-]+(?:\\.[a-z0-9_-]+)*)*/?)?(?:#[a-z0-9_-]+)?$",
+    "technique": "^T\\d{4}(\\.\\d{3})?$",
+    "section_id": "^[a-z0-9][a-z0-9_-]{0,31}$",
+    "artifact_ref": "^t([1-9][0-9]{0,2})\\.a([1-9][0-9]{0,2})$",
+    "stored_ref": "^m([1-9][0-9]{0,2})\\.b([1-9][0-9]{0,2})$",
+    "timestamp": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])(?:[Tt ](?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\\.[0-9]{1,9})?)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])?)?$"
+  },
+  "invisible_ranges": [
+    [
+      0,
+      8
+    ],
+    [
+      11,
+      12
+    ],
+    [
+      14,
+      31
+    ],
+    [
+      127,
+      159
+    ],
+    [
+      173,
+      173
+    ],
+    [
+      847,
+      847
+    ],
+    [
+      1564,
+      1564
+    ],
+    [
+      4447,
+      4448
+    ],
+    [
+      6068,
+      6069
+    ],
+    [
+      6155,
+      6159
+    ],
+    [
+      8203,
+      8207
+    ],
+    [
+      8232,
+      8238
+    ],
+    [
+      8288,
+      8303
+    ],
+    [
+      12644,
+      12644
+    ],
+    [
+      65024,
+      65039
+    ],
+    [
+      65279,
+      65279
+    ],
+    [
+      65440,
+      65440
+    ],
+    [
+      65520,
+      65531
+    ],
+    [
+      113824,
+      113827
+    ],
+    [
+      119155,
+      119162
+    ],
+    [
+      917504,
+      921599
+    ]
+  ],
+  "timestamp_examples": {
+    "valid": [
+      "2026-10-08",
+      "2026-10-08T10:10",
+      "2026-10-08 10:10:10",
+      "2026-10-08t10:10:10z",
+      "2026-10-08T10:10:10.123456789Z",
+      "2026-10-08T10:10:10+0200",
+      "2026-10-08T10:10:10-05:30",
+      "2026-10-08T10:10Z",
+      "2024-02-29",
+      "0001-01-01",
+      "2026-10-08T23:59:59+23:59"
+    ],
+    "invalid": [
+      "20261008T101010Z",
+      "2026-W41-3",
+      "2026-281",
+      "2026-10-08Z",
+      "2026-02-30",
+      "2023-02-29",
+      "0000-01-01",
+      "2026-13-01",
+      "2026-10-08T24:00:00Z",
+      "2026-10-08T10:60",
+      "2026-10-08T10:00:60Z",
+      "2026-10-08T10:00:00+24:00",
+      "2026-10-08T10:00:00+05:60",
+      "٢٠٢٦-10-08",
+      "2026-10-08T10:10:10.1234567890Z",
+      "2026-10-08T10",
+      " 2026-10-08",
+      "2026-10-08\n",
+      ""
+    ]
+  },
+  "doc_ref_examples": {
+    "valid": [
+      "/docs/0.1/",
+      "/docs/0.1/#release-status",
+      "/docs/0.1/analyst/chat/",
+      "/docs/0.1/analyst/chat/#sources",
+      "/docs/0.1/getting-started/first-run",
+      "/docs/0.1/releases/0.1.13/",
+      "/docs/0.1/releases/0.1.13/#operator-bootstrap",
+      "/docs/12.34/a_b-c"
+    ],
+    "invalid": [
+      "",
+      "/docs/0.1",
+      "/docs/0.1/./analyst/",
+      "/docs/0.1/../admin/",
+      "/docs/0.1/analyst/../../etc/",
+      "/docs/0.1/analyst/.",
+      "/docs/0.1/..",
+      "/docs/0.1//analyst/",
+      "/docs/0.1/a..b/",
+      "/docs/0.1/.well-known/",
+      "/docs/0.1/releases/0.1./",
+      "https://evil.example/docs/0.1/",
+      "//evil.example/docs/0.1/",
+      "javascript:alert(1)",
+      "/docs/0.1/analyst/chat/?q=1",
+      "/docs/0.1/Analyst/chat/",
+      "/DOCS/0.1/",
+      "/docs/0.1/analyst/chat/#Sources",
+      "/docs/0.1/%2e%2e/admin/",
+      "/docs/0.1/analyst%2Fchat/",
+      "/docs/0.1/analyst\\chat/",
+      "/docs/0.1/analyst/chat/#",
+      "/docs/0.1/analyst/chat/#a#b",
+      "/docs/0.1/analyst chat/",
+      " /docs/0.1/",
+      "/docs/0.1/analyst/chat/\n",
+      "/docs/x.1/",
+      "/docs/٠.١/",
+      "/docs/0.1/café/"
+    ]
+  },
+  "chart_honesty": {
+    "_comment": "Totals (a stack height, a donut centre and shares) are drawn only where the values add up: additive units always; percent/ratio only when the parts of every complete group reconcile to 100/1 within share_tolerance percentage points (and at least one group is complete); never score or durations. A stack's groups are the series per x slot, a donut's the categories of its one series. A donut also needs a complete population: a truncated block (optional \"truncated\": true) never fits one. Pinned for blocks.chart_kind_fits and views.chartKindFits; x values are generated (a, b, …, or hourly ISO timestamps for x_kind time).",
+    "additive_units": [
+      "count",
+      "tokens",
+      "bytes",
+      "usd"
+    ],
+    "share_tolerance": 0.5,
+    "examples": [
+      {
+        "name": "count stack",
+        "kind": "stacked_bar",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            3,
+            4
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "tokens donut",
+        "kind": "donut",
+        "unit": "tokens",
+        "x_kind": "category",
+        "series": [
+          [
+            10,
+            20,
+            30
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "usd stack",
+        "kind": "stacked_bar",
+        "unit": "usd",
+        "x_kind": "category",
+        "series": [
+          [
+            0.5,
+            1.25
+          ],
+          [
+            2,
+            0
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "bytes donut",
+        "kind": "donut",
+        "unit": "bytes",
+        "x_kind": "category",
+        "series": [
+          [
+            1024,
+            2048
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "truncated count donut (a clipped top-N is not a whole)",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "category",
+        "truncated": true,
+        "series": [
+          [
+            5,
+            3,
+            2
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "truncated count stack (each slot still adds up)",
+        "kind": "stacked_bar",
+        "unit": "count",
+        "x_kind": "category",
+        "truncated": true,
+        "series": [
+          [
+            5,
+            3
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack reconciles per slot",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            60,
+            30
+          ],
+          [
+            40,
+            70
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack does not reconcile",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            60,
+            30
+          ],
+          [
+            30,
+            30
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent stack within rounding tolerance",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            33.3,
+            50
+          ],
+          [
+            33.3,
+            25
+          ],
+          [
+            33.3,
+            25
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack beyond tolerance",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            33,
+            50
+          ],
+          [
+            33,
+            50
+          ],
+          [
+            33,
+            0
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent stack slot with a missing part is skipped",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            60,
+            null
+          ],
+          [
+            40,
+            30
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent stack with every slot missing a part",
+        "kind": "stacked_bar",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            null,
+            20
+          ],
+          [
+            50,
+            null
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "ratio donut reconciles to one",
+        "kind": "donut",
+        "unit": "ratio",
+        "x_kind": "category",
+        "series": [
+          [
+            0.25,
+            0.25,
+            0.5
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "ratio donut does not reconcile",
+        "kind": "donut",
+        "unit": "ratio",
+        "x_kind": "category",
+        "series": [
+          [
+            0.5,
+            0.6
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent donut share of total",
+        "kind": "donut",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            50,
+            50
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "percent donut with a missing part",
+        "kind": "donut",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            50,
+            null,
+            50
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "score stack",
+        "kind": "stacked_bar",
+        "unit": "score",
+        "x_kind": "category",
+        "series": [
+          [
+            40,
+            50
+          ],
+          [
+            60,
+            50
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "minutes stack",
+        "kind": "stacked_bar",
+        "unit": "minutes",
+        "x_kind": "category",
+        "series": [
+          [
+            12,
+            40
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "seconds stack",
+        "kind": "stacked_bar",
+        "unit": "seconds",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "ms donut",
+        "kind": "donut",
+        "unit": "ms",
+        "x_kind": "category",
+        "series": [
+          [
+            100,
+            200
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "hours donut",
+        "kind": "donut",
+        "unit": "hours",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "count donut over six segments",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "count donut of two series",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "count donut over time",
+        "kind": "donut",
+        "unit": "count",
+        "x_kind": "time",
+        "series": [
+          [
+            1,
+            2
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "percent sparkline of one series",
+        "kind": "sparkline",
+        "unit": "percent",
+        "x_kind": "category",
+        "series": [
+          [
+            10,
+            20
+          ]
+        ],
+        "fits": true
+      },
+      {
+        "name": "count sparkline of two series",
+        "kind": "sparkline",
+        "unit": "count",
+        "x_kind": "category",
+        "series": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": false
+      },
+      {
+        "name": "minutes line",
+        "kind": "line",
+        "unit": "minutes",
+        "x_kind": "category",
+        "series": [
+          [
+            12,
+            40
+          ],
+          [
+            3,
+            4
+          ]
+        ],
+        "fits": true
+      }
+    ]
+  },
+  "nav_log_examples": {
+    "_comment": "Logs deep-link opts an InternalRef may carry ('Open in Logs', SPEC §10.7): the webui router's DEEP_LINK_KEYS.logs grammar. blocks.clean_nav_opts / NavRefOpts and schema.ts parseInternalRef accept exactly 'valid' and refuse 'invalid' (an invalid opt invalidates the whole ref); the webui test also checks router pageHash serialises exactly the valid ones.",
+    "valid": {
+      "logQuery": [
+        "failed password",
+        "user.name:\"alice\" AND event.action:login",
+        "x",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ünïcödé 名前 😀"
+      ],
+      "from": [
+        "now",
+        "now-24h",
+        "now-15m",
+        "now-99999w",
+        "2026-10-08",
+        "2026-10-08T10:00:00Z",
+        "2026-10-08T10:00:00.123456+00:00"
+      ],
+      "to": [
+        "now",
+        "now-24h",
+        "now-15m",
+        "now-99999w",
+        "2026-10-08",
+        "2026-10-08T10:00:00Z",
+        "2026-10-08T10:00:00.123456+00:00"
+      ],
+      "sourceId": [
+        "wazuh-prod",
+        "primary",
+        "src_1.a:b",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    },
+    "invalid": {
+      "logQuery": [
+        "",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "line\nbreak",
+        "tab\there",
+        "zero\u200bwidth",
+        "bidi\u202eoverride",
+        "sep\u2028arator",
+        "nul\u0000byte",
+        "private\ue000use",
+        "unassigned\u0378"
+      ],
+      "from": [
+        "",
+        "NOW",
+        "now-24 h",
+        "now-100000d",
+        "now-24y",
+        "now-24h ",
+        "yesterday",
+        "2026-10-08 10:00",
+        "2026-10-08T10:00:00 05:00",
+        "26-10-08",
+        "2026-10-08T10:00:00.123456789012+00:00:00"
+      ],
+      "to": [
+        "",
+        "NOW",
+        "now-24 h",
+        "now-100000d",
+        "now-24y",
+        "now-24h ",
+        "yesterday",
+        "2026-10-08 10:00",
+        "2026-10-08T10:00:00 05:00",
+        "26-10-08",
+        "2026-10-08T10:00:00.123456789012+00:00:00"
+      ],
+      "sourceId": [
+        "",
+        "x y",
+        "a/b",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "src\u200b",
+        "ü",
+        "src#1"
+      ]
+    }
+  },
+  "fallback_text": "This part of the answer could not be displayed",
+  "expired_text": "Expired from saved history"
+}
