@@ -110,6 +110,34 @@ const StateChips: React.FC<{ state: StageState }> = ({ state }) => {
 /** A trusted prose body longer than this gets clamped to a few lines + "Show more". */
 const CLAMP_CHARS = 320;
 
+/** decode_acl splits its output into a DELTA-first headline and a full-ACL detail block. */
+const ACL_DETAIL_MARKER = '---DECODED-ACL-DETAIL---';
+
+/** Untrusted tool body: if it carries the ACL detail marker, show the delta headline and
+ *  tuck the full decoded ACL behind a disclosure; otherwise a plain fenced CodeBlock. */
+const UntrustedBody: React.FC<{ body: string }> = ({ body }) => {
+  const idx = body.indexOf(ACL_DETAIL_MARKER);
+  if (idx < 0) return <CodeBlock value={body} wrap copyable maxHeightClassName="max-h-40" />;
+  const head = body.slice(0, idx).trim();
+  const detail = body.slice(idx + ACL_DETAIL_MARKER.length).trim();
+  return (
+    <div className="space-y-2">
+      {/* DELTA headline (the change/abuse) — prominent; full ACL detail collapsed below. */}
+      <div className="rounded-md border-l-2 border-info bg-info/5 px-2.5 py-1.5 text-xs font-medium leading-relaxed text-foreground whitespace-pre-wrap">
+        {head}
+      </div>
+      <details className="text-xs">
+        <summary className="cursor-pointer select-none text-info hover:underline">
+          View full decoded ACL
+        </summary>
+        <div className="mt-2">
+          <CodeBlock value={detail} wrap copyable maxHeightClassName="max-h-72" />
+        </div>
+      </details>
+    </div>
+  );
+};
+
 const StepItem: React.FC<{ step: StageStep }> = ({ step }) => {
   const [open, setOpen] = React.useState(false);
   const isLong = step.trusted && step.body.length > CLAMP_CHARS;
@@ -142,7 +170,7 @@ const StepItem: React.FC<{ step: StageStep }> = ({ step }) => {
             ) : null}
           </>
         ) : (
-          <CodeBlock value={step.body} wrap copyable maxHeightClassName="max-h-40" />
+          <UntrustedBody body={step.body} />
         )
       ) : null}
     </div>
@@ -445,7 +473,7 @@ const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => (
           {step.body}
         </p>
       ) : (
-        <CodeBlock value={step.body} wrap copyable maxHeightClassName="max-h-36" />
+        <UntrustedBody body={step.body} />
       )
     ) : null}
   </div>

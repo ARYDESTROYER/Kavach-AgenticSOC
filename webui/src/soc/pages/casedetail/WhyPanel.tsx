@@ -47,6 +47,61 @@ function decisionByLabel(decisionBy?: string): { text: string; isHuman: boolean 
   return { text: decisionBy ? humanizeToken(decisionBy) : 'Automated pipeline', isHuman };
 }
 
+/**
+ * A tool's result summary. Some tools (decode_acl) split their output into a DELTA-first
+ * headline — the change that matters — and a longer detail block (the full decoded ACL),
+ * separated by ACL_DETAIL_MARKER. We render the headline inline and tuck the detail behind
+ * a native <details> disclosure so the analyst sees the abuse first, full ACL on demand.
+ * All text is UNTRUSTED (source-derived) — rendered as plain text / inside CodeBlock (#9).
+ */
+const ACL_DETAIL_MARKER = '---DECODED-ACL-DETAIL---';
+
+/**
+ * Agent reasoning is often one dense blob — "The investigation reveals… 1. … 2. …
+ * Recommendation: …" — with no line breaks, so it reads as a wall of text. This splits
+ * it into its intro, each numbered point, and the recommendation, giving each a line gap
+ * for readability. UNTRUSTED model text — rendered as plain paragraphs (#9).
+ */
+const ReasoningText: React.FC<{ text: string }> = ({ text }) => {
+  const normalized = text
+    .replace(/\s+(\d+\.\s)/g, '\n$1') // break before "1. ", "2. " …
+    .replace(/\s+(Recommendation[:-])/gi, '\n$1'); // break before "Recommendation:"
+  const lines = normalized.split('\n').map((l) => l.trim()).filter(Boolean);
+  return (
+    <div className="space-y-2 text-sm leading-relaxed text-foreground/90">
+      {lines.map((l, i) => (
+        <p key={i} className="whitespace-pre-wrap">{l}</p>
+      ))}
+    </div>
+  );
+};
+
+const ToolSummary: React.FC<{ text: string }> = ({ text }) => {
+  const idx = text.indexOf(ACL_DETAIL_MARKER);
+  if (idx < 0) {
+    return <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{text}</p>;
+  }
+  const head = text.slice(0, idx).trim();
+  const detail = text.slice(idx + ACL_DETAIL_MARKER.length).trim();
+  return (
+    <div className="mt-2 space-y-2">
+      {/* The DELTA headline — the change/abuse — made prominent so it reads first,
+          distinct from the (collapsed) full-ACL detail below. */}
+      <div className="rounded-md border-l-2 border-info bg-info/5 px-2.5 py-1.5 text-xs font-medium leading-relaxed text-foreground whitespace-pre-wrap">
+        {head}
+      </div>
+      <details className="group text-xs">
+        <summary className="cursor-pointer select-none text-info hover:underline">
+          View full decoded ACL
+        </summary>
+        <div className="mt-2">
+          <CodeBlock value={detail} wrap copyable maxHeightClassName="max-h-72" />
+        </div>
+      </details>
+    </div>
+  );
+};
+
 export const WhyPanel: React.FC<{
   c: Case;
   rationale: CaseRationale | null;
@@ -162,8 +217,8 @@ export const WhyPanel: React.FC<{
           Agent reasoning
         </SectionHeading>
         {r.reasoning && r.reasoning.trim() ? (
-          /* UNTRUSTED — plain text. */
-          <p className="whitespace-pre-wrap text-sm text-foreground/90">{r.reasoning}</p>
+          /* UNTRUSTED — plain text, split into readable points. */
+          <ReasoningText text={r.reasoning} />
         ) : (
           <p className="text-sm text-muted-foreground">
             No reasoning excerpt was recorded for this investigation.
@@ -232,12 +287,7 @@ export const WhyPanel: React.FC<{
                 {t.query ? (
                   <CodeBlock value={t.query} wrap copyable maxHeightClassName="max-h-40" />
                 ) : null}
-                {t.summary ? (
-                  /* UNTRUSTED — plain text. */
-                  <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">
-                    {t.summary}
-                  </p>
-                ) : null}
+                {t.summary ? <ToolSummary text={t.summary} /> : null}
               </div>
             ))}
           </div>
