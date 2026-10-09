@@ -21,6 +21,15 @@ and (b) direct injection of the single best-matching runbook as TRUSTED guidance
 into the investigator prompt. A tiny dependency-free frontmatter parser keeps the
 "no new deps" rule (mirrors how Vigil parses its WORKFLOW.md). Loading is cached
 because the files are static at runtime; ``reload_runbooks()`` clears the cache.
+
+Operator-authored runbooks often use a different frontmatter vocabulary than the
+canonical keys above (``mitre:`` instead of ``applies_to_techniques:``, ``tags:``
+instead of ``keywords:``). Rather than force every author to rewrite, ``_ALIASES``
+maps those spellings onto the canonical fields, technique ids are extracted from
+prose entries like ``"T1110.003 (Brute Force: Password Spraying)"``, and a missing
+``summary`` falls back to the body's first real paragraph. Canonical keys always
+win; aliases only add. A file using purely canonical keys parses byte-identically
+to before.
 """
 
 from __future__ import annotations
@@ -130,25 +139,81 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
     return meta, body
 
 
+# Operator-authored spellings → canonical Runbook field. Several aliases may map
+# onto the same canonical key; every one of them is merged (canonical value first).
+_ALIASES: dict[str, str] = {
+    "mitre": "applies_to_techniques",
+    "attack_technique": "applies_to_techniques",
+    "techniques": "applies_to_techniques",
+    "tags": "keywords",
+    "rules": "applies_to_rules",
+    "entities": "applies_to_entities",
+}
+
+# ATT&CK technique id, optionally with a sub-technique: T1110, T1110.003.
+_TECHNIQUE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+
+# A body block that is only a heading, table row, or horizontal rule is not a summary.
+_NON_PROSE_PREFIXES = ("#", "|", "---", "> ", "```")
+
+
+def _extract_techniques(values: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split prose technique entries into ``(ids, leftovers)``.
+
+    ``"T1110.003 (Brute Force: Password Spraying)"`` → id ``"T1110.003"``. An entry
+    carrying no ATT&CK id at all — ``"ADCS ESC1 / CVE-2022-26923 (Certifried)"`` —
+    is a *leftover*: it would pollute a technique-id list, but it is exactly the
+    kind of phrase an analyst searches for, so the caller folds it into keywords
+    instead of dropping it."""
+    ids: list[str] = []
+    leftovers: list[str] = []
+    for value in values:
+        found = _TECHNIQUE_RE.findall(value)
+        if found:
+            ids.extend(found)
+        elif value:
+            leftovers.append(value)
+    return tuple(dict.fromkeys(ids)), tuple(dict.fromkeys(leftovers))
+
+
+def _first_paragraph(body: str) -> str:
+    """The body's first prose paragraph, for runbooks that declare no ``summary``.
+
+    Skips headings, tables, quotes and fences so the fallback is a real sentence.
+    Bounded so a long opening paragraph can't bloat the RAG corpus entry."""
+    for block in re.split(r"\n\s*\n", body):
+        block = block.strip()
+        if not block or block.startswith(_NON_PROSE_PREFIXES):
+            continue
+        return " ".join(line.strip() for line in block.splitlines())[:300]
+    return ""
+
+
 def _to_runbook(meta: dict[str, object], body: str, fallback_id: str) -> Runbook:
     def _tuple(key: str) -> tuple[str, ...]:
-        v = meta.get(key)
-        if isinstance(v, tuple):
-            return tuple(str(x) for x in v)
-        if isinstance(v, str) and v:
-            return (v,)
-        return ()
+        """Values for a canonical key, merged with every alias pointing at it."""
+        out: list[str] = []
+        for candidate in (key, *(a for a, c in _ALIASES.items() if c == key)):
+            v = meta.get(candidate)
+            if isinstance(v, tuple):
+                out.extend(str(x) for x in v)
+            elif isinstance(v, str) and v:
+                out.append(v)
+        return tuple(dict.fromkeys(out))
 
+    techniques, unparsed = _extract_techniques(_tuple("applies_to_techniques"))
     return Runbook(
         id=str(meta.get("id") or fallback_id),
         title=str(meta.get("title") or fallback_id),
         body=body,
-        summary=str(meta.get("summary") or ""),
+        summary=str(meta.get("summary") or "") or _first_paragraph(body),
         persona=str(meta.get("persona") or ""),
         applies_to_rules=_tuple("applies_to_rules"),
-        applies_to_techniques=_tuple("applies_to_techniques"),
+        applies_to_techniques=techniques,
         applies_to_entities=_tuple("applies_to_entities"),
-        keywords=_tuple("keywords"),
+        # Technique entries that carried no ATT&CK id are searchable phrases, not
+        # ids — they enrich retrieval as keywords rather than polluting the ids.
+        keywords=tuple(dict.fromkeys(_tuple("keywords") + unparsed)),
     )
 
 
