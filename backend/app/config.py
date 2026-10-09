@@ -2279,6 +2279,12 @@ class Preferences(BaseModel):
     cold_start_lookback_minutes: int = 60
     polling_enabled: bool = True
 
+    # How many of a cluster's events the investigator prompt shows (top-N, #7). The
+    # cluster itself always retains ALL events; this only bounds what the model reads
+    # per prompt. Default 12 suits single-signal cases; multi-stage attacks (a chained
+    # sequence where the ORDER is the evidence) need more so no stage is hidden.
+    investigator_max_events: int = 12
+
     # --- Models per role (Section 6.4) ---
     router_model: ModelConfig = Field(
         default_factory=lambda: ModelConfig(model="claude-haiku-4-5-20251001", max_tokens=600)

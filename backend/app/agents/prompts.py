@@ -15,7 +15,7 @@ from typing import Any
 from ..constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from ..models import Cluster, EnrichmentResult, MemoryEntry, RagChunk
 from ..tools.rag import is_trusted_knowledge
-from ..utils import truncate
+from ..utils import dotted_get, truncate
 
 # Distinct delimiters for the TRUSTED operator-MEMORY block (durable facts the
 # agents remember). Mirrors the PLAYBOOK block: separate from fenced UNTRUSTED
@@ -34,6 +34,129 @@ _FENCE_BLOCK_MAX_CHARS = 16000
 # it cheap + injection-surface tight).
 _MEMORY_MAX_ENTRIES = 20
 _MEMORY_MAX_CHARS = 2000
+
+# Per-event outcome fields, beyond the entity/severity core, READ from the event's
+# own document via a source-agnostic path ladder.
+#
+# Without these an authentication cluster is indistinguishable from a failed one:
+# every event renders as {ip, user, host, rule, severity} and differs only by
+# username, so a model asked "did anything succeed?" has no field that could answer
+# it and correctly reports no evidence of success. Outcome and status carry that
+# answer; the event code separates a TGT request from a pre-auth failure from
+# "the audit log was cleared".
+#
+# Nothing here is synthesised: a source that lacks a path simply omits the key, and
+# every value stays inside the same UNTRUSTED fence as the rest of the projection.
+_EXTRA_EVENT_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("outcome", ("event.outcome", "outcome", "unmapped.Outcome")),
+    ("status", ("winlog.status", "status_code", "unmapped.Status",
+                "winlog.event_data.Status")),
+    ("event_code", ("event.code", "winlog.event_id", "metadata.event_code",
+                    "unmapped.EventID")),
+    # The ACTOR — who performed the action — on account-management events (4732/4741/
+    # 4742/4781/5136). On these ``user`` is the TARGET (the account/group modified), so
+    # the attacker is ``subject_user``. Kept EARLY, next to the SPN it accompanies, so
+    # the fixed per-event fence budget (#9) never truncates the one field that names who
+    # did it. Absent on pure-auth events (spray reads TargetUserName via ``user``).
+    ("subject_user", ("winlog.event_data.SubjectUserName", "unmapped.SubjectUserName")),
+    # Service-principal-name detail (Windows 4741/4742 computer-account SPN set). For
+    # DCShadow the tell is a NON-DC machine account handed a Domain-Controller-only SPN
+    # — ``GC/`` (Global Catalog) or the DRS replication SPN — registering it as a rogue
+    # DC so the attacker can PUSH replication. Distinct from DCSync (which PULLs and
+    # touches no SPN). Placed EARLY, deliberately: the whole compact event is fenced at a
+    # fixed budget (#9), the DC-only SPN typically sits at the TAIL of the SPN list, and a
+    # length cap would truncate exactly the token that carries the signal — so we neither
+    # cap it nor bury it, giving the SPN the most of the shared budget before it.
+    # Absent on auth/replication events, so invisible to the other AD samples.
+    ("service_principal_names", ("winlog.event_data.ServicePrincipalNames", "unmapped.ServicePrincipalNames")),
+    # Directory-access detail (Windows 4662 and kin). For a directory-service read
+    # the discriminator is not volume or outcome but WHICH right was exercised: the
+    # access mask plus the object/property GUIDs in ``Properties`` are what separate
+    # a routine object read from a DCSync replication pull. Absent on every non-4662
+    # event (auth, process, etc.), so this is invisible to the password-spray path.
+    ("access_mask", ("winlog.event_data.AccessMask", "unmapped.AccessMask")),
+    ("properties", ("winlog.event_data.Properties", "unmapped.Properties")),
+    ("object_type", ("winlog.event_data.ObjectType", "unmapped.ObjectType")),
+    # Account-management detail (Windows 4765/4766/4738/4728 and kin). When one
+    # principal's rights are grafted onto another, the payload IS a SID: a
+    # sIDHistory write carrying a well-known RID (-512 Domain Admins, -519
+    # Enterprise Admins) grants that group's access without any group membership
+    # ever changing. Without the SID the event reads as a routine account edit.
+    # ``subject_user`` names the ACTOR, which ``user`` cannot always carry - on
+    # account-management events ``user`` is the account being MODIFIED.
+    ("source_sid", ("winlog.event_data.SourceSid", "unmapped.SourceSid")),
+    ("source_user", ("winlog.event_data.SourceUserName", "unmapped.SourceUserName")),
+    ("target_sid", ("winlog.event_data.TargetSid", "unmapped.TargetSid")),
+    # Account-management naming (Windows 4741/4742/4781). ``sam_account_name`` is the
+    # account's logon name; for noPac the tell is a MACHINE account whose sam name is
+    # changed to one NOT ending in "$" (impersonating a DC). old/new name expose the
+    # rename transition in a single 4781 event. Absent on non-account-mgmt events.
+    ("sam_account_name", ("winlog.event_data.SamAccountName", "unmapped.SamAccountName")),
+    ("old_name", ("winlog.event_data.OldTargetUserName", "unmapped.OldTargetUserName")),
+    ("new_name", ("winlog.event_data.NewTargetUserName", "unmapped.NewTargetUserName")),
+    # Directory-object modification detail (Windows 5136). The changed attribute and
+    # its new value ARE the evidence: for an ACL grant, the value is the raw NT
+    # security descriptor (SDDL), and the extended-right ACEs inside it (e.g. the
+    # DS-Replication GUIDs) are what a grant of DCSync rights looks like. Absent on
+    # every non-5136 event, so invisible to the other AD samples.
+    ("attribute_name", ("winlog.event_data.AttributeLDAPDisplayName", "unmapped.AttributeLDAPDisplayName")),
+    ("attribute_value", ("winlog.event_data.AttributeValue", "unmapped.AttributeValue")),
+    ("object_dn", ("winlog.event_data.ObjectDN", "unmapped.ObjectDN")),
+    ("operation_type", ("winlog.event_data.OperationType", "unmapped.OperationType")),
+    # Group-membership detail (Windows 4732/4728/4756 member-added-to-group). The
+    # payload IS the added principal: a member added to a privileged group (local
+    # Administrators, Domain Admins) IS the escalation, and WHICH principal was added
+    # is the whole discriminator — a well-known low-privilege SID (RID -501 Guest,
+    # S-1-5-20 Network Service) added to Administrators is never legitimate. ``user``
+    # carries the GROUP here; the ACTOR is ``subject_user``. Absent on non-group events.
+    ("member_sid", ("winlog.event_data.MemberSid", "unmapped.MemberSid")),
+    ("member_name", ("winlog.event_data.MemberName", "unmapped.MemberName")),
+)
+
+# Per-field character caps for projected values that can be pathologically large.
+# An SDDL blob runs 3-4k chars, and the top-N events each carry one, so an uncapped
+# projection can dominate the prompt and burn the per-case token budget. The
+# extended-right ACEs that carry the signal sit early in the descriptor, so a 2k cap
+# keeps the decodable evidence while shedding the (irrelevant) tail. Uncapped fields
+# are unaffected; this only trims the known-huge ones.
+_FIELD_MAX_CHARS: dict[str, int] = {
+    "attribute_value": 2000,
+}
+
+
+def _first_present(src: dict[str, Any], paths: tuple[str, ...]) -> Any:
+    """First meaningful value among ``paths``; ``None`` when the event has none."""
+    for path in paths:
+        value = dotted_get(src, path)
+        if value not in (None, "", "-"):
+            return value
+    return None
+
+
+def focus_runbooks(chunks: list[RagChunk], rule_values: list[str]) -> list[RagChunk]:
+    """Drop competing runbooks once one is explicitly bound to this cluster's rule.
+
+    Retrieval is similarity-based, so a merely topic-adjacent runbook can clear the
+    score floor and be rendered beside the correct one with equal authority — an
+    ADCS relay procedure arriving next to a password-spray procedure invites the
+    model to blend two unrelated playbooks.
+
+    A runbook naming this cluster's rule in ``applies_to_rules`` is a DETERMINISTIC
+    match, not a guess, so when one exists the other runbooks are dropped. Falls
+    through untouched when nothing is bound (similarity is then the best signal we
+    have), and never filters MITRE / suppression / baseline chunks, which are
+    complementary rather than competing.
+    """
+    rules = {r for r in rule_values if r}
+    if not rules:
+        return chunks
+    bound = {
+        id(ch) for ch in chunks
+        if ch.source == "runbook" and rules.intersection((ch.metadata or {}).get("rules") or [])
+    }
+    if not bound:
+        return chunks
+    return [ch for ch in chunks if ch.source != "runbook" or id(ch) in bound]
 
 _INJECTION_NOTE = (
     "SECURITY: Text between "
@@ -247,9 +370,23 @@ def render_cluster(cluster: Cluster, enrichment: EnrichmentResult | None,
             "rule": ev.rule,
             "severity": ev.severity,
         }
+        # Outcome/status/event-code, when the source carries them. Read from the
+        # event's own document; absent paths are omitted, never invented. A known-huge
+        # field (SDDL) is capped so one event cannot dominate the prompt.
+        for key, paths in _EXTRA_EVENT_FIELDS:
+            value = _first_present(ev.source, paths)
+            if value is not None:
+                cap = _FIELD_MAX_CHARS.get(key)
+                compact[key] = truncate(str(value), cap) if cap else value
         lines.append(f"- {fence(json.dumps(compact, default=str))}")
 
     if rag_chunks:
+        # A runbook explicitly bound to this cluster's rule beats a merely similar
+        # one; when such a match exists, competing runbooks are dropped so two
+        # unrelated procedures never arrive with equal authority. The investigator
+        # already focuses the list before it audits it (so the record matches what
+        # the model saw); this repeat is idempotent and protects other callers.
+        rag_chunks = focus_runbooks(rag_chunks, cluster.rule_values)
         # Split prior analyst decisions (resolved cases) into their own baseline
         # block (C3-5) so the model weights institutional history distinctly from
         # static runbook/MITRE knowledge.

@@ -28,6 +28,7 @@ from .prompts import (
     build_investigator_system,
     fence,
     fence_block,
+    focus_runbooks,
     render_cluster,
     tool_defs_text,
 )
@@ -151,8 +152,14 @@ class Investigator:
             # Operator MEMORY (durable trusted facts) is injected as a DISTINCT block
             # ABOVE the untrusted evidence and BELOW the playbook procedure — it can
             # only INFORM; the deterministic policy still decides close/escalate.
+            # Focus the retrieved knowledge ONCE, here, so the prompt below and the
+            # CONTEXT audit record further down describe the SAME set. Filtering it
+            # inside render_cluster alone would shape the prompt while the audit
+            # trail still claimed the runbooks the model never actually saw.
+            rag_chunks = focus_runbooks(rag_chunks or [], cluster.rule_values)
             context = render_cluster(
                 cluster, enrichment, rag_chunks, playbook=playbook_text, memory=memory,
+                max_events=getattr(prefs, "investigator_max_events", 12),
             )
             messages = [
                 {"role": "system", "content": system},
@@ -181,8 +188,13 @@ class Investigator:
                     "persona": (persona.id if persona else "generalist"),
                     "playbook": (f"{playbook.id} v{playbook.version}" if playbook else None),
                     "memory": [truncate(m.text, 200) for m in (memory or []) if (m.text or "").strip()][:20],
+                    # 200 chars cut a runbook descriptor off mid-keyword in the UI
+                    # ("...credential_acc…"), hiding the rules/MITRE bindings that
+                    # explain WHY this knowledge was selected. 600 shows a whole
+                    # descriptor; the panel scrolls, and the chunk is a summary
+                    # already, so this widens explainability without leaking bulk.
                     "knowledge": [
-                        {"source": ch.source, "snippet": truncate(ch.text, 200)}
+                        {"source": ch.source, "snippet": truncate(ch.text, 600)}
                         for ch in (rag_chunks or [])[:20]
                     ],
                     "enrichment": (

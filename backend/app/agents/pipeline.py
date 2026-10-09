@@ -25,6 +25,7 @@ from ..engine.case_manager import CaseManager
 from ..engine.cost_gate import CaseBudget
 from ..engine.risk import compute_risk
 from ..engine.signatures import find_open_case_for_cluster
+from ..engine.runbooks import load_runbooks
 from ..es.base import BaseESClient
 from ..llm.gateway import LLMGateway
 from ..models import Case, Cluster, EnrichmentResult, VerdictResult
@@ -671,7 +672,9 @@ class InvestigationPipeline:
             verdict=verdict.verdict,
             confidence=verdict.confidence,
             evidence=verdict.evidence,
-            mitre=verdict.mitre,
+            # Adopt the matched runbook's curated ATT&CK techniques (authoritative);
+            # fall back to the model's tags only when no runbook bound to this rule.
+            mitre=(_runbook_techniques(cluster.rule_values) or verdict.mitre),
             recommended_action=verdict.recommended_action,
             reproduce_query=reproduce_query,
             title=truncate(title, 200),
@@ -683,6 +686,24 @@ class InvestigationPipeline:
             agent_persona=persona_id or (existing.agent_persona if existing else ""),
             playbook_id=playbook_id or (existing.playbook_id if existing else ""),
         )
+
+
+def _runbook_techniques(rule_values: list[str]) -> list[str]:
+    """The ATT&CK techniques declared by the runbook matched to this cluster's rule.
+
+    The case's MITRE tags should reflect the CURATED techniques of the runbook the
+    investigation actually used — not a per-case guess by the model, which drifts (a
+    noPac case tagged T1110 "Brute Force"). The runbook binds by rule
+    (``applies_to_rules``), so we look it up the same way and adopt its declared
+    ``applies_to_techniques``. Returns ``[]`` when no runbook matches, so the caller
+    falls back to the model's tags unchanged."""
+    rules = {r for r in rule_values if r}
+    if not rules:
+        return []
+    for rb in load_runbooks():
+        if rules.intersection(rb.applies_to_rules):
+            return list(rb.applies_to_techniques)
+    return []
 
 
 def _trigger(existing: Case | None, cluster: Cluster):
