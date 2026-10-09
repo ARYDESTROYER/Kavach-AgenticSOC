@@ -858,7 +858,8 @@
         "tokens",
         "type out answers",
         "internal domains",
-        "email"
+        "email",
+        "e-mail"
       ],
       "owned_keys": [
         "chat_agent"
