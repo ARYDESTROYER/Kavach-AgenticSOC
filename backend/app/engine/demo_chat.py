@@ -952,21 +952,61 @@ _LOG_COUNT_RE = re.compile(
     r"(?:contain|mention|match|include|have|with|containing|mentioning|matching|including|that contain|"
     r"that mention|that match|that include)\s+(?P<term>.+?)\s*$",
     re.IGNORECASE)
-# The words of a log search that are not part of the searched value.
+# The words of a log search that are not part of the searched value. The window
+# pattern stops before a trailing "by <field>" so "… in the last 7 days by user" keeps
+# its grouping.
 _LOG_TERM_WINDOW_RE = re.compile(
-    r"\s+(?:(?:in|over|for|during|from|within)\s+(?:the\s+)?(?:last|past|previous)\b.*|today|yesterday|"
-    r"this (?:week|month)|overnight)$", re.IGNORECASE)
+    r"\s+(?:(?:in|over|for|during|from|within)\s+(?:the\s+)?(?:last|past|previous)\b"
+    r"(?:(?!\s+(?:by|per)\s+[a-z]).)*|today|yesterday|this (?:week|month)|overnight)$", re.IGNORECASE)
+_LOG_WINDOW_ONLY_RE = re.compile(
+    r"^(?:(?:the\s+)?(?:last|past|previous)\b.*|today|yesterday|this (?:week|month)|overnight)$", re.IGNORECASE)
 _LOG_TERM_GROUP_RE = re.compile(r"\s+(?:by|per)\s+((?:source |src )?[a-z]+(?: [a-z]+)?)$", re.IGNORECASE)
 _LOG_TERM_FIELD_RE = re.compile(
     r"^(?:the\s+)?(?P<field>host(?:name)?|machine|server|endpoint|user(?:name)?|account|(?:source |src )?ip"
     r"(?: address)?|rule)\s+(?P<value>\S{1,200})$", re.IGNORECASE)
 _LOG_TERM_FIELDS = {"host": "host", "hostname": "host", "machine": "host", "server": "host", "endpoint": "host",
                     "user": "user", "username": "user", "account": "user", "rule": "rule"}
-# A back-reference ("logs for this case") is about the conversation's subject, not a
-# value to search for.
-_LOG_TERM_BACKREF_RE = re.compile(
-    r"^(?:it|this|that|them|these|those|here|there)$|\b(?:this|that|the|its|these|those)\s+"
-    r"(?:case|cases|alert|alerts|incident|incidents|entity)\b", re.IGNORECASE)
+# A value the analyst quoted is searched as written, whatever its words.
+_LOG_TERM_QUOTED_RE = re.compile(
+    r"[\"“](?P<dq>[^\"”]{1,200})[\"”]|(?<!\w)['‘`](?P<sq>[^'’`]{1,200})['’`](?!\w)")
+# Where a request goes on past the searched value ("for mimikatz, then summarise",
+# "for 203.0.113.7 and look it up"): the value ends there.
+_LOG_TERM_CLAUSE_RE = re.compile(r"\s*[,;]\s*|\s+(?:and|then|&)\s+", re.IGNORECASE)
+_LOG_TERM_PLEASE_RE = re.compile(r"(?:[\s,]+please)+$", re.IGNORECASE)
+_LOG_TAIL_LEAD_RE = re.compile(r"^(?:(?:and|then|also|please|now)\b[\s,]*)+", re.IGNORECASE)
+# A clause after the value that asks for more than the search ("…, then summarise it")
+# is answered by the search itself; one that asks for a lookup is not (below).
+_LOG_TAIL_VERB_RE = re.compile(
+    r"^(?:summari[sz]e|explain|show|tell|give|build|make|create|write|draft|chart|plot|graph|break|group|split|"
+    r"count|list|compare|rank|sort|highlight|display|put|turn|add|send|share|export)\b", re.IGNORECASE)
+_LOG_TAIL_LOOKUP_RE = re.compile(r"\b(?:hunt|look ?(?:it |them )?up|reputation|ioc|indicator|check|investigat\w*|"
+                                 r"pivot|sightings?|enrich\w*)\b", re.IGNORECASE)
+# Words that send the question to another intent ("logs for the escalated cases",
+# "events for the top hosts", "events about the campaign") or name a level rather than
+# text ("events with severity high"): not a log text search.
+_LOG_TERM_OTHER_INTENT_RE = re.compile(
+    r"\b(?:cases?|incidents?|alerts?|campaigns?|top|most|least|noisiest|busiest|loudest|severity|severities|"
+    r"priority)\b", re.IGNORECASE)
+# A determiner, pronoun or connective makes a phrase about something ("this host",
+# "the attacker IP", "anything suspicious", "a user"), never a value to search for:
+# such a back-reference belongs to the conversation (or the case) instead.
+_LOG_TERM_STOP_WORDS = frozenset({
+    "a", "an", "the", "this", "that", "these", "those", "it", "its", "them", "their", "theirs", "his", "her",
+    "hers", "him", "my", "our", "ours", "your", "me", "us", "and", "or", "then", "all", "any", "every", "each",
+    "some", "please", "anything", "something", "everything", "nothing", "anyone", "someone", "here", "there",
+    "what", "which", "who", "whom", "whose", "where", "when", "why", "how", "also", "just", "same", "other",
+})
+# Generic entity words: a term made only of these names no value ("attacker IP", "hosts").
+_LOG_TERM_GENERIC = frozenset({
+    "host", "hosts", "hostname", "hostnames", "user", "users", "username", "usernames", "ip", "ips", "address",
+    "addresses", "account", "accounts", "machine", "machines", "server", "servers", "endpoint", "endpoints",
+    "attacker", "attackers", "victim", "victims", "alert", "alerts", "case", "cases", "incident", "incidents",
+    "entity", "entities", "campaign", "campaigns", "rule", "rules", "source", "sources", "destination",
+    "destinations", "affected", "related", "suspicious", "malicious", "event", "events", "log", "logs",
+    "activity", "traffic", "indicator", "indicators", "ioc", "iocs",
+})
+#: Longest unquoted free-text value taken as a search term (in words).
+_LOG_TERM_MAX_WORDS = 4
 _LOG_FIELD_NOUNS = {"ip": "IP", "user": "user", "host": "host", "rule": "rule"}
 _REPORT_TEMPLATES = ("shift", "posture", "investigation", "hunt", "ioc", "custom")
 
@@ -1123,15 +1163,81 @@ def _content_words(text: str) -> set[str]:
     return set(re.findall(r"[a-z]{3,}", text.lower())) - _RESHAPE_STOP_WORDS
 
 
-def _log_search(question: str) -> tuple[str, tuple[tuple[str, str], ...], str | None] | None:
+_LogFilter = tuple[tuple[str, str], ...]
+
+
+def _log_term_split(term: str) -> tuple[str, str]:
+    """``term`` cut where the request goes on past the searched value (a comma, "and",
+    "then"): ``(value, rest)``. A quoted value is never cut inside its quotes."""
+    quoted = _LOG_TERM_QUOTED_RE.search(term)
+    cut = _LOG_TERM_CLAUSE_RE.search(term, quoted.end() if quoted else 0)
+    if cut is None:
+        return term, ""
+    return term[:cut.start()], term[cut.end():]
+
+
+def _log_term_strip(text: str) -> tuple[str, str | None]:
+    """``text`` without its trailing window, "by <field>" grouping and "please", in
+    either order: ``(value, group field)``."""
+    # A leading space lets a bare "by user" or "in the last day" (a clause of its own)
+    # match the same trailing patterns.
+    text = " " + _LOG_TERM_PLEASE_RE.sub("", re.sub(r"[?!.]+$", "", text.strip())).strip()
+    group: str | None = None
+    for _ in range(2):
+        grouped = _LOG_TERM_GROUP_RE.search(text)
+        fld = _group_field(f"by {grouped.group(1).lower()}") if grouped else None
+        if grouped and fld is not None:
+            group = group or fld
+            text = text[:grouped.start()]
+        text = _LOG_TERM_WINDOW_RE.sub("", text)
+    return text.strip(), group
+
+
+def _log_term_filter(text: str, *, case_scoped: bool) -> _LogFilter | None:
+    """One searched value as a log filter, else None (``text`` names no value).
+
+    A quoted value is searched as written; a value named by its field ("host web-01")
+    or an IPv4 address filters that field. Unquoted free text becomes a ``contains``
+    filter only when it is a short run of words with no determiner, pronoun or
+    connective ("this host", "the attacker IP", "anything suspicious" are references,
+    not values), not only generic entity words ("attacker IP"), and naming no case,
+    campaign or top-N subject; in the Case Manager chat (``case_scoped``) only a single
+    word qualifies, so everyday references to the case's own entities stay case
+    questions."""
+    quoted = _LOG_TERM_QUOTED_RE.fullmatch(text)
+    if quoted:
+        value = (quoted.group("dq") or quoted.group("sq") or "").strip()
+        return (("contains", value[:200]),) if value else None
+    named = _LOG_TERM_FIELD_RE.match(text)
+    if named:
+        value = named.group("value").strip("\"'`\u201c\u201d\u2018\u2019")
+        if not value or value.lower() in _LOG_TERM_STOP_WORDS or value.lower() in _LOG_TERM_GENERIC:
+            return None
+        word = named.group("field").lower()
+        fld = "ip" if word.endswith(("ip", "address")) else _LOG_TERM_FIELDS.get(word, "host")
+        return ((fld, value[:200]),)
+    if _IPV4_RE.fullmatch(text):
+        return (("ip", text),)
+    words = [w.lower() for w in text.split()]
+    if (not words or len(words) > (1 if case_scoped else _LOG_TERM_MAX_WORDS)
+            or any(w in _LOG_TERM_STOP_WORDS for w in words) or all(w in _LOG_TERM_GENERIC for w in words)
+            or _LOG_TERM_OTHER_INTENT_RE.search(text)):
+        return None
+    return (("contains", text[:200]),)
+
+
+def _log_search(question: str, *, case_scoped: bool = False) -> tuple[str, _LogFilter, str | None] | None:
     """``(intent, filter, group field)`` for explicit log-search phrasing, else None.
 
     ``intent`` is ``logs`` (``search_logs``) or ``log_count`` (``log_stats``, for "how
-    many events mention X"). The filter is the searched value: a ``host``/``user``/
-    ``ip``/``rule`` filter when the value is named by its field ("logs for host web-01")
-    or is an IPv4 address, else a ``contains`` text filter. A window or a "by <field>"
-    grouping the question names is taken off the value (the window is read separately);
-    a back-reference ("logs for this case") is not a value, so it is not a log search."""
+    many events mention X"). The filter is the searched value (:func:`_log_term_filter`).
+    A window or a "by <field>" grouping the question names is taken off the value (the
+    window is read separately). The value ends at a comma, "and" or "then": a clause
+    after it may group the count, name a window, add a second field-named value, or ask
+    for more than the search ("then summarise"), which the search answers. None — so
+    the other rules answer — when the question names no value (a back-reference such as
+    "logs for this host"), asks for a named report ("… and build a hunt report"), or
+    goes on to a lookup ("… and look it up"), a case, a campaign or a top-N."""
     intent = "logs"
     match = _LOG_COUNT_RE.match(question)
     if match:
@@ -1140,26 +1246,34 @@ def _log_search(question: str) -> tuple[str, tuple[tuple[str, str], ...], str | 
         match = _LOG_SEARCH_RE.match(question) or _LOG_SEARCH_FOR_RE.match(question)
     if match is None:
         return None
-    term = match.group("term").strip()
-    term = re.sub(r"[?!.]+$", "", term).strip()
-    term = _LOG_TERM_WINDOW_RE.sub("", term).strip()
-    group: str | None = None
-    grouped = _LOG_TERM_GROUP_RE.search(term)
-    if grouped:
-        group = _group_field(f"by {grouped.group(1).lower()}")
-        if group is not None:
-            term = term[:grouped.start()].strip()
-    term = _LOG_TERM_WINDOW_RE.sub("", term).strip().strip("\"'`\u201c\u201d\u2018\u2019").strip()
-    if not term or _LOG_TERM_BACKREF_RE.search(term):
+    template, _headings = _report_request(question.lower())
+    if template not in (None, "custom"):
         return None
-    named = _LOG_TERM_FIELD_RE.match(term)
-    if named:
-        word = named.group("field").lower()
-        fld = "ip" if word.endswith(("ip", "address")) else _LOG_TERM_FIELDS.get(word, "host")
-        return intent, ((fld, named.group("value").strip("\"'`")[:200]),), group
-    if _IPV4_RE.fullmatch(term):
-        return intent, (("ip", term),), group
-    return intent, (("contains", term[:200]),), group
+    head, tail = _log_term_split(match.group("term").strip())
+    head, group = _log_term_strip(head)
+    log_filter: _LogFilter | None
+    if not head or _LOG_WINDOW_ONLY_RE.match(head):
+        # "Show me the logs for today": the window's events, no value to search for.
+        # In the Case Manager chat that question is about the case's own logs.
+        log_filter = None if case_scoped else ()
+    else:
+        log_filter = _log_term_filter(head, case_scoped=case_scoped)
+    if log_filter is None:
+        return None
+    rest = _LOG_TAIL_LEAD_RE.sub("", tail.strip(" ,;")).strip(" ,;")
+    if rest:
+        if _LOG_TAIL_LOOKUP_RE.search(rest) or _LOG_TERM_OTHER_INTENT_RE.search(rest):
+            return None
+        value, rest_group = _log_term_strip(rest)
+        group = group or rest_group
+        if value and not _LOG_WINDOW_ONLY_RE.match(value) and not _LOG_TAIL_VERB_RE.match(value):
+            # A second value joins the search only when it names another field ("host
+            # web-01 and user bob"); "mimikatz and powershell" is not one text search.
+            more = _log_term_filter(value, case_scoped=False)
+            if more is None or more[0][0] == "contains" or more[0][0] in {key for key, _value in log_filter}:
+                return None
+            log_filter = log_filter + more
+    return intent, log_filter, group
 
 
 def classify(question: str, view: PromptView | None = None) -> Ask:
@@ -1212,16 +1326,20 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     case_id = _case_id(q)
     if case_id:
         return ask("case", case_id=case_id)
-    # Explicit log-search phrasing runs a log lookup (wave-6 B5), ahead of the hunt (a
-    # typed IP is a log filter here, not a reputation lookup the analyst did not ask
-    # for) and of the case-scoped default; a how-to question ("can I search logs for
-    # a user?") stays a help question, and failed sign-ins keep their brute-force plan.
-    searched = None if (_HELP_RE.search(low) and not _DATA_ASK_RE.match(low)) else _log_search(q)
+    # Explicit log-search phrasing that names a value runs a log lookup (wave-6 B5),
+    # ahead of the hunt (a typed IP is a log filter here, not a reputation lookup the
+    # analyst did not ask for) and of the case-scoped default; a how-to question ("can
+    # I search logs for a user?") stays a help question, failed sign-ins keep their
+    # brute-force plan, and a reference ("logs for this host", "events for the top
+    # hosts") is left to the rules below (:func:`_log_search`).
+    searched = (None if (_HELP_RE.search(low) and not _DATA_ASK_RE.match(low))
+                else _log_search(q, case_scoped=view.case_scoped))
     if searched is not None:
         intent, log_filter, group = searched
         if any(key == "contains" and _BRUTE_RE.search(value.lower()) for key, value in log_filter):
             return ask("brute")
-        return ask(intent, log_filter=log_filter, field=group)
+        # "Search logs for mimikatz by user" asks for a breakdown: a count by that field.
+        return ask("log_count" if group else intent, log_filter=log_filter, field=group)
     indicator = _indicator(q, low)
     if indicator:
         return ask("hunt", indicator=indicator)
@@ -1732,7 +1850,34 @@ def _ranked(top: Sequence[Mapping[str, Any]], unit: str = "event") -> str:
     return text + (f", then {_join(rest)}" if rest else "")
 
 
+def _filter_words(filters: Iterable[tuple[str, Any]]) -> str:
+    """Log filters in words: searched text as its bare code span ("`sql`"), a field by
+    its noun ("IP `203.0.113.7`", "host `web-01`"), never the raw filter key."""
+    parts: list[str] = []
+    for key, value in filters:
+        if key == "contains":
+            parts.append(_code(value, 60))
+        elif key == "severity_gte":
+            parts.append(f"severity {_count(value)} or higher")
+        elif key == "ids":
+            parts.append(f"the {_plural(value, 'requested event ID')}")
+        else:
+            parts.append(f"{_LOG_FIELD_NOUNS.get(key, key.replace('_', ' '))} {_code(value, 60)}")
+    return _join(parts)
+
+
+def _no_log_events(o: Mapping[str, Any], what: str) -> str:
+    """The zero-match sentence of a log lookup: "No log events match `x` in the last
+    24h (5 of 5 sources answered)." (``what`` empty: no filter, "No log events in …")."""
+    coverage = _coverage_phrase(o)
+    matched = f" match {what}" if what else ""
+    return f"No log events{matched} in the {_window(o)}" + (f" ({coverage})." if coverage else ".")
+
+
 def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
+    """A ``log_stats`` result in words. ``subject`` replaces the filter phrase
+    ("matching `sql`", "for `web-01`"); without it the filters are named in words, and
+    a zero total reads "No log events match …"."""
     o = r.obs
     window = _window(o)
     group_by = [g for g in o.get("group_by") or [] if isinstance(g, str)]
@@ -1745,8 +1890,10 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
     if subject is not None:
         scope = subject
     else:
-        scope = (f"matching {_join([f'{k} {_code(v, 60)}' for k, v in filters.items()])}"
-                 if filters else "")
+        what = _filter_words(filters.items())
+        if not total:
+            return _no_log_events(o, what)
+        scope = f"matching {what}" if what else ""
     lead = f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}in the {window}"
     if coverage:
         lead += f" ({coverage})"
@@ -1761,15 +1908,18 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
 
 
 def _say_search_logs(r: Result, *, subject: str | None = None) -> str:
+    """A ``search_logs`` result in words. ``subject`` names what was searched for;
+    without it the filters are named in words, and a search with no filter counts the
+    window's events ("12 log events in the last 24h")."""
     o = r.obs
     total = _num(o.get("total")) or 0
     coverage = _coverage_phrase(o)
     filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
-    what = subject if subject else (_join([f"{k} {_code(v, 60)}" for k, v in filters.items()]) or "the filters")
+    what = subject or _filter_words(filters.items())
     if not total:
-        return (f"No log events match {what} in the {_window(o)}"
-                + (f" ({coverage})." if coverage else "."))
-    text = f"**{_plural(total, 'log event')}** match {what} in the {_window(o)}"
+        return _no_log_events(o, what)
+    matched = f" match {what}" if what else ""
+    text = f"**{_plural(total, 'log event')}**{matched} in the {_window(o)}"
     text += f" ({coverage})." if coverage else "."
     tops = o.get("top_values") if isinstance(o.get("top_values"), Mapping) else {}
     parts = []
@@ -3079,16 +3229,13 @@ def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
             parts.append(f"{figures[:1].upper()}{figures[1:]}" + (f", {meaning}" if meaning else "") + ".")
         if logs:
             parts.append(_partial_sources(logs.obs))
-    elif ask.intent in ("top", "regroup", "brute", "log_count"):
-        stats = view.ok("log_stats")
-        if stats:
-            figure = _log_figure(stats.obs)
-            parts.extend([f"{figure[:1].upper()}{figure[1:]}.", _partial_sources(stats.obs)])
-    elif ask.intent == "logs":
-        logs = view.ok("search_logs")
-        if logs:
-            figure = _log_figure(logs.obs, "matched the search")
-            parts.extend([f"{figure[:1].upper()}{figure[1:]}.", _partial_sources(logs.obs)])
+    elif ask.intent in ("top", "regroup", "brute", "log_count", "logs"):
+        result = view.ok("search_logs" if ask.intent == "logs" else "log_stats")
+        if result:
+            # An explicit search says it matched; a window's events (no value) just count.
+            searched = ask.intent in ("logs", "log_count") and bool(ask.log_filter)
+            figure = _log_figure(result.obs, "matched the search" if searched else "")
+            parts.extend([f"{figure[:1].upper()}{figure[1:]}.", _partial_sources(result.obs)])
     if not parts:
         for paragraph in final.body[:4]:
             if ("`" in paragraph or paragraph.startswith(("- ", "Recorded", "From the Help"))
@@ -3246,8 +3393,7 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
 
 def _log_subject(ask: Ask) -> str:
     """The searched value in words: "`zzqq`" for text, "host `web-01`" for a field."""
-    return _join([_code(value) if key == "contains" else f"{_LOG_FIELD_NOUNS.get(key, key)} {_code(value)}"
-                  for key, value in ask.log_filter])
+    return _filter_words(ask.log_filter)
 
 
 def _log_follow_ups(view: PromptView, ask: Ask, total: float, field: str | None) -> list[str]:
@@ -3266,8 +3412,9 @@ def _final_logs(view: PromptView, ask: Ask) -> Final | None:
     total = _num(logs.obs.get("total")) or 0
     body = [_say_search_logs(logs, subject=_log_subject(ask) or None)]
     named = next((key for key, _value in ask.log_filter if key in ("user", "host")), None)
+    title = "Matching log events" if ask.log_filter else "Log events"
     return Final(body=body, blocks=_keep(
-        _block(logs, "table", view="table", title="Matching log events") if total else None,
+        _block(logs, "table", view="table", title=title) if total else None,
     ), follow_ups=_log_follow_ups(view, ask, total, named))
 
 
@@ -3279,11 +3426,12 @@ def _final_log_count(view: PromptView, ask: Ask) -> Final | None:
     total = _num(stats.obs.get("total")) or 0
     fld = (stats.obs.get("group_by") or [ask.field or "host"])[0]
     subject = _log_subject(ask)
-    body = [_say_log_stats(stats, subject=f"matching {subject}" if subject else None)]
+    body = [_say_log_stats(stats, subject=f"matching {subject}" if subject else "") if total
+            else _no_log_events(stats.obs, subject)]
     label = _FIELD_LABEL.get(fld, fld)
+    title = f"{'Matching events' if ask.log_filter else 'Events'} by {label} ({_window(stats.obs)})"
     return Final(body=body, blocks=_keep(
-        _block(stats, "categories", view="hbar", title=f"Matching events by {label} ({_window(stats.obs)})")
-        if total else None,
+        _block(stats, "categories", view="hbar", title=title) if total else None,
     ), follow_ups=_log_follow_ups(view, ask, total, fld))
 
 

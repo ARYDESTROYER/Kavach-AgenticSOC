@@ -691,10 +691,12 @@ class ChatEngine:
         # mutates the case decision (#3); a persistence failure never affects the
         # chat response (never drop a response). Compatibility mode keeps writing to
         # a case id it was given without looking the case up (today's behaviour).
-        saved = await self._persist_case_turn(
+        saved, why = await self._persist_case_turn_detail(
             case_id, message, answer, prefs, author=author, cost=cost,
             require_existing=False, can_comment=can_comment_case,
         )
+        # As in agent mode: only a store failure is worth a re-run (SPEC A25).
+        not_saved = make_notice("not_saved", retryable=why == "store_error") if saved is False else None
 
         return ChatResponse(
             answer=answer, table=table, query=query_str, discover=discover,
@@ -704,8 +706,9 @@ class ChatEngine:
             # This identity is attached only after the gateway produced a result.
             # The GatewayError fallback above intentionally leaves it ``None``.
             effective_model=prefs.chat_model.model,
-            notice=make_notice("not_saved") if saved is False else None,
+            notice=not_saved,
             case_saved=saved,
+            case_save_notice=not_saved,
         )
 
     async def _analyse_results(
@@ -2116,17 +2119,22 @@ class _AgentTurn:
     async def _with_case_save(self, response: ChatResponse) -> ChatResponse:
         """Persist a case-scoped answer (:meth:`_persist_case`) and report the outcome
         on the response: ``case_saved`` always carries it (SPEC §4.6, A34 open item),
-        apart from the top notice, and the ``not_saved`` notice is attached only when
-        the answer carries no other notice (a partial, timeout, cap, denied or policy
-        notice outranks it), so clients that read only ``notice`` keep working."""
+        apart from the top notice, with ``case_save_notice`` (the ``not_saved`` notice
+        and whether a re-run can help) whenever it was not saved. The ``not_saved``
+        notice also becomes the top ``notice`` when the answer carries no other one (a
+        partial, timeout, cap, denied or policy notice outranks it), so clients that
+        read only ``notice`` keep working."""
         saved, why = await self._persist_case(response)
         if saved is None:
             return response
         update: dict[str, Any] = {"case_saved": saved}
-        if saved is False and response.notice is None:
-            # "Retry save" can only help when the store failed; a missing grant or
-            # case would fail the same way again.
-            update["notice"] = make_notice("not_saved", retryable=why == "store_error")
+        if saved is False:
+            # "Run again to save" can only help when the store failed; a missing
+            # grant or case would fail the same way again (SPEC A25).
+            notice = make_notice("not_saved", retryable=why == "store_error")
+            update["case_save_notice"] = notice
+            if response.notice is None:
+                update["notice"] = notice
         return response.model_copy(update=update)
 
     async def _persist_case(self, response: ChatResponse) -> tuple[bool | None, str | None]:

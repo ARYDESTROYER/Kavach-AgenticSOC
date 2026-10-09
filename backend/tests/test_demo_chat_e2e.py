@@ -268,7 +268,8 @@ SWEEP = (
     ("Can we see brute force attempts?", "brute"),
     ("Build a hunt report on lateral movement", "pivot"),
     ("Search logs for zzqq-no-such-thing", "logs"),
-    ("How many events mention sql in the last 7 days by host?", "log_count"),
+    # The grouping named after the window is kept (user, not the default host).
+    ("How many events mention sql in the last 7 days by user?", "log_count"),
 )
 
 
@@ -416,8 +417,33 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
     (step,) = _tool_steps(regrouped)
     assert step.tool == "log_stats" and step.status == "ok"
     assert step.params["contains"] == "sql" and step.params["group_by"] in ("user", ["user"])
+    # The re-run names the searched text as written, never the raw filter key.
+    assert re.search(r"\*\*\d+ events?\*\* matching `sql` in the last 7d", regrouped.answer), regrouped.answer
+    assert "contains `" not in regrouped.answer
+    # Nothing matched: the longer window is offered, and its re-run reads the same way.
+    question = "Same for the last 7 days"
+    assert response.follow_ups[0] == question
+    wider = await _turn(demo_state, question, origin="user",
+                        prior=[_prior("Search logs for zzqq-no-such-thing", response, 1)])
+    assert [(s.tool, s.params.get("contains"), s.status) for s in _tool_steps(wider)] == [
+        ("search_logs", "zzqq-no-such-thing", "ok")]
+    assert "No log events match `zzqq-no-such-thing` in the last 7d" in wider.answer, wider.answer
+    assert "contains `" not in wider.answer
     again = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
     assert _shape(again) == _shape(response)                         # deterministic
+
+
+async def test_case_chat_references_to_its_entities_are_case_questions(demo_state) -> None:
+    """Review (wave 6): "Show me the logs for this host" in the Case Manager chat is
+    about the case's own host, never a text search for "this host"."""
+    case_id = "demo-00000539-0004"
+    for question in ("Show me the logs for this host", "Search logs for the attacker IP",
+                     "Show me the events for that user"):
+        response = await _turn(demo_state, question, origin="user", case_id=case_id)
+        tools = [(s.tool, s.params.get("contains"), s.status) for s in _tool_steps(response)]
+        assert ("get_case", None, "ok") in tools, (question, tools)
+        assert not any(t == "search_logs" for t, _contains, _status in tools), (question, tools)
+        assert "No log events match" not in response.answer, (question, response.answer)
 
 
 async def test_a_report_on_a_case_materialises_and_case_manager_reports_do_not(demo_state) -> None:

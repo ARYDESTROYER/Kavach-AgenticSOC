@@ -994,6 +994,21 @@ def test_classifier_ordering_fixes(question: str, intent: str, extra: dict[str, 
     ("Search logs for 203.0.113.7", [("search_logs", {"ip": "203.0.113.7"})]),
     ("How many log events mention zzqq by user?",
      [("log_stats", {"contains": "zzqq", "group_by": ["user"], "top_n": 10})]),
+    # A request for the logs of a window names no value: the window's events, unfiltered.
+    ("Show me the logs for today", [("search_logs", {"time_from": "now-24h"})]),
+    # The value ends where the request goes on; a trailing "please" is not searched.
+    ("Search logs for mimikatz please", [("search_logs", {"contains": "mimikatz"})]),
+    ("search logs for mimikatz, then summarise", [("search_logs", {"contains": "mimikatz"})]),
+    ("Search logs for host web-01 and user bob", [("search_logs", {"host": "web-01", "user": "bob"})]),
+    # A "by <field>" grouping survives a window named before it, and asks for a breakdown.
+    ("How many events mention sql in the last 7 days by user?",
+     [("log_stats", {"contains": "sql", "group_by": ["user"], "top_n": 10, "time_from": "now-7d"})]),
+    ("How many events mention sql by user in the last 7 days?",
+     [("log_stats", {"contains": "sql", "group_by": ["user"], "top_n": 10, "time_from": "now-7d"})]),
+    ("Search logs for mimikatz in the last 7 days by user",
+     [("log_stats", {"contains": "mimikatz", "group_by": ["user"], "top_n": 10, "time_from": "now-7d"})]),
+    ("Find events for host web-01, by user",
+     [("log_stats", {"host": "web-01", "group_by": ["user"], "top_n": 10})]),
 ])
 def test_explicit_log_search_phrasing_plans_a_log_lookup(question: str,
                                                          expected: list[tuple[str, dict[str, Any]]]) -> None:
@@ -1019,6 +1034,67 @@ def test_log_search_classification_leaves_other_intents_alone(question: str, int
 def test_a_back_reference_is_not_searched_as_text() -> None:
     assert classify("Show the logs for this case").log_filter == ()
     assert classify("Show the logs for this case", read_prompt(prompt("x", case_scoped=True))).intent == "case"
+
+
+_CASE_VIEW = read_prompt(prompt("x", case_scoped=True))
+
+
+@pytest.mark.parametrize("question", [
+    "Show me the logs for this host",
+    "Show the logs for the user",
+    "Find events for this IP",
+    "Search logs for the attacker IP",
+    "Show me the logs for the affected host",
+    "Show the logs for these hosts",
+    "Show me the events for that user",
+    "Show me the logs for the related alerts",
+    # Free text of more than one word, or no value at all, is a question about the case.
+    "Search logs for sql injection",
+    "Show me the logs for today",
+])
+def test_case_chat_references_to_the_cases_entities_stay_case_questions(question: str) -> None:
+    ask = classify(question, _CASE_VIEW)
+    assert (ask.intent, ask.log_filter) == ("case", ()), (question, ask.intent, ask.log_filter)
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Search logs for zzqq-no-such-thing", ("logs", (("contains", "zzqq-no-such-thing"),))),
+    ("Show me the logs for host web-01", ("logs", (("host", "web-01"),))),
+    ("Find events for 10.0.0.5", ("logs", (("ip", "10.0.0.5"),))),
+    ("Search logs for \"powershell -enc\"", ("logs", (("contains", "powershell -enc"),))),
+])
+def test_case_chat_still_searches_a_named_value(question: str, expected: tuple[str, Any]) -> None:
+    ask = classify(question, _CASE_VIEW)
+    assert (ask.intent, ask.log_filter) == expected
+
+
+@pytest.mark.parametrize("question,intent", [
+    # References to the conversation's subject name no value to search for.
+    ("Show logs for that host", "fallback"),
+    ("Show logs for that user", "fallback"),
+    ("Search logs for attacker IP", "fallback"),
+    ("Check the logs for anything suspicious", "fallback"),
+    ("Can you search logs for a user?", "fallback"),
+    # The other intents these phrasings had before explicit log search keep them.
+    ("Show logs for the escalated cases", "cases"),
+    ("Show me the events for the top hosts", "top"),
+    ("Find logs for the noisiest host", "top"),
+    ("Show me events about the campaign", "campaigns"),
+    ("List the events about the ransomware case", "cases"),
+    ("Search logs for user bob and build a hunt report", "pivot"),
+    ("Search logs for 203.0.113.7 and look it up", "hunt"),
+    ("Search logs for mimikatz and powershell", "fallback"),
+])
+def test_log_search_takes_only_a_value_and_leaves_other_requests_alone(question: str, intent: str) -> None:
+    ask = classify(question)
+    assert (ask.intent, ask.log_filter) == (intent, ()), (question, ask.intent, ask.log_filter)
+
+
+def test_a_log_search_with_a_report_request_keeps_the_report() -> None:
+    ask = classify("Search logs for mimikatz and build a report")
+    assert (ask.intent, ask.log_filter, ask.report) == ("logs", (("contains", "mimikatz"),), "custom")
+    hunt = classify("Search logs for user bob and build a hunt report")
+    assert (hunt.intent, hunt.report) == ("pivot", "hunt")
 
 
 def test_a_log_search_with_no_match_says_so_without_a_case_search() -> None:
@@ -1047,6 +1123,14 @@ def test_a_log_search_with_matches_shows_the_matching_rows() -> None:
     assert body.startswith("**3 log events** match `mimikatz` in the last 24h") and "`web-01`" in body
     assert header["blocks"] == [{"ref": "t1.a1", "view": "table", "title": "Matching log events"}]
     assert header["follow_ups"][0] == "Break that down by user instead"
+
+
+def test_an_unfiltered_log_request_counts_the_window_without_a_match_phrase() -> None:
+    obs = {"window": "last 24h", "filters": {}, "total": 12, "sources": [{"name": "A", "status": "ok"}],
+           "top_values": {}}
+    msgs = prompt("Show me the logs for today", [call("search_logs", obs, inp={"time_from": "now-24h"})])
+    _header, body = final_of(plan_turn(msgs))
+    assert body.startswith("**12 log events** in the last 24h (") and "match" not in body.split(".")[0]
 
 
 def test_a_log_count_states_the_total_by_the_named_field() -> None:

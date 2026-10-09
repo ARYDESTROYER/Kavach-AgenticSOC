@@ -2870,6 +2870,11 @@ class ChatResponse(BaseModel):
     # turn stopped before it answered). The ``not_saved`` notice is still attached
     # when no other notice exists, so a client that ignores this field keeps working.
     case_saved: bool | None = None
+    # The ``not_saved`` notice whenever ``case_saved`` is False, whatever the top
+    # notice is: its ``retryable`` is True only for a store failure (SPEC A25: a re-run
+    # bills again, so "Run again to save" is offered only when it can help; a missing
+    # grant or case would fail the same way). ``None`` otherwise.
+    case_save_notice: TurnNotice | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2940,6 +2945,11 @@ class ChatResponse(BaseModel):
     def _case_saved(cls, value: Any) -> bool | None:
         # Lenient like the other presentation fields: only a real bool is kept.
         return value if isinstance(value, bool) else None
+
+    @field_validator("case_save_notice", mode="before")
+    @classmethod
+    def _case_save_notice(cls, value: Any) -> Any:
+        return _lenient_model(TurnNotice, value)
 
     @model_validator(mode="after")
     def _cost_matches_usage(self) -> "ChatResponse":

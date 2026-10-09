@@ -1102,6 +1102,10 @@ async def test_case_turn_with_another_notice_still_reports_not_saved(app_state) 
     assert next(s for s in resp.steps if s.kind == "tool").status == "denied"
     assert resp.notice.kind == "denied" and resp.notice.message == NOTICE_MESSAGES["denied"]
     assert resp.case_saved is False and outcome.case_saved is False
+    # The not-saved line keeps its own retry decision under the other notice: a missing
+    # grant would fail the same way again, so a re-run (which bills again) is not offered.
+    assert resp.case_save_notice is not None and resp.case_save_notice.kind == "not_saved"
+    assert resp.case_save_notice.retryable is False
     assert await app_state.case_threads.list_for_case("case-77") == []
     # Without another notice the not-saved notice is still attached (current clients),
     # and its sentence does not repeat the "Not saved" label the client renders.
@@ -1109,14 +1113,16 @@ async def test_case_turn_with_another_notice_still_reports_not_saved(app_state) 
     _, resp, _ = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77",
                            can_comment_case=False)
     assert resp.notice.kind == "not_saved" and resp.case_saved is False
+    assert resp.case_save_notice == resp.notice
     assert resp.notice.message == NOTICE_MESSAGES["not_saved"] == "The answer was not added to the case thread."
     # A saved case answer says so; a Workspace answer has no case outcome at all.
     engine = _case_engine(app_state, FakeGateway([final("Saved.")]))
     _, resp, _ = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77")
-    assert resp.notice is None and resp.case_saved is True
+    assert resp.notice is None and resp.case_saved is True and resp.case_save_notice is None
     _, resp, _ = await run(make_engine(FakeGateway([final()])), "q", prefs, make_ctx(prefs))
-    assert resp.case_saved is None
+    assert resp.case_saved is None and resp.case_save_notice is None
     assert ChatResponse.model_validate({"answer": "x", "case_saved": "no"}).case_saved is None
+    assert ChatResponse.model_validate({"answer": "x", "case_save_notice": "no"}).case_save_notice is None
 
 
 async def test_case_turn_store_error_is_retryable(app_state, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1132,7 +1138,41 @@ async def test_case_turn_store_error_is_retryable(app_state, monkeypatch: pytest
     engine = _case_engine(app_state, FakeGateway([final("x")]))
     _, resp, outcome = await run(engine, "q", prefs, make_ctx(prefs, case_id="case-77"), case_id="case-77")
     assert resp.notice.kind == "not_saved" and resp.notice.retryable is True
+    assert resp.case_saved is False and resp.case_save_notice == resp.notice
     assert outcome.case_saved is False
+    # Under another notice the store failure is still the retryable kind (SPEC A25).
+    engine = _case_engine(app_state, FakeGateway([tool_call("audit_search"), final("Partial view.")]))
+    _, resp, _ = await run(engine, "who touched it?", prefs, make_ctx(prefs, case_id="case-77"),
+                           case_id="case-77")
+    assert resp.notice.kind == "denied" and resp.case_saved is False
+    assert resp.case_save_notice.kind == "not_saved" and resp.case_save_notice.retryable is True
+
+
+@pytest.mark.parametrize("error,kind", [(BudgetBlocked("budget"), "budget"), (BreakerOpen("breaker"), "breaker")])
+async def test_case_scoped_help_fallback_reports_whether_it_was_saved(app_state, error: GatewayError,
+                                                                     kind: str) -> None:
+    """§5.4.1 in the Case Manager chat: the $0 Help Center answer keeps the reason AI is
+    unavailable on top, and still says whether it reached the case thread."""
+    await _seed_case(app_state)
+    prefs = make_prefs()
+
+    def engine() -> ChatEngine:
+        built = _case_engine(app_state, FakeGateway([error]))
+        built.app_knowledge = FakeKnowledge(FallbackAnswer(answer="From the Help Center: Settings › Models."))
+        return built
+
+    _, resp, outcome = await run(engine(), "How do I add a model?", prefs, make_ctx(prefs, case_id="case-77"),
+                                 case_id="case-77", can_comment_case=False)
+    assert resp.answer_kind == "product_help" and resp.usage.calls == 0 and resp.notice.kind == kind
+    assert resp.case_saved is False and outcome.case_saved is False
+    assert resp.case_save_notice.kind == "not_saved" and resp.case_save_notice.retryable is False
+    assert await app_state.case_threads.list_for_case("case-77") == []
+    _, resp, outcome = await run(engine(), "How do I add a model?", prefs, make_ctx(prefs, case_id="case-77"),
+                                 case_id="case-77")
+    assert resp.notice.kind == kind and resp.case_saved is True and resp.case_save_notice is None
+    thread = await app_state.case_threads.list_for_case("case-77")
+    assert [m.author_type for m in thread] == ["human", "ai"]
+    assert thread[1].body == "From the Help Center: Settings › Models."
 
 
 async def test_case_turn_unconfirmed_backend_write_is_a_retryable_not_saved(app_state, monkeypatch) -> None:
@@ -1213,6 +1253,26 @@ async def test_compatibility_mode_is_unchanged(app_state, mock_provider) -> None
     assert resp.answer == "Hello." and resp.steps == [] and resp.usage is None and resp.turn_id is None
     assert outcome.response is resp
     assert chat_module._agg_message([], "0 hits").startswith("Results of the es_query are summarised below")
+
+
+async def test_compatibility_mode_case_turn_reports_whether_it_was_saved(app_state, mock_provider) -> None:
+    """§4.7: a compatibility-mode case answer carries the same save outcome as agent
+    mode: ``case_saved`` and, when not saved, the ``not_saved`` notice (on top here,
+    since nothing else outranks it) with its retry decision."""
+    await _seed_case(app_state)
+    mock_provider.push("chat", json.dumps({"answer": "Not without the grant.", "needs_query": False}))
+    resp = await app_state.chat_engine.chat("summarise", app_state.prefs, case_id="case-77", can_comment_case=False)
+    assert resp.case_saved is False
+    assert resp.notice.kind == "not_saved" and resp.notice.retryable is False
+    assert resp.case_save_notice == resp.notice
+    assert await app_state.case_threads.list_for_case("case-77") == []
+    mock_provider.push("chat", json.dumps({"answer": "Looks benign.", "needs_query": False}))
+    resp = await app_state.chat_engine.chat("summarise", app_state.prefs, case_id="case-77")
+    assert resp.case_saved is True and resp.notice is None and resp.case_save_notice is None
+    assert [m.author_type for m in await app_state.case_threads.list_for_case("case-77")] == ["human", "ai"]
+    mock_provider.push("chat", json.dumps({"answer": "Hello.", "needs_query": False}))
+    resp = await app_state.chat_engine.chat("hi", app_state.prefs)
+    assert resp.case_saved is None and resp.case_save_notice is None
 
 
 async def test_compatibility_memory_carve_out_gives_a_truthful_reason(app_state, mock_provider) -> None:
