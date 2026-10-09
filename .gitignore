@@ -6,6 +6,20 @@
 *.pem
 certs/
 
+# ---- Local AD-attack replay data + tooling (not shipped) ----
+# Anchored to the repo root: an unanchored `scripts/` / `rules/` would also hide
+# new files in tracked dirs like webui/scripts/ and webui/src/soc/components/rules/.
+/rules/
+/scripts/replay/
+/scripts/simulate_attack.py
+/scripts/sync_runbooks.py
+/EVTX-ATTACK-SAMPLES/
+/ingestion-scripts-/
+/Security-Datasets/
+/cef_batch.txt
+backend/.agentic/
+backend/app/runbooks/.synced-manifest.json
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
