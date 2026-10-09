@@ -217,6 +217,16 @@ function NotSavedLine({ notice, onRetry, disabled }: { notice: TurnNotice; onRet
   );
 }
 
+/**
+ * The case-thread save failure, if any. The server carries it in `case_save_notice`
+ * apart from the top notice (a partial or denied answer can also be unsaved); older
+ * servers only put it in `notice` when nothing else was there.
+ */
+function notSavedNotice(response: ChatResponse): TurnNotice | null {
+  if (response.case_save_notice?.kind === 'not_saved') return response.case_save_notice;
+  return response.notice?.kind === 'not_saved' ? response.notice : null;
+}
+
 export interface MemoryLineProps {
   response: ChatResponse;
   onRetrySave?: () => void;
@@ -239,11 +249,10 @@ function MemoryChange({ response }: { response: ChatResponse }) {
  * saved can still carry a memory proposal; neither hides the other.
  */
 export function MemoryLine({ response, onRetrySave, retryDisabled }: MemoryLineProps) {
+  const notSaved = notSavedNotice(response);
   return (
     <>
-      {response.notice?.kind === 'not_saved' ? (
-        <NotSavedLine notice={response.notice} onRetry={onRetrySave} disabled={retryDisabled} />
-      ) : null}
+      {notSaved ? <NotSavedLine notice={notSaved} onRetry={onRetrySave} disabled={retryDisabled} /> : null}
       <MemoryChange response={response} />
     </>
   );
@@ -252,7 +261,7 @@ export function MemoryLine({ response, onRetrySave, retryDisabled }: MemoryLineP
 /** Whether {@link MemoryLine} renders anything for this response. */
 export function hasMemoryLine(response: ChatResponse): boolean {
   return (
-    response.notice?.kind === 'not_saved' ||
+    notSavedNotice(response) !== null ||
     !!response.memory_proposal ||
     !!response.memory_suggestion?.text ||
     !!response.memory_action

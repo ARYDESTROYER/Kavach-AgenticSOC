@@ -663,6 +663,10 @@ export function normaliseChatResponse(raw: unknown): ChatResponse | null {
   out.turn_id = optId(raw.turn_id);
   out.message_id = optId(raw.message_id);
   out.memory_proposal = normaliseMemoryProposal(raw.memory_proposal);
+  // Case turns: the thread-save outcome travels apart from the top notice (SPEC A25),
+  // so a partial or denied case answer can still say it was not saved.
+  out.case_saved = typeof raw.case_saved === 'boolean' ? raw.case_saved : null;
+  out.case_save_notice = normaliseNotice(raw.case_save_notice);
   out.cost = out.usage ? out.usage.cost : amount(raw.cost, 0);
   return out;
 }

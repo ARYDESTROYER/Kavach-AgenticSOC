@@ -411,6 +411,20 @@ describe('Message — notices and failures', () => {
     expect(screen.queryByRole('button', { name: 'Run again to save' })).toBeNull();
   });
 
+  it('shows the not-saved line from case_save_notice when another notice holds the top slot', () => {
+    renderMessage({
+      item: assistantItem({
+        response: response({
+          notice: { kind: 'denied', message: 'Some lookups were not run because they need permissions you do not have.', retryable: false },
+          case_saved: false,
+          case_save_notice: { kind: 'not_saved', message: 'The answer was not added to the case thread.', retryable: true },
+        }),
+      }),
+    });
+    expect(screen.getByText('The answer was not added to the case thread.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Run again to save' })).toBeInTheDocument();
+  });
+
   it('shows a not-saved line and a memory proposal on the same turn', () => {
     renderMessage({
       item: assistantItem({

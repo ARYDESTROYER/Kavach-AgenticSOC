@@ -2950,6 +2950,10 @@ export interface ChatResponse {
   message_id?: string | null;
   /** A model-proposed memory change awaiting human confirmation (`memory:manage`). */
   memory_proposal?: MemoryProposal | null;
+  /** Case turns only: whether the answer reached the case thread (null = not a case turn). */
+  case_saved?: boolean | null;
+  /** The `not_saved` notice whenever `case_saved` is false, whatever the top notice is. */
+  case_save_notice?: TurnNotice | null;
 }
 
 // --------------------------------------------------------------------------- //

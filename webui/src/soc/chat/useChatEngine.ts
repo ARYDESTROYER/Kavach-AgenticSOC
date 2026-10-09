@@ -519,7 +519,8 @@ export function retriesWithSameKey(item: Pick<ChatAssistantItem, 'status' | 'res
   if (item.status === 'error') return true;
   if (item.status !== 'done' || !item.response) return false;
   if (isUnsavedTurn(item.response)) return true;
-  const notice = item.response.notice;
+  // The save outcome may travel apart from the top notice (case_save_notice, SPEC A25).
+  const notice = item.response.case_save_notice?.kind === 'not_saved' ? item.response.case_save_notice : item.response.notice;
   return notice?.kind === 'not_saved' && notice.retryable === true;
 }
 

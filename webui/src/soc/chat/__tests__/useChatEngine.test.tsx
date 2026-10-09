@@ -500,6 +500,33 @@ describe('useChatEngine — transports, retries and origins', () => {
     expect(result.current.items).toHaveLength(2);
   });
 
+  it('a retryable case_save_notice keeps the same key even under another top notice', () => {
+    const base = {
+      status: 'done' as const,
+      request: { message: 'Summarise this case', case_id: 'case-7', idempotency_key: 'k-1' } as never,
+    };
+    const resp = (extra: Record<string, unknown>) =>
+      ({ answer: 'Two hosts touched.', message_id: null, usage: { calls: 1, total_tokens: 900, cost: 0.002 }, ...extra }) as never;
+    expect(
+      retriesWithSameKey({
+        ...base,
+        response: resp({
+          notice: { kind: 'denied', message: 'Denied.', retryable: false },
+          case_save_notice: { kind: 'not_saved', message: 'The answer was not added to the case thread.', retryable: true },
+        }),
+      }),
+    ).toBe(true);
+    expect(
+      retriesWithSameKey({
+        ...base,
+        response: resp({
+          notice: { kind: 'denied', message: 'Denied.', retryable: false },
+          case_save_notice: { kind: 'not_saved', message: 'The answer was not added to the case thread.', retryable: false },
+        }),
+      }),
+    ).toBe(false);
+  });
+
   it('a non-retryable not_saved answer is asked again with a NEW key', async () => {
     const { result } = await mountEngine({ caseId: 'case-7' });
     act(() => {
