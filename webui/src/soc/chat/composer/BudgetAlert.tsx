@@ -4,8 +4,11 @@
  * `/chat/context` says the AI budget (daily or monthly) is approaching or reached.
  * The copy never names the window: either one can be the limit that was hit.
  *
- * - approaching: a calm warning with the numbers when the caller may see them;
- *   dismissible for this session of the page (it returns if the state changes).
+ * - approaching: a calm warning; dismissible for this session of the page (it returns
+ *   if the state changes).
+ * - Today's figures ("Today: $x of $y used.") appear only when the caller may see them
+ *   AND the daily window alone explains the state; otherwise the monthly limit drove it
+ *   and the figures are left out.
  * - reached + `on_exceed: block`: not dismissible. Send stays enabled
  *   ({@link budgetPausesAnswers}): AI answers are paused until the budget resets, and
  *   product questions are still answered from the Help Center at no cost.
@@ -22,7 +25,7 @@ import type { ChatBudgetState, ChatContextInfo } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { useAnnouncer } from '@/soc/components/announcer';
-import { budgetMeterValue, budgetPausesAnswers, formatMoney } from './format';
+import { budgetMeterValue, budgetPausesAnswers, formatMoney, type BudgetMeterValue } from './format';
 
 export { budgetPausesAnswers } from './format';
 
@@ -38,18 +41,31 @@ interface AlertCopy {
   dismissible: boolean;
 }
 
+/**
+ * Today's spend explains the state when the daily window alone would set it: at or past
+ * the soft-warn share for "approaching", at or past the limit for "reached". Mirrors the
+ * gate's bands (engine/budget.py `_window_status`: the fraction rounded to 4 places, and
+ * a soft-warn share of 0 read as 0.8).
+ */
+function todayExplains(state: ChatBudgetState, meter: BudgetMeterValue, softWarn: number | undefined): boolean {
+  const fraction = Math.round((meter.spent / meter.limit) * 10_000) / 10_000;
+  if (state === 'reached') return fraction >= 1;
+  return fraction >= (softWarn || 0.8);
+}
+
 /** The alert's copy for a context, or null when no alert is due. */
 export function budgetAlertCopy(context: ChatContextInfo | null): AlertCopy | null {
   const state = context?.budget_state;
   if (!context || !state || state === 'ok') return null;
   const meter = budgetMeterValue(context);
-  const sim = meter?.simulated ? ' (simulated)' : '';
-  // The ring's figures are today's spend against the daily limit: say so, since the
-  // limit that was hit may be the monthly one.
-  const numbers = meter ? ` Today: ${formatMoney(meter.spent)} of ${formatMoney(meter.limit)} used${sim}.` : '';
+  // The ring's figures are today's spend against the daily limit, labelled "Today",
+  // and shown only when they explain the state: the limit that was hit may be the
+  // monthly one, and "used up … $2.00 of $10.00 used" would read as a contradiction.
+  const lead = meter && todayExplains(state, meter, context.budget?.soft_warn_pct)
+    ? `Today: ${formatMoney(meter.spent)} of ${formatMoney(meter.limit)} used${meter.simulated ? ' (simulated)' : ''}. `
+    : '';
   const shared = 'Chat shares this budget with automatic investigations.';
   const help = 'Questions about this app are still answered from the Help Center at no cost.';
-  const lead = numbers ? `${numbers.trim()} ` : '';
   if (state === 'approaching') {
     return {
       tone: 'warning',
@@ -62,7 +78,7 @@ export function budgetAlertCopy(context: ChatContextInfo | null): AlertCopy | nu
     return {
       tone: 'critical',
       title: 'The AI budget is used up.',
-      body: `${lead}AI answers are paused until the budget resets or an administrator raises it. ${help} New investigations route to Needs human.`,
+      body: `${lead}AI answers are paused until the budget resets. ${help}`,
       dismissible: false,
     };
   }

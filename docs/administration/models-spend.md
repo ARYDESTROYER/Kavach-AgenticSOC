@@ -138,7 +138,8 @@ provider-side budgets and alerts as the final financial backstop.
 
 Workspace and Case Manager chat share this budget. At the soft limit the chat composer
 shows one alert. When a blocking daily or monthly limit is reached, the alert says AI
-answers are paused until the budget resets, and **Send** stays available to every user,
+answers are paused until the budget resets ("may be paused" for users without
+`models:read`, who cannot see the budget policy), and **Send** stays available to every user,
 whatever their permissions: a product question is answered at no cost from the Help
 Center, and any other question is refused with a budget notice before any model call.
 Each chat question is also bounded by

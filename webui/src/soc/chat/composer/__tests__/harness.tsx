@@ -48,6 +48,8 @@ export interface HarnessProps extends Omit<ComposerProps, 'engine' | 'context'> 
   model?: string | null;
   scopes?: ChatScope[];
   streamMode?: ChatStreamMode;
+  /** The engine's initial time range (a reopened thread's, or a custom one). */
+  timeRange?: ChatTimeRange | null;
   handleRef?: React.Ref<ComposerHandle>;
   /** Whether `send` reports success (the engine refuses while blocked). */
   sendResult?: boolean;
@@ -69,6 +71,7 @@ export function Harness(props: HarnessProps) {
     sendResult = true,
     controlledDraft,
     onDraftChange,
+    timeRange: initialTimeRange = null,
     ...rest
   } = props;
   const [localDraft, setLocalDraft] = React.useState(props.draft ?? '');
@@ -80,7 +83,7 @@ export function Harness(props: HarnessProps) {
   const [scopes, setScopes] = React.useState<ChatScope[]>(props.scopes ?? []);
   const [model, setModel] = React.useState<string | null>(props.model ?? null);
   const [sourceId, setSourceId] = React.useState<string | null>(null);
-  const [timeRange, setTimeRange] = React.useState<ChatTimeRange | null>(null);
+  const [timeRange, setTimeRange] = React.useState<ChatTimeRange | null>(initialTimeRange);
   const [streamMode, setStreamMode] = React.useState<ChatStreamMode>(props.streamMode ?? 'steps');
 
   const engine: ChatEngine = {

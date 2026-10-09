@@ -1,7 +1,8 @@
 /**
  * BudgetAlert (SPEC §8, §10.3, §10.9): at most one alert above the composer for
- * approaching / reached, window-neutral honest copy per `on_exceed`, numbers only when
- * the context carries them, dismissible only while AI answers still run, never a live
+ * approaching / reached, window-neutral honest copy per `on_exceed`, today's numbers only
+ * when the context carries them and they explain the state, dismissible only while AI
+ * answers still run, never a live
  * region, and one announcement per threshold crossing through the shell announcer.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -34,10 +35,16 @@ describe('budgetAlertCopy', () => {
     expect(approaching?.body).toContain('Today: $8.50 of $10.00 used.');
 
     // Blocking: AI answers pause, product questions still get the $0 Help Center answer.
+    // Short: no administrator or investigations note (that lives in the meter's hover card).
     const blocked = budgetAlertCopy(makeContext({ budget_state: 'reached', budget }));
     expect(blocked).toMatchObject({ tone: 'critical', dismissible: false, title: 'The AI budget is used up.' });
-    expect(blocked?.body).toContain('AI answers are paused until the budget resets');
-    expect(blocked?.body).toContain('Questions about this app are still answered from the Help Center at no cost.');
+    expect(blocked?.body).toBe(
+      'AI answers are paused until the budget resets. Questions about this app are still answered from the Help Center at no cost.',
+    );
+    const blockedToday = budgetAlertCopy(makeContext({ budget_state: 'reached', budget, spent_today: 10.25 }));
+    expect(blockedToday?.body).toBe(
+      'Today: $10.25 of $10.00 used. AI answers are paused until the budget resets. Questions about this app are still answered from the Help Center at no cost.',
+    );
 
     const warnOnly = budgetAlertCopy(makeContext({ budget_state: 'reached', budget: { ...budget, on_exceed: 'warn' } }));
     expect(warnOnly).toMatchObject({ tone: 'warning', dismissible: true });
@@ -51,10 +58,28 @@ describe('budgetAlertCopy', () => {
     );
   });
 
+  it('shows today\'s figures only when they explain the state (the monthly limit may be the one hit)', () => {
+    // Reached on the monthly window while today's spend is low: no contradictory figures.
+    const monthlyReached = budgetAlertCopy(makeContext({ budget_state: 'reached', budget, spent_today: 2 }));
+    expect(monthlyReached?.title).toBe('The AI budget is used up.');
+    expect(monthlyReached?.body).not.toContain('Today:');
+    expect(monthlyReached?.body).not.toContain('$2.00');
+    const monthlyWarnOnly = budgetAlertCopy(
+      makeContext({ budget_state: 'reached', budget: { ...budget, on_exceed: 'warn' }, spent_today: 2 }),
+    );
+    expect(monthlyWarnOnly?.body).toBe('Questions still run because the budget is set to warn only.');
+    // Approaching on the monthly window: today at 30% does not explain it.
+    const monthlyApproaching = budgetAlertCopy(makeContext({ budget_state: 'approaching', budget, spent_today: 3 }));
+    expect(monthlyApproaching?.body).toBe('Chat shares this budget with automatic investigations.');
+    // At the soft-warn share exactly, today's figures do explain it.
+    const dailyApproaching = budgetAlertCopy(makeContext({ budget_state: 'approaching', budget, spent_today: 8 }));
+    expect(dailyApproaching?.body).toBe('Today: $8.00 of $10.00 used. Chat shares this budget with automatic investigations.');
+  });
+
   it('never names a daily or monthly window in its wording', () => {
     const states = [
       makeContext({ budget_state: 'approaching', budget, spent_today: 8.5 }),
-      makeContext({ budget_state: 'reached', budget }),
+      makeContext({ budget_state: 'reached', budget, spent_today: 10 }),
       makeContext({ budget_state: 'reached', budget: { ...budget, on_exceed: 'warn' } }),
       makeContext({ budget_state: 'reached', budget: null }),
     ];

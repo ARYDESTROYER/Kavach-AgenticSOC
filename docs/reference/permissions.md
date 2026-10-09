@@ -99,8 +99,8 @@ so a role sees the same data through chat as through the console:
 A few chat features have their own gates:
 
 - choosing a model other than the default, and seeing money and budget figures, need
-  `models:read`; today's spend also needs `cost:view`. A used-up blocking daily or
-  monthly budget does not depend on these: Send stays available to everyone, a product
+  `models:read`; today's spend also needs `cost:view`. When a blocking daily or monthly
+  budget is used up, Send stays available whatever these permissions: a product
   question is answered from the Help Center at no cost, and any other question gets the
   budget notice;
 - posting a case-chat question and its answer text to the case thread, where every

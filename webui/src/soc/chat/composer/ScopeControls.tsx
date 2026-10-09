@@ -119,10 +119,11 @@ function ScopeEditor({
           options={TIME_PRESETS.map((p) => ({ value: p.id, label: p.id }))}
         />
         <p className="mt-1.5 text-muted-foreground">
-          {/* No range: the 24 h default, which a question may change. A chosen range is an
-              outer bound a question can only narrow (SPEC §3.1). */}
+          {/* No range: the 24 h default, which a question may change (SPEC §3.1). A chosen
+              range, an explicit "now-24h" included, is an outer bound a question can only
+              narrow: tool windows are clamped into it (§4.8.4, chat_tools/common.resolve_window). */}
           {!target.timeRange
-            ? `${(preset ?? TIME_PRESETS[1]).label}, unless your question names another window.`
+            ? `${TIME_PRESETS[1].label}, unless your question names another window.`
             : `${preset ? preset.label : timeRangeLongLabel(target.timeRange)}. Questions can narrow this range, not widen it.`}
         </p>
       </div>

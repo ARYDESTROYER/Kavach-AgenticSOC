@@ -178,7 +178,8 @@ Every block has **Add to report** and a `⋯` menu:
 A table shows ten rows inline, and **View all** opens the rest. A lookup that returns
 no rows adds no empty chart or table; the answer says so in words. A count of zero is
 still a figure and is shown, and a duration of zero reads in its unit, such as "0 min";
-a duration under one second reads "< 1 min". You can also ask for a
+a duration measured in minutes or hours that is under one second reads "< 1 min". You
+can also ask for a
 different view in words, such as "show that as a donut" or "now by host": the assistant
 reuses the earlier lookup or its stored result.
 
@@ -220,12 +221,13 @@ Chat shows token use and cost before, during, and after each question.
 - **For the conversation:** the toolbar shows the running total.
 
 Chat shares the AI budget, daily and monthly, with automatic investigations. When
-either budget is close, one alert appears above the composer. When one is used up and
-set to block spending, the alert says AI answers are paused until the budget resets or
-an administrator raises it, and **Send** stays available to everyone: a question about
-the product is still answered from the Help Center at no cost, and any other question
-gets a notice that the AI budget limit has been reached, without a model call. Without
-the `models:read` permission the composer cannot tell whether the budget blocks, so the
+either budget is close, one alert appears above the composer; it includes today's spend
+when you may see it and the daily budget is the one that is close or used up. When a
+budget is used up and set to block spending, the alert says AI answers are paused until
+the budget resets, and **Send** stays available to everyone: a question about the
+product is still answered from the Help Center at no cost, and any other question gets
+a notice that the AI budget limit has been reached, without a model call. Without the
+`models:read` permission the composer cannot tell whether the budget blocks, so the
 alert says AI answers may be paused.
 
 When the budget is set to warn only, questions keep running. Money and budget figures

@@ -342,6 +342,29 @@ describe('Composer — @ scopes and the scope chip', () => {
     expect(screen.getByRole('button', { name: /^Scope: Elastic prod/ })).toHaveTextContent('Elastic prod · 24h');
   });
 
+  it('reads a custom absolute range and an explicit now-24h as outer bounds a question can only narrow', async () => {
+    const custom = setup({ timeRange: { from: '2026-10-01T00:00:00Z', to: '2026-10-02T00:00:00Z' } });
+    await custom.user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
+    let dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    expect(
+      within(dialog).getByText(
+        'From 2026-10-01T00:00:00Z to 2026-10-02T00:00:00Z. Questions can narrow this range, not widen it.',
+      ),
+    ).toBeInTheDocument();
+    // No preset matches, so no time segment is selected.
+    for (const id of ['1h', '24h', '7d', '30d', '90d']) {
+      expect(within(dialog).getByRole('radio', { name: id })).not.toBeChecked();
+    }
+    custom.view.unmount();
+
+    // An explicit range equal to the default is still a chosen range, so it clamps.
+    const explicit = setup({ timeRange: { from: 'now-24h' } });
+    await explicit.user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
+    dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    expect(within(dialog).getByText('Last 24 hours. Questions can narrow this range, not widen it.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/unless your question names another window/)).toBeNull();
+  });
+
   it('says why a source cannot be chosen without sources:read', async () => {
     stubServer({ sourcesStatus: 403 });
     const user = userEvent.setup();

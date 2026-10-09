@@ -781,12 +781,12 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                     className="h-7"
                     disabled={summaryBusy}
                     onClick={() => void generate()}
-                    aria-describedby={estimateText ? estimateId : undefined}
+                    aria-describedby={estimateText && !summaryBusy ? estimateId : undefined}
                   >
                     <RefreshCw aria-hidden className={cn(summaryBusy && 'animate-spin motion-reduce:animate-none')} />
                     Regenerate
                   </Button>
-                  {estimateCaption}
+                  {summaryBusy ? null : estimateCaption}
                 </div>
               ) : null}
             </div>

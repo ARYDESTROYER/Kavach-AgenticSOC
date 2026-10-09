@@ -208,14 +208,29 @@ describe('ReportPanel', () => {
   it('marks a summary out of date when the report moved on and regenerates it', async () => {
     const user = userEvent.setup();
     // Fixture: based_on_version 4 < version 5.
-    api.generateReportSummary.mockResolvedValue({
-      report: withVersion(sampleReport(), 6, { summary: { ...sampleReport().summary!, based_on_version: 6 } }),
-      summary: null,
-    });
+    let finish: (value: unknown) => void = () => {};
+    api.generateReportSummary.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
     show();
     const stale = await screen.findByTestId('report-summary-stale');
     expect(stale).toHaveTextContent('Out of date');
-    await user.click(within(stale).getByRole('button', { name: /Regenerate/ }));
+    const regenerate = within(stale).getByRole('button', { name: /Regenerate/ });
+    // Regenerate carries the dry-run estimate like Generate does …
+    await waitFor(() => expect(within(stale).getByTestId('report-summary-estimate')).toHaveTextContent('≈ 1.4k tokens'));
+    expect(regenerate).toHaveAccessibleDescription('≈ 1.4k tokens · ≈ $0.0010');
+    await user.click(regenerate);
+    // … and hides it while the summary is written.
+    await waitFor(() => expect(screen.queryByTestId('report-summary-estimate')).toBeNull());
+    expect(regenerate).not.toHaveAccessibleDescription();
+    await act(async () => {
+      finish({
+        report: withVersion(sampleReport(), 6, { summary: { ...sampleReport().summary!, based_on_version: 6 } }),
+        summary: null,
+      });
+    });
     await waitFor(() => expect(screen.queryByTestId('report-summary-stale')).toBeNull());
   });
 
