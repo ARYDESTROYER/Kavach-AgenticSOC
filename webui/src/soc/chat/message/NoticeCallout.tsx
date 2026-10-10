@@ -39,6 +39,9 @@ const NOTICE_TITLE: Record<TurnNoticeKind, string> = {
   cancelled: 'Stopped',
   unsupported: 'Not something this assistant can do',
   not_saved: 'Not saved',
+  limited: 'Answered with what chat can read',
+  stopped_repeating: 'Stopped repeating the same lookup',
+  compacted: 'Earlier messages were summarised',
 };
 
 const NOTICE_TONE: Record<TurnNoticeKind, Tone> = {
@@ -52,6 +55,9 @@ const NOTICE_TONE: Record<TurnNoticeKind, Tone> = {
   cancelled: 'neutral',
   unsupported: 'info',
   not_saved: 'warning',
+  limited: 'info',
+  stopped_repeating: 'info',
+  compacted: 'neutral',
 };
 
 const TONE_CLASS: Record<Tone, { box: string; icon: string; Icon: React.ComponentType<{ className?: string }> }> = {

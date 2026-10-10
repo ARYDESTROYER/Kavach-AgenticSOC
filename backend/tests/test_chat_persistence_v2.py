@@ -621,13 +621,19 @@ def test_stream_turn_persists_origin_time_range_and_totals() -> None:
 def test_saved_chat_prompts_round_trip_through_personal_prefs() -> None:
     with _client() as client:
         prompts = [{"id": "p1", "title": "Morning", "text": "Write the shift brief for the last 24h."}]
+        # Round 12 prompt library: category and favorite are additive with defaults.
+        expected = [{**prompts[0], "category": None, "favorite": False}]
         saved = client.put("/api/prefs/user", json={"chat_prompts": prompts})
         assert saved.status_code == 200, saved.text
-        assert saved.json()["chat_prompts"] == prompts
-        assert client.get("/api/prefs/user").json()["chat_prompts"] == prompts
+        assert saved.json()["chat_prompts"] == expected
+        assert client.get("/api/prefs/user").json()["chat_prompts"] == expected
         # Other personal prefs are untouched by a prompts-only patch.
         client.put("/api/prefs/user", json={"theme_mode": "dark"})
-        assert client.get("/api/prefs/user").json()["chat_prompts"] == prompts
+        assert client.get("/api/prefs/user").json()["chat_prompts"] == expected
+        # Category and favorite round-trip (Round 12, SPEC §3.1).
+        library = [{"id": "p2", "title": "Hunt", "text": "Hunt {host} for the last week.",
+                    "category": "hunt", "favorite": True}]
+        assert client.put("/api/prefs/user", json={"chat_prompts": library}).json()["chat_prompts"] == library
         too_many = [{"id": f"p{i}", "title": "t", "text": "x"} for i in range(51)]
         assert client.put("/api/prefs/user", json={"chat_prompts": too_many}).status_code == 422
         bad_id = [{"id": "bad id!", "title": "t", "text": "x"}]

@@ -41,6 +41,10 @@ export const TEMPLATE_LABEL: Readonly<Record<ReportTemplateName, string>> = {
   shift: 'Shift handoff',
   posture: 'Posture review',
   custom: 'Custom',
+  executive: 'Executive summary',
+  monthly: 'Monthly SOC report',
+  infographic: 'Infographic',
+  investigation_brief: 'Investigation brief',
 };
 
 /** The order the template picker offers. */

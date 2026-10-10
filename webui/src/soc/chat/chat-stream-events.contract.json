@@ -35,7 +35,9 @@
     "follow_up",
     "starter",
     "command",
-    "continue"
+    "continue",
+    "clarify",
+    "retry_step"
   ],
   "scopes": [
     "logs",
@@ -79,7 +81,10 @@
     "timeout",
     "cancelled",
     "unsupported",
-    "not_saved"
+    "not_saved",
+    "limited",
+    "stopped_repeating",
+    "compacted"
   ],
   "citation_kinds": [
     "doc",
@@ -107,7 +112,11 @@
     "ioc",
     "shift",
     "posture",
-    "custom"
+    "custom",
+    "executive",
+    "monthly",
+    "infographic",
+    "investigation_brief"
   ],
   "report_item_kinds": [
     "block",

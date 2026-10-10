@@ -2869,11 +2869,19 @@ export interface ChatConversationSummary {
   total_tokens?: number | null;
   total_cost?: number | null;
   usage_turns?: number | null;
+  /** Round 12 (SPEC D13): live state for the history rail and the nav indicator. */
+  status?: ChatConversationStatus;
+  /** An answer arrived that the owner has not opened yet. */
+  unread?: boolean;
 }
+
+export type ChatConversationStatus = 'idle' | 'running' | 'needs_input' | 'failed';
 
 /** Full per-user Workspace conversation returned when a rail row is opened. */
 export interface ChatConversation extends ChatConversationSummary {
   messages: ChatConversationMessage[];
+  /** Round 12 (SPEC D4): newest message id folded into the stored conversation summary. */
+  summary_covers_through?: string | null;
 }
 
 export interface ChatConversationsResponse {
@@ -2967,6 +2975,55 @@ export interface ChatResponse {
   case_saved?: boolean | null;
   /** The `not_saved` notice whenever `case_saved` is false, whatever the top notice is. */
   case_save_notice?: TurnNotice | null;
+  /** Round 12 (SPEC D10): a clarifying question instead of a guess. Model text: render as text. */
+  clarify?: ChatClarify | null;
+  /** Round 12 (SPEC D11): the report the server saved from this answer. */
+  saved_report?: ChatSavedReport | null;
+  /** Round 12 (SPEC D3): continuation steps used for the final answer. */
+  continued?: number;
+  /** Round 12 (SPEC D4): earlier context was summarised in this turn. */
+  compacted?: boolean;
+}
+
+/** Round 12 (SPEC §3.1). Options are model-authored: render as untrusted text (#9). */
+export interface ChatClarify {
+  /** ≤ 200 characters. */
+  question: string;
+  /** ≤ 4 options, each ≤ 80 characters. */
+  options: string[];
+  allow_custom: boolean;
+}
+
+/** Round 12 (SPEC D11): created by the server from the persisted message. */
+export interface ChatSavedReport {
+  id: string;
+  title: string;
+  items: number;
+}
+
+/** `GET /api/chat/turns/active` (SPEC D13). `label` is an engine template. */
+export interface ChatActiveTurn {
+  turn_id: string;
+  conversation_id?: string | null;
+  case_id?: string | null;
+  started_at: string;
+  label: string;
+  lookups: number;
+  tokens: number;
+  status: 'running' | 'needs_input';
+}
+
+export type ChatFeedbackRating = 'up' | 'down';
+export type ChatFeedbackReason = 'wrong' | 'incomplete' | 'slow' | 'other';
+
+/** `POST /api/chat/feedback` (SPEC §3.2). Stored and audited; never used for training. */
+export interface ChatFeedbackRequest {
+  conversation_id: string;
+  message_id: string;
+  rating: ChatFeedbackRating;
+  reason?: ChatFeedbackReason | null;
+  /** ≤ 1000 characters. */
+  comment?: string;
 }
 
 // --------------------------------------------------------------------------- //
@@ -2978,7 +3035,14 @@ export interface ChatResponse {
 // --------------------------------------------------------------------------- //
 export type ChatStreamMode = 'steps' | 'text';
 export type ChatScope = 'logs' | 'cases' | 'metrics' | 'intel' | 'docs' | 'platform';
-export type ChatOrigin = 'user' | 'follow_up' | 'starter' | 'command' | 'continue';
+export type ChatOrigin =
+  | 'user'
+  | 'follow_up'
+  | 'starter'
+  | 'command'
+  | 'continue'
+  | 'clarify'
+  | 'retry_step';
 export type ChatStepKind = 'tool' | 'model';
 export type ChatStepStatus = 'ok' | 'error' | 'denied' | 'timeout' | 'skipped' | 'cancelled';
 export type ChatStepBasis = 'exact' | 'newest_n' | 'sample' | 'cached';
@@ -2993,12 +3057,25 @@ export type TurnNoticeKind =
   | 'timeout'
   | 'cancelled'
   | 'unsupported'
-  | 'not_saved';
+  | 'not_saved'
+  | 'limited'
+  | 'stopped_repeating'
+  | 'compacted';
 export type ChatCitationKind = 'doc' | 'case' | 'knowledge' | 'mitre' | 'query';
 export type MemoryProposalOp = 'add' | 'remove';
 export type ChatBudgetState = 'ok' | 'approaching' | 'reached';
 export type TextStreamingReason = 'disabled_by_admin' | 'model_does_not_stream';
-export type ReportTemplateName = 'investigation' | 'hunt' | 'ioc' | 'shift' | 'posture' | 'custom';
+export type ReportTemplateName =
+  | 'investigation'
+  | 'hunt'
+  | 'ioc'
+  | 'shift'
+  | 'posture'
+  | 'custom'
+  | 'executive'
+  | 'monthly'
+  | 'infographic'
+  | 'investigation_brief';
 export type ReportItemKind = 'block' | 'section';
 
 /**
@@ -3106,6 +3183,18 @@ export interface ChatStep {
   usage?: StepUsage | null;
   /** Steps sharing a group ran in one parallel batch. */
   group?: number | null;
+  /** Round 12: owner-scoped key for the step inspector. */
+  observation_ref?: string | null;
+  /** Round 12: progress of a long aggregate scan. */
+  progress?: ChatStepProgress | null;
+}
+
+/** Round 12 (SPEC §3.1). `total` is null when the store cannot say up front. */
+export interface ChatStepProgress {
+  done: number;
+  total?: number | null;
+  /** Display noun ("cases"). */
+  unit: string;
 }
 
 /** A cited source, referenced by id in the answer (SPEC §3.5). */
@@ -3244,6 +3333,10 @@ export interface ChatContextInfo {
   remaining?: number | null;
   /** §10.5 empty-state starters (server-built; Demo and production share the shape). */
   starters?: ChatStarter[];
+  /** Round 12 (SPEC D1): chat limits mode. */
+  limits_mode?: 'unlimited' | 'bounded';
+  /** Round 12 (SPEC D7): operator timezone for calendar windows and buckets. */
+  timezone?: string;
 }
 
 /** One empty-state starter card. Shown only if every tool in `tools` is allowed. */
@@ -3295,9 +3388,14 @@ export interface ChatPrompt {
   id: string;
   /** ≤ 60 characters. */
   title: string;
-  /** ≤ 2000 characters. */
+  /** ≤ 2000 characters. `{name}` placeholders are filled in before sending (Round 12). */
   text: string;
+  /** Round 12 prompt library category. */
+  category?: ChatPromptCategory | null;
+  favorite?: boolean;
 }
+
+export type ChatPromptCategory = 'triage' | 'hunt' | 'ioc' | 'posture' | 'reporting' | 'app_help';
 
 /** `PATCH /api/chat/conversations/{id}`: at least one of `title` / `pinned`. */
 export interface ChatConversationUpdateRequest {

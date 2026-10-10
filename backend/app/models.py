@@ -853,23 +853,33 @@ CHAT_PROMPT_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,64}$"
 _CHAT_PROMPT_ID_RE = re.compile(CHAT_PROMPT_ID_PATTERN)
 
 
+ChatPromptCategory = Literal["triage", "hunt", "ioc", "posture", "reporting", "app_help"]
+CHAT_PROMPT_CATEGORIES: tuple[str, ...] = get_args(ChatPromptCategory)
+
+
 class ChatPrompt(BaseModel):
     """One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered
-    as text, sent as an ordinary user message (it is the user's own words)."""
+    as text, sent as an ordinary user message (it is the user's own words).
+
+    Round 12 prompt library (SPEC §3.1): an optional ``category`` and a ``favorite``
+    star; ``{name}`` placeholders in ``text`` are filled in by the composer before
+    sending (client-side; the server stores the template as plain text)."""
 
     id: str = Field(pattern=CHAT_PROMPT_ID_PATTERN)
     title: str = Field(min_length=1, max_length=MAX_CHAT_PROMPT_TITLE_CHARS)
     text: str = Field(min_length=1, max_length=MAX_CHAT_PROMPT_TEXT_CHARS)
+    category: ChatPromptCategory | None = None
+    favorite: bool = False
 
 
-def _repair_chat_prompts(value: Any) -> list[dict[str, str]]:
+def _repair_chat_prompts(value: Any) -> list[dict[str, Any]]:
     """Lenient stored-prompt repair: sanitise + clamp, drop unusable or duplicate
     entries, keep at most 50. A bad entry must never fail the WHOLE prefs bucket —
     the store skips a bucket that fails validation, which would silently wipe the
     user's saved views, dashboards and theme along with it."""
     if not isinstance(value, (list, tuple)):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in value:
         if isinstance(item, ChatPrompt):
@@ -886,7 +896,13 @@ def _repair_chat_prompts(value: Any) -> list[dict[str, str]]:
             text, MAX_CHAT_PROMPT_TITLE_CHARS
         )
         seen.add(prompt_id)
-        out.append({"id": prompt_id, "title": title, "text": text})
+        entry: dict[str, Any] = {"id": prompt_id, "title": title, "text": text}
+        category = item.get("category")
+        if isinstance(category, str) and category in CHAT_PROMPT_CATEGORIES:
+            entry["category"] = category
+        if item.get("favorite") is True:
+            entry["favorite"] = True
+        out.append(entry)
         if len(out) >= MAX_CHAT_PROMPTS:
             break
     return out
@@ -2009,7 +2025,12 @@ class Cursor(BaseModel):
 # --------------------------------------------------------------------------- #
 ChatStreamMode = Literal["steps", "text"]
 ChatScope = Literal["logs", "cases", "metrics", "intel", "docs", "platform"]
-ChatOrigin = Literal["user", "follow_up", "starter", "command", "continue"]
+ChatOrigin = Literal[
+    "user", "follow_up", "starter", "command", "continue",
+    # Round 12 (SPEC §3.1): a clarify-option pick and a step-inspector retry. Both carry the
+    # follow_up taint class (#9): their text is model-authored and may echo log values.
+    "clarify", "retry_step",
+]
 ChatStepKind = Literal["tool", "model"]
 ChatStepStatus = Literal["ok", "error", "denied", "timeout", "skipped", "cancelled"]
 ChatStepBasis = Literal["exact", "newest_n", "sample", "cached"]
@@ -2017,12 +2038,19 @@ ChatAnswerKind = Literal["data", "product_help", "mixed", "conversation"]
 TurnNoticeKind = Literal[
     "partial", "cap", "budget", "provider", "breaker", "denied", "timeout", "cancelled",
     "unsupported", "not_saved",
+    # Round 12 (SPEC D2/D4/D9): answered with what chat can read; the loop guard ended a
+    # repeated lookup; earlier context was summarised to keep going.
+    "limited", "stopped_repeating", "compacted",
 ]
 CitationKind = Literal["doc", "case", "knowledge", "mitre", "query"]
 MemoryProposalOp = Literal["add", "remove"]
 ChatBudgetState = Literal["ok", "approaching", "reached"]
 TextStreamingReason = Literal["disabled_by_admin", "model_does_not_stream"]
-ReportTemplateName = Literal["investigation", "hunt", "ioc", "shift", "posture", "custom"]
+ReportTemplateName = Literal[
+    "investigation", "hunt", "ioc", "shift", "posture", "custom",
+    # Round 12 (SPEC D11).
+    "executive", "monthly", "infographic", "investigation_brief",
+]
 ReportItemKind = Literal["block", "section"]
 
 CHAT_STREAM_MODES: tuple[str, ...] = get_args(ChatStreamMode)
@@ -2348,6 +2376,11 @@ class ChatConversationSummary(BaseModel):
     total_tokens: int | None = Field(default=None, ge=0)
     total_cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     usage_turns: int | None = Field(default=None, ge=0)
+    # --- Round 12 (SPEC §3.1; additive). Live state for the history rail and the nav
+    # indicator (D13): a question is running, waiting for a clarify pick, or failed; an
+    # answer arrived that the owner has not opened yet.
+    status: Literal["idle", "running", "needs_input", "failed"] = "idle"
+    unread: bool = False
 
     @field_validator("pinned", mode="before")
     @classmethod
@@ -2378,6 +2411,8 @@ class ChatConversationSummary(BaseModel):
 
 class ChatConversation(ChatConversationSummary):
     messages: list[ChatConversationMessage] = Field(default_factory=list)
+    # Round 12 (SPEC D4): the newest message id folded into the stored conversation summary.
+    summary_covers_through: str | None = None
 
 
 class ChatConversationMatch(BaseModel):
@@ -2728,6 +2763,11 @@ class ChatStep(BaseModel):
     sources: list[str] = Field(default_factory=list, max_length=_STEP_MAX_SOURCES)
     usage: StepUsage | None = None
     group: int | None = Field(default=None, ge=0)
+    # --- Round 12 (SPEC §3.1; additive). Owner-scoped key for the step inspector
+    # (GET /api/chat/conversations/{id}/messages/{mid}/steps/{index}); progress of a long
+    # aggregate scan ("Counted 42,000 of 118,402 cases").
+    observation_ref: str | None = Field(default=None, max_length=200)
+    progress: ChatStepProgress | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2943,6 +2983,13 @@ class ChatResponse(BaseModel):
     # bills again, so "Run again to save" is offered only when it can help; a missing
     # grant or case would fail the same way). ``None`` otherwise.
     case_save_notice: TurnNotice | None = None
+    # --- Round 12 (SPEC §3.1; additive). A clarifying question instead of a guess (D10);
+    # the report the server saved from this answer (D11); continuation steps used for the
+    # final answer (D3); whether earlier context was summarised in this turn (D4).
+    clarify: ChatClarify | None = None
+    saved_report: ChatSavedReport | None = None
+    continued: int = Field(default=0, ge=0)
+    compacted: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -3133,6 +3180,11 @@ class ChatContextInfo(BaseModel):
     # shape (Demo: engine.demo_chat.DEMO_STARTERS; production: templated from live
     # context, never literal IOCs). The page shows a card only if all its tools are allowed.
     starters: list[ChatStarter] = Field(default_factory=list)
+    # --- Round 12 (SPEC §3.1; additive). Chat limits mode (D1) and the operator timezone
+    # used for calendar windows and buckets (D7). ``context_window`` above drives the
+    # composer's context-use ring.
+    limits_mode: Literal["unlimited", "bounded"] = "unlimited"
+    timezone: str = "UTC"
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -3158,7 +3210,83 @@ class ChatTopicQuestion(BaseModel):
     question: str
 
 
+# --- Round 12 chat contracts (docs/research/2026-10-round12/SPEC.md §3.1) --------- #
+
+
+class ChatStepProgress(BaseModel):
+    """Progress of one long-running lookup (an exact aggregate scan). ``total`` is None
+    when the store cannot say up front; ``unit`` is a display noun ("cases")."""
+
+    done: int = Field(default=0, ge=0)
+    total: int | None = Field(default=None, ge=0)
+    unit: str = Field(default="", max_length=40)
+
+
+class ChatClarify(BaseModel):
+    """A clarifying question the model asked instead of guessing (SPEC D10). Option
+    text is model-authored and may echo log values: the UI renders it as untrusted
+    text, and a pick is sent with ``origin="clarify"`` (follow_up taint class, #9)."""
+
+    question: str = Field(min_length=1, max_length=200)
+    options: list[str] = Field(default_factory=list, max_length=4)
+    allow_custom: bool = True
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _options(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            text = display_text(item, 80) if isinstance(item, str) else ""
+            if text and text not in out:
+                out.append(text)
+            if len(out) == 4:
+                break
+        return out
+
+
+class ChatSavedReport(BaseModel):
+    """The report the server saved from this answer (SPEC D11). Created by the server
+    from the persisted message, never by the model."""
+
+    id: str
+    title: str = Field(default="", max_length=200)
+    items: int = Field(default=0, ge=0)
+
+
+class ChatActiveTurn(BaseModel):
+    """``GET /api/chat/turns/active`` (SPEC D13): one of the caller's running turns.
+    ``label`` is an engine template, never model or log text."""
+
+    turn_id: str
+    conversation_id: str | None = None
+    case_id: str | None = None
+    started_at: str
+    label: str = Field(default="", max_length=120)
+    lookups: int = Field(default=0, ge=0)
+    tokens: int = Field(default=0, ge=0)
+    status: Literal["running", "needs_input"] = "running"
+
+
+ChatFeedbackRating = Literal["up", "down"]
+ChatFeedbackReason = Literal["wrong", "incomplete", "slow", "other"]
+
+
+class ChatFeedbackRequest(BaseModel):
+    """``POST /api/chat/feedback`` (SPEC §3.2). Stored per user and audited; never used
+    to train a model."""
+
+    conversation_id: str = Field(min_length=1, max_length=200)
+    message_id: str = Field(min_length=1, max_length=200)
+    rating: ChatFeedbackRating
+    reason: ChatFeedbackReason | None = None
+    comment: str = Field(default="", max_length=1000)
+
+
 ChatContextInfo.model_rebuild()
+ChatStep.model_rebuild()
+ChatResponse.model_rebuild()
 
 
 # --- §9.1 reports ----------------------------------------------------------------- #

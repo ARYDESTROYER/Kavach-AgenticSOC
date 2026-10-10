@@ -177,6 +177,8 @@ export const CHAT_ORIGINS = [
   'starter',
   'command',
   'continue',
+  'clarify',
+  'retry_step',
 ] as const satisfies readonly ChatOrigin[];
 export const CHAT_STEP_KINDS = ['tool', 'model'] as const satisfies readonly ChatStepKind[];
 export const CHAT_STEP_STATUSES = [
@@ -205,6 +207,9 @@ export const TURN_NOTICE_KINDS = [
   'cancelled',
   'unsupported',
   'not_saved',
+  'limited',
+  'stopped_repeating',
+  'compacted',
 ] as const satisfies readonly TurnNoticeKind[];
 export const CHAT_CITATION_KINDS = [
   'doc',
@@ -226,6 +231,10 @@ export const REPORT_TEMPLATES = [
   'shift',
   'posture',
   'custom',
+  'executive',
+  'monthly',
+  'infographic',
+  'investigation_brief',
 ] as const satisfies readonly ReportTemplateName[];
 export const REPORT_ITEM_KINDS = ['block', 'section'] as const satisfies readonly ReportItemKind[];
 /**
