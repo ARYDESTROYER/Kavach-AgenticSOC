@@ -152,6 +152,86 @@ describe('Sessions — Remember me', () => {
     expect(within(revoked).getByText('Revoked')).toBeInTheDocument();
   });
 
+  it('shows a session that already ended as ended, never as a live remembered device', async () => {
+    const ago1h = new Date(Date.now() - 3_600_000).toISOString();
+    const in10h = new Date(Date.now() + 10 * 3_600_000).toISOString();
+    sessionsList.mockResolvedValue({
+      sessions: [
+        {
+          sid: 'sid-current',
+          current: true,
+          ua_browser: 'Chrome',
+          ua_os: 'macOS',
+          created_at: new Date(Date.now() - 4 * 3_600_000).toISOString(),
+          last_active_at: new Date().toISOString(),
+          remember: true,
+          remember_seconds: 86_400,
+          active: true,
+          ended_reason: '',
+          // Inactivity (12 h) ends it before the hard limit (20 h) unless it is used.
+          expires_at: IN_11H,
+          effective_idle_expires_at: IN_11H,
+          effective_absolute_expires_at: IN_20H,
+        },
+        {
+          // Another device, unused for 13 h: the server already signs it out. Even
+          // if a listing still said remember: true, it must not read as signed in.
+          sid: 'sid-idle',
+          current: false,
+          ua_browser: 'Edge',
+          ua_os: 'Windows',
+          created_at: new Date(Date.now() - 14 * 3_600_000).toISOString(),
+          last_active_at: new Date(Date.now() - 13 * 3_600_000).toISOString(),
+          remember: true,
+          remember_seconds: 86_400,
+          active: false,
+          ended_reason: 'idle_expired',
+          expires_at: ago1h,
+          effective_idle_expires_at: ago1h,
+          effective_absolute_expires_at: in10h,
+        },
+        {
+          sid: 'sid-old',
+          current: false,
+          ua_browser: 'Firefox',
+          ua_os: 'Linux',
+          created_at: new Date(Date.now() - 25 * 3_600_000).toISOString(),
+          last_active_at: new Date(Date.now() - 3_600_000).toISOString(),
+          remember: false,
+          active: false,
+          ended_reason: 'absolute_expired',
+          expires_at: ago1h,
+        },
+      ],
+    });
+    renderSessions();
+    await screen.findByText('Chrome on macOS');
+
+    const idle = rowFor('Edge on Windows');
+    expect(idle.querySelector('[data-session-remembered]')).toBeNull();
+    expect(idle.querySelector('[data-session-expires]')).toBeNull();
+    const ended = within(idle).getByText('Ended (inactive)');
+    expect(ended).toHaveAttribute('data-session-ended');
+    expect(ended.getAttribute('title')).toMatch(/^Ended /);
+    expect(within(idle).queryByText('in 10h')).toBeNull();
+    // It can still be revoked, so a later, looser policy can never bring it back.
+    expect(within(idle).getByRole('button', { name: 'Revoke session sid-idle' })).toBeEnabled();
+
+    expect(within(rowFor('Firefox on Linux')).getByText('Ended (time limit)')).toBeInTheDocument();
+
+    // The live remembered device: the earlier end time, with the latest in the tooltip.
+    const current = rowFor('Chrome on macOS');
+    const expires = within(current).getByText('in 11h');
+    expect(expires).toHaveAttribute('data-session-expires');
+    expect(expires.getAttribute('title')).toMatch(/if it isn't used again, .* at the latest$/);
+    expect(current.querySelector('[data-session-remembered]')).toHaveAttribute(
+      'title',
+      `Remembered until ${sessionUntilLabel(IN_11H)} if it isn't used again, ${sessionUntilLabel(
+        IN_20H,
+      )} at the latest`,
+    );
+  });
+
   it('offers "Forget this device" only when this browser remembers a username', async () => {
     renderSessions();
     await screen.findByText('Chrome on macOS');

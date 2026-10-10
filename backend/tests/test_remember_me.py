@@ -1041,11 +1041,101 @@ def test_16b_session_listing_projects_remember_and_the_effective_expiry() -> Non
         assert all("expires_at" in r for r in admin_rows)
 
 
+def _when(iso: str) -> float:
+    from datetime import datetime
+
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def test_16c_an_ended_session_is_never_listed_as_live() -> None:
+    """Re-review finding: a remembered session on another device that ended for
+    inactivity was listed as "Remembered, expires in 10h" while its token got 401."""
+    with _build() as c:  # default policy: 12 h idle timeout applies to remembered rows
+        other = _login(c, remember=True).json()["token"]
+        sid_other = decode(other, SECRET)["sid"]
+        c.cookies.clear()
+        current = _login(c, remember=True).json()["token"]
+        sid_current = decode(current, SECRET)["sid"]
+        _age_row(sid_other, created_hours=14, idle_hours=13)
+        now = now_utc().timestamp()
+
+        rows = {r["sid"]: r for r in c.get("/api/sessions").json()["sessions"]}
+        ended = rows[sid_other]
+        assert ended["active"] is False and ended["ended_reason"] == "idle_expired"
+        assert ended["remember"] is False and ended["remember_seconds"] == 0
+        # The listed end time is when it actually ended, never a future one.
+        assert _when(ended["expires_at"]) < now
+        assert ended["expires_at"] == ended["effective_idle_expires_at"]
+        assert _when(ended["effective_absolute_expires_at"]) > now  # the unreached hard limit
+
+        live = rows[sid_current]
+        assert live["active"] is True and live["ended_reason"] == ""
+        assert live["remember"] is True and live["remember_seconds"] == _DAY
+        # Live: the earlier of the inactivity deadline (12 h) and the hard limit (24 h).
+        assert live["expires_at"] == live["effective_idle_expires_at"]
+        assert _when(live["expires_at"]) < _when(live["effective_absolute_expires_at"])
+        assert abs(_when(live["expires_at"]) - (now + 12 * 3600)) < 120
+
+        # The admin console projects the same truth with each owner's limits.
+        admin = {r["sid"]: r for r in c.get("/api/admin/sessions").json()["sessions"]}
+        assert admin[sid_other]["active"] is False and admin[sid_other]["remember"] is False
+        assert admin[sid_current]["active"] is True
+
+        # ...and it matches what the server does with that device's token.
+        c.cookies.clear()
+        dead = c.get("/api/cases", headers={"Authorization": f"Bearer {other}"})
+        assert dead.status_code == 401
+
+
+def test_16d_listing_reports_every_way_a_session_ends() -> None:
+    with _build() as c:
+        old = _login(c, remember=True).json()["token"]
+        sid_old = decode(old, SECRET)["sid"]
+        c.cookies.clear()
+        gone = _login(c).json()["token"]
+        sid_gone = decode(gone, SECRET)["sid"]
+        c.cookies.clear()
+        _login(c, remember=True)
+        # Past the 24 h remembered lifetime, though used an hour ago.
+        _age_row(sid_old, created_hours=25, idle_hours=1)
+        run(_STATE["state"].sessions.revoke(sid_gone, by="Admin", reason="admin"))
+        rows = {r["sid"]: r for r in c.get("/api/sessions").json()["sessions"]}
+        assert (rows[sid_old]["active"], rows[sid_old]["ended_reason"]) == (False, "absolute_expired")
+        assert rows[sid_old]["remember"] is False
+        assert _when(rows[sid_old]["expires_at"]) < now_utc().timestamp()
+        assert (rows[sid_gone]["active"], rows[sid_gone]["ended_reason"]) == (False, "revoked")
+
+
+def test_16e_public_projection_unit_cases() -> None:
+    from datetime import timedelta
+
+    limits = session_limits(SessionPolicyConfig(), roles=None)
+    now = now_utc()
+    row = {
+        "sid": "s1", "username": "alice", "remember": True, "remember_seconds": _DAY,
+        "created_at": (now - timedelta(hours=1)).isoformat(),
+        "last_active_at": now.isoformat(),
+        # The access token itself ran out (a stale token_expires_at stamp).
+        "token_expires_at": (now - timedelta(minutes=1)).isoformat(),
+    }
+    out = SessionStore.public(row, limits)
+    assert (out["active"], out["ended_reason"], out["remember"]) == (False, "absolute_expired", False)
+    # Without limits the projection is unchanged (no live-policy claims at all).
+    bare = SessionStore.public(row)
+    assert "active" not in bare and "expires_at" not in bare and bare["remember"] is True
+    # A live row whose hard limit comes first lists the hard limit.
+    row2 = {**row, "token_expires_at": "", "created_at": (now - timedelta(hours=20)).isoformat()}
+    out2 = SessionStore.public(row2, limits)
+    assert out2["active"] is True
+    assert out2["expires_at"] == out2["effective_absolute_expires_at"]
+    assert _when(out2["expires_at"]) < _when(out2["effective_idle_expires_at"])
+
+
 # --------------------------------------------------------------------------- #
 # 17-19  Public status, config, coverage
 # --------------------------------------------------------------------------- #
 _STATUS_KEYS = {
-    "enabled", "duration_seconds", "insecure_blocked", "secure_cookies",
+    "enabled", "duration_seconds", "idle_seconds", "insecure_blocked", "secure_cookies",
     "standard_session_seconds",
 }
 
@@ -1055,8 +1145,9 @@ def test_17_setup_status_exposes_only_the_public_remember_block() -> None:
         c.cookies.clear()
         block = c.get("/api/setup/status").json()["remember_me"]
         assert block == {
-            "enabled": True, "duration_seconds": _DAY, "insecure_blocked": False,
-            "secure_cookies": False, "standard_session_seconds": 12 * 3600,
+            "enabled": True, "duration_seconds": _DAY, "idle_seconds": 12 * 3600,
+            "insecure_blocked": False, "secure_cookies": False,
+            "standard_session_seconds": 12 * 3600,
         }
     with _build(base_url="http://testserver") as c:
         block = c.get("/api/setup/status").json()["remember_me"]
@@ -1073,6 +1164,48 @@ def test_17_setup_status_exposes_only_the_public_remember_block() -> None:
                 auth_cookie_secure=True) as c:
         block = c.get("/api/setup/status").json()["remember_me"]
         assert block["insecure_blocked"] is False and block["secure_cookies"] is True
+
+
+def test_17b_setup_status_states_the_remembered_inactivity_limit() -> None:
+    """Re-review finding: the sign-in page promised a flat 24 hours while a remembered
+    device that went unused for the idle timeout was signed out."""
+    # Default: the 12 h idle timeout applies to remembered devices too.
+    with _build() as c:
+        block = c.get("/api/setup/status").json()["remember_me"]
+        assert (block["duration_seconds"], block["idle_seconds"]) == (_DAY, 12 * 3600)
+        # The promise matches the enforcement: unused for 13 h, inside the 24 h.
+        sid = decode(_login(c, remember=True).json()["token"], SECRET)["sid"]
+        _age_row(sid, created_hours=13, idle_hours=13)
+        assert c.get("/api/auth/me").json()["reason"] == "idle_expired"
+    # A separate remembered inactivity limit wins.
+    with _build(remember={"idle_seconds": 3600}) as c:
+        assert c.get("/api/setup/status").json()["remember_me"]["idle_seconds"] == 3600
+    # No inactivity limit shorter than the lifetime: activity never matters → 0.
+    with _build(session_policy={"idle_timeout": 2 * _DAY}) as c:
+        assert c.get("/api/setup/status").json()["remember_me"]["idle_seconds"] == 0
+    with _build(remember={"enabled": False}) as c:
+        assert c.get("/api/setup/status").json()["remember_me"]["idle_seconds"] == 0
+
+
+def test_17c_remember_idle_window_helper() -> None:
+    from app.auth.session_limits import remember_idle_window_seconds
+
+    assert remember_idle_window_seconds(SessionPolicyConfig()) == 12 * 3600
+    assert remember_idle_window_seconds(
+        SessionPolicyConfig(remember_me=RememberMePolicy(duration_seconds=6 * 3600))
+    ) == 0  # the 12 h idle timeout is longer than a 6 h remembered lifetime
+    assert remember_idle_window_seconds(
+        SessionPolicyConfig(idle_timeout=1800,
+                            remember_me=RememberMePolicy(idle_seconds=7200))
+    ) == 7200  # an explicit remembered limit is the administrator's choice
+    assert remember_idle_window_seconds(
+        SessionPolicyConfig(absolute_lifetime=7200)
+    ) == 0  # capped lifetime (2 h) is shorter than the 12 h idle timeout
+    assert remember_idle_window_seconds(None) == 0
+    # It is exactly the inactivity limit the evaluator applies to a remembered row.
+    policy = SessionPolicyConfig(idle_timeout=5 * 3600)
+    limits = session_limits(policy, roles=None)
+    assert remember_idle_window_seconds(policy) == limits.for_row({"remember": True})[0]
 
 
 def test_18_config_bounds_are_repaired_and_the_prune_invariant_holds() -> None:

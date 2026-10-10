@@ -35,8 +35,10 @@ import {
   REMEMBER_ME_DEFAULTS,
   SESSION_POLICY_DEFAULTS,
   SessionPolicyEditor,
+  rbacEnabledOf,
 } from '../SessionPolicyEditor';
 import type { SessionPolicy } from '@/lib/types';
+import { api } from '@/lib/api';
 import { TooltipProvider } from '@/ui/tooltip';
 
 const CONFIG_PY = readFileSync(
@@ -57,11 +59,11 @@ function asNumber(raw: string): number {
   return Number(raw.replace(/_/g, ''));
 }
 
-function renderControlled(policy: SessionPolicy = {}) {
+function renderControlled(policy: SessionPolicy = {}, rbacEnabled?: boolean | null) {
   let current: SessionPolicy = policy;
   const ui = () => (
     <TooltipProvider>
-      <SessionPolicyEditor policy={current} onChange={onChange} embedded />
+      <SessionPolicyEditor policy={current} onChange={onChange} embedded rbacEnabled={rbacEnabled} />
     </TooltipProvider>
   );
   const onChange = vi.fn((next: SessionPolicy) => {
@@ -274,6 +276,81 @@ describe('SessionPolicyEditor — what the server enforces', () => {
     runtime({ secure_cookies: false, insecure_blocked: true });
     const { container } = renderControlled({ absolute_lifetime: 8 * 3600 });
     await screen.findByText(/also ends after 12 hours/);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('SessionPolicyEditor — excluded roles while role-based access is off', () => {
+  const NOTE_ALL =
+    'Role-based access is off, so every account counts as Super admin. Excluding Super admin turns Remember me off for everyone.';
+  const NOTE_EXCLUDED =
+    'Role-based access is off, so every account counts as Super admin. While Super admin is excluded, Remember me is off for everyone.';
+
+  it('warns that excluding Super admin covers every account', () => {
+    renderControlled({}, false);
+    const note = document.querySelector('[data-remember-rbac-note]');
+    expect(note).toHaveTextContent(NOTE_ALL);
+    expect(note).toHaveClass('text-warning-text');
+    // The role list is described by the note, not only placed near it.
+    const roles = within(group()).getByRole('group', { name: 'Never remember these roles' });
+    expect(roles).toHaveAccessibleDescription(
+      `People with these roles stay signed in only until they close the browser. ${NOTE_ALL}`,
+    );
+  });
+
+  it('says Remember me is off for everyone once Super admin is excluded', () => {
+    const { last } = renderControlled({}, false);
+    fireEvent.click(within(group()).getByRole('checkbox', { name: 'Super admin' }));
+    expect(last().remember_me?.excluded_roles).toEqual(['super_admin']);
+    expect(document.querySelector('[data-remember-rbac-note]')).toHaveTextContent(NOTE_EXCLUDED);
+  });
+
+  it('says nothing when role-based access is on, unknown, or Remember me is off', () => {
+    const on = renderControlled({ remember_me: { excluded_roles: ['super_admin'] } }, true);
+    expect(document.querySelector('[data-remember-rbac-note]')).toBeNull();
+    on.unmount();
+    const unknown = renderControlled({});
+    expect(document.querySelector('[data-remember-rbac-note]')).toBeNull();
+    unknown.unmount();
+    renderControlled({ remember_me: { enabled: false } }, false);
+    expect(document.querySelector('[data-remember-rbac-note]')).toBeNull();
+  });
+
+  it('reads the setting itself when it loads its own settings', async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      prefs: { session_policy: {}, rbac: { enabled: false } },
+      configured: {},
+    } as never);
+    const view = render(
+      <TooltipProvider>
+        <SessionPolicyEditor />
+      </TooltipProvider>,
+    );
+    expect(await screen.findByText(NOTE_ALL)).toBeInTheDocument();
+    view.unmount();
+    vi.mocked(api.getSettings).mockResolvedValue({
+      prefs: { session_policy: {}, rbac: { enabled: true } },
+      configured: {},
+    } as never);
+    render(
+      <TooltipProvider>
+        <SessionPolicyEditor />
+      </TooltipProvider>,
+    );
+    await screen.findByRole('region', { name: 'Remember me' });
+    expect(document.querySelector('[data-remember-rbac-note]')).toBeNull();
+  });
+
+  it('treats a missing rbac block as off (the backend default) and unknown settings as unknown', () => {
+    expect(rbacEnabledOf({})).toBe(false);
+    expect(rbacEnabledOf({ rbac: { enabled: false } })).toBe(false);
+    expect(rbacEnabledOf({ rbac: { enabled: true } })).toBe(true);
+    expect(rbacEnabledOf(null)).toBeNull();
+    expect(rbacEnabledOf(undefined)).toBeNull();
+  });
+
+  it('has no axe violations with the note shown', async () => {
+    const { container } = renderControlled({ remember_me: { excluded_roles: ['super_admin'] } }, false);
     expect(await axe(container)).toHaveNoViolations();
   });
 });

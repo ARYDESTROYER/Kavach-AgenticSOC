@@ -26,7 +26,7 @@ import { Can } from '@/soc/components/Can';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
 import { LoadError } from '@/soc/components/LoadError';
-import { SessionPolicySection } from '@/soc/components/SessionPolicyEditor';
+import { SessionPolicySection, rbacEnabledOf } from '@/soc/components/SessionPolicyEditor';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 import { Textarea } from '@/ui/textarea';
@@ -497,6 +497,7 @@ export function SecuritySsoInner({
     ? {
         policy: (prefs?.session_policy as SessionPolicy | undefined) ?? {},
         onChange: (next: SessionPolicy) => update?.({ session_policy: next }),
+        rbacEnabled: rbacEnabledOf(prefs),
       }
     : {};
 

@@ -98,6 +98,12 @@ def _to_epoch(value: Any) -> float | None:
     return dt.timestamp() if dt is not None else None
 
 
+def _iso_epoch(epoch: float | None) -> str:
+    if epoch is None:
+        return ""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
 class SessionStore:
     """CRUD over the session list, persisted as one KV document.
 
@@ -701,6 +707,19 @@ class SessionStore:
         with activity. Empty strings when unknown."""
         if row is None:
             return ("", "")
+        hard, soft = SessionStore._expiry_epochs(
+            row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
+            remember_idle=remember_idle, remember_absolute=remember_absolute,
+        )
+        return (_iso_epoch(hard), _iso_epoch(soft))
+
+    @staticmethod
+    def _expiry_epochs(row: dict[str, Any], *, idle_timeout: int = 0,
+                       absolute_lifetime: int = 0, remember_idle: int = 0,
+                       remember_absolute: int = 0) -> tuple[float | None, float | None]:
+        """``(hard, soft)`` epoch seconds behind :meth:`effective_expiry`: the hard
+        limit (absolute lifetime or the access token's ``exp``, whichever is earlier)
+        and the inactivity deadline. ``None`` when unknown."""
         idle, absolute = SessionStore.limits_for_row(
             row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
             remember_idle=remember_idle, remember_absolute=remember_absolute,
@@ -718,13 +737,7 @@ class SessionStore:
             soft: float | None = last_active + idle
         else:
             soft = _to_epoch(row.get("idle_expiry_at"))
-
-        def _iso(epoch: float | None) -> str:
-            if epoch is None:
-                return ""
-            return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
-
-        return (_iso(hard), _iso(soft))
+        return (hard, soft)
 
     @staticmethod
     def reauth_age_seconds(row: dict[str, Any] | None) -> float | None:
@@ -777,17 +790,36 @@ class SessionStore:
 
         Round 12: projects ``remember`` / ``remember_seconds`` and, when the live
         ``limits`` (:class:`app.auth.session_limits.SessionLimits`, built for the
-        row's owner) are supplied, the effective ``expires_at`` the server enforces
-        and whether the row is still remembered under them."""
+        row's owner) are supplied, what the server enforces under them — the same
+        :meth:`is_active` evaluation every protected request runs:
+
+        * ``active`` / ``ended_reason`` — whether the session can still be used, else
+          why it ended (``revoked`` | ``idle_expired`` | ``absolute_expired``; a row
+          whose access token's own ``exp`` has passed counts as ``absolute_expired``,
+          as ``/auth/me`` reports it).
+        * ``expires_at`` — the earliest moment the server ends a live session if it
+          is not used again: the earlier of the inactivity deadline
+          (``effective_idle_expires_at``) and the hard limit
+          (``effective_absolute_expires_at``, which activity never extends).
+        * ``remember`` — true only while the session is live AND the policy still
+          remembers it (Remember me on, the owner's role not excluded), so an ended
+          session is never shown as a remembered device that is still signed in."""
         out = SessionStore._public_fields(row)
         if limits is not None:
             kwargs = limits.kwargs() if hasattr(limits, "kwargs") else dict(limits)
-            expires_at, idle_expires_at = SessionStore.effective_expiry(row, **kwargs)
-            out["expires_at"] = expires_at
-            out["effective_idle_expires_at"] = idle_expires_at
-            # Shown as remembered only while the live policy still remembers it
-            # (Remember me on and the owner's role not excluded).
-            if out["remember"] and int(kwargs.get("remember_absolute", 0) or 0) <= 0:
+            hard, soft = SessionStore._expiry_epochs(row, **kwargs)
+            reason = SessionStore.is_active(row, **kwargs)
+            if reason is None and hard is not None and now_utc().timestamp() > hard:
+                reason = REASON_ABSOLUTE
+            known = [t for t in (hard, soft) if t is not None]
+            out["expires_at"] = _iso_epoch(min(known) if known else None)
+            out["effective_idle_expires_at"] = _iso_epoch(soft)
+            out["effective_absolute_expires_at"] = _iso_epoch(hard)
+            out["active"] = reason is None
+            out["ended_reason"] = reason or ""
+            if out["remember"] and (
+                reason is not None or int(kwargs.get("remember_absolute", 0) or 0) <= 0
+            ):
                 out["remember"] = False
                 out["remember_seconds"] = 0
         return out

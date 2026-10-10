@@ -21,6 +21,7 @@ from ..auth.session_limits import (
     REMEMBER_MAX_SECONDS,
     effective_roles,
     limits_for_username,
+    remember_idle_window_seconds,
     remember_window_seconds,
 )
 from ..build_identity import build_identity_advisories, build_stamp
@@ -3241,13 +3242,16 @@ def _remember_me_status(state: AppState, request: Request | None) -> dict[str, A
     request's transport would refuse it, whether the session cookie is marked
     ``Secure`` (observable on every ``Set-Cookie`` anyway — lets the sign-in page and
     the Session policy editor tell "plain HTTP" from "HTTPS without secure cookies"),
-    and how long a sign-in WITHOUT Remember me lasts (the token lifetime,
-    ``AUTH_TOKEN_HOURS``)."""
+    how long a sign-in WITHOUT Remember me lasts (the token lifetime,
+    ``AUTH_TOKEN_HOURS``), and ``idle_seconds``: how long a remembered device may go
+    unused before it is signed out (0 when no inactivity limit is shorter than the
+    remembered lifetime), so the page never promises more than the server keeps."""
     rm = _remember_policy(state)
     enabled = bool(getattr(rm, "enabled", False))
     duration = remember_window_seconds(_session_policy(state))
     if not duration:
         duration = int(getattr(rm, "duration_seconds", 0) or 0)
+    idle_seconds = remember_idle_window_seconds(_session_policy(state))
     insecure_blocked = bool(
         enabled
         and not bool(getattr(rm, "allow_insecure_http", False))
@@ -3257,6 +3261,7 @@ def _remember_me_status(state: AppState, request: Request | None) -> dict[str, A
     return {
         "enabled": enabled,
         "duration_seconds": duration,
+        "idle_seconds": idle_seconds,
         "insecure_blocked": insecure_blocked,
         "secure_cookies": bool(getattr(state.secrets, "auth_cookie_secure", False)),
         "standard_session_seconds": standard,

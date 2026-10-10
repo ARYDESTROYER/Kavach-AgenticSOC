@@ -124,6 +124,18 @@ function rememberOf(policy: SessionPolicy | null | undefined): Required<Remember
   };
 }
 
+/**
+ * Whether role-based access control is on in a settings payload: null when the
+ * settings are not known, false when the `rbac` block is missing (the backend
+ * default is off). While it is off every account counts as Super admin, which
+ * matters for "Never remember these roles".
+ */
+export function rbacEnabledOf(prefs: unknown): boolean | null {
+  if (!prefs || typeof prefs !== 'object') return null;
+  const rbac = (prefs as { rbac?: { enabled?: unknown } | null }).rbac;
+  return Boolean(rbac && typeof rbac === 'object' && rbac.enabled === true);
+}
+
 /** A labelled duration field that edits seconds via a `unit` divisor. */
 function DurationField({
   id,
@@ -208,6 +220,7 @@ export function RememberMeGroup({
   disabled,
   policy = {},
   runtime = null,
+  rbacEnabled = null,
 }: {
   value: Required<RememberMePolicy>;
   onChange: (next: Required<RememberMePolicy>) => void;
@@ -216,6 +229,12 @@ export function RememberMeGroup({
   policy?: SessionPolicy;
   /** This console's sign-in status (secure cookies, transport); null when unknown. */
   runtime?: RememberMeStatus | null;
+  /**
+   * Whether role-based access control is on (`prefs.rbac.enabled`); null when
+   * unknown. While it is off every account counts as Super admin, so excluding
+   * Super admin turns Remember me off for everyone; the role list says so.
+   */
+  rbacEnabled?: boolean | null;
 }) {
   const presetFor = (seconds: number) =>
     REMEMBER_PRESETS.find((p) => p.seconds === seconds)?.value ?? 'custom';
@@ -234,6 +253,14 @@ export function RememberMeGroup({
   // secure; with secure cookies it changes nothing, so it is not shown.
   const secureCookies = runtime?.secure_cookies === true;
   const showInsecureSwitch = !secureCookies || value.allow_insecure_http;
+  // With role-based access off, the server treats every account as Super admin
+  // (session_limits.effective_roles), so that one exclusion covers everyone.
+  const rbacOffNote =
+    rbacEnabled === false && value.enabled
+      ? excluded.has('super_admin')
+        ? 'Role-based access is off, so every account counts as Super admin. While Super admin is excluded, Remember me is off for everyone.'
+        : 'Role-based access is off, so every account counts as Super admin. Excluding Super admin turns Remember me off for everyone.'
+      : null;
 
   return (
     <section
@@ -354,6 +381,9 @@ export function RememberMeGroup({
         <div
           role="group"
           aria-labelledby="sp-remember-roles-label"
+          aria-describedby={
+            rbacOffNote ? 'sp-remember-roles-help sp-remember-roles-rbac' : 'sp-remember-roles-help'
+          }
           className="flex flex-wrap gap-x-5 gap-y-1"
         >
           {Object.entries(ROLE_LABELS).map(([role, label]) => (
@@ -378,9 +408,19 @@ export function RememberMeGroup({
             </label>
           ))}
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p id="sp-remember-roles-help" className="text-xs text-muted-foreground">
           People with these roles stay signed in only until they close the browser.
         </p>
+        {rbacOffNote ? (
+          <p
+            id="sp-remember-roles-rbac"
+            className="flex max-w-prose items-start gap-1.5 text-xs text-warning-text"
+            data-remember-rbac-note
+          >
+            <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+            <span>{rbacOffNote}</span>
+          </p>
+        ) : null}
       </div>
 
       <div className="space-y-1.5" data-remember-transport>
@@ -437,12 +477,19 @@ export interface SessionPolicyEditorProps {
   onChange?: (next: SessionPolicy) => void;
   /** Use the flat divider-led Settings grammar instead of a nested card. */
   embedded?: boolean;
+  /**
+   * Whether role-based access control is on (see {@link rbacEnabledOf}). In
+   * controlled mode the parent passes it from its prefs; the standalone editor
+   * reads it from the settings it loads. Null/omitted when unknown.
+   */
+  rbacEnabled?: boolean | null;
 }
 
 export function SessionPolicyEditor({
   policy: controlledPolicy,
   onChange,
   embedded = false,
+  rbacEnabled: controlledRbac,
 }: SessionPolicyEditorProps = {}) {
   const controlled = Boolean(onChange);
 
@@ -452,7 +499,9 @@ export function SessionPolicyEditor({
   const [loading, setLoading] = React.useState(!controlled);
   const [saving, setSaving] = React.useState(false);
   const [loadError, setLoadError] = React.useState<unknown>(null);
+  const [loadedRbac, setLoadedRbac] = React.useState<boolean | null>(null);
   const runtime = useSigninRuntime();
+  const rbacEnabled = controlledRbac ?? loadedRbac;
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -461,6 +510,7 @@ export function SessionPolicyEditor({
       const s = await api.getSettings();
       const p = (s.prefs.session_policy as SessionPolicy | undefined) ?? {};
       setLocalPolicy({ ...DEFAULTS, ...p });
+      setLoadedRbac(rbacEnabledOf(s.prefs));
     } catch (error) {
       setLoadError(error);
       setLocalPolicy(null);
@@ -574,6 +624,7 @@ export function SessionPolicyEditor({
           disabled={saving}
           policy={policy}
           runtime={runtime}
+          rbacEnabled={rbacEnabled}
         />
 
         <div className="space-y-3 border-t border-border pt-4">

@@ -48,6 +48,18 @@ export interface RememberMeControlProps {
   wordmark: string;
 }
 
+/**
+ * The remembered inactivity limit worth stating ("12 hours"), or null when no
+ * inactivity limit is shorter than the remembered lifetime (or the server does not
+ * report one).
+ */
+export function rememberIdleLimit(status: RememberMeStatus | null | undefined): string | null {
+  const idle = Math.round(Number(status?.idle_seconds) || 0);
+  const lifetime = Math.round(Number(status?.duration_seconds) || 0);
+  if (idle <= 0 || (lifetime > 0 && idle >= lifetime)) return null;
+  return formatRememberDuration(idle);
+}
+
 /** Whether the policy lets this console offer Remember me right now. */
 export function rememberAvailable(status: RememberMeStatus | null | undefined): boolean {
   return Boolean(status?.enabled && !status?.insecure_blocked);
@@ -69,11 +81,14 @@ export function RememberMeControl({
   const available = rememberAvailable(status);
   const interactive = available && !busy;
   const duration = formatRememberDuration(status.duration_seconds);
+  const idle = rememberIdleLimit(status);
+  // "Up to": a remembered device can be signed out sooner (inactivity, an
+  // administrator); the warning spells out each limit.
   const hint = !status.enabled
     ? 'Turned off by your administrator'
     : status.insecure_blocked
       ? insecureRememberHint()
-      : `Stay signed in on this device for ${duration}`;
+      : `Stay signed in on this device for up to ${duration}`;
 
   const name = username.trim();
   const nameKey = name.toLowerCase();
@@ -166,8 +181,9 @@ export function RememberMeControl({
                 Your username will be remembered on this device, and your browser may offer to
                 save your password.
               </li>
-              <li>
-                You&apos;ll be asked to sign in again after {duration}, or sooner if an
+              <li data-remember-warning-limits>
+                You&apos;ll be asked to sign in again after {duration}
+                {idle ? <>, after {idle} without activity,</> : ','} or sooner if an
                 administrator ends your session. Sensitive actions still ask for your password.
               </li>
               <li>

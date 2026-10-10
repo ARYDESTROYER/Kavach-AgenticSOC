@@ -180,6 +180,21 @@ def remember_window_seconds(policy: Any) -> int:
     return _policy_limits(policy).remember_absolute
 
 
+def remember_idle_window_seconds(policy: Any) -> int:
+    """How long a NEW remembered sign-in may go without activity before the server
+    ends it (seconds): the remembered inactivity limit — ``remember_me.idle_seconds``
+    when set, else the standard ``idle_timeout`` — capped by the remembered
+    lifetime. 0 when Remember me is off or no inactivity limit is shorter than the
+    lifetime (activity then never matters). Used by the sign-in page, so the
+    promise it makes ("up to 24 hours … after 12 hours without activity") is the
+    one :meth:`app.stores.sessions.SessionStore.is_active` enforces."""
+    limits = _policy_limits(policy)
+    if limits.remember_absolute <= 0:
+        return 0
+    idle = limits.remember_idle
+    return idle if 0 < idle < limits.remember_absolute else 0
+
+
 def effective_roles(prefs: Any, role: Any) -> frozenset[str]:
     """The roles a principal effectively holds for the exclusion check: its stored
     role, plus ``super_admin`` while RBAC is off (every authenticated principal is
@@ -246,6 +261,7 @@ __all__ = [
     "effective_roles",
     "limits_for_principal",
     "limits_for_username",
+    "remember_idle_window_seconds",
     "remember_policy",
     "remember_window_seconds",
     "session_limits",

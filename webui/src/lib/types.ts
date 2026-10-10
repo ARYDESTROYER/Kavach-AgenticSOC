@@ -171,12 +171,30 @@ export interface Session {
   /** The client kind (e.g. "web"/"api"/"cli") + the MFA method used at sign-in. */
   client_type?: string | null;
   mfa_method?: string | null;
-  /** True for a "Remember me" sign-in (Round 12). */
+  /**
+   * True for a "Remember me" sign-in (Round 12) that is still live and still
+   * remembered under the current policy; false once the session has ended.
+   */
   remember?: boolean;
   /** The remembered lifetime granted at sign-in, in seconds (0 when not remembered). */
   remember_seconds?: number;
-  /** When the server ends this session regardless of activity (ISO, live policy). */
+  /**
+   * The earliest moment the server ends this session if it is not used again: the
+   * earlier of the inactivity deadline and the hard limit (ISO, live policy). In the
+   * past for a session that has ended.
+   */
   expires_at?: string | null;
+  /** When inactivity ends it (moves with each request; ISO, live policy). */
+  effective_idle_expires_at?: string | null;
+  /** The hard limit activity never extends (ISO, live policy). */
+  effective_absolute_expires_at?: string | null;
+  /**
+   * Whether the session can still be used under the live policy (the same check
+   * every request runs). Absent from older backends.
+   */
+  active?: boolean;
+  /** Why an ended session ended (empty while active). */
+  ended_reason?: '' | 'revoked' | 'idle_expired' | 'absolute_expired' | string;
   [key: string]: unknown;
 }
 
@@ -315,6 +333,11 @@ export interface RememberMeStatus {
   enabled: boolean;
   /** The lifetime a new remembered sign-in gets (the policy duration, capped by the absolute lifetime). */
   duration_seconds: number;
+  /**
+   * How long a remembered device may go unused before it is signed out (seconds);
+   * 0 or absent when no inactivity limit is shorter than `duration_seconds`.
+   */
+  idle_seconds?: number;
   /** True when THIS console's transport would refuse a remembered session. */
   insecure_blocked: boolean;
   /** Whether the session cookie is marked Secure (AUTH_COOKIE_SECURE); never a secret. */

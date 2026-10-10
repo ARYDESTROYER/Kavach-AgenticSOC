@@ -133,6 +133,8 @@ function status(remember?: Record<string, unknown> | null) {
           remember_me: {
             enabled: true,
             duration_seconds: 86_400,
+            // The backend default: the 12 hour idle timeout applies to remembered devices.
+            idle_seconds: 43_200,
             insecure_blocked: false,
             ...(remember ?? {}),
           },
@@ -195,8 +197,8 @@ describe('Login — Remember me', () => {
     const box = rememberBox();
     expect(box).toBeEnabled();
     expect(box).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByText('Stay signed in on this device for 24 hours')).toBeInTheDocument();
-    expect(box).toHaveAccessibleDescription('Stay signed in on this device for 24 hours');
+    expect(screen.getByText('Stay signed in on this device for up to 24 hours')).toBeInTheDocument();
+    expect(box).toHaveAccessibleDescription('Stay signed in on this device for up to 24 hours');
     const row = document.querySelector('[data-login-remember]');
     expect(row).toHaveClass('min-h-11', 'press-scale');
   });
@@ -205,7 +207,32 @@ describe('Login — Remember me', () => {
     setupStatusMock.mockResolvedValue(status({ duration_seconds: 6 * 3600 }));
     renderLogin();
     await toPasswordStep();
-    expect(screen.getByText('Stay signed in on this device for 6 hours')).toBeInTheDocument();
+    expect(screen.getByText('Stay signed in on this device for up to 6 hours')).toBeInTheDocument();
+  });
+
+  it('states no inactivity limit when none is shorter than the remembered time', async () => {
+    // A 6 hour preset under the 12 hour idle timeout: the server reports none (0).
+    setupStatusMock.mockResolvedValue(status({ duration_seconds: 6 * 3600, idle_seconds: 0 }));
+    renderLogin();
+    await toPasswordStep('alice');
+    fireEvent.click(rememberBox());
+    const dialog = await screen.findByRole('alertdialog');
+    const limits = dialog.querySelector('[data-remember-warning-limits]');
+    expect(limits).toHaveTextContent(
+      "You'll be asked to sign in again after 6 hours, or sooner if an administrator ends your session.",
+    );
+    expect(limits).not.toHaveTextContent(/without activity/);
+  });
+
+  it('states a separate remembered inactivity limit in minutes', async () => {
+    setupStatusMock.mockResolvedValue(status({ idle_seconds: 30 * 60 }));
+    renderLogin();
+    await toPasswordStep('alice');
+    fireEvent.click(rememberBox());
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.querySelector('[data-remember-warning-limits]')).toHaveTextContent(
+      /after 24 hours, after 30 minutes without activity, or sooner/,
+    );
   });
 
   it('shows the box disabled with a reason when the administrator turned it off', async () => {
@@ -247,6 +274,10 @@ describe('Login — Remember me', () => {
     expect(dialog).toHaveTextContent(/For the next 24 hours, anyone who can open this browser/);
     expect(dialog).toHaveTextContent(/use Acme SOC as alice/);
     expect(dialog).toHaveTextContent(/shared, public, or kiosk computers/);
+    // Every limit that signs a remembered device out, inactivity included.
+    expect(dialog.querySelector('[data-remember-warning-limits]')).toHaveTextContent(
+      "You'll be asked to sign in again after 24 hours, after 12 hours without activity, or sooner if an administrator ends your session.",
+    );
     const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
     await waitFor(() => expect(cancel).toHaveFocus());
     // Not destructive: the confirm is the normal primary button, never red.

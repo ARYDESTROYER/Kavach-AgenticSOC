@@ -15,9 +15,11 @@
  *
  * Round 12 (Remember me): a remembered session carries a compact "Remembered" badge
  * (its end time in the tooltip), every row shows in an "Expires" column when the
- * server will end it (the live policy, computed by the backend), and "Forget this
- * device" clears the username this browser keeps for the sign-in page (it does not
- * sign anyone out).
+ * server will end it (the live policy, computed by the backend: the earlier of the
+ * inactivity deadline and the hard limit), a session that already ended under the
+ * live policy reads "Ended (inactive)" / "Ended (time limit)" and is never shown as
+ * remembered, and "Forget this device" clears the username this browser keeps for
+ * the sign-in page (it does not sign anyone out).
  */
 import * as React from 'react';
 import {
@@ -84,6 +86,62 @@ export function sessionUntilLabel(iso?: string | null): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Whether a session can no longer be used: revoked, or ended under the live policy
+ * (the backend's `active: false`, e.g. after a period of inactivity).
+ */
+export function sessionEnded(s: Pick<Session, 'revoked' | 'active'>): boolean {
+  return Boolean(s.revoked) || s.active === false;
+}
+
+/** The plain label for a session that ended on its own (not revoked). */
+export function sessionEndedLabel(s: Pick<Session, 'ended_reason'>): string {
+  switch (s.ended_reason) {
+    case 'idle_expired':
+      return 'Ended (inactive)';
+    case 'absolute_expired':
+      return 'Ended (time limit)';
+    default:
+      return 'Ended';
+  }
+}
+
+/**
+ * True when a live session ends sooner through inactivity than through its hard
+ * limit: `expires_at` (the earlier of the two) then moves later with each use, up
+ * to `effective_absolute_expires_at`.
+ */
+function idleEndsFirst(s: Pick<Session, 'expires_at' | 'effective_absolute_expires_at'>): boolean {
+  const end = Date.parse(s.expires_at ?? '');
+  const latest = Date.parse(s.effective_absolute_expires_at ?? '');
+  return !Number.isNaN(end) && !Number.isNaN(latest) && latest - end > 60_000;
+}
+
+/** The tooltip for the "Expires" cell of a live session. */
+export function sessionExpiresTitle(
+  s: Pick<Session, 'expires_at' | 'effective_absolute_expires_at'>,
+): string {
+  if (idleEndsFirst(s)) {
+    return `${formatTimestamp(s.expires_at)} if it isn't used again, ${formatTimestamp(
+      s.effective_absolute_expires_at,
+    )} at the latest`;
+  }
+  return formatTimestamp(s.expires_at);
+}
+
+/** The tooltip for the "Remembered" badge of a live session. */
+export function sessionRememberedTitle(
+  s: Pick<Session, 'expires_at' | 'effective_absolute_expires_at'>,
+): string | undefined {
+  const end = sessionUntilLabel(s.expires_at);
+  if (!end) return undefined;
+  if (idleEndsFirst(s)) {
+    const latest = sessionUntilLabel(s.effective_absolute_expires_at);
+    return `Remembered until ${end} if it isn't used again, ${latest} at the latest`;
+  }
+  return `Remembered until ${end}`;
 }
 
 /** A "Browser on OS" device label from the parsed UA fields. */
@@ -172,25 +230,21 @@ export function SessionsTable({
                 </Badge>
               ) : null}
             </div>
-            {s.client_type || (s.remember && !s.revoked) ? (
+            {s.client_type || (s.remember && !sessionEnded(s)) ? (
               <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
                 {s.client_type ? (
                   <span className="text-xs text-muted-foreground">
                     {humanizeToken(String(s.client_type))}
                   </span>
                 ) : null}
-                {s.remember && !s.revoked ? (
+                {s.remember && !sessionEnded(s) ? (
                   // Compact so the table keeps its actions in view; the end time is in
-                  // the Expires column and the tooltip.
+                  // the Expires column and the tooltip. Never on an ended session.
                   <Badge
                     variant="outline"
                     className="text-2xs"
                     data-session-remembered
-                    title={
-                      sessionUntilLabel(s.expires_at)
-                        ? `Remembered until ${sessionUntilLabel(s.expires_at)}`
-                        : undefined
-                    }
+                    title={sessionRememberedTitle(s)}
                   >
                     Remembered
                   </Badge>
@@ -238,12 +292,23 @@ export function SessionsTable({
       id: 'expires',
       header: 'Expires',
       cell: (s) =>
-        s.revoked || !s.expires_at ? (
+        s.revoked ? (
+          <span className="text-sm text-muted-foreground">{DASH}</span>
+        ) : s.active === false ? (
+          // Ended under the live policy (e.g. inactivity): never a future time.
+          <span
+            className="whitespace-nowrap text-sm text-muted-foreground"
+            title={s.expires_at ? `Ended ${formatTimestamp(s.expires_at)}` : undefined}
+            data-session-ended
+          >
+            {sessionEndedLabel(s)}
+          </span>
+        ) : !s.expires_at ? (
           <span className="text-sm text-muted-foreground">{DASH}</span>
         ) : (
           <span
             className="whitespace-nowrap text-sm text-muted-foreground"
-            title={formatTimestamp(s.expires_at)}
+            title={sessionExpiresTitle(s)}
             data-session-expires
           >
             {humanizeUntil(s.expires_at)}
