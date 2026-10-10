@@ -131,6 +131,26 @@ function cnCalls(text: string): string[] {
 /** A sticky offset BELOW the top bar: `top-[calc(var(--header-h) + …)]`, any variant prefix. */
 const OFFSET_BELOW_HEADER = /(?:^|[\s'"`:])top-\[calc\(var\(--header-h\)\s*\+/;
 
+/** An overflow on the material itself: it would clip (or scroll into view) the fade below it. */
+const SELF_OVERFLOW = /(?:^|[\s'"`:])overflow-(?:x-|y-)?(?:auto|hidden|scroll|clip)\b/;
+
+function selfOverflowMaterials(): string[] {
+  const found: string[] = [];
+  for (const file of walk(SRC)) {
+    const rel = path.relative(SRC, file).split(path.sep).join('/');
+    const text = fs
+      .readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|\s)\/\/.*$/gm, '$1');
+    for (const call of cnCalls(text)) {
+      if (/\bmaterial(?:Bar|Thick)\b/.test(call) && SELF_OVERFLOW.test(call)) {
+        found.push(`${rel}: cn(${call.replace(/\s+/g, ' ').slice(0, 140)}…)`);
+      }
+    }
+  }
+  return found;
+}
+
 function offsetMaterials(): string[] {
   const found: string[] = [];
   for (const file of walk(SRC)) {
@@ -155,6 +175,13 @@ describe('material gate: sticky materials pin flush under the top bar', () => {
   it('no material composition carries a top offset below --header-h', () => {
     const found = offsetMaterials();
     expect(found, found.join('\n')).toEqual([]);
+  });
+
+  it('no material sets its own overflow (the scroll-edge fade hangs below it)', () => {
+    const found = selfOverflowMaterials();
+    expect(found, found.join('\n')).toEqual([]);
+    expect(SELF_OVERFLOW.test("'sticky z-10 overflow-x-auto border-y'")).toBe(true);
+    expect(SELF_OVERFLOW.test("'sticky z-10 border-y'")).toBe(false);
   });
 
   it('detects the slit pattern it guards (self-test on a synthetic composition)', () => {

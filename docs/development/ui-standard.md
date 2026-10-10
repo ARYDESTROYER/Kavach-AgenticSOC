@@ -117,11 +117,13 @@ opacity stays at or above 0.80 so 12px secondary text keeps AA; on a material, s
 text uses `text-foreground` or `text-secondary-foreground` at `font-medium`, and colour
 lives on solid chips (a sticky table header lifts its column labels to
 `text-secondary-foreground`). Under sticky chrome the scroll-edge fade replaces a hard
-divider: `PageHeader`, `ControlBar`, `FilterBar` and `TableHeader` with `sticky`, and
-`MaterialBar`, show it only while content is scrolled beneath the pinned bar
-(`useScrollEdge` / `useScrollEdgeRef`), and drop their own hairline while pinned. Each
-recipe has its own opaque fallback (`--material-solid`: the background for a bar, the
-popover colour for a thick pane), so a solid fallback never changes the surface's
+divider: `PageHeader`, `ControlBar`, `FilterBar` and `TableHeader` with `sticky`,
+`MaterialBar` and the Settings section strip show it only while content is scrolled
+beneath the pinned bar (`useScrollEdge` / `useScrollEdgeRef`), and drop their own
+hairline while pinned. The fade hangs below the bar, so a material never sets `overflow`
+on itself (a horizontally scrolling row goes inside it). Each recipe has its own opaque
+token (`--material-solid`: the background for a bar, the popover colour for a thick
+pane), which both the fade and every solid fallback paint, so neither changes the surface's
 colour. Never animate `backdrop-filter`. `src/design-system/__tests__/material-gate.test.ts`
 fails on a new page-local blur or translucent sticky fill.
 
