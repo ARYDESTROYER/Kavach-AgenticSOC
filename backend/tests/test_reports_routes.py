@@ -377,7 +377,9 @@ async def test_chat_history_outage_is_503_on_add_and_create(monkeypatch):
         async def down(*_a: Any, **_k: Any):
             raise ChatHistoryUnavailable("kv down")
 
-        monkeypatch.setattr(h.state.chat_conversations, "get", down)
+        # Every chat-history read path (the exchange read, the existence check).
+        for name in ("get", "get_exchange", "exists"):
+            monkeypatch.setattr(h.state.chat_conversations, name, down)
         for resp in (await add(h.client, cid, mid, block_id="b1"),
                      await h.client.post("/api/reports", json={"conversation_id": cid})):
             assert resp.status_code == 503
@@ -385,7 +387,7 @@ async def test_chat_history_outage_is_503_on_add_and_create(monkeypatch):
         assert (await h.client.get("/api/reports")).json()["reports"] == []
 
 
-async def test_report_full_at_forty_items_is_409():
+async def test_report_full_at_sixty_items_is_409():
     async with harness() as h:
         cid, mid = await seed_answer(h.state)
         first = (await add(h.client, cid, mid, block_id="b1")).json()["report"]
@@ -398,7 +400,7 @@ async def test_report_full_at_forty_items_is_409():
         resp = await add(h.client, cid, mid, block_id="b2")
         assert resp.status_code == 409
         assert resp.json()["detail"] == {
-            "code": "report_full", "message": "Report is full (40 items).", "reason": "items",
+            "code": "report_full", "message": f"Report is full ({MAX_REPORT_ITEMS} items).", "reason": "items",
         }
 
 

@@ -18,6 +18,12 @@
  *
  * Long transcripts: each card is `content-visibility: auto` with an intrinsic size, so
  * off-screen charts skip layout and paint but stay in the accessibility tree.
+ *
+ * Static mode (print and static exports, Round 12 WP-REP R6/R7/R13): no menu, no Add to
+ * report, no provenance glyph (its "01/10" icon read as a stray control on paper; an AI
+ * block still says "Values stated by the model"), no `content-visibility` (a skipped
+ * subtree can print blank), a title that wraps instead of truncating, and every control
+ * that could still render is marked `data-print-hide`.
  */
 import * as React from 'react';
 import {
@@ -36,6 +42,7 @@ import {
 
 import { cn } from '@/lib/cn';
 import { copyText } from '@/lib/clipboard';
+import { UTF8_BOM } from '@/lib/download';
 import { focusRing } from '@/lib/ui-recipes';
 import {
   DropdownMenu,
@@ -250,6 +257,7 @@ export function BlockBody({
         <ReportView
           block={block}
           blockIndex={index}
+          staticMode={staticMode}
           renderLeaf={(leaf: LeafBlock, key: string) => (
             // One boundary per leaf: a leaf that cannot render degrades alone (G9).
             <BlockBoundary key={key} id={leaf.id} fallbackText={leaf.fallback_text}>
@@ -384,7 +392,7 @@ export function BlockCard({
   // Bare blocks: prose and notes carry no chrome of their own.
   if (block.type === 'markdown' || block.type === 'callout') {
     return (
-      <div className="min-w-0 [contain-intrinsic-size:auto_80px] [content-visibility:auto]" data-block-type={block.type}>
+      <div className={cn('min-w-0', !staticMode && '[contain-intrinsic-size:auto_80px] [content-visibility:auto]')} data-block-type={block.type}>
         <BlockBody block={block} title={blockTitle(block)} index={index} nested={nested} leafKey={leafKey} staticMode={staticMode} />
       </div>
     );
@@ -486,7 +494,8 @@ export function BlockCard({
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem
               onSelect={() => {
-                if (downloadText(`${stamp()}.csv`, 'text/csv;charset=utf-8', toCSV(tabular))) announce('CSV downloaded');
+                // The BOM makes Excel read the file as UTF-8 (Round 12 WP-REP R15).
+                if (downloadText(`${stamp()}.csv`, 'text/csv;charset=utf-8', `${UTF8_BOM}${toCSV(tabular)}`)) announce('CSV downloaded');
               }}
             >
               <Download className="size-3.5" aria-hidden />
@@ -525,7 +534,8 @@ export function BlockCard({
       aria-labelledby={isBrief ? `${eyebrowId} ${titleId}` : titleId}
       data-block-type={block.type}
       className={cn(
-        'min-w-0 [contain-intrinsic-size:auto_320px] [content-visibility:auto]',
+        'min-w-0',
+        !staticMode && '[contain-intrinsic-size:auto_320px] [content-visibility:auto]',
         nested || bare ? 'pt-1' : 'rounded-lg border border-border/70 px-3 pb-3 pt-2',
       )}
     >
@@ -537,7 +547,11 @@ export function BlockCard({
               Brief
             </p>
           ) : null}
-          <Heading id={titleId} className="truncate text-sm font-semibold text-foreground" title={title}>
+          <Heading
+            id={titleId}
+            className={cn('text-sm font-semibold text-foreground', staticMode ? 'break-words' : 'truncate')}
+            title={staticMode ? undefined : title}
+          >
             {titleNode(block, title)}
           </Heading>
           {captionParts.length ? (
@@ -546,13 +560,15 @@ export function BlockCard({
             </p>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <ProvenanceTag kind={block.provenance} variant="icon" className="px-1" />
-          {showAddToReport && onAddToReport ? (
-            <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
-          ) : null}
-          {staticMode ? null : menu}
-        </div>
+        {staticMode ? null : (
+          <div className="flex shrink-0 items-center gap-0.5" data-print-hide>
+            <ProvenanceTag kind={block.provenance} variant="icon" className="px-1" />
+            {showAddToReport && onAddToReport ? (
+              <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
+            ) : null}
+            {menu}
+          </div>
+        )}
       </figcaption>
 
       {block.provenance === 'ai' && isDataBlock(block) ? (

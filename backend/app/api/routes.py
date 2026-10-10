@@ -17,6 +17,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
+from ..auth.session_limits import (
+    REMEMBER_MAX_SECONDS,
+    effective_roles,
+    limits_for_username,
+    remember_window_seconds,
+)
 from ..build_identity import build_identity_advisories, build_stamp
 from ..config import (
     CAPS_MINIMUMS,
@@ -125,7 +131,9 @@ from .deps import (
     _bearer,
     current_user,
     current_username,
+    evaluate_session,
     get_state,
+    live_session_limits,
     require_admin,
     require_fresh_auth,
     require_permission,
@@ -413,8 +421,9 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # encoded verbatim by the bus (the PRODUCER fences/escapes #9 at its own boundary).
 # --------------------------------------------------------------------------- #
 # Topics the UI may subscribe to. A single case-detail view may also request
-# 'cases:{case_id}' (exact-match topic) — allowed via the prefix below.
-_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent"})
+# 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
+# (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
+_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat"})
 
 
 @router.get("/events")
@@ -491,7 +500,10 @@ class SecretsUpdate(BaseModel):
 
 
 @router.get("/setup/status")
-async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def setup_status(
+    state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
+) -> dict[str, Any]:
     """PUBLIC first-run status. Carries both the legacy wizard fields AND the Wave-1
     OOBE fields (auth/RBAC/user-count) the login/setup screen needs before a session
     exists. ``needs_user`` is true only when auth is enabled and NO users exist yet
@@ -510,6 +522,10 @@ async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
     )
     es_connected = await state.es.ping()
     return {
+        # Round 12 (Remember me): the sign-in page learns the policy here, so no new
+        # public path is needed. Nothing secret: an on/off flag, a duration, and
+        # whether THIS request's transport would refuse a remembered session.
+        "remember_me": _remember_me_status(state, request),
         "setup_complete": p.setup_complete,
         "needs_user": bool(auth_enabled and user_count == 0),
         "auth_enabled": auth_enabled,
@@ -1570,6 +1586,72 @@ def _reject_out_of_range_caps(body: Any) -> None:
         )
 
 
+def _reject_out_of_range_remember_me(body: Any) -> None:
+    """422 on an out-of-range or malformed ``session_policy.remember_me`` value that
+    arrived in a REQUEST BODY (Round 12; ``research/remember-me.md`` §4.1).
+
+    ``RememberMePolicy`` REPAIRS a stored document on load (clamping a duration into
+    1–24 h, dropping a malformed flag) so one bad number can never reset the whole
+    configuration. That repair is the wrong answer for a live edit: an administrator
+    who asks for a 30-minute remembered session must not silently get a 1-hour one.
+    Like :func:`_reject_out_of_range_caps` it inspects the BODY, never the merged
+    document, so an already-stored value stays loadable. The bounds are read off the
+    model, so this can never drift from what the loader enforces."""
+    if not isinstance(body, dict):
+        return
+    policy = body.get("session_policy")
+    if not isinstance(policy, dict):
+        return
+    rm = policy.get("remember_me")
+    if rm is None:
+        return
+    if not isinstance(rm, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid settings: session_policy.remember_me must be an object",
+        )
+    from ..config import RememberMePolicy
+
+    def _bad(field: str, expected: str, raw: Any) -> HTTPException:
+        return HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: session_policy.remember_me.{field} must be "
+                f"{expected} (received {raw!r})"
+            ),
+        )
+
+    for flag in ("enabled", "allow_insecure_http"):
+        if flag in rm and not isinstance(rm[flag], bool):
+            raise _bad(flag, "true or false", rm[flag])
+    lo, hi = RememberMePolicy._DURATION_BOUNDS
+    if "duration_seconds" in rm:
+        raw = rm["duration_seconds"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not lo <= raw <= hi:
+            raise _bad("duration_seconds", f"a whole number of seconds from {lo} to {hi}", raw)
+    ilo, ihi = RememberMePolicy._IDLE_BOUNDS
+    if "idle_seconds" in rm and rm["idle_seconds"] is not None:
+        raw = rm["idle_seconds"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not (
+            raw == 0 or ilo <= raw <= ihi
+        ):
+            raise _bad(
+                "idle_seconds",
+                f"null, 0 (off) or a whole number of seconds from {ilo} to {ihi}",
+                raw,
+            )
+    if "excluded_roles" in rm:
+        roles = rm["excluded_roles"]
+        if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+            raise _bad("excluded_roles", "a list of role names", roles)
+        if len(roles) > RememberMePolicy._MAX_ROLES:
+            raise _bad(
+                "excluded_roles",
+                f"at most {RememberMePolicy._MAX_ROLES} role names",
+                f"{len(roles)} names",
+            )
+
+
 @router.put("/settings")
 async def put_settings(
     body: dict[str, Any],
@@ -1615,6 +1697,7 @@ async def put_settings(
         # the check must see the REQUEST BODY, because `_clamp_caps` repairs the merged
         # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
         _reject_out_of_range_caps(body)
+        _reject_out_of_range_remember_me(body)
         old_prefs = current
         merged = _deep_update(current.model_dump(mode="json"), body)
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.
@@ -1733,6 +1816,9 @@ class ChatConversationPage(BaseModel):
     oldest_retained_at: str | None = None
     limit: int
     offset: int
+    # With ``?q=`` only (Round 12): the full-text search hit its read budget, so older
+    # messages of some conversations were not searched.
+    search_incomplete: bool = False
 
 
 @router.get(
@@ -1768,7 +1854,7 @@ async def list_chat_conversations(
             )
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
-    return {
+    result = {
         "conversations": [item.model_dump(mode="json") for item in page.conversations],
         # ``total`` remains the retained/paginatable count for compatibility.
         "total": page.total,
@@ -1778,6 +1864,9 @@ async def list_chat_conversations(
         "limit": limit,
         "offset": offset,
     }
+    if q and q.strip():
+        result["search_incomplete"] = bool(getattr(page, "search_incomplete", False))
+    return result
 
 
 @router.get(
@@ -2837,14 +2926,22 @@ async def playbook_update(
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
 async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
-    # Served through the shared short-TTL page cache (api/metrics_shared) so the
-    # Overview's LIVE 5s poll re-serves one scan instead of re-fetching 2000 full
-    # documents per refresh. Keyed by (store identity, limit) — Demo Mode's store
-    # swap self-invalidates, and the 2000-row limit keeps this response's
-    # truncation semantics byte-identical.
-    from .metrics_shared import fetch_case_page
+    # Round 12: the SAME all-time case population the posture rollups read (shared
+    # short-TTL cache, api/metrics_shared — one read serves the Overview's whole LIVE
+    # fan-out), not a newest-2,000 page: every case when the store holds no more than
+    # the rollups' bound, else its newest cases with the EXACT store total, so the
+    # ``retrieval_history`` truncation flag stays honest. Keyed by store identity —
+    # Demo Mode's store swap self-invalidates. An unreadable store is an error, never
+    # a page of zeros.
+    from . import routes_metrics
+    from .metrics_shared import fetch_case_population
 
-    cases, total = await fetch_case_page(state.cases, 2000)
+    population = await fetch_case_population(
+        state.cases, span_hours=None, limit=routes_metrics._STORE_FETCH_LIMIT
+    )
+    if not population.load_ok:
+        raise HTTPException(status_code=503, detail="The case store could not be read")
+    cases, total = population.cases, population.scope_total
     out = compute_metrics(cases, total_cases=total)
     try:
         out["cost"] = await state.usage_store.summary(window_hours=max(1, window_hours))
@@ -2996,6 +3093,9 @@ async def demo_disable(
 class LoginBody(BaseModel):
     username: str
     password: str
+    # Round 12: "Remember me" (additive; the proxies forward arbitrary JSON). The
+    # server decides eligibility (``_remember_decision``) — a request is never a grant.
+    remember: bool = False
 
 
 def _resolved_role(state: AppState, user) -> str:
@@ -3013,9 +3113,229 @@ def _session_policy(state: AppState):
     return getattr(state.prefs, "session_policy", None)
 
 
+# --------------------------------------------------------------------------- #
+# Remember me (Round 12, SPEC D14). One cookie helper replaces the five copies:
+# a REMEMBERED sign-in gets a persistent cookie (Max-Age = the policy duration, the
+# JWT ``exp`` matches); every other sign-in gets a browser-session cookie (no
+# Max-Age) bounded by the server's idle/absolute limits. The cookie NAME is an
+# existing wire identifier and is unchanged (AGENTS.md naming contract).
+# --------------------------------------------------------------------------- #
+_SESSION_COOKIE = "tlsoc_token"
+
+# Revocations this session's own user asked for on this device (logout, "Sign out
+# this device"): /auth/me reports no reason for them.
+_DELIBERATE_SIGNOUTS = frozenset({"logout", "self_signout"})
+
+# Why a remember request was refused (or ``ok`` / ``not_requested``). Closed set.
+REMEMBER_REASONS = ("ok", "not_requested", "disabled", "role_excluded", "insecure_transport")
+
+
+def _set_session_cookie(
+    response: Response, state: AppState, token: str, *, remember_seconds: int = 0
+) -> None:
+    """Set the session cookie. ``remember_seconds > 0`` makes it persistent."""
+    kwargs: dict[str, Any] = {
+        "httponly": True,
+        "samesite": "lax",
+        "secure": bool(state.secrets.auth_cookie_secure),
+        "path": "/",
+    }
+    if remember_seconds > 0:
+        kwargs["max_age"] = int(remember_seconds)
+    response.set_cookie(_SESSION_COOKIE, token, **kwargs)
+
+
+def _clear_session_cookie(response: Response, state: AppState) -> None:
+    """Clear the session cookie with the SAME attributes it was set with."""
+    response.delete_cookie(
+        _SESSION_COOKIE,
+        path="/",
+        samesite="lax",
+        secure=bool(state.secrets.auth_cookie_secure),
+        httponly=True,
+    )
+
+
+def _host_is_loopback(host: str) -> bool:
+    """Whether a ``Host``-style value (optionally with a port) names this machine."""
+    import ipaddress
+
+    value = (host or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("["):  # [::1]:8080
+        end = value.find("]")
+        value = value[1:end] if end > 0 else value[1:]
+    elif value.count(":") == 1:  # host:port (a bare IPv6 address has several colons)
+        value = value.split(":", 1)[0]
+    value = value.rstrip(".")
+    if value == "localhost" or value.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+# Headers a reverse proxy adds when it forwards a request. Their presence means the
+# request did not come straight from a browser on this machine, whatever ``Host`` says.
+_FORWARDING_HEADERS = (
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+)
+
+
+def _peer_is_loopback(request: Request) -> bool:
+    import ipaddress
+
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip().lower()
+    if not host:
+        return False
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_is_loopback(request: Request | None) -> bool:
+    """True only for a DIRECT local request: the TCP peer is a loopback address, the
+    ``Host`` header names this machine, and no reverse-proxy forwarding header is
+    present. A proxied request — even one whose ``Host`` was rewritten to
+    ``127.0.0.1`` by a proxy on the same host — never counts, because the browser
+    behind the proxy may be anywhere on the network (OWASP ASVS 3.3.1). The
+    development server's proxy (``./scripts/run-demo.sh``) forwards without these
+    headers, so a browser on the same machine keeps Remember me there."""
+    if request is None:
+        return False
+    if any(request.headers.get(name) for name in _FORWARDING_HEADERS):
+        return False
+    if not _peer_is_loopback(request):
+        return False
+    return _host_is_loopback(request.headers.get("host") or (request.url.hostname or ""))
+
+
+def _remember_insecure(state: AppState, request: Request | None) -> bool:
+    """Whether a persistent cookie would cross plain HTTP to a network origin: the
+    cookie is not ``Secure`` (``AUTH_COOKIE_SECURE`` off) and the request is not a
+    direct local one (see :func:`_request_is_loopback`). OWASP ASVS 3.3.1."""
+    if bool(getattr(state.secrets, "auth_cookie_secure", False)):
+        return False
+    return not _request_is_loopback(request)
+
+
+def _remember_policy(state: AppState):
+    return getattr(_session_policy(state), "remember_me", None)
+
+
+def _remember_me_status(state: AppState, request: Request | None) -> dict[str, Any]:
+    """The PUBLIC ``/setup/status`` ``remember_me`` block.
+
+    Non-secret by construction: an on/off flag, the lifetime a new remembered
+    sign-in gets (the policy duration capped by the absolute lifetime), whether THIS
+    request's transport would refuse it, whether the session cookie is marked
+    ``Secure`` (observable on every ``Set-Cookie`` anyway — lets the sign-in page and
+    the Session policy editor tell "plain HTTP" from "HTTPS without secure cookies"),
+    and how long a sign-in WITHOUT Remember me lasts (the token lifetime,
+    ``AUTH_TOKEN_HOURS``)."""
+    rm = _remember_policy(state)
+    enabled = bool(getattr(rm, "enabled", False))
+    duration = remember_window_seconds(_session_policy(state))
+    if not duration:
+        duration = int(getattr(rm, "duration_seconds", 0) or 0)
+    insecure_blocked = bool(
+        enabled
+        and not bool(getattr(rm, "allow_insecure_http", False))
+        and _remember_insecure(state, request)
+    )
+    standard = int(getattr(getattr(state, "auth", None), "token_seconds", 0) or 0)
+    return {
+        "enabled": enabled,
+        "duration_seconds": duration,
+        "insecure_blocked": insecure_blocked,
+        "secure_cookies": bool(getattr(state.secrets, "auth_cookie_secure", False)),
+        "standard_session_seconds": standard,
+    }
+
+
+def _remember_decision(
+    state: AppState, request: Request | None, user: Any, requested: bool
+) -> tuple[int, str]:
+    """Server-side "Remember me" eligibility: ``(remember_seconds, reason)``.
+
+    ``remember_seconds`` is the remembered lifetime when granted (the policy
+    duration, capped by the standard absolute lifetime), else 0. Reasons, in
+    precedence order: ``not_requested``, ``disabled`` (policy off),
+    ``role_excluded`` (the account's stored role OR its effective role — every
+    principal is effectively ``super_admin`` while RBAC is off — is excluded), and
+    ``insecure_transport`` (see :func:`_remember_insecure`, unless the admin allowed
+    plain HTTP). ``ok`` when granted. MFA and step-up are never affected. The same
+    exclusion is re-checked on every request (``deps.live_session_limits``)."""
+    if not requested:
+        return (0, "not_requested")
+    rm = _remember_policy(state)
+    if rm is None or not bool(getattr(rm, "enabled", False)):
+        return (0, "disabled")
+    excluded = {
+        str(r).strip().lower() for r in (getattr(rm, "excluded_roles", None) or []) if str(r).strip()
+    }
+    if excluded:
+        roles = set(effective_roles(state.prefs, getattr(user, "role", "")))
+        roles.add(str(_resolved_role(state, user) or "").strip().lower())
+        if roles & excluded:
+            return (0, "role_excluded")
+    if not bool(getattr(rm, "allow_insecure_http", False)) and _remember_insecure(state, request):
+        return (0, "insecure_transport")
+    duration = min(REMEMBER_MAX_SECONDS, remember_window_seconds(_session_policy(state)))
+    if duration <= 0:
+        return (0, "disabled")
+    return (duration, "ok")
+
+
+def _duration_label(seconds: int) -> str:
+    """A compact audit label for a lifetime: ``24h`` / ``90m``."""
+    seconds = int(seconds or 0)
+    if seconds > 0 and seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    return f"{max(1, round(seconds / 60))}m"
+
+
+def _token_expires_iso(state: AppState, token: str) -> str:
+    """The ISO ``exp`` of a token this server just minted ("" when unknown)."""
+    try:
+        exp = int((state.auth.claims_of(token) or {}).get("exp", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if exp <= 0:
+        return ""
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _remember_fields(
+    state: AppState, token: str, remember_seconds: int, reason: str
+) -> dict[str, Any]:
+    """The additive ``remembered`` / ``remember_reason`` / ``session_expires_at``
+    fields every session-minting response carries."""
+    return {
+        "remembered": remember_seconds > 0,
+        "remember_reason": reason if reason in REMEMBER_REASONS else "disabled",
+        "session_expires_at": _token_expires_iso(state, token),
+    }
+
+
 async def _register_session(
     state: AppState, request: Request, token: str, *, mfa_method: str = "",
-    refresh_hash: str = "",
+    refresh_hash: str = "", remember_seconds: int = 0,
 ) -> str:
     """Session-create HOOK (Wave 3) — called at EVERY cookie-set site (login,
     mfa/verify, sso/callback). Decodes the freshly-minted token to read its ``sid``/
@@ -3035,19 +3355,33 @@ async def _register_session(
         username = str(claims.get("sub") or "")
         tv = int(claims.get("tv", 0) or 0)
         policy = _session_policy(state)
-        idle = int(getattr(policy, "idle_timeout", 0) or 0)
-        absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        limits = limits_for_username(state, username)
+        remembered = int(remember_seconds or 0) > 0
+        if remembered:
+            # Stamp the REMEMBERED limits on the row (display + prune); the live
+            # policy stays authoritative in is_active().
+            absolute = int(remember_seconds)
+            idle = limits.remember_idle if 0 < limits.remember_idle <= absolute else absolute
+        else:
+            idle, absolute = limits.idle, limits.absolute
         meta = session_metadata(request)
         await sessions.create(
             sid=sid, username=username, token_version=tv,
             refresh_hash=refresh_hash or "",
             idle_timeout=idle, absolute_lifetime=absolute,
-            mfa_method=mfa_method or "", **meta,
+            mfa_method=mfa_method or "",
+            remember=remembered,
+            remember_seconds=int(remember_seconds or 0) if remembered else 0,
+            token_expires_at=_token_expires_iso(state, token),
+            **meta,
         )
         await _audit_session(
             state, "session_create", username, sid,
-            f"new session ({meta.get('client_type', '') or 'unknown'} "
-            f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})".strip(),
+            (
+                f"new session ({meta.get('client_type', '') or 'unknown'} "
+                f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})"
+                + (f" remembered {_duration_label(remember_seconds)}" if remembered else "")
+            ).strip(),
         )
         # Best-effort new-device notification (a first session for this UA/device).
         try:
@@ -3098,18 +3432,24 @@ async def auth_login(
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
-    token = auth.authenticate(body.username, body.password)
-    if not token:
+    # Constant-cost credential check (no token yet: the lifetime depends on the
+    # Remember-me decision below, which needs the verified principal's role).
+    user = auth.principal(body.username) if auth.check_password(
+        body.username, body.password
+    ) else None
+    if user is None:
         await state.control_audit.record(
             action_type=ActionType.AUTH_EVENT, surface="auth", actor=body.username or "",
             result_summary="login failed",
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
-    user = auth.principal(body.username) or auth.verify(token)
     # --- MFA phase 1 (Wave 2 / F3): the password is correct, but the user has MFA
     # enabled (or its role is enforced). Do NOT mint a session cookie/token here —
     # return a SHORT-LIVED pending token the client exchanges at /auth/mfa/verify
-    # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED. ---
+    # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED.
+    # Round 12: the user's Remember-me REQUEST rides in the SIGNED pending token
+    # (``rm``); eligibility is decided when the session is minted. Remember me never
+    # skips the second factor. ---
     if auth.requires_mfa(user.username):
         # --- Mandated-enrollment phase 1 (additive): the account is REQUIRED to use
         # MFA (per-user ``mfa_required`` mandate or role enforce_for_roles) but has
@@ -3125,7 +3465,7 @@ async def auth_login(
             return {
                 "requires_mfa": True,
                 "mfa_enrollment_required": True,
-                "pending_token": auth.begin_mfa(user.username),
+                "pending_token": auth.begin_mfa(user.username, remember=body.remember),
             }
         await state.control_audit.record(
             action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
@@ -3133,8 +3473,15 @@ async def auth_login(
         )
         return {
             "requires_mfa": True,
-            "pending_token": auth.begin_mfa(user.username),
+            "pending_token": auth.begin_mfa(user.username, remember=body.remember),
         }
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, user, body.remember
+    )
+    minted = auth.mint_session(user.username, remember_seconds=remember_seconds)
+    if minted is None:  # pragma: no cover — the principal was verified above
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token, _minted_user = minted
     # Best-effort: record the login timestamp (multi-user store only).
     try:
         await state.users.update(user.username, last_login_at=iso_now())
@@ -3142,15 +3489,16 @@ async def auth_login(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-        result_summary="login ok",
+        result_summary=(
+            f"login ok (remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else "login ok"
+        ),
     )
     # Wave 3: register the session (sid/tv from the token) with request metadata.
-    await _register_session(state, request, token, mfa_method="password")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method="password", remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -3159,28 +3507,110 @@ async def auth_login(
             "must_change_password": bool(user.must_change_password),
             "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
 @router.get("/auth/me")
-async def auth_me(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def auth_me(
+    request: Request, response: Response, state: AppState = Depends(get_state)
+) -> dict[str, Any]:
+    """The session state the console boots from (PUBLIC).
+
+    Round 12: REGISTRY-AWARE. Beyond the JWT signature/``exp``/active-user check it
+    runs the same session-registry evaluation as every protected route (revocation,
+    per-user token version, idle and absolute limits — standard or remembered). When
+    the session has ended it answers ``authenticated: false`` with a ``reason``
+    (``revoked`` | ``idle_expired`` | ``absolute_expired`` | ``tv_mismatch``) and
+    clears the cookie, so the console lands on the sign-in page instead of a shell
+    where every call 401s. A session-store outage keeps trusting the JWT (as every
+    protected route does). A live session carries an additive ``session`` summary
+    ``{remember, expires_at, idle_expires_at}``."""
     auth = state.auth
     if not auth.is_enabled:
         return {"authenticated": True, "auth_enabled": False, "user": None}
-    token = request.cookies.get("tlsoc_token") or _bearer(request)
+    cookie_token = request.cookies.get(_SESSION_COOKIE)
+    token = cookie_token or _bearer(request)
     user = auth.verify(token) if token else None
+
+    def _ended(reason: str | None, lifetime: int | None = None,
+               remembered: bool | None = None) -> dict[str, Any]:
+        if cookie_token:
+            _clear_session_cookie(response, state)
+        out: dict[str, Any] = {"authenticated": False, "auth_enabled": True, "user": None}
+        if reason:
+            out["reason"] = reason
+        if lifetime:
+            out["lifetime_seconds"] = int(lifetime)
+        if remembered is not None:
+            out["remembered"] = bool(remembered)
+        return out
+
+    if user is None:
+        if not token:
+            return {"authenticated": False, "auth_enabled": True, "user": None}
+        expired = auth.expired_session_claims(token)
+        if expired is not None:
+            # A token this server signed whose own lifetime ran out: the session
+            # ended at its absolute limit (for a remembered sign-in, the policy
+            # duration — "signed out after 24 hours").
+            try:
+                lifetime = int(expired.get("exp", 0)) - int(expired.get("iat", 0))
+            except (TypeError, ValueError):
+                lifetime = 0
+            return _ended("absolute_expired", lifetime if lifetime > 0 else None,
+                          expired.get("rm") is True)
+        return _ended(None)
+    verdict = await evaluate_session(request, state, auth, user, token)
+    if verdict.reason is not None:
+        if verdict.reason == "revoked" and str(
+            (verdict.row or {}).get("revoke_reason") or ""
+        ) in _DELIBERATE_SIGNOUTS:
+            # A deliberate sign-out of this very session needs no explanation.
+            return _ended(None)
+        lifetime: int | None = None
+        row_remembered: bool | None = None
+        if verdict.row is not None and verdict.limits is not None:
+            idle, absolute = verdict.limits.for_row(verdict.row)
+            if verdict.reason == "absolute_expired":
+                lifetime = absolute or None
+            elif verdict.reason == "idle_expired":
+                lifetime = idle or None
+            row_remembered = bool(verdict.row.get("remember"))
+        return _ended(verdict.reason, lifetime, row_remembered)
+    session: dict[str, Any] = {"remember": bool(getattr(user, "remember", False))}
+    if verdict.row is not None and verdict.limits is not None:
+        from ..stores.sessions import SessionStore
+
+        expires_at, idle_expires_at = SessionStore.effective_expiry(
+            verdict.row, **verdict.limits.kwargs()
+        )
+        # Remembered only while the LIVE policy still remembers this principal
+        # (Remember me on, role not excluded).
+        remembered = bool(verdict.row.get("remember")) and verdict.limits.remember_enabled
+        session.update(
+            remember=remembered,
+            expires_at=expires_at,
+            idle_expires_at=idle_expires_at,
+        )
+        if cookie_token and bool(verdict.row.get("remember")) and not remembered:
+            # Remember me was turned off or this role was excluded after the sign-in:
+            # turn the persistent cookie into a browser-session cookie, so it no
+            # longer survives a browser restart (the server already judges the
+            # session by the standard limits).
+            _set_session_cookie(response, state, cookie_token)
+    else:
+        session["expires_at"] = _token_expires_iso(state, token or "")
     return {
-        "authenticated": user is not None,
+        "authenticated": True,
         "auth_enabled": True,
-        "user": (
-            {
-                "username": user.username,
-                "role": _resolved_role(state, user),
-                "must_change_password": bool(user.must_change_password),
-                "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
-            }
-            if user else None
-        ),
+        "user": {
+            "username": user.username,
+            "role": _resolved_role(state, user),
+            "must_change_password": bool(user.must_change_password),
+            "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
+        },
+        "session": session,
     }
 
 
@@ -3203,7 +3633,7 @@ async def auth_logout(
             except Exception:  # noqa: BLE001
                 pass
     # Mirror the set_cookie attributes so the cookie is reliably cleared.
-    response.delete_cookie("tlsoc_token", samesite="lax", secure=state.secrets.auth_cookie_secure)
+    _clear_session_cookie(response, state)
     return {"ok": True}
 
 
@@ -3286,9 +3716,13 @@ async def list_my_sessions(request: Request, state: AppState = Depends(get_state
     principal = _require_session(state, request)
     rows = await state.sessions.list_for(principal.username)
     current_sid = getattr(principal, "sid", None)
+    limits = live_session_limits(state, principal)
     return {
         "sessions": [
-            {**state.sessions.public(r), "current": bool(current_sid and r.get("sid") == current_sid)}
+            {
+                **state.sessions.public(r, limits),
+                "current": bool(current_sid and r.get("sid") == current_sid),
+            }
             for r in rows
         ],
         "current_sid": current_sid or "",
@@ -3304,7 +3738,12 @@ async def revoke_my_session(
     row = await state.sessions.get(sid)
     if row is None or _norm_user(row.get("username", "")) != _norm_user(principal.username):
         raise HTTPException(status_code=404, detail="session not found")
-    ok = await state.sessions.revoke(sid, by=principal.username, reason="user_revoke")
+    # Round 12: signing out THIS device is a deliberate sign-out (like logout), so the
+    # sign-in page must not later say it was "ended from another device".
+    self_signout = bool(getattr(principal, "sid", None)) and principal.sid == sid
+    ok = await state.sessions.revoke(
+        sid, by=principal.username, reason="self_signout" if self_signout else "user_revoke"
+    )
     if ok:
         await _audit_session(state, "session_revoke", principal.username, sid, "self revoke")
     return {"ok": True, "revoked": bool(ok)}
@@ -3369,15 +3808,26 @@ async def auth_refresh(
         raise HTTPException(status_code=401, detail={"code": "session_invalid", "reason": "unknown_refresh"})
     sid = str(row.get("sid") or "")
     username = str(row.get("username") or "")
-    # The session must still be usable (not revoked/expired) to rotate.
-    policy = _session_policy(state)
-    reason = state.sessions.is_active(
-        row, idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
-        absolute_lifetime=int(getattr(policy, "absolute_lifetime", 0) or 0),
-    )
+    # The session must still be usable (not revoked/expired) to rotate — judged by
+    # the limits that apply to THIS row (standard or remembered, Round 12) for the
+    # account's LIVE role (an excluded role is never remembered).
+    limits = limits_for_username(state, username)
+    reason = state.sessions.is_active(row, **limits.kwargs())
     if reason is not None:
         raise HTTPException(status_code=401, detail={"code": "session_expired", "reason": reason})
-    minted = state.auth.mint_session(username)
+    # A remembered session stays remembered, but rotation can never extend it past
+    # its absolute limit (created_at + the remembered duration).
+    remember_seconds = 0
+    if bool(row.get("remember")) and limits.remember_enabled:
+        from ..utils import parse_es_timestamp
+
+        created_dt = parse_es_timestamp(row.get("created_at"))
+        remaining = (
+            int(created_dt.timestamp() + limits.remember_absolute - now_utc().timestamp())
+            if created_dt is not None else limits.remember_absolute
+        )
+        remember_seconds = max(60, min(remaining, limits.remember_absolute))
+    minted = state.auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:
         raise HTTPException(status_code=401, detail={"code": "session_invalid", "reason": "inactive_user"})
     token, _principal = minted
@@ -3387,16 +3837,14 @@ async def auth_refresh(
     # the created_at anchor (absolute lifetime) while the access sid resolves.
     new_refresh = new_refresh_token()
     new_sid = str((state.auth.claims_of(token) or {}).get("sid") or "")
+    idle_for_row, _absolute_for_row = limits.for_row(row)
     await state.sessions.rekey_and_rotate(
         sid, new_sid, hash_refresh(new_refresh),
-        idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
+        idle_timeout=idle_for_row,
+        token_expires_at=_token_expires_iso(state, token),
     )
     await _audit_session(state, "refresh_rotate", username, new_sid, f"rotated from {_short(sid)}")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
-    )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {"token": token, "refresh_token": new_refresh, "sid": new_sid}
 
 
@@ -3443,7 +3891,17 @@ async def admin_list_sessions(
 ) -> dict[str, Any]:
     """Every session across all users (admin console). UI-safe projection."""
     rows = await state.sessions.list_all()
-    return {"sessions": [state.sessions.public(r) for r in rows]}
+    # Each row is projected with ITS owner's live limits (an excluded role is never
+    # shown as remembered); one lookup per user.
+    by_user: dict[str, Any] = {}
+
+    def _limits(row: dict[str, Any]):
+        key = _norm_user(str(row.get("username") or ""))
+        if key not in by_user:
+            by_user[key] = limits_for_username(state, str(row.get("username") or ""))
+        return by_user[key]
+
+    return {"sessions": [state.sessions.public(r, _limits(r)) for r in rows]}
 
 
 @router.post("/admin/sessions/{sid}/revoke")
@@ -3855,7 +4313,13 @@ async def mfa_verify(
         )
         raise HTTPException(status_code=401, detail="invalid code")
     await state.refresh_users()
-    minted = auth.mint_session(username)
+    # Round 12: the Remember-me REQUEST comes only from the SIGNED pending token
+    # (never a body field), and eligibility is decided against the live policy now.
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, auth.principal(username),
+        auth.pending_remember(body.pending_token),
+    )
+    minted = auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:  # pragma: no cover — username verified above
         raise HTTPException(status_code=401, detail="invalid credentials")
     token, principal = minted
@@ -3865,15 +4329,16 @@ async def mfa_verify(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=f"mfa login ok ({method})",
+        result_summary=(
+            f"mfa login ok ({method}; remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else f"mfa login ok ({method})"
+        ),
     )
     # Wave 3: register the session from the freshly-minted token (carries sid/tv).
-    await _register_session(state, request, token, mfa_method=method)
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method=method, remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -3882,6 +4347,7 @@ async def mfa_verify(
             "must_change_password": bool(principal.must_change_password),
             "mfa_enabled": True,
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
@@ -4007,8 +4473,13 @@ async def mfa_enroll_confirm(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
         result_summary="mfa enabled (login-mandated enrollment)",
     )
-    # Mint the FULL session — the /auth/mfa/verify success tail.
-    minted = auth.mint_session(username)
+    # Mint the FULL session — the /auth/mfa/verify success tail (incl. the signed
+    # Remember-me request carried by the pending token, Round 12).
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, auth.principal(username),
+        auth.pending_remember(body.pending_token),
+    )
+    minted = auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:  # pragma: no cover — username verified above
         raise HTTPException(status_code=401, detail="invalid credentials")
     token, principal = minted
@@ -4018,14 +4489,16 @@ async def mfa_enroll_confirm(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary="mfa login ok (totp; enrolled at login)",
+        result_summary=(
+            "mfa login ok (totp; enrolled at login; remembered "
+            f"{_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else "mfa login ok (totp; enrolled at login)"
+        ),
     )
-    await _register_session(state, request, token, mfa_method="totp")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method="totp", remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -4034,6 +4507,7 @@ async def mfa_enroll_confirm(
             "must_change_password": bool(principal.must_change_password),
             "mfa_enabled": True,
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
@@ -4125,6 +4599,7 @@ async def sso_authorize(
     request: Request,
     response: Response,
     provider: str = Query(...),
+    remember: bool = False,  # query parameter (a plain default keeps direct calls safe)
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """PUBLIC: build the IdP authorization URL. Stashes a single-use state+nonce in
@@ -4152,6 +4627,9 @@ async def sso_authorize(
         "nonce": nonce,
         "redirect_uri": redirect_uri,
         "expires_at": iso_now(),
+        # Round 12: the Remember-me REQUEST, bound server-side to this single-use
+        # state; eligibility is decided at the callback against the live policy.
+        "remember": bool(remember),
     })
     response.set_cookie(
         _OIDC_STATE_COOKIE, state_tok, max_age=600, httponly=True, samesite="lax",
@@ -4226,7 +4704,10 @@ async def sso_callback(
         )
         return _fail("user_not_provisioned")
     await state.refresh_users()
-    minted = state.auth.mint_session(username)
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, state.auth.principal(username), rec.get("remember") is True
+    )
+    minted = state.auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:
         return _fail("session_failed")
     token, _principal = minted
@@ -4236,16 +4717,23 @@ async def sso_callback(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=f"sso login ok ({provider_id})",
+        result_summary=(
+            f"sso login ok ({provider_id}; remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else f"sso login ok ({provider_id})"
+        ),
     )
     # Wave 3: register the SSO session from the freshly-minted token (carries sid/tv).
-    await _register_session(state, request, token, mfa_method=f"sso:{provider_id}")
-    redirect = RedirectResponse(url="/", status_code=302)
-    redirect.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method=f"sso:{provider_id}",
+        remember_seconds=remember_seconds,
     )
+    # A refused remember request is reported on the landing URL (a closed reason
+    # vocabulary, never free text) so the console can explain it once.
+    landing = "/"
+    if rec.get("remember") is True and remember_seconds <= 0:
+        landing = f"/?remember_refused={quote_plus(remember_reason)}"
+    redirect = RedirectResponse(url=landing, status_code=302)
+    _set_session_cookie(redirect, state, token, remember_seconds=remember_seconds)
     redirect.delete_cookie(_OIDC_STATE_COOKIE, path="/")  # one-time binding consumed (#38)
     return redirect
 

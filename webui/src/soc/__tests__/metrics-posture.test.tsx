@@ -203,4 +203,28 @@ describe('Metrics posture (Round 3 / F5)', () => {
     expect(screen.getByText('SLA attainment')).toBeInTheDocument();
     expect(screen.getAllByText('TLSOC-1').length).toBeGreaterThan(0);
   });
+
+  it('renders SLA attainment that was not measured as a dash, never 0%', async () => {
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      sla: {
+        enabled: true,
+        evaluated: 0,
+        response_breached: 0,
+        response_at_risk: 0,
+        resolve_breached: 0,
+        resolve_at_risk: 0,
+        attainment_pct: null,
+        attainment_reason: 'no case in this window has a priority level with an SLA target',
+        breaching: [],
+      },
+    });
+    render(<Metrics embedded />);
+    await waitFor(() => expect(screen.getByTestId('metrics-tab-posture')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('metrics-tab-posture'));
+    await waitFor(() => expect(screen.getByText('Attainment')).toBeInTheDocument());
+    const tile = screen.getByText('Attainment').closest('div')?.parentElement as HTMLElement;
+    expect(tile.textContent).toContain('—');
+    expect(tile.textContent).not.toContain('0%');
+  });
 });

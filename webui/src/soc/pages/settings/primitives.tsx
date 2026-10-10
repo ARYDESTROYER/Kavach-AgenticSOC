@@ -16,6 +16,7 @@ import type { LucideIcon } from 'lucide-react';
 import type { ModelConfig, ModelsResponse, Preferences } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
 
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
@@ -180,7 +181,14 @@ export function SectionShell({
     <div className="space-y-8">
       {heading}
       {showToc ? (
-        <div className="sticky top-[calc(var(--header-h)+0.5rem)] z-10 -mx-1 overflow-x-auto border-y border-border/80 bg-background/95 px-1 py-1">
+        // Sticky chrome over the scrolling section: the ONE Console material (solid under
+        // reduced transparency or increased contrast), never a page-local translucent fill.
+        <div
+          className={cn(
+            'sticky top-[calc(var(--header-h)+0.5rem)] z-10 -mx-1 overflow-x-auto border-y border-border/80 px-1 py-1',
+            materialBar,
+          )}
+        >
           <SettingsTOC items={toc!} active={active} orientation="horizontal" className="min-w-max flex-row gap-1" />
         </div>
       ) : null}

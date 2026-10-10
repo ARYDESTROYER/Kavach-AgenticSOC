@@ -44,11 +44,40 @@ export interface AuthUser {
   locale?: string;
 }
 
+/**
+ * Why a session ended (Round 12, GET /api/auth/me `reason`). The server reports it
+ * once, clears the cookie, and the sign-in page explains it calmly.
+ */
+export type SessionEndReason =
+  | 'revoked'
+  | 'idle_expired'
+  | 'absolute_expired'
+  | 'tv_mismatch'
+  | (string & {});
+
+/** The live session summary on an authenticated GET /api/auth/me (Round 12). */
+export interface AuthSessionSummary {
+  /** True when this session came from a "Remember me" sign-in. */
+  remember: boolean;
+  /** When the server will end the session regardless of activity (ISO). */
+  expires_at?: string;
+  /** When the session ends if it stays idle (ISO; moves with activity). */
+  idle_expires_at?: string;
+}
+
 /** GET /api/auth/me — describes whether auth is on and the session state. */
 export interface AuthMe {
   authenticated: boolean;
   auth_enabled: boolean;
   user: AuthUser | null;
+  /** Present when the presented session has ended (registry-aware, Round 12). */
+  reason?: SessionEndReason;
+  /** The limit that ended it, in seconds (e.g. 86400 → "after 24 hours"). */
+  lifetime_seconds?: number;
+  /** Whether the ended session had been remembered. */
+  remembered?: boolean;
+  /** The live session summary (authenticated only). */
+  session?: AuthSessionSummary;
 }
 
 // --------------------------------------------------------------------------- //
@@ -142,6 +171,12 @@ export interface Session {
   /** The client kind (e.g. "web"/"api"/"cli") + the MFA method used at sign-in. */
   client_type?: string | null;
   mfa_method?: string | null;
+  /** True for a "Remember me" sign-in (Round 12). */
+  remember?: boolean;
+  /** The remembered lifetime granted at sign-in, in seconds (0 when not remembered). */
+  remember_seconds?: number;
+  /** When the server ends this session regardless of activity (ISO, live policy). */
+  expires_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -173,7 +208,26 @@ export interface SessionPolicy {
   notify_on_new_device?: boolean;
   /** Email the user when one of their sessions is terminated. */
   notify_on_terminate?: boolean;
+  /** The "Remember me" sign-in policy (Round 12). */
+  remember_me?: RememberMePolicy;
   [key: string]: unknown;
+}
+
+/**
+ * Preferences.session_policy.remember_me (Round 12, SPEC §3.1). Durations are in
+ * SECONDS. The server repairs out-of-range values (1 h .. 24 h).
+ */
+export interface RememberMePolicy {
+  /** Offer "Remember me" on the sign-in page (default true). */
+  enabled?: boolean;
+  /** How long a remembered device stays signed in (3600..86400, default 86400). */
+  duration_seconds?: number;
+  /** Optional inactivity limit for remembered sessions; null = none. */
+  idle_seconds?: number | null;
+  /** Roles that are never remembered. */
+  excluded_roles?: string[];
+  /** Allow a remembered session on a plain-HTTP console (not recommended). */
+  allow_insecure_http?: boolean;
 }
 
 /**
@@ -239,6 +293,34 @@ export interface LoginResult {
   mfa_enrollment_required?: boolean;
   /** A short-lived half-auth token to exchange at /api/auth/mfa/verify. */
   pending_token?: string;
+  /** Round 12: whether this sign-in was remembered (persistent, bounded cookie). */
+  remembered?: boolean;
+  /** Why a remember request was or was not granted. */
+  remember_reason?: RememberReason;
+  /** When the new session's token expires (ISO). */
+  session_expires_at?: string;
+}
+
+/** The server's Remember-me decision (Round 12). */
+export type RememberReason =
+  | 'ok'
+  | 'not_requested'
+  | 'disabled'
+  | 'role_excluded'
+  | 'insecure_transport'
+  | (string & {});
+
+/** GET /api/setup/status `remember_me` — the public sign-in policy (Round 12). */
+export interface RememberMeStatus {
+  enabled: boolean;
+  /** The lifetime a new remembered sign-in gets (the policy duration, capped by the absolute lifetime). */
+  duration_seconds: number;
+  /** True when THIS console's transport would refuse a remembered session. */
+  insecure_blocked: boolean;
+  /** Whether the session cookie is marked Secure (AUTH_COOKIE_SECURE); never a secret. */
+  secure_cookies?: boolean;
+  /** How long a sign-in WITHOUT Remember me lasts (the token lifetime, AUTH_TOKEN_HOURS). */
+  standard_session_seconds?: number;
 }
 
 // --------------------------------------------------------------------------- //
@@ -1060,6 +1142,8 @@ export function configuredSsoById(configured: ConfiguredStatus): SsoClientSecret
 
 export interface SetupStatus {
   setup_complete: boolean;
+  /** Round 12: the public "Remember me" policy for the sign-in page. */
+  remember_me?: RememberMeStatus;
   // Wave-1 OOBE + auth fields (additive).
   needs_user?: boolean;
   auth_enabled?: boolean;
@@ -2882,6 +2966,19 @@ export interface ChatConversation extends ChatConversationSummary {
   messages: ChatConversationMessage[];
   /** Round 12 (SPEC D4): newest message id folded into the stored conversation summary. */
   summary_covers_through?: string | null;
+  /**
+   * Round 12 (WP-API): older messages not in `messages` (the read returns the newest
+   * window). Read them with `GET chat/conversations/{id}/messages?before=<first id>`.
+   */
+  earlier_message_count?: number;
+}
+
+/** `GET /api/chat/conversations/{id}/messages` (Round 12): oldest first, full text. */
+export interface ChatMessagePage {
+  conversation_id: string;
+  messages: ChatConversationMessage[];
+  /** Older messages still before this page (0 = the page starts the conversation). */
+  earlier_message_count: number;
 }
 
 export interface ChatConversationsResponse {
@@ -2894,6 +2991,8 @@ export interface ChatConversationsResponse {
   oldest_retained_at?: string | null;
   limit?: number;
   offset?: number;
+  /** With `?q=` only (Round 12): the search hit its read budget; older messages of some conversations were not searched. */
+  search_incomplete?: boolean;
 }
 
 export interface ChatTable {
@@ -2979,6 +3078,8 @@ export interface ChatResponse {
   clarify?: ChatClarify | null;
   /** Round 12 (SPEC D11): the report the server saved from this answer. */
   saved_report?: ChatSavedReport | null;
+  /** Round 12 (WP-API): the report the answer asked for could not be saved (the answer is saved). */
+  saved_report_error?: ChatReportSaveError | null;
   /** Round 12 (SPEC D3): continuation steps used for the final answer. */
   continued?: number;
   /** Round 12 (SPEC D4): earlier context was summarised in this turn. */
@@ -2999,6 +3100,16 @@ export interface ChatSavedReport {
   id: string;
   title: string;
   items: number;
+  /** Sections of the answer that did not fit the report's item or size limit. */
+  skipped?: number;
+}
+
+/** Round 12 (WP-API): why the report a chat answer asked for was not saved. `message` is a server template. */
+export interface ChatReportSaveError {
+  code: 'report_limit' | 'report_unavailable' | 'report_empty';
+  message: string;
+  /** The same save may work later (offer "Save as report"). */
+  retryable: boolean;
 }
 
 /** `GET /api/chat/turns/active` (SPEC D13). `label` is an engine template. */

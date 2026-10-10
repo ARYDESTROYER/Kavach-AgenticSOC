@@ -9,6 +9,15 @@ export {
   type LoadingStateProps,
 } from './loading';
 export { LoadingBar, type LoadingBarProps } from './loading-bar';
+export {
+  MaterialBar,
+  materialBar,
+  materialThick,
+  useScrollEdge,
+  useScrollEdgeRef,
+  type MaterialBarProps,
+  type UseScrollEdgeOptions,
+} from './material';
 export { SourceMark, type SourceMarkProps } from './source-mark';
 export {
   BUILTIN_CONNECTOR_SOURCE_TYPES,

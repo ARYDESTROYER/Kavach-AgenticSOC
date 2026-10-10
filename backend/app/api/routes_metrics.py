@@ -50,60 +50,68 @@ from ..engine.noise_counters import build_noise_reduction
 from ..state import AppState
 from ..utils import iso_now
 from .deps import get_state, require_permission
-from .metrics_shared import fetch_case_page
+from .metrics_shared import CasePopulation, fetch_case_population, fetch_ledger_span
 
 logger = logging.getLogger("tlsoc.api.metrics")
 router = APIRouter(prefix="/api")
 
-# How many cases we pull from the store before time-bounding in the pure functions.
-# A generous server-side bound (not a 200 client sample) so the posture rollup is
-# computed over up to the most-recent 5000 cases, then window-filtered
-# deterministically. When the store holds MORE than this, the rollup is a partial
-# (newest-N) view; the response carries a ``truncated``/``store_total``/``fetched``
-# marker so a consumer can tell a lower-bound tally from a complete one rather than
-# silently trusting a wrong number.
-_STORE_FETCH_LIMIT = 5000
-_USAGE_FETCH_LIMIT = 5000
+# The most cases ONE rollup reads and holds. Round 12: the rollups no longer read the
+# newest N cases of the WHOLE store — each reads the newest cases of ITS window
+# (``api.metrics_shared.fetch_case_population``: newest-first with the window pushed
+# into the store, stopping after this many rows, so a read never costs more), and the
+# window's size, the store total and the open-now stock are exact COUNT push-downs. A
+# window holding no more cases than this is exact; a larger one is analysed over its
+# newest cases and the response's ``truncated``/``store_total``/``fetched`` marker says
+# so (``store_total`` = the exact number of cases in the rollup's scope, ``fetched`` =
+# cases analysed), so a lower bound is never presented as a complete number.
+_STORE_FETCH_LIMIT = 20000
 _TUNING_FETCH_LIMIT = 1000
+# The longest ``window_hours`` a rollup takes literally (about a century: no case is
+# older). Anything longer is the same population, so it is clamped rather than turned
+# into an out-of-range date (a dashboard query never 500s on a large number).
+_MAX_WINDOW_HOURS = 876_000
+
+
+def _window(window_hours: Any) -> int:
+    """``window_hours`` as a safe non-negative int (0 = all time), clamped to
+    ``_MAX_WINDOW_HOURS``."""
+    try:
+        hours = int(window_hours)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, min(hours, _MAX_WINDOW_HOURS))
+
+
+async def _population(state: AppState, span_hours: int | None) -> CasePopulation:
+    """The exact case population a rollup needs: every case created in the last
+    ``span_hours`` (``None``/``0`` = all time), plus exact store-wide counts.
+
+    Served through the SHARED 5 s single-flight cache (``api/metrics_shared``), keyed
+    by store identity and ``_STORE_FETCH_LIMIT``, so the dashboard's parallel fan-out
+    and LIVE cadence share one scan per window, a wider cached window serves a narrower
+    one, and a Demo Mode store swap or a monkeypatched limit never reuses a stale
+    population. A store outage never raises: ``load_ok`` goes False and the rollups
+    carry it into their completeness flags (an outage is never "0 open cases")."""
+    return await fetch_case_population(
+        state.cases, span_hours=span_hours, limit=_STORE_FETCH_LIMIT
+    )
 
 
 async def _load_cases(state: AppState) -> tuple[list, int]:
-    """Fetch up to the most recent ``_STORE_FETCH_LIMIT`` cases (newest first) for the
-    posture/coverage rollups, AND the store's reported total so the rollup can flag a
-    truncated/partial result honestly instead of silently returning a number computed
-    over only the newest N cases.
+    """``(cases, scope_total)`` over the ALL-TIME population (compatibility helper).
 
-    Served through the SHARED short-TTL page cache (``api/metrics_shared``) so the
-    dashboard's parallel endpoint fan-out and its LIVE poll cadence perform ONE store
-    scan per TTL window instead of one per endpoint per refresh. The cache is keyed
-    by the (store identity, fetch limit) pair, so a monkeypatched
-    ``_STORE_FETCH_LIMIT`` or a Demo Mode store swap always bypasses stale pages.
-
-    Defensive: a store error degrades to an empty list (total 0) rather than failing
-    the request (a dashboard query must never 500 on a transient store hiccup).
-
-    That degradation is INDISTINGUISHABLE from an empty store on its own — same rows,
-    same total — so any rollup that publishes a completeness assertion must take the
-    three-value :func:`_load_cases_ok` instead and thread ``load_ok`` through. This
-    two-value form is kept for the rollups that only report counts."""
+    A soft-failed load is indistinguishable from an empty store in this pair, so a
+    rollup that publishes a completeness assertion takes :func:`_load_cases_ok`."""
     cases, total, _ok = await _load_cases_ok(state)
     return cases, total
 
 
 async def _load_cases_ok(state: AppState) -> tuple[list, int, bool]:
-    """:func:`_load_cases`, plus whether the fetch actually SUCCEEDED.
-
-    A soft-failed fetch returns ``([], 0, False)``. Both of the first two values are
-    also what a genuinely empty store returns, which is why the third exists: with only
-    the pair, ``truncation_marker(0, 0)`` reads "not truncated", and the posture rollup
-    went on to publish ``open_now.complete=true`` / ``window_covered=true`` with empty
-    reasons — a store outage rendered as a proven-complete "0 open cases"."""
-    try:
-        cases, total = await fetch_case_page(state.cases, _STORE_FETCH_LIMIT)
-        return cases, int(total), True
-    except Exception as exc:  # noqa: BLE001 — dashboards degrade, never fail hard
-        logger.warning("posture/coverage case load soft-failed: %s", exc)
-        return [], 0, False
+    """:func:`_load_cases`, plus whether the load actually SUCCEEDED (``([], 0, False)``
+    on an outage — the third value is what keeps an outage from being published as a
+    proven-complete empty store)."""
+    population = await _population(state, None)
+    return population.cases, population.scope_total, population.load_ok
 
 
 def _subtract_counter_bands(
@@ -245,13 +253,21 @@ async def _load_agent_outcome_inputs(
     Failures remain explicit availability flags. No row identifiers, usage rows,
     source ids, or tuning rule ids leave the pure aggregation layer.
     """
+    # EVERY ledger row in the reporting span (Round 12: no newest-5,000 cap), read with
+    # the span pushed into the scan (the bundled stores range-filter ``ts`` under one
+    # snapshot), so the cost follows the span, never the ledger's whole history. Only
+    # the three fields the cost evidence reads are kept, and the read is shared for a
+    # few seconds like the case population.
     usage_available = True
+    span_start = end - timedelta(days=max(1, current_days) + max(1, baseline_days))
     try:
-        raw_usage = await state.usage_store.records_strict(limit=_USAGE_FETCH_LIMIT)
-        usage_records = [row for row in raw_usage if isinstance(row, dict)]
+        usage_records, usage_truncated = await fetch_ledger_span(
+            state.usage_store, span_start=span_start, end=end
+        )
     except Exception as exc:  # noqa: BLE001 — evidence degrades, route stays available
         logger.warning("agent-improvement usage read soft-failed: %s", exc)
         usage_available = False
+        usage_truncated = False
         usage_records = []
 
     tuning_available = True
@@ -361,8 +377,9 @@ async def _load_agent_outcome_inputs(
     return {
         "usage_records": usage_records,
         "usage_available": usage_available,
-        # The strict projection has no total count, so cap saturation is partial.
-        "usage_records_truncated": len(usage_records) >= _USAGE_FETCH_LIMIT,
+        # Exact unless the ledger scan stopped early or the repository could only
+        # return one unverified page.
+        "usage_records_truncated": usage_truncated,
         "noise_comparison": noise_comparison,
         "period_noise_comparisons": period_noise_comparisons,
         "tuning_records": tuning_records,
@@ -379,8 +396,11 @@ async def metrics_posture(
     _=Depends(require_permission("metrics", "view")),
 ) -> dict[str, Any]:
     """The rich security-posture rollup over the last ``window_hours``, computed over
-    up to the most-recent 5000 cases (the response's ``truncated`` flag is True when
-    the store held more).
+    every case the window (and, for ``compare=prev``, the preceding window) reaches
+    (Round 12). ``truncated`` is True when that span holds more cases than
+    ``_STORE_FETCH_LIMIT`` or the read failed partway; ``store_total`` is then the exact
+    number of in-scope cases and ``fetched`` the newest analysed, and
+    ``window_covered`` says whether the SELECTED window is still complete.
 
     ``compare=prev`` adds period-over-period deltas vs the immediately-preceding
     equal-length window. SLA targets come from ``Preferences.sla`` (advisory; #3).
@@ -415,27 +435,40 @@ async def metrics_posture(
       and human work is NEVER ``terminal_cases - auto_closed_cases``. These report the
       LAST recorded decider — see ``engine.metrics.quality_metrics`` for the caveat a
       "human vs AI" surface must disclose.
-    * ``window_covered`` is the honest-coverage flag. ``truncated`` alone is permanent
-      for any deployment above the 5000-case fetch bound; ``window_covered`` says
-      whether the SELECTED window is nonetheless fully answerable from the rows that
-      were read (cutoff at or after ``oldest_fetched_at``), which is what lets a tile
-      publish a real number instead of withholding forever. It does not apply to
-      ``open_now``, which carries its own ``complete`` flag.
+    * ``window_covered`` is the honest-coverage flag: whether the SELECTED window is
+      fully answerable from the cases that were read (cutoff at or after
+      ``oldest_fetched_at``). With the exact population it is True unless a single
+      window outgrew the in-memory bound. ``open_now`` is an exact store COUNT (window
+      exempt) and carries its own ``complete`` flag.
     * A case-store OUTAGE soft-fails to an empty fetch so the dashboard never 500s.
       Both completeness flags then go False with a reason naming the failure: the
       counts are still zeros, but zero-because-unreadable is not a measurement and must
       never be published as one. ``truncated`` is unchanged (it compares fetched with
       store-reported total, and both are 0)."""
-    cases, store_total, load_ok = await _load_cases_ok(state)
+    wh = _window(window_hours)
+    mode = (compare or "").strip().lower()
+    # Every case the windows can reach: the current window, plus the preceding one
+    # for ``compare=prev``; all time when unbounded.
+    span = (wh * 2 if mode == "prev" else wh) if wh > 0 else None
+    population = await _population(state, span)
     sla_policy = getattr(state.prefs, "sla", None)
     return posture_metrics(
-        cases,
+        population.cases,
         sla_policy=sla_policy,
-        window_hours=max(0, int(window_hours)),
-        compare=(compare or "").strip().lower(),
-        store_total=store_total,
+        window_hours=wh,
+        compare=mode,
+        store_total=population.scope_total,
         prefs=state.prefs,
-        load_ok=load_ok,
+        load_ok=population.load_ok,
+        open_now_count=population.open_now,
+        open_now_unavailable=(
+            None if population.open_now is not None or span is None else
+            "the store could not count its open cases, so only open cases created in "
+            "the selected window were counted; this is a lower bound"
+        ),
+        # A read that failed partway is never certified as covering the window.
+        read_error=(population.read_error or None) if not population.complete else None,
+        newest_first=population.newest_first,
     )
 
 
@@ -467,13 +500,15 @@ async def metrics_trends(
     ingested tallies (null when the counters are warming up / unreadable, and for
     buckets predating their first observation).
 
-    Served from the SAME shared short-TTL case page as the other posture rollups
-    (one store scan per TTL window), computed over up to the most-recent
-    ``_STORE_FETCH_LIMIT`` cases — the ``truncated``/``store_total``/``fetched``
-    marker keeps a partial (newest-N) tally honest. DETERMINISTIC + advisory:
-    nothing here is read by ``case_manager.decide()`` (#3)."""
-    cases, store_total = await _load_cases(state)
-    wh = max(1, min(720, int(window_hours)))
+    Served from the SAME shared short-TTL exact population as the other posture
+    rollups (every case the window reaches; one store scan per TTL window). The
+    ``truncated``/``store_total``/``fetched`` marker is True only when the window alone
+    outgrew ``_STORE_FETCH_LIMIT``. DETERMINISTIC + advisory: nothing here is read by
+    ``case_manager.decide()`` (#3)."""
+    wh = max(1, min(720, _window(window_hours) or 1))
+    # +24h: the aligned FIRST bucket can start up to one bucket (max 24h) before the
+    # window edge.
+    population = await _population(state, wh + 24)
     alert_counters: dict[str, Any] | None = None
     try:
         # +24h of hourly slack so the aligned FIRST bucket (which can start up to one
@@ -483,9 +518,9 @@ async def metrics_trends(
         logger.warning("trends counter read soft-failed: %s", exc)
         alert_counters = None
     return trend_metrics(
-        cases,
+        population.cases,
         window_hours=wh,
-        store_total=store_total,
+        store_total=population.scope_total,
         alert_counters=alert_counters,
     )
 
@@ -509,15 +544,18 @@ async def metrics_auto_close_health(
     a DASH rate and ``available: false`` with a reason, never a reassuring number. There
     is no composite score.
 
-    READ-ONLY derivation over already-persisted cases, computed over up to the most
-    recent 5000 (``truncated`` says when the store held more). The auto-close policy is
-    read for DISPLAY only — nothing here is ever an input to ``decide()`` (#3)."""
-    cases, store_total = await _load_cases(state)
+    READ-ONLY derivation over already-persisted cases — the ALL-TIME population (a case
+    created long ago can be decided today), exact up to ``_STORE_FETCH_LIMIT`` cases and
+    honestly ``truncated`` beyond. The auto-close policy is read for DISPLAY only —
+    nothing here is ever an input to ``decide()`` (#3)."""
+    # Decision-time windows plus a "lifetime" tally: a case created long ago can be
+    # decided today, so this rollup reads the ALL-TIME population.
+    population = await _population(state, None)
     return auto_close_health(
-        cases,
+        population.cases,
         window_hours=int(window_hours),
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
-        store_total=store_total,
+        store_total=population.scope_total,
     )
 
 
@@ -652,12 +690,12 @@ async def metrics_auto_close_health_recorded(
     READ-ONLY. The auto-close policy is read for DISPLAY-ONLY classification of
     decisions that have already been made — nothing here is ever an input to
     ``decide()`` (#3)."""
-    cases, store_total = await _load_cases(state)
+    population = await _population(state, None)
     return recorded_auto_close_health(
-        cases,
+        population.cases,
         window_hours=int(window_hours),
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
-        store_total=store_total,
+        store_total=population.scope_total,
         anchor=anchor,
         decision_audit_rows=await _load_decision_audit(state, window_hours=int(window_hours)),
         decision_audit_span_hours=_decision_audit_span_hours(int(window_hours)),
@@ -698,7 +736,9 @@ async def metrics_agent_improvement(
             status_code=422,
             detail="as_of is an exclusive UTC boundary and cannot be in the future",
         )
-    cases, store_total = await _load_cases(state)
+    # Feedback and turnaround EVENTS are windowed, and a case created long ago can carry
+    # one inside the window, so this reads the ALL-TIME population.
+    population = await _population(state, None)
     end_date = as_of or request_now.date()
     report_end = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
     outcome_inputs = await _load_agent_outcome_inputs(
@@ -708,12 +748,12 @@ async def metrics_agent_improvement(
         end=report_end,
     )
     return agent_improvement_metrics(
-        cases,
+        population.cases,
         as_of=as_of,
         current_days=current_days,
         baseline_days=baseline_days,
         now=request_now,
-        store_total=store_total,
+        store_total=population.scope_total,
         synthetic=state.demo_active,
         # Resolve each case's advisory severity band for the mix strata (the persisted
         # attribute is never written by a production path). Advisory only (#3).
@@ -734,27 +774,28 @@ async def metrics_noise_reduction(
     ``ingested``/``clustered`` come from the DURABLE ``noise_counters`` store (raw-alert-by-
     severity, so they reflect the TRUE inbound volume even after low-value events are
     dropped at ingest); ``cases`` + the MECE outcomes (needs_human > escalated >
-    auto_cleared > true_positive residual) come from a case tally computed over up to the
-    most-recent 5000 cases (the ``cases_meta.truncated`` flag is True when the store held
-    more — the outcome tallies are then a lower bound). When the counters are still warming
+    auto_cleared > true_positive residual) come from a tally over every case in the window
+    (``cases_meta.truncated`` is True when the window holds more cases than
+    ``_STORE_FETCH_LIMIT`` or the read failed partway — the outcome tallies are then a
+    lower bound and ``store_total``/``fetched`` say by how much). When the counters are still warming
     up (``counters.available: false``) the ingested/clustered totals are ``null`` and the
     headline ``reduction.overall_pct`` is a DASH, so the UI degrades to a case-only funnel.
 
     DETERMINISTIC + advisory: nothing here is read by ``case_manager.decide()`` (#3); every
     band name is plain framework data the UI renders escaped."""
-    cases, store_total = await _load_cases(state)
-    wh = max(0, int(window_hours))
+    wh = _window(window_hours)
+    population = await _population(state, wh or None)
     try:
         counters = await state.noise_counters.read_window(wh)
     except Exception as exc:  # noqa: BLE001 — a counter glitch degrades to case-only funnel
         logger.warning("noise-reduction counter read soft-failed: %s", exc)
         counters = {"available": False}
     return build_noise_reduction(
-        cases,
+        population.cases,
         counters,
         window_hours=wh,
-        store_total=store_total,
-        fetched_count=len(cases),
+        store_total=population.scope_total,
+        fetched_count=population.fetched,
         # ``execution_prefs`` so the funnel bands the SAME cases the same way as its own
         # ``/lineage`` rows and the case surfaces (under an active demo sandbox the cases
         # come from the demo stack, so the real tenant prefs are the wrong authority).
@@ -782,12 +823,14 @@ async def metrics_noise_reduction_lineage(
     Read-only/advisory: no correlation is re-run and no value here participates in
     risk scoring or the deterministic close/escalate decision (#3).
     """
-    cases, store_total = await _load_cases(state)
-    wh = max(0, int(window_hours))
+    wh = _window(window_hours)
+    population = await _population(state, wh or None)
+    cases = population.cases
+    store_total = population.scope_total
     window_cases = _window_filter(cases, window_hours=wh)
     prefs = state.execution_prefs
     rows = [build_case_lineage(case, prefs) for case in window_cases[:limit]]
-    store_truncated = store_total > len(cases)
+    store_truncated = not population.complete
     return {
         "window_hours": wh,
         "generated_at": iso_now(),
@@ -818,19 +861,21 @@ async def mitre_coverage(
     _=Depends(require_permission("metrics", "view")),
 ) -> dict[str, Any]:
     """Per-tactic MITRE ATT&CK technique coverage tallied from our case load against
-    the bundled corpus, over up to the most-recent 5000 cases (the response's
-    ``truncated`` flag is True when the store held more — the covered tally is then a
-    lower bound). ``window_hours=0`` (default) covers ALL fetched cases; a positive
-    value time-bounds to created-within. Invalid/forged technique ids are dropped (#9).
+    the bundled corpus, over every case in the window (``window_hours=0``, the default,
+    is all time; a positive value bounds to created-within). ``truncated`` is True when
+    that population outgrew ``_STORE_FETCH_LIMIT`` (or the read failed partway) — the
+    covered tally is then a lower bound over the newest cases, beside the exact
+    ``store_total``. Invalid/forged technique ids are dropped (#9).
     """
-    cases, store_total = await _load_cases(state)
-    fetched_count = len(cases)  # rows pulled from the store, BEFORE window-filtering
-    if window_hours and window_hours > 0:
-        from ..engine.metrics import _window_filter
-
-        cases = _window_filter(cases, window_hours=int(window_hours))
-    out = compute_mitre_coverage(cases, store_total=store_total, fetched_count=fetched_count)
-    out["window_hours"] = int(window_hours) if window_hours and window_hours > 0 else 0
+    wh = _window(window_hours)
+    population = await _population(state, wh or None)
+    cases = population.cases
+    if wh > 0:
+        cases = _window_filter(cases, window_hours=wh)
+    out = compute_mitre_coverage(
+        cases, store_total=population.scope_total, fetched_count=population.fetched
+    )
+    out["window_hours"] = wh
     return out
 
 
@@ -842,13 +887,12 @@ async def mitre_coverage_navigator(
 ) -> dict[str, Any]:
     """Return an ATT&CK **Navigator v4.5** layer dict for the case coverage. Pure
     JSON the UI hands straight to the Navigator; invalid ids never appear (#9)."""
-    cases, store_total = await _load_cases(state)
-    fetched_count = len(cases)  # rows pulled from the store, BEFORE window-filtering
-    wh = int(window_hours) if window_hours and window_hours > 0 else 0
+    wh = _window(window_hours)
+    population = await _population(state, wh or None)
+    cases = population.cases
     if wh > 0:
-        from ..engine.metrics import _window_filter
-
         cases = _window_filter(cases, window_hours=wh)
     return navigator_layer(
-        cases, window_hours=wh or None, store_total=store_total, fetched_count=fetched_count
+        cases, window_hours=wh or None, store_total=population.scope_total,
+        fetched_count=population.fetched,
     )

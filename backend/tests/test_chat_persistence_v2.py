@@ -1,9 +1,10 @@
 """Workspace chat persistence v2 (chat revamp SPEC §7.5).
 
 The storage form (one opaque ``presentation_json`` per answer, scalar receipts),
-compact storage (≤ 16 kB per answer), downgrade-before-drop retention with the
-12-rich-exchange guarantee (the 15-turn acceptance runs on SQLite and the fake
-Elasticsearch KV; PostgreSQL runs in CI's real-Postgres lane), cumulative totals,
+compact INLINE storage (≤ 16 kB per answer) backed by one exchange document per
+answer (Round 12: every answer reads back whole, nothing is evicted; the 15-turn
+acceptance runs on SQLite and the fake Elasticsearch KV; PostgreSQL runs in CI's
+real-Postgres lane), cumulative totals,
 pins (≤ 10, exempt from eviction, listed first), server-side search, the user
 message ``origin`` and lenient decoding of legacy rows.
 """
@@ -36,6 +37,7 @@ from app.stores.chat_conversations import (
     MAX_PRESENTATION_BYTES,
     MAX_RECEIPT_CONTENT_CHARS,
     PRESENTATION_KEY,
+    EXCHANGE_MARKER,
     ChatConversationStore,
     ChatPinLimitReached,
     compact_presentation,
@@ -161,7 +163,7 @@ async def test_stored_partition_holds_no_nested_presentation_objects(app_state: 
     assert isinstance(message["response"][PRESENTATION_KEY], str)
     assert set(message["response"]) <= {
         PRESENTATION_KEY, "cost", "query", "effective_model", "effective_source_name",
-        "truncated", "turn_id", "blocks_version", "idempotency_key",
+        "truncated", "turn_id", "blocks_version", "idempotency_key", EXCHANGE_MARKER,
     }
     receipt = stored_request_rows(raw)["persist-key-000001"]
     assert PRESENTATION_KEY not in json.dumps(receipt)
@@ -187,14 +189,17 @@ async def test_compact_storage_limits_and_legacy_table_round_trip(app_state: App
     assert len(blocks["b2"]["series"][0]["values"]) == 100
     assert blocks["b2"]["x"]["values"][-1].endswith("23:00:00Z")          # the newest points kept
     assert all(len(s.get("query") or "") <= 1_000 for s in presentation["steps"])
-    # The legacy table duplicated block b4, so it is not stored twice...
+    # The legacy table duplicated block b4, so it is not stored twice INLINE...
     assert "table" not in presentation and presentation["table_block"] == "b4"
-    # ...and still decodes for legacy clients.
+    # ...and the inline copy is marked partial (Round 12: the full exchange has its
+    # own document)...
+    assert stored["truncated"] is True and stored[EXCHANGE_MARKER] is True
+    # ...so a read restores the live answer exactly: 50 rows, 168 points, full table.
     decoded = (await store.get("bob", done.conversation_id)).messages[1].response
-    assert decoded["table"]["columns"] == [f"Column {c}" for c in range(6)]
-    assert len(decoded["table"]["rows"]) == 25 and decoded["table"]["truncated"] is True
-    # Live responses keep full limits (only storage is compact).
-    assert len(_rich_response(2)["blocks"][3]["rows"]) == 50
+    live = _rich_response(2)
+    assert decoded["table"] == live["table"] and len(decoded["table"]["rows"]) == 50
+    assert decoded["blocks"] == live["blocks"] and decoded["steps"] == live["steps"]
+    assert "truncated" not in decoded and EXCHANGE_MARKER not in decoded
 
 
 def test_compaction_tightens_then_expires_and_flags_truncation() -> None:
@@ -254,8 +259,10 @@ async def _fifteen_turns(store: ChatConversationStore) -> None:
     assert [a.content for a in answers] == [
         f"Posture answer {100 + s}: risk is moderate and web hosts lead the volume." for s in range(15)
     ]
-    rich = [a for a in answers if not any(is_expired_block(b) for b in a.response.get("blocks", []))]
-    assert len(rich) >= 12 and answers[-12:] == rich[-12:]            # the newest stay rich
+    # Round 12: every answer restores whole (no expired stubs, no clipped rows).
+    assert not any(is_expired_block(b) for a in answers for b in a.response.get("blocks", []))
+    assert [a.response["blocks"] for a in answers] == [
+        _rich_response(100 + s, rows=25, cols=12)["blocks"] for s in range(15)]
     assert conversation.usage_turns == 15 and conversation.total_tokens == 15 * 7800
 
 
@@ -293,8 +300,7 @@ async def _fifteen_quote_dense_turns(store: ChatConversationStore) -> None:
     conversation = await store.get("dense", conversation_id)
     answers = [m for m in conversation.messages if m.role == "assistant"]
     assert len(answers) == 15
-    rich = [a for a in answers if not any(is_expired_block(b) for b in a.response.get("blocks", []))]
-    assert len(rich) >= 12 and answers[-12:] == rich[-12:]
+    assert [a.response["blocks"] for a in answers] == [_quote_dense_response(s)["blocks"] for s in range(15)]
 
 
 async def test_fifteen_rich_turns_kept_on_fake_elasticsearch() -> None:
@@ -324,68 +330,78 @@ def test_presentation_cap_is_measured_on_the_stored_escaped_size() -> None:
     assert not any(is_expired_block(b) for b in compact["blocks"])   # tightened, not expired
 
 
-async def test_downgrade_before_drop_keeps_text_and_strips_old_details(app_state: AppState) -> None:
+async def test_long_conversations_keep_every_answer_whole(app_state: AppState) -> None:
+    """Round 12 (SPEC D1): past the inline budget the OLDEST exchanges' inline copies
+    shrink to previews, but every answer still reads back whole from its exchange
+    document; the stored row stays within the inline budget."""
     store = app_state.chat_conversations
     conversation_id = None
-    # Enough near-cap answers to pass 256 kB, so the oldest must be downgraded.
     for seed in range(32):
         done = await _exchange(store, "carol", 300 + seed, conversation_id=conversation_id, rows=25, cols=12)
         conversation_id = done.conversation_id
     conversation = await store.get("carol", conversation_id)
-    assert len(conversation.messages) == 64 and not turns_removed(conversation)   # downgraded, none dropped
-    oldest = conversation.messages[1].response
-    assert all(is_expired_block(b) for b in oldest["blocks"])
-    assert all(b.get("text") == EXPIRED_TEXT for b in oldest["blocks"])
-    assert oldest["blocks"][0]["expired"] == {"type": "kpi_group", "artifact_kind": "kpis"}
-    assert all("params" not in s and "query" not in s for s in oldest["steps"])
-    assert oldest["usage"]["total_tokens"] == 7800                   # facts outlive the charts
-    newest = conversation.messages[-1].response
-    assert not any(is_expired_block(b) for b in newest["blocks"])
+    assert len(conversation.messages) == 64 and not turns_removed(conversation)
+    assert conversation.history_truncated is False
+    for seed, answer in zip(range(32), conversation.messages[1::2]):
+        live = _rich_response(300 + seed, rows=25, cols=12)
+        assert answer.content == live["answer"]
+        assert answer.response["blocks"] == live["blocks"] and answer.response["steps"] == live["steps"]
+    for seed, question in zip(range(32), conversation.messages[0::2]):
+        assert question.content == f"Question {300 + seed}: how is our posture and which hosts are busiest?"
     raw = await app_state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user("carol"))
     stored_messages = stored_conversation_rows(raw)[conversation_id]["messages"]
     assert len(json.dumps(stored_messages, separators=(",", ":"), ensure_ascii=False).encode()) <= MAX_CONVERSATION_BYTES
+    oldest = stored_messages[1]["response"]
+    assert PRESENTATION_KEY not in oldest and oldest["truncated"] is True and oldest[EXCHANGE_MARKER] is True
+    assert PRESENTATION_KEY in stored_messages[-1]["response"]       # the newest stays rich inline
 
 
-async def test_whole_exchanges_drop_only_when_text_alone_overflows(app_state: AppState) -> None:
+async def test_no_exchange_is_ever_dropped_however_long_the_text(app_state: AppState) -> None:
     store = app_state.chat_conversations
     conversation_id = None
     for index in range(20):
         saved = await store.append_exchange(
             "dave", conversation_id=conversation_id, user_content=f"u{index} " + "x" * 11_000,
-            assistant_content=f"a{index} " + "y" * 11_000, response=_rich_response(index),
+            assistant_content=f"a{index} " + "y" * 30_000, response=_rich_response(index),
         )
         conversation_id = saved.id
     conversation = await store.get("dave", conversation_id)
-    assert conversation.history_truncated is True
-    assert len(conversation.messages) < 40 and len(conversation.messages) % 2 == 0
-    assert conversation.messages[0].role == "user" and conversation.messages[-1].role == "assistant"
-    assert conversation.messages[-1].content.startswith("a19 ")
-    assert conversation.total_message_count == 40
-    assert turns_removed(conversation) is True                       # the storage-limit note applies
-    assert conversation.usage_turns == 20                            # totals survive trimming
+    assert conversation.history_truncated is False and not turns_removed(conversation)
+    assert len(conversation.messages) == 40 and conversation.total_message_count == 40
+    assert [m.content for m in conversation.messages[0::2]] == [f"u{i} " + "x" * 11_000 for i in range(20)]
+    assert [m.content for m in conversation.messages[1::2]] == [f"a{i} " + "y" * 30_000 for i in range(20)]
+    assert conversation.usage_turns == 20
 
 
-async def test_one_large_answer_is_shortened_but_no_turn_is_removed(app_state: AppState) -> None:
-    """``history_truncated`` (something was shortened) is not the storage-limit signal:
-    a one-exchange thread with an oversized answer removed no turn."""
+async def test_one_large_answer_reads_back_whole(app_state: AppState) -> None:
+    """An answer far past the inline limits is stored whole: the inline copy is
+    marked partial, the read restores everything, and nothing reads as shortened."""
     store = app_state.chat_conversations
     huge = _rich_response(7, rows=120, cols=10, points=200)
     huge["blocks"] = huge["blocks"] * 3
     for index, block in enumerate(huge["blocks"], start=1):
         block["id"] = f"b{index}"
+    huge["answer"] = "## Findings\n" + "".join(f"Paragraph {i}: " + "detail " * 40 + "\n" for i in range(220))
+    assert len(huge["answer"]) > 60_000
     saved = await store.append_exchange(
         "frank", conversation_id=None, user_content="q", assistant_content=huge["answer"], response=huge,
     )
-    assert saved.history_truncated is True and saved.messages[1].response["truncated"] is True
-    assert turns_removed(saved) is False
+    assert saved.history_truncated is False and not turns_removed(saved)
+    assert saved.messages[1].content == huge["answer"]
+    assert "truncated" not in saved.messages[1].response
+    assert saved.messages[1].response["blocks"] == huge["blocks"]
+    again = await ChatConversationStore(app_state.kv).get("frank", saved.id)
+    assert again.messages[1].content == huge["answer"] and again.messages[1].response["blocks"] == huge["blocks"]
     summary = (await store.list_page("frank")).conversations[0]
-    assert summary.history_truncated is True and turns_removed(summary) is False
+    assert summary.history_truncated is False and turns_removed(summary) is False
 
 
 # --------------------------------------------------------------------------- #
 # Receipts, origin, time range, totals.
 # --------------------------------------------------------------------------- #
-async def test_receipt_replay_after_retention_is_compact_and_flagged(app_state: AppState) -> None:
+async def test_receipt_replay_restores_the_whole_answer(app_state: AppState) -> None:
+    """Round 12: the answer is never removed from its transcript, so a same-key
+    replay restores the whole answer (blocks included), however long the thread."""
     store = app_state.chat_conversations
     first = await _exchange(store, "erin", 1, conversation_id=None)
     conversation_id = first.conversation_id
@@ -400,6 +416,25 @@ async def test_receipt_replay_after_retention_is_compact_and_flagged(app_state: 
     )
     assert replay.status == "completed"
     assert replay.assistant_message.id == first.assistant_message.id
+    assert replay.assistant_message.content == _rich_response(1)["answer"]
+    assert replay.assistant_message.response["blocks"] == _rich_response(1)["blocks"]
+    assert "truncated" not in replay.assistant_message.response
+
+
+async def test_receipt_replay_after_the_conversation_is_evicted_is_compact_and_flagged(
+    app_state: AppState,
+) -> None:
+    store = app_state.chat_conversations
+    first = await _exchange(store, "erin2", 1, conversation_id=None)
+    for index in range(MAX_CONVERSATIONS_PER_USER + 1):
+        await store.append_exchange("erin2", conversation_id=None, user_content=f"newer {index}",
+                                    assistant_content="a")
+    assert await store.get("erin2", first.conversation_id) is None        # evicted by retention
+    replay = await store.reserve_exchange(
+        "erin2", idempotency_key="persist-key-000001", request_fingerprint=f"{1:064x}",
+        conversation_id=None,
+    )
+    assert replay.status == "completed"
     assert len(replay.assistant_message.content) <= MAX_RECEIPT_CONTENT_CHARS
     assert replay.assistant_message.response["truncated"] is True
     assert "blocks" not in replay.assistant_message.response

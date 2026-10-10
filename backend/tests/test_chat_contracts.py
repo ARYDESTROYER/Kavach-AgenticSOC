@@ -193,6 +193,11 @@ def test_chat_request_continue_of_must_be_a_plain_id() -> None:
     {"from": "2026-10-01T00:00:00Z", "to": "2026-10-02T00:00:00Z"},
     {"from": "2026-10-01", "to": "2026-10-03T12:00:00+02:00"},
     {"from": "now-90d"},
+    # Round 12 (SPEC D7/D7a): chat windows have no span limit, and "All time" is a chip.
+    {"from": "now-91d"},
+    {"from": "2026-01-01T00:00:00Z", "to": "2026-06-01T00:00:00Z"},
+    {"from": "all"},
+    {"from": "All time"},
 ])
 def test_time_range_accepts_the_spec_grammar(window: dict[str, str]) -> None:
     body = ChatRequest(message="x", time_range=window)
@@ -204,8 +209,7 @@ def test_time_range_accepts_the_spec_grammar(window: dict[str, str]) -> None:
 @pytest.mark.parametrize("window", [
     {"from": "now", "to": "now-1h"},               # from after to
     {"from": "now-1h", "to": "now-1h"},            # empty window
-    {"from": "now-91d"},                           # > 90 days
-    {"from": "2026-01-01T00:00:00Z", "to": "2026-06-01T00:00:00Z"},
+    {"from": "now", "to": "all"},                  # "all" is a lower bound only
     {"from": "now+1h"},                            # no forward-relative
     {"from": "yesterday"},
     {"from": "1696000000000"},                     # no epoch numbers
@@ -218,7 +222,12 @@ def test_time_range_rejects_invalid_windows(window: dict[str, str]) -> None:
 
 def test_time_range_helpers() -> None:
     window = TimeRange.model_validate({"from": "now-24h"})
-    assert window.label() == "last 24h"
+    assert window.label() == "last 24 hours"
+    assert TimeRange.MAX_SPAN_DAYS is None   # Round 12 (SPEC D7a)
+    lifetime = TimeRange.model_validate({"from": "lifetime"})
+    assert lifetime.is_all_time and lifetime.label() == "all time"
+    assert lifetime.model_dump() == {"from": "all", "to": "now"}
+    assert TimeRange.model_validate({"from": "now-720h"}).label() == "last 30 days"
     assert window.window_hours() == 24
     assert TimeRange.model_validate({"from": "now-30m"}).window_hours() == 1   # clamped to >= 1
     absolute = TimeRange.model_validate({"from": "2026-10-01T00:00:00Z", "to": "2026-10-01T06:00:00Z"})
@@ -644,6 +653,9 @@ def _all_events() -> list[Any]:
         E.TextDeltaEvent(text="Top hosts"),
         E.TextResetEvent(),
         E.PingEvent(),
+        # Round 12 (SPEC §3.3).
+        E.StepProgressEvent(index=1, done=4_000, total=118_402, unit="cases"),
+        E.TextContinuedEvent(part=2),
         E.TurnDoneEvent(response=ChatResponse(answer="done", blocks=[VALID_BLOCKS["chart"]])),
         E.TurnErrorEvent(code="budget_blocked", message="Budget reached", retryable=False,
                          notice={"kind": "budget", "message": "Budget reached"}),
@@ -873,6 +885,11 @@ def test_message_limits() -> None:
     assert {d.reason for d in dropped} == {"block_limit"}
     big = [dict(VALID_BLOCKS["markdown"], id=f"m{i}", text="x" * 11_000) for i in range(6)]
     blocks, dropped = B.validate_blocks(big)
+    assert len(blocks) == 6 and not dropped   # Round 12: a long answer is not cut (D3/D11)
+    # The hard serialized cap still holds: tables of 200 rows of long cells overflow it.
+    wide = [dict(VALID_BLOCKS["table"], id=f"t{i}", rows=[["w" * B.MAX_CELL_CHARS]] * B.MAX_TABLE_ROWS)
+            for i in range(6)]
+    blocks, dropped = B.validate_blocks(wide)
     assert len(json.dumps(blocks)) <= B.MAX_BLOCKS_BYTES
     assert dropped and dropped[0].reason == "size_limit"
 
@@ -1069,7 +1086,7 @@ def test_answer_blocks_contract_parity() -> None:
         "timeline_kinds": B.TIMELINE_KINDS, "citation_kinds": B.CITATION_BLOCK_KINDS,
         "query_languages": B.QUERY_LANGUAGES, "x_kinds": B.X_KINDS, "time_buckets": B.TIME_BUCKETS,
         "good_directions": B.GOOD_DIRECTIONS, "report_templates": B.REPORT_TEMPLATES,
-        "nav_statuses": B.NAV_STATUSES,
+        "nav_statuses": B.NAV_STATUSES, "report_layouts": B.REPORT_LAYOUTS,
     }
     for key, values in pairs.items():
         assert c[key] == list(values), key
@@ -1082,6 +1099,7 @@ def test_answer_blocks_contract_parity() -> None:
     assert limits["donut_segments"] == B.MAX_DONUT_SEGMENTS
     assert (limits["table_columns"], limits["table_rows"]) == (B.MAX_TABLE_COLUMNS, B.MAX_TABLE_ROWS)
     assert (limits["heatmap_x"], limits["heatmap_y"]) == (B.MAX_HEATMAP_X, B.MAX_HEATMAP_Y)
+    assert limits["blocks_bytes_target"] == B.MAX_BLOCKS_BYTES_TARGET
     for key, value in {"title": B.MAX_TITLE, "label": B.MAX_LABEL, "caption": B.MAX_CAPTION,
                        "callout": B.MAX_CALLOUT, "markdown": B.MAX_MARKDOWN,
                        "report_leaves": B.MAX_REPORT_LEAVES, "report_sections": B.MAX_REPORT_SECTIONS,
@@ -1094,6 +1112,7 @@ def test_answer_blocks_contract_parity() -> None:
         "doc_ref": B.DOC_REF_PATTERN, "technique": B.TECHNIQUE_PATTERN,
         "section_id": B.SECTION_ID_PATTERN, "artifact_ref": B.ARTIFACT_REF_PATTERN,
         "stored_ref": B.STORED_REF_PATTERN, "timestamp": B.TIMESTAMP_PATTERN,
+        "tz": B.TZ_PATTERN,
     }
     assert limits["section_blocks"] == B.MAX_SECTION_BLOCKS == B.MAX_BLOCKS_PER_MESSAGE + 1
     # The webui test runs the SAME examples through parseTimestamp().

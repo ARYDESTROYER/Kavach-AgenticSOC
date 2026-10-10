@@ -19,6 +19,8 @@
 import { ApiError } from '@/lib/api';
 import type { Report } from '@/lib/types';
 
+import { CHAT_LIMITS } from '../stream-events';
+
 export const REPORT_CHANGED_EVENT = 'agentic-soc:report-changed';
 
 export interface ReportChangedDetail {
@@ -68,7 +70,8 @@ export function reportItemIndex(report: Report | null | undefined): Map<string, 
 /* Limits and error copy (SPEC §10.6).                                         */
 /* -------------------------------------------------------------------------- */
 
-export const MAX_REPORT_ITEMS = 40;
+/** The server's item bound (Round 12 D11: 60), from the shared chat contract. */
+export const MAX_REPORT_ITEMS = CHAT_LIMITS.report_items;
 export const MAX_REPORTS = 100;
 export const REPORT_FULL_MESSAGE = `Report is full (${MAX_REPORT_ITEMS} items)`;
 export const REPORT_LIMIT_MESSAGE = 'Delete a report in Reports to start another';
@@ -111,7 +114,7 @@ export function reportErrorMessage(error: unknown, fallback = 'The report could 
     case 'report_version_conflict':
       return REPORT_CONFLICT_MESSAGE;
     case 'report_full':
-      // A note or title that would grow the document past its bound is not "40 items".
+      // A note or title that would grow the document past its bound is not "N items".
       return reasonOf(error) === 'size' ? REPORT_SIZE_MESSAGE : REPORT_FULL_MESSAGE;
     case 'report_limit':
       return REPORT_LIMIT_MESSAGE;

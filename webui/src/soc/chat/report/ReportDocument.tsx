@@ -103,6 +103,8 @@ export function ReportDocument({
                     <button
                       type="button"
                       onClick={() => onOpenSource(item)}
+                      // A screen action: the Ctrl/Cmd+P fallback leaves it off paper.
+                      data-print-hide=""
                       className={cn('inline-flex items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
                     >
                       <ExternalLink className="size-3" aria-hidden />

@@ -11,7 +11,7 @@ or motion language.
 
 | Layer | Owns | Location |
 |---|---|---|
-| Theme | Semantic CSS variables, Light/Dark values, material density, reduced-motion rules | `webui/src/styles/theme.css` |
+| Theme | Semantic CSS variables, Light/Dark values, material, motion and reduced-motion / reduced-transparency / increased-contrast rules | `webui/src/styles/theme.css` |
 | Primitives | Accessible shadcn-style wrappers over Radix | `webui/src/ui/` |
 | Cross-cutting system | Loading feedback, source identities, stable catalog exports | `webui/src/design-system/` |
 | SOC components | Tables, case badges, charts, page anatomy, editors, RBAC guards | `webui/src/soc/components/` |
@@ -31,6 +31,11 @@ import { LoadingState, SourceMark } from '@/design-system';
 The public barrel currently exposes:
 
 - `LoadingState`, `LoadingGlyph`, `LoadingShape`, and the non-blocking `LoadingBar`;
+- the Console material: `MaterialBar`, the `materialBar` / `materialThick` recipes, and
+  `useScrollEdge` / `useScrollEdgeRef` (the scroll-edge fade under sticky chrome; the
+  shared sticky `PageHeader`, `ControlBar`, `FilterBar` and `TableHeader` already use
+  it). Shared primitives import it from `@/design-system/material` rather than the
+  barrel, so the catalog never rides into their chunks;
 - `SourceMark` and the source-mark metadata;
 - `DESIGN_SYSTEM_CATALOG`, a JSON-serializable inventory of the stable component,
   token, asset, and accessibility contracts.
@@ -52,9 +57,14 @@ Routine operator surfaces are border-first and quiet:
 
 - `Card` has no resting shadow by default and uses a compact `rounded-md` edge.
   Opt into `elevation="sm"` only when the surface is genuinely detached.
-- `Tabs` and `SegmentedControl` use the same squared rail grammar: a 36px outer
-  control, compact inner targets, no pill treatment, and no active shadow. Tabs own
-  peer panels; segments select one value and expose radiogroup semantics.
+- `Tabs` and `SegmentedControl` use the same rail grammar: a 36px outer control with an
+  8px radius, compact 6px inner targets (concentric radii), no pill treatment, and no
+  active shadow. Tabs own peer panels; segments select one value and expose radiogroup
+  semantics.
+- Floating surfaces follow the concentric scale in the [Console UI standard](ui-standard.md#foundations):
+  10px menus, popovers and tooltips holding 6px items; 14px dialogs and sheets. Menus
+  use `menuSurface` and popovers `overlaySurface` from `lib/ui-recipes.ts`; both are
+  solid and scale from their trigger.
 - `ControlBar` and `FilterBar` are the page-level action/filter bands. The default
   surface is a hairline section, not another nested card.
 - `DataTable` owns a single bounded hairline and a compact shared `EmptyState`.

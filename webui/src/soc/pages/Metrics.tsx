@@ -1316,7 +1316,12 @@ function PostureTab({ posture, mitre, loading, windowLabel, onNavigate }: Postur
         {sla?.enabled ? (
           <>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-              <StatCard label="Attainment" value={ratioPct((sla.attainment_pct ?? 0) / 100)} accent="success" />
+              <StatCard
+                label="Attainment"
+                // null = nothing in the window could be scored: a dash, never "0%".
+                value={ratioPct(typeof sla.attainment_pct === 'number' ? sla.attainment_pct / 100 : null)}
+                accent="success"
+              />
               <StatCard label="Evaluated" value={fmtNumber(sla.evaluated)} accent="info" />
               <StatCard label="Response breached" value={fmtNumber(sla.response_breached)} accent="critical" />
               <StatCard label="Resolve breached" value={fmtNumber(sla.resolve_breached)} accent="critical" />

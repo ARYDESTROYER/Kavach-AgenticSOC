@@ -9,7 +9,8 @@ Everything here is deterministic and side-effect free:
   ``run(ctx, **inp)`` signature, and parallel calls in one ``tools`` batch (each its
   own asyncio task) can never see each other's identity.
 * :class:`ToolInput` + :func:`parse_input` — every tool validates the model's input
-  with a Pydantic model. Unknown keys are ignored; an invalid value becomes an
+  with a Pydantic model. An unknown key is refused visibly (naming the accepted
+  inputs), never silently dropped; an invalid value becomes an
   ENGINE-template error naming only our own field names (never the model's text).
 * :func:`resolve_window` — the §3.1 time precedence (the model's window, then the
   request chip, then the default) with the §4.8.4 rule that nothing a tool is asked
@@ -34,7 +35,7 @@ import math
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Iterator, Literal
 
@@ -116,29 +117,91 @@ def citation_id(prefix: str, index: int, ctx: Any = None) -> str:
 
 
 class ToolInput(BaseModel):
-    """Base for tool input models: unknown keys are ignored (a model that adds a
-    harmless extra key still gets its lookup) and strings are stripped."""
+    """Base for tool input models. Strings are stripped. Round 12 (SPEC, routing
+    fix 4): an input name the lookup does not have is REFUSED with a message naming
+    the accepted inputs (never silently dropped, so the model never believes a
+    grouping or a filter ran when it did not); the model retries with a valid name."""
 
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+# An input NAME a model chose is echoed (inside the fenced error only) when it looks
+# like an identifier; anything else is counted, never echoed.
+_INPUT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{0,39}$")
+_MAX_NAMED_UNKNOWN = 5
+
+
+def accepted_inputs(model: type[BaseModel]) -> list[str]:
+    """The input names ``model`` reads, in declaration order."""
+    return list(model.model_fields)
+
+
+def unknown_input_failure(model: type[BaseModel] | None, unknown: list[Any]) -> ToolOutcome:
+    """The refusal for input names the lookup does not have. The TRUSTED summary
+    names only our own inputs; the model's names appear in the fenced error (bounded,
+    identifier-shaped ones only)."""
+    accepted = ", ".join(accepted_inputs(model)) if model is not None else ""
+    tail = f" Accepted inputs: {accepted}." if accepted else ""
+    named = [k for k in unknown if isinstance(k, str) and _INPUT_NAME_RE.match(k)][:_MAX_NAMED_UNKNOWN]
+    if named:
+        verb = "is not an input" if len(named) == 1 else "are not inputs"
+        error = f"Invalid input: {', '.join(named)} {verb} of this lookup.{tail}"
+    else:
+        error = f"Invalid input: unknown input names.{tail}"
+    return ToolOutcome.failure(error, summary=f"Invalid input: unknown input names.{tail}")
+
+
+def _constraint_hint(err: dict[str, Any]) -> str | None:
+    """What a field accepts, from the SCHEMA side of a validation error only (its
+    literal values or numeric bounds); the rejected value is never echoed."""
+    kind = str(err.get("type") or "")
+    ctx = err.get("ctx") if isinstance(err.get("ctx"), dict) else {}
+    if kind == "literal_error" and isinstance(ctx.get("expected"), str):
+        return f"one of {ctx['expected'][:300]}"
+    for key, symbol in (("le", "at most"), ("lt", "below"), ("ge", "at least"), ("gt", "above")):
+        if key in ctx and isinstance(ctx[key], (int, float)) and not isinstance(ctx[key], bool):
+            return f"{symbol} {ctx[key]}"
+    if kind in ("string_too_long", "too_long") and isinstance(ctx.get("max_length"), int):
+        return f"at most {ctx['max_length']} long"
+    if kind.startswith(("int_", "float_")):
+        return "a number"
+    if kind.startswith("bool"):
+        return "true or false"
+    return None
 
 
 def parse_input(model: type[ToolInput], inp: Any) -> tuple[Any, ToolOutcome | None]:
     """Validate ``inp`` with ``model``. Returns ``(parsed, None)`` or
-    ``(None, failure)`` whose error names only fields of ``model`` (engine text)."""
+    ``(None, failure)``. An unknown input name is refused with the accepted names
+    (:func:`unknown_input_failure`); an invalid value names our own field and what it
+    accepts (``Invalid input: check limit (at most 50)``), never the model's text."""
     if inp is None:
         inp = {}
     if not isinstance(inp, dict):
         return None, ToolOutcome.failure("Invalid input: expected an object of named arguments")
+    unknown = [k for k in inp if not (isinstance(k, str) and k in model.model_fields)]
+    if unknown:
+        return None, unknown_input_failure(model, unknown)
     try:
         return model.model_validate(inp), None
     except ValidationError as exc:
         names: list[str] = []
+        hints: dict[str, str] = {}
         for err in exc.errors():
             loc = err.get("loc") or ()
             head = loc[0] if loc else None
-            if isinstance(head, str) and head in model.model_fields and head not in names:
-                names.append(head)
-        detail = ", ".join(names) if names else "arguments"
+            if isinstance(head, str) and head in model.model_fields:
+                if head not in names:
+                    names.append(head)
+                hint = _constraint_hint(err)
+                if hint and head not in hints:
+                    hints[head] = hint
+            elif err.get("type") == "extra_forbidden":
+                return None, unknown_input_failure(model, list(loc[:1]))
+        if names:
+            detail = ", ".join(f"{n} ({hints[n]})" if n in hints else n for n in names)
+        else:
+            detail = "arguments"
         return None, ToolOutcome.failure(f"Invalid input: check {detail}")
 
 
@@ -150,25 +213,44 @@ def none_if_blank(value: Any) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# §3.1 time window.
+# §3.1 time window (Round 12 SPEC D7: all time, calendar periods, any length).
 # --------------------------------------------------------------------------- #
+# The legacy relative grammar (lower-case units: m = MINUTES). ``now-6M`` (upper-case
+# M) is six MONTHS and goes through ``engine.time_windows``.
 _RELATIVE_RE = re.compile(r"^now-(\d{1,5})([mhdw])$")
+# A months/years chip bound (``models.TimeRange`` keeps ``now-6M`` and ``now-1y``).
+_CALENDAR_RELATIVE_RE = re.compile(r"^now-(\d{1,5})([My])$")
+_LEGACY_RELATIVE_RE = re.compile(r"^now(?:-\d{1,5}[mhdw])?$")
+_ALL_TIME_WORDS = frozenset({"all", "all_time", "all time", "alltime", "lifetime", "ever", "*", "everything"})
+#: The start instant an all-time window hands a log connector (no lower bound).
+ALL_TIME_START = datetime(1970, 1, 1, tzinfo=timezone.utc)
+ALL_TIME_LABEL = "all time"
+# The Logs page (``GET /api/logs``) reads at most this many days; a longer window has
+# no exact "Open in Logs" view (the tools themselves are not bounded).
+LOGS_PAGE_MAX_DAYS = 90
+# Kept for importers; Round 12 removed both clamps from the chat tools (SPEC D7).
 MAX_WINDOW_DAYS = 90
-# The longest whole-hour span a ``window_hours`` engine function is asked for.
 MAX_WINDOW_HOURS = 720
+WINDOW_HELP = (
+    "use all, now-<n>[h|d|w|M|y], a calendar period (today, yesterday, this_week, last_week, "
+    "this_month, last_month, this_quarter, last_quarter, ytd, this_year, last_year) or an "
+    "ISO-8601 range {from, to}"
+)
+INVALID_WINDOW = f"Invalid time window: {WINDOW_HELP}"
+EMPTY_WINDOW = "Invalid time window: the start must be before the end"
+WINDOW_INPUT_DESCRIPTION = "window?=all|now-90d|now-6M|last_month|this_quarter|ytd|{from,to}"
 
 
 @dataclass(frozen=True)
 class Window:
     """An effective time window: the expressions passed to a connector, the
-    resolved instants, the whole-hour span (``hours``, clamped 1..720) for tools
-    that take ``window_hours``, a caption ``label`` and whether the request's own
+    resolved instants, the whole-hour span (``hours``) for tools that take
+    ``window_hours``, a humanised caption ``label`` and whether the request's own
     range narrowed what was asked (``clamped``).
 
-    ``hours`` is a CEILING of the span capped at 720 (30 days) while a window may
-    span 90 days, so a tool that counts back ``hours`` from an instant must check
-    :attr:`hours_capped` (and :attr:`trailing`) before it reuses ``label``; see
-    ``metrics.metric_window``."""
+    Round 12: ``all_time`` windows start at :data:`ALL_TIME_START` (a store reads them
+    with no lower bound); ``tz`` is the operator timezone calendar periods were cut in;
+    ``token`` the normalised input. There is no span cap."""
 
     time_from: str
     time_to: str
@@ -178,6 +260,17 @@ class Window:
     label: str
     source: Literal["tool", "request", "default"]
     clamped: bool = False
+    all_time: bool = False
+    tz: str = "UTC"
+    token: str = ""
+    # The instant the window was resolved at, and the engine's own resolution when the
+    # window came from ``engine.time_windows`` unchanged (kept for the aggregate API).
+    ref: datetime | None = None
+    engine: Any = None
+    # The calendar unit the window's start was snapped to (``align_to_bucket``): a
+    # relative window broken down by that unit covers N whole periods, the last in
+    # progress, exactly as the aggregator counts it. ``None`` when not aligned.
+    aligned_to: str | None = None
 
     def iso_from(self) -> str:
         return self.start.isoformat()
@@ -186,105 +279,439 @@ class Window:
         return self.end.isoformat()
 
     @property
+    def created_from(self) -> str | None:
+        """The store's lower bound: ``None`` for all time (no bound at all)."""
+        return None if self.all_time else self.iso_from()
+
+    @property
     def span_hours(self) -> float:
         return (self.end - self.start).total_seconds() / 3600
 
     @property
+    def span_days(self) -> float:
+        return self.span_hours / 24
+
+    @property
     def hours_capped(self) -> bool:
-        """True when the span is longer than :data:`MAX_WINDOW_HOURS`, so ``hours``
-        covers only the newest part of it."""
-        return self.span_hours > MAX_WINDOW_HOURS + 1e-9
+        """Kept for importers: no window is capped any more (Round 12)."""
+        return False
 
     @property
     def trailing(self) -> bool:
         """True when the window ends at the present (``to`` is ``now``)."""
         return self.time_to.strip().lower() == "now"
 
+    def as_resolved(self) -> Any:
+        """This window as an :class:`engine.time_windows.ResolvedWindow` (the aggregate
+        API's input): ``start=None`` and no upper bound for a trailing all-time window
+        (a record stamped after now is still counted, never dropped)."""
+        from ...engine.time_windows import ResolvedWindow
+
+        if self.engine is not None and not self.clamped:
+            return self.engine
+        return ResolvedWindow(
+            start=None if self.all_time else self.start, end=self.end, label=self.label,
+            tz=self.tz, token=self.token or self.time_from, now=self.ref or self.end,
+            open_end=self.all_time and self.trailing,
+            kind="all" if self.all_time else ("relative" if self.trailing else "range"),
+        )
+
+
+def align_to_bucket(window: Window, unit: str | None) -> Window:
+    """``window`` as the aggregators count it when it is broken down by the calendar
+    ``unit`` (``engine.time_windows.align_window``): a relative window that spans a
+    whole number N (>= 2) of ``unit`` periods covers N whole periods, the last in
+    progress ("last 6 months by month" is May to October, not 10 April to now with a
+    cut first month), and its label says so ("last 6 months (since May 2026)").
+
+    Every lookup that labels, totals or compares a bucketed window uses the aligned
+    window, so the headline, the series, the bucket labels and the compared periods
+    describe the same span. Calendar periods, ranges, all time, a clamped window and
+    a span that is not whole periods (90 days by month) come back unchanged."""
+    if not unit or window.all_time or window.clamped or window.aligned_to:
+        return window
+    from ...engine.time_windows import align_window
+
+    try:
+        resolved = window.as_resolved()
+        aligned = align_window(resolved, unit)
+    except NotImplementedError:
+        raise
+    except Exception:  # noqa: BLE001 — an unalignable window stays as resolved
+        return window
+    start = getattr(aligned, "start", None)
+    if aligned is resolved or start is None or start == window.start or start >= window.end:
+        return window
+    return replace(
+        window, start=start, time_from=start.isoformat(), hours=_hours(start, window.end),
+        label=str(aligned.label or window.label), engine=aligned, aligned_to=unit,
+    )
+
+
+def operator_tz(ctx: Any) -> str:
+    """The operator timezone (``SlaPolicy.timezone``), a valid IANA name, else ``UTC``."""
+    name = getattr(getattr(getattr(ctx, "prefs", None), "sla", None), "timezone", None)
+    if isinstance(name, str) and name.strip():
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(name.strip())
+            return name.strip()
+        except Exception:  # noqa: BLE001 — an unknown zone falls back to UTC
+            pass
+    return "UTC"
+
 
 def window_label(time_from: str, time_to: str, start: datetime, end: datetime) -> str:
-    """``last 24h`` for a trailing relative window, else a UTC minute range."""
+    """``last 24 hours`` / ``last 30 days`` for a trailing relative window, ``all time``
+    for an all-time one, else a UTC minute range."""
+    from ...models import humanise_relative_window
+
     if time_to.strip().lower() == "now":
+        if start <= ALL_TIME_START:
+            return ALL_TIME_LABEL
+        # ``now-6M`` (a months chip) is six MONTHS: read case-sensitively, never
+        # lower-cased into six minutes.
+        calendar = _CALENDAR_RELATIVE_RE.match(time_from.strip())
+        if calendar:
+            return humanise_relative_window(int(calendar.group(1)), calendar.group(2))
         match = _RELATIVE_RE.match(time_from.strip().lower())
         if match:
-            return f"last {int(match.group(1))}{match.group(2)}"
+            return humanise_relative_window(int(match.group(1)), match.group(2))
     return f"{start.strftime('%Y-%m-%d %H:%M')} → {end.strftime('%Y-%m-%d %H:%M')} UTC"
 
 
-def _hours(start: datetime, end: datetime, *, lo: int = 1, hi: int = MAX_WINDOW_HOURS) -> int:
+def _hours(start: datetime, end: datetime, *, lo: int = 1) -> int:
     span = (end - start).total_seconds() / 3600
-    return min(max(math.ceil(span), lo), hi)
+    return max(math.ceil(span), lo)
+
+
+def _is_all(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() in _ALL_TIME_WORDS
+
+
+def _is_now_relative(expr: Any) -> bool:
+    """``now`` / ``now-<n>[mhdw]`` in the legacy grammar (``m`` = MINUTES). ``now-6M``
+    (upper-case M, months) is not: the calendar resolver reads it."""
+    if not isinstance(expr, str):
+        return False
+    text = expr.strip()
+    lowered = text.lower()
+    return lowered.startswith("now") and "M" not in text[3:] and bool(_LEGACY_RELATIVE_RE.match(lowered))
+
+
+def _legacy_bound(expr: str, ref: datetime) -> tuple[datetime, str] | None:
+    """``now``/``now-<n>[mhdw]``/ISO, resolved the classic way (``m`` = minutes)."""
+    text = expr.strip()
+    lowered = text.lower()
+    if lowered.startswith("now"):
+        if not _is_now_relative(text):
+            return None  # ``now-6M`` is six months: the calendar resolver reads it
+        moment = resolve_time_expr(lowered, ref)
+        return (moment, lowered) if moment is not None else None
+    moment = resolve_time_expr(text, ref)
+    return (moment, text) if moment is not None else None
+
+
+def _engine_window(spec: Any, tz: str, ref: datetime) -> Any:
+    """``engine.time_windows.resolve_window`` (calendar periods, months, years, ISO
+    ranges), or ``None`` when it cannot read the spec."""
+    from ...engine import time_windows
+
+    try:
+        resolved = time_windows.resolve_window(spec, tz=tz, now=ref)
+    except NotImplementedError:
+        raise
+    except Exception:  # noqa: BLE001 — an unreadable window is the caller's error
+        return None
+    return resolved if getattr(resolved, "end", None) is not None else None
+
+
+@dataclass(frozen=True)
+class _Span:
+    start: datetime | None        # None = all time
+    end: datetime
+    time_from: str
+    time_to: str
+    label: str | None = None      # None = derive with window_label()
+    token: str = ""
+    engine: Any = None            # the engine's ResolvedWindow, when it resolved this
+
+
+def _span_from_resolved(resolved: Any, ref: datetime) -> _Span:
+    start = resolved.start
+    end = resolved.end
+    trailing = bool(getattr(resolved, "open_end", False)) or abs((end - ref).total_seconds()) < 1
+    return _Span(
+        start=start, end=end,
+        time_from=start.isoformat() if start is not None else ALL_TIME_START.isoformat(),
+        time_to="now" if trailing else end.isoformat(),
+        label=str(resolved.label or "") or None, token=str(getattr(resolved, "token", "") or ""),
+        engine=resolved,
+    )
+
+
+def _all_time_span(ref: datetime) -> _Span:
+    return _Span(None, ref, ALL_TIME_START.isoformat(), "now", ALL_TIME_LABEL, "all")
+
+
+def _legacy_span(time_from: str, ref: datetime) -> _Span | None:
+    """A trailing ``now-<n>[mhdw]`` window (the classic grammar, ``m`` = minutes). A
+    start before :data:`ALL_TIME_START` (``now-99999d``) is all time."""
+    bound = _legacy_bound(time_from, ref)
+    if bound is None:
+        return None
+    if bound[0] <= ALL_TIME_START:
+        return _all_time_span(ref)
+    return _Span(bound[0], ref, bound[1], "now", token=bound[1])
+
+
+def _resolve_spec(spec: Any, tz: str, ref: datetime) -> _Span | str | None:
+    """One ``window`` input: all time, the legacy relative grammar, a calendar period,
+    ``now-<n>M``/``now-<n>y``, an ISO range ``{from, to}`` or ``"a..b"``."""
+    if isinstance(spec, dict):
+        lowered = {str(k).strip().lower(): v for k, v in spec.items()}
+        return _resolve_range(lowered.get("from") or lowered.get("start"),
+                              lowered.get("to") or lowered.get("end"), tz, ref)
+    if not isinstance(spec, str) or not spec.strip():
+        return None
+    text = spec.strip()
+    if _is_all(text):
+        return _all_time_span(ref)
+    if ".." in text:
+        left, _, right = text.partition("..")
+        return _resolve_range(left or None, right or None, tz, ref)
+    if text.lower().startswith("now-") and _is_now_relative(text):
+        return _legacy_span(text, ref)
+    resolved = _engine_window(text, tz, ref)
+    return _span_from_resolved(resolved, ref) if resolved is not None else None
+
+
+def _resolve_range(time_from: Any, time_to: Any, tz: str, ref: datetime) -> _Span | str | None:
+    """A ``{from, to}`` range (also ``"a..b"`` and ``time_from``/``time_to``).
+
+    Only a range whose bounds are both ``now``/``now-<n>[mhdw]`` keeps the classic
+    trailing grammar. Every other bound (an ISO date or instant, a calendar token, a
+    period literal, ``now-6M``) is resolved by ``engine.time_windows`` in the operator
+    timezone (Round 12 SPEC §3.5, D7): a naive instant or a date is local time, a ``to``
+    DATE is inclusive (the window runs to the end of that day) and the label is
+    humanised ("1 Mar – 10 Oct 2026"). A ``from`` alone that names a period
+    (``last_month``, ``2026-Q3``, ``now-6M``) means that whole period; an ISO date or
+    instant alone means "since then"."""
+    from_expr = none_if_blank(time_from)
+    to_expr = none_if_blank(time_to)
+    if from_expr is not None and not isinstance(from_expr, str):
+        return None
+    if to_expr is not None and not isinstance(to_expr, str):
+        return None
+    if from_expr is None:
+        return None
+    to_is_now = to_expr is None or to_expr.strip().lower() == "now"
+    if _is_all(from_expr) and to_is_now:
+        return _all_time_span(ref)
+    if to_is_now and _is_now_relative(from_expr):
+        return _legacy_span(from_expr, ref)
+    if to_expr is None and not _is_all(from_expr) and _legacy_bound(from_expr, ref) is None:
+        # A period name or ``now-6M`` on its own: the whole period it names.
+        return _resolve_spec(from_expr, tz, ref)
+    spec: dict[str, Any] = {"from": "all" if _is_all(from_expr) else from_expr}
+    if to_expr is not None:
+        spec["to"] = to_expr
+    from ...engine import time_windows
+
+    try:
+        resolved = time_windows.resolve_window(spec, tz=tz, now=ref)
+    except NotImplementedError:
+        raise
+    except ValueError as exc:
+        # An empty range is named as such; anything else is an unreadable window.
+        return EMPTY_WINDOW if "empty" in str(exc) else None
+    except Exception:  # noqa: BLE001 — an unreadable window is the caller's error
+        return None
+    return _span_from_resolved(resolved, ref)
+
+
+# Kept for importers: ``time_from``/``time_to`` resolve exactly like a ``{from, to}`` range.
+_resolve_bounds = _resolve_range
+
+# A lower-case ``m`` window ("now-6m", "6m", "last 6m") is MINUTES in the classic
+# grammar but reads like MONTHS: the case, metric and cost lookups (where a minute
+# window is meaningless) refuse it instead of answering a different question.
+_MINUTE_WINDOW_RE = re.compile(r"^(?:now\s*-\s*|(?:last|past|previous|trailing)?[\s_-]*)\d{1,6}\s*m$")
+AMBIGUOUS_MINUTES = (
+    "Invalid time window: now-<n>m means minutes; use now-<n>M for months, now-<n>d for days "
+    "or now-<n>h for hours"
+)
+
+
+def _minute_window(spec: Any) -> bool:
+    """Does ``spec`` (a window string or a ``{from, to}`` object) use a lower-case
+    ``m`` (minutes) relative bound?"""
+    if isinstance(spec, dict):
+        return any(_minute_window(v) for v in spec.values())
+    if not isinstance(spec, str):
+        return False
+    text = spec.strip()
+    if ".." in text:
+        return any(_minute_window(part) for part in text.split(".."))
+    return bool(_MINUTE_WINDOW_RE.match(text))
+
+
+_WINDOW_SPEC_CHARS = 80
+
+
+def window_input(value: Any) -> Any:
+    """The ``window`` input as the model may send it, normalised for validation: a
+    bounded string, or a ``{from, to}`` object of bounded strings (``start``/``end``
+    accepted as aliases). Anything else is left for the field's own type error."""
+    value = none_if_blank(value)
+    if isinstance(value, str):
+        if len(value) > _WINDOW_SPEC_CHARS:
+            raise ValueError("window is too long")
+        return value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            name = {"start": "from", "end": "to"}.get(str(key).strip().lower(), str(key).strip().lower())
+            if name not in ("from", "to") or not (item is None or isinstance(item, str)):
+                raise ValueError("window is {from, to}")
+            if isinstance(item, str) and len(item) > _WINDOW_SPEC_CHARS:
+                raise ValueError("window is too long")
+            if item is not None and item.strip():
+                out[name] = item.strip()
+        if "from" not in out:
+            raise ValueError("window needs from")
+        return out
+    return value
 
 
 def resolve_window(
     ctx: ChatToolContext,
     *,
+    window: Any = None,
     time_from: str | None = None,
     time_to: str | None = None,
     window_hours: int | None = None,
     default_hours: int = 24,
+    default: str | None = None,
     now: datetime | None = None,
+    minutes_ok: bool = True,
 ) -> Window | str:
     """The effective window for one call, or an engine-template error string.
 
-    Precedence (SPEC §3.1): a window in the tool input (``time_from``/``time_to``
-    or ``window_hours``, which the model sets from the user's own words) → the
-    request's ``time_range`` chip (``ctx.time_range``) → the screen context's
-    ``context.time_range`` (``ctx.context_time_range``) → ``default_hours``.
-    §4.8.4: when the request selected a range (the chip), a tool window is CLAMPED
-    into it — nothing a model reads in a tool result can widen what the user
-    selected — and ``clamped`` says so. The screen context is only a default, never
-    a clamp. A window is at most 90 days (the start moves)."""
+    Precedence (SPEC §3.1): a window in the tool input (``window``, or
+    ``time_from``/``time_to``, or ``window_hours`` — set by the model from the user's
+    own words) → the request's ``time_range`` chip (``ctx.time_range``) → the screen
+    context's ``context.time_range`` (``ctx.context_time_range``) → the tool's own
+    default (``default``, a window spec such as ``"all"``, else ``default_hours``).
+
+    Round 12 (SPEC D7): a window may be all time, ``now-<n>[h|d|w|M|y]``, a calendar
+    period in the operator timezone (``SlaPolicy.timezone``) or an ISO range, of any
+    length (no 90-day or 720-hour clamp). §4.8.4 still holds: when the request
+    selected a range (the chip), a tool window is CLAMPED into it — nothing a model
+    reads in a tool result can widen what the user selected — and ``clamped`` says
+    so. An "All time" chip never clamps. The screen context is only a default.
+
+    ``minutes_ok=False`` (the case, metric and cost lookups) refuses a lower-case
+    ``m`` relative window ("now-6m" is six MINUTES, which reads like six months). A
+    ``window_hours`` or relative window reaching back before 1970 is all time. A
+    clamped calendar window keeps no calendar token: its previous period is the same
+    length immediately before it, never a whole calendar period."""
     ref = now or datetime.now(timezone.utc)
+    tz = operator_tz(ctx)
     chip = ctx.time_range
-    from_expr = none_if_blank(time_from)
-    to_expr = none_if_blank(time_to)
     source: Literal["tool", "request", "default"]
-    if from_expr is not None or to_expr is not None:
-        from_expr = str(from_expr or f"now-{default_hours}h").strip()
-        to_expr = str(to_expr or "now").strip()
-        start = resolve_time_expr(from_expr.lower() if from_expr.lower().startswith("now") else from_expr, ref)
-        end = resolve_time_expr(to_expr.lower() if to_expr.lower().startswith("now") else to_expr, ref)
-        if start is None or end is None:
-            return "Invalid time window: use now, now-<n>[m|h|d|w] or an ISO-8601 timestamp"
-        if start >= end:
-            return "Invalid time window: the start must be before the end"
-        if from_expr.lower().startswith("now"):
-            from_expr = from_expr.lower()
-        if to_expr.lower().startswith("now"):
-            to_expr = to_expr.lower()
+    window = none_if_blank(window)
+    span: _Span | None
+    if window is not None:
+        if none_if_blank(time_from) is not None or none_if_blank(time_to) is not None:
+            return "Invalid input: give window or time_from/time_to, not both"
+        if not minutes_ok and _minute_window(window):
+            return AMBIGUOUS_MINUTES
+        span = _resolve_spec(window, tz, ref)
+        if span is None:
+            return INVALID_WINDOW
+        source = "tool"
+    elif none_if_blank(time_from) is not None or none_if_blank(time_to) is not None:
+        if not minutes_ok and (_minute_window(time_from) or _minute_window(time_to)):
+            return AMBIGUOUS_MINUTES
+        span = _resolve_bounds(time_from if none_if_blank(time_from) is not None else f"now-{default_hours}h",
+                               time_to, tz, ref)
+        if span is None:
+            return INVALID_WINDOW
         source = "tool"
     elif window_hours is not None:
         hours = max(1, int(window_hours))
-        from_expr, to_expr = f"now-{hours}h", "now"
-        start, end = ref - timedelta(hours=hours), ref
+        if hours * 3600 >= (ref - ALL_TIME_START).total_seconds():
+            # "Everything" said as a huge hour count: all time (never an overflow).
+            span = _all_time_span(ref)
+        else:
+            span = _Span(ref - timedelta(hours=hours), ref, f"now-{hours}h", "now", token=f"now-{hours}h")
         source = "tool"
     elif ctx.default_range is not None:
         selected = ctx.default_range
         start, end = selected.resolve(ref)
-        from_expr, to_expr = selected.from_, selected.to
+        if getattr(selected, "is_all_time", False):
+            span = _Span(None, end, ALL_TIME_START.isoformat(), selected.to,
+                         selected.label(), "all")
+        else:
+            # A trailing relative chip ("now-6M", "now-24h") keeps its relative token, so a
+            # bucketed lookup aligns it to whole periods exactly like the same window
+            # asked for in words (``align_to_bucket``).
+            relative = selected.to == "now" and bool(
+                _RELATIVE_RE.match(selected.from_) or _CALENDAR_RELATIVE_RE.match(selected.from_))
+            span = _Span(start, end, selected.from_, selected.to,
+                         token=selected.from_ if relative else f"{selected.from_}..{selected.to}")
         source = "request"
     else:
-        from_expr, to_expr = f"now-{default_hours}h", "now"
-        start, end = ref - timedelta(hours=default_hours), ref
+        spec = default if default is not None else f"now-{default_hours}h"
+        span = _resolve_spec(spec, tz, ref)
+        if span is None:
+            return INVALID_WINDOW
         source = "default"
+    if isinstance(span, str):
+        return span
+    if span.start is not None and span.start >= span.end:
+        return EMPTY_WINDOW
 
+    start = span.start if span.start is not None else ALL_TIME_START
+    end = span.end
+    from_expr, to_expr = span.time_from, span.time_to
+    all_time = span.start is None
+    label = span.label
     clamped = False
-    if source == "tool" and chip is not None:
+    if source == "tool" and chip is not None and not getattr(chip, "is_all_time", False):
         chip_start, chip_end = chip.resolve(ref)
         if start < chip_start:
-            start, from_expr, clamped = chip_start, chip.from_, True
+            start, from_expr, clamped, all_time = chip_start, chip.from_, True, False
         if end > chip_end:
             end, to_expr, clamped = chip_end, chip.to, True
         if start >= end:
             start, end = chip_start, chip_end
-            from_expr, to_expr, clamped = chip.from_, chip.to, True
-    if end - start > timedelta(days=MAX_WINDOW_DAYS):
-        start = end - timedelta(days=MAX_WINDOW_DAYS)
-        from_expr, clamped = start.isoformat(), True
+            from_expr, to_expr, clamped, all_time = chip.from_, chip.to, True, False
+        if clamped:
+            label = None
+    elif source == "tool" and chip is not None:
+        # An "All time" chip: only the end bound still applies.
+        chip_start, chip_end = chip.resolve(ref)
+        if end > chip_end:
+            end, to_expr, clamped, label = chip_end, chip.to, True, None
+    if all_time and to_expr.strip().lower() == "now":
+        label = ALL_TIME_LABEL
+    if all_time:
+        token = "all"
+    elif clamped:
+        # The clamped range itself: a calendar token ("this_month") no longer
+        # describes it, so nothing may step back a whole calendar period from it.
+        token = f"{start.isoformat()}..{end.isoformat()}"
+    else:
+        token = span.token or from_expr
     return Window(
         time_from=from_expr, time_to=to_expr, start=start, end=end,
-        hours=_hours(start, end), label=window_label(from_expr, to_expr, start, end),
-        source=source, clamped=clamped,
+        hours=_hours(start, end), label=label or window_label(from_expr, to_expr, start, end),
+        source=source, clamped=clamped, all_time=all_time, tz=tz,
+        token=token, ref=ref,
+        engine=None if clamped else span.engine,
     )
 
 
@@ -359,7 +786,8 @@ def logs_console_view(
       would be fabricating a filter.
 
     The window is the one the tool resolved (:func:`resolve_window`: the same
-    precedence, request clamp and 90-day cap) written as ABSOLUTE UTC instants
+    precedence and request clamp; a window longer than the Logs page's 90 days, or
+    all time, has no exact view) written as ABSOLUTE UTC instants
     (:func:`nav_instant`), so a stored answer reopened next week still opens the
     window its data came from rather than a relative ``now-24h`` re-evaluated
     then. ``now`` is the instant the call started (``ChatToolbox.execute`` passes
@@ -376,10 +804,21 @@ def logs_console_view(
     if searched is False:
         return None
     window = resolve_window(
-        ctx, time_from=getattr(args, "time_from", None), time_to=getattr(args, "time_to", None), now=now,
+        ctx, window=getattr(args, "window", None), time_from=getattr(args, "time_from", None),
+        time_to=getattr(args, "time_to", None), now=now,
     )
     if isinstance(window, str):
         return None
+    interval = getattr(args, "interval", None)
+    if isinstance(interval, str):
+        # ``log_stats`` counts the window aligned to whole periods of its series
+        # (``logs.aligned_log_window``): the view opens exactly that window. A lazy
+        # import: the log tools import this module.
+        from .logs import aligned_log_window
+
+        window, _interval = aligned_log_window(window, interval)
+    if window.all_time or window.end - window.start > timedelta(days=LOGS_PAGE_MAX_DAYS):
+        return None  # the Logs page reads at most 90 days: no exact view of a longer window
     if _to_millis(window.start, round_up=True) >= _to_millis(window.end, round_up=False):
         return None  # a sub-millisecond window has no millisecond link
     start, end = nav_instant(window.start, round_up=True), nav_instant(window.end, round_up=False)
@@ -672,12 +1111,15 @@ def column(
 
 
 __all__ = [
+    "AMBIGUOUS_MINUTES",
+    "EMPTY_WINDOW",
     "MAX_CITATIONS_PER_CALL",
     "MAX_WINDOW_DAYS",
     "MAX_WINDOW_HOURS",
     "ToolCall",
     "ToolInput",
     "Window",
+    "align_to_bucket",
     "call_scope",
     "case_entity",
     "case_list_item",

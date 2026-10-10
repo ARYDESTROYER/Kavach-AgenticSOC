@@ -451,14 +451,15 @@ async def test_a_running_turn_keeps_its_key_after_its_lease_ages(gated_state) ->
     assert state.chat_turns.active == 0
 
 
-def test_the_reservation_lease_covers_the_configured_worst_case_turn() -> None:
+def test_the_reservation_lease_is_fixed_and_renewed_by_a_heartbeat() -> None:
+    """Round 12 (SPEC D1): a turn has no configured worst case any more, so the lease
+    is not sized to it; the running turn renews it (see the heartbeat test)."""
     from app.config import ChatAgentConfig
     from app.stores.chat_conversations import IDEMPOTENCY_PENDING_TTL_SECONDS
 
     assert routes_chat.turn_lease_seconds(ChatAgentConfig()) == IDEMPOTENCY_PENDING_TTL_SECONDS
-    slow = ChatAgentConfig(turn_timeout_s=600, model_step_timeout_s=300, tool_timeout_s=120)
-    # A step started just before the deadline, then the final-only step, then a margin.
-    assert routes_chat.turn_lease_seconds(slow) == 600 + 300 + 300 + routes_chat.TURN_LEASE_MARGIN_S
+    assert routes_chat.TURN_LEASE_SECONDS == IDEMPOTENCY_PENDING_TTL_SECONDS
+    assert 0 < routes_chat.TURN_HEARTBEAT_S < routes_chat.TURN_LEASE_SECONDS / 3
 
 
 async def test_factory_reset_cancels_running_turns_before_drain(gated_state) -> None:
@@ -620,7 +621,11 @@ async def test_per_user_and_global_concurrency_bounds(gated_state) -> None:
     assert _chat_calls(provider) == calls                 # refused before any work
     page = await state.chat_conversations.list_page("")
     doc = await state.kv.get(CHAT_CONVERSATIONS_NS, partition_key_for_user(""))
-    assert page.total == 0 and list(stored_request_rows(doc)) == ["conc-key-0001"]
+    # Round 12: the running first turn is listed as a temporary "answering" row only.
+    assert page.total == 1 and page.total_conversation_count == 0
+    assert page.conversations[0].status == "running" and page.conversations[0].message_count == 0
+    assert list(stored_request_rows(doc)) == ["conc-key-0001"]
+    assert busy.value.detail["scope"] in ("user", "global") and busy.value.detail["limit"] == 1
     provider.gate.set()
     await asyncio.wait_for(first.handle.finished.wait(), 10)
     third, _ = await _start(state, idempotency_key="conc-key-0003")

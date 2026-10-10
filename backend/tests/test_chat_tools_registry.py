@@ -244,10 +244,19 @@ async def test_execute_never_leaks_exception_text(probe_catalogue) -> None:
     assert "postgres" not in str(audit.calls)
 
 
-async def test_execute_drops_reserved_kwargs_and_binds_call(probe_catalogue) -> None:
-    box = build_toolbox(make_ctx())
-    out = await box.execute("echo_probe", {"x": 1, "ctx": "evil", "self": 2, "not-an-id": 3}, step=7)
-    assert out.ok and out.observation == {"keys": ["x"]}
+async def test_execute_refuses_reserved_kwargs_visibly_and_binds_call(probe_catalogue) -> None:
+    """Round 12 (routing fix 4): an input name no tool can take is REFUSED with a
+    message, never dropped silently; a non-identifier name reaches the tool, whose own
+    input model decides (the bundled tools refuse it by name)."""
+    audit = RecordingAudit()
+    box = build_toolbox(make_ctx(audit=audit))
+    refused = await box.execute("echo_probe", {"x": 1, "ctx": "evil", "self": 2}, step=7)
+    assert not refused.ok and refused.status == "error"
+    assert refused.error == "Invalid input: ctx, self are not inputs of this lookup."
+    assert refused.summary == "Invalid input: unknown input names."   # the trusted header names none
+    assert len(audit.calls) == 1   # the refusal is audited like any call
+    out = await box.execute("echo_probe", {"x": 1, "not-an-id": 3}, step=7)
+    assert out.ok and out.observation == {"keys": ["not-an-id", "x"]}
     assert out.summary == "step 7"
     assert current_call() is None  # the binding does not leak out of execute
 
@@ -376,4 +385,4 @@ async def test_unknown_kind_of_a_kind_gated_tool_is_denied_without_any_kind_gran
     control2 = RecordingAudit()
     box2 = build_toolbox(make_ctx(grants=frozenset({("automation", "read")}), control_audit=control2))
     bad = await box2.execute("automation_status", {"kind": "bogus"})
-    assert bad.status == "error" and bad.error == "Invalid input: check kind" and control2.calls == []
+    assert bad.status == "error" and bad.error.startswith("Invalid input: check kind (one of ") and control2.calls == []

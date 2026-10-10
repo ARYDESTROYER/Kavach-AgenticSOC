@@ -78,7 +78,7 @@ export function SegmentedControl<T extends string = string>({
           value={opt.value}
           disabled={disabled || opt.disabled}
           className={cn(
-            'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[3px] font-medium transition-colors',
+            'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors',
             size === 'sm' ? 'h-6 px-2.5 text-xs' : 'h-7 px-3 text-sm',
             fitted && 'flex-1',
             'text-muted-foreground hover:text-foreground',

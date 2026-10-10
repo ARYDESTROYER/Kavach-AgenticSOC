@@ -25,7 +25,8 @@
     "area",
     "donut",
     "sparkline",
-    "funnel"
+    "funnel",
+    "grouped_bar"
   ],
   "units": [
     "count",
@@ -76,7 +77,8 @@
     "entity",
     "mitre",
     "guide",
-    "query"
+    "query",
+    "comparison"
   ],
   "views": [
     "bar",
@@ -87,6 +89,7 @@
     "donut",
     "sparkline",
     "funnel",
+    "grouped_bar",
     "kpi_group",
     "table",
     "heatmap",
@@ -147,6 +150,12 @@
     ],
     "query": [
       "query"
+    ],
+    "comparison": [
+      "grouped_bar",
+      "kpi_group",
+      "hbar",
+      "table"
     ]
   },
   "ai_authored_types": [
@@ -242,7 +251,10 @@
     "1h",
     "6h",
     "1d",
-    "1w"
+    "1w",
+    "1M",
+    "1q",
+    "1y"
   ],
   "good_directions": [
     "up",
@@ -255,7 +267,15 @@
     "ioc",
     "shift",
     "posture",
-    "custom"
+    "custom",
+    "executive",
+    "monthly",
+    "infographic",
+    "investigation_brief"
+  ],
+  "report_layouts": [
+    "document",
+    "infographic"
   ],
   "nav_statuses": [
     "active",
@@ -272,9 +292,9 @@
     "blocks_per_message": 12,
     "section_blocks": 13,
     "report_sections": 12,
-    "report_leaves": 40,
-    "blocks_bytes_target": 40000,
-    "blocks_bytes": 48000,
+    "report_leaves": 60,
+    "blocks_bytes_target": 400000,
+    "blocks_bytes": 480000,
     "series": 8,
     "points": 200,
     "donut_segments": 6,
@@ -324,7 +344,8 @@
     "section_id": "^[a-z0-9][a-z0-9_-]{0,31}$",
     "artifact_ref": "^t([1-9][0-9]{0,2})\\.a([1-9][0-9]{0,2})$",
     "stored_ref": "^m([1-9][0-9]{0,2})\\.b([1-9][0-9]{0,2})$",
-    "timestamp": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])(?:[Tt ](?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\\.[0-9]{1,9})?)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])?)?$"
+    "timestamp": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])(?:[Tt ](?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\\.[0-9]{1,9})?)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])?)?$",
+    "tz": "^[A-Za-z][A-Za-z0-9_+/-]{0,63}$"
   },
   "invisible_ranges": [
     [

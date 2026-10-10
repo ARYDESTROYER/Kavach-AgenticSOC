@@ -1,5 +1,7 @@
 import * as React from 'react';
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
+import { useScrollEdgeRef } from '@/design-system/material';
 
 /**
  * `density` on TableHead/TableCell (DESIGN_STANDARD §5.2 / §7): `normal` is the
@@ -44,23 +46,31 @@ export interface TableHeaderProps extends React.HTMLAttributes<HTMLTableSectionE
 }
 
 const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
-  ({ className, sticky, ...props }, ref) => (
-    <thead
-      ref={ref}
-      className={cn(
-        '[&_tr]:border-b [&_tr]:border-border',
-        // Non-sticky keeps the translucent wash (byte-identical). Sticky needs an
-        // OPAQUE background so scrolled rows don't bleed through the pinned header —
-        // so it must NOT also carry `bg-surface/50` (that /50 rule wins the cascade
-        // over the opaque base and defeats the sticky bg).
-        sticky
-          ? 'sticky top-[var(--header-h)] z-10 bg-surface backdrop-blur supports-[backdrop-filter]:bg-surface/85'
-          : 'bg-surface/50',
-        className,
-      )}
-      {...props}
-    />
-  ),
+  ({ className, sticky, ...props }, ref) => {
+    // The scroll-edge fade under a pinned header, shown only while rows are scrolled
+    // beneath it (the same observation every sticky material bar uses).
+    const edgeRef = useScrollEdgeRef(ref, Boolean(sticky));
+    return (
+      <thead
+        ref={edgeRef}
+        className={cn(
+          '[&_tr]:border-b [&_tr]:border-border',
+          // Non-sticky keeps the translucent wash (byte-identical). A pinned header is
+          // floating chrome over scrolled rows, so it wears the ONE material
+          // (`materialBar`: ≥0.80 fill + blur, solid under reduced transparency or
+          // increased contrast) — and must NOT also carry `bg-surface/50`, which would
+          // win the cascade over the material's fill and let rows bleed through.
+          // Small text ON a material is secondary ink, never muted (ui-standard
+          // "Materials"): the 11px column labels step up from `text-muted-foreground`.
+          sticky
+            ? cn('sticky top-[var(--header-h)] z-10 [&_th]:text-secondary-foreground', materialBar)
+            : 'bg-surface/50',
+          className,
+        )}
+        {...props}
+      />
+    );
+  },
 );
 TableHeader.displayName = 'TableHeader';
 

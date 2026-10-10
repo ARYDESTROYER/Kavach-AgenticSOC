@@ -92,6 +92,8 @@ export const STREAM_CHANNELS = [
   'case.activity',
   AGENT_STEP_CHANNEL,
   'job',
+  // Round 12 (SPEC D13): the caller's own chat turns, owner-only, topic `chat`.
+  'chat.turn',
   'overflow',
 ] as const;
 

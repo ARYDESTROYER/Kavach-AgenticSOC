@@ -33,7 +33,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ..constants import SESSIONS_KEY, SESSIONS_NS
@@ -187,6 +187,13 @@ class SessionStore:
             "ua_os": "",
             "client_type": "",
             "mfa_method": "",
+            # Round 12 (Remember me): a remembered sign-in is judged against the
+            # remember_me policy limits (see app.auth.session_limits). ``remember_seconds``
+            # is the lifetime granted at creation (display + forensics only — the LIVE
+            # policy is authoritative), ``token_expires_at`` the access token's ``exp``.
+            "remember": False,
+            "remember_seconds": 0,
+            "token_expires_at": "",
         }
 
     # ----- token-version (per-user) ----------------------------------------- #
@@ -209,6 +216,8 @@ class SessionStore:
         idle_timeout: int,
         absolute_lifetime: int,
         sudo_window: int,
+        remember_idle: int = 0,
+        remember_absolute: int = 0,
     ) -> bool:
         """Fail-closed one-snapshot authority check for deferred privileged work.
 
@@ -226,6 +235,8 @@ class SessionStore:
                 idle_timeout=idle_timeout,
                 absolute_lifetime=absolute_lifetime,
                 sudo_window=sudo_window,
+                remember_idle=remember_idle,
+                remember_absolute=remember_absolute,
             )
             is not None
         )
@@ -239,6 +250,8 @@ class SessionStore:
         idle_timeout: int,
         absolute_lifetime: int,
         sudo_window: int,
+        remember_idle: int = 0,
+        remember_absolute: int = 0,
     ) -> int | None:
         """Return the exact live step-up expiry in epoch milliseconds.
 
@@ -265,6 +278,8 @@ class SessionStore:
             row,
             idle_timeout=max(0, int(idle_timeout)),
             absolute_lifetime=max(0, int(absolute_lifetime)),
+            remember_idle=max(0, int(remember_idle)),
+            remember_absolute=max(0, int(remember_absolute)),
         ) is not None:
             return None
         last_authn = _to_epoch(row.get("last_authn_at")) or _to_epoch(
@@ -285,6 +300,8 @@ class SessionStore:
         token_version: int,
         idle_timeout: int,
         absolute_lifetime: int,
+        remember_idle: int = 0,
+        remember_absolute: int = 0,
     ) -> str | None:
         """Validate one request session from a strict, read-only KV snapshot.
 
@@ -316,6 +333,8 @@ class SessionStore:
             row,
             idle_timeout=max(0, int(idle_timeout)),
             absolute_lifetime=max(0, int(absolute_lifetime)),
+            remember_idle=max(0, int(remember_idle)),
+            remember_absolute=max(0, int(remember_absolute)),
         )
 
     @staticmethod
@@ -347,9 +366,17 @@ class SessionStore:
         ua_os: str = "",
         client_type: str = "",
         mfa_method: str = "",
+        remember: bool = False,
+        remember_seconds: int = 0,
+        token_expires_at: str = "",
     ) -> dict[str, Any]:
         """Register a new session row (idempotent on ``sid`` — re-creating an existing
-        sid refreshes its metadata instead of duplicating). Returns the stored row."""
+        sid refreshes its metadata instead of duplicating). Returns the stored row.
+
+        ``remember`` marks a "Remember me" sign-in: the caller passes the REMEMBERED
+        limits as ``idle_timeout`` / ``absolute_lifetime`` so the stamped expiry
+        timestamps describe the remembered session (the live policy still decides,
+        see :meth:`is_active`)."""
         row = self._blank_row(sid, username)
         now = now_utc()
         if absolute_lifetime > 0:
@@ -362,6 +389,9 @@ class SessionStore:
             ip=ip or "", ip_city=ip_city or "", ip_country=ip_country or "",
             ua_raw=ua_raw or "", ua_browser=ua_browser or "", ua_os=ua_os or "",
             client_type=client_type or "", mfa_method=mfa_method or "",
+            remember=bool(remember),
+            remember_seconds=max(0, int(remember_seconds or 0)) if remember else 0,
+            token_expires_at=token_expires_at or "",
         )
 
         def apply(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -458,7 +488,8 @@ class SessionStore:
         return await self._mutate(apply)
 
     async def rekey_and_rotate(self, old_sid: str, new_sid: str, new_hash: str,
-                               *, idle_timeout: int = 0) -> dict[str, Any] | None:
+                               *, idle_timeout: int = 0,
+                               token_expires_at: str = "") -> dict[str, Any] | None:
         """Rotate a session on REFRESH while preserving ONE logical row.
 
         The existing row's ``sid`` is re-keyed to ``new_sid`` (so the freshly-minted
@@ -479,6 +510,8 @@ class SessionStore:
                 row["last_active_at"] = now.isoformat()
                 if idle_timeout > 0:
                     row["idle_expiry_at"] = (now + timedelta(seconds=int(idle_timeout))).isoformat()
+                if token_expires_at:
+                    row["token_expires_at"] = token_expires_at
                 return row
             return None
 
@@ -596,8 +629,22 @@ class SessionStore:
 
     # ----- activity / expiry checks ----------------------------------------- #
     @staticmethod
+    def limits_for_row(row: dict[str, Any] | None, *, idle_timeout: int = 0,
+                       absolute_lifetime: int = 0, remember_idle: int = 0,
+                       remember_absolute: int = 0) -> tuple[int, int]:
+        """``(idle, absolute)`` that apply to ``row``: the remembered pair for a row
+        created by a "Remember me" sign-in while remembered limits are supplied
+        (``remember_absolute > 0``), else the standard pair."""
+        if row is not None and bool(row.get("remember")) and int(remember_absolute or 0) > 0:
+            absolute = int(remember_absolute)
+            idle = int(remember_idle or 0)
+            return (idle if 0 < idle <= absolute else absolute, absolute)
+        return (int(idle_timeout or 0), int(absolute_lifetime or 0))
+
+    @staticmethod
     def is_active(row: dict[str, Any] | None, *, idle_timeout: int = 0,
-                  absolute_lifetime: int = 0) -> str | None:
+                  absolute_lifetime: int = 0, remember_idle: int = 0,
+                  remember_absolute: int = 0) -> str | None:
         """Return a rejection REASON string if the session is NOT usable, else None.
 
         Pure (no I/O) so the deps layer can call it after a single ``get``. Rejects
@@ -606,11 +653,22 @@ class SessionStore:
         live POLICY OVERRIDE — when >0 they are recomputed from ``created_at`` /
         ``last_active_at`` so a policy change takes effect on stored rows; the
         per-row stamped expiry timestamps are the fallback. A missing row is the
-        caller's concern (lazy-register), NOT a rejection here."""
+        caller's concern (lazy-register), NOT a rejection here.
+
+        Round 12: a row with ``remember: true`` is judged against ``remember_idle`` /
+        ``remember_absolute`` when ``remember_absolute > 0`` (build both pairs with
+        :func:`app.auth.session_limits.session_limits`); otherwise — Remember me
+        turned off, or a caller without remembered limits — the standard pair
+        applies. Shortening the remembered duration therefore expires older
+        remembered sessions on their next request."""
         if row is None:
             return None  # caller decides (lazy-register an unknown sid)
         if row.get("revoked"):
             return REASON_REVOKED
+        idle_timeout, absolute_lifetime = SessionStore.limits_for_row(
+            row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
+            remember_idle=remember_idle, remember_absolute=remember_absolute,
+        )
         now = now_utc().timestamp()
         # Absolute lifetime: created_at + policy, else the stamped timestamp.
         created = _to_epoch(row.get("created_at"))
@@ -631,6 +689,42 @@ class SessionStore:
             if idle_exp is not None and now > idle_exp:
                 return REASON_IDLE
         return None
+
+    @staticmethod
+    def effective_expiry(row: dict[str, Any] | None, *, idle_timeout: int = 0,
+                         absolute_lifetime: int = 0, remember_idle: int = 0,
+                         remember_absolute: int = 0) -> tuple[str, str]:
+        """``(expires_at, idle_expires_at)`` ISO timestamps for ``row`` under the LIVE
+        policy — the same arithmetic :meth:`is_active` applies, so the UI never shows
+        an expiry the server does not enforce. ``expires_at`` is the earlier of the
+        absolute limit and the access token's own ``exp``; ``idle_expires_at`` moves
+        with activity. Empty strings when unknown."""
+        if row is None:
+            return ("", "")
+        idle, absolute = SessionStore.limits_for_row(
+            row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
+            remember_idle=remember_idle, remember_absolute=remember_absolute,
+        )
+        created = _to_epoch(row.get("created_at"))
+        if absolute > 0 and created is not None:
+            hard: float | None = created + absolute
+        else:
+            hard = _to_epoch(row.get("absolute_expiry_at"))
+        token_exp = _to_epoch(row.get("token_expires_at"))
+        if token_exp is not None:
+            hard = token_exp if hard is None else min(hard, token_exp)
+        last_active = _to_epoch(row.get("last_active_at"))
+        if idle > 0 and last_active is not None:
+            soft: float | None = last_active + idle
+        else:
+            soft = _to_epoch(row.get("idle_expiry_at"))
+
+        def _iso(epoch: float | None) -> str:
+            if epoch is None:
+                return ""
+            return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+        return (_iso(hard), _iso(soft))
 
     @staticmethod
     def reauth_age_seconds(row: dict[str, Any] | None) -> float | None:
@@ -677,9 +771,29 @@ class SessionStore:
 
     # ----- safe public projection ------------------------------------------- #
     @staticmethod
-    def public(row: dict[str, Any]) -> dict[str, Any]:
+    def public(row: dict[str, Any], limits: Any = None) -> dict[str, Any]:
         """A UI-safe projection — NEVER the refresh hashes (#10). Metadata is PLAIN
-        text (#9)."""
+        text (#9).
+
+        Round 12: projects ``remember`` / ``remember_seconds`` and, when the live
+        ``limits`` (:class:`app.auth.session_limits.SessionLimits`, built for the
+        row's owner) are supplied, the effective ``expires_at`` the server enforces
+        and whether the row is still remembered under them."""
+        out = SessionStore._public_fields(row)
+        if limits is not None:
+            kwargs = limits.kwargs() if hasattr(limits, "kwargs") else dict(limits)
+            expires_at, idle_expires_at = SessionStore.effective_expiry(row, **kwargs)
+            out["expires_at"] = expires_at
+            out["effective_idle_expires_at"] = idle_expires_at
+            # Shown as remembered only while the live policy still remembers it
+            # (Remember me on and the owner's role not excluded).
+            if out["remember"] and int(kwargs.get("remember_absolute", 0) or 0) <= 0:
+                out["remember"] = False
+                out["remember_seconds"] = 0
+        return out
+
+    @staticmethod
+    def _public_fields(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "sid": row.get("sid", ""),
             "username": row.get("username", ""),
@@ -699,4 +813,7 @@ class SessionStore:
             "ua_os": row.get("ua_os", ""),
             "client_type": row.get("client_type", ""),
             "mfa_method": row.get("mfa_method", ""),
+            "remember": bool(row.get("remember", False)),
+            "remember_seconds": int(row.get("remember_seconds", 0) or 0)
+            if bool(row.get("remember", False)) else 0,
         }

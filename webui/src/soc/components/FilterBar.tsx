@@ -21,6 +21,8 @@
  */
 import * as React from 'react';
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
+import { useScrollEdgeRef } from '@/design-system/material';
 
 export interface FilterBarProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Accessible name for the toolbar (e.g. "Dashboard filters"). */
@@ -36,30 +38,36 @@ export interface FilterBarProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 export const FilterBar = React.forwardRef<HTMLDivElement, FilterBarProps>(
-  ({ end, meta, sticky, className, children, ...rest }, ref) => (
-    <div
-      ref={ref}
-      role="toolbar"
-      aria-label={rest['aria-label'] ?? 'Filters'}
-      className={cn(
-        '@container flex flex-wrap items-center gap-2 border-y border-border/80 bg-transparent py-2',
-        sticky && 'sticky top-[var(--header-h)] z-20 border-t-0 bg-background/95 backdrop-blur',
-        className,
-      )}
-      {...rest}
-    >
-      {/* Primary controls — left cluster, wraps. */}
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
+  ({ end, meta, sticky, className, children, ...rest }, ref) => {
+    // Sticky = floating chrome: the ONE Console material. Its hard rules give way to the
+    // scroll-edge fade, shown only while content is scrolled under the pinned bar; a
+    // real bottom rule returns under increased contrast (the material's own fallback).
+    const edgeRef = useScrollEdgeRef(ref, Boolean(sticky));
+    return (
+      <div
+        ref={edgeRef}
+        role="toolbar"
+        aria-label={rest['aria-label'] ?? 'Filters'}
+        className={cn(
+          '@container flex flex-wrap items-center gap-2 border-y border-border/80 bg-transparent py-2',
+          sticky && cn('sticky top-[var(--header-h)] z-20 border-y-0', materialBar),
+          className,
+        )}
+        {...rest}
+      >
+        {/* Primary controls — left cluster, wraps. */}
+        <div className="flex flex-wrap items-center gap-2">{children}</div>
 
-      {/* Spacer + right cluster. */}
-      {(end || meta) && (
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {meta ? <span className="text-xs tabular-nums text-muted-foreground">{meta}</span> : null}
-          {end}
-        </div>
-      )}
-    </div>
-  ),
+        {/* Spacer + right cluster. */}
+        {(end || meta) && (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {meta ? <span className="text-xs tabular-nums text-muted-foreground">{meta}</span> : null}
+            {end}
+          </div>
+        )}
+      </div>
+    );
+  },
 );
 FilterBar.displayName = 'FilterBar';
 

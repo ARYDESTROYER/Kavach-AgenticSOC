@@ -10,6 +10,13 @@
                                             answer (one block, or the whole answer).
 * ``POST   /api/reports/{id}/summary``    — one AI summary call (``?dry_run=1``: the
                                             token/cost estimate, no call).
+* ``POST   /api/reports/from-conversation`` — Round 12: save a whole Workspace
+                                            conversation as a new report (D11).
+
+Round 12 (SPEC D11) also saves a chat answer as a report when the final header asked
+for one: :func:`save_answer_as_report` (called by the chat turn route after the answer
+is persisted) resolves the stored answer through the same add path, expands Brief
+sections into items and is idempotent per request key.
 
 Every route is owner-scoped (``current_username``; the shared ``default`` bucket when
 auth is off) and requires ``cases:read``, like Workspace chat itself. Every mutation
@@ -33,6 +40,7 @@ Security properties held here:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import re
@@ -42,7 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Union
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import __version__ as APP_VERSION
 from ..agents.blocks import (
@@ -51,11 +59,12 @@ from ..agents.blocks import (
     is_expired_block,
 )
 from ..agents.chat_protocol import notice_for_failure, parse_report_summary, turn_error_code
-from ..constants import MAX_REPORTS_PER_USER, ActionType, Role
+from ..constants import MAX_REPORT_ITEMS, MAX_REPORTS_PER_USER, ActionType, Role
 from ..engine.report_digest import bounded_digest, report_summary_messages
 from ..llm.gateway import GatewayError, UsageReceipt, estimate_message_tokens
 from ..models import (
     ChatResponse,
+    ChatSavedReport,
     Report,
     ReportAddRequest,
     ReportCreateRequest,
@@ -475,6 +484,292 @@ def _build_item(answer: _Answer, conversation: Any, *, conversation_id: str, mes
 
 
 # --------------------------------------------------------------------------- #
+# Round 12: reports saved from chat (SPEC D11) and "Save conversation as report".
+# --------------------------------------------------------------------------- #
+# The answer text of a saved report, split into Markdown blocks this long at most.
+_TEXT_CHUNK = MAX_MARKDOWN - 200
+
+
+def report_id_for(owner: str | None, key: str, purpose: str) -> str:
+    """A deterministic report id for one request (idempotency: the same key always
+    names the same report, so a retried request never duplicates it)."""
+    digest = hashlib.sha256(
+        "\x00".join(("report", purpose, normalize_user_id(owner), str(key))).encode("utf-8")
+    ).hexdigest()[:32]
+    return f"rpt-{digest}"
+
+
+def _text_blocks(text: str, *, prefix: str) -> list[dict[str, Any]]:
+    """The answer text as Markdown blocks (split on paragraph breaks)."""
+    text = (text or "").strip()
+    chunks: list[str] = []
+    while text:
+        if len(text) <= _TEXT_CHUNK:
+            chunks.append(text)
+            break
+        cut = text.rfind("\n\n", 0, _TEXT_CHUNK)
+        if cut < _TEXT_CHUNK // 2:
+            cut = text.rfind("\n", 0, _TEXT_CHUNK)
+        if cut < _TEXT_CHUNK // 2:
+            cut = _TEXT_CHUNK
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    return [
+        {"id": f"{prefix}{'' if i == 0 else f'-{i + 1}'}", "type": "markdown", "provenance": "ai", "text": chunk}
+        for i, chunk in enumerate(chunks) if chunk
+    ]
+
+
+def _section_items(
+    answer: _Answer, conversation: Any, *, title: str, blocks: list[dict[str, Any]],
+    conversation_id: str, message_id: str, block_id: str, demo: bool,
+) -> list[ReportItem]:
+    """One or more ``section`` items (a section snapshot holds at most
+    ``MAX_SECTION_BLOCKS`` blocks; a longer one continues in the next item)."""
+    from ..agents.blocks import MAX_SECTION_BLOCKS
+
+    out: list[ReportItem] = []
+    usable = [b for b in blocks if isinstance(b, dict) and not _unusable(b)]
+    for part, start in enumerate(range(0, len(usable), MAX_SECTION_BLOCKS)):
+        group = usable[start:start + MAX_SECTION_BLOCKS]
+        heading = title if part == 0 else f"{title} (continued)"
+        source_block = block_id if part == 0 else f"{block_id[:44]}#{part + 1}"
+        item = ReportItem.model_validate({
+            "id": new_item_id(), "kind": "section",
+            "block": {"title": heading, "blocks": group, "truncated": answer.stored_truncated},
+            "source": {"conversation_id": conversation_id, "message_id": message_id,
+                       "block_id": source_block[:48]},
+            "scope": _scope_for(answer, conversation, block=None, demo=demo),
+            "added_at": iso_now(),
+        })
+        out.append(item)
+    return out
+
+
+def items_for_answer(
+    answer: _Answer, conversation: Any, *, conversation_id: str, message_id: str, demo: bool,
+    expand_briefs: bool = True,
+) -> list[ReportItem]:
+    """The report items of one persisted answer (D11): its text as a "Summary"
+    section, every Brief section as its own section (``expand_briefs``), and every
+    other block as its own item. Expired and unreadable blocks are left out. Built
+    server-side from the STORED answer only (the model never supplies block JSON)."""
+    if answer.presentation_lost:
+        return []
+    items: list[ReportItem] = []
+    text_blocks = _text_blocks(answer.response.answer or "", prefix="answer")
+    if text_blocks:
+        items.extend(_section_items(
+            answer, conversation, title="Summary", blocks=text_blocks,
+            conversation_id=conversation_id, message_id=message_id, block_id="answer", demo=demo,
+        ))
+    for block in answer.response.blocks:
+        if not isinstance(block, dict) or _unusable(block):
+            continue
+        block_id = str(block.get("id") or "")
+        if block.get("type") == "report" and expand_briefs:
+            for section in block.get("sections") or []:
+                if not isinstance(section, dict):
+                    continue
+                leaves: list[dict[str, Any]] = []
+                summary = section.get("summary")
+                section_id = str(section.get("id") or "section")
+                if isinstance(summary, str) and summary.strip():
+                    leaves.append({"id": f"{section_id}-summary"[:48], "type": "markdown",
+                                   "provenance": "ai", "text": summary})
+                leaves.extend(leaf for leaf in section.get("blocks") or [] if isinstance(leaf, dict))
+                if not leaves:
+                    continue
+                items.extend(_section_items(
+                    answer, conversation, title=str(section.get("heading") or "Section"),
+                    blocks=leaves, conversation_id=conversation_id, message_id=message_id,
+                    block_id=f"{block_id}.{section_id}", demo=demo,
+                ))
+            continue
+        item = ReportItem.model_validate({
+            "id": new_item_id(), "kind": "block", "block": block, "note": None,
+            "source": {"conversation_id": conversation_id, "message_id": message_id, "block_id": block_id or None},
+            "scope": _scope_for(answer, conversation, block=block, demo=demo),
+            "added_at": iso_now(),
+        })
+        if not _unusable(item.block):
+            items.append(item)
+    return items
+
+
+def _clean_title(value: Any, fallback: str) -> str:
+    """A report title from untrusted text (a model header or a conversation title):
+    display-safe plain text, single line, bounded (#9 — rendered as text, fenced as
+    untrusted wherever it later reaches a model)."""
+    from ..agents.blocks import display_text
+    from ..constants import MAX_REPORT_TITLE_CHARS
+
+    text = display_text(value if isinstance(value, str) else "", MAX_REPORT_TITLE_CHARS) if value else ""
+    return text or display_text(fallback, MAX_REPORT_TITLE_CHARS) or "Untitled report"
+
+
+def _clean_template(value: Any, default: str = "custom") -> str:
+    from ..models import REPORT_TEMPLATE_NAMES
+
+    return value if isinstance(value, str) and value in REPORT_TEMPLATE_NAMES else default
+
+
+async def save_answer_as_report(
+    state: AppState, owner: str, *, conversation_id: str, message_id: str,
+    title: Any = None, template: Any = None, idempotency_key: str,
+) -> ChatSavedReport | None:
+    """D11: save one persisted Workspace answer as a NEW report, server-side —
+    owner-scoped, strict CAS, Brief sections expanded into items, idempotent per
+    request key (the same key returns the same report). ``None`` when the answer has
+    nothing to save. Audited (#2). Raises the store errors (limit, unavailable) and
+    :class:`ChatHistoryUnavailable`; the chat route reports each one to the user."""
+    # Only this answer and its question are read (never the whole transcript).
+    conversation = await _owned_exchange(state, owner, conversation_id, message_id)
+    if conversation is None:
+        return None
+    answer = _resolve_answer(conversation, message_id)
+    if answer is None:
+        return None
+    items = items_for_answer(
+        answer, conversation, conversation_id=conversation_id, message_id=message_id,
+        demo=bool(getattr(state, "demo_active", False)),
+    )
+    if not items:
+        return None
+    report, created = await _store(state).create_with_items(
+        owner, title=_clean_title(title, str(_field(conversation, "title") or "")),
+        template=_clean_template(template), items=items,
+        # The chat request key already names one answer; the conversation is part of
+        # the derivation so a key can never resolve to another conversation's report.
+        report_id=report_id_for(owner, f"{conversation_id}\x00{idempotency_key}", "answer"),
+    )
+    if created:
+        await _audit(
+            state, owner,
+            f"report created from chat: {report.id} items={len(report.items)} "
+            f"skipped={max(0, len(items) - len(report.items))} "
+            f"message={message_id} template={report.template}",
+        )
+    return ChatSavedReport(
+        id=report.id, title=report.title, items=len(report.items),
+        skipped=max(0, len(items) - len(report.items)) if created else 0,
+    )
+
+
+async def _owned_exchange(state: AppState, owner: str, conversation_id: str, message_id: str) -> Any:
+    """The owned conversation holding only the answer ``message_id`` and its question
+    (``ChatConversationStore.get_exchange``; ``None`` when not owned). A store
+    without it falls back to the whole conversation. Raises
+    :class:`ChatHistoryUnavailable`."""
+    store = state.chat_conversations
+    getter = getattr(store, "get_exchange", None)
+    if callable(getter):
+        return await getter(owner, conversation_id, message_id)
+    return await store.get(owner, conversation_id)
+
+
+class ReportFromConversationRequest(BaseModel):
+    """``POST /api/reports/from-conversation``: save a whole Workspace conversation as
+    a new report (each answer one section). ``idempotency_key`` makes a retry return
+    the same report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    title: str | None = Field(default=None, max_length=200)
+    template: str | None = Field(default=None, max_length=40)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128,
+                                        pattern=r"^[A-Za-z0-9._:-]+$")
+
+
+class ReportFromConversationResponse(BaseModel):
+    """The saved report, how many items it holds, how many answers did not fit
+    (``skipped``) and whether this call created it (False: an idempotent replay)."""
+
+    report: Report
+    items: int = Field(ge=0)
+    skipped: int = Field(default=0, ge=0)
+    created: bool = True
+
+
+@router.post("/reports/from-conversation", response_model=ReportFromConversationResponse)
+async def report_from_conversation(
+    body: ReportFromConversationRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> ReportFromConversationResponse:
+    """"Save conversation as report" (SPEC D11): every answer of one caller-owned
+    Workspace conversation becomes one section (its question as the heading, then
+    the answer text and blocks), in order, up to the report's item limit. The server
+    resolves every item from the persisted conversation; nothing is client-supplied
+    content. Case-scoped chat never enters Workspace history, so a case conversation
+    can never be saved this way."""
+    owner = current_username(request)
+    try:
+        # Only the oldest answers a report can hold are restored to full text: each
+        # answer is at least one item and the report keeps MAX_REPORT_ITEMS.
+        conversation = await state.chat_conversations.get(
+            owner, body.conversation_id, window=None, hydrate_first=2 * MAX_REPORT_ITEMS + 2,
+        )
+    except ChatHistoryUnavailable as exc:
+        raise _http(503, "chat_history_unavailable", "Chat history is temporarily unavailable.") from exc
+    if conversation is None:
+        raise _not_found("conversation_not_found", "That conversation is not available.")
+    demo = bool(getattr(state, "demo_active", False))
+    items: list[ReportItem] = []
+    answers = 0
+    beyond = 0
+    for message in list(_field(conversation, "messages") or []):
+        if _field(message, "role") != "assistant":
+            continue
+        answers += 1
+        if len(items) >= MAX_REPORT_ITEMS:
+            beyond += 1  # cannot fit: counted as skipped, never restored or snapshotted
+            continue
+        answer = _resolve_answer(conversation, str(_field(message, "id")))
+        if answer is None or answer.presentation_lost:
+            continue
+        blocks = [*_text_blocks(answer.response.answer or "", prefix="answer"),
+                  *[b for b in answer.response.blocks if isinstance(b, dict)]]
+        items.extend(_section_items(
+            answer, conversation, title=answer.question or "Answer", blocks=blocks,
+            conversation_id=body.conversation_id, message_id=str(_field(message, "id")),
+            block_id="answer", demo=demo,
+        ))
+    if not items:
+        raise _http(409, "report_empty", "This conversation has no answers to save.")
+    key = body.idempotency_key
+    report_id = None
+    if key:
+        # The key is bound to WHAT is saved: reusing it for another conversation,
+        # title or template saves that request as its own report (never returns the
+        # first request's report as if this one had been saved).
+        report_id = report_id_for(owner, "\x00".join((
+            body.conversation_id, body.title or "", body.template or "", key,
+        )), "conversation")
+    try:
+        report, created = await _store(state).create_with_items(
+            owner, title=_clean_title(body.title, str(_field(conversation, "title") or "")),
+            template=_clean_template(body.template), items=items,
+            report_id=report_id,
+        )
+    except _STORE_ERRORS as exc:
+        raise _map_store_error(exc) from exc
+    if created:
+        await _audit(
+            state, owner,
+            f"report created from conversation: {report.id} items={len(report.items)} "
+            f"answers={answers}",
+        )
+    return ReportFromConversationResponse(
+        report=report, items=len(report.items),
+        skipped=max(0, len(items) - len(report.items)) + beyond,
+        created=created,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Summary admission: single-flight per report + per-user token bucket.
 # --------------------------------------------------------------------------- #
 class TokenBucket:
@@ -622,10 +917,14 @@ async def create_report(
     owner = current_username(request)
     if body.conversation_id is not None:
         try:
-            conversation = await state.chat_conversations.get(owner, body.conversation_id)
+            exists = getattr(state.chat_conversations, "exists", None)
+            owned = (
+                await exists(owner, body.conversation_id) if callable(exists)
+                else await state.chat_conversations.get(owner, body.conversation_id) is not None
+            )
         except ChatHistoryUnavailable as exc:
             raise _http(503, "chat_history_unavailable", "Chat history is temporarily unavailable.") from exc
-        if conversation is None:
+        if not owned:
             raise _not_found("conversation_not_found", "That conversation is not available.")
     try:
         report = await _store(state).create(
@@ -652,7 +951,8 @@ async def add_to_report(
     if body.report_id is not None:
         _check_report_id(body.report_id)
     try:
-        conversation = await state.chat_conversations.get(owner, body.conversation_id)
+        # Only the answer and its question are read (never the whole transcript).
+        conversation = await _owned_exchange(state, owner, body.conversation_id, body.message_id)
     except ChatHistoryUnavailable as exc:
         raise _http(503, "chat_history_unavailable", "Chat history is temporarily unavailable.") from exc
     if conversation is None:
@@ -938,11 +1238,16 @@ async def _generate_summary(
 __all__ = [
     "SUMMARY_FAILURE_MESSAGES",
     "ReportAddResponse",
+    "ReportFromConversationRequest",
+    "ReportFromConversationResponse",
     "ReportDeleteResponse",
     "ReportListResponse",
     "SummaryGuard",
     "TokenBucket",
+    "items_for_answer",
     "presentation_of",
+    "report_id_for",
     "router",
+    "save_answer_as_report",
     "summary_guard",
 ]

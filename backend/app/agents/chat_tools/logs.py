@@ -43,6 +43,7 @@ from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
     ToolInput,
     Window,
+    align_to_bucket,
     column,
     finite,
     fmt_int,
@@ -53,7 +54,18 @@ from .common import (
     resolve_window,
     text,
     visible_text,
+    window_input,
 )
+from .periods import (
+    Period,
+    comparison_data,
+    comparison_observation,
+    comparison_row,
+    normalise_compare,
+    resolve_periods,
+)
+
+from .stats import AGGREGATE_TOOL_TIMEOUT_S
 
 logger = logging.getLogger("tlsoc.agents.chat_tools.logs")
 
@@ -72,6 +84,17 @@ DISTINCT_LABELS: dict[str, str] = {
 }
 INTERVAL_SECONDS: dict[str, int] = {
     "1m": 60, "5m": 300, "15m": 900, "1h": 3_600, "6h": 21_600, "1d": 86_400, "1w": 604_800,
+    # Calendar periods (nominal widths, for the point budget only): their real bounds
+    # are cut by ``engine.time_windows`` in the operator timezone (Round 12, P0-5).
+    "1M": 2_629_746, "1q": 7_889_238, "1y": 31_556_952,
+}
+#: Calendar bucket widths → the ``engine.time_windows`` unit (ISO weeks on Monday).
+CALENDAR_UNITS: dict[str, str] = {"1w": "week", "1M": "month", "1q": "quarter", "1y": "year"}
+INTERVAL_CHOICES = ("auto", "5m", "15m", "1h", "6h", "1d", "1w", "1M", "1q", "1y")
+_INTERVAL_ALIASES = {
+    "hourly": "1h", "hour": "1h", "daily": "1d", "day": "1d", "weekly": "1w", "week": "1w",
+    "monthly": "1M", "month": "1M", "quarterly": "1q", "quarter": "1q", "yearly": "1y", "year": "1y",
+    "annual": "1y", "1mo": "1M",
 }
 _FILTER_KEYS = ("ip", "user", "host", "rule", "severity_gte", "contains")
 _SAMPLE_KEYS = ("ts", "source", "ip", "user", "host", "rule", "rule_name", "severity", "action")
@@ -99,6 +122,8 @@ class _LogFilters(ToolInput):
     contains: str | None = Field(default=None, max_length=200)
     time_from: str | None = Field(default=None, max_length=40)
     time_to: str | None = Field(default=None, max_length=40)
+    # Round 12 (SPEC D7): all time, now-90d, now-6M, calendar periods, ISO ranges.
+    window: str | dict[str, Any] | None = None
     source_id: str | None = Field(default=None, max_length=128)
     all_sources: bool | None = None
 
@@ -108,6 +133,11 @@ class _LogFilters(ToolInput):
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             value = str(value)
         return none_if_blank(value)
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _window(cls, value: Any) -> Any:
+        return window_input(value)
 
     @field_validator("severity_gte", "all_sources", mode="before")
     @classmethod
@@ -136,9 +166,27 @@ class SearchLogsInput(_LogFilters):
 
 class LogStatsInput(_LogFilters):
     group_by: list[GroupField] = Field(default_factory=lambda: ["rule"], max_length=3)
-    top_n: int = Field(default=10, ge=1, le=20)
-    interval: Literal["auto", "5m", "15m", "1h", "6h", "1d"] = "auto"
+    top_n: int = Field(default=10, ge=1, le=50)
+    interval: Literal[INTERVAL_CHOICES] = "auto"  # type: ignore[valid-type]
     include_heatmap: bool = False
+    compare: Any = None
+
+    @field_validator("interval", mode="before")
+    @classmethod
+    def _interval(cls, value: Any) -> Any:
+        if value in (None, ""):
+            return "auto"
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw in INTERVAL_CHOICES:
+                return raw
+            return _INTERVAL_ALIASES.get(raw.lower(), raw)
+        return value
+
+    @field_validator("compare", mode="before")
+    @classmethod
+    def _compare(cls, value: Any) -> Any:
+        return normalise_compare(value)
 
     @field_validator("group_by", mode="before")
     @classmethod
@@ -398,6 +446,22 @@ def _per_source_timeout(ctx: ChatToolContext) -> float:
     return clamp_per_source_timeout(min(_DEFAULT_SOURCE_TIMEOUT, max(0.5, tool_timeout - 2.0)))
 
 
+#: The margin an aggregate source read leaves inside the tool's long budget, so a stuck
+#: source is reported as a per-source timeout instead of timing out the whole lookup.
+_AGGREGATE_SOURCE_MARGIN_S = 10.0
+
+
+def _aggregate_source_timeout(ctx: ChatToolContext) -> float:
+    """The per-source timeout of an AGGREGATE log read (``log_stats``, SPEC P0-4): all
+    time and year-long counts take seconds per source on a real cluster, so it comes
+    from the tool's long budget (``chat_agent.aggregate_tool_timeout_s``, default
+    600 s) less a margin, never from the 8 s browse timeout (and never below it)."""
+    configured = getattr(getattr(ctx.prefs, "chat_agent", None), "aggregate_tool_timeout_s", None)
+    budget = float(configured) if (isinstance(configured, (int, float)) and not isinstance(configured, bool)
+                                   and configured > 0) else float(AGGREGATE_TOOL_TIMEOUT_S)
+    return max(_per_source_timeout(ctx), budget - _AGGREGATE_SOURCE_MARGIN_S)
+
+
 def reported_total(result: Any) -> tuple[int, bool]:
     """``(total, exact)`` for a connector ``SearchResult``.
 
@@ -464,6 +528,11 @@ def _query_language(language: str | None) -> str:
 # Interval + bucketing helpers.
 # --------------------------------------------------------------------------- #
 def auto_interval(window: Window) -> str:
+    """The bucket width for a window: fixed widths up to two weeks, calendar days up to
+    200 days, then ISO weeks, months and years, so a series stays at or under 200
+    points. All time (whose first event is unknown before the count) is monthly."""
+    if window.all_time:
+        return "1M"
     span_h = (window.end - window.start).total_seconds() / 3600
     if span_h <= 2:
         return "5m"
@@ -473,38 +542,118 @@ def auto_interval(window: Window) -> str:
         return "1h"
     if span_h <= 24 * 14:
         return "6h"
-    return "1d"
+    if span_h <= 24 * 200:
+        return "1d"
+    if span_h <= 24 * 7 * 200:
+        return "1w"
+    if span_h <= 24 * 30.44 * 200:
+        return "1M"
+    return "1y"
 
 
 def pick_interval(requested: str, window: Window) -> str:
     """The requested interval unless it would exceed the point limit."""
     if requested in INTERVAL_SECONDS:
+        if window.all_time:
+            return requested if requested in CALENDAR_UNITS else auto_interval(window)
         span = (window.end - window.start).total_seconds()
         if span / INTERVAL_SECONDS[requested] <= _MAX_SERIES_POINTS:
             return requested
     return auto_interval(window)
 
 
-def bucket_start(ts: datetime, interval: str) -> datetime:
+def calendar_unit(interval: str | None, tz: str = "UTC") -> str | None:
+    """The ``engine.time_windows`` unit a log bucket of ``interval`` is cut by in
+    ``tz``, or ``None`` for an epoch-aligned fixed width (UTC). Weeks, months,
+    quarters and years are calendar periods in the operator timezone; so is a DAY in
+    a zone other than UTC (the bundled connectors ask for ``calendar_interval: day``
+    with the ``time_zone`` there), so a daily series nests in that zone's weeks and
+    months. In UTC a fixed day IS the calendar day, and hours stay fixed (UTC)."""
+    unit = CALENDAR_UNITS.get(interval or "")
+    if unit is None and interval == "1d" and tz != "UTC":
+        return "day"
+    return unit
+
+
+#: The log intervals whose window is aligned to whole periods (``align_to_bucket``):
+#: a day or longer. Shorter fixed widths keep the exact trailing window.
+_ALIGNED_INTERVALS: dict[str, str] = {"1d": "day", "1w": "week", "1M": "month", "1q": "quarter", "1y": "year"}
+
+
+def aligned_log_window(window: Window, requested: str) -> tuple[Window, str]:
+    """``(window, interval)`` a ``log_stats`` call counts and draws: the interval
+    (:func:`pick_interval`) and, for a series in days or longer, the window aligned to
+    whole periods exactly like the case and cost lookups ("alerts by month for the
+    last 12 months" is twelve months, the last in progress, never thirteen with a cut
+    first month), so the total equals the sum of the series and no bucket is cut. A
+    day is a local day (:func:`calendar_unit`), so it aligns to local midnight."""
+    interval = pick_interval(requested, window)
+    unit = _ALIGNED_INTERVALS.get(interval)
+    if unit is None:
+        return window, interval
+    return align_to_bucket(window, unit), interval
+
+
+def bucket_start(ts: datetime, interval: str, tz: str = "UTC") -> datetime:
+    """The start of the bucket holding ``ts``: a calendar period (in ``tz``) for
+    ``1w``/``1M``/``1q``/``1y`` (and ``1d`` outside UTC, :func:`calendar_unit`), else
+    an epoch-aligned fixed width (UTC)."""
+    unit = calendar_unit(interval, tz)
+    if unit is not None:
+        from ...engine.time_windows import period_start
+
+        return period_start(ts, unit, tz).astimezone(timezone.utc)
     step = INTERVAL_SECONDS[interval]
     epoch = int(ts.timestamp())
     return datetime.fromtimestamp(epoch - epoch % step, tz=timezone.utc)
 
 
-def bucket_axis(window: Window, interval: str) -> list[str]:
-    """Epoch-aligned bucket starts covering the window (zero-filled axis)."""
-    step = timedelta(seconds=INTERVAL_SECONDS[interval])
-    cursor = bucket_start(window.start, interval)
+def _next_start(start: datetime, interval: str, tz: str) -> datetime:
+    unit = calendar_unit(interval, tz)
+    if unit is not None:
+        from ...engine.time_windows import next_period_start
+
+        return next_period_start(start, unit, tz).astimezone(timezone.utc)
+    return start + timedelta(seconds=INTERVAL_SECONDS[interval])
+
+
+def bucket_axis(window: Window, interval: str, observed: Any = ()) -> list[str]:
+    """Bucket starts covering the window ``[start, end)`` (zero-filled axis), at most
+    200. A bucket starting AT the end is outside the window (a Q3 question by month is
+    Jul, Aug and Sep, never an extra empty October). An all-time window has no lower
+    bound, so its axis runs from the earliest OBSERVED bucket."""
+    if window.all_time:
+        keys = sorted(_parse_ts(k) for k in observed if _parse_ts(k) is not None)
+        if not keys:
+            return []
+        cursor = bucket_start(keys[0], interval, window.tz)
+    else:
+        cursor = bucket_start(window.start, interval, window.tz)
     out: list[str] = []
-    while cursor <= window.end and len(out) < _MAX_SERIES_POINTS:
+    while cursor < window.end and len(out) < _MAX_SERIES_POINTS:
         out.append(cursor.isoformat())
-        cursor += step
+        cursor = _next_start(cursor, interval, window.tz)
     return out
 
 
-def _bucket_key(value: str, interval: str) -> str | None:
+def bucket_labels(axis: list[str], interval: str, tz: str) -> list[str] | None:
+    """Calendar labels ("Mar 2026", "W14 2026", "10 Oct 2026") for a calendar axis, else
+    ``None``."""
+    unit = calendar_unit(interval, tz)
+    if unit is None:
+        return None
+    from ...engine.time_windows import period_label
+
+    out = []
+    for start in axis:
+        moment = _parse_ts(start)
+        out.append(period_label(moment, unit, tz) if moment is not None else start)
+    return out
+
+
+def _bucket_key(value: str, interval: str, tz: str = "UTC") -> str | None:
     ts = _parse_ts(value)
-    return bucket_start(ts, interval).isoformat() if ts is not None else None
+    return bucket_start(ts, interval, tz).isoformat() if ts is not None else None
 
 
 # --------------------------------------------------------------------------- #
@@ -517,20 +666,26 @@ class SearchLogsTool(ChatTool):
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"
     signature: ClassVar[str] = (
-        "search_logs(ip?, user?, host?, rule?, severity_gte?, contains?, ids?, time_from?='now-24h', "
-        "time_to?='now', source_id?, all_sources?, size?=50) -- find log events; returns the match "
-        "count, top values and up to 5 sample rows (the full table is shown to the analyst)"
+        "search_logs(ip?, user?, host?, rule?, severity_gte?, contains?, ids?, window? or time_from?/time_to? "
+        "(default last 24 hours), source_id?, all_sources?, size?=50 (<=200)) -- find log events: the match "
+        "count, top values and up to 5 sample rows (the analyst sees the full table)"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
-        "ip", "user", "host", "rule", "severity_gte", "contains", "time_from", "time_to",
+        "ip", "user", "host", "rule", "severity_gte", "contains", "window", "time_from", "time_to",
         "source_id", "all_sources", "size",
     )
+
+    def display_params(self, inp: dict[str, Any]) -> dict[str, Any]:
+        params = dict(inp) if isinstance(inp, dict) else {}
+        if isinstance(params.get("window"), dict):
+            params["window"] = "..".join(str(v) for v in params["window"].values())[:80]
+        return super().display_params(params)
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
         args, error = parse_input(SearchLogsInput, inp)
         if error is not None:
             return error
-        window = resolve_window(ctx, time_from=args.time_from, time_to=args.time_to)
+        window = resolve_window(ctx, window=args.window, time_from=args.time_from, time_to=args.time_to)
         if isinstance(window, str):
             return ToolOutcome.failure(window)
         plan = await plan_sources(ctx, args.source_id, args.all_sources)
@@ -711,6 +866,8 @@ class SearchLogsTool(ChatTool):
             observation["free_text"] = free_text
         if plan.notes:
             observation["notes"] = list(plan.notes)
+        if total == 0:
+            observation["suggestions"] = zero_log_suggestions("search_logs", args, window, plan)
 
         columns = [column("ts", "Time", "time")]
         if multi:
@@ -739,8 +896,9 @@ class SearchLogsTool(ChatTool):
             ))
         if complete and returned >= 2:
             interval = auto_interval(window)
-            axis = bucket_axis(window, interval)
-            counts = Counter(_bucket_key(r["ts"], interval) for r in rows if r.get("ts"))
+            observed = [r["ts"] for r in rows if r.get("ts")]
+            axis = bucket_axis(window, interval, observed)
+            counts = Counter(_bucket_key(t, interval, window.tz) for t in observed)
             if len(axis) >= 2:
                 artifacts.append(Artifact(
                     id=f"a{len(artifacts) + 1}", kind="series", title="Events over time",
@@ -748,7 +906,8 @@ class SearchLogsTool(ChatTool):
                     data={"x": axis, "unit": "count", "bucket": interval,
                           "series": [{"key": "events", "label": "Events",
                                       "values": [counts.get(t, 0) for t in axis]}],
-                          "last_in_progress": window.time_to == "now"},
+                          "last_in_progress": window.time_to == "now",
+                          **_calendar_axis_data(axis, interval, window)},
                     provenance="source", basis="exact", total=total, window=window.label,
                 ))
 
@@ -797,6 +956,30 @@ class _SourceStats:
     over_time: Counter = field(default_factory=Counter)
     matrix: dict[str, Counter] = field(default_factory=dict)
     query: str | None = None
+    # False when the source counted exactly but could not bucket by a CALENDAR period
+    # (a third-party aggregate without ``time_zone``): no series is drawn from it.
+    over_time_ok: bool = True
+
+
+async def call_aggregate(
+    conn: Any, prefs: Any, query: StructuredQuery, group_by: list[str], interval: str | None, top_n: int,
+    tz: str,
+) -> tuple[Any, bool]:
+    """``conn.aggregate`` with the operator timezone when the connector takes one (the
+    bundled Elastic/OpenSearch/Wazuh connectors bucket CALENDAR periods in it). A
+    connector without ``time_zone`` is asked for no histogram at all for a calendar
+    interval (its exact counts still stand; its series would be cut differently), so
+    the second value says whether ``over_time`` holds this interval's buckets."""
+    aggregate = conn.aggregate
+    try:
+        takes_zone = "time_zone" in inspect.signature(aggregate).parameters
+    except (TypeError, ValueError):
+        takes_zone = False
+    if takes_zone:
+        return await aggregate(prefs, query, group_by, interval, top_n, time_zone=tz), True
+    if calendar_unit(interval, tz) is not None:
+        return await aggregate(prefs, query, group_by, None, top_n), False
+    return await aggregate(prefs, query, group_by, interval, top_n), True
 
 
 def _stats_from_aggregate(name: str, agg: Any, group_by: list[str]) -> _SourceStats:
@@ -815,7 +998,7 @@ def _stats_from_aggregate(name: str, agg: Any, group_by: list[str]) -> _SourceSt
 
 def _stats_from_rows(
     name: str, rows: list[dict[str, Any]], total: int | None, group_by: list[str], interval: str,
-    *, mode: str = "search", top_n: int, total_exact: bool = True,
+    *, mode: str = "search", top_n: int, total_exact: bool = True, tz: str = "UTC",
 ) -> _SourceStats:
     # A sample that holds every matching event (the source's exact match total) IS
     # the population, so its counts are exact.
@@ -832,7 +1015,7 @@ def _stats_from_rows(
         stats.other[fld] = max(0, sum(counter.values()) - sum(ranked.values()))
         stats.distinct[fld] = len(counter)
     for r in rows:
-        key = _bucket_key(r.get("ts") or "", interval)
+        key = _bucket_key(r.get("ts") or "", interval, tz)
         if key is None:
             continue
         stats.over_time[key] += 1
@@ -847,15 +1030,19 @@ class LogStatsTool(ChatTool):
     scope: ClassVar[str] = "logs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"
+    # An aggregate (all-time and year-long counts, compared periods): the long budget
+    # of SPEC P0-4, never the 15 s browse budget. Stop still cancels it at once.
+    timeout_s: ClassVar[float] = AGGREGATE_TOOL_TIMEOUT_S
     signature: ClassVar[str] = (
-        "log_stats(group_by?=[rule] (ip|user|host|rule|rule_name|severity|action, up to 3), top_n?=10, "
-        "interval?=auto, ip?, user?, host?, rule?, severity_gte?, contains?, time_from?, time_to?, "
-        "source_id?, all_sources?, include_heatmap?) -- counts, top values and events over time; exact "
-        "where the source can count, else the newest 200 per source (basis says which)"
+        "log_stats(group_by?=[rule] (<=3 of ip|user|host|rule|rule_name|severity|action), top_n?=10 (<=50), "
+        "interval?=auto|5m|15m|1h|6h|1d|1w|1M|1q|1y, window? or time_from?/time_to? (default last 24 hours), "
+        "compare?, ip?, user?, host?, rule?, severity_gte?, contains?, source_id?, all_sources?, "
+        "include_heatmap?) -- event counts, top values and events over time; exact where the source can "
+        "count, else the newest 200 per source (basis says which)"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
         "group_by", "top_n", "interval", "ip", "user", "host", "rule", "severity_gte",
-        "contains", "time_from", "time_to", "source_id", "all_sources",
+        "contains", "window", "time_from", "time_to", "compare", "source_id", "all_sources",
     )
 
     def display_params(self, inp: dict[str, Any]) -> dict[str, Any]:
@@ -863,28 +1050,53 @@ class LogStatsTool(ChatTool):
         group_by = params.get("group_by")
         if isinstance(group_by, list):
             params["group_by"] = ",".join(str(g) for g in group_by[:3])
+        for key in ("window", "compare"):
+            if isinstance(params.get(key), (dict, list)):
+                params[key] = str(params[key])[:80]
         return super().display_params(params)
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
         args, error = parse_input(LogStatsInput, inp)
         if error is not None:
             return error
-        window = resolve_window(ctx, time_from=args.time_from, time_to=args.time_to)
+        window = resolve_window(ctx, window=args.window, time_from=args.time_from, time_to=args.time_to)
         if isinstance(window, str):
             return ToolOutcome.failure(window)
+        # One window for the total, the series and the compared periods: aligned to
+        # whole periods for a series in days or longer (P0-5).
+        window, interval = aligned_log_window(window, args.interval)
+        periods = resolve_periods(ctx, window, args.compare)
+        if isinstance(periods, str):
+            return ToolOutcome.failure(periods)
         plan = await plan_sources(ctx, args.source_id, args.all_sources)
         if isinstance(plan, ToolOutcome):
             return plan
-        interval = pick_interval(args.interval, window)
         group_by = list(args.group_by)
+        compared: list[list[_SourceStats]] = []
         try:
-            if plan.mode == "single":
-                per_source = [await self._single(ctx, args, window, plan, group_by, interval)]
-            else:
-                per_source = await self._fanout(ctx, args, window, plan, group_by, interval)
+            # The window and every compared period are read at the same time: a
+            # comparison costs the slowest period, not the sum of them (P0-4).
+            others = [p.window for p in periods if p.window is not window] if len(periods) > 1 else []
+            reads = await asyncio.gather(*(self._read(ctx, args, w, plan, group_by, interval)
+                                           for w in [window, *others]))
+            per_source = reads[0]
+            if others:
+                by_window = dict(zip((id(w) for w in others), reads[1:]))
+                compared = [per_source if p.window is window else by_window[id(p.window)] for p in periods]
         finally:
             await _close(plan)
-        return self._outcome(args, window, plan, per_source, group_by, interval)
+        outcome = self._outcome(args, window, plan, per_source, group_by, interval)
+        if outcome.ok and compared:
+            _add_log_comparison(outcome, window, periods, compared, group_by)
+        return outcome
+
+    async def _read(
+        self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
+        group_by: list[str], interval: str,
+    ) -> list[_SourceStats]:
+        if plan.mode == "single":
+            return [await self._single(ctx, args, window, plan, group_by, interval)]
+        return await self._fanout(ctx, args, window, plan, group_by, interval)
 
     async def _single(
         self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
@@ -896,17 +1108,19 @@ class LogStatsTool(ChatTool):
         self, ctx: ChatToolContext, conn: Any, name: str, args: LogStatsInput, window: Window,
         group_by: list[str], interval: str,
     ) -> _SourceStats:
-        aggregate = getattr(conn, "aggregate", None)
-        if callable(aggregate):
+        if callable(getattr(conn, "aggregate", None)):
             try:
-                agg = await aggregate(
-                    ctx.prefs, _structured_query(args, window, size=0), group_by, interval, args.top_n,
+                agg, bucketed = await call_aggregate(
+                    conn, ctx.prefs, _structured_query(args, window, size=0), group_by, interval, args.top_n,
+                    window.tz,
                 )
             except Exception as exc:  # noqa: BLE001 — degrade to the sample path
                 logger.info("aggregate on %s failed: %s", name, exc)
-                agg = None
+                agg, bucketed = None, False
             if agg is not None:
-                return _stats_from_aggregate(name, agg, group_by)
+                stats = _stats_from_aggregate(name, agg, group_by)
+                stats.over_time_ok = bucketed
+                return stats
         try:
             result = await conn.search(ctx.prefs, _structured_query(args, window, size=_STATS_SAMPLE))
         except Exception as exc:  # noqa: BLE001 — engine template only
@@ -914,7 +1128,8 @@ class LogStatsTool(ChatTool):
             return _SourceStats(name=name, status="error")
         rows = [event_row(ev, name) for ev in result.events]
         total, total_exact = reported_total(result)
-        stats = _stats_from_rows(name, rows, total, group_by, interval, top_n=args.top_n, total_exact=total_exact)
+        stats = _stats_from_rows(name, rows, total, group_by, interval, top_n=args.top_n,
+                                 total_exact=total_exact, tz=window.tz)
         stats.query = result.rendering.query if result.rendering else None
         return stats
 
@@ -922,19 +1137,19 @@ class LogStatsTool(ChatTool):
         self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
         group_by: list[str], interval: str,
     ) -> list[_SourceStats]:
-        timeout = _per_source_timeout(ctx)
+        timeout = _aggregate_source_timeout(ctx)
 
         async def one(target: BrowseTarget) -> _SourceStats:
             if target.mode == "search" and ctx.source_resolver is not None:
                 resolved = await resolve_source(ctx, target.source_id)
                 if resolved is not None:
                     conn, _name, closer = resolved
-                    agg = None
+                    agg, bucketed = None, False
                     try:
                         if callable(getattr(conn, "aggregate", None)):
-                            agg = await conn.aggregate(
-                                ctx.prefs, _structured_query(args, window, size=0), group_by,
-                                interval, args.top_n,
+                            agg, bucketed = await call_aggregate(
+                                conn, ctx.prefs, _structured_query(args, window, size=0), group_by,
+                                interval, args.top_n, window.tz,
                             )
                     except Exception:  # noqa: BLE001 — degrade to the sample read
                         agg = None
@@ -945,7 +1160,9 @@ class LogStatsTool(ChatTool):
                             except Exception:  # noqa: BLE001
                                 pass
                     if agg is not None:
-                        return _stats_from_aggregate(target.source_name, agg, group_by)
+                        stats = _stats_from_aggregate(target.source_name, agg, group_by)
+                        stats.over_time_ok = bucketed
+                        return stats
             raw_rows, total = await target.read(_structured_query(args, window, size=_STATS_SAMPLE))
             rows = [browse_row(r) for r in raw_rows]
             if target.mode == "buffer":
@@ -953,7 +1170,7 @@ class LogStatsTool(ChatTool):
                 total = None
             return _stats_from_rows(
                 target.source_name, rows, total, group_by, interval, mode=target.mode, top_n=args.top_n,
-                total_exact=total is None or int(total) != ES_TOTAL_CAP,
+                total_exact=total is None or int(total) != ES_TOTAL_CAP, tz=window.tz,
             )
 
         async def guarded(target: BrowseTarget) -> _SourceStats:
@@ -1027,8 +1244,10 @@ class LogStatsTool(ChatTool):
             other[f] += sum(v for _k, v in ranked[args.top_n:])
             top[f] = kept
 
-        axis = bucket_axis(window, interval)
+        bucketed = all(s.over_time_ok for s in answered)
+        axis = bucket_axis(window, interval, list(over_time)) if bucketed else []
         series_values = [int(over_time.get(t, 0)) for t in axis]
+        labels = bucket_labels(axis, interval, window.tz)
         observation: dict[str, Any] = {
             "window": window.label,
             "window_clamped_to_request": window.clamped,
@@ -1042,8 +1261,13 @@ class LogStatsTool(ChatTool):
             # a lookalike value is its own bucket, never merged into the real one.
             "top": {f: [{"value": text(k, 200), "count": v} for k, v in top[f]] for f in group_by},
             "other": other,
-            "over_time": {"interval": interval, "start": axis[0] if axis else None, "counts": series_values},
+            "over_time": ({"interval": interval, "start": axis[0] if axis else None, "counts": series_values,
+                           **({"labels": labels, "timezone": window.tz} if labels else {})}
+                          if bucketed else {"interval": interval, "available": False,
+                                            "reason": "a source cannot count by calendar period"}),
         }
+        if total == 0:
+            observation["suggestions"] = zero_log_suggestions("log_stats", args, window, plan)
         if distinct:
             observation["distinct_approx"] = distinct
         if plan.mode == "fanout":
@@ -1072,11 +1296,20 @@ class LogStatsTool(ChatTool):
                 window=window.label,
             ))
         if len(axis) >= 2:
+            series_data: dict[str, Any] = {
+                "x": axis, "unit": "count", "bucket": interval,
+                "series": [{"key": "events", "label": "Events", "values": series_values}],
+                "last_in_progress": window.time_to == "now",
+                **_calendar_axis_data(axis, interval, window),
+            }
+            if calendar_unit(interval, window.tz) is None and window.tz != "UTC":
+                # Fixed UTC hours do not nest in the operator timezone's days, weeks and
+                # months (which the server cuts in that zone), so a client re-bin could
+                # never equal a server query: none is offered (P0-8).
+                series_data["rebin"] = False
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="series", title="Events over time", title_trusted=True,
-                data={"x": axis, "unit": "count", "bucket": interval,
-                      "series": [{"key": "events", "label": "Events", "values": series_values}],
-                      "last_in_progress": window.time_to == "now"},
+                data=series_data,
                 provenance="source", basis=basis, total=total if total_known else None,
                 truncated=not all_exact, window=window.label,
             ))
@@ -1133,6 +1366,120 @@ class LogStatsTool(ChatTool):
             coverage=coverage,
             sources=[s.name for s in per_source],
         )
+
+
+def _calendar_axis_data(axis: list[str], interval: str, window: Window) -> dict[str, Any]:
+    """The calendar labels and zone of a calendar axis (``x_labels``/``tz``), else {}."""
+    labels = bucket_labels(axis, interval, window.tz)
+    return {"x_labels": labels, "tz": window.tz} if labels else {}
+
+
+def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> list[dict[str, Any]]:
+    """Engine-built next lookups for a zero-match log question (SPEC D10): each a VALID
+    call of ``tool`` — a wider window, every source, and the query without one filter
+    at a time. Values are the call's own (fenced for the model like the call itself)."""
+    base = {k: v for k, v in args.filters().items()}
+    keep: dict[str, Any] = {}
+    if getattr(args, "group_by", None):
+        keep["group_by"] = list(args.group_by)
+    out: list[dict[str, Any]] = []
+    if window.span_days < 7 and window.source != "request":
+        out.append({"label": "Last 7 days", "tool": tool, "input": {**base, **keep, "window": "now-7d"}})
+    elif window.span_days < 30 and window.source != "request":
+        out.append({"label": "Last 30 days", "tool": tool, "input": {**base, **keep, "window": "now-30d"}})
+    window_input_: dict[str, Any] = {}
+    if getattr(args, "window", None) is not None:
+        window_input_["window"] = args.window
+    elif getattr(args, "time_from", None) is not None:
+        window_input_ = {k: getattr(args, k) for k in ("time_from", "time_to") if getattr(args, k) is not None}
+    if plan.mode == "single" and plan.source_id is not None:
+        out.append({"label": "All sources", "tool": tool,
+                    "input": {**base, **keep, **window_input_, "all_sources": True}})
+    for key in ("contains", "rule", "user", "host", "ip", "severity_gte"):
+        if key in base:
+            reduced = {k: v for k, v in base.items() if k != key}
+            label = {"contains": "Without the text filter", "severity_gte": "Any severity"}.get(
+                key, f"Without the {key} filter")
+            out.append({"label": label, "tool": tool, "input": {**reduced, **keep, **window_input_}})
+    return out[:4]
+
+
+_GROUP_DIMENSIONS = {"ip": "Source IP", "user": "User", "host": "Host", "rule": "Rule",
+                     "rule_name": "Rule name", "severity": "Severity", "action": "Action"}
+
+
+def _add_log_comparison(
+    outcome: ToolOutcome, window: Window, periods: list[Period], compared: list[list[_SourceStats]],
+    group_by: list[str],
+) -> None:
+    """``comparison`` artifacts: the matching events per period (tiles with deltas),
+    and the first grouping's top values per period (grouped bars).
+
+    A period's total is measured only when EVERY planned source answered with an
+    exact total; otherwise it is not measured (``None``, never the smaller sum of the
+    sources that did answer) and the coverage names the period. A value missing from a
+    period's COMPLETE top list (every source answered, nothing folded into "other") is
+    a measured 0 — also when it first appears in a LATER period, so a value new this
+    period reads as "new" — and from a cut list it is not measured."""
+    totals: list[int | None] = []
+    per_value: dict[str, list[float | None]] = {}
+    complete_lists: list[bool] = []
+    merged_cut = False     # a multi-source top list with a remainder: its counts are lower bounds
+    incomplete_periods: list[str] = []
+    first = group_by[0] if group_by else None
+    for index, per_source in enumerate(compared):
+        answered = [s for s in per_source if s.status == "ok"]
+        every_source = bool(per_source) and len(answered) == len(per_source)
+        known = every_source and all(s.total is not None and s.total_exact for s in answered)
+        totals.append(sum(int(s.total or 0) for s in answered) if known else None)
+        if not known:
+            incomplete_periods.append(periods[index].label)
+        if first is None:
+            complete_lists.append(False)
+            continue
+        merged: Counter[str] = Counter()
+        rest = 0
+        for s in answered:
+            merged.update(s.groups.get(first, Counter()))
+            rest += int(s.other.get(first, 0))
+        for value, count in merged.items():
+            per_value.setdefault(value, [None] * len(compared))[index] = count
+        complete_lists.append(every_source and rest == 0 and all(s.exact for s in answered))
+        merged_cut = merged_cut or (len(answered) > 1 and rest > 0)
+    # Second pass, once every period has added its values: a value absent from a
+    # period whose top list is complete was counted there as zero.
+    for row in per_value.values():
+        for index, complete in enumerate(complete_lists):
+            if complete and row[index] is None:
+                row[index] = 0
+    exact = not incomplete_periods and all(
+        s.exact for per_source in compared for s in per_source if s.status == "ok")
+    basis = outcome.basis if exact else "sample"
+    caption = " vs ".join(p.label for p in reversed(periods))
+    total_rows = [comparison_row("events", "Matching events", totals, unit="count")]
+    outcome.artifacts.append(Artifact(
+        id=f"a{len(outcome.artifacts) + 1}", kind="comparison", title="Events compared", title_trusted=True,
+        data=comparison_data(periods, total_rows), provenance="source", basis=basis, window=caption,
+    ))
+    observation: dict[str, Any] = {"events": comparison_observation(periods, total_rows)}
+    if incomplete_periods:
+        note = ("not measured for " + ", ".join(incomplete_periods)
+                + ": a source did not answer or reported only a lower bound")
+        observation["incomplete_periods"] = note
+        outcome.coverage = "; ".join(x for x in (outcome.coverage, f"comparison {note}") if x)
+    if first is not None and per_value:
+        ranked = sorted(per_value, key=lambda k: (-(per_value[k][-1] or 0), k))[:20]
+        value_rows = [comparison_row(f"v{i + 1}", visible_text(value, 200) or "—", per_value[value], unit="count")
+                      for i, value in enumerate(ranked)]
+        outcome.artifacts.append(Artifact(
+            id=f"a{len(outcome.artifacts) + 1}", kind="comparison", title="Top values compared", title_trusted=True,
+            data=comparison_data(periods, value_rows, dimension=_GROUP_DIMENSIONS.get(first, first), unit="count"),
+            provenance="source", untrusted_labels=True,
+            basis="sample" if merged_cut else basis, window=caption,
+        ))
+        observation["top_values"] = comparison_observation(periods, value_rows)
+    outcome.observation["comparison"] = observation
+    outcome.summary += "; compared with " + ", ".join(p.label for p in periods if p.window is not window)
 
 
 __all__ = [

@@ -38,8 +38,131 @@ case state.
 - Prefer transparent sections separated by `border-border` over card-inside-card
   layouts. A card is reserved for a selectable record, contained editor, dialog, or
   genuinely independent widget.
-- Controls are compact and squared/quiet (`Button`, `Select`, `SegmentedControl`,
-  `TimeRangePicker`); keep one visual grammar in light and dark themes.
+- Controls are compact and quiet with concentric radii (`Button`, `Select`,
+  `SegmentedControl`, `TimeRangePicker`); keep one visual grammar in light and dark
+  themes.
+
+## Foundations
+
+Restraint is expressed through space, type, and one material for floating chrome, not
+through new chrome. These rules are implemented once — `tailwind.config.js`,
+`styles/theme.css`, `lib/ui-recipes.ts`, `components/motion/variants.ts`, and the
+`src/ui` primitives — and pinned by `src/design-system/__tests__/foundations.test.ts`
+and `src/ui/__tests__/foundations.round12.test.tsx`. Compose them; do not restate them.
+
+**Spacing.** Tailwind's 4px scale on an 8px rhythm, in `rem` so zoom and text size
+scale the layout. Dense inside, generous between: `1` (4px) inside chips and menu
+insets, `2`–`3` (8–12px) between related controls and for row padding, `4`–`5`
+(16–20px) for instrument and pane insets, `6` (24px) for column gutters, `8`–`10`
+(32–40px) between bands, `12` (48px) only for sparse identity screens. The container
+sets rhythm with `gap-*`/`space-y-*`; children never add sibling margins. One 16–24px
+rail per pane; never stack page, pane, and panel padding.
+
+**Radii.** One concentric scale on the brandable `--radius` (10px by default):
+inner radius = outer radius − inset.
+
+| Surface | Radius | Class |
+|---|---|---|
+| Badges, chips, menu and list items, tab triggers, segments | 6px | `rounded-sm` |
+| Buttons, inputs, selects, segmented rails, cards | 8px | `rounded-md` |
+| Menus, popovers, hover cards, tooltips, toasts | 10px | `rounded-lg` |
+| Dialogs, sheets (leading edge only, from `sm`), the command palette | 14px | `rounded-xl` |
+| Bands, list rows, tables, the KPI strip, split panes | 0 | divider-led |
+
+A 10px menu with a `p-1` inset holds 6px items; a 14px dialog holds its own 8px
+controls. Focus rings follow the element's radius. Use the `rounded-tr-xl
+rounded-br-xl` pair rather than `rounded-r-xl`, which collides with the `r-xl` token
+key. The 14px step is `--radius + min(--radius, 4px)`, so the brand "Square" preset
+(`--radius: 0rem`) squares every step, dialogs and sheets included. A rounded side
+sheet clips its children to the curve (`overflow-hidden`), so a full-bleed child with
+its own fill never paints square corners over it.
+
+**Typography.** Inter Variable stays the face (identical metrics offline, tabular
+figures, the `ss01`/`cv01`/`zero` sets that keep IOCs legible). Tracking is
+size-specific and follows Inter's dynamic-metrics curve, carried by each `fontSize`
+step: +0.005em at 11px, 0 at 12px, −0.003 to −0.011em from 13 to 16px, tightening to
+−0.022em at 32px. Do not add `tracking-tight`/`tracking-wide` on top of a size step.
+Leading is inverse (looser body, tighter display); `leading-none` only on single-line
+numerals. Hierarchy comes from weight + size + leading together; weights stay 400–650.
+11px (`text-2xs`) is for badges, axis ticks and timestamps only; content text,
+legends, captions and stat context are 12px or larger.
+
+**Numerals.** A numeral never truncates and is never broken inside its digits: no
+ellipsis, no clip, no `break-words` split, because a cut number is a plausible wrong
+number ("≥77,77" over "7"). Nothing shares its line — a metric's context sits on its
+own line under it and wraps, a delta chip wraps under it when the row is short, and a
+tile's corner icons (help, drill-down) sit in the label row's corner, which reserves
+their width, never over the numeral. The hero ladder counts what is drawn, the `≥`
+floor mark included. `KpiTile` then measures the numeral against the row it is really
+in and steps the size down — then abbreviates through `formatCompact`, with the exact
+value as text — until it fits; only a value with a real space may take a second line,
+after the smallest step. `KpiTile size="fluid"` sizes the hero numeral from its own
+tile, never the viewport: the numeral row is a size container and the rungs are `cqi`
+clamps (25 / 20 / 15% of the row, 24–44px on the top rung) with −0.021em tracking.
+Use it inside a sized cell. Tile grids use `KpiTileGrid`, whose column count follows
+the tile count, so a grid never draws an empty track.
+
+**Materials.** One translucent material, for floating chrome only: the top bar, sticky
+page/control/filter bars, a sticky table or record header. Use the `materialBar`
+recipe (or `materialThick` for large floating panes, or `MaterialBar` from
+`@/design-system`); never a page-local `bg-*/95 backdrop-blur`. Content — tables,
+charts, transcripts, evidence — always sits on an opaque canvas or card, and menus,
+popovers, dialogs and sheets are solid, so translucent never stacks on translucent (a
+material nested in another material, or in the glass top bar, is painted solid). Fill
+opacity stays at or above 0.80 so 12px secondary text keeps AA; on a material, small
+text uses `text-foreground` or `text-secondary-foreground` at `font-medium`, and colour
+lives on solid chips (a sticky table header lifts its column labels to
+`text-secondary-foreground`). Under sticky chrome the scroll-edge fade replaces a hard
+divider: `PageHeader`, `ControlBar`, `FilterBar` and `TableHeader` with `sticky`, and
+`MaterialBar`, show it only while content is scrolled beneath the pinned bar
+(`useScrollEdge` / `useScrollEdgeRef`), and drop their own hairline while pinned. Each
+recipe has its own opaque fallback (`--material-solid`: the background for a bar, the
+popover colour for a thick pane), so a solid fallback never changes the surface's
+colour. Never animate `backdrop-filter`. `src/design-system/__tests__/material-gate.test.ts`
+fails on a new page-local blur or translucent sticky fill.
+
+Sticky chrome needs a scroller that actually scrolls. The shell clips horizontal
+overflow with `overflow-x-clip`, never `overflow-x-hidden`: a lone hidden axis turns
+the element into a vertical scroll container that never scrolls, and every sticky
+descendant — the top bar included — then leaves with the page. Pin below the top bar
+with `top-[var(--header-h)]` (or a `calc()` on it), never a bare `top-0`/`top-4` in a
+window-scrolled page.
+
+**Elevation.** Borders for tiled and scrolled content; shadows only for detached
+portals. Menus and select lists use `shadow-menu`; popovers, hover cards, tooltips,
+dialogs, sheets and the palette use `shadow-overlay`. No resting shadows on
+instruments; `hover-lift` only on genuinely clickable standalone tiles. Modal tasks dim
+the page with the shared scrim; a non-blocking side pane gets no scrim.
+
+**Motion.** One spring vocabulary (`components/motion/variants.ts`): `SPRING_UI`
+(critically damped, `bounce: 0`, 0.3s visual duration) is the default for tabs,
+disclosure, row reflow and the bulk bar; `SPRING_PANE` (0.35s) for sheets, side panes
+and the report panel; `SPRING_MOMENTUM` (a little bounce) only after a pointer release
+that carried velocity, never for click-driven motion. `HOUSE_SPRING` is a deprecated
+alias of `SPRING_UI`. Exits are short tweens. CSS overlays use the same curve through
+`ease-spring` (a sampled critically damped `linear()` where supported) with
+`duration-ui` / `duration-pane`. Overlays scale from their trigger: menus, popovers,
+hover cards, tooltips and selects use their Radix `--radix-*-transform-origin`, and a
+dialog opened from state passes `origin` (the trigger's centre) to `DialogContent`.
+Enter and exit follow the same path. Press feedback is immediate: buttons settle to
+97% in 100ms on pointer-down (`motion-safe` only; link-styled buttons never scale),
+and full-width rows darken on `:active` instead of scaling — the `Button` base does
+this for any `w-full` button. Animate `transform` and
+`opacity` only, from the current value, and never lock input during a transition.
+Data on an automatic refresh never animates (`KpiTile roll={false}`).
+
+**Accessibility media queries.** All three signals are honoured.
+`prefers-reduced-motion`: JS motion keeps only opacity (`MotionConfig
+reducedMotion="user"`), CSS overlays swap their scale/slide keyframes for a 150ms
+opacity-only cross-fade, and press scale is dropped. `prefers-reduced-transparency`
+(and `data-transparency="reduced"` on `<html>`, the in-app override for browsers that
+never report it): every material and the top bar become solid.
+`prefers-contrast: more`: hairlines become ≥3:1 structural lines — including the
+alpha hairline variants (`border-border/70` and the like), through the
+`--border-alpha-floor` the `border` colour carries — secondary text strengthens (and
+is never weaker than muted text), the login identity canvas strengthens its own
+borders, field edges and text, and materials turn solid with a defined bottom rule
+instead of the scroll-edge fade.
 
 ## Page anatomy
 
@@ -396,10 +519,14 @@ background data refreshes still follow the `LoadingState` / `LoadingBar` contrac
 
 Motion explains state change: route entry, disclosure, row insertion/removal, or a
 terminal live marker. It does not decorate static content. Honor
-`prefers-reduced-motion`; no required information depends on animation. Only the newest
-terminal timeline marker may pulse continuously. A successfully committed data refresh
+`prefers-reduced-motion`; no required information depends on animation. Only two things
+may animate continuously: the newest terminal timeline marker, and the single
+agent-activity glyph while a chat turn is running (a rotation or arc sweep of about a
+1.2–1.35s period — never a slow "breathing" loop — with a static mark and the word
+"Working" under reduced motion). A successfully committed data refresh
 may replay one short transform/opacity-only cue tied to the new payload; it must never
-run on its own timer or imply that a request is in flight when it is not.
+run on its own timer or imply that a request is in flight when it is not. Springs,
+press feedback and overlay origins follow **Foundations → Motion**.
 
 ## Detection-rule authoring honesty
 
@@ -872,6 +999,9 @@ scroll inside that frame.
 - Maintain WCAG AA token contrast in both themes and never disable paste. A measured
   `*-text` token has no headroom left: do not dim it with an `opacity-*` modifier on the
   wash it was tuned for—use the token as rendered, or pick a different token.
+- Honour reduced motion, reduced transparency, and increased contrast as described in
+  **Foundations**; the increased-contrast border and secondary-text values are measured
+  in both themes by the foundations test, alongside the design gates.
 
 Before handoff, run typecheck, lint, design gates, focused tests, the complete Console
 suite, and the production build. Use the in-app browser to inspect both themes, a narrow

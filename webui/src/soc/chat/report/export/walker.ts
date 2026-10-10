@@ -20,9 +20,9 @@
  */
 import { maybeDefang } from '@/lib/defang';
 
-import { formatUtc, formatValue, plainDocTitle, truncationNote, unitLabel } from '../../blocks/format';
+import { formatDelta, formatUtc, formatValue, plainDocTitle, truncationNote, unitLabel } from '../../blocks/format';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
-import type { AnswerBlock, Cell, ColumnType, LeafBlock, TableBlock, ToneKey } from '../../blocks/schema';
+import type { AnswerBlock, Cell, ColumnType, KpiItem, LeafBlock, TableBlock, ToneKey, ValueUnit } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
 import { parseChatMarkdown, type MdBlock } from '../../ChatMarkdown';
 import { navLabel } from '@/soc/nav';
@@ -53,6 +53,16 @@ export type Line = Run[];
 
 export interface TableNode {
   k: 'table';
+  /**
+   * What the table shows (the block's title, plain text): spreadsheet sheet names and
+   * table captions in the Office exports. Content, so defanged with the toggle.
+   */
+  label?: string;
+  /**
+   * A caption that belongs to the table (a chart's kind and unit): Markdown writes it as
+   * a line under the table, HTML as `<caption>`, Word as a caption paragraph.
+   */
+  caption?: string;
   head: string[];
   /** Right-aligned numeric columns. */
   numeric: boolean[];
@@ -61,6 +71,13 @@ export interface TableNode {
   rows: string[][];
   /** Per-cell override of `code` (a key/value table whose rows differ in trust). */
   cellCode?: boolean[][];
+  /**
+   * The raw NUMBER behind each cell where there is one (else `null`, use the text), so a
+   * spreadsheet export keeps numbers numeric instead of their formatted text.
+   */
+  values?: Array<Array<number | null>>;
+  /** The unit of each column's raw numbers (a spreadsheet number format), when known. */
+  units?: Array<ValueUnit | null>;
 }
 
 export type DocNode =
@@ -119,6 +136,8 @@ class Walker {
   readonly out: DocNode[] = [];
   private readonly on: boolean;
   readonly screen: boolean;
+  /** The title of the block being walked (each table node carries it as its label). */
+  label: string | null = null;
 
   constructor(options: WalkOptions) {
     this.on = options.defang !== false;
@@ -149,19 +168,30 @@ class Walker {
     code: boolean[],
     format?: (cell: Cell, col: number) => string,
     cellCode?: boolean[][],
+    extra: { raw?: Array<Array<number | null>>; caption?: string; units?: Array<ValueUnit | null> } = {},
   ): void {
     const cellText = (cell: Cell, col: number): string => {
       if (format) return format(cell, col);
       if (cell === null) return '—';
       return typeof cell === 'number' ? formatValue(cell, 'count') : String(cell);
     };
+    const values =
+      extra.raw ??
+      rows.map((row) => head.map((_, i) => {
+        const cell = row[i] ?? null;
+        return typeof cell === 'number' && Number.isFinite(cell) ? cell : null;
+      }));
     this.push({
       k: 'table',
+      ...(this.label ? { label: this.f(this.label) } : {}),
+      ...(extra.caption ? { caption: extra.caption } : {}),
       head: head.map((h) => this.f(h)),
       numeric,
       code,
       rows: rows.map((row) => head.map((_, i) => this.f(cellText(row[i] ?? null, i)))),
       ...(cellCode ? { cellCode } : {}),
+      values,
+      ...(extra.units ? { units: extra.units } : {}),
     });
   }
 
@@ -202,7 +232,11 @@ class Walker {
     if (block.provenance === 'ai' && !AI_AUTHORED_TYPES.includes(block.type) && block.type !== 'guide' && block.type !== 'citations') {
       this.para('Values stated by the model, not measured.', true);
     }
+    const outer = this.label;
+    // A Brief's leaves set their own label; the Brief itself labels nothing.
+    this.label = block.type === 'report' ? null : blockTitle(block);
     this.body(block, level);
+    this.label = outer;
     const notes: string[] = [];
     if (block.truncated) notes.push(truncationNote(shown(block), block.total));
     if (block.downsampled_for_storage) notes.push('Downsampled for saved history');
@@ -212,19 +246,35 @@ class Walker {
 
   private body(block: AnswerBlock, level: number): void {
     switch (block.type) {
-      case 'kpi_group':
+      case 'kpi_group': {
+        // The change column appears only when a figure carries one (the tile's delta
+        // chip, in the same words), so a paper or file copy says what the screen says.
+        const changes = block.items.some((it) => it.delta);
+        const head = changes ? ['Metric', 'Value', 'Change', 'Context'] : ['Metric', 'Value', 'Context'];
         this.table(
-          ['Metric', 'Value', 'Context'],
+          head,
           block.items.map((it) => [
             it.label,
             `${it.bound === 'lower' && it.value !== null ? '≥ ' : ''}${formatValue(it.value, it.unit)}`,
+            ...(changes ? [kpiChange(it)] : []),
             it.context ?? null,
           ]),
-          [false, true, false],
-          [false, false, false],
+          head.map((_, i) => i === 1),
+          head.map(() => false),
           (cell) => (cell === null ? '' : String(cell)),
+          undefined,
+          {
+            // An exact count stays a number in a spreadsheet; a lower bound ("≥ 19") and a
+            // figure with its own unit ("45%", "$1.20", "2.1 s") stay as their text.
+            raw: block.items.map((it) =>
+              head.map((_, i) =>
+                i === 1 && it.bound !== 'lower' && it.unit === 'count' && typeof it.value === 'number' && Number.isFinite(it.value) ? it.value : null,
+              ),
+            ),
+          },
         );
         return;
+      }
       case 'chart': {
         const head = [block.x.label ?? (block.x.kind === 'time' ? 'Time (UTC)' : 'Category'), ...block.series.map((s) => s.label)];
         const rows: Cell[][] = block.x.values.map((x, i) => [
@@ -237,8 +287,9 @@ class Walker {
           head.map((_, i) => i > 0),
           head.map((_, i) => i === 0 && block.untrusted),
           (cell, col) => (col === 0 ? (cell === null ? '—' : String(cell)) : formatValue(typeof cell === 'number' ? cell : null, block.unit)),
+          undefined,
+          { caption: `Chart: ${VIEW_LABEL[block.kind].toLowerCase()}, unit: ${unitLabel(block.unit)}.`, units: head.map((_, i) => (i > 0 ? block.unit : null)) },
         );
-        this.push({ k: 'meta', text: `Chart: ${VIEW_LABEL[block.kind].toLowerCase()}, unit: ${unitLabel(block.unit)}.` });
         return;
       }
       case 'heatmap': {
@@ -249,8 +300,9 @@ class Walker {
           head.map((_, i) => i > 0),
           head.map((_, i) => i === 0 && block.untrusted),
           (cell, col) => (col === 0 ? String(cell ?? '—') : formatValue(typeof cell === 'number' ? cell : null, block.unit)),
+          undefined,
+          { caption: `Heatmap, unit: ${unitLabel(block.unit)}.`, units: head.map((_, i) => (i > 0 ? block.unit : null)) },
         );
-        this.push({ k: 'meta', text: `Heatmap, unit: ${unitLabel(block.unit)}.` });
         return;
       }
       case 'table':
@@ -271,6 +323,8 @@ class Walker {
           [false, false, false, false, false, true, false],
           [true, block.untrusted, false, false, false, false, false],
           (cell, col) => (cell === null ? '—' : col === 5 && typeof cell === 'number' ? formatValue(cell, 'score') : String(cell)),
+          undefined,
+          { units: [null, null, null, null, null, 'score', null] },
         );
         return;
       case 'timeline':
@@ -302,6 +356,7 @@ class Walker {
         for (const c of block.counts) add(c.label, formatValue(c.value, c.unit));
         this.table(['Field', 'Value'], rows, [false, false], [false, false], (cell) => (cell === null ? '—' : String(cell)), trust);
         if (block.reputation.length) {
+          this.label = `${blockTitle(block)} — reputation`;
           this.table(
             ['Provider', 'Verdict', 'Score', 'Detail'],
             block.reputation.map((r) => [r.provider, r.verdict, r.score ?? null, r.detail ?? null]),
@@ -406,8 +461,19 @@ class Walker {
         if (column?.type === 'time') return formatUtc(cell);
         return cell;
       },
+      undefined,
+      { units: block.columns.map((c) => (c.type === 'risk' ? 'score' : NUMERIC_TYPES.includes(c.type) ? c.unit ?? 'count' : null)) },
     );
   }
+}
+
+/** A KPI's change in the tile's own words ("+6 vs previous window", "no change …"). */
+function kpiChange(it: KpiItem): string | null {
+  const d = it.delta;
+  if (!d) return null;
+  if (d.value === 0) return `no change ${d.period_label}`.trim();
+  const sign = d.value > 0 ? '+' : '−';
+  return `${sign}${formatDelta(Math.abs(d.value), it.unit)} ${d.period_label}`.trim();
 }
 
 function shown(block: AnswerBlock): number {

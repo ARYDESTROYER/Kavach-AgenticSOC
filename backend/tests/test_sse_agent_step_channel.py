@@ -26,6 +26,7 @@ import pytest
 from app.realtime import (
     AGENT_STEP_EVENT,
     CASE_ACTIVITY_EVENT,
+    CHAT_TURN_EVENT,
     INAPP_EVENT,
     JOB_EVENT,
     OVERFLOW_EVENT,
@@ -36,8 +37,9 @@ from app.realtime import (
 
 def test_registry_lists_exactly_the_channels_the_backend_publishes() -> None:
     assert SSE_EVENT_TYPES == {
-        AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, OVERFLOW_EVENT,
+        AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, CHAT_TURN_EVENT, OVERFLOW_EVENT,
     }
+    assert CHAT_TURN_EVENT == "chat.turn"
     # The exact wire tokens. Changing one of these is a client-visible break.
     assert AGENT_STEP_EVENT == "agent.step"
     assert CASE_ACTIVITY_EVENT == "case.activity"

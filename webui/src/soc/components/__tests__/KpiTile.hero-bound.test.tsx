@@ -103,12 +103,18 @@ describe('KpiTile — the hero numeral', () => {
     expect(numeral(tile).parentElement).toHaveClass('mt-auto');
   });
 
-  it('always shrink-wraps the numeral, so a long value ellipsizes instead of clipping', () => {
-    // `min-w-0` and `truncate` TOGETHER, never either alone: without `min-w-0` a flex item
-    // refuses to shrink below its content and the tile's `overflow-hidden` clips it with no
-    // ellipsis; without `truncate` the shrunk box paints over its own row-mates.
+  it('never truncates the numeral and never breaks it inside its digits', () => {
+    // Round 12: an ellipsis on a numeral is a plausible WRONG number ("19" printed as
+    // "1…", "≥ 40" as "≥…"), and so is a digit split: `break-words` painted "≥77,77" over
+    // "7". `break-normal` keeps a grouped integer whole (and overrides an inherited
+    // `break-words`); a value too long for its row is stepped down by the fit guard
+    // (KpiTile.round12.test.tsx) instead.
     render(<KpiTile label="Total Cases" value="543,210" variant="strip" />);
-    expect(numeral(screen.getByTestId('kpi-total-cases'))).toHaveClass('min-w-0', 'truncate');
+    const span = numeral(screen.getByTestId('kpi-total-cases'));
+    expect(span).toHaveClass('min-w-0', 'max-w-full', 'break-normal');
+    expect(span).not.toHaveClass('break-words');
+    expect(span).not.toHaveClass('break-all');
+    expect(span.className).not.toMatch(/(^|\s)(truncate|text-ellipsis|whitespace-nowrap)(\s|$)/);
   });
 
   it('abbreviates a value too long for any step, keeping the exact value on the tile', () => {

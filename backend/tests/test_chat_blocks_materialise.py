@@ -433,10 +433,10 @@ def test_report_without_any_resolved_leaf_is_replaced_by_a_notice() -> None:
 
 
 def test_report_envelope_limits_clip_and_count_instead_of_dropping_the_brief() -> None:
-    # 50 leaves over 10 sections: the first 40 are kept (the 40-leaf budget), the
+    # 70 leaves over 10 sections: the first 60 are kept (the 60-leaf budget), the
     # other 10 are counted in the one notice instead of the whole brief vanishing.
     too_many = [{"type": "report", "title": "Big", "sections": [
-        {"heading": f"S{i}", "items": [{"type": "markdown", "text": "x"}] * 5} for i in range(10)]}]
+        {"heading": f"S{i}", "items": [{"type": "markdown", "text": "x"}] * 7} for i in range(10)]}]
     requests, dropped = parse_final_block_requests(too_many)
     assert dropped == [] and requests[0].invalid_items == 10
     assert sum(len(s.items) for s in requests[0].sections) == B.MAX_REPORT_LEAVES

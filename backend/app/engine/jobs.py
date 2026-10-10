@@ -457,17 +457,18 @@ class JobRunner:
             if job.fresh_token_version is None:
                 return False
             policy = getattr(self.state.prefs, "session_policy", None)
+            # Standard + remembered limits for the actor's live role (Round 12,
+            # one builder for every site; an excluded role is never remembered).
+            from ..auth.session_limits import limits_for_username
+
             return await sessions.strict_deferred_authority(
                 sid=job.fresh_session_id,
                 username=job.actor,
                 token_version=job.fresh_token_version,
-                idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
-                absolute_lifetime=int(
-                    getattr(policy, "absolute_lifetime", 0) or 0
-                ),
                 sudo_window=int(
                     getattr(policy, "sudo_reauth_window", 600) or 600
                 ),
+                **limits_for_username(self.state, job.actor).kwargs(),
             )
         except Exception:  # privileged deferred execution fails closed
             return False

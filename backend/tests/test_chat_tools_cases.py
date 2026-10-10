@@ -79,11 +79,12 @@ async def test_search_cases_push_down_is_exact(store: CaseStore) -> None:
     assert_artifacts_render(out)
 
 
-async def test_search_cases_in_memory_filters_report_scanned(store: CaseStore) -> None:
+async def test_search_cases_in_memory_filters_count_exactly(store: CaseStore) -> None:
     ctx = make_ctx(cases=store)
     out = await SearchCasesTool().run(ctx, verdict="true_positive")
-    assert out.observation["count"] == 2 and out.observation["scanned"] == 4
-    assert out.observation["exact"] is True  # the scan covered the whole store
+    # Round 12 (SPEC D8): the count comes from the exact aggregate over every case.
+    assert out.observation["count"] == 2 and out.observation["count_source"] == "exact aggregate"
+    assert out.observation["exact"] is True and "scanned" not in out.observation
     unassigned = await SearchCasesTool().run(ctx, assignee="unassigned", status_group="active")
     assert unassigned.observation["count"] == 2
     text_hit = await SearchCasesTool().run(ctx, text="WEB3")
@@ -295,16 +296,31 @@ async def test_list_campaigns() -> None:
     assert one.observation["returned"] == 1
 
 
-async def test_in_memory_window_keeps_cases_without_a_parseable_creation_time(store: CaseStore) -> None:
-    """Never-drop (#4): the in-memory path (any memory-only filter) keeps an undated
-    case inside a window exactly like the store push-down does."""
+async def test_a_bounded_window_neither_counts_nor_lists_undated_cases(store: CaseStore) -> None:
+    """The dashboards' rule (which the aggregator follows): a case with no parseable
+    creation time cannot be placed in a bounded window, so it is not counted there and
+    not listed there either (the rows match the count), and the answer says how many
+    were left out. All time counts and lists it (never dropped, #4)."""
     undated = _case(9, rule="weird")
     undated.created_at = "not-a-date"
     await store.save(undated)
     from app.api.metrics_shared import invalidate_case_page_cache
 
     invalidate_case_page_cache()
-    out = await SearchCasesTool().run(make_ctx(cases=store), rule="weird", window_hours=24)
+    # The in-memory path (a memory-only filter) and the store path agree.
+    for extra in ({"rule": "weird"}, {}):
+        out = await SearchCasesTool().run(make_ctx(cases=store), window_hours=24, **extra)
+        invalidate_case_page_cache()
+        assert out.ok
+        listed = [c["case_id"] for c in out.observation["cases"]]
+        assert "case-0009" not in listed
+        assert out.observation["count"] == len(listed) == (0 if extra else 3)
+        assert out.observation["missing_created"] == 1
+        assert out.observation["missing_created_in_total"] is False
+        assert "1 case has no creation date and is not counted in this window" in (out.coverage or "")
+    everything = await SearchCasesTool().run(make_ctx(cases=store), rule="weird", window="all")
     invalidate_case_page_cache()
-    assert out.ok and out.observation["count"] == 1
-    assert out.observation["cases"][0]["case_id"] == "case-0009"
+    assert everything.ok and everything.observation["count"] == 1
+    assert everything.observation["cases"][0]["case_id"] == "case-0009"
+    assert everything.observation["missing_created_in_total"] is True
+    assert "not counted" not in (everything.coverage or "")

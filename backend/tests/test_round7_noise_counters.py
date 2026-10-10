@@ -548,12 +548,17 @@ def metrics_client(app_state):
 @asyncio_mark
 async def test_noise_reduction_endpoint_truncation_and_warmup(metrics_client, app_state, monkeypatch):
     monkeypatch.setattr("app.api.routes_metrics._STORE_FETCH_LIMIT", 2)
+    fresh = datetime.now(timezone.utc).isoformat()
     for i in range(3):
-        await app_state.cases.save(_case(f"n{i}", status=CaseStatus.OPEN))
+        # In the 24h window (Round 12: the funnel reads every in-window case, so the
+        # bound only bites when the WINDOW holds more cases than it).
+        await app_state.cases.save(
+            _case(f"n{i}", status=CaseStatus.OPEN).model_copy(update={"created_at": fresh})
+        )
     r = metrics_client.get("/api/metrics/noise-reduction?window_hours=24")
     assert r.status_code == 200
     body = r.json()
-    # Truncation reported honestly (store had 3, fetch bound was 2).
+    # Truncation reported honestly (the window held 3, the bound was 2).
     assert body["cases_meta"] == {"truncated": True, "store_total": 3, "fetched": 2}
     # No poll/ingest ran → counters are warming up → null ingested + DASH reduction.
     assert body["counters"]["available"] is False

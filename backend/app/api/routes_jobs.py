@@ -320,14 +320,18 @@ async def _fresh_fields(
     if not sid or tv < 0:
         raise HTTPException(401, detail={"code": "reauth_required"})
     policy = state.prefs.session_policy
+    # Standard + remembered limits for the actor's live role (Round 12, one builder
+    # for every site; an excluded role is never remembered).
+    from ..auth.session_limits import limits_for_username
+
+    username = current_username(request)
     try:
         expires_at = await state.sessions.strict_deferred_authority_expires_at(
             sid=sid,
-            username=current_username(request),
+            username=username,
             token_version=tv,
-            idle_timeout=int(policy.idle_timeout or 0),
-            absolute_lifetime=int(policy.absolute_lifetime or 0),
             sudo_window=int(policy.sudo_reauth_window or 600),
+            **limits_for_username(state, username).kwargs(),
         )
     except Exception as exc:
         raise HTTPException(503, detail="session authority registry unavailable") from exc

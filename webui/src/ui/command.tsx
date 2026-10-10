@@ -104,7 +104,7 @@ const CommandItem = React.forwardRef<
       // `data-[disabled]:pointer-events-none` would match ALL rows and grey out + kill
       // pointer events on the whole palette. Use VALUE-specific `data-[disabled=true]:`
       // variants (which only match a real disabled row) instead.
-      'relative flex cursor-default select-none items-center gap-2 rounded-md px-2.5 py-2 text-sm outline-none transition-colors',
+      'relative flex cursor-default select-none items-center gap-2 rounded-sm px-2.5 py-2 text-sm outline-none transition-colors',
       'focus:bg-accent focus:text-accent-foreground',
       'data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground',
       'data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50',

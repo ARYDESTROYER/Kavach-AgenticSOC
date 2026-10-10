@@ -45,6 +45,7 @@ from .common import (
     resolve_window,
     text,
     verdict_semantic,
+    window_input,
 )
 
 logger = logging.getLogger("tlsoc.agents.chat_tools.cases")
@@ -92,7 +93,11 @@ def _norm_enum(value: Any, allowed: tuple[str, ...], *, upper: bool = False) -> 
 # --------------------------------------------------------------------------- #
 # search_cases
 # --------------------------------------------------------------------------- #
-class SearchCasesInput(ToolInput):
+class CaseFilters(ToolInput):
+    """The case filters ``search_cases`` and ``case_stats`` share, and the window
+    (Round 12: ``window`` accepts all time, calendar periods and ISO ranges of any
+    length; ``window_hours`` stays as an alias). No window means ALL TIME."""
+
     text: str | None = Field(default=None, max_length=120)
     status: Literal[_STATUSES] | None = None  # type: ignore[valid-type]
     status_group: Literal["active", "terminal"] | None = None
@@ -102,15 +107,18 @@ class SearchCasesInput(ToolInput):
     priority: Literal["P1", "P2", "P3", "P4"] | None = None
     assignee: str | None = Field(default=None, max_length=128)
     rule: str | None = Field(default=None, max_length=128)
-    window_hours: int | None = Field(default=None, ge=1, le=720)
-    sort_field: Literal["created_at", "updated_at", "risk_score"] = "created_at"
-    sort_order: Literal["desc", "asc"] = "desc"
-    limit: int = Field(default=20, ge=1, le=50)
+    window: str | dict[str, Any] | None = None
+    window_hours: int | None = Field(default=None, ge=1)
 
     @field_validator("text", "entity", "assignee", "rule", "window_hours", mode="before")
     @classmethod
     def _blank(cls, value: Any) -> Any:
         return none_if_blank(value)
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _window(cls, value: Any) -> Any:
+        return window_input(value)
 
     @field_validator("status", mode="before")
     @classmethod
@@ -144,6 +152,15 @@ class SearchCasesInput(ToolInput):
     def filters(self) -> dict[str, Any]:
         keys = ("text", "status", "status_group", "verdict", "entity", "severity", "priority", "assignee", "rule")
         return {k: getattr(self, k) for k in keys if getattr(self, k) is not None}
+
+    def has_window(self) -> bool:
+        return self.window is not None or self.window_hours is not None
+
+
+class SearchCasesInput(CaseFilters):
+    sort_field: Literal["created_at", "updated_at", "risk_score"] = "created_at"
+    sort_order: Literal["desc", "asc"] = "desc"
+    limit: int = Field(default=20, ge=1, le=50)
 
 
 def _case_matches(case: Any, args: SearchCasesInput, prefs: Any, window: Any) -> bool:
@@ -185,11 +202,20 @@ def _case_matches(case: Any, args: SearchCasesInput, prefs: Any, window: Any) ->
             return False
     if window is not None:
         created = _created(case)
-        # Never-drop (#4): a case without a parseable creation time cannot be placed
-        # outside the window, so it stays, exactly as the store push-down keeps it.
-        if created is not None and not (window.start <= created <= window.end):
+        if created is None:
+            # A case without a parseable creation time cannot be placed in a bounded
+            # window: like the aggregator and the dashboards, only an unbounded (all
+            # time) window counts it; a bounded one discloses it as ``missing_created``.
+            return _undated_counted(window)
+        if not (window.start <= created <= window.end):
             return False
     return True
+
+
+def _undated_counted(window: Any) -> bool:
+    """Does ``window`` count a case with no parseable creation time? Only an unbounded
+    one (all time, ending now): the dashboards' rule, which the aggregator follows."""
+    return bool(getattr(window, "all_time", False) and getattr(window, "trailing", False))
 
 
 def _created(case: Any):
@@ -205,6 +231,16 @@ def _created(case: Any):
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _sort_phrase(field: str, order: str) -> str:
+    """What the listed rows are, in words ("newest", "highest-risk")."""
+    desc = order == "desc"
+    if field == "risk_score":
+        return "highest-risk" if desc else "lowest-risk"
+    if field == "updated_at":
+        return "most recently updated" if desc else "least recently updated"
+    return "newest" if desc else "oldest"
+
+
 def _sort_cases(cases: list[Any], field: str, order: str) -> list[Any]:
     def key(case: Any) -> Any:
         if field == "risk_score":
@@ -213,21 +249,35 @@ def _sort_cases(cases: list[Any], field: str, order: str) -> list[Any]:
     return sorted(cases, key=key, reverse=(order == "desc"))
 
 
+#: At most this many extra rows are read to refill a page after undated cases (not
+#: counted in a bounded window) are left out of the listing.
+_UNDATED_EXTRA_ROWS = 50
+
+
 class SearchCasesTool(ChatTool):
     name: ClassVar[str] = "search_cases"
     label: ClassVar[str] = "Searched cases"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Case store"
+    input_model: ClassVar[type] = SearchCasesInput
+    timeout_s: ClassVar[float] = 600
     signature: ClassVar[str] = (
         "search_cases(text?, status?, status_group?=active|terminal, verdict?=TRUE_POSITIVE|FALSE_POSITIVE|"
-        "NEEDS_HUMAN, entity?, severity?, priority?=P1..P4, assignee?, rule?, window_hours?, "
-        "sort_field?=created_at|updated_at|risk_score, sort_order?, limit?=20) -- find and count cases"
+        "NEEDS_HUMAN, entity?, severity?, priority?=P1..P4, assignee?, rule?, window? (default all time), "
+        "sort_field?=created_at|updated_at|risk_score, sort_order?, limit?=20 (<=50)) -- list matching cases "
+        "with an EXACT count and verdict and status counts over every case"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
         "text", "status", "status_group", "verdict", "entity", "severity", "priority",
-        "assignee", "rule", "window_hours", "sort_field", "limit",
+        "assignee", "rule", "window", "window_hours", "sort_field", "limit",
     )
+
+    def display_params(self, inp: dict[str, Any]) -> dict[str, Any]:
+        params = dict(inp) if isinstance(inp, dict) else {}
+        if isinstance(params.get("window"), dict):
+            params["window"] = "..".join(str(v) for v in params["window"].values())[:80]
+        return super().display_params(params)
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
         args, error = parse_input(SearchCasesInput, inp)
@@ -237,12 +287,88 @@ class SearchCasesTool(ChatTool):
             return ToolOutcome.failure("Invalid input: choose status or status_group, not both")
         if ctx.cases is None:
             return ToolOutcome.failure("The case store is not available")
-        window = None
-        if args.window_hours is not None or ctx.default_range is not None:
-            window = resolve_window(ctx, window_hours=args.window_hours)
-            if isinstance(window, str):
-                return ToolOutcome.failure(window)
-        scanned: int | None = None
+        window = resolve_window(ctx, window=args.window, window_hours=args.window_hours, default="all",
+                                minutes_ok=False)
+        if isinstance(window, str):
+            return ToolOutcome.failure(window)
+        counts = await self._exact_counts(ctx, args, window)
+        # A bounded window does not count cases with no creation date (the aggregator
+        # discloses them as ``missing_created``), so it does not list them either: the
+        # rows always match the count. Ask the store for that many more rows to fill
+        # the page after they are left out.
+        undated = int(finite(getattr(counts, "missing_created", 0)) or 0) if counts is not None else 0
+        drop_undated = undated > 0 and not bool(getattr(counts, "missing_in_total", True))
+        extra = min(undated, _UNDATED_EXTRA_ROWS) if drop_undated else 0
+        listing = await self._list_rows(ctx, args, window, extra=extra)
+        if isinstance(listing, ToolOutcome):
+            return listing
+        page, listed_count, listed_exact, scanned = listing
+        if drop_undated:
+            kept = [c for c in page if _created(c) is not None]
+            listed_count = max(0, listed_count - (len(page) - len(kept)))
+            page = kept[: args.limit]
+        unlisted = 0
+        if (args.memory_filters() and not listed_exact and counts is not None
+                and int(getattr(counts, "total", 0) or 0) > listed_count):
+            # The newest-cases page holds only some of the matches: list from every
+            # case instead (a streaming scan that keeps the top ``limit`` rows), so
+            # the rows are really the newest (or highest-risk) matches.
+            streamed = await self._scan_rows(ctx, args, window)
+            if streamed is not None:
+                page, listed_count = streamed
+                listed_exact, scanned = True, None
+            else:
+                unlisted = int(getattr(counts, "total", 0) or 0) - listed_count
+        return self._outcome(ctx, args, window, page, listed_count, listed_exact, scanned, counts,
+                             unlisted=unlisted)
+
+    async def _scan_rows(
+        self, ctx: ChatToolContext, args: SearchCasesInput, window: Any,
+    ) -> tuple[list[Any], int] | None:
+        """``(top rows by the sort, every match counted)`` from a streaming scan of the
+        whole store (only ``limit`` rows are kept), or ``None`` when the scan could not
+        finish (the caller then says which rows it could not list)."""
+        from ...engine.case_aggregate import scan_cases
+        from ...models import Case
+
+        kept: list[Any] = []
+        matched = 0
+        cap = max(args.limit * 4, 200)
+
+        def consume(rows: list[Any]) -> None:
+            nonlocal kept, matched
+            for row in rows:
+                case = row
+                if isinstance(row, dict):
+                    try:
+                        case = Case.model_validate(row)
+                    except Exception:  # noqa: BLE001 — an unreadable row is not a match
+                        continue
+                if _case_matches(case, args, ctx.prefs, window):
+                    matched += 1
+                    kept.append(case)
+            if len(kept) > cap:
+                kept = _sort_cases(kept, args.sort_field, args.sort_order)[: args.limit]
+
+        try:
+            outcome = await scan_cases(
+                ctx.cases, consume,
+                created_from=None if window.all_time else window.start,
+                created_to=None if window.all_time and window.trailing else window.end,
+            )
+        except Exception as exc:  # noqa: BLE001 — the page's rows still stand, labelled
+            logger.info("search_cases listing scan failed: %s", exc)
+            return None
+        if not outcome.complete:
+            return None
+        return _sort_cases(kept, args.sort_field, args.sort_order)[: args.limit], matched
+
+    async def _list_rows(
+        self, ctx: ChatToolContext, args: SearchCasesInput, window: Any, *, extra: int = 0,
+    ) -> tuple[list[Any], int, bool, int | None] | ToolOutcome:
+        """The DISPLAY rows (newest first, at most ``limit``, plus ``extra`` from the
+        store when undated rows will be left out) and the listing's own count. The
+        count is only a fallback: the exact total comes from the aggregator."""
         if args.memory_filters():
             cases, store_total, ok = await load_case_page(ctx)
             if not ok:
@@ -251,84 +377,179 @@ class SearchCasesTool(ChatTool):
                 [c for c in cases if _case_matches(c, args, ctx.prefs, window)],
                 args.sort_field, args.sort_order,
             )
-            count = len(matched)
-            scanned = len(cases)
-            exact = store_total <= scanned
-            page = matched[: args.limit]
-            breakdown_cases = matched
-        else:
-            try:
-                page, count, exact = await ctx.cases.list_window(
-                    created_from=window.iso_from() if window else None,
-                    created_to=window.iso_to() if window else None,
-                    status=args.status, status_group=args.status_group,
-                    entity_value=args.entity, limit=args.limit,
-                    sort_field=args.sort_field, sort_order=args.sort_order,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("search_cases list failed: %s", exc)
-                return ToolOutcome.failure("The case store did not answer")
-            page = list(page)
-            count = int(count)
-            breakdown_cases = page if count <= len(page) else None
+            return matched[: args.limit], len(matched), store_total <= len(cases), len(cases)
+        try:
+            page, count, exact = await ctx.cases.list_window(
+                created_from=window.created_from,
+                created_to=None if window.all_time and window.trailing else window.iso_to(),
+                status=args.status, status_group=args.status_group,
+                entity_value=args.entity, limit=args.limit + max(0, int(extra)),
+                sort_field=args.sort_field, sort_order=args.sort_order,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("search_cases list failed: %s", exc)
+            return ToolOutcome.failure("The case store did not answer")
+        return list(page), int(count), bool(exact), None
+
+    async def _exact_counts(self, ctx: ChatToolContext, args: SearchCasesInput, window: Any) -> Any:
+        """Exact counts over every matching case (SPEC D8): the total, by verdict and
+        by status, and the average risk, from ONE aggregate. ``None`` when the store
+        cannot aggregate (the listing's own count then stands, labelled as such)."""
+        from .stats import run_case_aggregate
+
+        try:
+            return await run_case_aggregate(
+                ctx, window, filters=args.filters(), group_by=("verdict", "status"),
+                metrics=("count", "mean_risk"),
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to the listing's count
+            logger.info("search_cases exact count unavailable: %s", exc)
+            return None
+
+    def _outcome(
+        self, ctx: ChatToolContext, args: SearchCasesInput, window: Any, page: list[Any],
+        listed_count: int, listed_exact: bool, scanned: int | None, agg: Any, *, unlisted: int = 0,
+    ) -> ToolOutcome:
         prefs = ctx.prefs
-        by_verdict = Counter(enum_value(c.verdict) or "none" for c in (breakdown_cases or []))
-        by_status = Counter(enum_value(c.status) or "unknown" for c in (breakdown_cases or []))
+        by_verdict: Counter[str] = Counter()
+        by_status: Counter[str] = Counter()
+        avg_risk: float | None = None
+        if agg is not None:
+            count = int(getattr(agg, "total", 0) or 0)
+            exact = bool(getattr(agg, "exact", True))
+            for group in getattr(agg, "groups", None) or []:
+                key = group.get("key") if isinstance(group, dict) else None
+                metrics = group.get("metrics") if isinstance(group, dict) else None
+                if not isinstance(key, dict) or not isinstance(metrics, dict):
+                    continue
+                n = int(finite(metrics.get("count")) or 0)
+                by_verdict[enum_value(key.get("verdict")) or "none"] += n
+                by_status[enum_value(key.get("status")) or "unknown"] += n
+            avg_risk = finite((getattr(agg, "totals", None) or {}).get("mean_risk"))
+            breakdown_known = exact
+        else:
+            # The listing's own count: exact for a store push-down, a lower bound when
+            # an in-memory filter could only scan the newest cases.
+            count, exact = listed_count, listed_exact
+            complete = exact and count <= len(page)
+            if complete:
+                by_verdict.update(enum_value(c.verdict) or "none" for c in page)
+                by_status.update(enum_value(c.status) or "unknown" for c in page)
+                risks = [finite(c.risk_score) for c in page if finite(c.risk_score) is not None]
+                avg_risk = round(sum(risks) / len(risks), 1) if risks else None
+            breakdown_known = complete
+        count = max(count, len(page)) if not exact else count
+        # "Still open": every match when the filter itself selects open cases; else the
+        # exact status breakdown. Never a count of the returned page (screenshot 4).
+        if args.status_group == "active" or (args.status in OPEN_CASE_STATUSES):
+            open_count: int | None = count
+            open_exact = exact
+        elif args.status_group == "terminal" or (args.status in TERMINAL_CASE_STATUSES):
+            open_count, open_exact = 0, True
+        elif breakdown_known:
+            open_count = sum(n for s, n in by_status.items() if s in OPEN_CASE_STATUSES)
+            open_exact = exact
+        else:
+            open_count, open_exact = None, False
         observation: dict[str, Any] = {
             "filters": args.filters(),
-            "window": window.label if window else "all time",
+            "window": window.label,
+            "window_clamped_to_request": window.clamped,
             "count": count,
             "exact": bool(exact),
+            "count_source": "exact aggregate" if agg is not None else "listing",
             "returned": len(page),
             "cases": [case_row(c, prefs) for c in page[:_OBS_CASES]],
         }
-        if scanned is not None:
+        if unlisted > 0 and scanned is not None:
+            # The rows come from the newest-cases page only (the full scan failed).
+            observation["listing"] = (
+                f"the {fmt_int(len(page))} rows come from the newest {fmt_int(scanned)} cases; "
+                f"{fmt_int(unlisted)} matches are older and not listed; the count covers every match"
+            )
+        elif count > len(page):
+            observation["listing"] = (
+                f"the {fmt_int(len(page))} rows are the {_sort_phrase(args.sort_field, args.sort_order)} "
+                "matches; the count covers every match"
+            )
+        if scanned is not None and (agg is None or unlisted > 0):
             observation["scanned"] = scanned
-        if breakdown_cases is not None:
+        if breakdown_known:
             observation["by_verdict"] = dict(by_verdict)
             observation["by_status"] = dict(by_status)
+        if open_count is not None:
+            observation["open"] = open_count
+        if avg_risk is not None:
+            observation["average_risk"] = round(avg_risk, 1)
+        if count == 0:
+            from .stats import zero_case_suggestions
+
+            observation["suggestions"] = zero_case_suggestions(args, window, "search_cases")
+        from .stats import counted_share, missing_created_note
+
+        missing, missing_in_total, missing_note = (
+            missing_created_note(agg) if agg is not None else (0, True, None))
+        if missing:
+            observation["missing_created"] = missing
+            observation["missing_created_in_total"] = missing_in_total
+            observation["missing_created_note"] = missing_note
+        share_counted, share_note, share_text = counted_share(agg) if agg is not None else (None, None, None)
+        if share_text:
+            observation["partial"] = share_text
+            if share_counted is not None:
+                observation["counted"] = share_counted
+        basis = "exact" if exact else "sample"
+        caption = f"{fmt_int(count)} {'case' if count == 1 else 'cases'} · {'exact' if exact else 'at least'} · {window.label}"
         items = [case_list_item(c, prefs) for c in page[:_CASE_LIST_MAX]]
         artifacts = [Artifact(
             id="a1", kind="case_list", title="Matching cases", title_trusted=True,
             data={"items": items}, provenance="code", untrusted_labels=True,
-            basis="exact" if exact else "sample", total=count, truncated=count > len(items),
-            window=window.label if window else None,
+            basis=basis, total=count, truncated=count > len(items), window=caption,
         )]
-        if breakdown_cases:
+        if breakdown_known and (by_verdict or by_status):
             if args.verdict:
-                pairs, title, dim = list(by_status.items()), "Matching cases by status", "status"
+                pairs = [(_STATUS_LABELS.get(k, k), v) for k, v in by_status.items()]
+                title, dim = "Matching cases by status", "status"
             else:
-                pairs, title, dim = list(by_verdict.items()), "Matching cases by verdict", "verdict"
+                pairs = [(_VERDICT_LABELS.get(k, "No verdict" if k == "none" else k), v) for k, v in by_verdict.items()]
+                title, dim = "Matching cases by verdict", "verdict"
             artifacts.append(Artifact(
                 id="a2", kind="categories", title=title, title_trusted=True,
                 data=categories(pairs, dimension=dim), provenance="code",
-                basis="exact" if exact else "sample", total=count, window=window.label if window else None,
+                basis=basis, total=count, window=caption,
             ))
-        open_count = sum(1 for c in (breakdown_cases or page) if enum_value(c.status) in OPEN_CASE_STATUSES)
-        risks = [finite(c.risk_score) for c in (breakdown_cases or page) if finite(c.risk_score) is not None]
         artifacts.append(Artifact(
             id=f"a{len(artifacts) + 1}", kind="kpis", title="Key figures", title_trusted=True,
             data={"items": [
                 kpi("matched", "Matching cases", count, bound=not exact),
-                kpi("open", "Still open", open_count, bound=breakdown_cases is None,
-                    context=None if breakdown_cases is not None else "in the returned page"),
-                kpi("avg_risk", "Average risk", round(sum(risks) / len(risks), 1) if risks else None, "score"),
+                kpi("open", "Still open", open_count, bound=open_count is not None and not open_exact,
+                    context=None if open_count is not None else "not counted"),
+                kpi("avg_risk", "Average risk", round(avg_risk, 1) if avg_risk is not None else None, "score"),
             ]},
-            provenance="code", basis="exact" if exact else "sample", total=count,
-            window=window.label if window else None,
+            provenance="code", basis=basis, total=count, window=caption,
         ))
-        summary = f"{fmt_int(count)} {'cases' if count != 1 else 'case'} matched"
-        summary += "" if exact else f" (lower bound; {fmt_int(scanned)} newest cases scanned)" if scanned else " (lower bound)"
-        if window is not None:
-            summary += f" ({window.label})"
-        coverage = None
-        if scanned is not None and not exact:
-            coverage = f"newest {fmt_int(scanned)} cases scanned"
+        noun = "cases" if count != 1 else "case"
+        summary = f"{fmt_int(count)} {noun} matched" if exact else f"at least {fmt_int(count)} {noun} matched"
+        summary += f" ({window.label})"
+        if count > len(page):
+            summary += f"; listing the {fmt_int(len(page))} {_sort_phrase(args.sort_field, args.sort_order)}"
+        if window.clamped:
+            summary += "; window limited to the selected range"
+        notes: list[str] = []
+        if not exact:
+            notes.append(f"newest {fmt_int(scanned)} cases scanned" if scanned is not None and agg is None
+                         else share_note or "partial: the case store stopped answering during the count")
+        elif unlisted > 0 and scanned is not None:
+            notes.append(f"rows come from the newest {fmt_int(scanned)} cases; {fmt_int(unlisted)} matches "
+                         "are older and not listed")
+        if missing and not missing_in_total and missing_note:
+            notes.append(missing_note)
+        coverage = "; ".join(notes) or None
         return ToolOutcome(
             ok=True, summary=summary,
             untrusted_params={k: str(v) for k, v in args.filters().items() if k in ("text", "entity", "assignee", "rule")},
             observation=observation, artifacts=artifacts, rows=count,
-            basis="exact" if exact else "sample", coverage=coverage,
+            basis=basis, coverage=coverage,
         )
 
 

@@ -8,8 +8,8 @@
  * heading on open; in `split` mode it never moves focus (SPEC §10.9).
  *
  * One scroll region, no tabs:
- *   header   editable title · template · n/40 · ⋯ (Open in Reports library, Export ▸,
- *            Delete) · close
+ *   header   editable title · template · n/60 · Download PDF · Export (one flat menu,
+ *            progress while it runs) · ⋯ (Open in Reports library, Delete) · close
  *   summary  "Generate summary" with "≈ N tokens · ≈ $X" from the server's dry run as its
  *            caption (and accessible description); then the
  *            AI-written text, next steps, "AI-generated; verify before acting" and
@@ -36,7 +36,6 @@ import {
   ArrowUp,
   ArrowUpToLine,
   ChevronRight,
-  Download,
   ExternalLink,
   FileText,
   MoreHorizontal,
@@ -58,9 +57,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
@@ -74,7 +70,7 @@ import { ChatMarkdown } from '../ChatMarkdown';
 import { deleteReport, estimateReportSummary, generateReportSummary, getReport, patchReport } from '../chat-api';
 import { displayText } from '../stream-events';
 import { formatUtc } from '../blocks/format';
-import { ExportMenuItems, useDefangPreference } from './ExportMenu';
+import { DownloadPdfButton, ExportErrorNote, ExportMenu, useDefangPreference } from './ExportMenu';
 import { ItemBlocks } from './ItemBlocks';
 import { TEMPLATE_LABEL, TEMPLATE_ORDER, itemBlocks, itemKindLabel, tokens, usd } from './model';
 import {
@@ -86,8 +82,8 @@ import {
   onReportChanged,
   reportErrorMessage,
 } from './report-sync';
-import { loadReportSourceContext } from './useSourceTurns';
-import type { ReportExportFormat } from './export/run';
+import { useReportExport } from './useReportExport';
+import type { ReportExportFormat } from './export/formats';
 
 export interface ReportPanelProps {
   /** The conversation whose draft this is (null for a new, unsaved chat). */
@@ -146,6 +142,10 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
   const [summaryBusy, setSummaryBusy] = React.useState(false);
   const [summaryError, setSummaryError] = React.useState<string | null>(null);
   const [defang, setDefang] = useDefangPreference();
+  const exports = useReportExport({ author: username });
+  // Focus returns to the control that started an export when its error note goes away.
+  const pdfRef = React.useRef<HTMLButtonElement>(null);
+  const exportRef = React.useRef<HTMLButtonElement>(null);
 
   const reportRef = React.useRef<Report | null>(null);
   reportRef.current = report;
@@ -520,23 +520,12 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     }
   };
 
-  const doExport = async (format: ReportExportFormat, defangOn: boolean) => {
+  // The methodology needs the source turns' recorded steps: read them only on export
+  // (or when the Export menu opens), once per report version.
+  const doExport = (format: ReportExportFormat, defangOn: boolean) => {
     const current = reportRef.current;
     if (!current) return;
-    // The methodology needs the source turns' recorded steps; read them only on export.
-    const [{ exportReport }, sources] = await Promise.all([
-      import('./export/run'),
-      format === 'json' ? null : loadReportSourceContext(current),
-    ]);
-    const outcome = await exportReport(current, format, {
-      defang: defangOn,
-      author: username,
-      sourceTurns: sources?.turns ?? null,
-      conversationTitles: sources?.titles ?? null,
-      conversationStatus: sources?.status ?? null,
-    });
-    announce(outcome.message);
-    if (!outcome.ok) setActionError(outcome.message);
+    void exports.run(current.id, current, format, defangOn);
   };
 
   /* ------------------------------------------------------------ summary -- */
@@ -686,6 +675,22 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
         ) : null}
       </div>
       {report ? (
+        <>
+          <DownloadPdfButton buttonRef={pdfRef} variant="icon" busy={exports.exporting(report.id)} onClick={() => doExport('print', defang)} />
+          <ExportMenu
+            triggerRef={exportRef}
+            variant="icon"
+            label="Export report"
+            busy={exports.exporting(report.id)}
+            onOpen={() => exports.warm(reportRef.current)}
+            onExport={doExport}
+            defang={defang}
+            onDefangChange={setDefang}
+            testId="report-export-trigger"
+          />
+        </>
+      ) : null}
+      {report ? (
         <DropdownMenu>
           <DropdownMenuTrigger aria-label="Report actions" className={MENU_TRIGGER} data-testid="report-menu-trigger">
             <MoreHorizontal className="size-4" aria-hidden />
@@ -695,15 +700,6 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
               <ExternalLink className="size-3.5" aria-hidden />
               Open in Reports library
             </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Download className="size-3.5" aria-hidden />
-                Export
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-60">
-                <ExportMenuItems onExport={(f, d) => void doExport(f, d)} defang={defang} onDefangChange={setDefang} />
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
             <DropdownMenuSeparator />
             <DropdownMenuItem className="text-critical-text focus:text-critical-text" onSelect={() => setConfirmDelete(true)}>
               <Trash2 className="size-3.5" aria-hidden />
@@ -980,6 +976,15 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
         <p className="border-b border-border px-3 py-1.5 text-xs text-critical-text">
           {actionError}
         </p>
+      ) : null}
+      {exports.error && report && exports.error.reportId === report.id ? (
+        <ExportErrorNote
+          variant="bar"
+          error={exports.error}
+          onRetry={exports.retry}
+          onDismiss={exports.dismissError}
+          returnFocus={() => (exports.error?.format === 'print' ? pdfRef.current : exportRef.current)}
+        />
       ) : null}
       {loadError && report ? (
         <p className="border-b border-border px-3 py-1.5 text-xs text-critical-text" data-testid="report-reload-error">

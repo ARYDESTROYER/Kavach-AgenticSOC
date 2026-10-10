@@ -137,7 +137,7 @@ import type { RouteMotionProps } from './components/motion/RouteMotion';
  *
  * PAIRED EDIT — `soc/pages/CaseManager.tsx` carries a negative-margin bleed that was tuned
  * to this exact ladder to land on a constant 16px inset. Flattening one without the other
- * overflows the board out of `<main class="… overflow-x-hidden">` by 8px per side on every
+ * overflows the board out of `<main class="… overflow-x-clip">` by 8px per side on every
  * screen ≥1536px. The two are a matched pair; `route-visual-standard.test.ts` pins them.
  */
 const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';
@@ -1250,7 +1250,11 @@ export const AppShell: React.FC<AppShellProps> = ({
       ) : null}
       <HealthAnnouncer degradations={agentDegradations} />
       <JobMonitor actor={username} onNavigate={onNavigate} />
-      <div className="flex min-h-dvh overflow-x-hidden bg-canvas text-foreground">
+      {/* `overflow-x-clip`, never `-hidden`: both keep a wide child from widening the
+          Console, but `hidden` silently makes the element a vertical scroll container
+          (a lone hidden axis forces the other to `auto`), so every `sticky` descendant,
+          the top bar included, pinned to a box that never scrolls and left with the page. */}
+      <div className="flex min-h-dvh overflow-x-clip bg-canvas text-foreground">
         {/* Skip-to-main link (#1 — WCAG 2.4.1). Visually hidden until it receives
           keyboard focus, then it pins to the top-left so a keyboard/SR user can jump
           straight past the nav to the routed content (#socMain). */}
@@ -1786,7 +1790,7 @@ export const AppShell: React.FC<AppShellProps> = ({
           id="socMain"
           role="main"
           tabIndex={-1}
-          className="min-w-0 flex-1 overflow-x-hidden outline-none"
+          className="min-w-0 flex-1 overflow-x-clip outline-none"
         >
           {/* Once a real navigation has engaged motion (the lazy chunk was loaded AT the
               time of that navigation — see the `motionActive` latch above), the routed

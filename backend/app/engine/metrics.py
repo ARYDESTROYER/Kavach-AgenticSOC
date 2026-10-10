@@ -600,6 +600,24 @@ def _ratio(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4) if denominator else 0.0
 
 
+def analyst_confirmed_fp_count(cases: list[Case]) -> int:
+    """How many ``cases`` an ANALYST independently confirmed as false positive.
+
+    The same ground-truth authority the threshold tuner and the precedent projection
+    use (:func:`app.engine.analyst_outcomes.analyst_confirmed_outcome`): graded feedback,
+    or an explicit analyst classification. A model verdict, a model-derived
+    disposition or a bare close is never counted. Advisory reporting only (#3)."""
+    count = 0
+    for case in cases:
+        try:
+            outcome, _source = analyst_confirmed_outcome(case)
+        except Exception:  # noqa: BLE001 — a malformed case is not ground truth
+            continue
+        if outcome == "false_positive":
+            count += 1
+    return count
+
+
 def quality_metrics(
     cases: list[Case], *, _timings: dict[int, _CaseTimings] | None = None
 ) -> dict[str, Any]:
@@ -676,6 +694,7 @@ def quality_metrics(
     # provenance. Neither agent nor human work, so it is reported on its own instead
     # of inflating either side. auto + human + system == len(terminal), always.
     system_closed = len(terminal) - auto_closed - human_closed
+    analyst_fp = analyst_confirmed_fp_count(cases)
 
     return {
         "total_cases": total,
@@ -694,6 +713,12 @@ def quality_metrics(
         "policy_closed_cases": len(policy_closed),
         "alert_to_incident_ratio": _ratio(tp, total),
         "false_positive_rate": _ratio(fp, verdicted),
+        # Beside the AI-verdict FP rate: how many of the same cases an ANALYST
+        # independently confirmed as false positive (graded feedback or an explicit
+        # classification — ``analyst_outcomes.analyst_confirmed_outcome``, the ground
+        # truth the tuner and precedent use). A count, not a rate: most cases are never
+        # graded, so a rate over this population would describe grading coverage.
+        "analyst_confirmed_fp": analyst_fp,
         "escalation_rate": _ratio(escalated, total),
         "containment_rate": _ratio(len(terminal), total),
         "automation_rate": _ratio(auto_closed, len(terminal)),
@@ -761,20 +786,41 @@ def aging(
     }
 
 
+def _sla_priority(case: Case, prefs: Any) -> str:
+    """The P-level an SLA target is looked up by: the persisted ``priority_level``, else
+    — when ``prefs`` are supplied — the SAME read-time ITIL projection the case list and
+    detail show (``engine.priority.advisory_bands``). No production path persists the
+    level, so without the projection no real case could ever be scored."""
+    level = case.priority_level or ""
+    if level or prefs is None:
+        return level
+    try:
+        from .priority import advisory_bands
+
+        return str(advisory_bands(case, prefs).get("priority_level") or "")
+    except Exception:  # noqa: BLE001 — advisory only; an unscorable case is skipped
+        return ""
+
+
 def sla_metrics(
     cases: list[Case],
     sla_policy: Any,
     *,
     now: datetime | None = None,
     _timings: dict[int, _CaseTimings] | None = None,
+    prefs: Any = None,
 ) -> dict[str, Any]:
     """SLA attainment vs ``Preferences.sla`` (response + resolve targets per P-level).
 
     DETERMINISTIC + advisory (#3): we compare each case's elapsed response/resolution
-    time against the target for its ``priority_level`` and classify it
-    breached / at-risk (>=80% of target, not yet met) / ok. SLA classification NEVER
-    feeds ``decide()``. Returns ``enabled:false`` (untouched today) when the policy
-    is off so the existing behaviour is byte-identical."""
+    time against the target for its P-level and classify it breached / at-risk (>=80%
+    of target, not yet met) / ok. SLA classification NEVER feeds ``decide()``. Returns
+    ``enabled:false`` (untouched today) when the policy is off so the existing
+    behaviour is byte-identical.
+
+    The P-level is the persisted ``priority_level`` or, with ``prefs`` (the posture
+    route passes them), the read-time ITIL projection an analyst sees on the case (see
+    :func:`_sla_priority`). ``attainment_pct`` is ``None`` when no case was scored."""
     now = now or datetime.now(timezone.utc)
     enabled = bool(getattr(sla_policy, "enabled", False))
     targets = getattr(sla_policy, "targets", {}) or {}
@@ -785,12 +831,14 @@ def sla_metrics(
     response_breached = response_at_risk = 0
     resolve_breached = resolve_at_risk = 0
     evaluated = 0
+    no_target = no_clock = 0
     breaching: list[dict[str, Any]] = []
 
     for c in cases:
-        prio = c.priority_level or ""
+        prio = _sla_priority(c, prefs)
         target = targets.get(prio)
         if target is None:
+            no_target += 1
             continue  # no target for this (or no) priority → not SLA-scored
         timings = _timings_for(c, _timings)
         start = timings.created
@@ -799,6 +847,7 @@ def sla_metrics(
             # attainment denominator (matching the guard-before-count idiom used
             # everywhere else in this file) so a corrupted doc can neither inflate
             # ``evaluated`` nor be silently scored as SLA-met.
+            no_clock += 1
             continue
         evaluated += 1
 
@@ -810,13 +859,13 @@ def sla_metrics(
             if resp_at is None:  # still unresponded → live clock
                 if elapsed > resp_target:
                     response_breached += 1
-                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached"))
+                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached", prio))
                 elif elapsed >= resp_target * AT_RISK_FRACTION:
                     response_at_risk += 1
-                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "at_risk"))
+                    breaching.append(_breach_row(c, "response", elapsed, resp_target, "at_risk", prio))
             elif elapsed > resp_target:  # responded, but late
                 response_breached += 1
-                breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached"))
+                breaching.append(_breach_row(c, "response", elapsed, resp_target, "breached", prio))
 
         # Resolution clock: created → terminal transition, else live to now.
         end = timings.terminal_any
@@ -828,13 +877,13 @@ def sla_metrics(
             if end is None:  # still open → live clock
                 if elapsed > resolve_target:
                     resolve_breached += 1
-                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached"))
+                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached", prio))
                 elif elapsed >= resolve_target * AT_RISK_FRACTION:
                     resolve_at_risk += 1
-                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "at_risk"))
+                    breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "at_risk", prio))
             elif elapsed > resolve_target:  # resolved, but late
                 resolve_breached += 1
-                breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached"))
+                breaching.append(_breach_row(c, "resolution", elapsed, resolve_target, "breached", prio))
 
     met = evaluated - len({b["case_id"] for b in breaching if b["state"] == "breached"})
     return {
@@ -844,16 +893,46 @@ def sla_metrics(
         "response_at_risk": response_at_risk,
         "resolve_breached": resolve_breached,
         "resolve_at_risk": resolve_at_risk,
-        "attainment_pct": round(100.0 * met / evaluated, 1) if evaluated else 0.0,
+        # ``None`` — never 0.0 — when no case could be scored: "0% attainment" is a
+        # claim that every scored case breached, and nothing was scored (a case scores
+        # only when it carries a priority level with a configured target). The UI
+        # renders the dash; ``attainment_reason`` says why.
+        "attainment_pct": round(100.0 * met / evaluated, 1) if evaluated else None,
+        "attainment_reason": (
+            "" if evaluated else _sla_unmeasured_reason(len(cases), no_target, no_clock)
+        ),
         "breaching": sorted(breaching, key=lambda b: -b["over_pct"])[:25],
     }
 
 
-def _breach_row(case: Case, clock: str, elapsed: float, target: float, state: str) -> dict[str, Any]:
+def _sla_unmeasured_reason(total: int, no_target: int, no_clock: int) -> str:
+    """Why SLA attainment was not measured, from what actually happened — an empty
+    window, cases without a usable creation time, or cases whose priority has no
+    configured target — so the dash points the operator at the real cause."""
+    if total == 0:
+        return "no cases in this window, so attainment was not measured"
+    parts: list[str] = []
+    if no_clock:
+        parts.append(
+            f"{no_clock} case{'s have' if no_clock != 1 else ' has'} no readable creation time"
+        )
+    if no_target:
+        parts.append(
+            f"{no_target} case{'s have' if no_target != 1 else ' has'} no priority with an "
+            "SLA target"
+        )
+    if not parts:  # defensive: every case was skipped for a reason counted above
+        return "no case could be scored, so attainment was not measured"
+    return " and ".join(parts) + ", so attainment was not measured"
+
+
+def _breach_row(
+    case: Case, clock: str, elapsed: float, target: float, state: str, priority: str = "",
+) -> dict[str, Any]:
     return {
         "case_id": case.case_id,
         "case_number": case.case_number or case.case_id,
-        "priority": case.priority_level or "",
+        "priority": priority or case.priority_level or "",
         "clock": clock,
         "state": state,
         "elapsed_minutes": round(elapsed, 1),
@@ -869,22 +948,27 @@ def _window_filter(
     now: datetime | None = None,
     _timings: dict[int, _CaseTimings] | None = None,
 ) -> list[Case]:
-    """Cases created within the last ``window_hours`` (0/negative → no filter).
+    """Cases created within the last ``window_hours``: ``cutoff <= created <= now``
+    (0/negative → no filter).
 
     A case with an UNPARSEABLE created_at has no usable timestamp, so it cannot
     honestly be attributed to any time bucket: it is excluded from EVERY bounded
     window (current AND prev). This keeps the current/prev filters symmetric — the
     prev-window comprehension in ``posture_metrics`` already drops null-date cases,
-    so counting them here would create a one-sided period-over-period delta. The
+    so counting them here would create a one-sided period-over-period delta. A case
+    stamped AFTER ``now`` (clock skew) is not in the trailing window either. This is
+    the same membership rule as the exact aggregates chat reads
+    (``engine.case_aggregate``), so chat and the dashboards count the same cases. The
     ``window_hours <= 0`` escape still returns everything (the no-window path)."""
     if window_hours <= 0:
         return list(cases)
     now = now or datetime.now(timezone.utc)
-    cutoff = now.timestamp() - window_hours * 3600.0
+    now_ts = now.timestamp()
+    cutoff = now_ts - float(window_hours) * 3600.0
     out: list[Case] = []
     for c in cases:
         start = _timings_for(c, _timings).created if _timings is not None else _created_dt(c)
-        if start is not None and start.timestamp() >= cutoff:
+        if start is not None and cutoff <= start.timestamp() <= now_ts:
             out.append(c)
     return out
 
@@ -982,6 +1066,8 @@ def _window_coverage(
     truncated: bool,
     load_ok: bool = True,
     _timings: dict[int, _CaseTimings] | None = None,
+    read_error: str | None = None,
+    newest_first: bool = True,
 ) -> tuple[bool, str, str | None]:
     """Can the SELECTED WINDOW be answered completely from the rows actually fetched?
 
@@ -1019,6 +1105,12 @@ def _window_coverage(
     AND ``store_total=0``, so ``truncated`` is False and this function would certify a
     window it never read a single row for.
 
+    ``read_error`` names a store failure that stopped the read partway (the rows read
+    are then a partial population); ``newest_first=False`` says the rows read are NOT
+    the newest ones (a partial read that was not in creation order), so the floor
+    argument above does not hold and a truncated read can never be proven to cover the
+    window. Either way the reason names the failure.
+
     This is emitted ALONGSIDE the truncation marker and never modifies it: four
     rollups share ``truncation_marker`` and its exact three-key shape is pinned."""
     floor: datetime | None = None
@@ -1038,6 +1130,20 @@ def _window_coverage(
         return False, _LOAD_FAILED_REASON, floor_iso
     if not truncated:
         return True, "", floor_iso
+    failure = (
+        f"the case store stopped answering partway through the read ({read_error}), so "
+        "not every case in the selected window was read"
+        if read_error else ""
+    )
+    if not newest_first:
+        return (
+            False,
+            failure or (
+                "the cases read are not the newest ones, so the unread cases cannot be "
+                "shown to fall outside the selected window"
+            ),
+            floor_iso,
+        )
     if window_hours <= 0:
         return (
             False,
@@ -1052,13 +1158,15 @@ def _window_coverage(
             "time, so there is no evidence of how far back the fetched rows reach",
             floor_iso,
         )
-    cutoff = now.timestamp() - window_hours * 3600.0
+    cutoff = now.timestamp() - float(window_hours) * 3600.0
     if cutoff >= floor.timestamp():
         return True, "", floor_iso
     return (
         False,
-        "the fetch was truncated and the selected window starts before the oldest "
-        "fetched case, so cases inside the window were not read",
+        failure or (
+            "the fetch was truncated and the selected window starts before the oldest "
+            "fetched case, so cases inside the window were not read"
+        ),
         floor_iso,
     )
 
@@ -1073,6 +1181,10 @@ def posture_metrics(
     store_total: int | None = None,
     prefs: Any = None,
     load_ok: bool = True,
+    open_now_count: int | None = None,
+    open_now_unavailable: str | None = None,
+    read_error: str | None = None,
+    newest_first: bool = True,
 ) -> dict[str, Any]:
     """The rich security-posture rollup: lifecycle + quality + aging + SLA + a few
     period-over-period headline comparisons. Pure + deterministic; advisory only (#3).
@@ -1084,9 +1196,12 @@ def posture_metrics(
     capped) so the response can flag a truncated/partial rollup honestly rather than
     silently returning a wrong number computed over only the newest N cases.
 
-    ``prefs`` (optional, ``Preferences``) is threaded ONLY into the read-time severity
-    projection behind ``severity_counts``; omitting it leaves every other number
-    byte-identical and bands on the identity ceiling (see :func:`severity_band_counts`).
+    ``prefs`` (optional, ``Preferences``) is threaded into the two read-time
+    projections: the severity band behind ``severity_counts``, and the ITIL priority an
+    SLA target is looked up by (``sla_metrics``; no production path persists
+    ``priority_level``, so without it no real case is SLA-scored). Omitting it leaves
+    every other number byte-identical and bands on the identity ceiling (see
+    :func:`severity_band_counts`).
 
     ``load_ok=False`` says the caller's case fetch FAILED (the route soft-fails to an
     empty list so a dashboard never 500s). Every count below is then computed over zero
@@ -1094,6 +1209,20 @@ def posture_metrics(
     ``open_now.complete`` and ``window_covered``, are forced False with a reason naming
     the failure. They are the flags that license a tile to publish, and an outage is
     exactly when they must not.
+
+    ``open_now_count`` (optional) is the EXACT window-exempt open stock counted by the
+    store (``engine.case_aggregate`` push-down). The route passes it because it hands
+    this function only the cases its windows need, not the whole store; when given,
+    ``open_now`` reports it as a complete measurement instead of re-counting the
+    supplied list (which would then be a lower bound). Omitted, the legacy behaviour
+    — count over ``cases``, complete only when the fetch was not truncated — stands.
+    ``open_now_unavailable`` (a reason) says the stock could NOT be counted although
+    ``cases`` is only a windowed population: the list count is then published as an
+    incomplete lower bound with that reason.
+
+    ``read_error`` / ``newest_first`` describe a PARTIAL read (the store failed partway,
+    and whether the rows read were still the newest ones); they flow into
+    ``window_covered`` so a partial read is never certified as covering the window.
 
     Populations, and which of them the window bounds — the distinction the headline
     tiles are built on and the one that is easiest to get silently wrong:
@@ -1127,7 +1256,7 @@ def posture_metrics(
     lifecycle = lifecycle_intervals(current, _timings=timings)
     quality = quality_metrics(current, _timings=timings)
     age = aging(current, now=now, _timings=timings)
-    sla = sla_metrics(current, sla_policy, now=now, _timings=timings)
+    sla = sla_metrics(current, sla_policy, now=now, _timings=timings, prefs=prefs)
 
     # ``cases`` is the full fetched set here (window filtering is internal), so its
     # length IS the fetched count for the truncation comparison.
@@ -1139,12 +1268,20 @@ def posture_metrics(
         truncated=bool(marker["truncated"]),
         load_ok=load_ok,
         _timings=timings,
+        read_error=read_error,
+        newest_first=newest_first,
     )
     # A failed fetch is NOT a truncated one — ``truncation_marker`` is a pure function
     # of (fetched, store_total) shared by four rollups and stays untouched (#pinned).
     # The completeness flags carry the outage instead.
+    open_count = open_case_count(cases)
     if not load_ok:
         open_now_complete, open_now_reason = False, _LOAD_FAILED_REASON
+    elif open_now_count is not None:
+        open_count = max(0, int(open_now_count))
+        open_now_complete, open_now_reason = True, ""
+    elif open_now_unavailable:
+        open_now_complete, open_now_reason = False, str(open_now_unavailable)
     elif marker["truncated"]:
         open_now_complete, open_now_reason = False, (
             "the store held more cases than were fetched, so open cases older than "
@@ -1163,7 +1300,7 @@ def posture_metrics(
         # ``generated_at``. ``window_exempt`` is on the wire so a consumer cannot
         # render it as a fifth summand of the windowed tiles.
         "open_now": {
-            "count": open_case_count(cases),
+            "count": open_count,
             "window_exempt": True,
             "as_of": now.isoformat(),
             # A truncated fetch makes this a LOWER BOUND, and ``window_covered``
@@ -1202,6 +1339,9 @@ def posture_metrics(
             ),
             "false_positive_rate": _compare_block(
                 quality["false_positive_rate"], prev_quality["false_positive_rate"]
+            ),
+            "analyst_confirmed_fp": _compare_block(
+                quality["analyst_confirmed_fp"], prev_quality["analyst_confirmed_fp"]
             ),
             "escalation_rate": _compare_block(
                 quality["escalation_rate"], prev_quality["escalation_rate"]
@@ -1403,6 +1543,9 @@ def trend_metrics(
             "human_closed": human_closed,
             "system_closed": system_closed,
             "false_positives": fp,
+            # Beside the AI-verdict FP tally: the analyst-confirmed FP ground truth over
+            # the same graded cohort (see ``quality_metrics``).
+            "analyst_confirmed_fp": analyst_confirmed_fp_count(graded),
             "needs_human": nh,
             "escalated": escalated,
             "sent_to_human": sent_to_human,

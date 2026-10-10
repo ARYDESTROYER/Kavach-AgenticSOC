@@ -639,7 +639,7 @@ async def test_app_help_abstains_and_validates_input():
     assert abstained.ok and abstained.rows == 0 and abstained.observation["abstained"] is True
     assert "no section" in render_app_docs(abstained.observation)
     bad = await AppHelpTool().run(_ctx(), query="x", top_k=99)
-    assert not bad.ok and bad.error == "Invalid input: check top_k"
+    assert not bad.ok and bad.error == "Invalid input: check top_k (at most 6)"
     empty = await AppHelpTool().run(_ctx(), query="   ")
     assert not empty.ok
 

@@ -97,6 +97,12 @@ def _http_status(exc: Exception) -> int | None:
 
 
 _BRACKETED_RE = re.compile(r"\[([^\[\]\s]{1,256})\]")
+# Round 12 (SPEC P0-5): calendar bucket widths the chat ``log_stats`` tool may ask for,
+# mapped to the ``calendar_interval`` unit (Elasticsearch and OpenSearch spell them the
+# same way). Everything in ``AGGREGATE_INTERVALS`` except ``1w`` stays a fixed width.
+CALENDAR_INTERVALS: dict[str, str] = {"1w": "week", "1M": "month", "1q": "quarter", "1y": "year"}
+# An IANA timezone name for ``date_histogram.time_zone`` (never free text).
+_TZ_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+/-]{0,63}$")
 
 
 def _fields_named_in(exc: Exception, fields: Any) -> set[str]:
@@ -1054,6 +1060,27 @@ class ElasticConnector(PullConnector):
         return filters, kql, time_from, time_to
 
     @staticmethod
+    def _histogram(time_field: str, interval: str, time_zone: str | None) -> dict[str, Any]:
+        """The ``date_histogram`` for one bucket width: a CALENDAR week, month,
+        quarter or year (``1w``/``1M``/``1q``/``1y``, Round 12 SPEC P0-5) is a
+        ``calendar_interval`` cut in ``time_zone`` (the operator timezone; ISO weeks
+        start on Monday), so "March" means the local month; anything shorter is a
+        ``fixed_interval`` in UTC, as before. A DAY (``1d``) in a zone other than UTC
+        is a calendar day in that zone too (local midnight to midnight, DST-safe), so a
+        daily series sums into the zone's weeks and months; in UTC the fixed and the
+        calendar day are the same, so the body is unchanged. OpenSearch (and Wazuh,
+        through it) accepts the same body."""
+        unit = CALENDAR_INTERVALS.get(interval)
+        if unit is None and interval == "1d" and time_zone and time_zone != "UTC":
+            unit = "day"
+        if unit is not None:
+            spec: dict[str, Any] = {"field": time_field, "calendar_interval": unit}
+            if time_zone and time_zone != "UTC":
+                spec["time_zone"] = time_zone
+            return spec
+        return {"field": time_field, "fixed_interval": interval}
+
+    @staticmethod
     def _aggregate_body(
         filters: list[dict[str, Any]],
         fields: dict[str, str],
@@ -1061,24 +1088,20 @@ class ElasticConnector(PullConnector):
         time_field: str,
         interval: str | None,
         top_n: int,
+        time_zone: str | None = None,
     ) -> dict[str, Any]:
         """``size: 0`` body: one ``terms`` + ``cardinality`` per group field, an
         optional ``date_histogram``, and the over-time split of the FIRST group's top
         values (the heatmap matrix) as a sub-aggregation."""
         aggs: dict[str, Any] = {}
-        fixed = None
+        histogram: dict[str, Any] | None = None
         if interval:
-            # ES calls a week "7d" in fixed intervals.
-            fixed = "7d" if interval == "1w" else interval
-            aggs["over_time"] = {
-                "date_histogram": {"field": time_field, "fixed_interval": fixed, "min_doc_count": 0}
-            }
+            histogram = ElasticConnector._histogram(time_field, interval, time_zone)
+            aggs["over_time"] = {"date_histogram": {**histogram, "min_doc_count": 0}}
         for index, (logical, physical) in enumerate(fields.items()):
             terms: dict[str, Any] = {"terms": {"field": physical, "size": top_n}}
-            if index == 0 and fixed:
-                terms["aggs"] = {
-                    "over_time": {"date_histogram": {"field": time_field, "fixed_interval": fixed}}
-                }
+            if index == 0 and histogram:
+                terms["aggs"] = {"over_time": {"date_histogram": dict(histogram)}}
             aggs[f"g_{logical}"] = terms
             aggs[f"d_{logical}"] = {"cardinality": {"field": physical}}
         return {
@@ -1106,8 +1129,13 @@ class ElasticConnector(PullConnector):
         group_by: list[str] | tuple[str, ...] = (),
         interval: str | None = None,
         top_n: int = 10,
+        *,
+        time_zone: str | None = None,
     ) -> AggregateResult | None:
         """Exact counts through ONE ``size: 0`` search on the read-only log key (#1).
+
+        ``interval`` is a fixed width (``1m`` … ``1d``) or a calendar ``1w``/``1M``/
+        ``1q``/``1y`` bucketed in ``time_zone`` (an IANA name; default UTC).
 
         Logical ``group_by`` names map through the source's effective field mapping
         (:func:`app.connectors.base.aggregate_field`). A ``terms`` aggregation on an
@@ -1130,11 +1158,12 @@ class ElasticConnector(PullConnector):
                 physical = aggregate_field(prefs, str(logical))
                 if physical:
                     fields[str(logical)] = physical
-            iv = interval if interval in AGGREGATE_INTERVALS else None
+            iv = interval if interval in AGGREGATE_INTERVALS or interval in CALENDAR_INTERVALS else None
+            zone = time_zone if isinstance(time_zone, str) and _TZ_NAME_RE.match(time_zone) else None
             top = max(1, min(int(top_n or 10), 50))
             filters, kql, time_from, time_to = self._aggregate_filters(prefs, query)
             body = self._aggregate_body(
-                filters, fields, time_field=prefs.time_field, interval=iv, top_n=top,
+                filters, fields, time_field=prefs.time_field, interval=iv, top_n=top, time_zone=zone,
             )
             retried: list[str] = []
             try:
@@ -1155,6 +1184,7 @@ class ElasticConnector(PullConnector):
                 }
                 body = self._aggregate_body(
                     filters, keyword_fields, time_field=prefs.time_field, interval=iv, top_n=top,
+                    time_zone=zone,
                 )
                 resp = await self._es.search_logs(prefs.data_view_pattern, body)
             result = self._aggregate_result(

@@ -615,6 +615,8 @@ def test_policy_closes_get_their_own_noise_funnel_stage() -> None:
     from app.engine import noise_counters as NC
 
     cases = [_policy_closed_case(f"p-{i}", rules=["r"]) for i in range(3)]
+    for case in cases:  # created inside the window ending at the fixed NOW (not after it)
+        case.created_at = (NOW - timedelta(hours=1)).isoformat()
     report = NC.build_noise_reduction(
         cases, {"available": False}, window_hours=24, store_total=3, fetched_count=3,
         prefs=None, generated_at=NOW.isoformat(), now=NOW,

@@ -5,7 +5,9 @@ A single, in-memory ``EventBus`` is the server->client push spine for the live U
 * in-app notifications (#8 — :class:`app.models.InAppNotification`),
 * case activity / collaboration (#4 — :class:`app.models.CaseActivity`,
   status changes, comments, assignments), and
-* agent investigation steps (#12 — :class:`app.models.TraceSpan` projections).
+* agent investigation steps (#12 — :class:`app.models.TraceSpan` projections), and
+* the caller's own chat turns (Round 12 — owner-only ``chat.turn`` frames, see
+  :func:`publish_chat_turn`).
 
 Design goals (all enforced here, no network needed to exercise them):
 
@@ -92,6 +94,7 @@ AGENT_STEP_EVENT = "agent.step"      # investigator/pipeline progress, room case
 CASE_ACTIVITY_EVENT = "case.activity"  # case collaboration timeline, room cases:{id}
 INAPP_EVENT = "inapp"                # in-app notifications, topics notifications/inbox
 JOB_EVENT = "job"                    # durable background-job progress, topic jobs
+CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, topic chat
 OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
 
 SSE_EVENT_TYPES: frozenset[str] = frozenset({
@@ -99,8 +102,12 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     CASE_ACTIVITY_EVENT,
     INAPP_EVENT,
     JOB_EVENT,
+    CHAT_TURN_EVENT,
     OVERFLOW_EVENT,
 })
+
+# The topic chat turn frames are published on (``GET /api/events?topics=chat``).
+CHAT_TOPIC = "chat"
 
 
 # --------------------------------------------------------------------------- #
@@ -446,6 +453,27 @@ class EventBus:
         for sub_id in list(self._subscribers):
             self._unregister(sub_id)
         self._history.clear()
+
+
+def publish_chat_turn(
+    bus: "EventBus", owner: str | None, payload: Any, *, retain: bool = False,
+) -> str | None:
+    """Publish one ``chat.turn`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
+
+    A chat turn belongs to one principal: the frame is always TARGETED with
+    ``audience = {owner}`` and never broadcast, so no other user and no anonymous
+    subscriber (auth disabled) ever receives it; with auth disabled the client polls
+    ``GET /api/chat/turns/active`` instead. ``payload`` carries ids, counts and an
+    engine label only (never prompt, answer or log text). Frames are NOT retained in
+    the topic's replay ring by default: the audience is a username, which can be
+    deleted and created again, and a new account must never replay its
+    predecessor's frames (the same rule as the Jobs and Inbox frames); a client that
+    missed frames reconciles through ``GET /api/chat/turns/active``. Returns the event
+    id, or ``None`` when there is no owner to address (nothing is published)."""
+    name = str(owner or "").strip().lower()
+    if not name:
+        return None
+    return bus.publish(CHAT_TOPIC, CHAT_TURN_EVENT, payload, audience=[name], retain=retain)
 
 
 def _encode(data: Any) -> str:

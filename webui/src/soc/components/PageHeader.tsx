@@ -1,5 +1,7 @@
 import * as React from 'react';
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
+import { useScrollEdgeRef } from '@/design-system/material';
 import { ChevronRight, type LucideIcon } from 'lucide-react';
 
 /** A single breadcrumb crumb (plain text; `href` optional for deep-linking). */
@@ -134,12 +136,17 @@ export function PageHeader({
     </div>
   ) : null;
 
+  // Sticky = floating chrome: the ONE Console material, with the scroll-edge fade shown
+  // only while content is scrolled under the pinned header (solid fallbacks in theme.css).
+  // An embedded header's bottom hairline gives way to that fade when it pins.
+  const edgeRef = useScrollEdgeRef<HTMLElement>(undefined, Boolean(sticky));
   const stickyCls = sticky
-    ? 'sticky top-[var(--header-h)] z-20 bg-background/95 supports-[backdrop-filter]:bg-background/80 backdrop-blur'
+    ? cn('sticky top-[var(--header-h)] z-20', materialBar, embedded && 'border-b-0')
     : undefined;
 
   return (
     <section
+      ref={edgeRef}
       data-testid={dataTestId}
       className={cn(
         'relative',

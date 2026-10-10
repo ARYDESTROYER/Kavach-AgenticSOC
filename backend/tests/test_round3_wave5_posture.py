@@ -24,7 +24,7 @@ All assertions are deterministic; advisory only — none of this is read by
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -231,7 +231,10 @@ def test_sla_unparseable_created_at_excluded_from_attainment() -> None:
     # And a lone corrupted P1 yields a truthful empty result, not a fake 100%.
     only_bad = M.sla_metrics([corrupt], SlaPolicy(enabled=True), now=NOW)
     assert only_bad["evaluated"] == 0
-    assert only_bad["attainment_pct"] == 0.0  # was 100.0 before the fix
+    # Round 12: nothing was scored, so attainment is NOT MEASURED (None, rendered as a
+    # dash) — neither the old fake 100% nor a fake 0%.
+    assert only_bad["attainment_pct"] is None
+    assert only_bad["attainment_reason"]
 
 
 def test_sla_clean_set_attainment_unchanged() -> None:
@@ -300,20 +303,27 @@ def metrics_client(app_state):
     return TestClient(api)
 
 
+def _recent(minutes: int = 30) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
 async def test_posture_endpoint_flags_truncation(metrics_client, app_state, monkeypatch) -> None:
-    # Shrink the fetch bound so a small seed set already exceeds it (a faithful proxy
-    # for a >5000-case store without seeding 5001 docs).
+    # Round 12: the rollup reads every case its window can reach, so truncation now
+    # means ONE WINDOW holds more cases than the in-memory bound. Shrink the bound so
+    # three in-window cases already exceed it.
     monkeypatch.setattr("app.api.routes_metrics._STORE_FETCH_LIMIT", 2)
     for i in range(3):  # all created within the last hour
         await app_state.cases.save(
-            _case(f"trunc-{i}", created="2026-06-30T11:30:00+00:00", status=CaseStatus.OPEN)
+            _case(f"trunc-{i}", created=_recent(10 + i), status=CaseStatus.OPEN)
         )
     r = metrics_client.get("/api/metrics/posture?window_hours=24")
     assert r.status_code == 200
     body = r.json()
     assert body["truncated"] is True
-    assert body["store_total"] == 3
-    assert body["fetched"] == 2
+    assert body["store_total"] == 3  # cases in the rollup's scope
+    assert body["fetched"] == 2  # the newest two were analysed
+    # The open-now stock is an exact store COUNT, so it is complete regardless.
+    assert body["open_now"]["count"] == 3 and body["open_now"]["complete"] is True
 
 
 async def test_posture_endpoint_no_truncation_when_under_limit(
@@ -322,11 +332,31 @@ async def test_posture_endpoint_no_truncation_when_under_limit(
     monkeypatch.setattr("app.api.routes_metrics._STORE_FETCH_LIMIT", 50)
     for i in range(3):
         await app_state.cases.save(
-            _case(f"small-{i}", created="2026-06-30T11:30:00+00:00", status=CaseStatus.OPEN)
+            _case(f"small-{i}", created=_recent(10 + i), status=CaseStatus.OPEN)
         )
     r = metrics_client.get("/api/metrics/posture?window_hours=24")
     body = r.json()
     assert body["truncated"] is False and body["store_total"] == 3 and body["fetched"] == 3
+
+
+async def test_posture_endpoint_old_cases_beyond_the_bound_no_longer_truncate(
+    metrics_client, app_state, monkeypatch
+) -> None:
+    """The Round 12 new truth: a store far larger than the bound is NOT a truncated
+    24-hour rollup when the window itself fits — only in-window cases are read, and the
+    open-now stock is still counted across the whole store."""
+    monkeypatch.setattr("app.api.routes_metrics._STORE_FETCH_LIMIT", 2)
+    for i in range(6):  # old open cases, outside every 24h/48h window
+        await app_state.cases.save(
+            _case(f"old-{i}", created="2026-01-0%dT10:00:00+00:00" % (i + 1),
+                  status=CaseStatus.OPEN)
+        )
+    await app_state.cases.save(_case("fresh", created=_recent(5), status=CaseStatus.OPEN))
+    body = metrics_client.get("/api/metrics/posture?window_hours=24&compare=prev").json()
+    assert body["truncated"] is False
+    assert body["case_count"] == 1
+    assert body["open_now"]["count"] == 7 and body["open_now"]["complete"] is True
+    assert body["window_covered"] is True
 
 
 async def test_mitre_coverage_endpoint_flags_truncation(

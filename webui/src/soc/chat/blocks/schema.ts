@@ -65,7 +65,18 @@ export const BLOCK_TYPES = [
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
-export const CHART_KINDS = ['bar', 'hbar', 'stacked_bar', 'line', 'area', 'donut', 'sparkline', 'funnel'] as const;
+export const CHART_KINDS = [
+  'bar',
+  'hbar',
+  'stacked_bar',
+  'line',
+  'area',
+  'donut',
+  'sparkline',
+  'funnel',
+  // Round 12 (SPEC §3.4): one series per compared period, side by side.
+  'grouped_bar',
+] as const;
 export type ChartKind = (typeof CHART_KINDS)[number];
 
 export const VALUE_UNITS = [
@@ -117,6 +128,8 @@ export const ARTIFACT_KINDS = [
   'mitre',
   'guide',
   'query',
+  // Round 12 (SPEC §3.4): a period comparison (tiles with deltas, grouped bars, delta table).
+  'comparison',
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
@@ -129,6 +142,7 @@ export const BLOCK_VIEWS = [
   'donut',
   'sparkline',
   'funnel',
+  'grouped_bar',
   'kpi_group',
   'table',
   'heatmap',
@@ -188,12 +202,27 @@ export const QUERY_LANGUAGES = ['kql', 'lucene', 'esql', 'dsl', 'sql'] as const;
 export type QueryLanguage = (typeof QUERY_LANGUAGES)[number];
 export const X_KINDS = ['category', 'time'] as const;
 export type XKind = (typeof X_KINDS)[number];
-export const TIME_BUCKETS = ['1m', '5m', '15m', '1h', '6h', '1d', '1w'] as const;
+/** `1M`/`1q`/`1y` are calendar months, quarters and years in the operator timezone (Round 12). */
+export const TIME_BUCKETS = ['1m', '5m', '15m', '1h', '6h', '1d', '1w', '1M', '1q', '1y'] as const;
 export type TimeBucket = (typeof TIME_BUCKETS)[number];
 export const GOOD_DIRECTIONS = ['up', 'down', 'none'] as const;
 export type GoodDirection = (typeof GOOD_DIRECTIONS)[number];
-export const REPORT_TEMPLATES = ['investigation', 'hunt', 'ioc', 'shift', 'posture', 'custom'] as const;
+export const REPORT_TEMPLATES = [
+  'investigation',
+  'hunt',
+  'ioc',
+  'shift',
+  'posture',
+  'custom',
+  'executive',
+  'monthly',
+  'infographic',
+  'investigation_brief',
+] as const;
 export type ReportTemplate = (typeof REPORT_TEMPLATES)[number];
+/** How a report envelope is laid out (Round 12 SPEC §3.4). Rendering is WP-BLK's. */
+export const REPORT_LAYOUTS = ['document', 'infographic'] as const;
+export type ReportLayout = (typeof REPORT_LAYOUTS)[number];
 /** The InternalRef `status` opt (the router's `isSafeCaseResultStatus` set). */
 export const NAV_STATUSES = [
   'active',
@@ -227,6 +256,7 @@ export const ALLOWED_VIEWS: Readonly<Record<ArtifactKind, readonly BlockView[]>>
   mitre: ['mitre'],
   guide: ['guide'],
   query: ['query'],
+  comparison: ['grouped_bar', 'kpi_group', 'hbar', 'table'],
 };
 export const DEFAULT_VIEW: Readonly<Record<ArtifactKind, BlockView>> = Object.fromEntries(
   ARTIFACT_KINDS.map((kind) => [kind, ALLOWED_VIEWS[kind][0]]),
@@ -242,9 +272,9 @@ export const LIMITS = {
   /** A report `section` snapshot: the answer's Markdown plus a full turn's blocks. */
   section_blocks: 13,
   report_sections: 12,
-  report_leaves: 40,
-  blocks_bytes_target: 40_000,
-  blocks_bytes: 48_000,
+  report_leaves: 60,
+  blocks_bytes_target: 400_000,
+  blocks_bytes: 480_000,
   series: 8,
   points: 200,
   donut_segments: 6,
@@ -306,6 +336,8 @@ export const PATTERN_SOURCES = {
     '^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])' +
     '(?:[Tt ](?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\\.[0-9]{1,9})?)?' +
     '(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])?)?$',
+  /** An IANA timezone name (a calendar axis's `x.tz`, Round 12). */
+  tz: '^[A-Za-z][A-Za-z0-9_+/-]{0,63}$',
 } as const;
 const BLOCK_ID_RE = new RegExp(PATTERN_SOURCES.block_id);
 const KEY_RE = new RegExp(PATTERN_SOURCES.key);
@@ -583,7 +615,11 @@ const has = <T extends string>(allowed: readonly T[], v: unknown): v is T =>
 
 function enumOr<T extends string, F>(value: unknown, allowed: readonly T[], fallback: F): T | F {
   if (typeof value === 'string') {
-    const v = value.trim().toLowerCase();
+    // An exact match wins first: time buckets are case-sensitive (`1M` is a calendar
+    // month, `1m` a minute), so a month is never lowered into a minute.
+    const exact = value.trim();
+    if (has(allowed, exact)) return exact;
+    const v = exact.toLowerCase();
     if (has(allowed, v)) return v;
   }
   return fallback;

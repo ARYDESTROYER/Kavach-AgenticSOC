@@ -18,7 +18,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import { SessionPolicyEditor } from '../SessionPolicyEditor';
 import { api } from '@/lib/api';
 
-const DEFAULT_ACCESS_TTL = 900; // 15m — mirrors DEFAULTS.access_ttl
+const DEFAULT_ACCESS_TTL = 3600; // 1h — mirrors DEFAULTS.access_ttl (the backend default)
 
 beforeEach(() => vi.clearAllMocks());
 

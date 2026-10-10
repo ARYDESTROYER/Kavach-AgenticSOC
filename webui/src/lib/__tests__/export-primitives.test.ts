@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { csvDocument, csvField, csvRow, defuseFormula, tsvField } from '../csv';
 import { defang, maybeDefang } from '../defang';
-import { EXPORT_MIME, downloadText, exportFileName, fileSlug, utcFileStamp } from '../download';
+import { EXPORT_MIME, REVOKE_DELAY_MS, UTF8_BOM, downloadBlob, downloadText, exportFileName, exportFileStem, fileSlug, utcFileStamp } from '../download';
 import * as kit from '@/soc/chat/blocks/export-helpers';
 
 describe('lib/csv', () => {
@@ -120,13 +120,51 @@ describe('lib/download', () => {
     }
   });
 
-  it('clicks a temporary link and revokes the object URL at once', () => {
-    const create = vi.fn(() => 'blob:report');
-    const revoke = vi.fn();
-    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    expect(downloadText('a.md', EXPORT_MIME.markdown, '# x')).toBe(true);
-    expect(click).toHaveBeenCalledTimes(1);
-    expect(revoke).toHaveBeenCalledWith('blob:report');
+  it('clicks an ATTACHED temporary link, removes it, and revokes the URL only after 40 s (R4)', () => {
+    vi.useFakeTimers();
+    try {
+      const create = vi.fn(() => 'blob:report');
+      const revoke = vi.fn();
+      Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
+      let attached = false;
+      let name = '';
+      const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        attached = document.body.contains(this);
+        name = this.download;
+      });
+      expect(downloadText('a.md', EXPORT_MIME.markdown, '# x')).toBe(true);
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(attached).toBe(true);
+      expect(name).toBe('a.md');
+      // Removed right after the click; nothing left in the page.
+      expect(document.body.querySelector('a[download]')).toBeNull();
+      vi.advanceTimersByTime(REVOKE_DELAY_MS - 1);
+      expect(revoke).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(revoke).toHaveBeenCalledWith('blob:report');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('saves binary files through the same path (Office exports)', () => {
+    const blobs: Blob[] = [];
+    Object.assign(URL, {
+      createObjectURL: vi.fn((b: Blob) => {
+        blobs.push(b);
+        return 'blob:bin';
+      }),
+      revokeObjectURL: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    expect(downloadBlob('r.xlsx', new Blob([new Uint8Array([80, 75, 3, 4])], { type: EXPORT_MIME.xlsx }))).toBe(true);
+    expect(blobs[0].type).toBe(EXPORT_MIME.xlsx);
+    expect(EXPORT_MIME.docx).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  });
+
+  it('names the PDF stem the print dialog suggests', () => {
+    const at = new Date(Date.UTC(2026, 9, 8, 14, 5));
+    expect(exportFileStem('report', 'Brute force on vpn-gw-2', at)).toBe('agentic-soc-report-brute-force-on-vpn-gw-2-20261008-1405Z');
+    expect(UTF8_BOM).toBe('\uFEFF');
   });
 });

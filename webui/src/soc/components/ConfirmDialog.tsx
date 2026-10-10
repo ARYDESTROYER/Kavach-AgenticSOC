@@ -57,6 +57,17 @@ export interface ConfirmDialogProps extends ConfirmOptions {
   children?: React.ReactNode;
   /** Hide the confirm action when the caller cannot safely offer it yet. */
   hideConfirm?: boolean;
+  /**
+   * Where keyboard focus returns when the dialog closes. A controlled dialog has no
+   * trigger, so without this focus would fall back to the page body (WCAG 2.4.3).
+   */
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  /**
+   * Render `description` as a block (paragraphs and lists) rather than one
+   * paragraph. It stays the dialog's accessible description, so assistive
+   * technology reads all of it.
+   */
+  richDescription?: boolean;
 }
 
 /** The controlled dialog. */
@@ -72,6 +83,8 @@ export function ConfirmDialog({
   destructive,
   children,
   hideConfirm = false,
+  returnFocusRef,
+  richDescription = false,
 }: ConfirmDialogProps) {
   // The Action/Cancel buttons are Radix `Close`s, so clicking either ALSO fires
   // `onOpenChange(false)`. We route the cancel/dismiss path through onOpenChange
@@ -99,13 +112,32 @@ export function ConfirmDialog({
         // suppresses pointer-outside, Escape AND interact-outside (the hand-rolled
         // handlers missed the last one), so no accidental dismissal slips through.
         dismissible={!destructive}
+        onCloseAutoFocus={
+          returnFocusRef
+            ? (event) => {
+                const target = returnFocusRef.current;
+                if (target) {
+                  event.preventDefault();
+                  target.focus();
+                }
+              }
+            : undefined
+        }
       >
         <AlertDialogHeader>
           <AlertDialogTitle className={cn(destructive && 'flex items-center gap-2')}>
             {destructive ? <AlertTriangle className="h-5 w-5 text-critical-text" aria-hidden="true" /> : null}
             {title}
           </AlertDialogTitle>
-          {description ? <AlertDialogDescription>{description}</AlertDialogDescription> : null}
+          {description ? (
+            richDescription ? (
+              <AlertDialogDescription asChild>
+                <div className="space-y-3">{description}</div>
+              </AlertDialogDescription>
+            ) : (
+              <AlertDialogDescription>{description}</AlertDialogDescription>
+            )
+          ) : null}
         </AlertDialogHeader>
         {children}
         <AlertDialogFooter>

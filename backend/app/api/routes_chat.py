@@ -21,6 +21,40 @@ and ``POST /api/chat/stream`` (NDJSON) both call :func:`run_chat_turn`, which
    then). Stop is server-side (``POST /api/chat/turns/{id}/cancel``). A factory reset
    cancels every registered turn before draining; such a turn persists nothing.
 
+Round 12 (SPEC D1, D6, D11, D13, §3.2, §3.6):
+
+* **Lease heartbeat.** A Workspace reservation is owned for :data:`TURN_LEASE_SECONDS`
+  and renewed every :data:`TURN_HEARTBEAT_S` while the turn runs (the owner's small
+  live-state document, never the transcript), so a turn of any length keeps its key —
+  a same-key retry gets 409 + ``retry_after`` naming the running ``turn_id`` and
+  ``conversation_id``, and re-attaches — while a crashed process's lease still
+  expires. A BILLED turn that could not be saved ENDS its reservation: the key stays
+  held for a full lease (never billed twice) but nothing reads ``running``.
+* **Re-attach.** Every relayed event also enters the turn's bounded
+  :class:`TurnEventRing`; ``GET /api/chat/turns/{id}/events?after=<seq>`` replays it
+  (text deltas coalesced) and tails it live to the terminal event, and finished turns
+  stay readable for :data:`RECENT_TURN_TTL_S`. ``GET /api/chat/turns/active`` lists the
+  caller's running turns. Both are owner-checked and process-local, like the registry.
+* **``chat.turn`` frames** (started, progress, finished, failed, needs_input) are
+  published on the ``chat`` topic to the owner only (``realtime.publish_chat_turn``):
+  engine labels and counts, never prompt, answer or log text, and never retained in
+  the bus's replay ring. Anonymous subscribers (auth disabled) never receive them;
+  that client polls ``turns/active``. Turns, their event rings and Stop are bound to
+  the owner's ACCOUNT generation (a deleted and re-created username sees none of its
+  predecessor's turns), and a reset or shutdown forgets finished turns' rings.
+* **Concurrency** comes from ``ChatAgentConfig`` (defaults 4 per user, 16 per
+  backend); a refusal is 429 ``chat_busy`` with ``retry_after``, ``scope`` and
+  ``limit``.
+* **Conversation summary** (D4): the stored summary is loaded and handed to the engine
+  (``summary_text``/``summary_covers_through``); a new one in the turn outcome is
+  stored on the conversation. **Step observations**: the outcome's per-step
+  observations go to the owner's ring and each stored step gets ``observation_ref``.
+  **Reports** (D11): a final header that asked for a report makes the server save the
+  persisted answer as one (``routes_reports.save_answer_as_report``) and return
+  ``ChatResponse.saved_report``; a save that could not happen returns
+  ``saved_report_error`` (``report_limit``, ``report_unavailable``, ``report_empty``)
+  instead, recorded on the answer too. Case-scoped turns never save one.
+
 Persistence (SPEC §7.5) is the store's job; this module decides WHAT is saved: the
 D1 rule (a first model call that failed before anything was billed is answered with
 its notice and saves nothing), Stop (saved once a model call was billed, so a retry
@@ -34,11 +68,15 @@ replay would bill the model again; the client offers Retry instead).
 from __future__ import annotations
 
 import asyncio
+import bisect
 import functools
+import inspect
+import json
 import logging
 import math
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, AsyncIterator, Iterable
 
@@ -48,11 +86,13 @@ from pydantic import BaseModel
 
 from ..agents.chat import TurnOutcome
 from ..agents.chat_events import (
+    MAX_TEXT_DELTA_CHARS,
     NDJSON_CONTENT_TYPE,
     PING_INTERVAL_S,
     STREAM_HEADERS,
     ChatStreamEventModel,
     PingEvent,
+    TextDeltaEvent,
     TurnDoneEvent,
     TurnErrorEvent,
     TurnStartEvent,
@@ -65,13 +105,16 @@ from ..engine.mutation_gate import MutationAdmissionClosed
 from ..models import (
     CHAT_TOPIC_MAX_CHARS,
     CONSOLE_TOPIC_ID_PATTERN,
+    ChatActiveTurn,
     ChatBudgetInfo,
     ChatContextBounds,
     ChatContextInfo,
     ChatConversation,
     ChatRates,
     ChatRequest,
+    ChatReportSaveError,
     ChatResponse,
+    ChatSavedReport,
     ChatStarter,
     ChatTopicQuestion,
     DiscoverLink,
@@ -88,7 +131,8 @@ from ..stores.chat_conversations import (
     IDEMPOTENCY_PENDING_TTL_SECONDS,
     normalize_user_id,
 )
-from ..utils import new_id
+from ..realtime import publish_chat_turn
+from ..utils import iso_now, new_id
 from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.chat")
@@ -102,6 +146,23 @@ router = APIRouter(prefix="/api")
 # a running turn to finish; in-progress (409) polls for the replay to appear.
 CHAT_BUSY_RETRY_AFTER_S = 5
 IN_PROGRESS_RETRY_AFTER_S = 2
+# Round 12 turn lease (SPEC D1, ``diagnosis/limits.md`` R2): a Workspace reservation is
+# owned for TURN_LEASE_SECONDS and the running turn renews it every
+# TURN_HEARTBEAT_S, so a turn of ANY length keeps its key (a same-key retry waits)
+# and a crashed process's lease still expires on its own. Module-level for tests.
+TURN_HEARTBEAT_S: float = 60.0
+TURN_LEASE_SECONDS = IDEMPOTENCY_PENDING_TTL_SECONDS
+# Round 12 reattach (SPEC D13): a finished turn's event ring stays readable this long
+# (and at most this many finished turns per process), so a client that reconnects just
+# after the end still gets the terminal event.
+RECENT_TURN_TTL_S = 300.0
+MAX_RECENT_TURNS = 256
+# The per-turn event ring keeps at most this many entries (text deltas are coalesced
+# into one entry per run, usage and step.progress keep only their latest), so one
+# turn's replay memory is bounded by its answer, not by its event count.
+TURN_RING_MAX_ENTRIES = 2_000
+# chat.turn progress frames are published at most this often per turn.
+TURN_PROGRESS_PUBLISH_S = 1.0
 # The idle interval between ``ping`` lines (module-level so tests can shorten it).
 STREAM_PING_INTERVAL_S: float = float(PING_INTERVAL_S)
 # /chat/context is cached per principal (SPEC §8) and invalidated when a turn ends.
@@ -146,20 +207,173 @@ class ChatTurnBusy(RuntimeError):
         self.scope = scope
 
 
+class TurnEventRing:
+    """The bounded per-turn event ring a client re-attaches to (Round 12, SPEC D13).
+
+    Every relayed event gets the next ``seq`` (1, 2, 3 … — the line number of a
+    ``POST /chat/stream`` relay that was attached from the start, pings excluded).
+    Consecutive ``text.delta`` events are stored as ONE text entry that remembers where
+    each seq ended, so a replay ``after`` any seq resumes mid-answer exactly; a
+    ``text.reset`` drops the text before it; ``usage`` and ``step.progress`` keep only
+    their latest value (per step). Past :data:`TURN_RING_MAX_ENTRIES` the oldest
+    entries after ``turn.start`` are dropped (``gap`` is then set); the terminal event
+    is always kept."""
+
+    def __init__(self, max_entries: int = TURN_RING_MAX_ENTRIES) -> None:
+        self.seq = 0
+        self.max_entries = max(8, int(max_entries))
+        self.entries: list[dict[str, Any]] = []
+        self.gap = False
+        self.terminal_seq: int | None = None
+
+    def append(self, event: BaseModel) -> int:
+        self.seq += 1
+        seq = self.seq
+        kind = getattr(event, "type", "")
+        if kind == "text.delta":
+            text = str(getattr(event, "text", "") or "")
+            last = self.entries[-1] if self.entries else None
+            if last is not None and last["kind"] == "text":
+                last["text"] += text
+                last["ends"].append(len(last["text"]))
+                last["last"] = seq
+            else:
+                self.entries.append({"kind": "text", "first": seq, "last": seq, "text": text,
+                                     "ends": [len(text)]})
+            return seq
+        if kind == "text.reset":
+            self.entries = [e for e in self.entries if e["kind"] != "text"]
+        elif kind == "usage":
+            self.entries = [e for e in self.entries if getattr(e.get("event"), "type", "") != "usage"]
+        elif kind == "step.progress":
+            index = getattr(event, "index", None)
+            self.entries = [
+                e for e in self.entries
+                if not (getattr(e.get("event"), "type", "") == "step.progress"
+                        and getattr(e.get("event"), "index", None) == index)
+            ]
+        self.entries.append({"kind": "event", "seq": seq, "event": event})
+        if kind in ("turn.done", "turn.error"):
+            self.terminal_seq = seq
+        while len(self.entries) > self.max_entries:
+            # Keep turn.start (the first entry) and the terminal event (the last).
+            drop = 1 if len(self.entries) > 1 and getattr(self.entries[0].get("event"), "type", "") == "turn.start" else 0
+            self.entries.pop(drop)
+            self.gap = True
+        return seq
+
+    def after(self, after_seq: int) -> list[tuple[int, BaseModel]]:
+        """``(seq, event)`` lines for everything after ``after_seq``. A text run comes
+        back as ``text.delta`` chunks of at most :data:`MAX_TEXT_DELTA_CHARS` that are
+        cut ONLY at original delta boundaries, each tagged with the seq of the last
+        delta it ends with, so resuming ``after`` any tag a client saw continues
+        exactly where that chunk ended (no gap, no repeat). Original deltas are never
+        longer than that bound (``TextDeltaEvent`` refuses it); one that somehow were
+        is split, its leading pieces tagged with the seq BEFORE it — a resume then
+        repeats that piece rather than skipping text."""
+        out: list[tuple[int, BaseModel]] = []
+        for entry in self.entries:
+            if entry["kind"] == "event":
+                if entry["seq"] > after_seq:
+                    out.append((entry["seq"], entry["event"]))
+                continue
+            if entry["last"] <= after_seq:
+                continue
+            ends: list[int] = entry["ends"]
+            first: int = entry["first"]
+            text: str = entry["text"]
+            # ``index``: the first original delta not yet sent; ``position`` its start.
+            index = 0 if after_seq < first else after_seq - first + 1
+            position = ends[index - 1] if index > 0 else 0
+            while index < len(ends):
+                limit = position + MAX_TEXT_DELTA_CHARS
+                # The last whole delta that still fits under the chunk bound.
+                last = bisect.bisect_right(ends, limit, lo=index) - 1
+                if last >= index:
+                    out.append((first + last, TextDeltaEvent(text=text[position:ends[last]])))
+                    position, index = ends[last], last + 1
+                    continue
+                # A single delta longer than the bound (never expected): send its first
+                # piece tagged with the previous seq, so a resume repeats, never skips.
+                out.append((first + index - 1, TextDeltaEvent(text=text[position:limit])))
+                position = limit
+                if position >= ends[index]:
+                    index += 1
+        return out
+
+
+def encode_ring_line(seq: int, event: BaseModel) -> bytes:
+    """One re-attach NDJSON line: the event plus its ``seq`` (clients that parse
+    the stream contract ignore the extra key; the re-attaching client resumes with
+    ``after=<last seq seen>``)."""
+    payload = event.model_dump(mode="json")
+    payload["seq"] = int(seq)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+class _Signal:
+    """A level-triggered wake-up for re-attached readers: ``waiter()`` returns the
+    current event, ``fire()`` sets it and installs a fresh one. A reader that takes
+    its waiter BEFORE reading the ring can never miss an append."""
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+
+    def waiter(self) -> asyncio.Event:
+        return self._event
+
+    def fire(self) -> None:
+        event, self._event = self._event, asyncio.Event()
+        event.set()
+
+
+# The engine's own model-step labels (the only model-step labels the indicator shows).
+_MODEL_LABELS = frozenset({
+    "Thinking", "Writing the answer", "Wrote the answer", "Planned lookups",
+    "Reply format corrected", "Model call failed",
+})
+
+
+def _activity_label(step: Any) -> str | None:
+    """An ENGINE-template label for the activity indicator (never model or log text):
+    a registered tool's own label, or one of the engine's model-step labels."""
+    kind = getattr(step, "kind", None)
+    if kind == "model":
+        label = getattr(step, "label", "")
+        return label if label in _MODEL_LABELS else "Thinking"
+    tool_name = getattr(step, "tool", None)
+    if isinstance(tool_name, str) and tool_name:
+        try:
+            from ..agents.chat_tools.registry import get_tool
+
+            tool = get_tool(tool_name)
+        except Exception:  # noqa: BLE001 -- the indicator degrades to a generic label
+            tool = None
+        label = getattr(tool, "label", None) if tool is not None else None
+        if isinstance(label, str) and label:
+            return label[:120]
+    return "Looking something up"
+
+
 @dataclass(eq=False)
 class ChatTurnHandle:
     """One running turn: its event queue, Stop flag and outcome.
 
     The task appends events; the stream response relays them. ``detached`` is set
     once the response stopped reading (client gone), after which events are dropped
-    rather than queued for nobody. ``response`` is the final (persisted) response,
-    ``error`` the terminal ``turn.error`` and ``http_error`` what the blocking route
-    raises for it."""
+    from the QUEUE rather than queued for nobody — they still enter ``ring``, the
+    bounded per-turn event ring ``GET /chat/turns/{id}/events`` replays (Round 12).
+    ``response`` is the final (persisted) response, ``error`` the terminal
+    ``turn.error`` and ``http_error`` what the blocking route raises for it."""
 
     turn_id: str
     owner: str
     idempotency_key: str | None = None
     case_id: str | None = None
+    # The owner's ACCOUNT generation (``engine.jobs.account_generation``): a username
+    # can be deleted and created again, and the new account must never see, re-attach
+    # to or stop its predecessor's turns. ``""`` with auth off (the shared profile).
+    generation: str = ""
     # What a synthesised ``turn.start`` names when the turn fails before the engine
     # emitted its own (SPEC §6.2: ``turn.start`` is always the first line).
     conversation_id: str | None = None
@@ -180,12 +394,69 @@ class ChatTurnHandle:
     error: TurnErrorEvent | None = None
     http_error: HTTPException | None = None
     started: float = field(default_factory=time.monotonic)
+    # --- Round 12 (SPEC D13): re-attach ring, live progress, owner-only frames. ---
+    ring: TurnEventRing = field(default_factory=TurnEventRing)
+    signal: _Signal = field(default_factory=_Signal)
+    started_at: str = field(default_factory=iso_now)
+    label: str = "Thinking"
+    lookups: int = 0
+    tokens: int = 0
+    finished_at: float | None = None
+    # ``publish(handle, phase, retain)`` — set by ``run_chat_turn`` to the active bus.
+    publisher: Any = None
+    _last_progress: float = 0.0
 
     def emit(self, event: BaseModel) -> None:
         if isinstance(event, TurnStartEvent):
             self.start_sent = True
+            if event.conversation_id and not self.conversation_id:
+                self.conversation_id = event.conversation_id
+        self.ring.append(event)
+        self._track(event)
         if not self.detached:
             self.queue.put_nowait(event)
+        self.signal.fire()
+
+    def _track(self, event: BaseModel) -> None:
+        """Live progress for ``GET /chat/turns/active`` and ``chat.turn`` frames:
+        engine labels and counts only."""
+        kind = getattr(event, "type", "")
+        changed = False
+        if kind in ("step.start", "step.end"):
+            step = getattr(event, "step", None)
+            label = _activity_label(step)
+            if label and label != self.label:
+                self.label, changed = label, True
+            if kind == "step.end" and getattr(step, "kind", None) == "tool":
+                self.lookups += 1
+                changed = True
+        elif kind == "usage":
+            totals = getattr(event, "totals", None)
+            tokens = getattr(totals, "total_tokens", None)
+            if isinstance(tokens, int) and tokens >= 0 and tokens != self.tokens:
+                self.tokens, changed = tokens, True
+        elif kind == "text.delta" and self.label != "Writing the answer":
+            self.label, changed = "Writing the answer", True
+        if changed:
+            now = time.monotonic()
+            if now - self._last_progress >= TURN_PROGRESS_PUBLISH_S:
+                self._last_progress = now
+                self.publish("progress", retain=False)
+
+    def publish(self, phase: str, *, retain: bool = False) -> None:
+        if self.publisher is None:
+            return
+        try:
+            self.publisher(self, phase, retain)
+        except Exception as exc:  # noqa: BLE001 -- the indicator never fails a turn
+            logger.debug("chat.turn publish failed (%s)", type(exc).__name__)
+
+    def active_view(self) -> ChatActiveTurn:
+        return ChatActiveTurn(
+            turn_id=self.turn_id, conversation_id=self.conversation_id, case_id=self.case_id,
+            started_at=self.started_at, label=self.label[:120], lookups=self.lookups,
+            tokens=self.tokens, status="running",
+        )
 
     def done(self, response: ChatResponse) -> None:
         """The terminal ``turn.done`` (the persisted response is the truth)."""
@@ -217,8 +488,17 @@ class ChatTurnHandle:
 
     def finish(self) -> None:
         if not self.finished.is_set():
+            self.finished_at = time.monotonic()
             self.finished.set()
             self.queue.put_nowait(_END)
+            self.signal.fire()
+            if self.error is not None:
+                phase = "failed"
+            elif self.response is not None and self.response.clarify is not None:
+                phase = "needs_input"
+            else:
+                phase = "finished"
+            self.publish(phase)
 
 
 class _Slot:
@@ -244,6 +524,9 @@ class ChatTurnRegistry:
 
     def __init__(self) -> None:
         self._turns: dict[str, ChatTurnHandle] = {}
+        # Round 12: finished turns whose event ring is still readable (re-attach just
+        # after the end), oldest first; bounded by count and RECENT_TURN_TTL_S.
+        self._recent: OrderedDict[str, ChatTurnHandle] = OrderedDict()
         self._per_owner: dict[str, int] = {}
         self._active = 0
         # Strong references to the cleanup a turn task needs when it ended without
@@ -275,9 +558,6 @@ class ChatTurnRegistry:
     def active(self) -> int:
         return self._active
 
-    def active_for(self, owner: str) -> int:
-        return self._per_owner.get(owner, 0)
-
     # --- turns -------------------------------------------------------------- #
     def register(self, handle: ChatTurnHandle) -> None:
         self._turns[handle.turn_id] = handle
@@ -285,18 +565,73 @@ class ChatTurnRegistry:
     def unregister(self, handle: ChatTurnHandle) -> None:
         if self._turns.get(handle.turn_id) is handle:
             self._turns.pop(handle.turn_id, None)
+            self._remember(handle)
+
+    def _remember(self, handle: ChatTurnHandle) -> None:
+        if handle.reset_cancelled:
+            return  # a reset's turns are never replayed (see ``cancel_all``)
+        self._recent[handle.turn_id] = handle
+        self._recent.move_to_end(handle.turn_id)
+        self._prune_recent()
+
+    def _prune_recent(self) -> None:
+        now = time.monotonic()
+        while self._recent:
+            oldest = next(iter(self._recent.values()))
+            ended = oldest.finished_at if oldest.finished_at is not None else now
+            if len(self._recent) > MAX_RECENT_TURNS or now - ended > RECENT_TURN_TTL_S:
+                self._recent.popitem(last=False)
+                continue
+            break
 
     def get(self, turn_id: str) -> ChatTurnHandle | None:
         return self._turns.get(turn_id)
 
+    def find(self, turn_id: str, owner: str, generation: str = "") -> ChatTurnHandle | None:
+        """The caller's own running or recently finished turn (Round 12 re-attach);
+        ``None`` for anyone else's — including a deleted account's turn seen by a new
+        account of the same name (ownership is indistinguishable from absence)."""
+        self._prune_recent()
+        handle = self._turns.get(turn_id) or self._recent.get(turn_id)
+        if handle is None or handle.owner != owner or handle.generation != generation:
+            return None
+        return handle
+
     def running(self) -> list[ChatTurnHandle]:
         return list(self._turns.values())
 
-    def request_stop(self, turn_id: str, owner: str) -> bool:
+    def active_for(self, owner: str) -> int:
+        return self._per_owner.get(owner, 0)
+
+    def running_for(self, owner: str, generation: str = "") -> list[ChatTurnHandle]:
+        """The caller's own turns still running, oldest first (``turns/active``)."""
+        return sorted(
+            (
+                h for h in self._turns.values()
+                if h.owner == owner and h.generation == generation and not h.finished.is_set()
+            ),
+            key=lambda h: h.started,
+        )
+
+    def running_with_key(self, owner: str, key: str, generation: str = "") -> ChatTurnHandle | None:
+        """The caller's own running turn that holds idempotency key ``key``."""
+        return next(
+            (
+                h for h in self._turns.values()
+                if h.owner == owner and h.generation == generation and h.idempotency_key == key
+                and not h.finished.is_set()
+            ),
+            None,
+        )
+
+    def request_stop(self, turn_id: str, owner: str, generation: str = "") -> bool:
         """Set the Stop flag of the caller's own running turn (SPEC §6.4). The
         in-flight step finishes and is recorded; no new step starts."""
         handle = self._turns.get(turn_id)
-        if handle is None or handle.owner != owner or handle.finished.is_set():
+        if (
+            handle is None or handle.owner != owner or handle.generation != generation
+            or handle.finished.is_set()
+        ):
             return False
         handle.cancel_event.set()
         return True
@@ -328,6 +663,9 @@ class ChatTurnRegistry:
         cleanups = [task for task in self._cleanups if not task.done()]
         if cleanups:
             await asyncio.wait(cleanups, timeout=max(0.1, deadline - loop.time()))
+        # A reset or shutdown also forgets the finished turns' event rings: their text
+        # (partial answers included) must never replay to whoever signs in next.
+        self._recent.clear()
         return len(handles)
 
     # --- /chat/context cache ------------------------------------------------ #
@@ -371,16 +709,24 @@ def _conflict_http(code: str, message: str, *, retry_after: int | None = None) -
     return HTTPException(status_code=409, detail=detail, headers=headers)
 
 
-def _busy_http(exc: ChatTurnBusy) -> HTTPException:
+def _busy_http(exc: ChatTurnBusy, limit: int | None = None) -> HTTPException:
+    """429 ``chat_busy`` (SPEC D6): a capacity bound, never a token limit. The body
+    carries ``retry_after`` (the client shows "Waiting for another answer to finish"
+    and retries with backoff), the bound's ``scope`` (``user``/``global``) and its
+    ``limit``."""
     message = (
         "You already have the maximum number of chat answers running; wait for one to finish."
         if exc.scope == "user"
         else "The assistant is busy with other answers; try again shortly."
     )
+    detail: dict[str, Any] = {
+        "code": "chat_busy", "message": message, "retry_after": CHAT_BUSY_RETRY_AFTER_S,
+        "scope": exc.scope,
+    }
+    if isinstance(limit, int) and limit > 0:
+        detail["limit"] = limit
     return HTTPException(
-        status_code=429,
-        detail={"code": "chat_busy", "message": message, "retry_after": CHAT_BUSY_RETRY_AFTER_S},
-        headers={"Retry-After": str(CHAT_BUSY_RETRY_AFTER_S)},
+        status_code=429, detail=detail, headers={"Retry-After": str(CHAT_BUSY_RETRY_AFTER_S)},
     )
 
 
@@ -500,6 +846,10 @@ class _TurnPlan:
     completed: bool = False
     replay: ChatResponse | None = None
     outcome: TurnOutcome | None = None
+    # Round 12: the stored running conversation summary (D4, §3.6) handed to the engine.
+    summary: Any = None
+    # The caller's account generation (turns are bound to it, see ChatTurnHandle).
+    generation: str = ""
 
     @property
     def billed(self) -> bool:
@@ -541,8 +891,10 @@ def _replay_response(reservation: ChatExchangeReservation) -> ChatResponse:
         raise _history_http(ChatHistoryUnavailable("The completed chat response is invalid.")) from exc
 
 
-async def _abort(plan: _TurnPlan) -> None:
-    """Release the reservation (nothing saved) — never raises."""
+async def _abort(plan: _TurnPlan, *, failed: bool = False) -> None:
+    """Release the reservation (nothing saved) — never raises. ``failed`` (Round 12):
+    the turn failed, so an existing conversation reads ``failed`` until its next
+    answer (a Stop or a maintenance reset is not a failure)."""
     reservation = plan.reservation
     if reservation is None or plan.completed or reservation.status != "reserved":
         return
@@ -550,10 +902,42 @@ async def _abort(plan: _TurnPlan) -> None:
         await plan.store.abort_exchange(
             plan.author, idempotency_key=plan.request_key,
             request_fingerprint=plan.fingerprint, lease_token=reservation.lease_token or "",
+            mark_failed=failed,
         )
     except Exception as exc:  # noqa: BLE001 -- the lease still expires on its own
         logger.warning("chat reservation abort failed (%s)", type(exc).__name__)
     plan.completed = True  # never aborted twice
+
+
+async def _end_billed(plan: _TurnPlan) -> None:
+    """A BILLED turn that could not be saved keeps its reservation (never aborted,
+    SPEC §6.4: a same-key retry waits for the lease instead of paying for the same
+    answer twice). The reservation is ENDED instead (``store.end_reservation``): the
+    key stays held for a full lease, but the turn no longer reads as running — the
+    conversation reads ``failed`` and a brand-new thread's temporary row disappears,
+    agreeing with the ``turn.error`` the client got. Never raises."""
+    if not plan.persist_workspace:
+        return
+    reservation = plan.reservation
+    ender = getattr(plan.store, "end_reservation", None)
+    if reservation is not None and reservation.status == "reserved" and not plan.completed and callable(ender):
+        try:
+            if await ender(
+                plan.author, idempotency_key=plan.request_key,
+                request_fingerprint=plan.fingerprint, lease_token=reservation.lease_token or "",
+            ):
+                return
+        except Exception as exc:  # noqa: BLE001 -- the lease still expires on its own
+            logger.info("chat reservation not ended (%s)", type(exc).__name__)
+    if plan.existing is None:
+        return
+    marker = getattr(plan.store, "mark_failed", None)
+    if not callable(marker):
+        return
+    try:
+        await marker(plan.author, plan.existing.id)
+    except Exception as exc:  # noqa: BLE001 -- the status is a convenience
+        logger.info("chat conversation status not updated (%s)", type(exc).__name__)
 
 
 async def _close_owned(plan: _TurnPlan) -> None:
@@ -566,43 +950,98 @@ async def _close_owned(plan: _TurnPlan) -> None:
         pass
 
 
-# Headroom on a reservation lease beyond the turn's configured worst case: the
-# preflight before the engine starts and the save after it ends.
-TURN_LEASE_MARGIN_S = 120
+def turn_lease_seconds(cfg: Any = None) -> int:
+    """How long a Workspace reservation stays owned without a heartbeat (Round 12).
+
+    A turn has no configured worst case any more (SPEC D1: unlimited turns), so the
+    reservation is NOT sized to the turn: it is owned for :data:`TURN_LEASE_SECONDS`
+    and the running turn renews it every :data:`TURN_HEARTBEAT_S`
+    (:func:`_lease_heartbeat`). A same-key retry therefore waits for a turn of any
+    length (never billing it twice, SPEC §6.4), while a crashed process's lease still
+    expires on its own. ``cfg`` is accepted for compatibility and ignored."""
+    return int(TURN_LEASE_SECONDS)
 
 
-def turn_lease_seconds(cfg: Any) -> int:
-    """How long a Workspace reservation stays owned without completing: the turn's
-    configured worst case, never less than the store's default lease.
-
-    The engine only stops starting NEW steps at ``turn_timeout_s``: a model step or a
-    lookup batch started just before it still runs to its own timeout, and the
-    answer is then written by one more final-only model step (SPEC A2). A lease
-    shorter than that would let a same-key retry reclaim a turn that is still running
-    and bill the question a second time (SPEC §6.4)."""
-    def bound(name: str, default: int) -> int:
+async def _lease_heartbeat(plan: "_TurnPlan") -> None:
+    """Renew the turn's reservation every :data:`TURN_HEARTBEAT_S` while it runs.
+    Stops when the lease is no longer this turn's (completed, aborted, reclaimed).
+    A failed renewal is retried on the next beat; the lease outlives several misses."""
+    reservation = plan.reservation
+    if reservation is None or reservation.status != "reserved":
+        return
+    while True:
+        await asyncio.sleep(max(0.01, float(TURN_HEARTBEAT_S)))
+        if plan.completed:
+            return
         try:
-            return max(0, int(getattr(cfg, name, default)))
-        except (TypeError, ValueError):
-            return default
+            renewed = await plan.store.renew_exchange(
+                plan.author, idempotency_key=plan.request_key,
+                request_fingerprint=plan.fingerprint, lease_token=reservation.lease_token or "",
+                lease_seconds=TURN_LEASE_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the next beat retries
+            logger.warning("chat lease heartbeat failed (%s)", type(exc).__name__)
+            continue
+        if not renewed:
+            return
 
-    model_step = bound("model_step_timeout_s", 30)
-    worst = (bound("turn_timeout_s", 90) + model_step + max(model_step, bound("tool_timeout_s", 15))
-             + TURN_LEASE_MARGIN_S)
-    return max(IDEMPOTENCY_PENDING_TTL_SECONDS, worst)
+
+async def account_generation_for(state: AppState, author: str | None) -> str:
+    """The caller's ACCOUNT generation (``engine.jobs.account_generation`` over the
+    username and the account's creation time), binding turns, their event rings and
+    Stop to one account: a deleted and re-created username is a different account.
+    ``""`` with auth off or for an account without a stored record (an environment
+    account cannot be re-created). A user store that cannot be read gives a value no
+    turn carries (fail closed: the caller sees none of the turns of that moment)."""
+    name = str(author or "").strip()
+    users = getattr(state, "users", None)
+    getter = getattr(users, "get", None)
+    if not name or not callable(getter):
+        return ""
+    try:
+        user = await getter(name)
+    except Exception:  # noqa: BLE001 -- never matches a turn's generation
+        return "unavailable:" + new_id("gen-")
+    created = getattr(user, "created_at", None) if user is not None else None
+    if not isinstance(created, str) or not created:
+        return ""
+    from ..engine.jobs import account_generation
+
+    return account_generation(name, created)
 
 
-def _running_with_key(state: AppState, owner: str, key: str) -> bool:
-    """Whether one of ``owner``'s turns holding ``key`` is still running here."""
-    return any(
-        handle.owner == owner and handle.idempotency_key == key and not handle.finished.is_set()
-        for handle in state.chat_turns.running()
-    )
+def _in_progress_http(handle: ChatTurnHandle | None, message: str) -> HTTPException:
+    """409 ``chat_request_in_progress``. When the turn holding the key runs here, the
+    detail names it (``turn_id``, ``conversation_id``; the caller's own turn — the
+    registry is owner-checked): a client whose stream died before ``turn.start`` can
+    re-attach (``GET /chat/turns/{turn_id}/events``) instead of polling."""
+    exc = _conflict_http("chat_request_in_progress", message, retry_after=IN_PROGRESS_RETRY_AFTER_S)
+    if handle is not None and isinstance(exc.detail, dict):
+        exc.detail["turn_id"] = handle.turn_id
+        if handle.conversation_id:
+            exc.detail["conversation_id"] = handle.conversation_id
+    return exc
+
+
+def replay_read_options(cfg: Any, summary: Any) -> dict[str, Any]:
+    """How much of a conversation the turn (and the ``/chat/context`` estimate, which
+    must agree with it) restores to full text: the whole transcript is read (archive
+    pages included — the engine's taint and lookup ledgers count every exchange),
+    but only the messages the replay will use are restored — in ``unlimited`` mode
+    those after the running summary (D4), in ``bounded`` mode only the newest
+    exchanges ``select_replay`` can keep."""
+    from ..agents.chat_protocol import HISTORY_MAX_EXCHANGES
+
+    if getattr(cfg, "limits_mode", "unlimited") == "bounded":
+        return {"window": None, "hydrate_last": 2 * HISTORY_MAX_EXCHANGES + 2}
+    return {"window": None, "hydrate_after": getattr(summary, "covers_through", None)}
 
 
 async def _prepare(
     request: Request, body: ChatRequest, state: AppState, *,
-    author: str, owner: str, grants: frozenset[tuple[str, str]],
+    author: str, owner: str, grants: frozenset[tuple[str, str]], generation: str = "",
 ) -> _TurnPlan:
     """The synchronous preflight (SPEC §6.1(a)); raises the HTTP error the blocking
     route has always returned. Aborts its own reservation when a later step fails."""
@@ -615,33 +1054,42 @@ async def _prepare(
         persist_workspace=persist_workspace,
         request_key=body.idempotency_key or new_id("chatreq-"),
         fingerprint=chat_request_fingerprint(body),
+        generation=generation,
     )
+    registry = state.chat_turns
+    if persist_workspace and body.idempotency_key:
+        holder = registry.running_with_key(owner, body.idempotency_key, generation)
+        if holder is not None:
+            # The turn holding this key is still running in this process: a same-key
+            # retry waits for it, whatever the age of its lease (SPEC §6.4, A21), and
+            # learns which turn it is, so it can re-attach.
+            raise _in_progress_http(holder, "This chat request is already in progress.")
     if persist_workspace and body.conversation_id:
         try:
-            plan.existing = await plan.store.get(author, body.conversation_id)
+            # D4: the running summary covers the oldest messages, so only the ones
+            # after it are restored to full text for the replay.
+            plan.summary = await _load_summary(plan.store, author, body.conversation_id)
+            plan.existing = await plan.store.get(
+                author, body.conversation_id, **replay_read_options(prefs.chat_agent, plan.summary),
+            )
         except ChatHistoryUnavailable as exc:
             raise _history_http(exc) from exc
         if plan.existing is None:
             raise HTTPException(status_code=404, detail="conversation not found")
     if persist_workspace:
-        if body.idempotency_key and _running_with_key(state, owner, body.idempotency_key):
-            # The turn holding this key is still running in this process: a same-key
-            # retry waits for it, whatever the age of its lease (SPEC §6.4, A21).
-            raise _conflict_http(
-                "chat_request_in_progress", "This chat request is already in progress.",
-                retry_after=IN_PROGRESS_RETRY_AFTER_S,
-            )
         try:
             plan.reservation = await plan.store.reserve_exchange(
                 author, idempotency_key=plan.request_key,
                 request_fingerprint=plan.fingerprint, conversation_id=body.conversation_id,
                 lease_seconds=turn_lease_seconds(prefs.chat_agent),
+                # Names the temporary "answering" row of a brand-new thread (D13).
+                title_hint=body.message if not body.conversation_id else None,
             )
         except ChatHistoryUnavailable as exc:
             raise _history_http(exc) from exc
         except ChatRequestInProgress as exc:
-            raise _conflict_http(
-                "chat_request_in_progress", str(exc), retry_after=IN_PROGRESS_RETRY_AFTER_S,
+            raise _in_progress_http(
+                registry.running_with_key(owner, plan.request_key, generation), str(exc),
             ) from exc
         except ChatRequestCapacityBusy as exc:
             raise _conflict_http("chat_request_capacity_busy", str(exc)) from exc
@@ -678,24 +1126,55 @@ async def _prepare(
     return plan
 
 
+async def _load_summary(store: Any, author: str, conversation_id: str) -> Any:
+    """The stored running summary (D4), or None. A summary that cannot be read is
+    not fatal: the engine then replays without it."""
+    getter = getattr(store, "get_summary", None)
+    if not callable(getter):
+        return None
+    try:
+        return await getter(author, conversation_id)
+    except ChatHistoryUnavailable:
+        return None
+
+
+def _publish_turn(state: AppState, handle: ChatTurnHandle, phase: str, retain: bool = False) -> None:
+    """One owner-only ``chat.turn`` frame (SPEC §3.2): ids, phase, an engine label and
+    counts — never prompt, answer or log text. Anonymous subscribers (auth off) never
+    receive targeted frames; that client polls ``GET /api/chat/turns/active``.
+
+    Never retained in the bus's replay ring (``retain`` is ignored): the audience is a
+    username, which can be deleted and created again, and a new account must never
+    replay its predecessor's frames (the Jobs/Inbox convention). A client that missed
+    frames reconciles through ``GET /chat/turns/active`` and re-attaches."""
+    del retain
+    publish_chat_turn(state.event_bus, handle.owner, {
+        "turn_id": handle.turn_id, "conversation_id": handle.conversation_id,
+        "case_id": handle.case_id, "phase": phase, "label": handle.label[:120],
+        "lookups": handle.lookups, "tokens": handle.tokens,
+    }, retain=False)
+
+
 async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) -> ChatTurnStart:
     """Shared by ``/chat`` and ``/chat/stream``: preflight, then start the turn task
     (or return the completed-key replay). Every failure here is an HTTP error."""
     author = current_username(request)
     owner = normalize_user_id(author)
     grants = await state.chat_grants(request)
+    generation = await account_generation_for(state, author)
     cfg = state.execution_prefs.chat_agent
     registry = state.chat_turns
+    per_user = int(getattr(cfg, "max_concurrent_turns_per_user", 4) or 4)
+    global_limit = int(getattr(cfg, "max_concurrent_turns_global", 16) or 16)
     try:
-        slot = registry.acquire(
-            owner, per_user=cfg.max_concurrent_turns_per_user,
-            global_limit=cfg.max_concurrent_turns_global,
-        )
+        slot = registry.acquire(owner, per_user=per_user, global_limit=global_limit)
     except ChatTurnBusy as exc:
-        raise _busy_http(exc) from exc
+        raise _busy_http(exc, per_user if exc.scope == "user" else global_limit) from exc
     started = False
     try:
-        plan = await _prepare(request, body, state, author=author, owner=owner, grants=grants)
+        plan = await _prepare(
+            request, body, state, author=author, owner=owner, grants=grants, generation=generation,
+        )
         if plan.replay is not None:
             return ChatTurnStart(replay=plan.replay)
         if state.mutation_gate.closed:
@@ -703,13 +1182,15 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
             await _abort(plan)
             raise _reset_http()
         handle = ChatTurnHandle(
-            turn_id=new_id("turn-"), owner=owner,
+            turn_id=new_id("turn-"), owner=owner, generation=generation,
             idempotency_key=plan.request_key if plan.persist_workspace else body.idempotency_key,
             case_id=plan.ctx.case_id if plan.ctx is not None else None,
             conversation_id=plan.reservation.conversation_id if plan.reservation is not None else None,
             model=plan.prefs.chat_model.model, stream_mode=body.stream_mode or "steps",
         )
+        handle.publisher = functools.partial(_publish_turn, state)
         registry.register(handle)
+        handle.publish("started")
         handle.task = asyncio.create_task(
             _turn_main(state, handle, plan, slot), name=f"chat-turn:{handle.turn_id}",
         )
@@ -780,12 +1261,18 @@ def _with_legacy_discover(
 
 async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, slot: _Slot) -> None:
     handle.running = True  # from here on, a cancel lands inside the try below
+    heartbeat: asyncio.Task | None = None
     try:
         if handle.reset_cancelled:
             # ``cancel_all`` reached this turn before its first step (a reset or
             # shutdown racing the start): abort exactly like a closed gate would.
             raise MutationAdmissionClosed("chat turn stopped before it started")
         async with state.mutation_gate.admit():
+            if plan.persist_workspace and plan.reservation is not None:
+                # Round 12: the reservation lease is renewed while the turn runs.
+                heartbeat = asyncio.create_task(
+                    _lease_heartbeat(plan), name=f"chat-turn-lease:{handle.turn_id}",
+                )
             await _drive(state, handle, plan)
     except MutationAdmissionClosed:
         await _abort(plan)
@@ -801,12 +1288,16 @@ async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, s
         # never aborted, SPEC §6.4): a retry waits for the lease instead of paying for
         # the same answer twice, so ``_drive`` marked such a failure not retryable.
         if not plan.billed:
-            await _abort(plan)
+            await _abort(plan, failed=True)
+        else:
+            await _end_billed(plan)
         handle.fail(exc.code, exc.message, retryable=exc.retryable, http=exc.http)
     except Exception as exc:  # noqa: BLE001 -- the stream always ends with one terminal line
         logger.exception("chat turn %s failed (%s)", handle.turn_id, type(exc).__name__)
         if not plan.billed:
-            await _abort(plan)
+            await _abort(plan, failed=True)
+        elif not plan.completed:
+            await _end_billed(plan)
         # Billed but unsaved: the kept reservation would answer the same key with 409
         # until its lease expires, so only a new request (Ask again) helps.
         stuck = plan.billed and not plan.completed
@@ -815,6 +1306,8 @@ async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, s
             retryable=not stuck, http=_internal_http(),
         )
     finally:
+        if heartbeat is not None:
+            heartbeat.cancel()
         try:
             await _close_owned(plan)
         finally:
@@ -868,6 +1361,121 @@ def _on_turn_task_done(
     registry.track_cleanup(cleanup)
 
 
+def _accepts(func: Any, name: str) -> bool:
+    """Whether ``func`` takes keyword ``name`` (or ``**kwargs``): the engine's Round 12
+    parameters are passed only when the engine in this build understands them."""
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
+def _summary_kwargs(engine: Any, summary: Any) -> dict[str, Any]:
+    """The stored running summary as the engine's ``summary_text`` /
+    ``summary_covers_through`` (SPEC §3.6)."""
+    text = getattr(summary, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    run_turn = getattr(engine, "run_turn", None)
+    if not _accepts(run_turn, "summary_text"):
+        return {}
+    out: dict[str, Any] = {"summary_text": text}
+    if _accepts(run_turn, "summary_covers_through"):
+        out["summary_covers_through"] = getattr(summary, "covers_through", None)
+    return out
+
+
+def _observation_payload(step: Any, observation: Any) -> dict[str, Any] | None:
+    """The stored form of one step's observation (P1-1): exactly the aggregate the
+    model saw (#7: never raw log rows), bounded at ``MAX_OBSERVATION_CHARS`` by the
+    same structural shrink the engine uses, with the step's engine metadata."""
+    from ..agents.chat_protocol import shrink_observation
+    from ..stores.chat_conversations import MAX_OBSERVATION_CHARS
+
+    if not isinstance(observation, dict):
+        return None
+    # The engine hands ``{ref, tool, summary, observation, untrusted_params}``; a bare
+    # observation dict is accepted too.
+    params: dict[str, str] = {}
+    summary: str | None = None
+    if isinstance(observation.get("observation"), dict):
+        raw_params = observation.get("untrusted_params")
+        if isinstance(raw_params, dict):
+            params = {str(k)[:64]: str(v)[:400] for k, v in list(raw_params.items())[:20]}
+        summary = observation.get("summary") if isinstance(observation.get("summary"), str) else None
+        observation = observation["observation"]
+    try:
+        size = len(json.dumps(observation, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return None
+    truncated = False
+    if size > MAX_OBSERVATION_CHARS:
+        observation, truncated = shrink_observation(observation, MAX_OBSERVATION_CHARS)
+    try:
+        observation = json.loads(json.dumps(observation, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return None
+    return {
+        "tool": getattr(step, "tool", None),
+        "ordinal": getattr(step, "ordinal", None),
+        "status": getattr(step, "status", None),
+        "label": getattr(step, "label", None),
+        "summary": (summary or getattr(step, "summary", None) or None),
+        "observation": observation,
+        "params": params,
+        "truncated": bool(truncated),
+    }
+
+
+async def _store_observations(
+    plan: _TurnPlan, outcome: Any, response: ChatResponse, conversation_id: str | None,
+) -> ChatResponse:
+    """Persist the turn's per-step observations in the owner's ring and set each
+    stored step's ``observation_ref`` (Round 12, P1-1). Best effort: a failure only
+    means no step inspector for this answer."""
+    observations = getattr(outcome, "observations", None)
+    saver = getattr(plan.store, "save_observations", None)
+    if not observations or not isinstance(observations, dict) or not callable(saver) or not conversation_id:
+        return response
+    by_index = {step.index: step for step in response.steps if step.kind == "tool"}
+    payloads: dict[int, dict[str, Any]] = {}
+    for index, observation in observations.items():
+        step = by_index.get(index) if isinstance(index, int) else None
+        if step is None:
+            continue
+        payload = _observation_payload(step, observation)
+        if payload is not None:
+            payloads[index] = payload
+    if not payloads or not response.turn_id:
+        return response
+    try:
+        saved = await saver(plan.author, turn_id=response.turn_id, conversation_id=conversation_id,
+                            steps=payloads)
+    except Exception as exc:  # noqa: BLE001 -- the answer is never lost for its inspector
+        logger.warning("chat step observations not stored (%s)", type(exc).__name__)
+        return response
+    if not saved:
+        return response
+    ref, stored = saved
+    return response.model_copy(update={"steps": [
+        step.model_copy(update={"observation_ref": ref}) if step.index in stored else step
+        for step in response.steps
+    ]})
+
+
+async def _persist_summary(plan: _TurnPlan, outcome: Any, conversation_id: str) -> None:
+    """Store the engine's NEW running summary on the conversation (D4, §3.6)."""
+    text = getattr(outcome, "summary_text", None)
+    setter = getattr(plan.store, "set_summary", None)
+    if not isinstance(text, str) or not text.strip() or not callable(setter):
+        return
+    try:
+        await setter(plan.author, conversation_id, text, getattr(outcome, "summary_covers_through", None))
+    except Exception as exc:  # noqa: BLE001 -- the next turn compacts again
+        logger.warning("chat conversation summary not stored (%s)", type(exc).__name__)
+
+
 async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> None:
     body = plan.body
     reservation = plan.reservation
@@ -884,6 +1492,7 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
         origin=body.origin, idempotency_key=handle.idempotency_key, outcome=outcome,
         conversation_id=reservation.conversation_id if reservation is not None else None,
         continue_of=body.continue_of,
+        **(_summary_kwargs(plan.engine, plan.summary) if plan.persist_workspace else {}),
     )
     try:
         async for event in agen:
@@ -904,6 +1513,7 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
     }
     first_call_failed = not outcome.persist
     if not plan.persist_workspace:
+        # Case-scoped and stateless turns: never Workspace history, never a report.
         final = response.model_copy(update={"idempotency_key": body.idempotency_key, **provenance})
         if first_call_failed:
             _fail_first_call(handle, final)
@@ -913,7 +1523,7 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
     if first_call_failed or (outcome.cancelled and not outcome.billed):
         # D1 (§4.5) or a Stop before anything was billed: save nothing; a retry with
         # the same key runs fresh. The answer names only an EXISTING conversation.
-        await _abort(plan)
+        await _abort(plan, failed=first_call_failed)
         final = response.model_copy(update={
             "conversation_id": plan.existing.id if plan.existing else None,
             "conversation_title": plan.existing.title if plan.existing else None,
@@ -925,6 +1535,7 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
             handle.done(final)
         return
     assert reservation is not None
+    response = await _store_observations(plan, outcome, response, reservation.conversation_id)
     with_provenance = response.model_copy(update={"idempotency_key": plan.request_key, **provenance})
     stored = with_provenance.model_dump(mode="json")
     if estimate:
@@ -970,12 +1581,99 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
     if conversation is None or assistant is None:
         raise _TurnFailure("history_unavailable", _HISTORY_MESSAGE, retryable=True, http=_history_http(
             ChatHistoryUnavailable("The saved conversation could not be restored.")))
-    handle.done(with_provenance.model_copy(update={
+    await _persist_summary(plan, outcome, conversation.id)
+    final = with_provenance.model_copy(update={
         "conversation_id": conversation.id,
         "conversation_title": conversation.title,
         "truncated": bool((assistant.response or {}).get("truncated")),
         "message_id": assistant.id,
-    }))
+    })
+    saved_report, report_error = await _save_report_from_turn(
+        state, plan, outcome, conversation.id, assistant.id,
+    )
+    if saved_report is not None:
+        final = final.model_copy(update={"saved_report": saved_report})
+    if report_error is not None:
+        final = final.model_copy(update={"saved_report_error": report_error})
+    handle.done(final)
+
+
+_REPORT_LIMIT_MESSAGE = (
+    "This answer was not saved to Reports: you already have {limit} reports. "
+    "Delete one in Reports, then save this answer again."
+)
+_REPORT_UNAVAILABLE_MESSAGE = (
+    "This answer was not saved to Reports because Reports could not be reached. "
+    "Save it again in a moment."
+)
+_REPORT_EMPTY_MESSAGE = "This answer had nothing that could be saved to Reports."
+
+
+def _report_error(code: str) -> ChatReportSaveError:
+    from ..constants import MAX_REPORTS_PER_USER
+
+    if code == "report_limit":
+        return ChatReportSaveError(
+            code="report_limit", message=_REPORT_LIMIT_MESSAGE.format(limit=MAX_REPORTS_PER_USER),
+            retryable=False,
+        )
+    if code == "report_empty":
+        return ChatReportSaveError(code="report_empty", message=_REPORT_EMPTY_MESSAGE, retryable=False)
+    return ChatReportSaveError(code="report_unavailable", message=_REPORT_UNAVAILABLE_MESSAGE, retryable=True)
+
+
+async def _save_report_from_turn(
+    state: AppState, plan: _TurnPlan, outcome: Any, conversation_id: str, message_id: str,
+) -> tuple[ChatSavedReport | None, ChatReportSaveError | None]:
+    """D11: when the final header asked for a report, the SERVER (never the model)
+    creates it from the persisted answer through the server-resolved add path —
+    owner-scoped, strict CAS, Brief sections expanded into items, idempotent per
+    request key — and records it on the stored answer. Workspace turns only (a
+    case-scoped turn never reaches here).
+
+    The outcome is never silent: ``(saved, None)`` names the report (and how many
+    sections did not fit); a save that could not happen returns ``(None, error)`` —
+    ``report_limit`` (the owner's library is full), ``report_unavailable`` (the store
+    failed; the same save may work later) or ``report_empty`` (nothing to save) —
+    and the error is recorded on the stored answer too, so a replay shows it. The
+    answer itself is already saved either way."""
+    from ..stores.reports import ReportLimitReached, ReportNotFound
+
+    request = getattr(outcome, "report_request", None)
+    if not isinstance(request, dict) or not request:
+        return None, None
+    from .routes_reports import save_answer_as_report
+
+    saved: ChatSavedReport | None = None
+    error: ChatReportSaveError | None = None
+    try:
+        saved = await save_answer_as_report(
+            state, plan.author, conversation_id=conversation_id, message_id=message_id,
+            title=request.get("title"), template=request.get("template"),
+            idempotency_key=plan.request_key,
+        )
+        if saved is None:
+            error = _report_error("report_empty")
+    except ReportLimitReached:
+        error = _report_error("report_limit")
+    except ReportNotFound:
+        # The owner deleted the report this request already saved: the delete stands.
+        return None, None
+    except Exception as exc:  # noqa: BLE001 -- the answer stands; the error is reported
+        logger.warning("chat report not saved (%s)", type(exc).__name__)
+        error = _report_error("report_unavailable")
+    updater = getattr(plan.store, "update_message_response", None)
+    if callable(updater):
+        record = (
+            {"saved_report": saved.model_dump(mode="json")} if saved is not None
+            else {"saved_report_error": error.model_dump(mode="json")} if error is not None else None
+        )
+        if record is not None:
+            try:
+                await updater(plan.author, conversation_id, message_id, record)
+            except Exception as exc:  # noqa: BLE001 -- a replay then shows the answer without the line
+                logger.info("report outcome not recorded on the answer (%s)", type(exc).__name__)
+    return saved, error
 
 
 def _fail_first_call(handle: ChatTurnHandle, response: ChatResponse) -> None:
@@ -1087,6 +1785,8 @@ async def run_chat_blocking(request: Request, body: ChatRequest, state: AppState
         return start.replay
     handle = start.handle
     assert handle is not None
+    # Nobody relays this turn's queue (the event ring still records it for re-attach).
+    handle.detached = True
     await handle.finished.wait()
     if handle.response is not None:
         return handle.response
@@ -1108,7 +1808,8 @@ async def cancel_chat_turn(
     ``cancelled`` notice. 404 when unknown, finished or not the caller's (ownership
     is indistinguishable from absence)."""
     author = current_username(request)
-    if not state.chat_turns.request_stop(turn_id, normalize_user_id(author)):
+    generation = await account_generation_for(state, author)
+    if not state.chat_turns.request_stop(turn_id, normalize_user_id(author), generation):
         raise HTTPException(status_code=404, detail="turn not found")
     try:
         await state.execution_audit.record(
@@ -1118,6 +1819,84 @@ async def cancel_chat_turn(
     except Exception:  # noqa: BLE001 -- Stop never fails on its audit row
         pass
     return ChatTurnCancelResult(ok=True, turn_id=turn_id)
+
+
+# --------------------------------------------------------------------------- #
+# Round 12 (SPEC D13, §3.2): the caller's running turns and live re-attach.
+# --------------------------------------------------------------------------- #
+@router.get("/chat/turns/active", response_model=list[ChatActiveTurn])
+async def active_chat_turns(
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> list[ChatActiveTurn]:
+    """The caller's own running chat turns, oldest first: ids, start time, an engine
+    label, lookups and tokens — never prompt, answer or log text. Process-local, like
+    the turn registry (the supported runtime is one backend process). With auth
+    disabled (targeted ``chat.turn`` frames never reach anonymous subscribers) the
+    client polls this every 5 s while it knows a turn is running."""
+    author = current_username(request)
+    generation = await account_generation_for(state, author)
+    return [
+        handle.active_view()
+        for handle in state.chat_turns.running_for(normalize_user_id(author), generation)
+    ]
+
+
+async def _reattach(handle: ChatTurnHandle, after: int) -> AsyncIterator[bytes]:
+    """Replay the ring after ``after`` (text coalesced), then tail live until the
+    terminal event, with a ``ping`` after every idle interval."""
+    cursor = max(0, int(after))
+    while True:
+        waiter = handle.signal.waiter()  # taken BEFORE reading: no append is missed
+        lines = handle.ring.after(cursor)
+        for seq, event in lines:
+            yield encode_ring_line(seq, event)
+            cursor = max(cursor, seq)
+        terminal = handle.ring.terminal_seq
+        if terminal is not None and cursor >= terminal:
+            return
+        if handle.finished.is_set() and terminal is None:
+            return  # ended without a terminal line (never expected): close cleanly
+        if lines:
+            continue
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=STREAM_PING_INTERVAL_S)
+        except asyncio.TimeoutError:
+            yield encode_event(PingEvent())
+
+
+@router.get(
+    "/chat/turns/{turn_id}/events",
+    response_class=_NDJSONSchemaDoc,
+    responses={200: {
+        "model": ChatStreamEventModel,
+        "description": (
+            "NDJSON: the turn's events after `after` (each line also carries its `seq`; "
+            "answer text coalesced), then the live tail, ending with turn.done or "
+            "turn.error; ping every idle 10 s."
+        ),
+    }},
+)
+async def chat_turn_events(
+    request: Request,
+    turn_id: str = Path(..., max_length=128, pattern=_SAFE_ID_PATTERN),
+    after: int = Query(default=0, ge=0, le=10_000_000),
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> NDJSONStreamingResponse:
+    """Re-attach to the caller's own running (or just finished) turn (SPEC D13):
+    a replay of its bounded event ring after ``after`` — consecutive text deltas
+    coalesced, ``usage`` and ``step.progress`` at their latest — then the live tail,
+    ending with the terminal event. Resume with ``after=<last seq seen>``. 404 for an
+    unknown or expired turn and for anyone else's (ownership is indistinguishable
+    from absence). Reading never holds a concurrency slot and never stops the turn."""
+    author = current_username(request)
+    generation = await account_generation_for(state, author)
+    handle = state.chat_turns.find(turn_id, normalize_user_id(author), generation)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="turn not found")
+    return NDJSONStreamingResponse(_reattach(handle, after), headers=dict(STREAM_HEADERS))
 
 
 # --------------------------------------------------------------------------- #
@@ -1307,24 +2086,63 @@ async def production_starters(state: AppState, prefs: Preferences) -> list[ChatS
 
 async def _history_estimate(
     state: AppState, owner_name: str, conversation_id: str | None,
+    cfg: Any = None, context_window: int | None = None,
 ) -> tuple[int, int, ChatConversation | None]:
-    """``(tokens, exchanges, conversation)`` for the replayed history of an owned
-    conversation (the same §4.3 selection the engine replays)."""
+    """``(tokens, exchanges, conversation)`` for the history the NEXT turn replays,
+    selected exactly as the engine selects it: in ``bounded`` mode the §4.3
+    ``select_replay`` window; in ``unlimited`` mode (SPEC D4) the stored running
+    summary (fenced) plus every exchange after it, less the oldest ones the turn
+    will fold into the summary (``plan_fold``) — read the same way the turn reads
+    them (``replay_read_options``: only those messages are restored to full text).
+    ``exchanges`` counts the exchanges replayed verbatim."""
+    from ..agents.chat_protocol import (
+        clean_summary,
+        drop_summarised,
+        plan_fold,
+        render_conversation_summary,
+        summary_max_chars,
+    )
     from ..llm.gateway import estimate_message_tokens
 
     if not conversation_id:
         return 0, 0, None
+    store = state.chat_conversations
+    unlimited = getattr(cfg, "limits_mode", "unlimited") != "bounded"
     try:
-        conversation = await state.chat_conversations.get(owner_name, conversation_id)
+        summary = await _load_summary(store, owner_name, conversation_id) if unlimited else None
+        conversation = await store.get(owner_name, conversation_id, **replay_read_options(cfg, summary))
     except ChatHistoryUnavailable:
         return 0, 0, None
+    except TypeError:  # a store without the windowed read (tests, third parties)
+        try:
+            conversation = await store.get(owner_name, conversation_id)
+        except ChatHistoryUnavailable:
+            return 0, 0, None
+        summary = None
     if conversation is None:
         return 0, 0, None
-    kept = select_replay(PriorExchange.from_messages(_replay_messages(conversation)))
-    if not kept:
+    exchanges = PriorExchange.from_messages(_replay_messages(conversation))
+    if not unlimited:
+        kept = select_replay(exchanges)
+        if not kept:
+            return 0, 0, conversation
+        return estimate_message_tokens(render_replay(kept).messages), len(kept), conversation
+    text = getattr(summary, "text", None)
+    summary_text = (
+        clean_summary(text, limit=summary_max_chars(context_window)) if isinstance(text, str) and text else ""
+    )
+    pending = (
+        drop_summarised(exchanges, getattr(summary, "covers_through", None)) if summary_text else list(exchanges)
+    )
+    verbatim = pending[plan_fold(pending, context_window):]
+    messages: list[dict[str, str]] = []
+    if summary_text:
+        messages.extend(render_conversation_summary(summary_text))
+    if verbatim:
+        messages.extend(render_replay(verbatim, unbounded=True).messages)
+    if not messages:
         return 0, 0, conversation
-    replay = render_replay(kept)
-    return estimate_message_tokens(replay.messages), len(kept), conversation
+    return estimate_message_tokens(messages), len(verbatim), conversation
 
 
 @router.get("/chat/context", response_model=ChatContextInfo)
@@ -1350,13 +2168,18 @@ async def chat_context(
     owner = normalize_user_id(author)
     grants = await state.chat_grants(request)
     registry = state.chat_turns
-    key = (owner, state.demo_active, conversation_id, (model or "").strip(), case_id, grants)
+    prefs = state.execution_prefs
+    cfg = prefs.chat_agent
+    # The limits mode and the operator timezone are part of the answer: a change to
+    # either is never served from the 30-second cache.
+    key = (
+        owner, state.demo_active, conversation_id, (model or "").strip(), case_id, grants,
+        getattr(cfg, "limits_mode", None), getattr(getattr(prefs, "sla", None), "timezone", None),
+    )
     cached = registry.context_get(key)
     if cached is not None:
         return cached
 
-    prefs = state.execution_prefs
-    cfg = prefs.chat_agent
     chat_model = prefs.chat_model
     requested = (model or "").strip()
     if requested and requested != chat_model.model and ("models", "read") in grants:
@@ -1373,15 +2196,21 @@ async def chat_context(
         request, None, grants=grants, prefs=effective_prefs, case_id=case_id or None,
     )
     toolbox = build_toolbox(ctx, ())
+    from ..agents.chat_tools.common import operator_tz
+
+    unlimited = getattr(cfg, "limits_mode", "unlimited") != "bounded"
+    timezone_name = operator_tz(ctx)
     system = render_chat_agent_system(
         toolbox.signatures(), max_parallel=cfg.max_parallel, case_scoped=bool(case_id),
         # The same configuration-disabled line a turn's prompt carries (estimate parity).
-        disabled_tools=toolbox.disabled if cfg.max_model_calls > 1 else (),
+        disabled_tools=toolbox.disabled if (unlimited or cfg.max_model_calls > 1) else (),
+        timezone=timezone_name,
     )
+    window = _context_window(chat_model.model, custom)
     history_tokens, history_exchanges, conversation = (0, 0, None)
     if not case_id:
         history_tokens, history_exchanges, conversation = await _history_estimate(
-            state, author, conversation_id,
+            state, author, conversation_id, cfg, window,
         )
 
     gateway = getattr(state.chat_engine, "_gateway", None) or state.gateway
@@ -1399,10 +2228,20 @@ async def chat_context(
             budget_status = await state.budget_gate.status()
         except Exception:  # noqa: BLE001 -- the meter degrades to tokens only
             budget_status = None
+    from ..agents.chat import _max_output
+
+    floor = max(int(chat_model.max_tokens), int(cfg.final_max_tokens))
     info: dict[str, Any] = {
         "model": chat_model.model,
-        "context_window": _context_window(chat_model.model, custom),
-        "max_output_tokens": max(int(chat_model.max_tokens), int(cfg.final_max_tokens)),
+        "context_window": window,
+        # D3: an unlimited turn asks for the model's catalogue maximum at every step.
+        "max_output_tokens": (
+            max(int(chat_model.max_tokens), _max_output(chat_model.model) or floor) if unlimited else floor
+        ),
+        # SPEC §3.1: the limits mode (bounded-mode notices and knobs) and the operator
+        # timezone calendar windows are labelled in.
+        "limits_mode": "unlimited" if unlimited else "bounded",
+        "timezone": timezone_name,
         "chars_per_token": CHARS_PER_TOKEN,
         "static_prompt_tokens": estimate_message_tokens([{"role": "system", "content": system}]),
         "history_tokens": history_tokens,
@@ -1462,6 +2301,8 @@ async def chat_topic(
 
 __all__ = [
     "CHAT_BUSY_RETRY_AFTER_S",
+    "TURN_HEARTBEAT_S",
+    "TURN_LEASE_SECONDS",
     "ChatTurnBusy",
     "ChatTurnCancelResult",
     "ChatTurnHandle",
@@ -1469,7 +2310,10 @@ __all__ = [
     "ChatTurnStart",
     "IN_PROGRESS_RETRY_AFTER_S",
     "NDJSONStreamingResponse",
+    "TurnEventRing",
+    "active_chat_turns",
     "chat_request_fingerprint",
+    "chat_turn_events",
     "production_starters",
     "router",
     "run_chat_blocking",

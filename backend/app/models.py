@@ -2220,7 +2220,28 @@ def _display_list(value: Any, limit: int, chars: int) -> list[str]:
 # --- §3.1 time window --------------------------------------------------------- #
 _RELATIVE_TIME_RE = re.compile(r"^now(?:-(\d{1,5})([mhdw]))?$")
 _RELATIVE_SECONDS = {"m": 60, "h": 3_600, "d": 86_400, "w": 604_800}
-_TIME_EXPR_HELP = "expected 'now', 'now-<n>[m|h|d|w]' or an ISO-8601 timestamp"
+# Round 12 (SPEC D7/P0-3): calendar months and years. ``now-6M`` is six MONTHS (an
+# upper-case M; a lower-case ``m`` stays minutes) and ``now-1y`` one year, in calendar
+# arithmetic (the day clamped to the target month), so a "6 months" chip is never six
+# minutes. Matched case-sensitively, after the prefix is lower-cased.
+_CALENDAR_RELATIVE_RE = re.compile(r"^now-(\d{1,4})([My])$")
+_TIME_EXPR_HELP = (
+    "expected 'now', 'now-<n>[m|h|d|w]' (m = minutes), 'now-<n>[M|y]' (M = months, y = years) "
+    "or an ISO-8601 timestamp"
+)
+
+
+def _months_before(moment: datetime, months: int) -> datetime | None:
+    """``moment`` moved back ``months`` calendar months (UTC; the day clamped to the
+    target month's length), or ``None`` before year 1."""
+    from calendar import monthrange
+
+    index = moment.year * 12 + (moment.month - 1) - months
+    year, month = divmod(index, 12)
+    month += 1
+    if year < 1:
+        return None
+    return moment.replace(year=year, month=month, day=min(moment.day, monthrange(year, month)[1]))
 
 
 def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None:
@@ -2231,6 +2252,10 @@ def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None
         return None
     reference = now or datetime.now(timezone.utc)
     text = expr.strip()
+    calendar = _CALENDAR_RELATIVE_RE.match(text)
+    if calendar:
+        months = int(calendar.group(1)) * (12 if calendar.group(2) == "y" else 1)
+        return _months_before(reference, months)
     match = _RELATIVE_TIME_RE.match(text.lower())
     if match:
         if match.group(1) is None:
@@ -2251,19 +2276,45 @@ def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None
 TimeRangeWire = TypedDict("TimeRangeWire", {"from": str, "to": str})
 
 
+# Round 12 (SPEC D7/D7a): ``from: "all"`` is the composer's "All time" chip. It resolves
+# to the start of the epoch and never clamps a tool's window.
+TIME_RANGE_ALL = "all"
+_ALL_TIME_START = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_RELATIVE_WORDS = {"m": "minute", "h": "hour", "d": "day", "w": "week", "M": "month", "y": "year"}
+
+
+def humanise_relative_window(amount: int, unit: str) -> str:
+    """"last 24 hours", "last 7 days", "last 30 days", "last 6 months" for a trailing
+    ``now-<amount><unit>`` window (never "last 720h"). Whole days read as days, so
+    ``now-720h`` is "last 30 days". ``unit`` is ``m`` (minutes), ``h``, ``d``, ``w``,
+    ``M`` (months) or ``y``."""
+    if unit == "h" and amount >= 48 and amount % 24 == 0:
+        amount, unit = amount // 24, "d"
+    if unit == "d" and amount == 1:
+        amount, unit = 24, "h"
+    if unit == "w" and amount == 1:
+        amount, unit = 7, "d"
+    if amount == 1 and unit in ("M", "y"):
+        return f"past {_RELATIVE_WORDS[unit]}"
+    word = _RELATIVE_WORDS.get(unit, unit)
+    return f"last {word}" if amount == 1 else f"last {amount:,} {word}s"
+
+
 class TimeRange(BaseModel):
     """The composer time window ``{from, to}`` (SPEC §3.1).
 
-    Each bound is ``now``, ``now-<n>[mhdw]`` or ISO-8601; ``from`` must be strictly
-    before ``to`` and the window at most :attr:`MAX_SPAN_DAYS` days, else 422. It
-    applies to every windowed chat tool; precedence is the model's explicit window
-    from the user's words, then this, then ``context.time_range``, then 24 h.
-    Serialises as ``{"from", "to"}`` (both keys, always) regardless of ``by_alias``
-    or ``exclude_defaults``, so stored and wire shapes never diverge."""
+    Each bound is ``now``, ``now-<n>[mhdw]`` or ISO-8601, and ``from`` may also be
+    ``all`` (the "All time" chip, Round 12); ``from`` must be strictly before ``to``,
+    else 422. Round 12 (SPEC D7a): chat scope windows have no span limit
+    (:attr:`MAX_SPAN_DAYS` is ``None``). It applies to every windowed chat tool;
+    precedence is the model's explicit window from the user's words, then this, then
+    ``context.time_range``, then the tool's own default. Serialises as ``{"from",
+    "to"}`` (both keys, always) regardless of ``by_alias`` or ``exclude_defaults``, so
+    stored and wire shapes never diverge."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    MAX_SPAN_DAYS: ClassVar[int] = 90
+    MAX_SPAN_DAYS: ClassVar[int | None] = None
 
     from_: str = Field(alias="from", min_length=1, max_length=40)
     to: str = Field(default="now", min_length=1, max_length=40)
@@ -2274,12 +2325,26 @@ class TimeRange(BaseModel):
         if not isinstance(value, str):
             return value
         text = value.strip()
-        # Relative expressions are canonicalised to lower case ("NOW-24H" → "now-24h").
-        return text.lower() if text.lower().startswith("now") else text
+        if text.lower() in (TIME_RANGE_ALL, "all_time", "all time", "lifetime"):
+            return TIME_RANGE_ALL
+        # Relative expressions are canonicalised to lower case ("NOW-24H" → "now-24h"),
+        # except a month or year unit: "now-6M" is six MONTHS and must never become
+        # "now-6m" (six minutes); "now-1Y" is "now-1y".
+        lowered = text.lower()
+        if not lowered.startswith("now"):
+            return text
+        unit = text[-1:]
+        if unit in ("M", "y", "Y"):
+            calendar = lowered[:-1] + ("M" if unit == "M" else "y")
+            if _CALENDAR_RELATIVE_RE.match(calendar):
+                return calendar
+        return lowered
 
     @field_validator("from_", "to")
     @classmethod
-    def _grammar(cls, value: str) -> str:
+    def _grammar(cls, value: str, info: Any) -> str:
+        if value == TIME_RANGE_ALL and info.field_name == "from_":
+            return value
         if resolve_time_expr(value) is None:
             raise ValueError(_TIME_EXPR_HELP)
         return value
@@ -2289,9 +2354,14 @@ class TimeRange(BaseModel):
         start, end = self.resolve()
         if start >= end:
             raise ValueError("time_range.from must be before time_range.to")
-        if end - start > timedelta(days=self.MAX_SPAN_DAYS):
+        if self.MAX_SPAN_DAYS is not None and end - start > timedelta(days=self.MAX_SPAN_DAYS):
             raise ValueError(f"time_range spans at most {self.MAX_SPAN_DAYS} days")
         return self
+
+    @property
+    def is_all_time(self) -> bool:
+        """True for the "All time" chip (``from: "all"``), which never clamps."""
+        return self.from_ == TIME_RANGE_ALL
 
     # ``plain`` + a TypedDict return: the wire shape is always both keys, and the
     # annotation is what gives ``openapi.json`` a typed ``{from, to}`` output schema
@@ -2303,7 +2373,7 @@ class TimeRange(BaseModel):
     def resolve(self, now: datetime | None = None) -> tuple[datetime, datetime]:
         """``(from, to)`` as aware UTC datetimes against one shared ``now``."""
         reference = now or datetime.now(timezone.utc)
-        start = resolve_time_expr(self.from_, reference)
+        start = _ALL_TIME_START if self.is_all_time else resolve_time_expr(self.from_, reference)
         end = resolve_time_expr(self.to, reference)
         assert start is not None and end is not None  # guaranteed by _grammar
         return start, end
@@ -2319,11 +2389,14 @@ class TimeRange(BaseModel):
         return min(max(hours, lo), hi)
 
     def label(self) -> str:
-        """Short caption text: ``last 24h`` for a trailing window, else ``a → b``."""
+        """Short caption text: ``last 24 hours`` / ``all time`` for a trailing window,
+        else ``a → b``."""
+        if self.is_all_time:
+            return "all time" if self.to == "now" else f"all time → {self.to}"
         if self.to == "now":
-            match = _RELATIVE_TIME_RE.match(self.from_)
+            match = _RELATIVE_TIME_RE.match(self.from_) or _CALENDAR_RELATIVE_RE.match(self.from_)
             if match and match.group(1):
-                return f"last {int(match.group(1))}{match.group(2)}"
+                return humanise_relative_window(int(match.group(1)), match.group(2))
         return f"{self.from_} → {self.to}"
 
 
@@ -2413,6 +2486,10 @@ class ChatConversation(ChatConversationSummary):
     messages: list[ChatConversationMessage] = Field(default_factory=list)
     # Round 12 (SPEC D4): the newest message id folded into the stored conversation summary.
     summary_covers_through: str | None = None
+    # Round 12 (WP-API; additive): how many older messages of this conversation are
+    # not in ``messages`` (``GET /chat/conversations/{id}`` returns the newest window;
+    # read older ones with ``GET .../messages?before=<first message id>``). Never stored.
+    earlier_message_count: int = Field(default=0, ge=0)
 
 
 class ChatConversationMatch(BaseModel):
@@ -2988,6 +3065,8 @@ class ChatResponse(BaseModel):
     # final answer (D3); whether earlier context was summarised in this turn (D4).
     clarify: ChatClarify | None = None
     saved_report: ChatSavedReport | None = None
+    # Additive (WP-API): the report the header asked for could not be saved.
+    saved_report_error: ChatReportSaveError | None = None
     continued: int = Field(default=0, ge=0)
     compacted: bool = False
 
@@ -3248,11 +3327,27 @@ class ChatClarify(BaseModel):
 
 class ChatSavedReport(BaseModel):
     """The report the server saved from this answer (SPEC D11). Created by the server
-    from the persisted message, never by the model."""
+    from the persisted message, never by the model. ``skipped`` (additive): sections
+    of the answer that did not fit the report's item or size limit."""
 
     id: str
     title: str = Field(default="", max_length=200)
     items: int = Field(default=0, ge=0)
+    skipped: int = Field(default=0, ge=0)
+
+
+ChatReportSaveErrorCode = Literal["report_limit", "report_unavailable", "report_empty"]
+
+
+class ChatReportSaveError(BaseModel):
+    """Why the report a chat answer asked for was NOT saved (SPEC D11; additive). The
+    answer itself is saved; ``message`` is a server template, never model text.
+    ``retryable``: the same save may work later (a store outage), so the UI can offer
+    "Save as report"; a full library or an answer with nothing to save cannot."""
+
+    code: ChatReportSaveErrorCode
+    message: str = Field(default="", max_length=300)
+    retryable: bool = False
 
 
 class ChatActiveTurn(BaseModel):

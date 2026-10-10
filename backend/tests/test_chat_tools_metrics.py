@@ -64,7 +64,8 @@ async def test_absolute_past_chip_counts_that_range_not_the_last_hours(store: Ca
     # open now is a stock over the whole page, measured now, and says so.
     open_now = out.observation["open_now"]
     assert open_now["count"] == 42 and open_now["window_exempt"] is True
-    assert all(a.window == PAST_LABEL for a in out.artifacts)
+    assert all(a.window.endswith(PAST_LABEL) for a in out.artifacts)
+    assert out.artifacts[0].window == f"2 cases · exact · {PAST_LABEL}"
     assert_artifacts_render(out)
 
     mix = await SocMetricsTool().run(ctx, kind="case_mix")
@@ -74,34 +75,35 @@ async def test_absolute_past_chip_counts_that_range_not_the_last_hours(store: Ca
     assert feedback.ok and feedback.observation["window"] == PAST_LABEL
 
     trends = await SocMetricsTool().run(ctx, kind="trends")
-    assert sum(v or 0 for v in trends.observation["new_cases"]) == 2
-    first = datetime.fromisoformat(trends.observation["first_bucket"])
-    assert first <= datetime(2020, 1, 1, tzinfo=timezone.utc) + timedelta(hours=1)
+    assert sum(v or 0 for v in trends.observation["opened"]) == 2 and trends.observation["bucket"] == "hour"
     series = trends.artifacts[0].data
+    first = datetime.fromisoformat(series["x"][0])
+    assert first == datetime(2020, 1, 1, tzinfo=timezone.utc)
     assert series["last_in_progress"] is False  # a past range has no partial bucket
     assert datetime.fromisoformat(series["x"][-1]) < datetime(2020, 1, 2, tzinfo=timezone.utc)
 
 
 async def test_trailing_window_still_matches_the_dashboard(store: CaseStore) -> None:
     out = await SocMetricsTool().run(make_ctx(cases=store), kind="posture")
-    assert out.observation["window"] == "last 24h" and out.observation["case_count"] == 40
+    assert out.observation["window"] == "last 24 hours" and out.observation["case_count"] == 40
     assert "requested_window" not in out.observation and out.coverage is None
 
 
-async def test_ranges_longer_than_thirty_days_are_relabelled_and_flagged(store: CaseStore) -> None:
+async def test_ranges_longer_than_thirty_days_are_exact_and_never_capped(store: CaseStore) -> None:
+    """Round 12 (SPEC D7): a 90-day range is read whole: no 30-day cap, no relabel."""
     ctx = make_ctx(cases=store, time_range=TimeRange(**{"from": "now-90d"}))
     out = await SocMetricsTool().run(ctx, kind="case_mix")
-    assert out.observation["window"] == "last 30d"
-    assert out.observation["requested_window"] == "last 90d"
-    assert out.observation["window_capped"] is True
-    assert "longer than 30 days" in (out.coverage or "")
-    assert out.summary.startswith("Case mix (last 30d)")
+    assert out.observation["window"] == "last 90 days" and out.observation["cases"] == 40
+    assert "requested_window" not in out.observation and "window_capped" not in out.observation
+    assert out.coverage is None and out.summary.startswith("Case mix (last 90 days)")
+    lifetime = await SocMetricsTool().run(make_ctx(cases=store), kind="case_mix", window="all")
+    assert lifetime.observation["cases"] == 43 and lifetime.observation["window"].startswith("all time (since")
 
 
 def test_metric_window_narrows_to_whole_hours_never_wider() -> None:
     now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
     ninety_minutes = metric_window(resolve_window(make_ctx(), time_from="now-90m", now=now), now)
-    assert (ninety_minutes.hours, ninety_minutes.label, ninety_minutes.trailing) == (1, "last 1h", True)
+    assert (ninety_minutes.hours, ninety_minutes.label, ninety_minutes.trailing) == (1, "last hour", True)
     day = metric_window(resolve_window(make_ctx(time_range=PAST), now=now), now)
     assert (day.hours, day.label, day.trailing, day.relabelled) == (24, PAST_LABEL, False, False)
     assert day.end == datetime(2020, 1, 2, tzinfo=timezone.utc)
@@ -168,17 +170,18 @@ class _Usage:
                 "cost_over_time": [{"ts": now - 3_600_000, "cost": 1.0}, {"ts": now, "cost": 1.0}]}
 
 
-async def test_cost_usage_refuses_a_past_range_and_flags_the_cap() -> None:
+async def test_cost_usage_on_a_summary_only_ledger_reads_trailing_windows_whole() -> None:
+    """A third-party ledger with only a trailing ``summary()``: a past range is refused
+    (it cannot be read), a 90-day range is read whole (Round 12: no 30-day cap)."""
     usage = _Usage()
     past = await CostUsageTool().run(make_ctx(usage=usage, time_range=PAST))
-    assert not past.ok and "ends in the past" in (past.error or "") and usage.hours == []
-    capped = await CostUsageTool().run(make_ctx(usage=usage, time_range=TimeRange(**{"from": "now-90d"})))
-    assert capped.ok and usage.hours == [720]
-    assert capped.observation["window"] == "last 30d" and capped.observation["requested_window"] == "last 90d"
-    assert capped.summary.startswith("AI spend (last 30d)") and "longer than 30 days" in (capped.coverage or "")
-    assert all(a.window == "last 30d" for a in capped.artifacts)
+    assert not past.ok and "window that ends now" in (past.error or "") and usage.hours == []
+    long = await CostUsageTool().run(make_ctx(usage=usage, time_range=TimeRange(**{"from": "now-90d"})))
+    assert long.ok and usage.hours == [2160]
+    assert long.observation["window"] == "last 90 days" and "requested_window" not in long.observation
+    assert long.summary.startswith("AI spend (last 90 days)") and long.coverage is None
     plain = await CostUsageTool().run(make_ctx(usage=usage))
-    assert plain.observation["window"] == "last 24h" and plain.coverage is None
+    assert plain.observation["window"] == "last 24 hours" and plain.coverage is None
 
 
 async def test_metric_observations_flag_a_window_the_chip_narrowed(store: CaseStore) -> None:
@@ -188,7 +191,7 @@ async def test_metric_observations_flag_a_window_the_chip_narrowed(store: CaseSt
     chip = TimeRange(**{"from": "now-6h"})
     narrowed = await SocMetricsTool().run(make_ctx(cases=store, time_range=chip), kind="posture", window_hours=24)
     assert narrowed.ok and narrowed.observation["window_clamped_to_request"] is True
-    assert narrowed.observation["window"] == "last 6h"
+    assert narrowed.observation["window"] == "last 6 hours"
     assert "window limited to the selected range" in (narrowed.coverage or "")
     inside = await SocMetricsTool().run(make_ctx(cases=store, time_range=chip), kind="posture", window_hours=2)
     assert inside.observation["window_clamped_to_request"] is False

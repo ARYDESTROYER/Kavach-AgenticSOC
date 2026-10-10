@@ -12,6 +12,12 @@
  * Every session/activity value is request-derived (User-Agent / IP / geo) and is
  * therefore UNTRUSTED — it is rendered as PLAIN text only (#9). No secret/token is
  * ever present (#10). When auth is OFF there are no sessions; we surface a note.
+ *
+ * Round 12 (Remember me): a remembered session carries a compact "Remembered" badge
+ * (its end time in the tooltip), every row shows in an "Expires" column when the
+ * server will end it (the live policy, computed by the backend), and "Forget this
+ * device" clears the username this browser keeps for the sign-in page (it does not
+ * sign anyone out).
  */
 import * as React from 'react';
 import {
@@ -22,13 +28,19 @@ import {
   Loader2,
   ShieldOff,
   History,
+  Eraser,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';
 import type { ActivityEvent, Session } from '@/lib/types';
-import { humanizeAge, formatTimestamp, humanizeToken, DASH } from '@/lib/format';
+import { humanizeAge, humanizeUntil, formatTimestamp, humanizeToken, DASH } from '@/lib/format';
 import { useAuth } from '@/soc/auth';
+import {
+  clearRememberedSessionEnd,
+  forgetDevice,
+  readRememberedUsername,
+} from '@/soc/components/auth/rememberMe';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
 import { Button } from '@/ui/button';
@@ -55,6 +67,23 @@ export function sessionLocation(s: Pick<Session, 'location' | 'ip_city' | 'ip_co
   if (s.location && s.location.trim()) return s.location.trim();
   const parts = [s.ip_city, s.ip_country].map((p) => (p ?? '').trim()).filter(Boolean);
   return parts.length ? parts.join(', ') : '';
+}
+
+/** "Oct 11, 10:00" — the compact local end time used in the Remembered badge. */
+export function sessionUntilLabel(iso?: string | null): string {
+  if (!iso) return '';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return '';
+  try {
+    return new Date(ms).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
 }
 
 /** A "Browser on OS" device label from the parsed UA fields. */
@@ -128,8 +157,10 @@ export function SessionsTable({
             <MonitorSmartphone className="h-4 w-4 text-muted-foreground" aria-hidden />
           )}
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="truncate text-sm text-foreground">{sessionDevice(s)}</span>
+            {/* Badges wrap under the device name when the column is narrow, so the
+                table keeps its actions in view at laptop widths. */}
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+              <span className="min-w-0 max-w-full truncate text-sm text-foreground">{sessionDevice(s)}</span>
               {s.current ? (
                 <Badge variant="success" className="text-2xs">
                   This device
@@ -141,8 +172,30 @@ export function SessionsTable({
                 </Badge>
               ) : null}
             </div>
-            {s.client_type ? (
-              <span className="text-xs text-muted-foreground">{humanizeToken(String(s.client_type))}</span>
+            {s.client_type || (s.remember && !s.revoked) ? (
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                {s.client_type ? (
+                  <span className="text-xs text-muted-foreground">
+                    {humanizeToken(String(s.client_type))}
+                  </span>
+                ) : null}
+                {s.remember && !s.revoked ? (
+                  // Compact so the table keeps its actions in view; the end time is in
+                  // the Expires column and the tooltip.
+                  <Badge
+                    variant="outline"
+                    className="text-2xs"
+                    data-session-remembered
+                    title={
+                      sessionUntilLabel(s.expires_at)
+                        ? `Remembered until ${sessionUntilLabel(s.expires_at)}`
+                        : undefined
+                    }
+                  >
+                    Remembered
+                  </Badge>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </div>
@@ -182,6 +235,22 @@ export function SessionsTable({
       ),
     },
     {
+      id: 'expires',
+      header: 'Expires',
+      cell: (s) =>
+        s.revoked || !s.expires_at ? (
+          <span className="text-sm text-muted-foreground">{DASH}</span>
+        ) : (
+          <span
+            className="whitespace-nowrap text-sm text-muted-foreground"
+            title={formatTimestamp(s.expires_at)}
+            data-session-expires
+          >
+            {humanizeUntil(s.expires_at)}
+          </span>
+        ),
+    },
+    {
       id: 'actions',
       header: '',
       align: 'right',
@@ -193,27 +262,34 @@ export function SessionsTable({
           onClick={() => onRevoke(s)}
           disabled={busySid === s.sid || s.revoked}
           aria-label={`${revokeLabel} session ${s.sid}`}
+          title={revokeLabel}
         >
           {busySid === s.sid ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           ) : (
             <LogOut className="h-4 w-4" aria-hidden />
           )}
-          {revokeLabel}
+          {/* In a narrow table the action keeps its icon (named by aria-label and
+              the tooltip) so every column, the action included, stays in view. */}
+          <span className="hidden @[52rem]/sessions:inline" data-session-action-label>
+            {revokeLabel}
+          </span>
         </Button>
       ),
     },
   ];
 
   return (
-    <DataTable<Session>
-      columns={columns}
-      rows={ordered}
-      getRowId={(s) => s.sid}
-      loading={loading}
-      ariaLabel={ariaLabel}
-      empty="No active sessions."
-    />
+    <div className="@container/sessions" data-sessions-table>
+      <DataTable<Session>
+        columns={columns}
+        rows={ordered}
+        getRowId={(s) => s.sid}
+        loading={loading}
+        ariaLabel={ariaLabel}
+        empty="No active sessions."
+      />
+    </div>
   );
 }
 
@@ -307,6 +383,10 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
   const [revokeTarget, setRevokeTarget] = React.useState<Session | null>(null);
   const [revokeOthersOpen, setRevokeOthersOpen] = React.useState(false);
   const [busyOthers, setBusyOthers] = React.useState(false);
+  // The sign-in page's remembered username lives only in this browser.
+  const [deviceRemembers, setDeviceRemembers] = React.useState(() =>
+    Boolean(readRememberedUsername()),
+  );
 
   const loadSessions = React.useCallback(async () => {
     setLoading(true);
@@ -349,6 +429,9 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
     setBusySid(s.sid);
     try {
       await api.sessions.revoke(s.sid);
+      // Signing out THIS device is deliberate, not an expiry (no "signed out after
+      // 24 hours" notice later).
+      if (s.current) clearRememberedSessionEnd();
       toast.success(s.current ? 'Signed out this device.' : 'Session revoked.');
       await loadSessions();
     } catch (e) {
@@ -385,7 +468,8 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
         description="Review where you're signed in and your recent account activity."
         actions={
           active ? (
-            <div className="flex items-center gap-2">
+            // Wraps on narrow screens so no action is ever pushed off-screen.
+            <div className="flex flex-wrap items-center justify-end gap-2" data-sessions-actions>
               <Button
                 variant="outline"
                 size="sm"
@@ -398,6 +482,21 @@ export function SessionsInner({ embedded = false }: SessionsInnerProps) {
                 <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden />
                 Refresh
               </Button>
+              {deviceRemembers ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    forgetDevice();
+                    setDeviceRemembers(false);
+                    toast.success("This device won't remember your username anymore.");
+                  }}
+                  title="Stop showing your username on this browser's sign-in page. You stay signed in."
+                >
+                  <Eraser className="h-4 w-4" aria-hidden />
+                  Forget this device
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
                 size="sm"

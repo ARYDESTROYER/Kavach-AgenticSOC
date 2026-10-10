@@ -79,9 +79,12 @@ MAX_BLOCKS_PER_MESSAGE = 12           # a report envelope counts as one
 # block, then up to MAX_BLOCKS_PER_MESSAGE of that turn's blocks (SPEC §9.1).
 MAX_SECTION_BLOCKS = MAX_BLOCKS_PER_MESSAGE + 1
 MAX_REPORT_SECTIONS = 12
-MAX_REPORT_LEAVES = 40
-MAX_BLOCKS_BYTES_TARGET = 40_000
-MAX_BLOCKS_BYTES = 48_000             # hard: trailing blocks past this are dropped
+# Round 12 (SPEC D11): a monthly or executive report holds up to 60 leaves.
+MAX_REPORT_LEAVES = 60
+# Round 12 (SPEC D3/D11): chat answers are not truncated, so the serialized budget is
+# sized for a full monthly report (60 leaves of charts and tables), not a short answer.
+MAX_BLOCKS_BYTES_TARGET = 400_000
+MAX_BLOCKS_BYTES = 480_000            # hard: trailing blocks past this are dropped
 MAX_SERIES = 8                        # 7 + "Other"
 MAX_POINTS = 200                      # per series (the materialiser downsamples first)
 MAX_DONUT_SEGMENTS = 6
@@ -132,7 +135,9 @@ BlockType = Literal[
     "markdown", "kpi_group", "chart", "heatmap", "table", "case_list", "timeline",
     "entity", "mitre", "query", "callout", "citations", "guide", "report",
 ]
-ChartKind = Literal["bar", "hbar", "stacked_bar", "line", "area", "donut", "sparkline", "funnel"]
+ChartKind = Literal[
+    "bar", "hbar", "stacked_bar", "line", "area", "donut", "sparkline", "funnel", "grouped_bar",
+]
 ValueUnit = Literal[
     "count", "percent", "ratio", "score", "ms", "seconds", "minutes", "hours", "usd",
     "tokens", "bytes",
@@ -145,10 +150,10 @@ ToneKey = Literal["info", "success", "warning", "critical"]
 BlockProvenance = Literal["code", "source", "ai"]
 ArtifactKind = Literal[
     "table", "kpis", "series", "categories", "funnel", "heatmap", "case_list", "timeline",
-    "entity", "mitre", "guide", "query",
+    "entity", "mitre", "guide", "query", "comparison",
 ]
 BlockView = Literal[
-    "bar", "hbar", "stacked_bar", "line", "area", "donut", "sparkline", "funnel",
+    "bar", "hbar", "stacked_bar", "line", "area", "donut", "sparkline", "funnel", "grouped_bar",
     "kpi_group", "table", "heatmap", "case_list", "timeline", "entity", "mitre", "guide",
     "query",
 ]
@@ -170,9 +175,19 @@ TimelineKind = Literal["alert", "detection", "case", "action", "note"]
 CitationBlockKind = Literal["runbook", "mitre", "case", "docs", "memory", "knowledge", "log"]
 QueryLanguage = Literal["kql", "lucene", "esql", "dsl", "sql"]
 XKind = Literal["category", "time"]
-TimeBucket = Literal["1m", "5m", "15m", "1h", "6h", "1d", "1w"]
+# ``1M``/``1q``/``1y`` are CALENDAR months, quarters and years in the operator timezone
+# (Round 12 SPEC D7, P0-5); ``1w`` is an ISO week (Monday) when it comes from a calendar
+# aggregate.
+TimeBucket = Literal["1m", "5m", "15m", "1h", "6h", "1d", "1w", "1M", "1q", "1y"]
 GoodDirection = Literal["up", "down", "none"]
-ReportTemplate = Literal["investigation", "hunt", "ioc", "shift", "posture", "custom"]
+ReportTemplate = Literal[
+    "investigation", "hunt", "ioc", "shift", "posture", "custom",
+    # Round 12 (SPEC D11, P0-7, P1-3).
+    "executive", "monthly", "infographic", "investigation_brief",
+]
+# How a report envelope is laid out (Round 12 SPEC §3.4): a document of sections, or an
+# infographic (a hero KPI row with sparklines, a 2-up chart grid, highlight callouts).
+ReportLayout = Literal["document", "infographic"]
 # The InternalRef ``status`` opt mirrors the webui ``isSafeCaseResultStatus``.
 NavStatus = Literal[
     "active", "new", "open", "needs_human", "investigating", "escalated", "on_hold",
@@ -204,6 +219,7 @@ X_KINDS: tuple[str, ...] = get_args(XKind)
 TIME_BUCKETS: tuple[str, ...] = get_args(TimeBucket)
 GOOD_DIRECTIONS: tuple[str, ...] = get_args(GoodDirection)
 REPORT_TEMPLATES: tuple[str, ...] = get_args(ReportTemplate)
+REPORT_LAYOUTS: tuple[str, ...] = get_args(ReportLayout)
 NAV_STATUSES: tuple[str, ...] = get_args(NavStatus)
 
 # The only block types the MODEL may author (provenance "ai"); see the module note.
@@ -226,6 +242,10 @@ ALLOWED_VIEWS: dict[str, tuple[str, ...]] = {
     "mitre": ("mitre",),
     "guide": ("guide",),
     "query": ("query",),
+    # Round 12 (SPEC §3.4, P0-6): a period comparison. Grouped bars when every row
+    # shares one unit; tiles with deltas (the default for a metric comparison, whose
+    # rows have different units); the delta table always.
+    "comparison": ("grouped_bar", "kpi_group", "hbar", "table"),
 }
 DEFAULT_VIEW: dict[str, str] = {kind: views[0] for kind, views in ALLOWED_VIEWS.items()}
 # A view is either a chart kind (block type "chart") or a block type of the same name.
@@ -437,9 +457,14 @@ def _iso_or_none(value: Any) -> str | None:
 
 
 def _enum_or(value: Any, allowed: tuple[str, ...], fallback: Any) -> Any:
-    """Case-insensitive enum match with a fallback for a drifted value."""
+    """Case-insensitive enum match with a fallback for a drifted value. An exact match
+    wins first: the time buckets are case-sensitive (``1M`` is a calendar month, ``1m``
+    a minute), so a month must never be lowered into a minute."""
     if isinstance(value, str):
-        candidate = value.strip().lower()
+        exact = value.strip()
+        if exact in allowed:
+            return exact
+        candidate = exact.lower()
         if candidate in allowed:
             return candidate
     return fallback
@@ -861,11 +886,40 @@ class KpiGroupBlock(_BlockBase):
         return data
 
 
+# An IANA timezone name ("UTC", "Asia/Kolkata", "America/Argentina/Buenos_Aires",
+# "Etc/GMT+5"): letters, digits and ``_+-/`` only, so it can never carry markup.
+TZ_PATTERN = r"^[A-Za-z][A-Za-z0-9_+/-]{0,63}$"
+_TZ_RE = re.compile(TZ_PATTERN)
+# The calendar order of the time buckets a client may re-bin a series into (coarser
+# only). ``1m``…``6h`` are fixed widths; from ``1d`` up they are calendar periods.
+_REBIN_ORDER: tuple[str, ...] = ("1h", "1d", "1w", "1M", "1q", "1y")
+# Which coarser buckets each bucket NESTS in (every fine bucket lies wholly inside one
+# coarse bucket, so a re-binned sum equals a server query at the coarse unit). ISO
+# weeks straddle month, quarter and year boundaries: a weekly series is never re-binned.
+_REBIN_NESTS: dict[str, tuple[str, ...]] = {
+    "1h": ("1d", "1w", "1M", "1q", "1y"),
+    "1d": ("1w", "1M", "1q", "1y"),
+    "1w": (),
+    "1M": ("1q", "1y"),
+    "1q": ("1y",),
+    "1y": (),
+}
+
+
+def _tz_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and _TZ_RE.match(value) else None
+
+
 class ChartX(_Strict):
     kind: XKind = "category"
     values: list[Category] = Field(max_length=MAX_POINTS)
     label: OptLabel = None
     bucket: TimeBucket | None = None
+    # Round 12 (SPEC §3.4, P0-5): the calendar label of each x value ("Mar 2026",
+    # "W14 2026", "Q3 2026", "Oct 2026 (in progress)"), aligned with ``values``; and the
+    # IANA zone the calendar buckets were cut in (labels name the zone). Display only.
+    labels: list[Category] | None = Field(default=None, max_length=MAX_POINTS)
+    tz: Annotated[Union[str, None], BeforeValidator(_tz_or_none)] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -878,6 +932,19 @@ class ChartX(_Strict):
             data["values"] = (
                 [_category_label(v) for v in values] if isinstance(values, (list, tuple)) else []
             )
+            labels = data.get("labels")
+            if isinstance(labels, (list, tuple)) and labels:
+                labels = [_category_label(v) for v in labels]
+                n = len(data["values"])
+                if len(labels) != n:
+                    # Re-align after a clip that only touched ``values`` (storage
+                    # compaction keeps the newest time points, the first categories).
+                    keep_tail = data["kind"] == "time"
+                    labels = labels[-n:] if keep_tail and n else labels[:n]
+                    labels += [""] * (n - len(labels))
+                data["labels"] = labels if any(labels) else None
+            else:
+                data["labels"] = None
         return data
 
 
@@ -917,6 +984,9 @@ class ChartBlock(_BlockBase):
     ] = None
     last_in_progress: bool = False
     drill: list[OptNavRef] | None = Field(default=None, max_length=MAX_POINTS)
+    # Round 12 (SPEC §3.4, P0-8): the coarser calendar buckets the client may re-bin
+    # this time series into by summing (additive units only; never a re-query).
+    allowed_rebin: list[TimeBucket] = Field(default_factory=list, max_length=len(TIME_BUCKETS))
 
     @model_validator(mode="before")
     @classmethod
@@ -931,6 +1001,10 @@ class ChartBlock(_BlockBase):
             data["kind"] = data["kind"].strip().lower()
         if isinstance(data.get("unit"), str):
             data["unit"] = data["unit"].strip().lower()
+        rebin = data.get("allowed_rebin")
+        data["allowed_rebin"] = [
+            b for b in dict.fromkeys(_enum_or(v, TIME_BUCKETS, None) for v in rebin) if b
+        ] if isinstance(rebin, (list, tuple)) else []
         x = data.get("x")
         if not isinstance(x, dict):
             return data
@@ -943,6 +1017,8 @@ class ChartBlock(_BlockBase):
         if n > MAX_POINTS:
             data["truncated"] = True
         x["values"] = values[start:stop]
+        if isinstance(x.get("labels"), (list, tuple)) and len(x["labels"]) == n:
+            x["labels"] = list(x["labels"])[start:stop]
         data["x"] = x
         width = stop - start
         series, clipped = _clip(data.get("series"), MAX_SERIES)
@@ -974,6 +1050,15 @@ class ChartBlock(_BlockBase):
             raise ValueError(f"a {self.kind} chart has exactly one series")
         if self.kind == "donut" and len(self.x.values) > MAX_DONUT_SEGMENTS:
             raise ValueError("a donut has at most 6 segments (fold the tail into Other)")
+        if self.allowed_rebin and not (
+            self.x.kind == "time" and self.x.bucket in _REBIN_ORDER and self.unit in ADDITIVE_UNITS
+        ):
+            # Re-binning sums buckets: only a calendar time series of additive values
+            # can be re-binned honestly (a sum of rates or medians is not a rate).
+            self.allowed_rebin = []
+        elif self.allowed_rebin:
+            nests = _REBIN_NESTS.get(self.x.bucket or "", ())  # type: ignore[arg-type]
+            self.allowed_rebin = [b for b in self.allowed_rebin if b in nests]
         return self
 
 
@@ -1422,6 +1507,9 @@ class ReportBlock(_BlockBase):
     title: Title  # type: ignore[assignment]  # required here, optional on the base
     subtitle: _opt_text_type(200) = None
     template: Annotated[Union[ReportTemplate, None], BeforeValidator(lambda v: None if v is None else _enum_or(v, REPORT_TEMPLATES, "custom"))] = None
+    # Round 12 (SPEC §3.4): ``infographic`` draws a hero KPI row, a 2-up chart grid and
+    # highlight callouts; ``document`` (or absent) is the section-by-section brief.
+    layout: Annotated[Union[ReportLayout, None], BeforeValidator(lambda v: _enum_or(v, REPORT_LAYOUTS, None))] = None
     scope: ReportScope
     sections: list[ReportSection] = Field(min_length=1, max_length=MAX_REPORT_SECTIONS)
 
@@ -1431,7 +1519,7 @@ class ReportBlock(_BlockBase):
         if leaves == 0:
             raise ValueError("a report needs at least one resolved leaf")
         if leaves > MAX_REPORT_LEAVES:
-            raise ValueError("a report holds at most 40 leaves")
+            raise ValueError(f"a report holds at most {MAX_REPORT_LEAVES} leaves")
         return self
 
 
@@ -1490,6 +1578,7 @@ class DroppedBlock:
 _PRUNE_WHEN_FALSE = frozenset({"untrusted", "truncated", "downsampled_for_storage", "last_in_progress"})
 _PRUNE_WHEN_EMPTY = frozenset({
     "allowed_views", "facts", "reputation", "counts", "related_cases", "steps", "links", "sources",
+    "allowed_rebin",
 })
 
 
@@ -1666,7 +1755,7 @@ def validate_blocks(
     :func:`dump_block`) ready for ``ChatResponse.blocks``; ``dropped`` lists what was
     removed and why, so the engine can add one quiet notice line. Enforced here:
     the block schema and its repairs, unique ids (a duplicate is suffixed), at most
-    :data:`MAX_BLOCKS_PER_MESSAGE` blocks (a report counts as one), at most 40 report
+    :data:`MAX_BLOCKS_PER_MESSAGE` blocks (a report counts as one), at most 60 report
     leaves, the G5 provenance rule, and the serialized-size hard cap ``max_bytes``
     (trailing blocks are dropped first; the answer prose is not a block, so it is
     never what gets cut).
@@ -1884,6 +1973,10 @@ def artifact_views(artifact: Any) -> list[str]:
     data = getattr(artifact, "data", None)
     if not isinstance(data, dict):
         return views
+    if data.get("overlapping") is True:
+        # The groups overlap (a case under two rules counts under both): not a
+        # partition, so no view may draw a total or a share of one.
+        views = [v for v in views if v not in TOTAL_VIEWS]
     if kind == "categories":
         labels = data.get("labels") if isinstance(data.get("labels"), (list, tuple)) else []
         values = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
@@ -1899,6 +1992,29 @@ def artifact_views(artifact: Any) -> list[str]:
             views = [v for v in views if v != "sparkline"]
         if not values_are_additive(data.get("unit"), _stack_groups(list(x), series)):
             views = [v for v in views if v != "stacked_bar"]
+    elif kind == "comparison":
+        views = comparison_views(data)
+    return views
+
+
+def comparison_views(data: dict[str, Any]) -> list[str]:
+    """The honest views of a ``comparison`` artifact, best first: grouped bars (or
+    horizontal grouped bars) only when every row shares ONE unit (one axis per chart,
+    G6); tiles with deltas lead for a metric comparison (rows with their own units) and
+    are offered only while the rows fit in one tile row; the delta table always."""
+    rows = [r for r in data.get("rows") or [] if isinstance(r, dict)]
+    units = {_unit(r.get("unit"), _unit(data.get("unit"))) for r in rows}
+    views: list[str] = []
+    chartable = len(units) <= 1
+    tiles = 0 < len(rows) <= MAX_KPI_ITEMS
+    metric = not _label_text(data.get("dimension"), MAX_LABEL)
+    if tiles and (metric or not chartable):
+        views.append("kpi_group")
+    if chartable:
+        views += ["grouped_bar", "hbar"]
+    if tiles and "kpi_group" not in views:
+        views.append("kpi_group")
+    views.append("table")
     return views
 
 
@@ -2048,7 +2164,7 @@ _SECTION_REQUEST = TypeAdapter(ReportSectionRequest)
 class ReportEnvelopeRequest(_Strict):
     """The model-written ``report`` envelope; leaves only (no nested report). Keys
     it does not read are ignored rather than fatal (a whole brief was lost for an
-    ``id``), sections past the limit and leaves past the 40-leaf budget are clipped
+    ``id``), sections past the limit and leaves past the 60-leaf budget are clipped
     instead of failing the envelope, and every leaf that was lost is counted in the
     ENGINE-SET ``invalid_items`` so the answer says so."""
 
@@ -2056,6 +2172,9 @@ class ReportEnvelopeRequest(_Strict):
     title: Title
     subtitle: _opt_text_type(200) = None
     template: ReportTemplate = "custom"
+    # ``infographic`` (or the ``infographic`` template) lays the brief out as a hero KPI
+    # row, a chart grid and highlight callouts (Round 12 SPEC §3.4).
+    layout: ReportLayout | None = None
     sections: list[ReportSectionRequest] = Field(min_length=1, max_length=MAX_REPORT_SECTIONS)
     invalid_items: int = 0
 
@@ -2065,6 +2184,8 @@ class ReportEnvelopeRequest(_Strict):
         if isinstance(data, dict):
             data = _only(data, cls)
             data["template"] = _enum_or(data.get("template"), REPORT_TEMPLATES, "custom")
+            layout = _enum_or(data.get("layout"), REPORT_LAYOUTS, None)
+            data["layout"] = layout or ("infographic" if data["template"] == "infographic" else None)
             if not isinstance(data.get("title"), str) or not data["title"].strip():
                 data["title"] = "Report"
             raw_sections = data.get("sections")
@@ -2094,7 +2215,7 @@ class ReportEnvelopeRequest(_Strict):
     @model_validator(mode="after")
     def _leaf_budget(self) -> "ReportEnvelopeRequest":
         if sum(len(s.items) for s in self.sections) > MAX_REPORT_LEAVES:
-            raise ValueError("a report holds at most 40 leaves")
+            raise ValueError(f"a report holds at most {MAX_REPORT_LEAVES} leaves")
         return self
 
 
@@ -2441,6 +2562,26 @@ def _series_order(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(series, key=key)
 
 
+# Rough length of each calendar bucket, only to judge whether a series spans more than
+# one bucket of a coarser unit (the client cuts the real calendar boundaries).
+_BUCKET_DAYS: dict[str, float] = {"1h": 1 / 24, "1d": 1.0, "1w": 7.0, "1M": 28.0, "1q": 89.0, "1y": 365.0}
+
+
+def rebin_options(bucket: Any, unit: Any, x: list[Any]) -> list[str]:
+    """The coarser calendar buckets a COMPLETE time series in ``bucket`` may be re-binned
+    into on the client (SPEC §3.4, P0-8): additive units only (a re-bin sums buckets),
+    only buckets ``bucket`` nests in (``_REBIN_NESTS``: an ISO week straddles months,
+    so a weekly series offers none) and only units the series spans more than one of.
+    Deterministic; no numbers made."""
+    if bucket not in _REBIN_ORDER or _unit(unit) not in ADDITIVE_UNITS or len(x) < 2:
+        return []
+    first, last = parse_timestamp(str(x[0])), parse_timestamp(str(x[-1]))
+    if first is None or last is None:
+        return []
+    span_days = (last - first).total_seconds() / 86_400 + _BUCKET_DAYS[bucket]
+    return [b for b in _REBIN_NESTS.get(bucket, ()) if span_days > _BUCKET_DAYS[b]]
+
+
 def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
     data = artifact.data
     x, series, is_time = _series_rows(data)
@@ -2462,9 +2603,19 @@ def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: 
     start = max(0, points - MAX_POINTS) if is_time else 0
     stop = points if is_time else min(points, MAX_POINTS)
     block = _base_block(artifact, options, views)
+    # Calendar labels ("Mar 2026") aligned with x, and the zone they were cut in.
+    raw_labels = data.get("x_labels")
+    x_labels = ([_label_text(v) for v in raw_labels]
+                if isinstance(raw_labels, (list, tuple)) and len(raw_labels) == points else None)
+    tz = _tz_or_none(data.get("tz"))
+    if view == "table" and x_labels and is_time:
+        # A calendar period reads as its label in a table ("Mar 2026"), not as the UTC
+        # instant its bucket starts at (which is another day in a non-UTC zone).
+        x, is_time = x_labels, False
+        x_labels = None
     if view == "table":
-        columns = [_text_column(_SERIES_X_COLUMN, _label_text(data.get("x_label"), MAX_LABEL) or ("Time" if is_time else "Category"),
-                                ctype="time" if is_time else "text", untrusted=block["untrusted"] and not is_time)]
+        columns = [_text_column(_SERIES_X_COLUMN, _label_text(data.get("x_label"), MAX_LABEL) or ("Time" if is_time else "Period" if tz else "Category"),
+                                ctype="time" if is_time else "text", untrusted=block["untrusted"] and not is_time and not tz)]
         columns += [_number_column(s["key"], s["label"], unit) for s in keep_list[: MAX_TABLE_COLUMNS - 1]]
         # A table holds fewer rows than a chart holds points: time keeps the newest.
         if stop - start > MAX_TABLE_ROWS:
@@ -2485,6 +2636,10 @@ def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: 
         bucket = _enum_or(data.get("bucket"), TIME_BUCKETS, None)
         if bucket:
             x_block["bucket"] = bucket
+        if x_labels:
+            x_block["labels"] = x_labels[start:stop]
+        if tz:
+            x_block["tz"] = tz
         block.update({
             "type": "chart", "kind": view, "unit": unit, "x": x_block,
             "series": [{**s, "values": s["values"][start:stop]} for s in keep_list],
@@ -2493,6 +2648,13 @@ def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: 
             block["last_in_progress"] = True
         if isinstance(data.get("reference"), dict):
             block["reference"] = data["reference"]
+        complete = (start, stop) == (0, points) and keep == available and not getattr(artifact, "truncated", False)
+        # ``rebin: False``: the tool cut these buckets in another zone than a coarser
+        # server query would, so a client re-bin could not equal one (P0-8).
+        if is_time and complete and data.get("rebin") is not False:
+            rebin = rebin_options(bucket, unit, x)
+            if rebin:
+                block["allowed_rebin"] = rebin
     shown_points = stop - start
     if shown_points < points:
         return _with_truncation(block, artifact, options, shown=shown_points, available=points,
@@ -2672,6 +2834,173 @@ def _build_timeline(artifact: Any, options: MaterialiseOptions, view: str, views
     return _with_truncation(block, artifact, options, shown=len(shown), available=len(events), noun="Latest")
 
 
+# --- comparisons (Round 12 SPEC §3.4, P0-6) ----------------------------------- #
+#: Below this many observations in a compared period a rate is flagged "n < 20".
+SMALL_SAMPLE_N = 20
+_PERIOD_KEY_RE = re.compile(r"^p([1-9])$")
+_COMPARISON_LABEL_COLUMN = "label"
+MAX_COMPARISON_PERIODS = 5          # the subject period plus up to four others
+
+
+def compare_values(current: Any, baseline: Any) -> dict[str, Any]:
+    """The change from ``baseline`` to ``current`` in their own unit (a percent value
+    changes by percentage points), its relative change in percent of the baseline, and
+    whether the baseline was zero while the current value is not (``new``: "new", never
+    infinity or NaN). Deterministic; the tools and the delta table share it, so a
+    comparison is computed once, in code (the model only narrates it)."""
+    cur, base = finite_number(current), finite_number(baseline)
+    if cur is None or base is None:
+        return {"delta": None, "delta_pct": None, "new": False}
+    delta = round(float(cur) - float(base), 6)
+    if base == 0:
+        return {"delta": delta, "delta_pct": 0.0 if cur == 0 else None, "new": cur != 0}
+    return {"delta": delta, "delta_pct": round(delta / abs(float(base)) * 100, 1), "new": False}
+
+
+def _plain_number(value: float) -> str:
+    if float(value).is_integer() and abs(value) < 1e15:
+        return f"{int(value):,}"
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def format_unit_value(value: Any, unit: str) -> str:
+    """A short display string for one value in ``unit`` ("1,284", "12.5%", "$3.20",
+    "42 min"); "—" when not measured."""
+    number = finite_number(value)
+    if number is None:
+        return "—"
+    unit = _unit(unit)
+    if unit == "percent":
+        return f"{number:.1f}%"
+    if unit == "usd":
+        return f"${number:,.2f}"
+    if unit == "ratio":
+        return f"{number:.2f}"
+    if unit in ("minutes", "hours", "seconds", "ms"):
+        short = {"minutes": "min", "hours": "h", "seconds": "s", "ms": "ms"}[unit]
+        return f"{_plain_number(round(float(number), 1))} {short}"
+    if unit == "score":
+        return _plain_number(round(float(number), 1))
+    return _plain_number(float(number))
+
+
+def format_change_pct(delta_pct: Any, new: Any) -> str:
+    """"+8.3%", "-2.0%", "0%", "new" (a zero baseline) or "—" (not measured)."""
+    if new is True:
+        return "new"
+    pct = finite_number(delta_pct)
+    if pct is None:
+        return "—"
+    if pct == 0:
+        return "0%"
+    return f"{pct:+.1f}%"
+
+
+def _comparison_parts(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """``(periods, rows, shared unit)`` of a comparison artifact, normalised: periods are
+    chronological (the last one is the subject period, the one before it the baseline),
+    every row's values aligned with them."""
+    periods = [p for p in (data.get("periods") or []) if isinstance(p, dict)][:MAX_COMPARISON_PERIODS]
+    periods = [{"key": f"p{i + 1}", "label": _label_text(p.get("label"), MAX_LABEL) or f"Period {i + 1}",
+                "in_progress": p.get("in_progress") is True} for i, p in enumerate(periods)]
+    shared = _unit(data.get("unit"))
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(r for r in (data.get("rows") or []) if isinstance(r, dict)):
+        raw = row.get("values") if isinstance(row.get("values"), (list, tuple)) else []
+        values = [finite_number(raw[i]) if i < len(raw) else None for i in range(len(periods))]
+        key = row.get("key") if isinstance(row.get("key"), str) and _KEY_RE.match(row["key"]) else f"r{index + 1}"
+        entry = {
+            "key": key,
+            "label": _label_text(row.get("label")) or key,
+            "unit": _unit(row.get("unit"), shared),
+            "values": values,
+            "good_direction": _enum_or(row.get("good_direction"), GOOD_DIRECTIONS, "none"),
+            "small_sample": row.get("small_sample") is True,
+        }
+        change = compare_values(values[-1], values[-2]) if len(values) >= 2 else compare_values(None, None)
+        # The tool's own figures are the same deterministic rule; a stored block read
+        # back carries none and gets them from that rule.
+        entry["delta"] = finite_number(row.get("delta")) if "delta" in row else change["delta"]
+        entry["delta_pct"] = finite_number(row.get("delta_pct")) if "delta_pct" in row else change["delta_pct"]
+        entry["new"] = (row.get("new") is True) if "new" in row else change["new"]
+        rows.append(entry)
+    return periods, rows, shared
+
+
+def _build_comparison(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
+    data = artifact.data
+    periods, rows, shared = _comparison_parts(data)
+    block = _base_block(artifact, options, views)
+    dimension = _label_text(data.get("dimension"), MAX_LABEL) or None
+    baseline = periods[-2]["label"] if len(periods) >= 2 else None
+    units = {r["unit"] for r in rows}
+    unit = units.pop() if len(units) == 1 else shared
+    if view == "kpi_group":
+        n = min(_top_n(options, len(rows)), MAX_KPI_ITEMS)
+        items = []
+        for row in rows[:n]:
+            item: dict[str, Any] = {"key": row["key"], "label": _label_text(row["label"], MAX_LABEL),
+                                    "value": row["values"][-1] if row["values"] else None, "unit": row["unit"]}
+            if baseline is not None and row["delta"] is not None:
+                item["delta"] = {"value": row["delta"], "period_label": f"vs {baseline}",
+                                 "good_direction": row["good_direction"]}
+            if baseline is not None:
+                context = f"{baseline}: {format_unit_value(row['values'][-2], row['unit'])}"
+                change = format_change_pct(row["delta_pct"], row["new"])
+                if change != "—":
+                    context += f" · {change}"
+                if row["small_sample"]:
+                    context += f" · n < {SMALL_SAMPLE_N}"
+                item["context"] = context
+            if len(periods) >= 3 and any(v is not None for v in row["values"]):
+                item["trend"] = {"points": row["values"],
+                                 "window_label": f"{periods[0]['label']} – {periods[-1]['label']}"}
+            items.append(item)
+        block.update({"type": "kpi_group", "items": items})
+        # A tile row cannot be read back into the periods it compares: a stored block
+        # offers only itself for a later view change (its table toggle is the client's).
+        block["allowed_views"] = ["kpi_group"]
+        return _with_truncation(block, artifact, options, shown=n, available=len(rows), noun="Showing")
+    if view in ("grouped_bar", "hbar"):
+        n = min(_top_n(options, len(rows)), MAX_POINTS)
+        x: dict[str, Any] = {"kind": "category", "values": [r["label"] for r in rows[:n]]}
+        if dimension:
+            x["label"] = dimension
+        block.update({
+            "type": "chart", "kind": view, "unit": unit, "x": x,
+            "series": [{"key": p["key"], "label": p["label"], "values": [r["values"][i] for r in rows[:n]]}
+                       for i, p in enumerate(periods)],
+        })
+        return _with_truncation(block, artifact, options, shown=n, available=len(rows))
+    # The delta table: category · each period · change · change %, plus the unit of
+    # each row when the rows differ, and the small-sample flag.
+    n = min(_top_n(options, len(rows)), MAX_TABLE_ROWS)
+    mixed = len({r["unit"] for r in rows}) > 1
+    columns = [_text_column(_COMPARISON_LABEL_COLUMN, dimension or "Metric",
+                            untrusted=block["untrusted"])]
+    columns += [_number_column(p["key"], p["label"], None if mixed else unit) for p in periods]
+    if baseline is not None:
+        columns.append(_number_column("delta", "Change", None if mixed else unit))
+        columns.append(_text_column("delta_pct", "Change %"))
+    if mixed:
+        columns.append(_text_column("unit", "Unit"))
+    flagged = any(r["small_sample"] for r in rows)
+    if flagged:
+        columns.append(_text_column("note", "Note"))
+    table_rows = []
+    for row in rows[:n]:
+        cells: list[Any] = [row["label"], *row["values"]]
+        if baseline is not None:
+            cells += [row["delta"], format_change_pct(row["delta_pct"], row["new"])]
+        if mixed:
+            cells.append(row["unit"])
+        if flagged:
+            cells.append(f"n < {SMALL_SAMPLE_N}" if row["small_sample"] else None)
+        table_rows.append(cells)
+    block.update({"type": "table", "columns": columns, "rows": table_rows})
+    return _with_truncation(block, artifact, options, shown=n, available=len(rows))
+
+
 def _build_passthrough(block_type: str, keys: tuple[str, ...]) -> Any:
     """Single-view kinds whose artifact data already IS the block body."""
     def build(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
@@ -2700,6 +3029,7 @@ _BUILDERS: dict[str, Any] = {
     "mitre": _build_passthrough("mitre", ("techniques",)),
     "guide": _build_passthrough("guide", ("steps", "links")),
     "query": _build_passthrough("query", ("language", "query", "source_name", "hits")),
+    "comparison": _build_comparison,
 }
 
 
@@ -2723,7 +3053,7 @@ def _has_items(block: dict[str, Any], key: str) -> bool:
 
 #: Artifact kinds whose table view is a projection of measured numbers: with no
 #: measured number left, that table is as empty as the chart it stands in for.
-_MEASURED_KINDS = frozenset({"categories", "series", "funnel", "heatmap"})
+_MEASURED_KINDS = frozenset({"categories", "series", "funnel", "heatmap", "comparison"})
 
 
 def is_empty_block(block: Any) -> bool:
@@ -2816,6 +3146,9 @@ def _artifact_has_data(artifact: Any) -> bool:
         return isinstance(data.get("techniques"), (list, tuple)) and len(data["techniques"]) > 0
     if kind == "guide":
         return any(isinstance(data.get(k), (list, tuple)) and len(data[k]) > 0 for k in ("steps", "links"))
+    if kind == "comparison":
+        periods, rows, _unit_ = _comparison_parts(data)
+        return bool(periods) and any(_measured(r["values"]) for r in rows)
     return True
 
 
@@ -2853,15 +3186,23 @@ def _materialise(artifact: "Artifact",
         views = _views_of(artifact)
     except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
         return [], "unshowable"
-    requested = options.view if options.view in views else DEFAULT_VIEW[kind]
+    # The honest default: the kind's default view, unless the data cannot support it
+    # (a comparison of metrics with different units has no chart axis), then the
+    # artifact's own best view. A comparison's views are ordered best first
+    # (:func:`comparison_views`: tiles with deltas lead for a metric comparison).
+    if kind == "comparison" and views:
+        default = views[0]
+    else:
+        default = DEFAULT_VIEW[kind] if DEFAULT_VIEW[kind] in views or not views else views[0]
+    requested = options.view if options.view in views else default
     raw: dict[str, Any] | None = None
-    for view in dict.fromkeys([requested, DEFAULT_VIEW[kind], *views]):
+    for view in dict.fromkeys([requested, default, *views]):
         try:
             made = builder(artifact, options, view, list(views))
             if made.get("type") == "chart" and not chart_kind_fits(made, str(made.get("kind"))):
                 # The CLIPPED block no longer supports its kind (a top-N cut that breaks a
                 # 100 % stack, say): draw the honest default instead of an invented total.
-                made = builder(artifact, options, DEFAULT_VIEW[kind], list(views))
+                made = builder(artifact, options, default, list(views))
             made["allowed_views"] = _honest_block_views(made, kind)
         except Exception:  # noqa: BLE001 -- a malformed artifact never sinks the answer
             return [], "unshowable"
@@ -3059,7 +3400,7 @@ def _artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
             return {"x": list(x.get("values") or []), "series": list(block.get("series") or []),
                     "unit": block.get("unit"), "x_kind": x.get("kind"), "bucket": x.get("bucket"),
                     "x_label": x.get("label"), "last_in_progress": block.get("last_in_progress", False),
-                    "reference": block.get("reference")}
+                    "reference": block.get("reference"), "x_labels": x.get("labels"), "tz": x.get("tz")}
         x_values = _table_column(block, _SERIES_X_COLUMN)
         if x_values is None:
             return None
@@ -3138,8 +3479,56 @@ def _artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
             {key: columns[key][i] for key in _TIMELINE_COLUMNS if columns[key] is not None and columns[key][i] is not None}
             for i in range(len(columns["at"]))
         ]}
+    if kind == "comparison":
+        return _comparison_from_block(block)
     # Single-view kinds: the block body is the artifact data.
     return {k: v for k, v in block.items() if k not in _BASE_FIELDS}
+
+
+def _at(values: Any, index: int) -> Any:
+    return values[index] if isinstance(values, (list, tuple)) and index < len(values) else None
+
+
+def _comparison_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    """A stored comparison's periods and rows (grouped bars or the delta table); a
+    tile row cannot be read back (it holds the subject period only)."""
+    btype = block.get("type")
+    if btype == "chart":
+        x = block.get("x") or {}
+        series = [s for s in block.get("series") or [] if isinstance(s, dict)]
+        labels = list(x.get("values") or [])
+        return {
+            "periods": [{"label": s.get("label")} for s in series],
+            "rows": [{"key": f"r{i + 1}", "label": label,
+                      "values": [_at(s.get("values"), i) for s in series]}
+                     for i, label in enumerate(labels)],
+            "unit": block.get("unit"), "dimension": x.get("label"),
+        }
+    if btype != "table":
+        return None
+    labels = _table_column(block, _COMPARISON_LABEL_COLUMN)
+    if labels is None:
+        return None
+    period_columns = [c for c in block.get("columns") or []
+                      if isinstance(c, dict) and _PERIOD_KEY_RE.match(str(c.get("key") or ""))]
+    if not period_columns:
+        return None
+    units = _table_column(block, "unit")
+    notes = _table_column(block, "note") or []
+    shared = _column_unit(block, period_columns[0]["key"])
+    values = [_table_column(block, c["key"]) or [] for c in period_columns]
+    label_column = next((c for c in block.get("columns") or []
+                         if isinstance(c, dict) and c.get("key") == _COMPARISON_LABEL_COLUMN), {})
+    return {
+        "periods": [{"label": c.get("label")} for c in period_columns],
+        "rows": [{"key": f"r{i + 1}", "label": label,
+                  "unit": _unit(units[i], shared) if units is not None and i < len(units) else shared,
+                  "values": [column[i] if i < len(column) else None for column in values],
+                  "small_sample": i < len(notes) and bool(notes[i])}
+                 for i, label in enumerate(labels)],
+        "unit": shared,
+        "dimension": None if label_column.get("label") == "Metric" else label_column.get("label"),
+    }
 
 
 def revise_view(block: dict[str, Any], view: str, *, block_id: str, title: str | None = None) -> dict[str, Any] | None:
@@ -3404,6 +3793,8 @@ def materialise_final_blocks(
             }
             if request.subtitle:
                 report["subtitle"] = request.subtitle
+            if request.layout:
+                report["layout"] = request.layout
             blocks.append(report)
         elif not duplicate(request, seen_top):
             blocks.extend(resolve(request))

@@ -338,6 +338,8 @@ async def test_trends_endpoint_contract_shape(metrics_client, app_state) -> None
             "t", "new_cases", "closed", "auto_closed", "human_closed",
             "system_closed", "false_positives", "needs_human", "escalated",
             "sent_to_human", "fp_rate", "alerts",
+            # Round 12 (additive): analyst-confirmed FP ground truth per bucket.
+            "analyst_confirmed_fp",
         }
     assert sum(r_["false_positives"] for r_ in body["buckets"]) == 1
     assert sum(r_["auto_closed"] for r_ in body["buckets"]) == 1
@@ -539,8 +541,11 @@ async def test_cache_errors_propagate_and_are_never_cached() -> None:
 
 
 async def test_cache_collapses_the_endpoint_fanout_to_one_scan(app_state, monkeypatch) -> None:
-    """Posture + noise-reduction + auto-close-health + diagnostics/health in one
-    refresh burst → ONE store.list scan."""
+    """Posture + noise-reduction + auto-close-health + diagnostics/health + trends in
+    one refresh burst → the population reads collapse: one read for the 24-hour window
+    (the first request) and ONE all-time read that then serves every other window. No
+    newest-N ``list`` page is read at all, and a second burst inside the TTL reads
+    nothing."""
     from app.api.deps import require_auth
     from app.api.routes_diagnostics import router as diagnostics_router
     from app.api.routes_metrics import router as metrics_router
@@ -550,12 +555,20 @@ async def test_cache_collapses_the_endpoint_fanout_to_one_scan(app_state, monkey
     )
     inner = app_state._real_cases
     spy_calls = {"n": 0}
+    list_calls = {"n": 0}
+    real_scan = inner.scan_page
     real_list = inner.list
 
+    async def _counting_scan(**kw):
+        if kw.get("cursor") is None and kw.get("newest_first"):
+            spy_calls["n"] += 1  # one population read starts
+        return await real_scan(**kw)
+
     async def _counting_list(**kw):
-        spy_calls["n"] += 1
+        list_calls["n"] += 1
         return await real_list(**kw)
 
+    monkeypatch.setattr(inner, "scan_page", _counting_scan)
     monkeypatch.setattr(inner, "list", _counting_list)
 
     api = FastAPI()
@@ -569,7 +582,12 @@ async def test_cache_collapses_the_endpoint_fanout_to_one_scan(app_state, monkey
     assert client.get("/api/metrics/auto-close-health?window_hours=24").status_code == 200
     assert client.get("/api/diagnostics/health?window_hours=24").status_code == 200
     assert client.get("/api/metrics/trends?window_hours=24").status_code == 200
-    assert spy_calls["n"] == 1
+    assert spy_calls["n"] == 2  # the 24-hour window, then all time (serves the rest)
+    assert list_calls["n"] == 0
+    for path in ("/api/metrics/posture?window_hours=24", "/api/metrics/trends?window_hours=24",
+                 "/api/mitre/coverage", "/api/metrics/noise-reduction?window_hours=168"):
+        assert client.get(path).status_code == 200
+    assert spy_calls["n"] == 2  # all served from the cached all-time read
 
 
 # --------------------------------------------------------------------------- #

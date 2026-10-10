@@ -84,6 +84,13 @@ def artifact_block(artifact: Artifact, block_id: str = "b1") -> dict[str, Any]:
         "truncated": artifact.truncated, "total": artifact.total,
     }
     kind = artifact.kind
+    if kind == "comparison":
+        # A comparison projects to tiles, grouped bars or a delta table: the real
+        # materialiser decides (its first honest view).
+        from app.agents.blocks import MaterialiseOptions, to_blocks
+
+        made = to_blocks(artifact, MaterialiseOptions(block_id=block_id))
+        return made[0] if made else base
     if kind == "categories":
         base.update(kind=view, unit=data["unit"], x={"kind": "category", "values": data["labels"]},
                     series=[{"key": "value", "label": "Value", "values": data["values"]}])

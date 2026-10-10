@@ -344,7 +344,7 @@ async def test_the_ready_sentence_ends_a_report_after_the_window_note(demo_state
                            time_range={"from": "now-1h", "to": "now"})
     assert _block(response, type="report")
     paragraphs = response.answer.split("\n\n")
-    assert paragraphs[-2] == "Window: the last 1h you selected applies to the windowed lookups above."
+    assert paragraphs[-2] == "Window: the last hour you selected applies to the windowed lookups above."
     assert paragraphs[-1] == "The report below is ready to add to your Reports."
 
 
@@ -402,12 +402,12 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
     response = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
     assert [(s.tool, s.params, s.status) for s in _tool_steps(response)] == [
         ("search_logs", {"contains": "zzqq-no-such-thing"}, "ok")]
-    assert response.answer.startswith("No log events match `zzqq-no-such-thing` in the last 24h")
+    assert response.answer.startswith("No log events match `zzqq-no-such-thing` in the last 24 hours")
     assert response.blocks == [] and "case" not in response.answer.lower()
 
     found = await _turn(demo_state, "Search logs for sql in the last 7 days", origin="user")
     assert [(s.tool, s.status) for s in _tool_steps(found)] == [("search_logs", "ok")]
-    assert re.match(r"\*\*\d+ log events?\*\* match `sql` in the last 7d", found.answer), found.answer
+    assert re.match(r"\*\*\d+ log events?\*\* match `sql` in the last 7 days", found.answer), found.answer
     assert _block(found, type="table", title="Matching log events")
     # The breakdown follow-up regroups the same search (same text filter and window).
     question = "Break that down by user instead"
@@ -418,7 +418,7 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
     assert step.tool == "log_stats" and step.status == "ok"
     assert step.params["contains"] == "sql" and step.params["group_by"] in ("user", ["user"])
     # The re-run names the searched text as written, never the raw filter key.
-    assert re.search(r"\*\*\d+ events?\*\* matching `sql` in the last 7d", regrouped.answer), regrouped.answer
+    assert re.search(r"\*\*\d+ events?\*\* matching `sql` in the last 7 days", regrouped.answer), regrouped.answer
     assert "contains `" not in regrouped.answer
     # Nothing matched: the longer window is offered, and its re-run reads the same way.
     question = "Same for the last 7 days"
@@ -427,7 +427,7 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
                         prior=[_prior("Search logs for zzqq-no-such-thing", response, 1)])
     assert [(s.tool, s.params.get("contains"), s.status) for s in _tool_steps(wider)] == [
         ("search_logs", "zzqq-no-such-thing", "ok")]
-    assert "No log events match `zzqq-no-such-thing` in the last 7d" in wider.answer, wider.answer
+    assert "No log events match `zzqq-no-such-thing` in the last 7 days" in wider.answer, wider.answer
     assert "contains `" not in wider.answer
     again = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
     assert _shape(again) == _shape(response)                         # deterministic
@@ -465,12 +465,12 @@ async def test_the_users_window_wins_over_the_chip_and_the_answer_says_so(demo_s
                            origin="user", time_range={"from": "now-7d"})
     (step,) = _tool_steps(response)
     assert step.params["time_from"] == "now-24h"
-    assert "in the last 24h" in response.answer
+    assert "in the last 24 hours" in response.answer
     assert response.answer.endswith("Window: your question named the last 24 hours, so the lookups used that "
-                                    "window instead of the last 7d you selected.")
+                                    "window instead of the last 7 days you selected.")
     narrower = await _turn(demo_state, "Which hosts generated the most events in the last 7 days?",
                            origin="user", time_range={"from": "now-6h"})
-    assert "so it was limited to the last 6h" in narrower.answer
+    assert "so it was limited to the last 6 hours" in narrower.answer
 
 
 async def test_scopes_are_reported_as_scopes_not_as_missing_permissions(demo_state) -> None:

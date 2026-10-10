@@ -11,6 +11,10 @@
  * Each section is a labelled `role="group"`, not a `<section aria-labelledby>`: a named
  * section is a region LANDMARK, and a transcript of Briefs would flood the landmark list
  * (and fail axe `landmark-unique` whenever two Briefs share a section heading).
+ *
+ * `staticMode` (print / static export, Round 12 WP-REP R6): the contents list is plain
+ * text — no toggle and no jump buttons, which a printed page cannot use (and which the
+ * old print stylesheet hid, leaving an empty "1. 2. 3." list).
  */
 import * as React from 'react';
 import { ChevronDown } from 'lucide-react';
@@ -49,9 +53,11 @@ export interface ReportViewProps {
   block: ReportBlock;
   blockIndex: number;
   renderLeaf: (leaf: LeafBlock, key: string) => React.ReactNode;
+  /** Print / static export: a plain-text contents list, nothing interactive. */
+  staticMode?: boolean;
 }
 
-export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
+export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }: ReportViewProps) {
   const { domId } = useBlocks();
   const [tocOpen, setTocOpen] = React.useState(block.sections.length > 3);
   const rawId = React.useId();
@@ -80,7 +86,16 @@ export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
         </span>
       </div>
 
-      {block.sections.length > 1 ? (
+      {block.sections.length > 1 && staticMode ? (
+        <div className="rounded-md border border-border/70 px-3 py-1.5 text-xs" data-testid="report-toc-static">
+          <p className="font-medium text-foreground">Contents ({block.sections.length} sections)</p>
+          <ol className="mt-0.5 list-decimal space-y-0.5 pl-5 text-foreground">
+            {block.sections.map((s) => (
+              <li key={s.id}>{s.heading}</li>
+            ))}
+          </ol>
+        </div>
+      ) : block.sections.length > 1 ? (
         <div className="rounded-md border border-border/70">
           <button
             type="button"
@@ -108,7 +123,7 @@ export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
         const headingId = sectionAnchorId(domId, blockIndex, si);
         return (
           <div key={s.id} role="group" aria-labelledby={headingId} className="flex min-w-0 flex-col gap-2">
-            <h5 id={headingId} tabIndex={-1} className="scroll-mt-16 text-sm font-semibold text-foreground outline-none">
+            <h5 id={headingId} tabIndex={staticMode ? undefined : -1} className="scroll-mt-16 text-sm font-semibold text-foreground outline-none">
               {s.heading}
             </h5>
             {s.summary ? <p className="whitespace-pre-line break-words text-sm text-muted-foreground">{s.summary}</p> : null}

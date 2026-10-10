@@ -36,7 +36,13 @@ describe('dynamic viewport shell contract', () => {
     // largest viewport and hide its own pinned footer behind the browser toolbar.
     ['KPI deep-inspection modal', '..', 'components', 'KpiDrilldownPanel.tsx'],
   ])('%s uses dynamic rather than legacy viewport units', (_label, ...segments) => {
-    const source = readFileSync(path.resolve(__dirname, ...segments), 'utf8');
+    let source = readFileSync(path.resolve(__dirname, ...segments), 'utf8');
+    // The shared Dialog and AlertDialog compose ONE modal recipe (`modalSurface` in
+    // lib/ui-recipes.ts), which is where their `max-h-[85dvh]` now lives. Read the recipe
+    // together with the primitive so the contract follows the classes, not the file.
+    if (/\bmodalSurface\b/.test(source)) {
+      source += `\n${readFileSync(path.resolve(__dirname, '..', '..', 'lib', 'ui-recipes.ts'), 'utf8')}`;
+    }
 
     expect(source).toContain('dvh');
     expect(source).not.toMatch(/\d+(?:\.\d+)?vh\b/);

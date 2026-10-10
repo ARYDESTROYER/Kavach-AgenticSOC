@@ -21,9 +21,12 @@ class OpenSearchConnector(ElasticConnector):
     """Pull connector for OpenSearch (and the OpenSearch Dashboards stack).
 
     Inherits ALL behaviour from :class:`ElasticConnector` (ping/poll/search/
-    fetch_by_ids/to_ocsf) because the OpenSearch search API is ES-compatible
-    through :meth:`BaseESClient.search_logs`. Only identity + wizard metadata
-    differ.
+    fetch_by_ids/to_ocsf/aggregate) because the OpenSearch search API is ES-compatible
+    through :meth:`BaseESClient.search_logs`. That includes the calendar buckets of
+    ``aggregate`` (``1w``/``1M``/``1q``/``1y`` → ``date_histogram.calendar_interval``
+    with the operator ``time_zone``, Round 12 SPEC P0-5): OpenSearch supports
+    ``calendar_interval`` with the same unit names, and Wazuh's indexer is OpenSearch.
+    Only identity + wizard metadata differ.
     """
 
     source_type = SourceType.OPENSEARCH

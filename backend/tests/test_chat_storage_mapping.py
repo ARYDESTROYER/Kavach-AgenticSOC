@@ -206,8 +206,16 @@ async def test_every_conversation_store_write_keeps_the_bounded_shape() -> None:
                      "history_truncated", "total_conversation_count"}
     # The partition registry is a list of opaque keys, not a keyed object.
     index_paths = {p for ns, key, value in kv.written
-                   if ns == CHAT_CONVERSATIONS_NS and key not in partitions for p in field_paths(value)}
+                   if ns == CHAT_CONVERSATIONS_NS and key == "conversations" for p in field_paths(value)}
     assert index_paths <= {"_rev", "schema", "partitions"}
+    # Round 12 auxiliary documents (exchange, summary, step observations, live state,
+    # archive pages): one fixed opaque field each, whatever they hold.
+    aux_paths = {p for ns, key, value in kv.written
+                 if ns == CHAT_CONVERSATIONS_NS and key not in partitions and key != "conversations"
+                 for p in field_paths(value)}
+    assert aux_paths <= {"_rev", "schema", cc.EXCHANGE_FIELD, cc.SUMMARY_FIELD, cc.OBSERVATION_FIELD,
+                         cc.OBSERVATION_INDEX_FIELD, cc.LIVE_STATE_FIELD, cc.ARCHIVE_FIELD}
+    assert cc.EXCHANGE_FIELD in aux_paths
     page = await store.list_page("alice")
     assert page.total == 5 and page.conversations[0].pinned
 

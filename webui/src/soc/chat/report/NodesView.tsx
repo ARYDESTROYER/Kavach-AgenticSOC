@@ -90,7 +90,8 @@ export function NodesView({ nodes, shift = 0, className }: NodesViewProps) {
           case 'table':
             return (
               <div key={i} className="max-w-full overflow-x-auto rounded-md border border-border">
-                <table className="w-full border-collapse text-sm">
+                <table className="w-full caption-bottom border-collapse text-sm">
+                  {node.caption ? <caption className="px-3 py-1 text-left text-xs text-muted-foreground">{node.caption}</caption> : null}
                   <thead>
                     <tr className="border-b border-border bg-surface">
                       {node.head.map((h, c) => (

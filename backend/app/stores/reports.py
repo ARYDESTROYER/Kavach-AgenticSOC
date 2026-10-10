@@ -109,8 +109,8 @@ class ReportLimitReached(RuntimeError):
 
 
 class ReportFull(RuntimeError):
-    """A write would exceed a report bound: 40 items (``reason="items"``) or the
-    512 kB document bound (``reason="size"``; an add, or a PATCH that grows notes or
+    """A write would exceed a report bound: ``MAX_REPORT_ITEMS`` items (60 since
+    Round 12; ``reason="items"``) or the 512 kB document bound (``reason="size"``; an add, or a PATCH that grows notes or
     the title past it)."""
 
     def __init__(self, reason: str) -> None:
@@ -581,6 +581,74 @@ class ReportStore:
             return await self._create_locked(
                 owner, title=title, template=template, conversation_id=conversation_id,
             )
+
+    # ----- create with items (Round 12, D11) ------------------------------------- #
+    async def create_with_items(
+        self,
+        owner: str | None,
+        *,
+        title: str,
+        template: str = "custom",
+        items: list[ReportItem],
+        report_id: str | None = None,
+    ) -> tuple[Report, bool]:
+        """Create a standalone report already holding ``items`` (a saved chat answer
+        or a whole conversation) in ONE strict write, then index it. Returns
+        ``(report, created)``.
+
+        Idempotent by ``report_id`` (the route derives it from the request's
+        idempotency key): when that report already exists it is returned unchanged
+        (``created=False``), and when its owner deleted it the delete stands
+        (:class:`ReportNotFound`). Items past :data:`MAX_REPORT_ITEMS`, or past the
+        document bound (keeping the summary's headroom), are left out — the caller
+        reports how many were saved. Refused at ``MAX_REPORTS_PER_USER``."""
+        uid = normalize_user_id(owner)
+        target = report_id or new_report_id()
+        key = report_key(owner, target)
+        async with self._lock_for(owner):
+            current = await self._strict_get(key)
+            existing = decode_report(current)
+            if existing is not None and existing.report.owner == uid:
+                return existing.report, False
+            if _is_tombstone(current) or existing is not None:
+                raise ReportNotFound("Report not found.")
+            rows = _index_rows(await self._strict_get(index_key(owner)))
+            if len(rows) >= MAX_REPORTS_PER_USER:
+                raise ReportLimitReached("Delete a report in Reports to start another.")
+            now = iso_now()
+            kept: list[ReportItem] = []
+            seen: set[str] = set()
+            for item in items[:MAX_REPORT_ITEMS]:
+                candidate = item if item.id not in seen else item.model_copy(update={"id": new_item_id()})
+                trial = Report(
+                    id=target, owner=uid, title=title, template=template,  # type: ignore[arg-type]
+                    items=[*kept, candidate], created_at=now, updated_at=now, version=1,
+                )
+                if not _content_fits(encode_report(trial)):
+                    break
+                kept.append(candidate)
+                seen.add(candidate.id)
+            report = Report(
+                id=target, owner=uid, title=title, template=template,  # type: ignore[arg-type]
+                conversation_id=None, items=kept, summary=None,
+                created_at=now, updated_at=now, version=1,
+            )
+
+            def _write(doc: dict[str, Any] | None) -> tuple[dict[str, Any], None]:
+                if _is_live(doc) or _is_tombstone(doc):
+                    raise ReportStoreUnavailable("The report changed while it was being saved; retry.")
+                return encode_report(report), None
+
+            await self._strict_mutate(key, _write)
+            try:
+                await self._index_add_locked(owner, report)
+            except BaseException:
+                try:
+                    await self._strict_mutate(key, lambda cur: (self._tombstone(report.id, uid), None))
+                except Exception:  # noqa: BLE001 -- the original error is the one to report
+                    logger.warning("could not tombstone orphaned report %s", report.id)
+                raise
+            return report, True
 
     # ----- add -------------------------------------------------------------- #
     async def add_item(

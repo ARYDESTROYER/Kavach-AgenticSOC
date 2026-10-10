@@ -45,6 +45,7 @@ export const VIEW_LABEL: Readonly<Record<BlockView, string>> = {
   donut: 'Donut',
   sparkline: 'Sparkline',
   funnel: 'Funnel',
+  grouped_bar: 'Grouped columns',
   kpi_group: 'Tiles',
   table: 'Table',
   heatmap: 'Heatmap',

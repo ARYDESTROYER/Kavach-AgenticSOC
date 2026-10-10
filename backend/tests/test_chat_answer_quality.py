@@ -398,7 +398,7 @@ def test_the_agent_prompt_asks_for_a_short_report_lead_and_human_names() -> None
     # The lead never swallows a disclosure (what failed, was denied or partial, the window).
     assert ("Notes about failed, denied or partial lookups and the time window still follow the lead."
             in " ".join(style.split()))
-    assert "change_unit" in style and "relative_change_pct is a percent of the previous value" in style
+    assert "A change versus another period is the result's change in its unit" in " ".join(style.split())
     assert "a campaign by its name or the entity its cases share" in style
     assert "Long machine ids" in style and "belong in blocks and links" in style
     assert "Show each figure once" in style
@@ -456,37 +456,36 @@ async def test_duration_kpis_and_series_are_in_minutes_end_to_end(timed_store: C
 
 
 async def test_posture_deltas_are_in_each_tiles_unit(timed_store: CaseStore) -> None:
+    """Round 12 (P0-6): ``compare_previous`` is ``compare: previous_period``; the change
+    each tile shows is computed in code, in the tile's unit, and the model reads the
+    SAME figure in the comparison rows (cases, percentage points, minutes)."""
     ctx = make_ctx(cases=timed_store)
     posture = await SocMetricsTool().run(ctx, kind="posture", window_hours=24, compare_previous=True)
     assert posture.ok
     items = {i["key"]: i for i in posture.artifacts[0].data["items"]}
-    compare = posture.observation["compare_previous"]
-    cases = compare["case_count"]
-    assert items["cases"]["delta"]["value"] == cases["value"] - cases["prev"]       # cases, not %
-    fp = compare["false_positive_rate"]
-    assert fp["value"] is not None and fp["prev"] is not None
-    assert items["fp_rate"]["delta"]["value"] == round((fp["value"] - fp["prev"]) * 100, 2)       # points
-    mttr = compare["mttr_p50"]
-    assert items["mttr_p50"]["delta"]["value"] == round(mttr["value"] - mttr["prev"], 2)          # minutes
+    comparison = posture.observation["comparison"]
+    assert comparison["periods"] == ["previous 24 hours", "last 24 hours"]
+    rows = {r["label"]: r for r in comparison["rows"]}
+    cases = rows["Cases"]
+    assert cases["unit"] == "count" and cases["values"] == [3, 6]
+    assert items["cases"]["delta"]["value"] == cases["change"] == 3            # cases, not %
+    assert cases["change_pct"] == 100.0 and cases["small_sample"] is True
+    fp = rows["False-positive rate"]
+    assert fp["unit"] == "percent" and fp["values"] == [0.0, 50.0]
+    assert items["fp_rate"]["delta"]["value"] == fp["change"] == 50.0          # percentage points
+    assert fp["new"] is True and fp["change_pct"] is None                      # a zero baseline is "new"
+    mttr = rows["MTTR (median)"]
+    assert mttr["unit"] == "minutes" and items["mttr_p50"]["delta"]["value"] == mttr["change"] == -60
     for item in items.values():
         if item.get("delta"):
-            assert item["delta"]["period_label"] == "vs previous window"
+            assert item["delta"]["period_label"] == "vs previous 24 hours"
     (block,) = to_blocks(posture.artifacts[0], MaterialiseOptions(block_id="b1"))
     assert all("%" not in (i.get("delta") or {}).get("period_label", "") for i in block["items"])
-    # The model reads the SAME change the tile shows, with its unit named, so prose and
-    # tile agree; the engine's relative percent is labelled as such, never as the change.
-    tile_of = {"case_count": "cases", "false_positive_rate": "fp_rate", "automation_rate": "automation_rate",
-               "mttr_p50": "mttr_p50"}
-    units = {"case_count": "cases", "false_positive_rate": "percentage points",
-             "automation_rate": "percentage points", "mttr_p50": "minutes"}
-    for key, tile in tile_of.items():
-        entry = compare[key]
-        assert entry["change_unit"] == units[key], key
-        assert "delta_pct" not in entry and "relative_change_pct" in entry
-        delta = items[tile].get("delta")
-        assert entry["change"] == (delta["value"] if delta else None), key
-    assert compare["period_label"] == "vs previous window"
-    assert compare["escalation_rate"]["change_unit"] == "percentage points"
+    comparison_artifact = next(a for a in posture.artifacts if a.kind == "comparison")
+    tiles = to_blocks(comparison_artifact, MaterialiseOptions(block_id="b2"))[0]
+    assert tiles["type"] == "kpi_group"
+    fp_tile = next(i for i in tiles["items"] if i["key"] == "fp_rate")
+    assert fp_tile["context"].startswith("previous 24 hours: 0.0% · new")
 
 
 async def test_every_previous_window_delta_uses_one_label() -> None:

@@ -231,6 +231,11 @@ const BUCKET_MS: Record<TimeBucket, number> = {
   '6h': 21_600_000,
   '1d': 86_400_000,
   '1w': 604_800_000,
+  // Calendar buckets (Round 12): nominal widths only; their real boundaries and labels
+  // come from the block's `x.labels` / `x.tz` (calendar months, quarters and years).
+  '1M': 2_592_000_000,
+  '1q': 7_776_000_000,
+  '1y': 31_536_000_000,
 };
 
 export function bucketMs(bucket: TimeBucket | undefined): number | null {

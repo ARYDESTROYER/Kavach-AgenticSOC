@@ -45,8 +45,11 @@ describe('Settings form composition visual standard', () => {
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });
     const tocBand = nav.parentElement as HTMLElement;
     expect(tocBand.className).toContain('border-y');
-    expect(tocBand.className).toContain('bg-background/95');
-    expect(tocBand.className).not.toMatch(/rounded|shadow|bg-card|backdrop/);
+    // Sticky chrome wears the ONE Console material (it turns solid under reduced
+    // transparency / increased contrast), never a page-local translucent fill.
+    expect(tocBand.className).toContain('material-surface');
+    expect(tocBand.className).not.toContain('bg-background/95');
+    expect(tocBand.className).not.toMatch(/rounded|shadow|bg-card/);
     expect(container.querySelectorAll('h2')).toHaveLength(1);
   });
 

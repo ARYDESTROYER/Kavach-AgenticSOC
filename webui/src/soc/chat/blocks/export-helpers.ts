@@ -18,7 +18,7 @@
 import { csvField, tsvField } from '@/lib/csv';
 import { defang } from '@/lib/defang';
 import { formatUtc, formatValue } from './format';
-import type { AnswerBlock, Cell, ChartBlock, ColumnType, TableBlock, ValueUnit } from './schema';
+import type { AnswerBlock, Cell, ChartBlock, ColumnType, KpiGroupBlock, TableBlock, ValueUnit } from './schema';
 import { leafBlocks } from './schema';
 
 export { csvField, defuseFormula, tsvField } from '@/lib/csv';
@@ -60,6 +60,36 @@ function tableTable(block: TableBlock): Tabular {
 }
 
 /**
+ * A KPI group as a table: Metric, Value (numeric), Unit, Context, then — only when a
+ * figure carries one — Bound ("at least": a scan-bounded lower bound is never read as an
+ * exact count) and the change the tile's delta chip shows, as a signed number plus its
+ * period (Round 12 WP-REP: the CSV says what the screen, the PDF and Word say). Appended
+ * columns keep the first four where every consumer expects them.
+ */
+export function kpiTabular(block: KpiGroupBlock): Tabular {
+  const bounded = block.items.some((it) => it.bound === 'lower');
+  const changes = block.items.some((it) => it.delta);
+  return {
+    columns: [
+      TEXT('Metric'),
+      NUM('Value'),
+      TEXT('Unit'),
+      TEXT('Context'),
+      ...(bounded ? [TEXT('Bound')] : []),
+      ...(changes ? [NUM('Change'), TEXT('Change period')] : []),
+    ],
+    rows: block.items.map((it): Cell[] => [
+      it.label,
+      it.value,
+      it.unit,
+      it.context ?? null,
+      ...(bounded ? [it.bound === 'lower' && it.value !== null ? 'at least' : null] : []),
+      ...(changes ? [it.delta ? it.delta.value : null, it.delta ? it.delta.period_label || null : null] : []),
+    ]),
+  };
+}
+
+/**
  * The block's data as a plain table (the same rows as the "Show table" view), or `null`
  * for blocks that have no tabular data (prose, callouts, queries, guides, reports).
  */
@@ -75,10 +105,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
     case 'table':
       return tableTable(block);
     case 'kpi_group':
-      return {
-        columns: [TEXT('Metric'), NUM('Value'), TEXT('Unit'), TEXT('Context')],
-        rows: block.items.map((it) => [it.label, it.value, it.unit, it.context ?? null]),
-      };
+      return kpiTabular(block);
     case 'case_list':
       return {
         columns: [TEXT('Case'), TEXT('Title'), TEXT('Severity'), TEXT('Verdict'), TEXT('Status'), NUM('Risk'), TEXT('Created (UTC)')],

@@ -46,6 +46,7 @@ from .common import (
     parse_input,
     resolve_window,
     text,
+    window_input,
 )
 
 logger = logging.getLogger("tlsoc.agents.chat_tools.ops")
@@ -537,7 +538,10 @@ class AuditSearchInput(ToolInput):
     surface: str | None = Field(default=None, max_length=40)
     case_id: str | None = Field(default=None, max_length=128)
     source_id: str | None = Field(default=None, max_length=128)
-    window_hours: int | None = Field(default=None, ge=1, le=720)
+    # Round 12 (SPEC D7): any window (all time, now-90d, last_quarter, ISO ranges), no
+    # 720-hour clamp; ``window_hours`` stays as an alias.
+    window: str | dict[str, Any] | None = None
+    window_hours: int | None = Field(default=None, ge=1)
     time_from: str | None = Field(default=None, max_length=40)
     time_to: str | None = Field(default=None, max_length=40)
     limit: int = Field(default=25, ge=1, le=100)
@@ -546,6 +550,11 @@ class AuditSearchInput(ToolInput):
     @classmethod
     def _blank(cls, value: Any) -> Any:
         return none_if_blank(value)
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _window(cls, value: Any) -> Any:
+        return window_input(value)
 
     @field_validator("action_type", mode="before")
     @classmethod
@@ -572,12 +581,20 @@ class AuditSearchTool(ChatTool):
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("audit", "view"),)
     data_source: ClassVar[str] = "Append-only audit trail (agent and analyst actions)"
     signature: ClassVar[str] = (
-        "audit_search(actor?, action_type?, surface?, case_id?, source_id?, window_hours?, time_from?, time_to?, "
-        "limit?=25) -- what agents and analysts did: counts by action, actor and surface plus recent rows"
+        "audit_search(actor?, action_type?, surface?, case_id?, source_id?, window? or time_from?/time_to? "
+        "(default last 24 hours), limit?=25) -- what agents and analysts did: counts by action, actor and "
+        "surface plus recent rows"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
-        "actor", "action_type", "surface", "case_id", "source_id", "window_hours", "time_from", "time_to", "limit",
+        "actor", "action_type", "surface", "case_id", "source_id", "window", "window_hours", "time_from", "time_to",
+        "limit",
     )
+
+    def display_params(self, inp: dict[str, Any]) -> dict[str, Any]:
+        params = dict(inp) if isinstance(inp, dict) else {}
+        if isinstance(params.get("window"), dict):
+            params["window"] = "..".join(str(v) for v in params["window"].values())[:80]
+        return super().display_params(params)
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
         args, error = parse_input(AuditSearchInput, inp)
@@ -586,7 +603,7 @@ class AuditSearchTool(ChatTool):
         audit = ctx.audit
         if audit is None or not hasattr(audit, "records"):
             return ToolOutcome.failure("The audit trail is not available")
-        window = resolve_window(ctx, time_from=args.time_from, time_to=args.time_to,
+        window = resolve_window(ctx, window=args.window, time_from=args.time_from, time_to=args.time_to,
                                 window_hours=args.window_hours, default_hours=24)
         if isinstance(window, str):
             return ToolOutcome.failure(window)

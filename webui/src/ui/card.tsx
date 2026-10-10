@@ -86,7 +86,7 @@ const CardTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTML
         ref={ref}
         // text-lg (16/24 — the standard's card-title step, §2.4) not text-base (14, =body).
         // No leading-tight: inherit the type step's on-grid 24px line-height.
-        className={cn('text-lg font-semibold tracking-tight text-foreground', className)}
+        className={cn('text-lg font-semibold text-foreground', className)}
         {...props}
       >
         {children}

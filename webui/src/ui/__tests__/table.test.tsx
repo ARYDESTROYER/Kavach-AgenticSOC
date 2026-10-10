@@ -1,8 +1,11 @@
 /**
- * TableHeader — a sticky header gets an OPAQUE background so scrolled rows don't
- * bleed through, while the non-sticky default keeps its translucent wash
- * (round-6 ui-theme #55). The bug was an unconditional `bg-surface/50` whose
- * translucent rule won the cascade over the sticky `bg-surface`.
+ * TableHeader — a sticky header is floating chrome and wears the ONE material
+ * (`materialBar`: ≥0.80 fill + blur, solid under reduced transparency / increased
+ * contrast), while the non-sticky default keeps its translucent wash
+ * (round-6 ui-theme #55). The original bug was an unconditional `bg-surface/50` whose
+ * translucent rule won the cascade over the sticky fill; that rule must still never
+ * ride on a sticky header. (Round 12: the sticky fill moved from a bespoke
+ * `bg-surface` + blur to the shared material recipe.)
  */
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
@@ -13,7 +16,7 @@ function classTokens(el: Element): string[] {
 }
 
 describe('TableHeader — sticky background opacity', () => {
-  it('sticky header is opaque (no translucent bg-surface/50)', () => {
+  it('sticky header wears the shared material (never the translucent bg-surface/50)', () => {
     const { container } = render(
       <Table>
         <TableHeader sticky>
@@ -25,7 +28,8 @@ describe('TableHeader — sticky background opacity', () => {
     );
     const thead = container.querySelector('thead')!;
     const tokens = classTokens(thead);
-    expect(tokens).toContain('bg-surface');
+    expect(tokens).toContain('material-surface');
+    expect(tokens).toContain('bg-background/85');
     expect(tokens).toContain('sticky');
     expect(tokens).not.toContain('bg-surface/50');
   });

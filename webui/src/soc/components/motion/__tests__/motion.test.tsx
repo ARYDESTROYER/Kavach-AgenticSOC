@@ -24,6 +24,9 @@ import {
   EASE_STANDARD,
   HOUSE_TRANSITION,
   HOUSE_SPRING,
+  SPRING_UI,
+  SPRING_PANE,
+  SPRING_MOMENTUM,
   pageVariants,
   tabVariants,
   bulkBarVariants,
@@ -56,15 +59,33 @@ afterEach(() => {
 });
 
 describe('motion variant tokens', () => {
-  it('derive timing from the shared MOTION tempo (ms → s) and the CSS ease tokens', () => {
-    // HOUSE_TRANSITION base duration = MOTION.base (200ms) → 0.2s.
-    expect(HOUSE_TRANSITION.duration).toBeCloseTo(MOTION.base / 1000, 5);
-    expect(HOUSE_TRANSITION.ease).toEqual(EASE_PREMIUM);
+  it('derive exit timing from the shared MOTION tempo (ms → s) and the CSS ease tokens', () => {
     // The cubic-bezier arrays mirror --motion-ease-premium / --motion-ease-standard.
     expect(EASE_PREMIUM).toEqual([0.16, 1, 0.3, 1]);
     expect(EASE_STANDARD).toEqual([0.2, 0, 0, 1]);
-    // The house spring is velocity-aware (a real spring, low bounce).
-    expect(HOUSE_SPRING.type).toBe('spring');
+    // Exits stay short tweens on the fast tempo (MOTION.fast 120ms → 0.12s).
+    const exit = pageVariants.exit as { transition?: { duration?: number; ease?: unknown } };
+    expect(exit.transition?.duration).toBeCloseTo(MOTION.fast / 1000, 5);
+    expect(exit.transition?.ease).toEqual(EASE_STANDARD);
+  });
+
+  it('has ONE spring vocabulary: critically damped by default, bounce only for momentum', () => {
+    // Round 12 (Apple damping 1.0 ⇔ bounce 0; response ⇔ visualDuration). This
+    // replaced the 200ms tween default and the ζ≈0.84 house spring.
+    expect(SPRING_UI).toEqual({ type: 'spring', bounce: 0, visualDuration: 0.3 });
+    expect(SPRING_PANE).toEqual({ type: 'spring', bounce: 0, visualDuration: 0.35 });
+    expect(SPRING_MOMENTUM).toMatchObject({ type: 'spring', visualDuration: 0.35 });
+    expect((SPRING_MOMENTUM as { bounce: number }).bounce).toBeGreaterThan(0);
+    // The MotionConfig default is the UI spring, and the deprecated house spring is an
+    // alias of it, so old click-driven call sites (the Cases bulk bar) stop overshooting.
+    expect(HOUSE_TRANSITION).toBe(SPRING_UI);
+    expect(HOUSE_SPRING).toBe(SPRING_UI);
+    // Every click-driven enter settles on the critically damped spring.
+    for (const v of [pageVariants, tabVariants, bulkBarVariants, verdictLandVariants]) {
+      const show = v.show as { transition?: unknown };
+      expect(show.transition).toBe(SPRING_UI);
+      expect((show.transition as { bounce: number }).bounce).toBe(0);
+    }
   });
 
   it('every enter variant starts hidden (opacity 0) and settles to opacity 1', () => {

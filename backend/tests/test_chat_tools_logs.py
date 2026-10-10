@@ -198,7 +198,7 @@ async def test_no_source_and_unknown_source() -> None:
 async def test_invalid_inputs_are_engine_templates() -> None:
     ctx = make_ctx(log_source=RecordingConnector())
     bad_size = await SearchLogsTool().run(ctx, size=5000)
-    assert bad_size.error == "Invalid input: check size"
+    assert bad_size.error == "Invalid input: check size (at most 200)"
     bad_time = await SearchLogsTool().run(ctx, time_from="yesterday at noon")
     assert bad_time.error and bad_time.error.startswith("Invalid time window")
 

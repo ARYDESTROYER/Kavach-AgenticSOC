@@ -108,12 +108,17 @@ async def test_store_pagination_concurrency_and_bounds(app_state: AppState) -> N
     assert total == 4 and len(rows) == 2
     assert {item.id for item in rows}.issubset({item.id for item in created})
 
-    # Transcript cap keeps complete exchanges.
+    # Round 12: no transcript window any more — every exchange is kept, in order.
     current = await _append(store, "dave", "turn 0")
     for index in range(1, MAX_MESSAGES_PER_CONVERSATION // 2 + 8):
         current = await _append(store, "dave", f"turn {index}", conversation_id=current.id)
-    assert len(current.messages) == MAX_MESSAGES_PER_CONVERSATION
+    # The default read is the newest window (the rest is counted and paged).
+    assert len(current.messages) == 100 and current.earlier_message_count == 16
+    current = await store.get("dave", current.id, window=None)
+    assert len(current.messages) == MAX_MESSAGES_PER_CONVERSATION + 16
+    assert current.messages[0].content == "turn 0" and current.messages[1].content == "answer to turn 0"
     assert current.messages[0].role == "user" and current.messages[-1].role == "assistant"
+    assert current.total_message_count == current.message_count == len(current.messages)
 
     # Per-user conversation cap trims old rows but always keeps the newest write.
     newest = None
@@ -471,7 +476,9 @@ async def test_completed_receipt_survives_transcript_retention(app_state: AppSta
         current = await _append(
             store, "retention-user", f"later turn {index}", conversation_id=current.id
         )
-    assert first_assistant_id not in {item.id for item in current.messages}
+    # Round 12: nothing is removed — the first answer is still in the thread.
+    whole = await store.get("retention-user", current.id, window=None)
+    assert first_assistant_id in {item.id for item in whole.messages}
 
     replay = await store.reserve_exchange(
         "retention-user",

@@ -46,6 +46,7 @@ import {
   humanizeToken,
 } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
 import { toast } from 'sonner';
 
 import { Button } from '@/ui/button';
@@ -866,7 +867,12 @@ export default function Approvals({ onNavigate }: ApprovalsProps) {
         <div
           role="region"
           aria-label="Bulk approval actions"
-          className="sticky top-[var(--header-h)] z-20 flex flex-wrap items-center gap-2 border-y border-primary/30 bg-background/95 px-3 py-2 shadow-sm backdrop-blur"
+          // Floating chrome over the scrolling queue: the ONE Console material (solid
+          // under reduced transparency or increased contrast), never a page-local blur.
+          className={cn(
+            'sticky top-[var(--header-h)] z-20 flex flex-wrap items-center gap-2 border-y border-primary/30 px-3 py-2 shadow-sm',
+            materialBar,
+          )}
         >
           <span className="text-sm font-medium text-foreground">
             <span className="tabular-nums">{fmtNumber(selected.size)}</span> selected

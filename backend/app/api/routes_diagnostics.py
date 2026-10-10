@@ -76,14 +76,16 @@ from ..engine.precedent import (
 from ..state import AppState
 from ..utils import iso_now
 from .deps import get_state, require_permission
-from .metrics_shared import fetch_case_page
+from .metrics_shared import fetch_case_population
 
 logger = logging.getLogger("tlsoc.api.diagnostics")
 router = APIRouter(prefix="/api")
 
-# Bound the case read exactly like the posture rollups do. The response carries the
-# truncation marker so a partial (newest-N) tally is never presented as a complete one.
-_STORE_FETCH_LIMIT = 5000
+# Bound the case read exactly like the posture rollups do (the same value as
+# ``routes_metrics._STORE_FETCH_LIMIT``, so both share ONE cached population read). The
+# response carries the truncation marker, whose store total is the exact case count,
+# so a newest-N tally is never presented as a complete one.
+_STORE_FETCH_LIMIT = 20000
 
 # The RAG source that holds analyst-confirmed precedent. Imported lazily in
 # :func:`_precedent_source` so this router can still report a degraded-but-honest
@@ -101,20 +103,26 @@ def _precedent_source() -> str:
 
 
 async def _load_cases(state: AppState) -> tuple[list, int]:
-    """Newest-first case page + the store's reported total. A store error degrades to
-    an empty page rather than failing the request; the caller reports the gap.
+    """The all-time case population (newest first, at most ``_STORE_FETCH_LIMIT``) +
+    the exact number of cases it should hold. A store error degrades to an empty list
+    rather than failing the request; the caller reports the gap.
 
-    Served through the SHARED short-TTL page cache (``api/metrics_shared``) — the
+    Served through the SHARED short-TTL population cache (``api/metrics_shared``) — the
     Overview health strip fires this endpoint alongside the posture/noise rollups
-    every refresh, and all of them read the same newest-N page. The cache is keyed by
-    (store identity, fetch limit), so a monkeypatched ``_STORE_FETCH_LIMIT`` or a
-    Demo Mode store swap always bypasses stale pages."""
+    every refresh, and all of them share one read. The cache is keyed by store
+    identity and fetch limit, so a monkeypatched ``_STORE_FETCH_LIMIT`` or a Demo Mode
+    store swap always bypasses stale reads."""
     try:
-        cases, total = await fetch_case_page(state.cases, _STORE_FETCH_LIMIT)
-        return list(cases), int(total)
+        population = await fetch_case_population(
+            state.cases, span_hours=None, limit=_STORE_FETCH_LIMIT
+        )
     except Exception as exc:  # noqa: BLE001 — diagnostics degrade, never 500
         logger.warning("diagnostics case load soft-failed: %s", exc)
         return [], 0
+    if not population.load_ok:
+        logger.warning("diagnostics case load soft-failed: %s", population.error)
+        return [], 0
+    return list(population.cases), int(population.scope_total)
 
 
 def _projection_block(rag: Any) -> dict[str, Any]:

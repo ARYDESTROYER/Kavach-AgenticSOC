@@ -833,8 +833,12 @@ export const api = {
   // ---- Auth (optional; OFF-safe) ---------------------------------------- //
   auth: {
     me: () => request<AuthMe>('GET', 'auth/me'),
-    login: (username: string, password: string) =>
-      request<LoginResult>('POST', 'auth/login', { body: { username, password } }),
+    // `remember` (Round 12) asks for a persistent, server-bounded session; the
+    // server decides and reports `remembered` / `remember_reason`.
+    login: (username: string, password: string, opts?: { remember?: boolean }) =>
+      request<LoginResult>('POST', 'auth/login', {
+        body: { username, password, ...(opts?.remember ? { remember: true } : {}) },
+      }),
     logout: () => request<{ ok: boolean }>('POST', 'auth/logout'),
     changePassword: (currentPassword: string, newPassword: string) =>
       request<{ ok: boolean }>('POST', 'auth/change-password', {
@@ -881,8 +885,10 @@ export const api = {
       // PUBLIC: the enabled providers for the login screen.
       providers: () => request<SsoProvidersResponse>('GET', 'auth/sso/providers'),
       // PUBLIC: the IdP authorization URL to redirect the browser to.
-      authorize: (provider: string) =>
-        request<SsoAuthorizeResult>('GET', 'auth/sso/authorize', { query: { provider } }),
+      authorize: (provider: string, opts?: { remember?: boolean }) =>
+        request<SsoAuthorizeResult>('GET', 'auth/sso/authorize', {
+          query: { provider, ...(opts?.remember ? { remember: '1' } : {}) },
+        }),
       // Admin: set/clear a provider's OIDC client secret (write-only).
       setSecret: (providerId: string, clientSecret: string | null) =>
         request<{ ok: boolean; configured: boolean }>(

@@ -66,6 +66,7 @@ _GENERIC_ARTIFACT_LABEL: dict[str, str] = {
     "categories": "Top values", "funnel": "Funnel", "heatmap": "Heatmap",
     "case_list": "Cases", "timeline": "Timeline", "entity": "Entity",
     "mitre": "ATT&CK techniques", "guide": "Guide", "query": "Query",
+    "comparison": "Comparison",
 }
 
 # The data shape each artifact kind carries, by convention shared between the tools
@@ -75,9 +76,18 @@ _GENERIC_ARTIFACT_LABEL: dict[str, str] = {
 ARTIFACT_DATA_SHAPES: dict[str, dict[str, tuple[str, ...]]] = {
     # labels[i] ↔ values[i]; sorted by value desc, ties by label (stable colours).
     # ``unit`` is a blocks ValueUnit; ``other`` is the folded remainder, if any.
-    "categories": {"required": ("labels", "values", "unit"), "optional": ("dimension", "other", "drill")},
+    # ``overlapping`` (Round 12): the groups are not a partition (a case under two rules
+    # counts under both), so ``blocks.artifact_views`` offers no donut and no stack.
+    "categories": {"required": ("labels", "values", "unit"), "optional": ("dimension", "other", "drill", "overlapping")},
     # x = ISO-8601 UTC bucket starts; series = [{key, label, values[], semantic?}].
-    "series": {"required": ("x", "series", "unit"), "optional": ("bucket", "last_in_progress", "reference")},
+    # ``x_labels`` are the calendar labels ("Mar 2026") aligned with x and ``tz`` the
+    # IANA zone the calendar buckets were cut in (Round 12, P0-5).
+    # ``rebin: False`` (Round 12, P0-8): the buckets were not cut in the zone a coarser
+    # server query uses (fixed UTC hours under a non-UTC operator timezone), so the
+    # materialiser offers no client re-bin.
+    "series": {"required": ("x", "series", "unit"),
+               "optional": ("bucket", "last_in_progress", "reference", "x_labels", "tz", "x_label", "overlapping",
+                            "rebin")},
     # stages in order; values[i] is the stage count.
     "funnel": {"required": ("stages", "values", "unit"), "optional": ()},
     # items = blocks KpiItem dicts (key, label, value, unit, ...).
@@ -93,6 +103,12 @@ ARTIFACT_DATA_SHAPES: dict[str, dict[str, tuple[str, ...]]] = {
     "mitre": {"required": ("techniques",), "optional": ()},
     "guide": {"required": ("links",), "optional": ("steps",)},
     "query": {"required": ("language", "query"), "optional": ("source_name", "hits")},
+    # Round 12 (P0-6): periods = [{label, in_progress?}] chronological (the last is the
+    # subject period, the one before it the baseline); rows = [{key, label, unit,
+    # values[per period], delta, delta_pct, new, small_sample, good_direction}], deltas
+    # computed in code (``blocks.compare_values``); ``dimension`` names the category axis
+    # (None for a comparison of metrics).
+    "comparison": {"required": ("periods", "rows"), "optional": ("dimension", "unit", "overlapping")},
 }
 
 
@@ -262,6 +278,11 @@ class ChatToolContext:
     # ``app_help`` defaults its ``topic`` input to it, so the topic's own glossary
     # sections lead. Never prompt text; an unknown id is ignored.
     topic: str | None = None
+    # Round 12 (SPEC §3.3, WP-ENG): ``await progress(done, total, unit)`` reports the
+    # progress of a long lookup (an exact aggregate scan) as a ``step.progress`` event
+    # of the calling step. Set by the chat engine per turn; ``None`` elsewhere. Tools
+    # call :func:`report_progress`, which never raises.
+    progress: Callable[..., Any] | None = None
 
     @property
     def default_range(self) -> TimeRange | None:
@@ -288,6 +309,22 @@ class ChatToolContext:
     def in_scope(self, tool: "type[ChatTool] | ChatTool") -> bool:
         return not self.scopes or tool.scope in self.scopes
 
+
+
+async def report_progress(ctx: Any, done: int, total: int | None = None, unit: str = "") -> None:
+    """Report a long lookup's progress through ``ctx.progress`` (Round 12, SPEC §3.3):
+    ``done`` of ``total`` ``unit`` (an engine noun such as "cases"; ``total`` ``None``
+    when unknown). A no-op without a callback; a failing callback is swallowed, so
+    progress can never fail a lookup."""
+    callback = getattr(ctx, "progress", None)
+    if callback is None:
+        return
+    try:
+        result = callback(int(done), None if total is None else int(total), str(unit or ""))
+        if hasattr(result, "__await__"):
+            await result
+    except Exception:  # noqa: BLE001 -- progress is cosmetic
+        return
 
 class ChatTool(ABC):
     """One chat tool. Concrete subclasses declare the class attributes below and
@@ -392,6 +429,9 @@ def _missing_grants(tool: Any, grants: Iterable[Grant], kind: str | None) -> lis
 # §4.3 / §4.4 prompt renderers.
 # --------------------------------------------------------------------------- #
 TOOL_SIGNATURE_LINE_RE = re.compile(r"^- ([a-z][a-z0-9_]{0,63})\(", re.MULTILINE)
+# A signature line is engine text; Round 12's aggregate tools carry their groupings,
+# metrics and defaults in it (the routing diagnosis), so the bound fits them whole.
+MAX_SIGNATURE_CHARS = 600
 
 
 def render_tool_signatures(tools: Iterable["type[ChatTool] | ChatTool"]) -> str:
@@ -399,7 +439,7 @@ def render_tool_signatures(tools: Iterable["type[ChatTool] | ChatTool"]) -> str:
     planner reads the granted tool names back with :data:`TOOL_SIGNATURE_LINE_RE`."""
     lines: list[str] = []
     for tool in tools:
-        signature = display_text(tool.signature, 400)
+        signature = display_text(tool.signature, MAX_SIGNATURE_CHARS)
         if not signature.startswith(f"{tool.name}("):
             signature = f"{tool.name}() {signature}".strip()
         lines.append(f"- {signature}")

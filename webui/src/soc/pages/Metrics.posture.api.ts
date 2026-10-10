@@ -132,7 +132,10 @@ export interface PostureSla {
   response_at_risk?: number;
   resolve_breached?: number;
   resolve_at_risk?: number;
-  attainment_pct?: number;
+  /** null when no case in the window could be scored (rendered as a dash). */
+  attainment_pct?: number | null;
+  /** Why attainment was not measured (empty when it was). */
+  attainment_reason?: string;
   breaching?: SlaBreachRow[];
 }
 

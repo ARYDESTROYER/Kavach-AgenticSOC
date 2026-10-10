@@ -1,19 +1,52 @@
 /**
- * Print / Save as PDF (BLOCKS.md §7.4): a print root directly under <body> carrying the
- * light tokens inline, the @media print / @page A4 hooks, static block renderers (data
- * tables visible, no menus), defanged content by default, then `window.print()` and an
- * unmount on `afterprint`. jsdom cannot print; the portal content and CSS hooks are the
- * contract.
+ * Print / Save as PDF (BLOCKS.md §7.4; Round 12 SPEC WP-REP R5, R6, R8–R13): a print root
+ * directly under <body> carrying the light tokens inline, the @media print / @page A4
+ * hooks, static block renderers (data tables visible, no menus, no content rendered as
+ * hidden buttons), defanged content by default, the export file name as the document
+ * title while printing, a wait for a closing menu's scroll lock, then `window.print()`
+ * and an unmount on `afterprint` after a grace period. jsdom cannot print; the portal
+ * content, the CSS hooks and the timing are the contract.
  */
 import { act, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildReportDoc } from '../model';
-import { PRINT_CSS, PRINT_ROOT_ID, clearPrintRoot, printDocument } from '../export/print';
+import { PRINT_CSS, PRINT_HIDDEN, PRINT_ROOT_ID, clearPrintRoot, mountPrintRoot, printDocument, printRootMounted } from '../export/print';
+import { GALLERY_RAW } from '../../blocks/__fixtures__/gallery';
 import { REPORT_LIGHT_TOKENS } from '../export/report-tokens';
+import { BlockCard } from '../../blocks/BlockCard';
 import { NOW, rawBlock, sampleReport } from './fixtures';
 
 const doc = () => buildReportDoc(sampleReport(), { author: 'ana', appVersion: '0.1.13', generatedAt: NOW.toISOString() });
+
+/** The sample report plus a Brief (contents list, sections, KPI leaf). */
+const briefDoc = () =>
+  buildReportDoc(
+    sampleReport({
+      items: [
+        ...sampleReport().items,
+        {
+          id: 'it-brief',
+          kind: 'block',
+          block: rawBlock('shift-brief'),
+          note: null,
+          source: { conversation_id: 'conv-1', message_id: 'msg-2', block_id: 'shift-brief' },
+          scope: { window: 'last 12h', sources: ['Wazuh'], generated_by: 'demo-chat', app_version: '0.1.13', demo: true },
+          added_at: '2026-10-08T13:00:00Z',
+        },
+        {
+          id: 'it-cases',
+          kind: 'block',
+          block: rawBlock('open-cases'),
+          note: null,
+          source: { conversation_id: 'conv-1', message_id: 'msg-2', block_id: 'open-cases' },
+          scope: { window: 'last 12h', sources: ['Wazuh'], generated_by: 'demo-chat', app_version: '0.1.13', demo: true },
+          added_at: '2026-10-08T13:00:00Z',
+        },
+      ],
+    }),
+    { author: 'ana', appVersion: '0.1.13', generatedAt: NOW.toISOString() },
+  );
 
 let print: ReturnType<typeof vi.fn>;
 beforeEach(() => {
@@ -22,6 +55,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   act(() => clearPrintRoot());
+  document.body.removeAttribute('data-scroll-locked');
+  vi.useRealTimers();
 });
 
 describe('printDocument', () => {
@@ -81,17 +116,218 @@ describe('printDocument', () => {
     expect(document.getElementById(PRINT_ROOT_ID)!.textContent).toContain('203.0.113.14');
   });
 
-  it('unmounts after printing and replaces a pending root', async () => {
+  it('unmounts after printing (after the grace) and replaces a pending root', async () => {
     await act(async () => {
-      await printDocument(doc());
+      await printDocument(doc(), { graceMs: 10 });
     });
     await act(async () => {
-      await printDocument(doc());
+      await printDocument(doc(), { graceMs: 10 });
     });
     expect(document.querySelectorAll(`#${PRINT_ROOT_ID}`)).toHaveLength(1);
     act(() => {
       window.dispatchEvent(new Event('afterprint'));
     });
     await waitFor(() => expect(document.getElementById(PRINT_ROOT_ID)).toBeNull());
+  });
+});
+
+describe('print document title (R5)', () => {
+  it('is the export file stem while printing and is restored afterwards', async () => {
+    document.title = 'Agentic SOC';
+    let during = '';
+    print.mockImplementation(() => {
+      during = document.title;
+    });
+    await act(async () => {
+      await printDocument(doc(), { documentTitle: 'agentic-soc-report-brute-force-on-vpn-gw-2-20261008-1405Z', graceMs: 5 });
+    });
+    expect(during).toBe('agentic-soc-report-brute-force-on-vpn-gw-2-20261008-1405Z');
+    act(() => {
+      window.dispatchEvent(new Event('afterprint'));
+    });
+    await waitFor(() => expect(document.title).toBe('Agentic SOC'));
+  });
+});
+
+describe('print content is never hidden (R6, R7, R13)', () => {
+  it('hides only [data-print-hide] and copy controls, never every button', () => {
+    expect(PRINT_CSS).not.toMatch(/button\s*[,{]/);
+    expect(PRINT_CSS).toContain(`${PRINT_HIDDEN} { display: none !important; }`);
+    expect(PRINT_HIDDEN).toContain('[data-print-hide]');
+    expect(PRINT_HIDDEN).toContain('button[aria-label^="Copy"]');
+    expect(PRINT_CSS).toContain('content-visibility: visible !important');
+  });
+
+  it('prints no control: every button left visible is content (a KPI tile with a link)', async () => {
+    // The sample report plus every gallery block, with defang off (prose links then
+    // carry a "Copy defanged link" button), through the real static renderers.
+    const base = sampleReport();
+    const gallery = (GALLERY_RAW as Array<Record<string, unknown>>).map((block, i) => ({
+      ...base.items[1],
+      id: `g-${i}`,
+      kind: 'block' as const,
+      block,
+      source: { ...base.items[1].source, block_id: String(block.id) },
+    }));
+    const all = buildReportDoc(sampleReport({ items: [...base.items, ...gallery] }), { generatedAt: NOW.toISOString() });
+    await act(async () => {
+      await printDocument(all, { defang: false });
+    });
+    const root = document.getElementById(PRINT_ROOT_ID)!;
+    const buttons = Array.from(root.querySelectorAll('button'));
+    const hidden = buttons.filter((b) => b.matches(PRINT_HIDDEN) || b.closest('[data-print-hide]'));
+    // The code block's "Copy", a prose link's "Copy defanged link", an entity's "Copy value".
+    const labels = new Set(hidden.map((b) => b.getAttribute('aria-label')));
+    expect(labels).toEqual(new Set(['Copy to clipboard', 'Copy defanged link', 'Copy value']));
+    const shown = buttons.filter((b) => !hidden.includes(b));
+    expect(shown.length).toBeGreaterThan(0);
+    for (const b of shown) {
+      expect(b.getAttribute('data-testid') ?? '', b.outerHTML.slice(0, 120)).toMatch(/^kpi-/);
+      expect((b.textContent ?? '').trim()).not.toBe('');
+    }
+  });
+
+  it('lays static data tables out fixed and wrapping, never a row label forced onto one line', () => {
+    expect(PRINT_CSS).not.toMatch(/nowrap/);
+    expect(PRINT_CSS).toContain('table[data-static-table] { table-layout: fixed !important; }');
+    expect(PRINT_CSS).toMatch(/table\[data-static-table\] td \{ overflow-wrap: anywhere; \}/);
+  });
+
+  it('prints table headers, the Brief contents and case ids as text', async () => {
+    await act(async () => {
+      await printDocument(briefDoc(), { defang: false });
+    });
+    const root = document.getElementById(PRINT_ROOT_ID)!;
+    // Nothing that carries text is hidden by the print stylesheet.
+    for (const el of Array.from(root.querySelectorAll('[data-print-hide]'))) expect(el.textContent ?? '').toBe('');
+    // Every header cell and list item has text (no empty "1. 2. 3." contents list).
+    const ths = Array.from(root.querySelectorAll('th'));
+    expect(ths.length).toBeGreaterThan(0);
+    for (const th of ths) expect((th.textContent ?? '').trim(), th.outerHTML).not.toBe('');
+    for (const li of Array.from(root.querySelectorAll('li'))) expect((li.textContent ?? '').trim()).not.toBe('');
+    // Sortable headers are plain text, not buttons.
+    expect(Array.from(root.querySelectorAll('th button'))).toHaveLength(0);
+    const toc = root.querySelector('[data-testid="report-toc-static"]')!;
+    expect(toc).toHaveTextContent('Contents (3 sections)');
+    expect(toc).toHaveTextContent('Summary');
+    expect(toc.querySelector('button')).toBeNull();
+    // No provenance glyph ("01/10") and no block controls in print.
+    expect(root.querySelector('figcaption button')).toBeNull();
+    // Content-visibility is never set on a printed block.
+    expect(root.querySelector('[class*="content-visibility"]')).toBeNull();
+    // The KPI values are all there (a tile with a link still prints).
+    expect(root).toHaveTextContent('12,840');
+    expect(root).toHaveTextContent('6,400');
+  });
+
+  it('keeps page breaks on small atoms only (R8)', () => {
+    expect(PRINT_CSS).not.toContain('.report-block, ');
+    expect(PRINT_CSS).toContain('thead { display: table-header-group; }');
+    expect(PRINT_CSS).toContain('orphans: 3; widows: 3;');
+    expect(PRINT_CSS).toMatch(/h4, [^{]*figcaption[^{]*\{ break-after: avoid; \}/);
+    // Wide tables wrap instead of being cut at the page edge.
+    expect(PRINT_CSS).toContain('overflow: visible !important');
+    expect(PRINT_CSS).toContain('white-space: normal !important');
+  });
+});
+
+describe('print guidance (R17)', () => {
+  it('shows the guidance before the dialog opens, never after it closed', async () => {
+    const order: string[] = [];
+    print.mockImplementation(() => {
+      // The dialog blocks here: the guidance must already be on screen.
+      order.push(`print (root ${printRootMounted() ? 'mounted' : 'missing'})`);
+    });
+    await act(async () => {
+      await printDocument(doc(), { onBeforePrint: () => order.push('guidance') });
+    });
+    expect(order).toEqual(['guidance', 'print (root mounted)']);
+  });
+
+  it('shows no guidance where printing is unavailable', async () => {
+    Object.defineProperty(window, 'print', { configurable: true, writable: true, value: undefined });
+    const guidance = vi.fn();
+    let ok = true;
+    await act(async () => {
+      ok = await printDocument(doc(), { onBeforePrint: guidance });
+    });
+    expect(ok).toBe(false);
+    expect(guidance).not.toHaveBeenCalled();
+    expect(printRootMounted()).toBe(false);
+  });
+});
+
+describe('print timing (R10, R11)', () => {
+  it('waits for a closing menu to release the scroll lock before printing', async () => {
+    document.body.setAttribute('data-scroll-locked', '1');
+    let lockedAtPrint: boolean | null = null;
+    print.mockImplementation(() => {
+      lockedAtPrint = document.body.hasAttribute('data-scroll-locked');
+    });
+    await act(async () => {
+      const pending = printDocument(doc(), { settleMs: 2_000 });
+      await new Promise((r) => setTimeout(r, 60));
+      expect(print).not.toHaveBeenCalled();
+      document.body.removeAttribute('data-scroll-locked');
+      await pending;
+    });
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(lockedAtPrint).toBe(false);
+    // The stylesheet lifts any lock that remains anyway.
+    expect(PRINT_CSS).toContain('html body[data-scroll-locked]');
+  });
+
+  it('keeps the root through an immediate afterprint, then unmounts after the grace', () => {
+    vi.useFakeTimers();
+    let done: (() => void) | null = null;
+    act(() => {
+      done = mountPrintRoot(doc(), BlockCard as never, { graceMs: 1_000 });
+    });
+    expect(printRootMounted()).toBe(true);
+    act(() => {
+      window.dispatchEvent(new Event('afterprint'));
+    });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(printRootMounted()).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(printRootMounted()).toBe(false);
+    expect(typeof done).toBe('function');
+  });
+
+  it('waits longer while the page is still in print media', () => {
+    vi.useFakeTimers();
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) => ({ matches: query === 'print', media: query }) as MediaQueryList,
+    );
+    act(() => {
+      mountPrintRoot(doc(), BlockCard as never, { graceMs: 1_000 });
+    });
+    act(() => {
+      window.dispatchEvent(new Event('afterprint'));
+    });
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(printRootMounted()).toBe(true);
+    matchMedia.mockImplementation((query: string) => ({ matches: false, media: query }) as MediaQueryList);
+    act(() => {
+      vi.advanceTimersByTime(1_100);
+    });
+    expect(printRootMounted()).toBe(false);
+  });
+
+  it('falls back to the timeout when afterprint never fires', () => {
+    vi.useFakeTimers();
+    act(() => {
+      mountPrintRoot(doc(), BlockCard as never, { timeoutMs: 60_000 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(60_001);
+    });
+    expect(printRootMounted()).toBe(false);
   });
 });
