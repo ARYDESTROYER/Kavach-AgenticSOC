@@ -69,6 +69,7 @@ export const DESIGN_SYSTEM_CATALOG = {
       variants: ['regular', 'thick', 'sticky', 'useScrollEdge', 'useScrollEdgeRef', 'materialBar recipe', 'materialThick recipe'],
       accessibility: [
         'solid under prefers-reduced-transparency and data-transparency=reduced',
+        'data-transparency=reduced is the per-user Settings "Reduce transparency" override (design-system/transparency)',
         'solid with a defined border under prefers-contrast: more',
         'fill opacity >= 0.80 for small text',
         'never stacked on another material',
@@ -81,7 +82,7 @@ export const DESIGN_SYSTEM_CATALOG = {
       purpose: 'One metric: label, a numeral that never truncates, and its context line under it',
       variants: ['default', 'bar', 'strip', 'compact', 'comfortable', 'hero', 'size=fluid', 'roll=false'],
       accessibility: [
-        'numeral never ellipsized, clipped or split inside its digits (fit guard steps it down)',
+        'numeral never ellipsized, clipped or split inside its digits: the fit guard steps it down, abbreviates, and keeps fitting the short form down to an 18px floor (needs a tile of about 100px; KpiTileGrid keeps 10rem)',
         'corner icons reserved in the label row, never over the numeral',
         'bound and abbreviation announced as text',
         'delta announced with direction and judgement',

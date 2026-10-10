@@ -2,7 +2,8 @@
  * Gate: no page-local MATERIAL (ui-standard "Materials", SYNTHESIS-ux §1.4).
  *
  * The Console has ONE translucent material for floating chrome — `materialBar` /
- * `materialThick` in lib/ui-recipes.ts — and theme.css turns it solid under
+ * `materialThick` in lib/material-recipes.ts (re-exported by lib/ui-recipes.ts) — and
+ * theme.css turns it solid under
  * `prefers-reduced-transparency`, the in-app `data-transparency="reduced"` override and
  * `prefers-contrast: more`. A page that spells its own `bg-background/95 backdrop-blur`
  * gets none of those fallbacks, so it stays translucent and blurred for exactly the
@@ -23,7 +24,9 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC = path.resolve(__dirname, '..', '..');
-const RECIPES = path.join('lib', 'ui-recipes.ts');
+/** The recipe files: the only places a blur may be spelled. */
+const RECIPE_FILES = new Set(['lib/ui-recipes.ts', 'lib/material-recipes.ts']);
+const MATERIAL_RECIPES = path.join('lib', 'material-recipes.ts');
 
 /** Grandfathered occurrences per file (posix path relative to src/). Ratchet DOWN only. */
 const BASELINE: Record<string, number> = {
@@ -57,7 +60,7 @@ function count(): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const file of walk(SRC)) {
     const rel = path.relative(SRC, file).split(path.sep).join('/');
-    if (rel === RECIPES.split(path.sep).join('/')) continue;
+    if (RECIPE_FILES.has(rel)) continue;
     // Code only: a doc comment that NAMES the anti-pattern (GlassSurface explains its own
     // blur) is not an occurrence of it.
     const text = fs
@@ -86,8 +89,82 @@ describe('material gate: no page-local translucent chrome', () => {
   });
 
   it('the recipe itself is the one place the blur is spelled', () => {
-    const recipes = fs.readFileSync(path.join(SRC, RECIPES), 'utf8');
+    const recipes = fs.readFileSync(path.join(SRC, MATERIAL_RECIPES), 'utf8');
     expect(recipes).toMatch(/export const materialBar =[\s\S]*?backdrop-blur-xl/);
     expect(recipes).toMatch(/export const materialThick =[\s\S]*?backdrop-blur-2xl/);
+    // One import path for every recipe: ui-recipes re-exports the material.
+    const uiRecipes = fs.readFileSync(path.join(SRC, 'lib', 'ui-recipes.ts'), 'utf8');
+    expect(uiRecipes).toMatch(/export \{ materialBar, materialThick \} from '\.\/material-recipes';/);
+    expect(uiRecipes).not.toMatch(/export const material(?:Bar|Thick)\b/);
+  });
+});
+
+/*
+ * Geometry: a sticky MATERIAL pins flush under the top bar.
+ *
+ * The material spans its column and content scrolls beneath it, so an offset such as
+ * `top-[calc(var(--header-h)+0.5rem)]` leaves an unpainted slit between the top bar and
+ * the bar through which scrolled fields show (the Settings section strip did, once the
+ * shell's `overflow-x-clip` made sticky positioning work). Every class composition that
+ * wears `materialBar` / `materialThick` / `<MaterialBar>` must pin at
+ * `top-[var(--header-h)]` (or a container-relative `top-0`). A `calc()` offset is for a
+ * sticky ASIDE in its own column, which never carries the material.
+ */
+
+/** Every balanced `cn(…)` argument list in `text`. */
+function cnCalls(text: string): string[] {
+  const out: string[] = [];
+  for (let at = text.indexOf('cn('); at !== -1; at = text.indexOf('cn(', at + 3)) {
+    if (/[\w$.]/.test(text[at - 1] ?? '')) continue; // `foo.cn(` / `xcn(` are not the helper
+    let depth = 0;
+    for (let i = at + 2; i < text.length; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')' && --depth === 0) {
+        out.push(text.slice(at + 3, i));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** A sticky offset BELOW the top bar: `top-[calc(var(--header-h) + …)]`, any variant prefix. */
+const OFFSET_BELOW_HEADER = /(?:^|[\s'"`:])top-\[calc\(var\(--header-h\)\s*\+/;
+
+function offsetMaterials(): string[] {
+  const found: string[] = [];
+  for (const file of walk(SRC)) {
+    const rel = path.relative(SRC, file).split(path.sep).join('/');
+    const text = fs
+      .readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|\s)\/\/.*$/gm, '$1');
+    for (const call of cnCalls(text)) {
+      if (/\bmaterial(?:Bar|Thick)\b/.test(call) && OFFSET_BELOW_HEADER.test(call)) {
+        found.push(`${rel}: cn(${call.replace(/\s+/g, ' ').slice(0, 140)}…)`);
+      }
+    }
+    for (const m of text.matchAll(/<MaterialBar\b[^>]*>/g)) {
+      if (OFFSET_BELOW_HEADER.test(m[0])) found.push(`${rel}: ${m[0].slice(0, 140)}`);
+    }
+  }
+  return found;
+}
+
+describe('material gate: sticky materials pin flush under the top bar', () => {
+  it('no material composition carries a top offset below --header-h', () => {
+    const found = offsetMaterials();
+    expect(found, found.join('\n')).toEqual([]);
+  });
+
+  it('detects the slit pattern it guards (self-test on a synthetic composition)', () => {
+    const sample = "cn('sticky top-[calc(var(--header-h)+0.5rem)] z-10 border-y', materialBar)";
+    const calls = cnCalls(sample);
+    expect(calls).toHaveLength(1);
+    expect(OFFSET_BELOW_HEADER.test(calls[0])).toBe(true);
+    // A column aside's offset (no material) and a flush material are both fine.
+    expect(OFFSET_BELOW_HEADER.test("'sticky top-[var(--header-h)] z-20'")).toBe(false);
+    expect(OFFSET_BELOW_HEADER.test("'md:sticky md:top-[calc(var(--header-h)+1rem)]'")).toBe(true);
+    expect(/\bmaterial(?:Bar|Thick)\b/.test("'md:sticky md:top-[calc(var(--header-h)+1rem)]'")).toBe(false);
   });
 });

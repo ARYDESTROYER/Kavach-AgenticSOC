@@ -66,13 +66,14 @@ const sheetVariants = cva(
       { side: 'right', size: 'default', class: 'w-full max-w-md' },
       { side: 'right', size: 'lg', class: 'w-full max-w-2xl' },
       { side: 'right', size: 'xl', class: 'w-full max-w-[56rem]' },
-      // A full-width sheet has no leading edge to round.
-      { side: 'right', size: 'full', class: 'w-full max-w-full sm:rounded-none' },
+      // `full` spans the viewport, so its leading edge meets the screen edge and is
+      // squared in SheetContent — unless a consumer caps the width (see there).
+      { side: 'right', size: 'full', class: 'w-full max-w-full' },
       { side: 'left', size: 'sm', class: 'w-full max-w-sm' },
       { side: 'left', size: 'default', class: 'w-full max-w-md' },
       { side: 'left', size: 'lg', class: 'w-full max-w-2xl' },
       { side: 'left', size: 'xl', class: 'w-full max-w-[56rem]' },
-      { side: 'left', size: 'full', class: 'w-full max-w-full sm:rounded-none' },
+      { side: 'left', size: 'full', class: 'w-full max-w-full' },
       // vertical panels (top/bottom) → height-bound
       { side: 'top', size: 'sm', class: 'max-h-[25dvh]' },
       { side: 'top', size: 'default', class: 'max-h-[40dvh]' },
@@ -99,30 +100,41 @@ export interface SheetContentProps
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof SheetPrimitive.Content>,
   SheetContentProps
->(({ side = 'right', size = 'default', className, children, ...props }, ref) => (
-  <SheetPortal>
-    <SheetOverlay />
-    <SheetPrimitive.Content
-      ref={ref}
-      className={cn(sheetVariants({ side, size }), className)}
-      {...props}
-    >
-      {children}
-      <SheetPrimitive.Close
-        aria-label="Close"
-        className={cn(
-          'absolute right-4 top-4 inline-flex h-7 w-7 items-center justify-center rounded-md',
-          'text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-          focusRing,
-          'disabled:pointer-events-none',
-        )}
+>(({ side = 'right', size = 'default', className, children, ...props }, ref) => {
+  const classes = cn(sheetVariants({ side, size }), className);
+  return (
+    <SheetPortal>
+      <SheetOverlay />
+      <SheetPrimitive.Content
+        ref={ref}
+        className={
+          // A `full` side sheet squares its leading edge only while it really spans the
+          // viewport. A consumer `max-w-[…]` cap (the case-detail and expanded-block
+          // sheets) replaces `max-w-full` in the merge; the leading edge then faces the
+          // page and keeps its 14px radius like every other side sheet.
+          size === 'full' && classes.split(' ').includes('max-w-full')
+            ? cn(classes, 'sm:rounded-none')
+            : classes
+        }
+        {...props}
       >
-        <X className="h-4 w-4" />
-        <span className="sr-only">Close</span>
-      </SheetPrimitive.Close>
-    </SheetPrimitive.Content>
-  </SheetPortal>
-));
+        {children}
+        <SheetPrimitive.Close
+          aria-label="Close"
+          className={cn(
+            'absolute right-4 top-4 inline-flex h-7 w-7 items-center justify-center rounded-md',
+            'text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
+            focusRing,
+            'disabled:pointer-events-none',
+          )}
+        >
+          <X className="h-4 w-4" />
+          <span className="sr-only">Close</span>
+        </SheetPrimitive.Close>
+      </SheetPrimitive.Content>
+    </SheetPortal>
+  );
+});
 SheetContent.displayName = SheetPrimitive.Content.displayName;
 
 const SheetHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (

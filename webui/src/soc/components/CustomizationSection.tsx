@@ -30,7 +30,6 @@ import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SectionTitle } from '@/soc/pages/settings/primitives';
 import {
   applyTransparencyPreference,
-  readTransparencyPreference,
   TRANSPARENCY_PREF_KEY,
   type TransparencyPreference,
 } from '@/design-system/transparency';
@@ -69,11 +68,11 @@ export const CustomizationSection: React.FC = () => {
   const { prefs, themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh } = usePrefs();
   const isAdmin = useCan('settings', 'manage');
 
-  // "Reduce transparency": this device's mirror first (what the page is showing right
-  // now), then the account's stored choice once the cascade hydrates (prefs.tsx has
-  // already applied that value to <html>).
+  // "Reduce transparency": start from what the page is showing right now (the pre-paint
+  // stamp from this device's mirror, or the account value prefs.tsx already applied),
+  // then follow the account's stored choice once the cascade hydrates.
   const [transparency, setTransparency] = React.useState<TransparencyPreference>(() =>
-    readTransparencyPreference(),
+    document.documentElement.dataset.transparency === 'reduced' ? 'reduced' : 'system',
   );
   const storedTransparency = prefs.misc?.[TRANSPARENCY_PREF_KEY];
   React.useEffect(() => {

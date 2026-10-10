@@ -15,8 +15,9 @@
  *     index.html reads so the first frame is already solid (no translucent flash) and
  *     which keeps the choice on this device when the prefs request fails.
  *
- * Kept tiny and React-free: `prefs.tsx` applies the server value on hydration, so this
- * module is first-paint code.
+ * First-paint code (`prefs.tsx` applies the stored value when the prefs hydrate), so it
+ * stays React-free and as small as it can be: a reader of the choice in force asks <html>
+ * (`data-transparency`), which the pre-paint stamp and every apply keep current.
  */
 
 /** The two choices. `system` follows `prefers-reduced-transparency` where reported. */
@@ -28,28 +29,19 @@ export const TRANSPARENCY_STORAGE_KEY = 'soc.transparency';
 /** `UserPrefs.misc` key holding the per-user choice. */
 export const TRANSPARENCY_PREF_KEY = 'transparency';
 
-/** The choice stored on this device (`system` when unset, unknown or unreadable). */
-export function readTransparencyPreference(): TransparencyPreference {
-  try {
-    return window.localStorage?.getItem(TRANSPARENCY_STORAGE_KEY) === 'reduced' ? 'reduced' : 'system';
-  } catch {
-    return 'system';
-  }
-}
-
 /**
  * Apply a choice to <html> and mirror it on this device. Anything that is not one of the
  * two known values (an absent or corrupt server field) is ignored, so the device's own
  * mirror stays in force.
  */
 export function applyTransparencyPreference(value: unknown): void {
-  if ((value !== 'reduced' && value !== 'system') || typeof document === 'undefined') return;
+  if (value !== 'reduced' && value !== 'system') return;
   const root = document.documentElement;
   if (value === 'reduced') root.dataset.transparency = value;
   else delete root.dataset.transparency;
   try {
-    window.localStorage?.setItem(TRANSPARENCY_STORAGE_KEY, value);
+    localStorage.setItem(TRANSPARENCY_STORAGE_KEY, value);
   } catch {
-    /* storage unavailable — the attribute above still applies for this session */
+    /* storage unavailable — the attribute above still applies for this page */
   }
 }

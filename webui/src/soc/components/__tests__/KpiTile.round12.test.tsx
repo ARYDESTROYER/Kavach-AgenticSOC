@@ -135,6 +135,29 @@ describe('KpiTile — the fit guard (a numeral that does not fit steps down, nev
       },
     });
   }
+  /**
+   * A text-aware model: the numeral is `width` px wide and its content takes 0.62em per
+   * character at the size its class names (Inter tabular figures run ~0.63em a digit), so
+   * the SHORT form really is narrower than the full one at the same size.
+   */
+  const PX: Record<string, number> = { 'text-4xl': 30, 'text-3xl': 24, 'text-2xl': 20, 'text-xl': 18, 'text-lg': 16 };
+  const sizeOf = (el: HTMLElement) => PX[[...el.classList].find((c) => c in PX) ?? ''] ?? 0;
+  const contentWidth = (el: HTMLElement) => Math.ceil((el.textContent ?? '').length * sizeOf(el) * 0.62);
+  function tileOfWidth(width: number) {
+    const isNumeral = (el: HTMLElement) => el.parentElement?.classList.contains('items-end') ?? false;
+    Object.defineProperty(proto, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isNumeral(this) ? width : 0;
+      },
+    });
+    Object.defineProperty(proto, 'scrollWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return isNumeral(this) ? contentWidth(this) : 0;
+      },
+    });
+  }
   afterEach(() => {
     for (const [key, desc] of Object.entries(original)) {
       if (desc) Object.defineProperty(proto, key, desc);
@@ -157,17 +180,53 @@ describe('KpiTile — the fit guard (a numeral that does not fit steps down, nev
   });
 
   it('abbreviates through formatCompact once even the smallest size does not fit', () => {
-    narrowTile(['text-4xl', 'text-3xl', 'text-2xl', 'text-xl']);
+    // 76px: "777,777" overflows even at 18px (78px), so the tile abbreviates — and the
+    // short form, measured again, fits at 20px (75px), larger than the full value could.
+    tileOfWidth(76);
     render(
-      <KpiTile label="Events" value="—" countTo={123_456} format={fmt} formatCompact={() => '123k'}
+      <KpiTile label="Events" value="—" countTo={777_777} format={fmt} formatCompact={() => '777.8K'}
         roll={false} variant="strip" density="compact" numeral="hero" />,
     );
     const tile = screen.getByTestId('kpi-events');
-    // The short form takes the size its own length earns, and the exact value stays on
-    // the tile for assistive tech and the pointer.
-    expect(within(tile).getByText('123k').closest('[aria-hidden="true"]')).not.toBeNull();
-    expect(within(tile).getByText('123,456')).toHaveClass('sr-only');
-    expect(numeral(tile)).toHaveAttribute('title', '123,456');
+    const span = numeral(tile);
+    expect(span).toHaveTextContent('777.8K');
+    expect(span).toHaveClass('text-2xl');
+    expect(span.scrollWidth).toBeLessThanOrEqual(span.clientWidth);
+    // The exact value stays on the tile for assistive tech and the pointer.
+    expect(within(tile).getByText('777.8K').closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(within(tile).getByText('777,777')).toHaveClass('sr-only');
+    expect(span).toHaveAttribute('title', '777,777');
+  });
+
+  it('keeps fitting the short form: an abbreviated numeral is never left clipped', () => {
+    // The reviewer's case: a floor "≥77,777" in a 70px cell. It overflows at every size
+    // (18px is 79px), abbreviates to "≥77.8K", and the short form starts on ITS rung (30px,
+    // 112px) — which used to be final and clipped it by ~40px. It now steps down until it
+    // fits: 18px is 67px.
+    tileOfWidth(70);
+    render(
+      <KpiTile label="Open cases" value="—" countTo={77_777} format={fmt}
+        formatCompact={(n) => `${(n / 1000).toFixed(1)}K`} bound="At least this many: partial read"
+        roll={false} variant="strip" density="compact" numeral="hero" />,
+    );
+    const span = numeral(screen.getByTestId('kpi-open-cases'));
+    expect(span).toHaveTextContent('≥77.8K');
+    expect(span).toHaveClass('text-xl');
+    expect(span).not.toHaveClass('text-4xl');
+    expect(span.scrollWidth).toBeLessThanOrEqual(span.clientWidth);
+  });
+
+  it('shows the full value whenever it fits, and starts over when the row widens', () => {
+    tileOfWidth(200);
+    render(
+      <KpiTile label="Open cases" value="—" countTo={77_777} format={fmt}
+        formatCompact={(n) => `${(n / 1000).toFixed(1)}K`} bound="At least this many: partial read"
+        roll={false} variant="strip" density="compact" numeral="hero" />,
+    );
+    const span = numeral(screen.getByTestId('kpi-open-cases'));
+    expect(span).toHaveTextContent('≥77,777');
+    expect(span).toHaveClass('text-3xl');
+    expect(span.scrollWidth).toBeLessThanOrEqual(span.clientWidth);
   });
 
   it('fits a non-hero numeral too (its own size steps)', () => {

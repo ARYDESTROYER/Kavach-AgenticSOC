@@ -12,14 +12,13 @@ type ToasterProps = React.ComponentProps<typeof SonnerToaster>;
  * `system` remains only as the standalone default. Import `toast` directly from
  * 'sonner' to fire toasts.
  */
-function Toaster({ theme = 'system', style, ...props }: ToasterProps) {
+function Toaster({ theme = 'system', ...props }: ToasterProps) {
   return (
     <SonnerToaster
       theme={theme}
       className="toaster group"
-      // Toasts are 10px (`--radius`), like menus and popovers — sonner reads its corner
-      // from this variable — with the detached-portal `shadow-overlay` elevation.
-      style={{ ['--border-radius' as string]: 'var(--radius)', ...style }}
+      // Toasts are 10px (`--radius`, set on `[data-sonner-toaster]` in theme.css), like
+      // menus and popovers, with the detached-portal `shadow-overlay` elevation.
       toastOptions={{
         classNames: {
           toast:

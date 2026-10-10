@@ -342,8 +342,10 @@ export interface KpiTileProps {
    */
   density?: 'default' | 'compact' | 'comfortable';
   /**
-   * The numeral size scale. `'fluid'` is the hero numeral that grows with the viewport
-   * (clamp 30 → 44px) instead of a fixed step; see `KpiNumeralScale`. Default `'default'`.
+   * The numeral size scale. `'fluid'` is the hero numeral that grows with ITS OWN TILE
+   * (the numeral row is a size container; the rungs are `cqi` clamps between a 24 / 20 /
+   * 18px floor and a 44 / 35 / 29px cap) instead of a fixed step; see `KpiNumeralScale`.
+   * Default `'default'`.
    */
   size?: KpiNumeralScale;
   /**
@@ -666,7 +668,16 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
      * The numeral's SIZE STEPS, largest first, and where the ladder starts on them. The fit
      * guard (`useNumeralFit`) then walks further down from the start whenever the numeral
      * does not fit the row it is actually in, and — once the sizes run out — abbreviates
-     * through `formatCompact` when one is offered.
+     * through `formatCompact` when one is offered, and KEEPS WALKING with the short form.
+     *
+     * One walk, two phases, each step measured:
+     *   phase 1 — the full value, from `ladderStart` to the smallest size;
+     *   phase 2 — the abbreviated value, from the rung its OWN length earns
+     *             (`compactStart`) to the smallest size.
+     * Phase 2 restarts at the short form's rung rather than staying at the smallest size,
+     * so a short form that fits large is shown large; and because every step is measured,
+     * one that does not fit there steps down again instead of being clipped (before, the
+     * short form jumped back to its rung with no steps left to take).
      */
     const sizeSteps: readonly string[] = fluid
       ? FLUID_RUNGS
@@ -676,25 +687,26 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           : HERO_STEPS
         : ['text-3xl', 'text-2xl', 'text-xl'];
     const lengthCompact = canCompact && markText.length + heroText.length > HERO_ABBREVIATE_AT;
-    const ladderStart = laddered
-      ? ladderRung(markText + (lengthCompact ? formatCompact!(countTo as number) : heroText))
-      : 0;
-    const maxFitStep = sizeSteps.length - 1 - ladderStart + (canCompact && !lengthCompact ? 1 : 0);
+    const compactStart = canCompact ? ladderRung(markText + formatCompact!(countTo as number)) : 0;
+    const ladderStart = laddered ? (lengthCompact ? compactStart : ladderRung(markText + heroText)) : 0;
+    // Sizes the full value walks through, then (only when it may still abbreviate) the
+    // sizes the short form walks through.
+    const fullSteps = sizeSteps.length - ladderStart;
+    const compactSteps = canCompact && !lengthCompact ? sizeSteps.length - compactStart : 0;
+    const maxFitStep = fullSteps - 1 + compactSteps;
     const numeralRef = React.useRef<HTMLSpanElement | null>(null);
     const fitStep = useNumeralFit(
       numeralRef,
       `${sizeSteps[0]}|${markText}${heroText}|${ladderStart}`,
       maxFitStep,
     );
-    const sizeIndex = ladderStart + fitStep;
-    // Abbreviating is the LAST step: by length (the ladder's own rule), or because even the
-    // smallest size did not fit this row — and then the short form takes the size its own
-    // length earns rather than the smallest one.
-    const fitCompact = canCompact && !lengthCompact && sizeIndex >= sizeSteps.length;
+    // Abbreviating is the LAST resort: by length (the ladder's own rule), or because even
+    // the smallest size did not fit this row (phase 2 of the walk above).
+    const fitCompact = compactSteps > 0 && fitStep >= fullSteps;
     const heroCompact = lengthCompact || fitCompact;
     const sizeClass = fitCompact
-      ? sizeSteps[ladderRung(markText + formatCompact!(countTo as number))]
-      : sizeSteps[Math.min(sizeIndex, sizeSteps.length - 1)];
+      ? sizeSteps[compactStart + fitStep - fullSteps]
+      : sizeSteps[Math.min(ladderStart + fitStep, sizeSteps.length - 1)];
 
     // The rendered numeral: roll to `countTo` when it's a finite integer, else the
     // caller-supplied `value` (string or node) unchanged. The roll is the lazy motion.dev

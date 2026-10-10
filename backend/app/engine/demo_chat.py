@@ -282,6 +282,9 @@ class PromptView:
     disabled: tuple[str, ...] = ()
     prior_blocks: list[PriorBlock] = field(default_factory=list)
     prior_calls: list[PriorCall] = field(default_factory=list)
+    #: The analyst's earlier questions in this conversation (their own words, oldest
+    #: first): a bare clarify option ("Cases") is read against the one before it.
+    prior_questions: list[str] = field(default_factory=list)
     rounds: list[list[Result]] = field(default_factory=list)
     reference: Reference = field(default_factory=Reference)
     final_only: bool = False
@@ -543,6 +546,13 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
         return view
     view.question = (extract_user_turn(_content(msgs[live])) or "").strip()
     _parse_history(view, msgs[:live])
+    for message in msgs[:live]:
+        # Earlier user turns are replayed as plain user messages (never a tool result,
+        # which opens with an engine header, nor the product reference).
+        content = _content(message)
+        if (_role(message) == "user" and content.strip() and not TOOL_CALL_HEADER_RE.match(content.split("\n", 1)[0])
+                and not content.startswith(PRODUCT_REFERENCE_HEADER)):
+            view.prior_questions.append((extract_user_turn(content) or content).strip()[:500])
 
     echo: list[tuple[str, dict[str, Any]]] | None = None
     echo_pending = False
@@ -833,6 +843,18 @@ class Ask:
     memory: str | None = None
     definition: bool = False                      # a "what does X count/measure" question
     log_filter: tuple[tuple[str, str], ...] = ()  # explicit log search: (("contains", "x"),)
+    # Round 12 (SPEC D7-D11): the window the question names, a period comparison, a
+    # creation-time bucket and a case grouping; whether a report is to be SAVED (the
+    # header's ``report``); a trend's subject; a clarify kind; an entity to dig into.
+    win: Win | None = None
+    compare: Any = None
+    compare_win: Win | None = None                # an explicit other period ("Q3 vs Q2")
+    bucket: str | None = None
+    group: str | None = None
+    save: bool = False
+    subject: str | None = None
+    clarify: str | None = None
+    entity: tuple[str, str] | None = None         # (kind, value): host | user | ip
 
 
 _IPV4_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
@@ -1008,40 +1030,379 @@ _LOG_TERM_GENERIC = frozenset({
 #: Longest unquoted free-text value taken as a search term (in words).
 _LOG_TERM_MAX_WORDS = 4
 _LOG_FIELD_NOUNS = {"ip": "IP", "user": "user", "host": "host", "rule": "rule"}
-_REPORT_TEMPLATES = ("shift", "posture", "investigation", "hunt", "ioc", "custom")
+_REPORT_TEMPLATES = ("shift", "posture", "investigation", "hunt", "ioc", "executive", "monthly", "infographic",
+                     "investigation_brief", "custom")
+
+
+# --------------------------------------------------------------------------- #
+# Time windows (Round 12 SPEC D7): every phrase an analyst uses for a period becomes
+# the window spec the tools accept (``all``, ``now-90d``, ``now-6M``, ``this_month``,
+# ``last_quarter``, ``ytd``, ``2026-09``, ``2026-Q3``, ``{"from", "to"}``). Nothing is
+# shortened: 90 days stays 90 days, "lifetime" is all time. A month or quarter named
+# without its year ("September", "since March") needs today's date, which the planner
+# never reads from a clock: it is resolved from the latest calendar bucket of an anchor
+# lookup (:func:`_anchor_call`) before the lookups that use it run.
+# --------------------------------------------------------------------------- #
+_MONTH_NUMBERS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6, "july": 7,
+    "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "sept": 9,
+    "oct": 10, "nov": 11, "dec": 12,
+}
+_MONTH_LONG = ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+               "October", "November", "December")
+_MONTH_SHORT = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+# Full month names, plus the short forms that are never ordinary words. "May" and
+# "March" are verbs too, so alone they count only after a preposition or before a year.
+_MONTH_WORD = (r"(?:january|february|march|april|may|june|july|august|september|october|november|"
+               r"december|jan|feb|apr|jun|jul|aug|sept?|oct|nov|dec)")
+_SAFE_MONTH_WORD = (r"(?:january|february|april|june|july|august|september|october|november|december|"
+                    r"jan|feb|apr|jun|jul|aug|sept?|oct|nov|dec)")
+_UNIT_LETTER = {"m": "h", "h": "h", "d": "d", "w": "w", "M": "M", "y": "y"}
+_UNIT_WORDS = {"h": ("hour", "hours"), "d": ("day", "days"), "w": ("week", "weeks"),
+               "M": ("month", "months"), "y": ("year", "years")}
+_UNIT_HOURS = {"h": 1, "d": 24, "w": 168, "M": 720, "y": 8760}
+# Calendar tokens (``engine.time_windows``): their words and an approximate span in
+# hours (used only where a tool takes whole hours, such as the shift snapshot).
+_CALENDAR = {
+    "today": ("today", 24, "day"), "yesterday": ("yesterday", 24, "day"),
+    "this_week": ("this week", 168, "week"), "last_week": ("last week", 168, "week"),
+    "this_month": ("this month", 720, "month"), "last_month": ("last month", 720, "month"),
+    "this_quarter": ("this quarter", 2160, "quarter"), "last_quarter": ("last quarter", 2160, "quarter"),
+    "ytd": ("this year to date", 8760, "year"), "this_year": ("this year", 8760, "year"),
+    "last_year": ("last year", 8760, "year"),
+}
+_CALENDAR_PHRASES: tuple[tuple[str, str], ...] = (
+    (r"\b(?:ytd|year[- ]to[- ]date|so far this year|this year so far)\b", "ytd"),
+    (r"\b(?:mtd|month[- ]to[- ]date|so far this month)\b", "this_month"),
+    (r"\b(?:qtd|quarter[- ]to[- ]date|so far this quarter)\b", "this_quarter"),
+    (r"\btoday(?:'s)?\b|\bthis morning\b|\bso far today\b", "today"),
+    (r"\byesterday(?:'s)?\b", "yesterday"),
+    (r"\b(?:this|current) week(?:'s)?\b|\bweek to date\b", "this_week"),
+    (r"\b(?:last|previous|prior) week(?:'s)?\b", "last_week"),
+    (r"\b(?:this|current) month(?:'s)?\b", "this_month"),
+    (r"\b(?:last|previous|prior) month(?:'s)?\b", "last_month"),
+    (r"\b(?:this|current) quarter(?:'s)?\b", "this_quarter"),
+    (r"\b(?:last|previous|prior) quarter(?:'s)?\b", "last_quarter"),
+    (r"\b(?:this|current) year(?:'s)?\b", "this_year"),
+    (r"\b(?:last|previous|prior) year(?:'s)?\b", "last_year"),
+)
+_ALL_TIME_RE = re.compile(
+    r"\b(?:all[- ]?time|lifetime|life[- ]time|of all time|ever|in total|since (?:we|the) (?:start(?:ed)?|began|"
+    r"beginning)|since inception|since day one|from (?:the )?(?:start|beginning)|overall|to date|so far|"
+    r"entire history|whole history|all (?:the )?(?:history|data|cases))\b")
+_RELATIVE_RE = re.compile(
+    r"\b(?:(?:in|over|for|during|within)\s+)?(?:the\s+)?(?:last|past|previous|prior|trailing|recent)\s+"
+    r"(\d{1,4})\s*[- ]?(minutes?|mins?|hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?|mo|years?|yrs?|y)\b")
+_BARE_SPAN_RE = re.compile(
+    r"\b(?:(?:in|over|for|during|within|across)\s+(?:the\s+)?)?(\d{1,4})[- ](hours?|days?|weeks?|months?|years?)"
+    r"(?!\s+ago)\b")
+_ISO_DATE = r"(\d{4}-\d{2}-\d{2})"
+_ISO_RANGE_RE = re.compile(
+    rf"\b(?:from|between)?\s*{_ISO_DATE}\s*(?:to|until|through|thru|and|-|–|\.\.)\s*{_ISO_DATE}\b")
+_ISO_SINCE_RE = re.compile(rf"\b(?:since|after|from)\s+{_ISO_DATE}\b")
+_ISO_DAY_RE = re.compile(rf"\b(?:on|for)\s+{_ISO_DATE}\b")
+_QUARTER_YEAR_RE = re.compile(r"\bq([1-4])\s*[- ]?\s*(20\d\d)\b|\b(20\d\d)\s*[- ]?\s*q([1-4])\b")
+_QUARTER_ONLY_RE = re.compile(r"\bq([1-4])\b")
+_MONTH_YEAR_RE = re.compile(rf"\b{_MONTH_WORD}\.?\s+(?:of\s+)?(20\d\d)\b")
+_ISO_MONTH_RE = re.compile(r"\b(20\d\d)-(0[1-9]|1[0-2])\b(?!-\d)")
+_SINCE_MONTH_RE = re.compile(rf"\b(?:since|from|after)\s+(?:the\s+(?:start|beginning)\s+of\s+)?({_MONTH_WORD})\b"
+                             r"(?:\s+(20\d\d))?")
+_NAMED_MONTH_RE = re.compile(
+    rf"\b(?:in|for|during|of|over|on)\s+({_MONTH_WORD})\b|\b({_SAFE_MONTH_WORD})\b(?:'s)?")
+_YEAR_RE = re.compile(r"\b(?:in|for|during|of|year)\s+(20\d\d)\b|\b(20\d\d)\s+(?:report|review|summary|figures|"
+                      r"numbers|stats|metrics|posture|performance)\b")
+_CADENCE: tuple[tuple[str, str], ...] = (
+    (r"\bdaily (?:report|summary|brief|digest|review)\b", "now-24h"),
+    (r"\bweekly (?:report|summary|brief|digest|review)\b", "now-7d"),
+    (r"\bmonthly (?:soc )?(?:report|summary|brief|digest|review)\b", "last_month"),
+    (r"\bquarterly (?:report|summary|brief|digest|review)\b", "last_quarter"),
+    (r"\b(?:annual|yearly) (?:report|summary|brief|digest|review)\b", "last_year"),
+)
+
+
+@dataclass(frozen=True)
+class Win:
+    """One window the question names: ``spec`` is what the tools are sent (``None``
+    only while a month or quarter named without its year waits for the anchor),
+    ``phrase`` the planner's own words for it, ``hours`` its span in whole hours when
+    one is meaningful (a trailing window; an approximation for calendar periods)."""
+
+    spec: Any
+    phrase: str
+    hours: int | None = None
+    all_time: bool = False
+    unit: str | None = None          # the calendar unit of a calendar period
+    pending: tuple[str, int] | None = None   # ("month"|"since"|"quarter", n): needs the year
+
+    @property
+    def bounded(self) -> bool:
+        return not self.all_time and self.spec is not None or self.pending is not None
+
+
+def _relative(n: int, unit: str) -> Win:
+    """``now-<n><unit>`` with its phrase ("the last 90 days", "the last hour")."""
+    n = max(1, n)
+    one, many = _UNIT_WORDS[unit]
+    phrase = f"the last {one}" if n == 1 else f"the last {n} {many}"
+    return Win(spec=f"now-{n}{unit}", phrase=phrase, hours=n * _UNIT_HOURS[unit])
+
+
+def _relative_from(number: str, word: str) -> Win:
+    n = int(number)
+    letter = word[0]
+    if word.startswith(("mo", "month")):
+        letter = "M"
+    elif letter == "m":
+        # Minutes: the case, metric and cost lookups count whole hours, so a span in
+        # minutes is the last hour (it never reads as months).
+        return _relative(1, "h")
+    return _relative(n, _UNIT_LETTER.get(letter, "d"))
+
+
+def _month_win(year: int, month: int) -> Win:
+    return Win(spec=f"{year:04d}-{month:02d}", phrase=f"{_MONTH_LONG[month - 1]} {year}", hours=720, unit="month")
+
+
+def _quarter_win(year: int, quarter: int) -> Win:
+    return Win(spec=f"{year:04d}-Q{quarter}", phrase=f"Q{quarter} {year}", hours=2160, unit="quarter")
+
+
+def _since_win(year: int, month: int) -> Win:
+    return Win(spec={"from": f"{year:04d}-{month:02d}-01"}, phrase=f"since {_MONTH_SHORT[month - 1]} {year}")
+
+
+def _day_phrase(iso: str) -> str:
+    try:
+        year, month, day = (int(p) for p in iso.split("-"))
+        return f"{day} {_MONTH_SHORT[month - 1]} {year}"
+    except (ValueError, IndexError):
+        return iso
+
+
+def _window_from(lowered: str) -> Win | None:
+    """The window the question names, or None (each lookup's own default applies)."""
+    low = lowered
+    match = _ISO_RANGE_RE.search(low)
+    if match:
+        a, b = match.group(1), match.group(2)
+        return Win(spec={"from": a, "to": b}, phrase=f"{_day_phrase(a)} to {_day_phrase(b)}")
+    match = _ISO_SINCE_RE.search(low)
+    if match:
+        return Win(spec={"from": match.group(1)}, phrase=f"since {_day_phrase(match.group(1))}")
+    match = _ISO_DAY_RE.search(low)
+    if match:
+        return Win(spec=match.group(1), phrase=_day_phrase(match.group(1)), hours=24, unit="day")
+    match = _QUARTER_YEAR_RE.search(low)
+    if match:
+        quarter = int(match.group(1) or match.group(4))
+        year = int(match.group(2) or match.group(3))
+        return _quarter_win(year, quarter)
+    match = _SINCE_MONTH_RE.search(low)
+    if match:
+        # After "since", "from" or "after", even "May" and "March" are months.
+        month = _MONTH_NUMBERS[match.group(1)]
+        if match.group(2):
+            return _since_win(int(match.group(2)), month)
+        return Win(spec=None, phrase=f"since {_MONTH_LONG[month - 1]}", pending=("since", month))
+    match = _MONTH_YEAR_RE.search(low)
+    if match:
+        word = re.match(_MONTH_WORD, match.group(0)).group(0)  # type: ignore[union-attr]
+        return _month_win(int(match.group(1)), _MONTH_NUMBERS[word])
+    match = _ISO_MONTH_RE.search(low)
+    if match:
+        return _month_win(int(match.group(1)), int(match.group(2)))
+    for pattern, token in _CADENCE:
+        if re.search(pattern, low) and not _NAMED_MONTH_RE.search(low):
+            return _token_win(token)
+    # "In the last week" and "over the past month" are rolling spans; "last week" and
+    # "last month" (no article) are the calendar periods.
+    match = re.search(r"\bthe (?:last|past) (week|month|year)\b", low)
+    if match:
+        return {"week": _relative(7, "d"), "month": _relative(30, "d"), "year": _relative(12, "M")}[match.group(1)]
+    for pattern, token in _CALENDAR_PHRASES:
+        if re.search(pattern, low):
+            return _token_win(token)
+    match = _RELATIVE_RE.search(low)
+    if match:
+        return _relative_from(match.group(1), match.group(2))
+    if _ALL_TIME_RE.search(low):
+        return Win(spec="all", phrase="all time", all_time=True)
+    match = _NAMED_MONTH_RE.search(low)
+    if match:
+        word = match.group(1) or match.group(2)
+        return Win(spec=None, phrase=_MONTH_LONG[_MONTH_NUMBERS[word] - 1],
+                   pending=("month", _MONTH_NUMBERS[word]), unit="month", hours=720)
+    match = _QUARTER_ONLY_RE.search(low)
+    if match:
+        quarter = int(match.group(1))
+        return Win(spec=None, phrase=f"Q{quarter}", pending=("quarter", quarter), unit="quarter", hours=2160)
+    match = _YEAR_RE.search(low)
+    if match:
+        year = int(match.group(1) or match.group(2))
+        return Win(spec=str(year), phrase=str(year), hours=8760, unit="year")
+    if re.search(r"\b(?:last|past|previous) hour\b|\bthis hour\b", low):
+        return _relative(1, "h")
+    if re.search(r"\b(?:last|past|previous) day\b|\b24 ?h(?:ours?|rs?)?\b|\b(?:last|past) 24\b", low):
+        return _relative(24, "h")
+    if re.search(r"\b(?:past|last few|recent) (?:week|7 days)\b|\bthis past week\b", low):
+        return _relative(7, "d")
+    if re.search(r"\bpast month\b", low):
+        return _relative(30, "d")
+    if re.search(r"\bpast quarter\b", low):
+        return _relative(3, "M")
+    if re.search(r"\bpast year\b|\blast 12 months\b", low):
+        return _relative(12, "M")
+    if re.search(r"\bovernight\b", low):
+        return _relative(12, "h")
+    match = _BARE_SPAN_RE.search(low)
+    if match:
+        return _relative_from(match.group(1), match.group(2))
+    return None
+
+
+def _token_win(token: str) -> Win:
+    if token in _CALENDAR:
+        phrase, hours, unit = _CALENDAR[token]
+        return Win(spec=token, phrase=phrase, hours=hours, unit=unit)
+    match = re.fullmatch(r"now-(\d+)([hdwMy])", token)
+    if match:
+        return _relative(int(match.group(1)), match.group(2))
+    return Win(spec=token, phrase=token)
+
+
+def _anchored(win: Win | None, anchor: tuple[int, int] | None) -> Win | None:
+    """A named month or quarter given its year from ``anchor`` (the current year and
+    month, read from the anchor lookup's latest calendar bucket): the most recent one
+    that is not in the future."""
+    if win is None or win.pending is None:
+        return win
+    if anchor is None:
+        return None
+    year, month = anchor
+    kind, number = win.pending
+    if kind == "quarter":
+        current = (month - 1) // 3 + 1
+        return _quarter_win(year if number <= current else year - 1, number)
+    target = year if number <= month else year - 1
+    return _since_win(target, number) if kind == "since" else _month_win(target, number)
 
 
 def _hours_from(lowered: str) -> int | None:
-    match = re.search(
-        r"\b(?:last|past|previous)\s+(\d{1,3})\s*(minutes?|mins?|hours?|hrs?|h|days?|d|weeks?|wks?|w)\b",
-        lowered)
-    if match:
-        n = max(1, int(match.group(1)))
-        unit = match.group(2)
-        if unit.startswith("m"):
-            hours = 1
-        elif unit.startswith("h"):
-            hours = n
-        elif unit.startswith("d"):
-            hours = n * 24
-        else:
-            hours = n * 168
-        return max(1, min(720, hours))
-    if re.search(r"\b(?:last|past|previous) month\b|\b30 days\b", lowered):
-        return 720
-    if re.search(r"\b(?:this|last|past|previous) week\b|\bweekly\b|\b7 days\b", lowered):
-        return 168
-    if re.search(r"\b(?:last|past|previous) hour\b|\bthis hour\b", lowered):
-        return 1
-    if re.search(r"\btoday\b|\b(?:last|past) day\b|\b24 ?h(?:ours?)?\b", lowered):
-        return 24
-    return None
+    """The span in hours of the window the question names (None without one)."""
+    win = _window_from(lowered)
+    return win.hours if win is not None else None
 
 
 def _time_from(hours: int) -> str:
     # Whole days from two days up ("last 7d"), hours below that ("last 24h"): the tools
     # echo this expression in their window label, and "last 1d" reads oddly.
     return f"now-{hours // 24}d" if hours >= 48 and hours % 24 == 0 else f"now-{hours}h"
+
+
+# Comparisons (SPEC P0-6): the compared period, as ``compare`` takes it.
+_COMPARE_YOY_RE = re.compile(
+    r"\bsame (?:period|time|week|month|quarter|day|days) (?:last|a|the previous|previous|prior) year\b|"
+    r"\b(?:year[- ]over[- ]year|yoy|vs\.? (?:the )?same (?:period|time) last year)\b")
+_COMPARE_PREVIOUS_RE = re.compile(
+    r"\b(?:vs\.?|versus|compared? (?:to|with)|against|than|relative to)\s+(?:the\s+)?(?:last|previous|prior|"
+    r"preceding|earlier|month before|week before|quarter before)\b|"
+    r"\b(?:month|week|quarter|year|day)[- ]over[- ](?:month|week|quarter|year|day)\b|\b(?:mom|wow|qoq)\b|"
+    r"\bcompared? (?:this|the current|our)\b|\bchanged? (?:since|from) (?:last|the previous)\b|"
+    r"\bbetter or worse\b|\bimprov(?:ed|ing) (?:since|from|over)\b")
+_COMPARE_STRIP_RE = re.compile(
+    r"\b(?:vs\.?|versus|compared? (?:to|with)|against|than|relative to)\b.*$")
+
+
+def _compare_from(lowered: str) -> Any:
+    """``compare`` for a comparison question, else None."""
+    if _COMPARE_YOY_RE.search(lowered):
+        return "same_period_last_year"
+    if _COMPARE_PREVIOUS_RE.search(lowered):
+        return "previous_period"
+    return None
+
+
+def _compare_window(lowered: str) -> Win | None:
+    """The window a comparison is ABOUT: the period before "vs", else the one named
+    ("this month vs last month" is this month, compared with the one before)."""
+    head = _COMPARE_STRIP_RE.sub("", _COMPARE_YOY_RE.sub("", lowered)).strip()
+    win = _window_from(head) if head else None
+    if win is None:
+        win = _window_from(lowered)
+    if win is not None and win.spec in ("last_week", "last_month", "last_quarter", "last_year") and re.search(
+            r"\b(?:this|current)\b", lowered):
+        win = _token_win(win.spec.replace("last_", "this_"))
+    if win is None:
+        unit = next((u for u, words in (("this_month", "month"), ("this_week", "week"),
+                                         ("this_quarter", "quarter"), ("this_year", "year"))
+                     if re.search(rf"\b{words}\b", lowered)), "this_month")
+        win = _token_win(unit)
+    return win
+
+
+#: A breakdown by creation time: the calendar unit a question asks for.
+_BUCKET_WORDS: tuple[tuple[str, str], ...] = (
+    (r"\bmonth[- ]?wise\b|\b(?:by|per|each|every|a) month\b|\bmonthly\b|\bmonth by month\b|"
+     r"\bmonth[- ]on[- ]month\b|\bsegregat\w* (?:\w+ ){0,3}month|\bper calendar month\b", "month"),
+    (r"\bweek[- ]?wise\b|\b(?:by|per|each|every|a) week\b|\bweekly\b|\bweek by week\b", "week"),
+    (r"\bday[- ]?wise\b|\b(?:by|per|each|every|a) day\b|\bdaily\b|\bday by day\b", "day"),
+    (r"\bquarter[- ]?wise\b|\b(?:by|per|each|every|a) quarter\b|\bquarterly\b", "quarter"),
+    (r"\byear[- ]?wise\b|\b(?:by|per|each|every|a) year\b|\byearly\b|\bannually\b", "year"),
+    (r"\bhour[- ]?wise\b|\b(?:by|per|each|every|an) hour\b|\bhourly\b", "hour"),
+)
+
+
+def _bucket_from(lowered: str) -> str | None:
+    return next((unit for pattern, unit in _BUCKET_WORDS if re.search(pattern, lowered)), None)
+
+
+def _natural_bucket(win: Win | None) -> str:
+    """The calendar unit a breakdown of ``win`` reads best in (at most ~60 points)."""
+    if win is None or win.all_time or win.pending is not None:
+        return "month" if win is not None else "day"
+    unit = win.unit
+    if unit == "day":
+        return "hour"
+    if unit == "week":
+        return "day"
+    if unit == "month":
+        return "week"
+    if unit in ("quarter", "year"):
+        return "month" if unit == "year" else "week"
+    hours = win.hours or 24
+    if hours <= 48:
+        return "hour"
+    if hours <= 24 * 45:
+        return "day"
+    if hours <= 24 * 200:
+        return "week"
+    return "month"
+
+
+#: Case groupings (``case_stats group_by``) by the words that ask for them.
+_CASE_GROUP_WORDS: tuple[tuple[str, str], ...] = (
+    (r"\bwho (?:closed|resolved)\b|\bclosed (?:the )?most\b|\b(?:by|per) (?:closer|who closed)\b|"
+     r"\bclosed by (?:analyst|whom|who)\b|\bwhich analysts? (?:closed|resolved)\b", "closed_by"),
+    (r"\b(?:by|per|across|for each) (?:assignee|analyst|owner|person)s?\b|\bwho (?:is|are) (?:assigned|working)\b|"
+     r"\bassigned to (?:whom|who)\b|\bwhich analysts?\b|\bper analyst\b|\banalyst workload\b", "assignee"),
+    (r"\b(?:by|per|across|for each) severit(?:y|ies)\b|\bseverity (?:breakdown|split|mix)\b", "severity"),
+    (r"\b(?:by|per|across|for each) (?:status|state)(?:es)?\b|\bstatus (?:breakdown|split|mix)\b", "status"),
+    (r"\b(?:by|per|across|for each) verdicts?\b|\bverdict (?:breakdown|split)\b", "verdict"),
+    (r"\b(?:by|per|across|for each) priorit(?:y|ies)\b", "priority"),
+    (r"\b(?:by|per|across|for each) (?:detection )?rules?\b|\b(?:top|noisiest) (?:detection )?rules\b|"
+     r"\bwhich rules?\b", "rule"),
+    (r"\b(?:by|per|across|for each) (?:log )?sources?\b|\bwhich sources?\b", "source"),
+    (r"\b(?:by|per|across|for each) (?:disposition|classification)s?\b", "disposition"),
+    (r"\b(?:by|per|across|for each) (?:att&ck |mitre )?tactics?\b", "mitre_tactic"),
+    (r"\b(?:by|per|across|for each) (?:att&ck |mitre )?techniques?\b", "mitre_technique"),
+    (r"\b(?:decided by|who decided|by decision maker)\b", "decided_by"),
+    (r"\bopen (?:vs\.?|versus|and) closed\b", "status_group"),
+)
+
+
+def _case_group_from(lowered: str) -> str | None:
+    return next((fld for pattern, fld in _CASE_GROUP_WORDS if re.search(pattern, lowered)), None)
 
 
 def _indicator(question: str, lowered: str) -> tuple[str, str] | None:
@@ -1134,10 +1495,38 @@ def _help_topic(question: str) -> str:
     return display_text(text or question, 200)
 
 
+#: Words that ask for a report (or one of its forms) in this question.
+_REPORT_NOUN_RE = re.compile(
+    r"\b(reports?|brief|briefing|infographics?|one[- ]pager|executive (?:summary|overview|brief)|"
+    r"exec summary)\b")
+#: A request to MAKE one ("create a report", "give me whatever reports you can"):
+#: the header then asks the server to save it to Reports (SPEC D11).
+_SAVE_REPORT_RE = re.compile(
+    r"\b(?:create|make|build|generate|produce|prepare|give|write|draft|compile|put together|save|export|"
+    r"turn|need|want|send|share|run|do|get|pull)\b|\breports? you can\b|^\s*(?:/report|report|an? report)\b")
+#: Performance words: a report about how the SOC is doing, not about one case or hunt.
+_PERFORMANCE_RE = re.compile(
+    r"\b(performance|lifetime|how (?:are|did|have) we (?:been )?doing|how did we do|kpis?|metrics|posture|"
+    r"overall|whatever reports?|soc report|security report|operations report|summary report|status report|"
+    r"management report|board report|leadership|stakeholders?|numbers)\b")
+
+
 def _report_request(lowered: str, question: str = "") -> tuple[str | None, tuple[str, ...]]:
-    if not re.search(r"\b(report|brief|briefing)\b", lowered):
+    if not _REPORT_NOUN_RE.search(lowered):
         return None, ()
-    template = next((t for t in _REPORT_TEMPLATES if re.search(rf"\b{t}\b", lowered)), None)
+    template = next((t for t in _REPORT_TEMPLATES if re.search(rf"\b{t.replace('_', ' ')}\b", lowered)), None)
+    if re.search(r"\binvestigation brief\b|\bbrief (?:for|on|about) (?:case|incident)\b|\bcase brief\b", lowered):
+        template = "investigation_brief"
+    elif re.search(r"\binfographics?\b|\bone[- ]pager\b|\bvisual (?:summary|report)\b", lowered):
+        template = "infographic"
+    elif re.search(r"\bexec(?:utive)? (?:summary|overview|brief|report)\b|\bboard report\b|\bleadership\b", lowered):
+        template = "executive"
+    elif template is None and (re.search(r"\bmonthly\b", lowered) or (
+            (_MONTH_YEAR_RE.search(lowered) or _NAMED_MONTH_RE.search(lowered) or _ISO_MONTH_RE.search(lowered))
+            and re.search(r"\breports?\b", lowered))):
+        template = "monthly"
+    elif template is None and re.search(r"\b(performance|lifetime)\b", lowered):
+        template = "executive"
     if template is None and re.search(r"\b(handoff|hand-off|handover|brief|briefing)\b", lowered):
         template = "shift"
     headings: tuple[str, ...] = ()
@@ -1276,15 +1665,174 @@ def _log_search(question: str, *, case_scoped: bool = False) -> tuple[str, _LogF
     return intent, log_filter, group
 
 
+#: An object that makes a create/make/build request an ANSWER (a report, a chart, a
+#: breakdown), never a change: "Create a report of lifetime performance" is a report.
+_ANSWER_OBJECT_RE = re.compile(
+    r"\b(reports?|brief|briefing|summary|summaries|overview|charts?|graphs?|plots?|tables?|lists?|breakdowns?|"
+    r"exports?|infographics?|one[- ]pager|digest|analysis|recap|rundown|snapshot|review|timeline|"
+    r"visuali[sz]ations?|comparison|trend|stats|statistics)\b")
+_ANSWER_VERB_RE = re.compile(
+    r"^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?(?:create|make|build|generate|produce|prepare|draft|"
+    r"compile|write|give|put together|export)\b")
+
+
+def _is_change(low: str) -> bool:
+    """A request to change something (chat is read-only). Asking to create, make,
+    build or generate a report, chart, table or breakdown is not one (SPEC D9)."""
+    if not _CHANGE_RE.match(low) or low.startswith(("show", "list", "summar")):
+        return False
+    return not (_ANSWER_VERB_RE.match(low) and _ANSWER_OBJECT_RE.search(low))
+
+
+#: "Investigate everything about host dc01", "deep dive into user pnair".
+_DEEP_RE = re.compile(
+    r"\b(everything (?:about|on|for)|all (?:about|activity (?:of|for|from|on))|deep[- ]?dive|full (?:investigation|"
+    r"picture|history)|in depth|in-depth|thorough(?:ly)?|complete (?:investigation|picture|history)|"
+    r"leave no stone|end[- ]to[- ]end)\b")
+_DEEP_ENTITY_RE = re.compile(
+    r"\b(host(?:name)?|machine|server|endpoint|workstation|user(?:name)?|account|ip(?: address)?)\s+"
+    r"[\"'`]?([A-Za-z0-9][A-Za-z0-9._@\\-]{1,62})[\"'`]?")
+_DEEP_KINDS = {"host": "host", "hostname": "host", "machine": "host", "server": "host", "endpoint": "host",
+               "workstation": "host", "user": "user", "username": "user", "account": "user", "ip": "ip",
+               "ip address": "ip"}
+_DEEP_STOP = frozenset({"the", "this", "that", "it", "a", "an", "our", "their", "over", "in", "for", "during",
+                        "and", "with", "from", "last", "past", "activity", "behaviour", "behavior", "logs"})
+
+
+def _deep_entity(question: str) -> tuple[str, str] | None:
+    """``(kind, value)`` of the host, user or IP an in-depth investigation is about."""
+    match = _IPV4_RE.search(question)
+    if match:
+        return "ip", match.group(0)
+    for found in _DEEP_ENTITY_RE.finditer(question):
+        value = found.group(2).strip(".,;:")
+        if value.lower() in _DEEP_STOP or value.lower() in _LOG_TERM_GENERIC:
+            continue
+        return _DEEP_KINDS.get(found.group(1).lower(), "host"), value
+    return None
+
+
+#: Trend subjects: what a "trend" or "over time" question is about.
+_TREND_SUBJECTS: tuple[tuple[str, str], ...] = (
+    (r"\bmtt[adr]\b|\bmean time\b|\bresponse times?\b|\btime to (?:acknowledge|resolve|detect|respond)\b|"
+     r"\bdwell\b|\bresolution time\b|\back(?:nowledg\w*)? time\b", "timing"),
+    (r"\bfalse[- ]positive rate\b|\bfp rate\b|\bfalse positives?\b|\btrue[- ]positive rate\b|\btp rate\b|"
+     r"\bautomation rate\b|\bauto[- ]?clos\w* rate\b|\bfp\b", "rates"),
+    (r"\b(?:ai |llm |model )?(?:cost|costs|spend|spending|tokens?|budget)\b", "cost"),
+    (r"\balerts?\b|\bevents?\b|\blog volume\b|\bingest\w*\b|\bnoise\b", "alerts"),
+    (r"\brisk\b", "risk"),
+    (r"\bcases?\b|\bincidents?\b|\bcase volume\b|\bworkload\b|\bbacklog\b", "cases"),
+)
+_TREND_RE = re.compile(
+    r"\btrends?\b|\btrending\b|\bover time\b|\btrendline\b|\btime series\b|\bhistory of\b|\bevolution\b|"
+    r"\b(?:going|gone|went) (?:up|down)\b|\b(?:month|week|quarter|day)[- ]over[- ](?:month|week|quarter|day)\b")
+
+
+def _trend_subject(low: str) -> str | None:
+    return next((subject for pattern, subject in _TREND_SUBJECTS if re.search(pattern, low)), None)
+
+
+#: Genuinely ambiguous asks (SPEC D10): nothing to pick a reasonable default from.
+_CLARIFY_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"^\s*(?:please\s+)?(?:show|give|draw|plot|chart|display|get)?\s*(?:me\s+)?(?:the\s+|a\s+|our\s+)?"
+     r"(?:trends?|trend ?lines?|graph|chart)\s*(?:please)?[?.!]*\s*$", "trend"),
+    (r"^\s*(?:what(?:'s| is) the )?trend\??\s*$|^\s*how(?:'s| is) it trending\??\s*$", "trend"),
+    (r"^\s*(?:please\s+)?compare(?:\s+(?:them|it|these|those|please))?\s*[?.!]*\s*$|^\s*(?:show|give)\s+(?:me\s+)?"
+     r"(?:a\s+)?comparison\s*[?.!]*\s*$", "compare"),
+    (r"^\s*(?:how many|how much|what(?:'s| is) the (?:count|number|total))\s*[?.!]*\s*$", "count"),
+    (r"^\s*(?:please\s+)?(?:break (?:it|this|that) down|breakdown|split (?:it|this) up)\s*[?.!]*\s*$", "breakdown"),
+)
+#: The options each clarify offers (each ≤ 80 characters), and what a pick means.
+CLARIFY_OPTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "trend": ("Trend of what?", ("Alerts", "Cases", "AI cost", "FP rate")),
+    "compare": ("Which periods should I compare?",
+                ("This month vs last month", "This week vs last week", "This quarter vs last quarter",
+                 "This month vs the same month last year")),
+    "count": ("Count what?", ("Open cases", "Cases this week", "Alerts in the last 24 hours", "AI spend today")),
+    "breakdown": ("Break down what, and by what?",
+                  ("Cases by month", "Cases by severity", "Alerts by host", "AI spend by model")),
+}
+#: A bare clarify option the analyst picked, as the full question it stands for.
+_CLARIFY_RESOLVE: dict[tuple[str, str], str] = {
+    ("trend", "alerts"): "Show the alert trend for the last 30 days by day",
+    ("trend", "cases"): "Show the case trend for the last 30 days by day",
+    ("trend", "ai cost"): "Show the AI cost trend for the last 30 days by day",
+    ("trend", "fp rate"): "Show the false-positive rate trend for the last 30 days by week",
+    ("trend", "false-positive rate"): "Show the false-positive rate trend for the last 30 days by week",
+}
+
+
+def _clarify_kind(low: str, view: PromptView) -> str | None:
+    """The clarify a question needs, else None. A follow-up with an earlier answer to
+    work from ("chart it", "compare them") is not ambiguous."""
+    for pattern, kind in _CLARIFY_PATTERNS:
+        if re.search(pattern, low):
+            if kind in ("breakdown", "compare") and (view.prior_calls or view.prior_blocks):
+                return None
+            if kind == "trend" and re.search(r"\b(chart|graph)\b", low) and view.prior_blocks:
+                return None
+            return kind
+    return None
+
+
+def _resolve_clarified(question: str, view: PromptView) -> str:
+    """A bare clarify option ("Cases") as the question it answers, read from the
+    analyst's previous question (their own words) when that one needed a clarify."""
+    if not view.prior_questions:
+        return question
+    previous = view.prior_questions[-1].strip().lower()
+    kind = next((k for pattern, k in _CLARIFY_PATTERNS if re.search(pattern, previous)), None)
+    if kind is None:
+        return question
+    key = (kind, question.strip().strip(".!?").lower())
+    return _CLARIFY_RESOLVE.get(key, question)
+
+
+def _two_periods(low: str) -> tuple[Win, Win] | None:
+    """``(window, other)`` for "Q3 vs Q2", "September vs August", "2026-09 vs 2026-08"."""
+    if not re.search(r"\b(?:vs\.?|versus|compared? (?:to|with)|against|and)\b", low):
+        return None
+    parts = re.split(r"\b(?:vs\.?|versus|compared? (?:to|with)|against|and)\b", low, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    first, second = _window_from(parts[0]), _window_from(parts[1])
+    if first is None or second is None or first.unit is None or first.unit != second.unit:
+        return None
+    if first.unit not in ("month", "quarter", "year"):
+        return None
+    return first, second
+
+
+#: A case-store subject ("cases", "incidents", "tickets") for breakdowns and counts.
+_CASE_SUBJECT_RE = re.compile(r"\b(cases?|incidents?|tickets?|investigations?|escalations?)\b")
+_COUNT_CUE_RE = re.compile(
+    r"\b(how many|number of|count|total|amount of|volume|stats|statistics|breakdown|break(?:ing)? down|split|"
+    r"distribution|segregat\w*|group(?:ed)? by|per|each|every|tally)\b")
+
+
 def classify(question: str, view: PromptView | None = None) -> Ask:
     """The intent of ``question`` (deterministic regex rules; order matters)."""
     view = view or PromptView()
-    q = (question or "").strip()
+    q = _resolve_clarified((question or "").strip(), view)
     low = q.lower()
-    hours = _hours_from(low)
+    compare: Any = _compare_from(low)
+    compare_win: Win | None = None
+    if compare is not None:
+        win: Win | None = _compare_window(low)
+    else:
+        two = _two_periods(low)
+        win = _window_from(low)
+        if two is not None:
+            win, compare_win = two
+            compare = "explicit"
+    hours = win.hours if win is not None else None
     template, headings = _report_request(low, q)
+    save = bool(template) and bool(_SAVE_REPORT_RE.search(low)) and not re.search(
+        r"^\s*(?:how|where|what|why|can i|is there|do we|does)\b", low)
     base: dict[str, Any] = {"question": q, "lowered": low, "hours": hours, "topic": _help_topic(q),
-                            "report": template, "headings": headings}
+                            "report": template, "headings": headings, "win": win, "compare": compare,
+                            "compare_win": compare_win, "bucket": _bucket_from(low), "group": _case_group_from(low),
+                            "save": save}
 
     def ask(intent: str, **extra: Any) -> Ask:
         fields = dict(base)
@@ -1296,8 +1844,8 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     remember = _REMEMBER_RE.match(q)
     if remember and not re.search(r"\?\s*$", q):
         return ask("remember", memory=display_text(remember.group(1).strip(), 500))
-    if _CHANGE_RE.match(low) and not low.startswith(("show", "list", "summar")):
-        return ask("change")
+    if _is_change(low):
+        return ask("change", save=False)
 
     # Follow-ups that reuse an earlier answer (SPEC §4.3 digest + stored block ids).
     requested_view = _requested_view(low)
@@ -1314,18 +1862,26 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     log_history = any(c.tool in ("log_stats", "search_logs") for c in view.prior_calls)
     if log_history and group and (refers_back or re.match(r"^\s*(chart|break|split|group|now)\b", low)):
         return ask("regroup", field=group)
-    if group and refers_back and (view.prior_calls or view.prior_blocks):
+    if group and refers_back and (view.prior_calls or view.prior_blocks) and not _CASE_SUBJECT_RE.search(low):
         # "Chart that by host" after a metrics answer: no log lookup to regroup; the
         # final says so instead of guessing a different question.
         return ask("regroup", field=group)
-    if view.prior_calls and hours is not None and (
+    if view.prior_calls and (win is not None or re.search(r"\bwithout the [a-z ]{2,30} filter\b", low)) and (
             re.search(r"\b(same|again|repeat|redo)\b", low)
             or re.match(r"^\s*(?:and\s+|now\s+)?(?:what|how) about\b", low)):
         return ask("rerun")
+    clarify = None if view.case_scoped else _clarify_kind(low, view)
+    if clarify:
+        return ask("clarify", clarify=clarify, save=False)
 
     case_id = _case_id(q)
     if case_id:
+        if template == "investigation_brief" or re.search(r"\bbrief\b", low):
+            return ask("brief", case_id=case_id, report="investigation_brief",
+                       save=not view.case_scoped and (save or bool(re.search(r"\bbrief\b", low))))
         return ask("case", case_id=case_id)
+    if view.case_scoped and template == "investigation_brief":
+        return ask("brief", save=False)
     # Explicit log-search phrasing that names a value runs a log lookup (wave-6 B5),
     # ahead of the hunt (a typed IP is a log filter here, not a reputation lookup the
     # analyst did not ask for) and of the case-scoped default; a how-to question ("can
@@ -1340,6 +1896,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
             return ask("brute")
         # "Search logs for mimikatz by user" asks for a breakdown: a count by that field.
         return ask("log_count" if group else intent, log_filter=log_filter, field=group)
+    deep = _DEEP_RE.search(low)
+    if deep and not view.case_scoped:
+        entity = _deep_entity(q)
+        if entity is not None:
+            return ask("deep", entity=entity, win=win or _relative(30, "d"))
     indicator = _indicator(q, low)
     if indicator:
         return ask("hunt", indicator=indicator)
@@ -1352,7 +1913,7 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         if metric:
             return ask("explain_metric", metric=metric[0], topic=metric[1], definition=True)
         return ask("help", definition=True, wants_access=bool(_ACCESS_RE.search(low)),
-                   wants_overview=bool(_OVERVIEW_RE.search(low)))
+                   wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
     help_like = bool(_HELP_RE.search(low)) and not _DATA_ASK_RE.match(low)
     if view.case_scoped and not help_like and re.search(
             r"\b(this|it|why|what happened|summar\w+|explain|evidence|decision|decided|timeline|verdict|"
@@ -1363,13 +1924,43 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     metric = _metric(low)
     if metric and _DEFINITION_RE.search(low):
         return ask("explain_metric", metric=metric[0], topic=metric[1])
+    if help_like or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
+        return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
+                   wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
+    # Period comparisons (SPEC P0-6), each over its own subject.
+    if compare is not None and not template:
+        subject = _trend_subject(low)
+        if subject == "cost":
+            return ask("cost")
+        if subject == "alerts" and not _CASE_SUBJECT_RE.search(low):
+            return ask("top", field=_group_field(low) or "rule")
+        return ask("compare", subject=subject)
+    # Performance, executive, monthly and infographic reports; a report request with no
+    # other subject is one too ("Last 90 days or whatever reports you can").
+    if template in ("executive", "monthly", "infographic") or (
+            template in ("custom", "posture") and _PERFORMANCE_RE.search(low)
+            and not re.search(r"\b(sections?:|hunt|ioc|indicator)\b", low)) or (
+            template == "custom" and not _CASE_SUBJECT_RE.search(low) and not _keyword(low)
+            and not re.search(r"\b(logs?|events?|hosts?|users?|ips?|rules?|cost|spend|noise|funnel|campaigns?|"
+                              r"sources?|mitre|att&ck)\b", low)):
+        chosen = template if template in ("executive", "monthly", "infographic", "posture") else "executive"
+        if chosen == "monthly" and win is None:
+            win = _token_win("last_month")
+        return ask("perf_report", report=chosen, win=win, hours=win.hours if win else None)
+    # Trends over time (SPEC P0-5): of what the question names, else a clarify.
+    if not template and (_TREND_RE.search(low) or base["bucket"] and re.search(
+            r"\b(mtt[adr]|response times?|fp rate|false[- ]positive rate|tp rate|automation rate|spend|cost)\b",
+            low)):
+        subject = _trend_subject(low)
+        if subject is None:
+            return ask("clarify", clarify="trend", save=False)
+        if subject == "cost":
+            return ask("cost", bucket=base["bucket"] or _natural_bucket(win or _relative(30, "d")))
+        return ask("trend", subject=subject)
     if metric and not help_like and re.search(r"\b(?:our|ours|we|my)\b", low):
         # "What is our false-positive rate?" asks for our figure, not a definition.
         intent = {"posture": "posture", "noise_funnel": "noise", "cost": "cost"}.get(metric[0], "metric")
         return ask(intent, metric=metric[0] if intent == "metric" else None)
-    if help_like or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
-        return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
-                   wants_overview=bool(_OVERVIEW_RE.search(low)))
     if re.search(r"\b(runbooks?|playbooks?|knowledge base|guidance)\b", low):
         # Named before the data intents: "which runbooks cover brute force" asks for
         # guidance, not for failed sign-ins.
@@ -1397,10 +1988,10 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("case", case_status=_case_status(low) or "escalated")
     if re.search(r"(att&ck|mitre) coverage|technique coverage", low):
         return ask("metric", metric="mitre_coverage")
-    if re.search(r"\b(att&ck|mitre|tactics?|techniques?)\b", low):
+    if re.search(r"\b(att&ck|mitre|tactics?|techniques?)\b", low) and not base["group"]:
         return ask("mitre")
     if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", low) and not re.search(
-            r"\bsource[- ]?(?:ips?|address(?:es)?)\b", low):
+            r"\bsource[- ]?(?:ips?|address(?:es)?)\b", low) and not (_CASE_SUBJECT_RE.search(low) and base["group"]):
         # "top source IPs" is a log question (handled by the top-N rule below).
         return ask("sources")
     if re.search(r"\bcampaigns?\b", low):
@@ -1414,11 +2005,18 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     ) if re.search(pattern, low)), None)
     if automation:
         return ask("automation", metric=automation)
+    # Exact counts and breakdowns over every case (SPEC D8, case_stats).
+    case_subject = bool(_CASE_SUBJECT_RE.search(low))
+    if case_subject and (base["bucket"] or base["group"] or (
+            _COUNT_CUE_RE.search(low) and (win is not None or re.search(
+                r"\b(open|active|closed|resolved|right now|currently|so far|in total|all[- ]time|ever)\b", low)))
+            or re.search(r"\b(?:case|incident) (?:stats|statistics|numbers|counts?|volume|breakdown)\b", low)):
+        return ask("breakdown")
     if re.search(r"\b(true positives?|confirmed (?:incidents?|threats?)|what happened today|"
                  r"today'?s (?:cases|incidents|activity)|summari[sz]e (?:today|the day))\b", low):
         return ask("tp")
-    if _UNSUPPORTED_RE.search(low) and _LIST_CUE_RE.search(low) and not re.search(r"\b(logs?|events?)\b", low):
-        return ask("unsupported")
+    if _UNSUPPORTED_RE.search(low) and _LIST_CUE_RE.search(low) and not re.search(r"\b(logs?|events?|cases?)\b", low):
+        return ask("unsupported", save=False)
     if re.search(r"\b(top|most|noisiest|busiest|loudest|which)\b", low) and re.search(
             r"\b(hosts?|machines?|servers?|endpoints?|users?|accounts?|ips?|ip addresses|rules?)\b", low):
         fld = next((f for words, f in _GROUP_FIELDS if re.search(rf"\b{words}\b", low)), "host")
@@ -1426,18 +2024,22 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if re.search(r"\bmost alerts\b|\bnoisiest\b", low):
         return ask("top", field="host")
     if re.search(r"\b(posture|how (?:are|is|'re) (?:we|things|the soc|our)|overview|risk index|"
-                 r"state of|kpis?|metrics|how are we doing)\b", low):
+                 r"state of|kpis?|metrics|how are we doing|performance)\b", low):
+        return ask("posture")
+    if re.search(r"\b(?:fp|tp|false[- ]positive|true[- ]positive|automation|auto[- ]?close) rates?\b", low):
         return ask("posture")
     if _DEFINITION_RE.search(low) or low.startswith(("what", "how", "where", "why")) and not re.search(
             r"\b(cases?|alerts?|incidents?|logs?|events?)\b", low):
         return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
-                   wants_overview=bool(_OVERVIEW_RE.search(low)))
+                   wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
     if re.search(r"\b(cases?|incidents?|alerts?)\b", low):
         return ask("cases")
     if template == "shift":
         return ask("shift")
     if view.case_scoped:
         return ask("case")
+    if template:
+        return ask("perf_report", report="executive")
     return ask("fallback")
 
 

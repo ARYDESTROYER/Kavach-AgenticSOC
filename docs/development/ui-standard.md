@@ -95,8 +95,12 @@ tile's corner icons (help, drill-down) sit in the label row's corner, which rese
 their width, never over the numeral. The hero ladder counts what is drawn, the `≥`
 floor mark included. `KpiTile` then measures the numeral against the row it is really
 in and steps the size down — then abbreviates through `formatCompact`, with the exact
-value as text — until it fits; only a value with a real space may take a second line,
-after the smallest step. `KpiTile size="fluid"` sizes the hero numeral from its own
+value as text, and keeps measuring the short form (it starts on the size its own length
+earns and steps down again) — until it fits; only a value with a real space may take a
+second line, after the smallest step. The smallest step is the floor (18px): a cell whose
+numeral row is narrower than the short form at 18px (under about 100px of tile) cannot
+hold a number, so never lay one out that narrow — `KpiTileGrid` keeps every tile at
+least 10rem wide. `KpiTile size="fluid"` sizes the hero numeral from its own
 tile, never the viewport: the numeral row is a size container and the rungs are `cqi`
 clamps (25 / 20 / 15% of the row, 24–44px on the top rung) with −0.021em tracking.
 Use it inside a sized cell. Tile grids use `KpiTileGrid`, whose column count follows
@@ -125,8 +129,12 @@ Sticky chrome needs a scroller that actually scrolls. The shell clips horizontal
 overflow with `overflow-x-clip`, never `overflow-x-hidden`: a lone hidden axis turns
 the element into a vertical scroll container that never scrolls, and every sticky
 descendant — the top bar included — then leaves with the page. Pin below the top bar
-with `top-[var(--header-h)]` (or a `calc()` on it), never a bare `top-0`/`top-4` in a
-window-scrolled page.
+with `top-[var(--header-h)]`, never a bare `top-0`/`top-4` in a window-scrolled page. A
+full-width sticky bar (anything on the material) pins FLUSH at `top-[var(--header-h)]`:
+an offset such as `calc(var(--header-h)+0.5rem)` leaves an unpainted slit between the top
+bar and the bar through which scrolled content shows. Want breathing room? Pad inside
+the material. A `calc()` offset is only for a sticky aside in its own column (a section
+rail), which no content scrolls past. `material-gate.test.ts` fails on an offset material.
 
 **Elevation.** Borders for tiled and scrolled content; shadows only for detached
 portals. Menus and select lists use `shadow-menu`; popovers, hover cards, tooltips,
@@ -157,7 +165,12 @@ Data on an automatic refresh never animates (`KpiTile roll={false}`).
 reducedMotion="user"`), CSS overlays swap their scale/slide keyframes for a 150ms
 opacity-only cross-fade, and press scale is dropped. `prefers-reduced-transparency`
 (and `data-transparency="reduced"` on `<html>`, the in-app override for browsers that
-never report it): every material and the top bar become solid.
+never report it): every material and the top bar become solid. The override is the
+per-user Settings → Appearance & customization → "Reduce transparency" choice
+(System / On), stored in `UserPrefs.misc.transparency`, mirrored on the device in
+`soc.transparency` and stamped before first paint by `index.html`
+(`design-system/transparency.ts`); Safari never reports the media query and Firefox
+only behind a flag.
 `prefers-contrast: more`: hairlines become ≥3:1 structural lines — including the
 alpha hairline variants (`border-border/70` and the like), through the
 `--border-alpha-floor` the `border` colour carries — secondary text strengthens (and

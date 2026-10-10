@@ -171,6 +171,14 @@ describe('radii: one concentric scale on --radius', () => {
       for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThan(steps[i - 1]);
     }
   });
+
+  it('gives toasts the 10px menu radius from CSS (no inline style in the entry bundle)', () => {
+    // sonner reads its corner from `--border-radius`, declared at zero specificity.
+    const base = blockAfter(css, '@layer base {');
+    expect(base).toMatch(/\[data-sonner-toaster\]\s*\{\s*--border-radius:\s*var\(--radius\);/);
+    const sonner = fs.readFileSync(path.join(WEBUI_ROOT, 'src', 'ui', 'sonner.tsx'), 'utf8');
+    expect(sonner).not.toMatch(/'--border-radius'/);
+  });
 });
 
 describe('motion: one spring vocabulary in CSS', () => {

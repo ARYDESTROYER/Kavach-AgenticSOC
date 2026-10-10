@@ -309,6 +309,12 @@
   [data-radix-popper-content-wrapper] > * {
     transform-origin: var(--radix-popper-transform-origin);
   }
+  /* Toasts are 10px (`--radius`), like menus and popovers: sonner reads its corner from
+     `--border-radius`, which it declares at zero specificity (`:where(...)`), so this
+     wins without an inline style in the entry bundle (ui/sonner.tsx). */
+  [data-sonner-toaster] {
+    --border-radius: var(--radius);
+  }
 }
 
 @layer components {

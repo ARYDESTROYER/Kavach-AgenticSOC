@@ -71,34 +71,13 @@ export const menuItem =
   'data-[disabled]:pointer-events-none data-[disabled]:opacity-50';
 
 /**
- * materialBar — the ONE translucent material, regular thickness: floating chrome only
- * (sticky page / control / filter bars, the sticky case header). Never behind data.
- *
- * Fill opacity stays ≥ 0.80 so 12px secondary text keeps AA over the worst realistic
- * content blurred beneath it; without `backdrop-filter` support it is a near-solid
- * 0.85. The `material-surface` marker carries the scroll-edge fade
- * (`data-scrolled="true"`, see `useScrollEdge`) and every fallback in theme.css:
- * solid under prefers-reduced-transparency / `data-transparency="reduced"`, solid
- * with a defined border under prefers-contrast: more, and solid when nested inside
- * another material (no translucent-on-translucent stacking).
- *
- * On a material, small text uses `text-foreground` or `text-secondary-foreground`
- * at `font-medium`; colour lives on solid chips, never on the translucent layer.
+ * materialBar / materialThick — the ONE translucent material (floating chrome only).
+ * Defined in `./material-recipes` and re-exported here so every recipe keeps one import
+ * path. They live in their own module because no first-paint component wears the
+ * material: this file rides the entry chunk (the menu, dialog and focus recipes are
+ * first-paint code), and a definition here would ship to every page load.
  */
-export const materialBar =
-  'material-surface bg-background/85 supports-[backdrop-filter]:bg-background/80 ' +
-  'supports-[backdrop-filter]:backdrop-blur-xl supports-[backdrop-filter]:backdrop-saturate-150';
-
-/**
- * materialThick — the same material, thicker, for LARGE floating panes (a sheet
- * header that content scrolls under, a palette over a live page). Bigger surfaces
- * read as thicker: more fill and a stronger blur. Same marker, same fallbacks — which
- * paint `--material-solid` (`--popover` here; `--background` when unset, as on
- * `materialBar`), so a solid thick pane keeps the colour of the pane it belongs to.
- */
-export const materialThick =
-  'material-surface [--material-solid:var(--popover)] bg-popover/95 supports-[backdrop-filter]:bg-popover/90 ' +
-  'supports-[backdrop-filter]:backdrop-blur-2xl supports-[backdrop-filter]:backdrop-saturate-150';
+export { materialBar, materialThick } from './material-recipes';
 
 /**
  * modalSurface — the one centred modal panel (Dialog and AlertDialog shared it by copy).

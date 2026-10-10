@@ -176,10 +176,6 @@ describe('dialogs and sheets', () => {
     );
     // Never the ambiguous `rounded-r-xl` (it collides with the `r-xl` radius token key).
     expect(sheetVariants({ side: 'left' })).not.toMatch(/(^|\s)(sm:)?rounded-r-xl(\s|$)/);
-    // A full-width sheet has no leading edge to round (SheetContent merges with `cn`).
-    const full = tokens(cn(sheetVariants({ side: 'right', size: 'full' })));
-    expect(full).toContain('sm:rounded-none');
-    expect(full).not.toContain('sm:rounded-l-xl');
 
     render(
       <Sheet defaultOpen>
@@ -191,6 +187,43 @@ describe('dialogs and sheets', () => {
     );
     expect(tokens(screen.getByRole('dialog'))).toContain('bg-card');
     expect(tokens(screen.getByText('Case'))).not.toContain('tracking-tight');
+  });
+
+  it('a full sheet squares its leading edge only while it really spans the viewport', () => {
+    const { unmount } = render(
+      <Sheet defaultOpen>
+        <SheetContent size="full">
+          <SheetTitle>Full</SheetTitle>
+          <SheetDescription>Spans the viewport</SheetDescription>
+        </SheetContent>
+      </Sheet>,
+    );
+    // Uncapped: the leading edge meets the screen edge, so it is square.
+    const full = tokens(screen.getByRole('dialog'));
+    expect(full).toEqual(expect.arrayContaining(['max-w-full', 'sm:rounded-none']));
+    expect(full).not.toContain('sm:rounded-l-xl');
+    unmount();
+
+    // Capped (the shared case-detail sheet and the expanded chat block): the leading edge
+    // faces the page and keeps the 14px radius every other side sheet has.
+    for (const side of ['right', 'left'] as const) {
+      const { unmount: close } = render(
+        <Sheet defaultOpen>
+          <SheetContent side={side} size="full" className="max-w-[min(98vw,1400px)]">
+            <SheetTitle>Capped</SheetTitle>
+            <SheetDescription>Narrower than the viewport</SheetDescription>
+          </SheetContent>
+        </Sheet>,
+      );
+      const capped = tokens(screen.getByRole('dialog'));
+      expect(capped).toContain('max-w-[min(98vw,1400px)]');
+      expect(capped).not.toContain('max-w-full');
+      expect(capped).not.toContain('sm:rounded-none');
+      expect(capped).toEqual(
+        expect.arrayContaining(side === 'right' ? ['sm:rounded-l-xl'] : ['sm:rounded-tr-xl', 'sm:rounded-br-xl']),
+      );
+      close();
+    }
   });
 
   it('a rounded side sheet clips its children to the radius', () => {

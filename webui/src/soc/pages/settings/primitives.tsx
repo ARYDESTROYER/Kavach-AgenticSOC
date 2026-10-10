@@ -17,6 +17,7 @@ import type { ModelConfig, ModelsResponse, Preferences } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { materialBar } from '@/lib/ui-recipes';
+import { useScrollEdgeRef } from '@/design-system/material';
 
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
@@ -153,6 +154,8 @@ export function SectionShell({
   const anchors = React.useMemo(() => (toc ?? []).map((t) => t.anchor), [toc]);
   const active = useActiveAnchor(anchors);
   const showToc = (toc?.length ?? 0) >= 2;
+  // The horizontal strip's scroll-edge fade (declared before the rail's early return).
+  const stripRef = useScrollEdgeRef<HTMLDivElement>(undefined, showToc && !rail);
 
   const heading = <SectionTitle title={title} sub={sub} actions={actions} />;
 
@@ -183,13 +186,22 @@ export function SectionShell({
       {showToc ? (
         // Sticky chrome over the scrolling section: the ONE Console material (solid under
         // reduced transparency or increased contrast), never a page-local translucent fill.
+        // Pinned FLUSH under the top bar: an offset left a slit between the two through
+        // which scrolled fields showed. Once pinned over scrolled content its top hairline
+        // gives way to the top bar's own (no doubled rule) and the scroll-edge fade shows.
+        // The horizontal scroll lives on an inner row: an `overflow` on the material itself
+        // would clip that fade (it hangs below the bar) and scroll it into view.
         <div
+          ref={stripRef}
           className={cn(
-            'sticky top-[calc(var(--header-h)+0.5rem)] z-10 -mx-1 overflow-x-auto border-y border-border/80 px-1 py-1',
+            'sticky top-[var(--header-h)] z-10 -mx-1 border-y border-border/80',
+            'data-[scrolled=true]:border-t-transparent',
             materialBar,
           )}
         >
-          <SettingsTOC items={toc!} active={active} orientation="horizontal" className="min-w-max flex-row gap-1" />
+          <div className="overflow-x-auto px-1 py-1">
+            <SettingsTOC items={toc!} active={active} orientation="horizontal" className="min-w-max flex-row gap-1" />
+          </div>
         </div>
       ) : null}
       {children}
