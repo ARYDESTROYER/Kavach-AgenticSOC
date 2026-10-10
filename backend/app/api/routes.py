@@ -124,6 +124,7 @@ from ..utils import (
     iso_now,
     new_id,
     now_utc,
+    parse_millis_strict,
     relative_to_millis,
     to_millis,
 )
@@ -463,6 +464,19 @@ async def realtime_events(
     ]
     if not allowed:
         allowed = list(_REALTIME_TOPICS)
+    # Round 12 (WP-CM): case topics carry case ids and lifecycle status (the live
+    # ``case.changed`` queue nudges and per-case rooms), so they are served only to a
+    # principal that may read cases. A no-op when auth or RBAC is off (``allows`` is
+    # then always true). Resolved WITHOUT the denial audit row ``_enforce`` writes:
+    # dropping an optional topic from a stream is not an access attempt.
+    if any(t == "cases" or t.startswith("cases:") for t in allowed):
+        from .deps import resolve_access
+
+        view = await resolve_access(request)
+        if not view.allows("cases", "read"):
+            allowed = [t for t in allowed if t != "cases" and not t.startswith("cases:")]
+            if not allowed:
+                return Response(status_code=204)
 
     user = current_user(request)
     username = getattr(user, "username", None) if user is not None else None
@@ -5267,6 +5281,190 @@ def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
         return case
 
 
+# --------------------------------------------------------------------------- #
+# Round 12 (WP-CM): the Case Manager queue's server-side search / owner / severity
+# filters and its Title A–Z order.
+#
+# The queue used to load the newest 200 cases and filter Active, search and status in
+# the BROWSER, so an open case older than the newest 200 was silently absent from the
+# Active queue and no search could find it. The lifecycle group, sort and paging were
+# already server-side; these four were not, because none of them is a push-down every
+# store can answer exactly: free-text search spans ten fields (two nested), the owner
+# match is case-insensitive, severity is a READ-TIME band (``engine.priority``, never
+# stored or mapped), and ``title`` is a text field no store can order by.
+#
+# They are therefore answered by ONE exact scan over the store's own ``scan_page``
+# (the same streaming read the exact aggregates use), with the lifecycle statuses
+# pushed down as its pre-filter and every predicate re-checked here. The total is the
+# true matching count over the whole corpus — never a page-bounded lower bound — and
+# a request that sends none of these parameters never reaches this path.
+# --------------------------------------------------------------------------- #
+CASE_QUEUE_SEARCH_MAX_CHARS = 200
+CASE_QUEUE_SEVERITIES: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
+CASE_QUEUE_SCAN_SORTS: tuple[str, ...] = ("title",)
+CASE_QUEUE_SCAN_PAGE = 1000
+
+
+def _queue_value(row: Any, key: str) -> Any:
+    """Read ``key`` off a raw stored document or a :class:`Case` (enum → value)."""
+    value = row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+    return getattr(value, "value", value)
+
+
+def _queue_entity(row: Any) -> tuple[str, str]:
+    entity = _queue_value(row, "entity")
+    if isinstance(entity, dict):
+        etype, evalue = entity.get("type"), entity.get("value")
+    else:
+        etype, evalue = getattr(entity, "type", None), getattr(entity, "value", None)
+    return str(etype or _queue_value(row, "entity_type") or ""), str(evalue or "")
+
+
+def _queue_search_terms(q: str | None) -> list[str]:
+    """Whitespace-separated, case-folded search terms (every term must match)."""
+    text = str(q or "").strip()[:CASE_QUEUE_SEARCH_MAX_CHARS]
+    return [t for t in text.casefold().split() if t]
+
+
+def _queue_search_haystack(row: Any) -> str:
+    """The ten fields the queue search has always matched, case-folded."""
+    etype, evalue = _queue_entity(row)
+    parts = [
+        _queue_value(row, "case_id"), _queue_value(row, "case_number"),
+        _queue_value(row, "title"), _queue_value(row, "summary"),
+        _queue_value(row, "status"), _queue_value(row, "verdict"),
+        etype, evalue, _queue_value(row, "source_name"), _queue_value(row, "assignee"),
+    ]
+    return " ".join(str(p) for p in parts if p not in (None, "")).casefold()
+
+
+def _queue_title(row: Any) -> str:
+    """The queue's display title chain (title → summary → number → id), case-folded."""
+    for key in ("title", "summary", "case_number", "case_id"):
+        value = _queue_value(row, key)
+        if value not in (None, ""):
+            return str(value).casefold()
+    return ""
+
+
+def _queue_score_band(score: float) -> str:
+    """The console's ONE severity ladder for a 0..100 number (``badges.severityBand``)."""
+    scaled = max(0.0, min(100.0, float(score)))
+    if scaled >= 74:
+        return "critical"
+    if scaled >= 48:
+        return "high"
+    if scaled >= 22:
+        return "medium"
+    return "info" if scaled < 8 else "low"
+
+
+def _queue_severity(case: Case) -> str:
+    """The band the queue row DISPLAYS: the read-time severity band, else the risk
+    band, else ``info`` — the same chain as the console's ``caseSeverity``."""
+    raw = str(getattr(case, "severity_band", "") or "").strip().lower()
+    aliases = {"crit": "critical", "med": "medium", "moderate": "medium",
+               "informational": "info", "none": "info"}
+    raw = aliases.get(raw, raw)
+    if raw in CASE_QUEUE_SEVERITIES:
+        return raw
+    risk = getattr(case, "risk_score", None)
+    if isinstance(risk, (int, float)) and not isinstance(risk, bool):
+        return _queue_score_band(risk)
+    return "info"
+
+
+def _queue_sort_key(row: Any, field: str) -> tuple[Any, str]:
+    tiebreak = str(_queue_value(row, "case_id") or "")
+    if field == "title":
+        return (_queue_title(row), tiebreak)
+    if field == "risk_score":
+        risk = _queue_value(row, "risk_score")
+        number = float(risk) if isinstance(risk, (int, float)) and not isinstance(risk, bool) else -1.0
+        return (number, tiebreak)
+    millis = parse_millis_strict(_queue_value(row, field))
+    return (millis if millis is not None else -1, tiebreak)
+
+
+async def _scan_case_queue(
+    state: AppState,
+    *,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee: str,
+    severity: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    sort_order: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[Case], int]:
+    """One exact pass over the case store for the queue filters → (page, total)."""
+    from ..stores.base import case_in_created_window
+
+    prefs = state.execution_prefs
+    assignee_key = assignee.casefold()
+    kept: list[tuple[Any, Case | None]] = []
+    store = state.cases
+    cursor: Any = None
+    started = False
+    try:
+        while not started or cursor is not None:
+            started = True
+            rows, cursor, _total, _consistency = await store.scan_page(
+                limit=CASE_QUEUE_SCAN_PAGE,
+                cursor=cursor,
+                raw=True,
+                statuses=list(statuses) if statuses else None,
+            )
+            for row in rows:
+                if statuses and str(_queue_value(row, "status") or "") not in statuses:
+                    continue
+                if surface and str(_queue_value(row, "source_surface") or "") != surface:
+                    continue
+                if entity and _queue_entity(row)[1] != entity:
+                    continue
+                if assignee_key and str(_queue_value(row, "assignee") or "").strip().casefold() != assignee_key:
+                    continue
+                if terms:
+                    hay = _queue_search_haystack(row)
+                    if not all(term in hay for term in terms):
+                        continue
+                validated: Case | None = row if isinstance(row, Case) else None
+                if lo is not None or hi is not None:
+                    validated = validated or Case.model_validate(row)
+                    if not case_in_created_window(validated, lo, hi):
+                        continue
+                if severity:
+                    validated = _with_advisory_bands(
+                        validated or Case.model_validate(row), prefs
+                    )
+                    if _queue_severity(validated) != severity:
+                        continue
+                kept.append((row, validated))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a partial scan must never pass as exact
+        if cursor is not None:
+            try:
+                await store.close_scan_cursor(cursor)
+            except Exception:  # noqa: BLE001
+                pass
+        logger.warning("case queue scan failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not search every case right now; try again.",
+        ) from exc
+    kept.sort(key=lambda item: _queue_sort_key(item[0], sort_field), reverse=sort_order == "desc")
+    total = len(kept)
+    page = kept[offset: offset + limit] if limit > 0 else []
+    cases = [validated or Case.model_validate(row) for row, validated in page]
+    return cases, total
+
+
 @router.get("/cases", response_model=CaseListResponse)
 async def list_cases(
     status: str | None = None,
@@ -5282,6 +5480,11 @@ async def list_cases(
     sort_field: str | None = None,
     sort_order: str | None = None,
     status_group: str | None = None,
+    # Round 12 (WP-CM) — the Case Manager queue's server-side filters. Each is optional
+    # and additive: a request that sends none of them is answered exactly as before.
+    q: str | None = None,
+    assignee: str | None = None,
+    severity: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> CaseListResponse | JSONResponse:
@@ -5317,7 +5520,25 @@ async def list_cases(
     # population instead of re-sorting one page of the newest rows in the browser. A
     # request that sends NONE of them takes byte-identical parameters into the store and
     # gets the byte-identical base envelope back.
-    extended = sort_field is not None or sort_order is not None or status_group is not None
+    search_terms = _queue_search_terms(q)
+    assignee_filter = str(assignee or "").strip()[:80]
+    severity_filter = str(severity or "").strip().lower() or None
+    if severity_filter and severity_filter not in CASE_QUEUE_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown severity '{severity_filter}'; "
+                f"expected one of {list(CASE_QUEUE_SEVERITIES)}"
+            ),
+        )
+    queue_scan = bool(
+        search_terms or assignee_filter or severity_filter
+        or sort_field in CASE_QUEUE_SCAN_SORTS
+    )
+    extended = (
+        sort_field is not None or sort_order is not None or status_group is not None
+        or queue_scan
+    )
 
     if status_group is not None:
         if status:
@@ -5342,7 +5563,9 @@ async def list_cases(
     # a presentation preference, and a deployment that cannot honour one should still
     # return the operator's cases. The echo below is what keeps that honest.
     applied_sort_field = (
-        sort_field if sort_field in CASE_SORT_FIELDS else CASE_SORT_FIELD_DEFAULT
+        sort_field
+        if sort_field in CASE_SORT_FIELDS or sort_field in CASE_QUEUE_SCAN_SORTS
+        else CASE_SORT_FIELD_DEFAULT
     )
     applied_sort_order = (
         sort_order if sort_order in CASE_SORT_ORDERS else CASE_SORT_ORDER_DEFAULT
@@ -5367,7 +5590,32 @@ async def list_cases(
         )
 
     window_total_exact: bool | None = None
-    if from_ or to or status_group:
+    if queue_scan:
+        from ..utils import relative_to_millis_strict
+        from ..stores.base import status_group_statuses, window_bounds_proven
+
+        lo = relative_to_millis_strict(from_) if from_ else None
+        hi = relative_to_millis_strict(to) if to else None
+        if from_ or to:
+            window_total_exact = window_bounds_proven(from_, to, lo, hi)
+        group_statuses = status_group_statuses(status_group)
+        scan_statuses = (str(status),) if status else group_statuses
+        cases, total = await _scan_case_queue(
+            state,
+            statuses=scan_statuses,
+            surface=surface,
+            entity=entity,
+            terms=search_terms,
+            assignee=assignee_filter,
+            severity=severity_filter,
+            lo=lo,
+            hi=hi,
+            sort_field=applied_sort_field,
+            sort_order=applied_sort_order,
+            limit=applied_limit,
+            offset=applied_offset,
+        )
+    elif from_ or to or status_group:
         # ``status_group`` is passed ONLY when one was asked for. ``list_window`` is a
         # non-abstract method a third-party repository MAY override, and unconditionally
         # handing an override a keyword it predates would break a deployment that never
@@ -5413,6 +5661,13 @@ async def list_cases(
             )
         )
     )
+    # Round 12 (WP-CM): echo the queue filters the server applied, only when asked.
+    if search_terms:
+        body["search_applied"] = " ".join(search_terms)
+    if assignee_filter:
+        body["assignee_applied"] = assignee_filter
+    if severity_filter:
+        body["severity_applied"] = severity_filter
     return JSONResponse(body)
 
 
@@ -5527,7 +5782,15 @@ _CLOSE_ACTIONS = {"close", "confirm_fp", "resolve", "reopen"}
 # APPLYING the disposition and CLASSIFYING the case are two different things. Every
 # action here applies it; only :data:`_SELF_DECLARING_ACTIONS` — or an explicit
 # ``disposition_declared`` — classifies. See ``_perform_case_action``.
-_DISPOSITION_ACTIONS = {"set_disposition", "close"}
+#
+# ``resolve`` (Round 12, WP-CM / SPEC D15): resolving a case is a terminal move, and a
+# terminal move must be able to capture the investigative outcome. Before this, "Mark
+# resolved" (single and bulk) could only leave the triage-time disposition that
+# ``case_manager.apply()`` mapped from the model's verdict — for a NEEDS_HUMAN verdict
+# that is ``undetermined`` — which is exactly the "Undetermined after I resolved it as a
+# false positive" report. Same apply-vs-classify split as ``close``: the value is applied
+# when sent, and it CLASSIFIES only on an affirmative ``disposition_declared``.
+_DISPOSITION_ACTIONS = {"set_disposition", "close", "resolve"}
 
 # Actions whose VERB is itself the analyst's declaration, so they need no separate
 # intent flag. ``set_disposition`` exists for no other purpose than classifying a case

@@ -573,8 +573,17 @@ class JobRunner:
             {key: value for key, value in job.params.items() if key != "case_ids"}
         )
 
+        # ONE operator transaction id for the whole job, stamped on every history entry
+        # it writes — the same contract as ``POST /api/cases/bulk`` — so a bulk Close
+        # with a declared disposition is ONE decision to the bounded precedent window
+        # (``PrecedentWindowConfig.max_transaction_fraction``), not N independent ones.
+        # Derived from the job id so a resumed job keeps the same transaction.
+        batch_id = f"bulk-{job.job_id}"
+
         async def run(case_id: str) -> None:
-            await _perform_case_action(case_id, body, job.actor, self.state)
+            await _perform_case_action(
+                case_id, body, job.actor, self.state, batch_id=batch_id
+            )
 
         await self._item_loop(job, token, run, result_kind="case_lifecycle")
 

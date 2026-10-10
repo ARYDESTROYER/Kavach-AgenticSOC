@@ -85,6 +85,11 @@ class CaseLifecycleParams(_CaseIds):
     reason: str = Field(default="", max_length=1000)
     resolution: str | None = Field(default=None, max_length=4000)
     disposition: str | None = Field(default=None, max_length=80)
+    # Round 12 (WP-CM / SPEC §3.2): a bulk Close or Resolve carries the analyst's chosen
+    # disposition. ``True`` ONLY when a human operated the disposition picker for this
+    # submission — the same ground-truth intent flag as the single-case action (G1); it
+    # is forwarded verbatim to ``_perform_case_action``, which applies-vs-classifies.
+    disposition_declared: bool = False
     status: CaseStatus | None = None
 
     @model_validator(mode="after")

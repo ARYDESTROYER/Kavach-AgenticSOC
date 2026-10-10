@@ -1,0 +1,62 @@
+/* Chat activity indicator (Round 12, SPEC D13): the navigation glyph, the history-row
+   spinner and the brand ring. Motion is transform-only, one calm rotation, and only
+   under `prefers-reduced-motion: no-preference`; reduced motion keeps the same static
+   arc (the tooltip then says "Working"). Forced colors use system colors. */
+
+.chat-activity-ring {
+  transform: rotate(-90deg);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes chat-activity-spin {
+  to {
+    transform: rotate(270deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chat-activity-ring[data-motion='on'] {
+    animation: chat-activity-spin 1.2s linear infinite;
+  }
+
+  .chat-brand-ring[data-motion='on'] {
+    animation: chat-activity-spin 1.6s linear infinite;
+  }
+
+  .chat-brand-ring {
+    transition: opacity 300ms ease-out;
+  }
+}
+
+.chat-brand-ring {
+  transform: rotate(-90deg);
+  transform-origin: center;
+}
+
+@starting-style {
+  .chat-brand-ring {
+    opacity: 0;
+  }
+}
+
+@media (forced-colors: active) {
+  .chat-activity-ring,
+  .chat-brand-ring,
+  .chat-activity-dot {
+    forced-color-adjust: none;
+  }
+
+  .chat-activity-ring circle,
+  .chat-brand-ring circle {
+    stroke: Highlight;
+  }
+
+  .chat-activity-ring [data-track] {
+    stroke: GrayText;
+  }
+
+  .chat-activity-dot {
+    background: Highlight;
+  }
+}

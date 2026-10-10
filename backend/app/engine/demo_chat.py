@@ -132,9 +132,11 @@ DEMO_STARTERS: tuple[ChatStarter, ...] = (
     ),
 )
 
-#: At most this many lookup rounds per turn; the next step is always the final. With
-#: the default ``max_model_calls`` of 5 that leaves a call in reserve.
-MAX_PLAN_ROUNDS = 3
+#: At most this many lookup rounds per turn (the planner's own bound; the longest plan,
+#: an in-depth investigation, needs four at four lookups a time). Unlimited chat
+#: (SPEC D1) sets no per-question cap; in bounded mode the engine's own
+#: ``max_model_calls`` ends the turn earlier and the final says what did not run.
+MAX_PLAN_ROUNDS = 12
 
 # --------------------------------------------------------------------------- #
 # Reading the prompt.
@@ -683,6 +685,29 @@ def _join(items: Sequence[str], conj: str = "and") -> str:
 def _window(obs: Mapping[str, Any], fallback: str = "the selected window") -> str:
     value = obs.get("window")
     return display_text(value, 60) if isinstance(value, str) and value.strip() else fallback
+
+
+_BARE_PERIODS = frozenset({"today", "yesterday", "this week", "last week", "this month", "last month",
+                           "this quarter", "last quarter", "this year", "last year"})
+
+
+def _in(label: str) -> str:
+    """A window label with the words that introduce it: "in the last 24 hours",
+    "over all time (since 3 Nov 2025)", "in September 2026", "this week", "since 1
+    Mar 2026" (SPEC D7: humanised labels, never "in the all time")."""
+    text = (label or "").strip()
+    low = text.lower()
+    if not text:
+        return "in the selected window"
+    if low.startswith(("last ", "past ", "previous ", "selected ")) and low.split(" (")[0] not in _BARE_PERIODS:
+        return f"in the {text}"
+    if low.startswith("all time"):
+        return f"over {text}"
+    if low.split(" (")[0] in _BARE_PERIODS or low.startswith(("since ", "from ", "between ")):
+        return text
+    if " – " in text and not low.startswith("the "):
+        return "from " + text.replace(" – ", " to ", 1)
+    return f"in {text}"
 
 
 def _sources_answered(obs: Mapping[str, Any]) -> tuple[int, int]:
@@ -1357,6 +1382,18 @@ def _bucket_from(lowered: str) -> str | None:
     return next((unit for pattern, unit in _BUCKET_WORDS if re.search(pattern, lowered)), None)
 
 
+#: The window a breakdown by ``unit`` covers when the question names none.
+_BUCKET_DEFAULT_WINDOWS = {"hour": "now-24h", "day": "now-30d", "week": "now-12w", "month": "now-12M",
+                           "quarter": "all", "year": "all"}
+
+
+def _bucket_default(unit: str | None) -> Win | None:
+    token = _BUCKET_DEFAULT_WINDOWS.get(unit or "")
+    if token is None:
+        return None
+    return Win(spec="all", phrase="all time", all_time=True) if token == "all" else _token_win(token)
+
+
 def _natural_bucket(win: Win | None) -> str:
     """The calendar unit a breakdown of ``win`` reads best in (at most ~60 points)."""
     if win is None or win.all_time or win.pending is not None:
@@ -1827,8 +1864,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
             compare = "explicit"
     hours = win.hours if win is not None else None
     template, headings = _report_request(low, q)
-    save = bool(template) and bool(_SAVE_REPORT_RE.search(low)) and not re.search(
-        r"^\s*(?:how|where|what|why|can i|is there|do we|does)\b", low)
+    # A report request is saved to Reports (SPEC D11) unless it is a question ABOUT
+    # reports ("how do I export a report?") or a shift brief that names no report.
+    save = bool(template) and not re.search(
+        r"^\s*(?:how|where|what|why|when|which|can i|is there|are there|do we|does|did)\b", low) and (
+        template != "shift" or bool(re.search(r"\breports?\b", low)))
     base: dict[str, Any] = {"question": q, "lowered": low, "hours": hours, "topic": _help_topic(q),
                             "report": template, "headings": headings, "win": win, "compare": compare,
                             "compare_win": compare_win, "bucket": _bucket_from(low), "group": _case_group_from(low),
@@ -1939,7 +1979,7 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     # other subject is one too ("Last 90 days or whatever reports you can").
     if template in ("executive", "monthly", "infographic") or (
             template in ("custom", "posture") and _PERFORMANCE_RE.search(low)
-            and not re.search(r"\b(sections?:|hunt|ioc|indicator)\b", low)) or (
+            and not re.search(r"\bsections?:|\b(?:hunt|ioc|indicator)\b", low)) or (
             template == "custom" and not _CASE_SUBJECT_RE.search(low) and not _keyword(low)
             and not re.search(r"\b(logs?|events?|hosts?|users?|ips?|rules?|cost|spend|noise|funnel|campaigns?|"
                               r"sources?|mitre|att&ck)\b", low)):
@@ -2052,21 +2092,124 @@ class Call:
     input: dict[str, Any]
 
 
-def _windowed(ask: Ask, view: PromptView, default: int | None = None) -> dict[str, Any]:
-    """``window_hours`` from the user's words, else the planner default (only when the
-    analyst selected no window: the request chip wins over a planner choice)."""
-    hours = ask.hours if ask.hours is not None else (None if view.analyst_window else default)
-    return {"window_hours": hours} if hours is not None else {}
+#: Lookups whose window is sent as ``window`` (any length, calendar periods, all
+#: time); the log lookups also take ``time_from``, kept for plain trailing spans.
+_LOG_WINDOW_TOOLS = frozenset({"log_stats", "search_logs"})
 
 
-def _log_window(ask: Ask, view: PromptView, default: int | None = None) -> dict[str, Any]:
-    hours = ask.hours if ask.hours is not None else (None if view.analyst_window else default)
-    return {"time_from": _time_from(hours)} if hours is not None else {}
+def _default_win(default: Win | str | int | None) -> Win | None:
+    if default is None or isinstance(default, Win):
+        return default
+    if isinstance(default, int):
+        return _relative(default // 24, "d") if default >= 48 and default % 24 == 0 else _relative(default, "h")
+    return _token_win(default)
+
+
+def _win_args(tool: str, ask: Ask, view: PromptView, default: Win | str | int | None = None) -> dict[str, Any]:
+    """The window inputs of one call: the window the question names, else the
+    planner's ``default`` — but only when the analyst selected no window (the request
+    chip wins over a planner choice; a window the question names wins over the chip,
+    which then clamps it, SPEC §4.8.4). Nothing is shortened (SPEC D7)."""
+    win = ask.win if ask.win is not None and ask.win.spec is not None else None
+    if win is None:
+        win = None if view.analyst_window else _default_win(default)
+    if win is None:
+        return {}
+    if tool in _LOG_WINDOW_TOOLS:
+        if isinstance(win.spec, str) and re.fullmatch(r"now-\d+[hd]", win.spec) and win.hours:
+            return {"time_from": _time_from(win.hours)}
+        return {"window": win.spec}
+    if tool == "shift_report":
+        # The shift snapshot looks back at most 7 days.
+        return {"window_hours": max(1, min(int(win.hours), 168))} if win.hours and not win.all_time else {}
+    return {"window": win.spec}
+
+
+def _windowed(ask: Ask, view: PromptView, default: Win | str | int | None = None) -> dict[str, Any]:
+    """Window inputs for a case, metric, cost or audit lookup."""
+    return _win_args("search_cases", ask, view, default)
+
+
+def _log_window(ask: Ask, view: PromptView, default: Win | str | int | None = None) -> dict[str, Any]:
+    return _win_args("log_stats", ask, view, default)
 
 
 def _metric_window(ask: Ask, view: PromptView) -> dict[str, Any]:
-    # soc_metrics computes whole hours capped at 30 days (WP-D); pass the user's own.
-    return {"window_hours": min(ask.hours, 720)} if ask.hours is not None else {}
+    return _win_args("soc_metrics", ask, view)
+
+
+def _compare_spec(ask: Ask) -> Any:
+    """``compare`` as the tools take it ("previous_period", "same_period_last_year",
+    or the other period's window for "Q3 vs Q2")."""
+    if ask.compare == "explicit":
+        other = ask.compare_win
+        return other.spec if other is not None and other.spec is not None else None
+    return ask.compare
+
+
+# The anchor (see the window section): a 12-month breakdown by month whose latest
+# bucket names the current month, so "September" and "since March" get their year
+# from data, never from a clock. It is also useful context (cases per month).
+_ANCHOR_WINDOW = "now-12M"
+_BUCKET_LABEL_RE = re.compile(r"^([A-Z][a-z]{2}) (\d{4})\b")
+
+
+def _anchor_call(view: PromptView) -> Call | None:
+    if view.can("case_stats"):
+        return Call("case_stats", {"window": _ANCHOR_WINDOW, "bucket": "month"})
+    if view.can("soc_metrics", "trends"):
+        return Call("soc_metrics", {"kind": "trends", "window": _ANCHOR_WINDOW, "bucket": "month"})
+    if view.can("cost_usage"):
+        return Call("cost_usage", {"window": _ANCHOR_WINDOW, "bucket": "month"})
+    return None
+
+
+def _anchor(view: PromptView) -> tuple[int, int] | None:
+    """``(year, month)`` of the latest monthly bucket an anchor lookup returned."""
+    for r in view.results():
+        if not r.ok or r.observation is None:
+            continue
+        if r.input.get("window") != _ANCHOR_WINDOW and not str(r.obs.get("window") or "").startswith(
+                "last 12 months"):
+            continue
+        labels = [b.get("label") for b in r.obs.get("buckets") or [] if isinstance(b, Mapping)]
+        labels += [b for b in _dig(r.obs, "spend_per_bucket", "buckets") or [] if isinstance(b, str)]
+        for label in reversed(labels):
+            match = _BUCKET_LABEL_RE.match(str(label or ""))
+            if match and match.group(1) in _MONTH_SHORT:
+                return int(match.group(2)), _MONTH_SHORT.index(match.group(1)) + 1
+    return None
+
+
+def _needs_anchor(ask: Ask) -> bool:
+    return any(w is not None and w.pending is not None for w in (ask.win, ask.compare_win))
+
+
+def _resolved(view: PromptView, ask: Ask) -> Ask:
+    """``ask`` with a month or quarter named without its year resolved from the anchor
+    (unchanged when nothing waits for it, or when the anchor did not answer: then the
+    named period is dropped and each lookup's own default applies)."""
+    if not _needs_anchor(ask):
+        return ask
+    anchor = _anchor(view)
+    win, other = _anchored(ask.win, anchor), _anchored(ask.compare_win, anchor)
+    return replace(ask, win=win, compare_win=other, hours=win.hours if win is not None else None,
+                   compare=ask.compare if other is not None or ask.compare != "explicit" else None)
+
+
+def _anchored_plan(planner: Callable[[PromptView, Ask, int], list[Call]]) -> Callable[[PromptView, Ask, int], list[Call]]:
+    """``planner`` preceded, when the question names a month or quarter without its
+    year, by the anchor lookup that supplies the year."""
+    def plan(view: PromptView, ask: Ask, done: int) -> list[Call]:
+        if not _needs_anchor(ask):
+            return planner(view, ask, done)
+        anchor = _anchor_call(view)
+        if anchor is None:
+            return planner(view, _resolved(view, ask), done)
+        if done == 0:
+            return [anchor]
+        return planner(view, _resolved(view, ask), done - 1)
+    return plan
 
 
 def _entity_of(obs: Mapping[str, Any]) -> tuple[str, str] | None:
@@ -2170,16 +2313,17 @@ def _plan_regroup(view: PromptView, ask: Ask, done: int) -> list[Call]:
     if prior is None or ask.field is None:
         return []
     inp: dict[str, Any] = {"group_by": [ask.field], "top_n": 10}
-    for key in ("ip", "user", "host", "rule", "contains", "time_from", "time_to", "source_id"):
+    for key in ("ip", "user", "host", "rule", "contains", "time_from", "time_to", "window", "source_id"):
         value = prior.arg(key)
-        if value:
+        if value and not value.startswith(("{", "[")):
             inp[key] = value
     severity = prior.arg("severity_gte")
     if severity and _num(_safe_float(severity)) is not None:
         inp["severity_gte"] = _safe_float(severity)
-    if ask.hours is not None:
-        inp["time_from"] = _time_from(ask.hours)
-        inp.pop("time_to", None)
+    if ask.win is not None and ask.win.spec is not None:
+        for key in ("time_from", "time_to", "window"):
+            inp.pop(key, None)
+        inp.update(_win_args("log_stats", ask, view))
     return [Call("log_stats", inp)]
 
 
@@ -2195,15 +2339,25 @@ _RERUN_KEYS: dict[str, tuple[str, ...]] = {
     "log_stats": ("ip", "user", "host", "rule", "contains", "source_id", "group_by"),
     "search_logs": ("ip", "user", "host", "rule", "contains", "source_id"),
     "search_cases": ("text", "status", "status_group", "verdict", "entity", "severity", "rule"),
-    "soc_metrics": ("kind",),
-    "cost_usage": (),
+    "case_stats": ("text", "status", "status_group", "verdict", "entity", "severity", "rule", "group_by", "bucket",
+                   "metrics", "top_n"),
+    "soc_metrics": ("kind", "bucket"),
+    "cost_usage": ("bucket",),
     "shift_report": (),
     "audit_search": ("actor", "action_type", "surface"),
 }
+_LIST_ARGS = frozenset({"group_by", "metrics"})
+_INT_ARGS = frozenset({"top_n", "window_hours"})
+_WITHOUT_FILTER_RE = re.compile(r"\bwithout the ([a-z][a-z ]{1,30}?) filter\b")
 
 
 def _plan_rerun(view: PromptView, ask: Ask, done: int) -> list[Call]:
-    if done or ask.hours is None:
+    """The latest answer's lookups again, with the window the question names ("same
+    for all time") or without one filter ("…without the text filter"): the engine's
+    zero-result suggestions as one-click follow-ups."""
+    drop = _WITHOUT_FILTER_RE.search(ask.lowered)
+    drop_key = drop.group(1).strip().replace(" ", "_") if drop else None
+    if done or (ask.win is None and drop_key is None):
         return []
     latest = view.prior_calls[-1].key if view.prior_calls else None
     calls: list[Call] = []
@@ -2213,12 +2367,23 @@ def _plan_rerun(view: PromptView, ask: Ask, done: int) -> list[Call]:
         inp: dict[str, Any] = {}
         for key in _RERUN_KEYS[prior.tool]:
             value = prior.arg(key)
-            if value:
-                inp[key] = value.split(",") if key == "group_by" else value
-        if prior.tool in ("log_stats", "search_logs"):
-            inp["time_from"] = _time_from(ask.hours)
+            if not value or key == drop_key:
+                continue
+            if key in _LIST_ARGS:
+                inp[key] = [v for v in value.split(",") if v]
+            elif key in _INT_ARGS:
+                number = _safe_float(value)
+                if number is not None:
+                    inp[key] = int(number)
+            else:
+                inp[key] = value
+        if ask.win is not None:
+            inp.update(_win_args(prior.tool, ask, view))
         else:
-            inp["window_hours"] = min(ask.hours, 168 if prior.tool == "shift_report" else 720)
+            for key in ("window", "time_from", "time_to", "window_hours"):
+                value = prior.arg(key)
+                if value and not value.startswith(("{", "[")):
+                    inp[key] = int(value) if key == "window_hours" and value.isdigit() else value
         calls.append(Call(prior.tool, inp))
     return calls
 
@@ -2229,26 +2394,323 @@ def _plan_simple(build: Callable[[PromptView, Ask], list[Call]]) -> Callable[[Pr
     return plan
 
 
+#: ``log_stats`` interval for a calendar unit.
+_INTERVALS = {"hour": "1h", "day": "1d", "week": "1w", "month": "1M", "quarter": "1q", "year": "1y"}
+
+
+def _case_filters_for(ask: Ask) -> dict[str, Any]:
+    """The case filters the question names (status group, severity, verdict, text)."""
+    low = ask.lowered
+    inp: dict[str, Any] = {}
+    if re.search(r"\b(open|active|unresolved|still open|not (?:yet )?closed|outstanding|backlog|pending)\b", low):
+        inp["status_group"] = "active"
+    elif re.search(r"\b(closed|resolved|terminal)\b", low):
+        inp["status_group"] = "terminal"
+    if ask.group != "severity":
+        severity = next((s for s in ("critical", "high", "medium", "low") if re.search(rf"\b{s}\b", low)), None)
+        if severity:
+            inp["severity"] = severity
+    if ask.group != "verdict":
+        verdict = next((v for p, v in ((r"needs?[- ]human", "NEEDS_HUMAN"), (r"false[- ]positives?", "FALSE_POSITIVE"),
+                                       (r"true[- ]positives?", "TRUE_POSITIVE")) if re.search(p, low)), None)
+        if verdict and not re.search(r"\b(?:fp|tp|false[- ]positive|true[- ]positive) rate\b", low):
+            inp["verdict"] = verdict
+    if re.search(r"\bunassigned\b", low):
+        inp["assignee"] = "unassigned"
+    found = _keyword(low)
+    if found:
+        inp["text"] = found[0]
+    return inp
+
+
+def _case_metrics_for(ask: Ask) -> list[str]:
+    low = ask.lowered
+    metrics = ["count"]
+    for pattern, metric in ((r"\bfalse[- ]positive rate\b|\bfp rate\b", "fp_rate"),
+                            (r"\btrue[- ]positive rate\b|\btp rate\b", "tp_rate"),
+                            (r"\bauto[- ]?clos\w*\b|\bautomation\b", "auto_closed"),
+                            (r"\bmttr\b|\btime to resolve\b|\bresolution time\b", "mttr_p50"),
+                            (r"\bmtta\b|\btime to acknowledge\b", "mtta_p50"),
+                            (r"\bmttd\b|\btime to detect\b", "mttd_p50"),
+                            (r"\b(?:average |mean )?risk\b", "mean_risk")):
+        if re.search(pattern, low) and metric not in metrics:
+            metrics.append(metric)
+    return metrics[:6]
+
+
+def _plan_breakdown(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    """Exact counts over every case (``case_stats``), grouped and bucketed as asked.
+    Open cases broken down by when they were opened also list the oldest of them."""
+    if done:
+        return []
+    filters = _case_filters_for(ask)
+    inp: dict[str, Any] = dict(filters)
+    stats_only = not ask.group and not ask.bucket
+    if ask.group:
+        inp["group_by"] = [ask.group]
+        if ask.group in ("rule", "assignee", "source", "closed_by", "mitre_technique", "mitre_tactic"):
+            inp["top_n"] = 10
+    elif stats_only:
+        inp["group_by"] = ["verdict"]
+    if ask.bucket:
+        inp["bucket"] = ask.bucket
+    metrics = _case_metrics_for(ask)
+    if stats_only and re.search(r"\b(stats|statistics|numbers|summary|overview)\b", ask.lowered):
+        metrics = list(dict.fromkeys(metrics + ["fp_rate", "auto_closed", "human_closed", "open_now", "mttr_p50"]))[:6]
+    if metrics != ["count"]:
+        inp["metrics"] = metrics
+    window = _windowed(ask, view)
+    inp.update(window)
+    calls = [Call("case_stats", inp)]
+    if filters.get("status_group") == "active" and ask.bucket:
+        # "When were they opened?": the oldest cases still open, beside the counts.
+        calls.append(Call("search_cases", {**filters, "sort_field": "created_at", "sort_order": "asc", "limit": 5,
+                                           **window}))
+    elif stats_only and not filters and _anchor(view) is None:
+        calls.append(Call("case_stats", {"bucket": _natural_bucket(ask.win) if ask.win else "month", **window}))
+    return calls
+
+
+def _plan_trend(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    """A measure over time, bucketed by a calendar unit. Without a named window the
+    last 30 days (stated in the answer) is the reasonable default."""
+    if done:
+        return []
+    default = _bucket_default(ask.bucket) or _relative(30, "d")
+    span = ask.win if ask.win is not None and ask.win.spec is not None else (None if view.analyst_window else default)
+    bucket = ask.bucket or _natural_bucket(span or default)
+    window = _windowed(ask, view, default)
+    log_window = _log_window(ask, view, default)
+    subject = ask.subject
+    if subject == "timing":
+        return [Call("case_stats", {"bucket": bucket, "metrics": ["count", "mttr_p50", "mtta_p50", "mttd_p50"],
+                                    **window}),
+                Call("soc_metrics", {"kind": "timing", "bucket": bucket, **window})]
+    if subject == "rates":
+        return [Call("case_stats", {"bucket": bucket, "metrics": ["count", "fp_rate", "tp_rate", "auto_closed"],
+                                    **window})]
+    if subject == "risk":
+        return [Call("case_stats", {"bucket": bucket, "metrics": ["count", "mean_risk"], **window})]
+    if subject == "alerts":
+        return [Call("soc_metrics", {"kind": "trends", "bucket": bucket, **window}),
+                Call("log_stats", {"group_by": ["severity"], "interval": _INTERVALS.get(bucket, "auto"),
+                                   **log_window})]
+    return [Call("soc_metrics", {"kind": "trends", "bucket": bucket, **window}),
+            Call("case_stats", {"bucket": bucket, "group_by": ["severity"], **window})]
+
+
+def _plan_compare(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    """A period comparison: the headline figures, the posture tiles and the severity
+    mix, each with ``compare`` (the changes come computed; SPEC P0-6)."""
+    if done:
+        return []
+    compare = _compare_spec(ask)
+    if compare is None:
+        compare = "previous_period"
+    window = _windowed(ask, view)
+    filters = _case_filters_for(ask)
+    calls = [Call("case_stats", {**filters, "metrics": ["count", "fp_rate", "tp_rate", "auto_closed", "mttr_p50"],
+                                 "compare": compare, **window}),
+             Call("soc_metrics", {"kind": "posture", "compare": compare, **window}),
+             Call("case_stats", {**filters, "group_by": [ask.group or "severity"], "compare": compare, **window})]
+    if ask.subject == "timing":
+        calls.append(Call("soc_metrics", {"kind": "timing", "compare": compare, **window}))
+    return calls
+
+
+def _report_bucket(win: Win | None) -> str:
+    if win is None or win.all_time or win.pending is not None:
+        return "month"
+    if win.unit in ("year",) or (win.hours or 0) >= 24 * 80:
+        return "month"
+    return _natural_bucket(win)
+
+
+def _report_win(view: PromptView, ask: Ask) -> Win | None:
+    """The window a performance report covers: the one the question names, else the
+    analyst's chip, else the last 30 days (stated in the answer)."""
+    if ask.win is not None and ask.win.spec is not None:
+        return ask.win
+    return None if view.analyst_window else _relative(30, "d")
+
+
+def _plan_perf_report(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    """The report recipe (SPEC P0-7): volume by period with rates and response times,
+    posture, timing and the noise funnel in one parallel batch (each compared with the
+    previous period for a bounded window), then the severity mix, the top rules, AI
+    cost and the open work in a second."""
+    win = _report_win(view, ask)
+    scoped = replace(ask, win=win) if win is not None else ask
+    window = _windowed(scoped, view)
+    compare = {"compare": "previous_period"} if win is not None and not win.all_time else {}
+    if done == 0:
+        return [
+            Call("case_stats", {"bucket": _report_bucket(win), "metrics": ["count", "fp_rate", "tp_rate",
+                                                                             "auto_closed", "mttr_p50"],
+                                **compare, **window}),
+            Call("soc_metrics", {"kind": "posture", **compare, **window}),
+            Call("soc_metrics", {"kind": "timing", **compare, **window}),
+            Call("soc_metrics", {"kind": "noise_funnel", **window}),
+        ]
+    if done == 1:
+        return [
+            Call("case_stats", {"group_by": ["severity"], **window}),
+            Call("case_stats", {"group_by": ["rule"], "top_n": 10, **window}),
+            Call("cost_usage", dict(window)),
+            Call("search_cases", {"status_group": "active", "sort_field": "risk_score", "limit": 5}),
+        ]
+    return []
+
+
+def _plan_brief(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    """An advisory investigation brief (SPEC P1-3): the case and its decision, then
+    what its entity did in the logs, the other cases that carry it and its ATT&CK
+    techniques, then the indicator's reputation when the entity is one."""
+    case_input = {"case_id": ask.case_id} if ask.case_id else {}
+    if done == 0:
+        return [Call("get_case", dict(case_input)), Call("explain_decision", dict(case_input))]
+    got = view.ok("get_case")
+    entity = _entity_of(got.obs) if got else None
+    if done == 1:
+        calls: list[Call] = []
+        if entity is not None:
+            log_call = _entity_log_call(*entity, ask, view, default=168)
+            if log_call is not None:
+                calls.append(log_call)
+            calls.append(Call("search_cases", {"entity": entity[1], "sort_field": "created_at", "limit": 10}))
+        ids = [str(m.get("id")) for m in (got.obs.get("mitre") if got else None) or []
+               if isinstance(m, Mapping) and re.fullmatch(r"T\d{4}(?:\.\d{3})?", str(m.get("id") or ""))]
+        if ids:
+            calls.append(Call("mitre_lookup", {"ids": list(dict.fromkeys(ids))[:5]}))
+        return calls
+    if done == 2 and entity is not None and _LOOKUP_KIND.get(entity[0]):
+        return [Call("lookup_indicator", {"indicator": entity[1], "kind": _LOOKUP_KIND[entity[0]]})]
+    return []
+
+
+_DEEP_FIELD = {"host": "host", "user": "user", "ip": "ip"}
+_PRIVATE_IP_RE = re.compile(r"^(?:10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)")
+
+
+def _public_ip(result: Result | None) -> str | None:
+    """The first public address among a log search's top values or sample rows."""
+    if result is None:
+        return None
+    values = [t.get("value") for t in _dig(result.obs, "top_values", "ip") or [] if isinstance(t, Mapping)]
+    values += [row.get("ip") for row in result.obs.get("sample_rows") or result.obs.get("rows") or []
+               if isinstance(row, Mapping)]
+    for value in values:
+        if isinstance(value, str) and _IPV4_RE.fullmatch(value) and not _PRIVATE_IP_RE.match(value):
+            return value
+    return None
+_DEEP_PIVOT = {"host": ("user", "ip"), "user": ("host", "ip"), "ip": ("host", "user")}
+
+
+def _plan_deep(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    """An in-depth investigation of one host, user or IP (10+ lookups over 4 rounds,
+    so the unlimited loop and its progress are visible): who and what touched it,
+    which rules fired, its severity over time, the matching events, every case that
+    carries it, the riskiest case's evidence and decision, ATT&CK, campaigns and the
+    audit trail."""
+    if ask.entity is None:
+        return []
+    kind, value = ask.entity
+    fld = _DEEP_FIELD.get(kind, "host")
+    first, second = _DEEP_PIVOT.get(kind, ("user", "ip"))
+    default = _relative(30, "d")
+    span = ask.win if ask.win is not None and ask.win.spec is not None else default
+    window = _windowed(ask, view, default)
+    logs = _log_window(ask, view, default)
+    if done == 0:
+        calls = [Call("log_stats", {fld: value, "group_by": [first], "top_n": 10, **logs}),
+                 Call("log_stats", {fld: value, "group_by": ["rule"], "top_n": 10, **logs}),
+                 Call("search_cases", {"entity": value, "sort_field": "risk_score", "limit": 10, **window}),
+                 Call("case_stats", {"entity": value, "group_by": ["verdict"], **window})]
+        if kind == "ip":
+            calls.insert(0, Call("lookup_indicator", {"indicator": value, "kind": "ip"}))
+        return calls
+    if done == 1:
+        return [Call("search_logs", {fld: value, **logs}),
+                Call("log_stats", {fld: value, "group_by": [second], "top_n": 10, **logs}),
+                Call("log_stats", {fld: value, "group_by": ["severity"],
+                                   "interval": _INTERVALS.get(_natural_bucket(span), "auto"), **logs}),
+                Call("log_stats", {fld: value, "group_by": ["action"], "top_n": 10, **logs})]
+    if done == 2:
+        case = _newest_case(view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity"))))
+        calls = [Call("list_campaigns", {"limit": 10}), Call("source_health", {})]
+        if case is not None:
+            calls[:0] = [Call("get_case", {"case_id": case["case_id"]}),
+                         Call("explain_decision", {"case_id": case["case_id"]})]
+        peer = _public_ip(view.ok("search_logs")) if kind != "ip" else None
+        if peer is not None:
+            # An address the matching events show (code evidence this turn): its reputation.
+            calls.append(Call("lookup_indicator", {"indicator": peer, "kind": "ip"}))
+        return calls
+    if done == 3:
+        got = view.ok("get_case")
+        calls = []
+        ids = [str(m.get("id")) for m in (got.obs.get("mitre") if got else None) or []
+               if isinstance(m, Mapping) and re.fullmatch(r"T\d{4}(?:\.\d{3})?", str(m.get("id") or ""))]
+        if ids:
+            calls.append(Call("mitre_lookup", {"ids": list(dict.fromkeys(ids))[:5]}))
+        case_id = _dig(got.obs, "case", "case_id") if got else None
+        if isinstance(case_id, str) and case_id:
+            calls.append(Call("audit_search", {"case_id": case_id, **window}))
+        return calls
+    return []
+
+
+def _cost_inputs(ask: Ask, view: PromptView) -> dict[str, Any]:
+    inp = dict(_windowed(ask, view, _bucket_default(ask.bucket)))
+    if ask.bucket:
+        inp["bucket"] = ask.bucket
+    compare = _compare_spec(ask)
+    if compare is not None:
+        inp["compare"] = compare
+    if re.search(r"\bby (?:ai )?role\b|\bper role\b", ask.lowered):
+        inp["group_by"] = ["role"]
+    elif re.search(r"\bby model\b|\bper model\b|\bwhich models?\b", ask.lowered):
+        inp["group_by"] = ["model"]
+    elif re.search(r"\bby surface\b|\bper surface\b", ask.lowered):
+        inp["group_by"] = ["surface"]
+    return inp
+
+
+def _posture_calls(v: PromptView, a: Ask) -> list[Call]:
+    window = _metric_window(a, v)
+    trends: dict[str, Any] = {"kind": "trends", **window}
+    if a.bucket:
+        trends["bucket"] = a.bucket
+    return [
+        Call("soc_metrics", {"kind": "posture", **window}),
+        Call("soc_metrics", trends),
+        *([Call("soc_metrics", {"kind": "noise_funnel", **window})] if a.report else []),
+    ]
+
+
+def _top_calls(v: PromptView, a: Ask) -> list[Call]:
+    inp: dict[str, Any] = {"group_by": [a.field or "host"], "top_n": 10, **_log_window(a, v, default=168)}
+    compare = _compare_spec(a)
+    if compare is not None:
+        inp["compare"] = compare
+    return [Call("log_stats", inp)]
+
+
 _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
-    "posture": lambda v, a: [
-        Call("soc_metrics", {"kind": "posture", **_metric_window(a, v)}),
-        Call("soc_metrics", {"kind": "trends", **_metric_window(a, v)}),
-        *([Call("soc_metrics", {"kind": "noise_funnel", **_metric_window(a, v)})] if a.report else []),
-    ],
+    "posture": _posture_calls,
     "shift": lambda v, a: [
-        Call("shift_report", {k: min(int(a.hours), 168) for k in ("window_hours",) if a.hours}),
+        Call("shift_report", _win_args("shift_report", a, v)),
         Call("soc_metrics", {"kind": "posture", **_metric_window(a, v)}),
         Call("list_campaigns", {"status": "open", "limit": 5}),
     ],
     "noise": lambda v, a: [Call("soc_metrics", {"kind": "noise_funnel", **_metric_window(a, v)})],
     "metric": lambda v, a: [Call("soc_metrics", {"kind": a.metric or "posture", **_metric_window(a, v)})],
-    "cost": lambda v, a: [Call("cost_usage", _windowed(a, v))],
+    "cost": lambda v, a: [Call("cost_usage", _cost_inputs(a, v))],
     "brute": lambda v, a: [
         Call("log_stats", {"group_by": ["ip"], "contains": "fail", "top_n": 10, **_log_window(a, v)}),
         Call("search_cases", {"text": "brute", "sort_field": "created_at", "limit": 10}),
     ],
-    "top": lambda v, a: [Call("log_stats", {"group_by": [a.field or "host"], "top_n": 10,
-                                            **_log_window(a, v, default=168)})],
+    "top": _top_calls,
     # An explicit log search: the tool's own window (the chip, else 24 h) unless the
     # question names one.
     "logs": lambda v, a: [Call("search_logs", {**dict(a.log_filter), **_log_window(a, v)})],
@@ -2256,13 +2718,13 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
                                                   "top_n": 10, **_log_window(a, v)})],
     "tp": lambda v, a: [
         Call("search_cases", {"verdict": "TRUE_POSITIVE", "limit": 10, **_windowed(a, v, default=24)}),
-        Call("soc_metrics", {"kind": "case_mix", **_metric_window(a, v)}),
+        Call("soc_metrics", {"kind": "case_mix", **_windowed(a, v, default=24)}),
     ],
     "hunt": lambda v, a: _indicator_calls(a.indicator[0], a.indicator[1], a, v, default=168)
     if a.indicator else [],
     "mitre": lambda v, a: [
         Call("mitre_lookup", {"ids": list(a.techniques)} if a.techniques else {"query": _mitre_query(a)}),
-        Call("soc_metrics", {"kind": "mitre_coverage"}),
+        Call("soc_metrics", {"kind": "mitre_coverage", **_metric_window(a, v)}),
     ],
     "sources": lambda v, a: [Call("source_health", {})],
     "campaigns": lambda v, a: [Call("list_campaigns", {"status": "open"} if "open" in a.lowered else {})],
@@ -2282,10 +2744,12 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
         (Call("cost_usage", _windowed(a, v)) if a.metric == "cost"
          else Call("soc_metrics", {"kind": a.metric or "posture", **_metric_window(a, v)})),
     ],
-    "cases": lambda v, a: [Call("search_cases", _cases_filters(a, v)),
-                           Call("soc_metrics", {"kind": "case_mix", **_metric_window(a, v)})],
+    # A case list counts its matches exactly and breaks them down by verdict and
+    # status itself: no unrelated 24-hour case mix beside it (diagnosis/routing.md §5.17).
+    "cases": lambda v, a: [Call("search_cases", _cases_filters(a, v))],
     "change": lambda v, a: [Call("app_help", {"query": _change_query(a)})],
     "unsupported": lambda v, a: [Call("app_help", {"query": a.question[:300]})],
+    "clarify": lambda v, a: [],
     "fallback": lambda v, a: [
         # Orientation: what chat can answer, not a keyword search for an unmapped ask.
         Call("app_help", {"query": "Workspace Chat ask a question"}),
@@ -2294,12 +2758,20 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
 }
 
 _PLANS: dict[str, Callable[[PromptView, Ask, int], list[Call]]] = {
-    "case": _plan_case,
-    "pivot": _plan_pivot,
-    "reshape": _plan_reshape,
-    "regroup": _plan_regroup,
-    "rerun": _plan_rerun,
-    **{name: _plan_simple(build) for name, build in _SIMPLE_PLANS.items()},
+    name: _anchored_plan(plan) for name, plan in {
+        "case": _plan_case,
+        "pivot": _plan_pivot,
+        "reshape": _plan_reshape,
+        "regroup": _plan_regroup,
+        "rerun": _plan_rerun,
+        "breakdown": _plan_breakdown,
+        "trend": _plan_trend,
+        "compare": _plan_compare,
+        "perf_report": _plan_perf_report,
+        "brief": _plan_brief,
+        "deep": _plan_deep,
+        **{name: _plan_simple(build) for name, build in _SIMPLE_PLANS.items()},
+    }.items()
 }
 
 #: The data tools each intent is ABOUT (for the "not available to your role" note).
@@ -2312,14 +2784,17 @@ _INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     "campaigns": ("list_campaigns",), "audit": ("audit_search",), "automation": ("automation_status",),
     "knowledge": ("search_knowledge",), "explain_metric": ("soc_metrics",), "cases": ("search_cases",),
     "regroup": ("log_stats",), "rerun": (), "logs": ("search_logs",), "log_count": ("log_stats",),
+    "breakdown": ("case_stats",), "trend": ("case_stats", "soc_metrics"), "compare": ("case_stats", "soc_metrics"),
+    "perf_report": ("case_stats", "soc_metrics", "cost_usage", "search_cases"),
+    "brief": ("get_case", "explain_decision"), "deep": ("log_stats", "search_cases", "search_logs"),
 }
 _DATA_INTENTS = frozenset(_INTENT_TOOLS) - {"rerun"}
 _TOOL_NAMES = {
     "soc_metrics": "SOC metrics", "shift_report": "the shift snapshot", "cost_usage": "AI cost data",
     "log_stats": "log statistics", "search_logs": "log search", "search_cases": "case search",
-    "get_case": "case details", "explain_decision": "the decision policy", "lookup_indicator":
-    "indicator reputation", "mitre_lookup": "the ATT&CK corpus", "source_health": "source health",
-    "list_campaigns": "campaigns", "audit_search": "the audit trail", "automation_status":
+    "case_stats": "case counts", "get_case": "case details", "explain_decision": "the decision policy",
+    "lookup_indicator": "indicator reputation", "mitre_lookup": "the ATT&CK corpus", "source_health":
+    "source health", "list_campaigns": "campaigns", "audit_search": "the audit trail", "automation_status":
     "automation status", "search_knowledge": "the knowledge base",
 }
 
@@ -2473,7 +2948,7 @@ def _no_log_events(o: Mapping[str, Any], what: str) -> str:
     24h (5 of 5 sources answered)." (``what`` empty: no filter, "No log events in …")."""
     coverage = _coverage_phrase(o)
     matched = f" match {what}" if what else ""
-    return f"No log events{matched} in the {_window(o)}" + (f" ({coverage})." if coverage else ".")
+    return f"No log events{matched} {_in(_window(o))}" + (f" ({coverage})." if coverage else ".")
 
 
 def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
@@ -2496,7 +2971,7 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
         if not total:
             return _no_log_events(o, what)
         scope = f"matching {what}" if what else ""
-    lead = f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}in the {window}"
+    lead = f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}{_in(window)}"
     if coverage:
         lead += f" ({coverage})"
     if not total or not top:
@@ -2521,7 +2996,7 @@ def _say_search_logs(r: Result, *, subject: str | None = None) -> str:
     if not total:
         return _no_log_events(o, what)
     matched = f" match {what}" if what else ""
-    text = f"**{_plural(total, 'log event')}**{matched} in the {_window(o)}"
+    text = f"**{_plural(total, 'log event')}**{matched} {_in(_window(o))}"
     text += f" ({coverage})." if coverage else "."
     tops = o.get("top_values") if isinstance(o.get("top_values"), Mapping) else {}
     parts = []
@@ -2624,7 +3099,7 @@ def _say_search_cases(r: Result, *, noun: str = "case") -> str:
     count = _num(o.get("count")) or 0
     filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
     window = o.get("window") if isinstance(o.get("window"), str) else "all time"
-    when = "" if window == "all time" else f" in the {display_text(window, 60)}"
+    when = "" if window == "all time" else f" {_in(display_text(window, 60))}"
     text = f"**{_plural(count, _case_noun(filters, noun))}**{when}"
     bound = _case_lower_bound(o)
     if bound:
@@ -2649,7 +3124,7 @@ def _say_posture(r: Result) -> list[str]:
     out = [
         f"**Active Risk Index {_dec(o.get('active_risk_index'), 0)}** over the "
         f"{_plural(_dig(o, 'open_now', 'count'), 'case')} open now (the index is not windowed); "
-        f"{_plural(o.get('case_count'), 'case')} were created in the {window}"
+        f"{_plural(o.get('case_count'), 'case')} were created {_in(window)}"
         + (f", {_count(critical)} of them critical." if critical else ".")
     ]
     quality = o.get("quality") if isinstance(o.get("quality"), Mapping) else {}
@@ -2704,6 +3179,19 @@ def _partial_completeness(o: Mapping[str, Any]) -> str:
     return ""
 
 
+_UNIT_ADJECTIVE = {"hour": "hourly", "day": "daily", "week": "weekly", "month": "monthly", "quarter": "quarterly",
+                   "year": "yearly"}
+
+
+def _bucket_labels(o: Mapping[str, Any], size: int) -> list[str]:
+    """The engine's calendar bucket labels ("Oct 2026", "W41 2026") when there is one
+    per point, the period in progress marked; else []."""
+    rows = [b for b in o.get("buckets") or [] if isinstance(b, Mapping)]
+    if len(rows) != size:
+        return []
+    return [display_text(b.get("label"), 40) + (" (in progress)" if b.get("in_progress") else "") for b in rows]
+
+
 def _say_trends(r: Result) -> str:
     o = r.obs
     new = [_num(v) for v in o.get("new_cases") or []]
@@ -2711,24 +3199,33 @@ def _say_trends(r: Result) -> str:
     measured = [v for v in new if v is not None]
     if not measured:
         return ""
+    unit = o.get("bucket") if isinstance(o.get("bucket"), str) else None
     bucket = _num(o.get("bucket_minutes"))
+    labels = _bucket_labels(o, len(new))
     # ``size`` measures a distance between buckets ("1 hour before the latest");
     # ``kind`` names the buckets themselves. The bucket COUNT is never written as a
     # duration: a trailing 24 h window touches 25 hourly buckets (its first and last
     # are partial), and "last 24h (25 hours)" would contradict itself.
-    if bucket == 60:
+    if unit in _UNIT_ADJECTIVE:
+        size, kind = unit, f"{_UNIT_ADJECTIVE[unit]} bucket"
+    elif bucket == 60:
         size, kind = "hour", "hourly bucket"
     elif bucket == 1440:
         size, kind = "day", "daily bucket"
     elif bucket and bucket % 60 == 0:
         size = kind = f"{_dec(bucket / 60, 0)}-hour bucket"
-    else:
+    elif bucket:
         size = kind = f"{_dec(bucket, 0)}-minute bucket"
+    else:
+        size, kind = "bucket", "bucket"
     peak = max(measured)
     peak_at = max(i for i, v in enumerate(new) if v == peak)
-    where = (f"the latest {size}" if peak_at == len(new) - 1
-             else f"{_plural(len(new) - 1 - peak_at, size)} before the latest")
-    text = (f"Trend over the {_window(o)} in {kind}s: {_count(sum(measured))} new and "
+    if labels:
+        where = labels[peak_at]
+    else:
+        where = (f"the latest {size}" if peak_at == len(new) - 1
+                 else f"{_plural(len(new) - 1 - peak_at, size)} before the latest")
+    text = (f"Trend {_in(_window(o))} in {kind}s: {_count(sum(measured))} new and "
             f"{_count(sum(v for v in closed if v is not None))} closed cases; the peak was {where}, with "
             f"{_plural(peak, 'new case')}.")
     alerts = [v for v in (_num(a) for a in o.get("alerts") or []) if v is not None]
@@ -2754,7 +3251,7 @@ def _say_noise(r: Result) -> list[str]:
     overall = _dig(o, "reduction_pct", "overall")
     before = _dig(o, "reduction_pct", "before_human")
     out = [
-        f"**{_pct(overall)} noise reduction** in the {_window(o)}: {_plural(stages.get('ingested'), 'alert')} "
+        f"**{_pct(overall)} noise reduction** {_in(_window(o))}: {_plural(stages.get('ingested'), 'alert')} "
         f"ingested became {_plural(stages.get('clustered'), 'cluster')} and "
         f"{_plural(stages.get('cases'), 'case')}, and **{_count(stages.get('needs_human'))} needed a human**."
     ]
@@ -2785,7 +3282,7 @@ def _say_case_mix(r: Result) -> str:
     verdicts = o.get("by_verdict") if isinstance(o.get("by_verdict"), Mapping) else {}
     parts = [f"{_count(n)} {display_text(v, 20).replace('_', ' ').lower()}"
              for v, n in sorted(verdicts.items(), key=lambda kv: (-(_num(kv[1]) or 0), kv[0]))]
-    text = f"{_plural(o.get('cases'), 'case')} in the {_window(o)}"
+    text = f"{_plural(o.get('cases'), 'case')} {_in(_window(o))}"
     if parts:
         text += f" ({_join(parts)})"
     if _num(o.get("avg_risk_score")) is not None:
@@ -2807,13 +3304,13 @@ def _say_timing(r: Result) -> str:
             parts.append(f"{name} p50 {_minutes(metric.get('p50'))} (p90 {_minutes(metric.get('p90'))}){count}")
         else:
             parts.append(f"{name} not measured yet")
-    return f"Response times in the {_window(o)}: {_join(parts)}." if parts else ""
+    return f"Response times {_in(_window(o))}: {_join(parts)}." if parts else ""
 
 
 def _say_auto_close(r: Result) -> str:
     o = r.obs
     current = o.get("current") if isinstance(o.get("current"), Mapping) else {}
-    text = (f"Auto-close in the {_window(o)}: {_pct(current.get('rate'), ratio=True)} of "
+    text = (f"Auto-close {_in(_window(o))}: {_pct(current.get('rate'), ratio=True)} of "
             f"{_plural(current.get('decided'), 'decided case')} closed automatically, "
             f"{_count(current.get('routed_to_human'))} routed to a human.")
     if o.get("status") == "insufficient_evidence":
@@ -2858,7 +3355,7 @@ def _say_soc_metrics(r: Result) -> list[str]:
 def _say_cost(r: Result) -> list[str]:
     o = r.obs
     simulated = " (simulated)" if o.get("simulated") else ""
-    out = [f"**AI spend in the {_window(o)}: {_usd(o.get('total_cost_usd'))}{simulated}** across "
+    out = [f"**AI spend {_in(_window(o))}: {_usd(o.get('total_cost_usd'))}{simulated}** across "
            f"{_plural(o.get('calls'), 'model call')} and {_plural(o.get('total_tokens'), 'token')}."]
     for key, name in (("by_role", "By role"), ("by_model", "By model"), ("by_surface", "By surface")):
         rows = [x for x in o.get(key) or [] if isinstance(x, Mapping)][:4]
@@ -2869,8 +3366,8 @@ def _say_cost(r: Result) -> list[str]:
     if _dig(o, "budget", "enabled") and isinstance(daily, Mapping) and _num(daily.get("cap")):
         out.append(f"Today's budget: {_usd(daily.get('spent'))} of {_usd(daily.get('cap'))} "
                    f"({_pct(daily.get('fraction'), ratio=True)}, {display_text(daily.get('band'), 20) or 'ok'}). "
-                   "Chat shares this budget with automatic investigations; at the limit new investigations "
-                   "route to Needs human.")
+                   "The daily budget limits automatic investigations (at the limit they route to Needs human); "
+                   "chat answers are not blocked by it.")
     return out
 
 
@@ -3099,7 +3596,7 @@ def _say_audit(r: Result) -> str:
     by_type = o.get("by_action_type") if isinstance(o.get("by_action_type"), Mapping) else {}
     parts = [f"{_count(n)} {display_text(k, 30).replace('_', ' ')}"
              for k, n in sorted(by_type.items(), key=lambda kv: (-(_num(kv[1]) or 0), kv[0]))[:4]]
-    text = f"**{_plural(o.get('matched'), 'audit row')}** in the {_window(o)}"
+    text = f"**{_plural(o.get('matched'), 'audit row')}** {_in(_window(o))}"
     return text + (f": {_join(parts)}." if parts else ".")
 
 
@@ -3423,6 +3920,11 @@ class Final:
     #: The closing sentence of an answer that carries a report envelope ("The report
     #: below is ready…"), added after every note so it ends the answer.
     closing: str = ""
+    #: SPEC D10: a clarifying question (``{question, options, allow_custom}``).
+    clarify: dict[str, Any] | None = None
+    #: SPEC D11: the header's ``report`` (``{title, template}``): the server saves the
+    #: answer's report to the Reports library after the message persists.
+    report_request: dict[str, str] | None = None
 
 
 def _keep(*blocks: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -3553,7 +4055,7 @@ def _final_posture(view: PromptView, ask: Ask) -> Final | None:
     if noise:
         body.append(_say_noise(noise)[0])
     blocks = _keep(
-        _block(post, "kpis", view="kpi_group", title=f"Security posture ({window})"),
+        _block(post, "kpis", view="kpi_group", title=f"Security posture ({window.split(' (')[0]})"),
         _block(trend, "series", view="line", title="Cases over time"),
         _block(post, "categories", view=_first_view(post, "categories", ("donut", "hbar")),
                title="Cases by severity"),
@@ -3639,7 +4141,7 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
     if post:
         p = post.obs
         posture_line = (f"Posture: Active Risk Index {_dec(p.get('active_risk_index'), 0)}, "
-                        f"{_plural(p.get('case_count'), 'case')} in the {_window(p)}, false-positive rate "
+                        f"{_plural(p.get('case_count'), 'case')} {_in(_window(p))}, false-positive rate "
                         f"{_pct(_dig(p, 'quality', 'false_positive_rate'), ratio=True)}.")
         body.append(posture_line)
     if camps:
@@ -3792,9 +4294,9 @@ def _log_figure(o: Mapping[str, Any], verb: str = "") -> str:
     total = _num(o.get("total")) or 0
     verb = f" {verb}" if verb else ""
     if not total:
-        return f"no log event{verb} in the {_window(o)}"
+        return f"no log event{verb} {_in(_window(o))}"
     bound = "at least " if _log_total_is_lower_bound(o) else ""
-    return f"{bound}{_plural(total, 'log event')}{verb} in the {_window(o)}"
+    return f"{bound}{_plural(total, 'log event')}{verb} {_in(_window(o))}"
 
 
 def _case_figure(o: Mapping[str, Any]) -> str:
@@ -3881,6 +4383,9 @@ def _report_summary(final: Final, view: PromptView, ask: Ask) -> str:
 
 #: The closing sentence of an answer that carries a report envelope.
 _REPORT_READY = "The report below is ready to add to your Reports."
+#: ... and of one the analyst asked to create: the server saves it (SPEC D11) and the
+#: line under the answer confirms it (or says why it could not).
+_REPORT_SAVING = "The full report is below, and it is being saved to your Reports."
 _BRIEF_READY = "The brief below is ready to add to a report."
 
 
@@ -3983,11 +4488,32 @@ def _unwrap_report(final: Final) -> Final:
     return final
 
 
+def _say_spend_buckets(o: Mapping[str, Any]) -> str:
+    """"By month: the most was spent in Oct 2026 ($0.0027)." from ``spend_per_bucket``."""
+    per = o.get("spend_per_bucket") if isinstance(o.get("spend_per_bucket"), Mapping) else {}
+    labels = [display_text(b, 40) for b in per.get("buckets") or [] if isinstance(b, str)]
+    values = [_num(v) for v in per.get("cost_usd") or []]
+    if not labels or len(labels) != len(values) or not any(values):
+        return ""
+    peak = max(range(len(values)), key=lambda i: (values[i] or 0, i))
+    unit = o.get("bucket") if isinstance(o.get("bucket"), str) else "period"
+    return (f"By {unit}: the most was spent in {labels[peak]} ({_usd(values[peak])}); "
+            f"{sum(1 for v in values if v)} of {_plural(len(values), unit)} had any spend.")
+
+
 def _final_cost(view: PromptView, ask: Ask) -> Final | None:
     cost = view.ok("cost_usage")
     if cost is None:
         return None
-    return Final(body=_say_cost(cost), blocks=_keep(
+    body = _say_cost(cost)
+    buckets = _say_spend_buckets(cost.obs)
+    if buckets:
+        body.insert(1, buckets)
+    comp = _comparison_of(cost.obs)
+    if comp:
+        body[1:1] = _say_comparison(comp, limit=4)
+    return Final(body=body, blocks=_keep(
+        _block_titled(cost, "comparison", view="kpi_group", title="Change versus the previous period"),
         _block(cost, "kpis", view="kpi_group", title="AI cost"),
         # cost_usage has no per-role time series, so §5.5's "stacked bar by role" is
         # spend over time (one series: plain bars) beside the by-role breakdown.
@@ -4005,11 +4531,21 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
     label = _FIELD_LABEL.get(fld, fld)
     window = _window(stats.obs)
     body = [_say_log_stats(stats)]
+    comp = _comparison_of(stats.obs)
+    if comp:
+        body.extend(_say_comparison(comp, limit=2, with_note=False))
+    tops = _comparison_of(stats.obs, "top_values")
+    if tops:
+        lines = _say_comparison(tops, limit=5, plain_labels=False)
+        if lines:
+            body.append(f"By {label}:")
+            body.extend(f"- {line}" if not line.startswith("The latest") else line for line in lines)
     if intent == "regroup":
         body.insert(0, f"Re-ran the earlier lookup grouped by {label} (same filters).")
     # One block per figure set: the chart's view switcher already offers the table.
     return Final(body=body, blocks=_keep(
-        _block(stats, "categories", view="hbar", title=f"Top {label}s ({window})"),
+        _block(stats, "categories", view="hbar", title=f"Top {label}s ({window.split(' (')[0]})"),
+        _block_titled(stats, "comparison", view="grouped_bar"),
     ), follow_ups=_follow_ups(view, intent, charts=True, field=fld))
 
 
@@ -4100,6 +4636,9 @@ def _final_tp(view: PromptView, ask: Ask) -> Final | None:
 
 
 def _final_case(view: PromptView, ask: Ask) -> Final | None:
+    missing = _case_missing(view, ask)
+    if missing is not None:
+        return missing
     got = view.ok("get_case")
     decision = view.ok("explain_decision")
     search = view.ok("search_cases")
@@ -4709,7 +5248,11 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
         kind = "data"
     else:
         kind = "product_help"
-    unsupported = not data and ask.intent in _DATA_INTENTS
+    # SPEC D9: "unsupported" only when this role can read no data at all (no data
+    # lookup is granted). A lookup that failed, or a case that does not exist, is a
+    # data answer with a note, never "chat cannot read that data".
+    data_granted = [t for t in view.granted if t not in _REFERENCE_TOOLS and t != "recall_observation"]
+    unsupported = not data and ask.intent in _DATA_INTENTS and not data_granted
     # Wrapped into a report envelope (a report request), the prose is a lead — what
     # the answer lacks and why, then the first finding — and these notes still follow
     # it: the report holds the data, never the disclosures (browser-QA D5).
@@ -4724,6 +5267,798 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
                  lead=[p for p in (opening, first) if p], notes=[n for n in notes if n])
 
 
+# --------------------------------------------------------------------------- #
+# Round 12 finals: exact case counts and breakdowns, trends, period comparisons,
+# performance reports, investigation briefs, in-depth investigations and clarify.
+# Numbers come only from the fenced observations; header text leaves (report
+# summaries, callouts, steps) are built from numbers, enums and engine labels.
+# --------------------------------------------------------------------------- #
+def _value_text(value: Any, unit: Any) -> str:
+    """One measured value in its unit ("76.6%", "12 min", "$0.0027", "1,284")."""
+    if _num(value) is None:
+        return "not measured"
+    if unit == "percent":
+        return _pct(value)
+    if unit == "minutes":
+        return _minutes(value)
+    if unit == "usd":
+        return _usd(value)
+    if unit == "score":
+        return _dec(value)
+    return _count(value)
+
+
+def _change_text(row: Mapping[str, Any]) -> str:
+    """A row's code-computed change: "+15, +50%", "+16.6 points", "new", "no change"."""
+    if row.get("new"):
+        return "new"
+    change = _num(row.get("change"))
+    if change is None:
+        return "no comparison"
+    if change == 0:
+        return "no change"
+    sign = "+" if change > 0 else "−"
+    unit = row.get("unit")
+    if unit == "percent":
+        return f"{sign}{_dec(abs(change))} points"
+    if unit == "minutes":
+        return f"{sign}{_minutes(abs(change))}"
+    if unit == "usd":
+        return f"{sign}{_usd(abs(change))}"
+    text = f"{sign}{_count(abs(change))}"
+    pct = _num(row.get("change_pct"))
+    return text + (f", {sign}{_dec(abs(pct))}%" if pct is not None and pct != 0 else "")
+
+
+def _comparison_of(obs: Mapping[str, Any], part: str = "events") -> Mapping[str, Any] | None:
+    """A result's comparison (``log_stats`` nests one per part: ``events`` and
+    ``top_values``)."""
+    comp = obs.get("comparison")
+    if isinstance(comp, Mapping) and not isinstance(comp.get("rows"), list):
+        comp = comp.get(part)
+    return comp if isinstance(comp, Mapping) and isinstance(comp.get("rows"), list) else None
+
+
+def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bool = True,
+                    skip: Iterable[str] = (), with_note: bool = True) -> list[str]:
+    """``Cases: **47** in Oct 2026 to date vs 30 in Sep 2026 to date (+17, +56.7%).``
+    per row (the subject against its baseline), then the in-progress note."""
+    periods = [display_text(p, 40) for p in comp.get("periods") or [] if isinstance(p, str)]
+    subject = display_text(comp.get("subject"), 40) or (periods[-1] if periods else "this period")
+    baseline = display_text(comp.get("baseline"), 40) or (periods[-2] if len(periods) > 1 else "the period before")
+    try:
+        cur_at, base_at = periods.index(subject), periods.index(baseline)
+    except ValueError:
+        cur_at, base_at = -1, -2
+    out: list[str] = []
+    skipped = {s.lower() for s in skip}
+    rows = [r for r in comp.get("rows") or [] if isinstance(r, Mapping)
+            and display_text(r.get("label"), 60).lower() not in skipped]
+    for row in rows[:limit]:
+        values = row.get("values") if isinstance(row.get("values"), list) else []
+        if len(values) < 2 or all(_num(v) is None for v in (values[cur_at], values[base_at])):
+            continue
+        label = display_text(row.get("label"), 60) if plain_labels else _code(row.get("label"), 60)
+        unit = row.get("unit")
+        if _num(values[base_at]) is None:
+            out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)}; not measured "
+                       f"{_in(baseline)}, so there is no change to show.")
+            continue
+        flags = [_change_text(row)] + (["small sample"] if row.get("small_sample") and unit != "count" else [])
+        out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)} vs "
+                   f"{_value_text(values[base_at], unit)} {_in(baseline)} ({'; '.join(flags)}).")
+    note = comp.get("note")
+    if with_note and isinstance(note, str) and note.strip() and out:
+        out.append(_plain(note, 240))
+    return out
+
+
+def _entry_titled(result: Result | None, kind: str, *prefixes: str) -> ManifestEntry | None:
+    """The first artifact of ``kind`` whose (engine) title starts with one of
+    ``prefixes`` (any of that kind without prefixes)."""
+    if result is None or not result.ok:
+        return None
+    for entry in result.artifacts:
+        if entry.kind == kind and (not prefixes or entry.title.lower().startswith(tuple(p.lower() for p in prefixes))):
+            return entry
+    return None
+
+
+def _block_titled(result: Result | None, kind: str, *prefixes: str, view: str | None = None,
+                  title: str | None = None) -> dict[str, Any] | None:
+    entry = _entry_titled(result, kind, *prefixes)
+    if entry is None:
+        return None
+    request: dict[str, Any] = {"ref": entry.ref}
+    if entry.views:
+        request["view"] = view if view in entry.views else entry.views[0]
+    if title:
+        request["title"] = title[:120]
+    return request
+
+
+def _group_value(field: str, label: Any) -> str:
+    """A grouped value in prose: an engine enum as words, a rule, assignee or source
+    (case- or log-derived) as inline code."""
+    if field in ("rule", "assignee", "source", "surface", "mitre_tactic", "mitre_technique", "closed_by"):
+        text = display_text(label, 80)
+        if field in ("assignee", "closed_by") and text in ("Unassigned", "Not closed"):
+            return text.lower()
+        return _code(label, 80)
+    return display_text(label, 60) or "(none)"
+
+
+def _stats_groups(o: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [g for g in o.get("groups") or [] if isinstance(g, Mapping)]
+
+
+def _stats_noun(o: Mapping[str, Any]) -> str:
+    filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
+    noun = _case_noun(filters, "case")
+    if isinstance(filters.get("severity"), str) and noun == "case":
+        noun = f"{display_text(filters['severity'], 20)}-severity case"
+    return noun
+
+
+def _stats_lead(o: Mapping[str, Any]) -> str:
+    """"**19 cases are open right now**" or "**47 cases** over all time (since …)"."""
+    total = _num(o.get("total")) or 0
+    filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
+    window = _window(o, "all time")
+    exact = "" if o.get("exact", True) is not False else " (a partial count)"
+    if filters.get("status_group") == "active" and window.lower().startswith("all time"):
+        verb = "is" if int(total) == 1 else "are"
+        return f"**{_plural(total, 'case')} {verb} open right now**{exact}"
+    return f"**{_plural(total, _stats_noun(o))}** {_in(window)}{exact}"
+
+
+def _date_text(value: Any) -> str:
+    """An ISO timestamp as a date ("18 Aug 2026"); "" when it is not one."""
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", value if isinstance(value, str) else "")
+    if not match or not 1 <= int(match.group(2)) <= 12:
+        return ""
+    return f"{int(match.group(3))} {_MONTH_SHORT[int(match.group(2)) - 1]} {match.group(1)}"
+
+
+def _say_bucket_counts(o: Mapping[str, Any], *, unit_word: str | None = None) -> str:
+    """"By the month they were opened: Aug 2026 3, Sep 2026 9 and Oct 2026 (in progress) 7."""
+    buckets = [b for b in o.get("buckets") or [] if isinstance(b, Mapping)]
+    unit = o.get("bucket") if isinstance(o.get("bucket"), str) else "period"
+    if not buckets:
+        return ""
+    counts: dict[str, float] = {}
+    for g in _stats_groups(o):
+        if g.get("bucket") is not None and not g.get("key"):
+            counts[str(g.get("bucket"))] = counts.get(str(g.get("bucket")), 0) + (_num(_dig(g, "metrics", "count")) or 0)
+        elif g.get("bucket") is not None:
+            counts[str(g.get("bucket"))] = counts.get(str(g.get("bucket")), 0) + (_num(_dig(g, "metrics", "count")) or 0)
+    parts = []
+    first = next((i for i, b in enumerate(buckets) if counts.get(str(b.get("label")))), len(buckets))
+    if first >= 2 and first < len(buckets):
+        # "None from Jan 2026 to Jul 2026": a leading run of empty periods in one phrase.
+        parts.append(f"none from {display_text(buckets[0].get('label'), 40)} to "
+                     f"{display_text(buckets[first - 1].get('label'), 40)}")
+        buckets = buckets[first:]
+    shown = buckets if len(buckets) <= 12 else [b for b in buckets if counts.get(str(b.get("label")))][-12:]
+    for b in shown:
+        label = display_text(b.get("label"), 40) + (" (in progress)" if b.get("in_progress") else "")
+        parts.append(f"{label}: {_count(counts.get(str(b.get('label')), 0))}")
+    if not parts:
+        return ""
+    lead = unit_word or f"By the {unit} they were opened"
+    text = f"{lead}: {_join(parts)}."
+    if len(buckets) > len(shown):
+        text += f" ({_plural(len(buckets) - len(shown), unit)} with no cases are not listed; the chart shows every {unit}.)"
+    missing = o.get("missing_created_note")
+    if isinstance(missing, str) and missing.strip():
+        text += f" {_sentence(_plain(missing, 160))}"
+    return text
+
+
+def _say_group_counts(o: Mapping[str, Any]) -> str:
+    fields = [f for f in o.get("group_by") or [] if isinstance(f, str)]
+    if not fields or o.get("bucket"):
+        return ""
+    field = fields[0]
+    rows = [g for g in _stats_groups(o) if isinstance(g.get("key"), Mapping)]
+    parts = [f"{_group_value(field, _dig(g, 'key', field))} {_count(_dig(g, 'metrics', 'count'))}" for g in rows[:8]]
+    if not parts:
+        return ""
+    other = _num(_dig(o, "other", "metrics", "count"))
+    name = {"closed_by": "who closed them", "decided_by": "who decided them", "status_group": "open or closed",
+            "mitre_technique": "ATT&CK technique", "mitre_tactic": "ATT&CK tactic"}.get(field, field.replace("_", " "))
+    text = f"By {name}: {_join(parts)}"
+    if len(rows) > 8:
+        text += f" and {_plural(len(rows) - 8, 'more group')}"
+    if other:
+        text += f"; {_plural(other, 'more case')} in smaller groups"
+    text += "."
+    if o.get("multi_valued"):
+        text += f" A case can count under several {name}s, so these add up to more than the total."
+    return text
+
+
+_TOTAL_WORDS = {"fp_rate": "false-positive rate", "tp_rate": "true-positive rate", "auto_closed": "closed automatically",
+                "human_closed": "closed by an analyst", "analyst_fp": "confirmed false positives by analysts",
+                "mttr_p50": "MTTR median", "mtta_p50": "MTTA median", "mttd_p50": "MTTD median",
+                "mttr_p90": "MTTR p90", "mtta_p90": "MTTA p90", "mttd_p90": "MTTD p90", "mean_risk": "average risk",
+                "open_now": "open now"}
+
+
+def _say_stats_totals(o: Mapping[str, Any]) -> str:
+    totals = o.get("totals") if isinstance(o.get("totals"), Mapping) else {}
+    units = o.get("units") if isinstance(o.get("units"), Mapping) else {}
+    parts = []
+    for metric in [m for m in o.get("metrics") or [] if isinstance(m, str)]:
+        if metric == "count" or metric not in _TOTAL_WORDS:
+            continue
+        value = totals.get(metric)
+        unit = units.get(metric)
+        if metric in ("auto_closed", "human_closed", "analyst_fp", "open_now"):
+            parts.append(f"{_count(value)} {_TOTAL_WORDS[metric]}")
+        else:
+            parts.append(f"{_TOTAL_WORDS[metric]} {_value_text(value, unit)}")
+    return (_sentence(_join(parts)) if parts else "")
+
+
+def _zero_suggestions(o: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """``(sentence, follow-ups)`` from a zero-match result's engine-built suggestions:
+    each becomes a one-click question that re-runs the lookup (SPEC D10)."""
+    labels = [display_text(s.get("label"), 60) for s in o.get("suggestions") or [] if isinstance(s, Mapping)]
+    labels = [label for label in labels if label]
+    if not labels:
+        return "", []
+    follow = []
+    for label in labels[:3]:
+        low = label.lower()
+        if low == "all time":
+            follow.append("Show the same for all time")
+        elif low.startswith("without the "):
+            follow.append(f"Show the same {low}")
+        elif low.startswith(("last ", "this ")):
+            follow.append(f"Show the same for the {low}" if low.startswith("last ") else f"Show the same for {low}")
+    return f"To widen it: {_join(labels[:3], 'or')}.", follow
+
+
+def _say_case_stats(r: Result) -> list[str]:
+    o = r.obs
+    total = _num(o.get("total")) or 0
+    if not total:
+        hint, _follow = _zero_suggestions(o)
+        return [f"No {_stats_noun(o)} matched {_in(_window(o, 'all time'))}." + (f" {hint}" if hint else "")]
+    out = [_stats_lead(o) + "."]
+    for sentence in (_say_bucket_counts(o) if o.get("bucket") and not o.get("group_by") else "",
+                     _say_group_counts(o), _say_stats_totals(o)):
+        if sentence:
+            out.append(sentence)
+    if o.get("partial"):
+        out.append(_plain(o.get("partial"), 240))
+    comp = _comparison_of(o)
+    if comp:
+        out.extend(_say_comparison(comp))
+    return out
+
+
+def _stats_blocks(r: Result | None, *, series_view: str = "bar") -> list[dict[str, Any]]:
+    """A ``case_stats`` result's blocks: the series (bars per period), the grouping
+    (bars, or a donut for a small complete split), the comparison and the table."""
+    if r is None:
+        return []
+    return _keep(
+        _block_titled(r, "comparison", view="grouped_bar"),
+        _block(r, "series", view=series_view),
+        _block(r, "categories", view=_first_view(r, "categories", ("hbar", "bar"))),
+        _block_titled(r, "series", "rates", view="line"),
+        _block_titled(r, "series", "response times", view="line"),
+        _block(r, "table", view="table") if not r.artifact("series") else None,
+        _block(r, "kpis", view="kpi_group") if not (r.artifact("series") or r.artifact("categories")) else None,
+    )
+
+
+def _final_breakdown(view: PromptView, ask: Ask) -> Final | None:
+    stats = view.ok("case_stats", where=lambda r: r.input.get("window") != _ANCHOR_WINDOW or not _needs_anchor(ask))
+    if stats is None:
+        return None
+    o = stats.obs
+    total = _num(o.get("total")) or 0
+    body = _say_case_stats(stats)
+    oldest = view.ok("search_cases")
+    if oldest is not None and total:
+        cases = [c for c in oldest.obs.get("cases") or [] if isinstance(c, Mapping)]
+        if cases:
+            first = cases[0]
+            created = _date_text(first.get("created_at"))
+            body.append(f"The oldest still open is {_code(first.get('case_id'), 60)} ({_case_name(first)}), opened "
+                        f"{created}." if created else f"The oldest still open is {_code(first.get('case_id'), 60)}.")
+            body.extend(_case_bullets(oldest, limit=5)[1:])
+    volume = (view.ok("case_stats", where=lambda r: r is not stats and bool(r.obs.get("bucket"))
+                      and r.input.get("window") != _ANCHOR_WINDOW)
+              or view.ok("case_stats", where=lambda r: r is not stats and bool(r.obs.get("bucket"))))
+    if volume is not None and volume is not stats:
+        over = f" {_in(_window(volume.obs))}" if volume.input.get("window") == _ANCHOR_WINDOW else ""
+        sentence = _say_bucket_counts(volume.obs, unit_word=f"Cases opened per {volume.obs.get('bucket')}{over}")
+        if sentence:
+            body.append(sentence)
+    blocks = _stats_blocks(stats)
+    if volume is not None and volume is not stats:
+        blocks += _keep(_block(volume, "series", view="bar"))
+    if oldest is not None and total:
+        blocks += _keep(_block(oldest, "case_list", view="case_list", title="Oldest open cases"))
+    follow: list[str] = []
+    filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
+    if not total:
+        _hint, follow = _zero_suggestions(o)
+    elif o.get("bucket") and not o.get("group_by"):
+        follow = ["Break the same cases down by severity", "Compare this month with last month"]
+        if filters.get("status_group") == "active":
+            follow.insert(1, "Show the open cases by month as a table")
+    else:
+        follow = ["Show the same cases by month", "Compare this month with last month"]
+    follow = [f for f in follow if f] + _follow_ups(view, "cases", charts=bool(blocks))
+    return Final(body=body, blocks=blocks[:6], follow_ups=list(dict.fromkeys(follow))[:3])
+
+
+_TREND_WORDS = {"timing": "Response times", "rates": "False-positive and true-positive rates",
+                "risk": "Average risk", "alerts": "Alert and case volume", "cases": "Case volume"}
+
+
+def _say_bucket_metric(o: Mapping[str, Any], metric: str, name: str) -> str:
+    """"MTTR median per week: latest W41 2026 (in progress) 12 min; highest W39 2026 40 min.""" 
+    buckets = [b for b in o.get("buckets") or [] if isinstance(b, Mapping)]
+    units = o.get("units") if isinstance(o.get("units"), Mapping) else {}
+    by_label = {str(g.get("bucket")): _num(_dig(g, "metrics", metric)) for g in _stats_groups(o)
+                if g.get("bucket") is not None}
+    points = [(display_text(b.get("label"), 40) + (" (in progress)" if b.get("in_progress") else ""),
+               by_label.get(str(b.get("label")))) for b in buckets]
+    measured = [(label, value) for label, value in points if value is not None]
+    if not measured:
+        return f"{name}: not measured in any {o.get('bucket') or 'period'} of this window."
+    unit = units.get(metric)
+    latest = measured[-1]
+    best = max(measured, key=lambda p: p[1])
+    text = (f"{name} per {o.get('bucket') or 'period'}: latest {latest[0]} {_value_text(latest[1], unit)}; "
+            f"highest {best[0]} {_value_text(best[1], unit)}")
+    return text + f" ({len(measured)} of {len(points)} periods measured)."
+
+
+def _final_trend(view: PromptView, ask: Ask) -> Final | None:
+    stats = view.ok("case_stats")
+    trends = view.ok("soc_metrics", "trends")
+    timing = view.ok("soc_metrics", "timing")
+    logs = view.ok("log_stats")
+    if stats is None and trends is None and timing is None:
+        return None
+    subject = ask.subject or "cases"
+    body: list[str] = []
+    window = _window((stats or trends or timing).obs)  # type: ignore[union-attr]
+    if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
+        body.append(f"No period was named, so this shows {_in(window)}; ask for another window (all time, this "
+                    "quarter, the last 6 months) to change it.")
+    if subject == "timing" and stats is not None:
+        o = stats.obs
+        body.insert(0, f"**{_TREND_WORDS['timing']} {_in(window)}**, by {o.get('bucket') or 'period'} "
+                       f"({_plural(o.get('total'), 'case')}, exact):")
+        for metric, name in (("mttr_p50", "MTTR median"), ("mtta_p50", "MTTA median"), ("mttd_p50", "MTTD median")):
+            body.append(f"- {_say_bucket_metric(o, metric, name)}")
+        if timing is not None:
+            body.append(_say_timing(timing))
+    elif subject in ("rates", "risk") and stats is not None:
+        o = stats.obs
+        body.insert(0, f"**{_TREND_WORDS[subject]} {_in(window)}**, by {o.get('bucket') or 'period'} "
+                       f"({_plural(o.get('total'), 'case')}, exact):")
+        metrics = (("fp_rate", "False-positive rate"), ("tp_rate", "True-positive rate"),
+                   ("auto_closed", "Closed automatically")) if subject == "rates" else (("mean_risk", "Average risk"),)
+        for metric, name in metrics:
+            body.append(f"- {_say_bucket_metric(o, metric, name)}")
+        sentence = _say_stats_totals(o)
+        if sentence:
+            body.append(f"Over the whole window: {sentence[:1].lower()}{sentence[1:]}")
+    else:
+        if trends is not None:
+            sentence = _say_trends(trends)
+            if sentence:
+                body.insert(0, sentence)
+        if stats is not None:
+            sentence = _say_bucket_counts(stats.obs, unit_word="") if not stats.obs.get("group_by") else ""
+            groups = _say_group_counts(stats.obs) or ""
+            if sentence:
+                body.append(sentence)
+            if groups:
+                body.append(groups)
+            elif stats.obs.get("group_by"):
+                body.append(f"By severity, the cases are split as the stacked chart shows ({_plural(stats.obs.get('total'), 'case')}).")
+        if logs is not None:
+            body.append("Alert volume: " + _say_log_stats(logs, subject=""))
+    blocks = _keep(
+        _block_titled(stats, "series", "response times", view="line"),
+        _block_titled(stats, "series", "rates", view="line"),
+        _block_titled(stats, "series", "average risk", view="line"),
+        _block(trends, "series", view="line", title="Cases opened and closed"),
+        _block_titled(trends, "series", "alerts", view="bar"),
+        _block(stats, "series", view="stacked_bar" if stats and stats.obs.get("group_by") else "bar")
+        if subject in ("cases", "alerts") else None,
+        _block_titled(logs, "series", view="line"),
+        _block(timing, "kpis", view="kpi_group"),
+    )
+    follow = ["Compare this month with last month", "Show the same trend for the last 6 months by month"]
+    return Final(body=body, blocks=blocks[:6], follow_ups=(follow + _follow_ups(view, "posture", charts=True))[:3])
+
+
+def _final_compare(view: PromptView, ask: Ask) -> Final | None:
+    head = view.ok("case_stats", where=lambda r: not r.obs.get("group_by") and bool(_comparison_of(r.obs)))
+    post = view.ok("soc_metrics", "posture")
+    mix = view.ok("case_stats", where=lambda r: bool(r.obs.get("group_by")) and bool(_comparison_of(r.obs)))
+    timing = view.ok("soc_metrics", "timing")
+    if head is None and post is None and mix is None:
+        return None
+    body: list[str] = []
+    source = head or post or mix
+    comp = _comparison_of(source.obs) if source else None  # type: ignore[union-attr]
+    if comp:
+        subject = display_text(comp.get("subject"), 40)
+        baseline = display_text(comp.get("baseline"), 40)
+        body.append(f"**{subject} compared with {baseline}** (changes computed exactly over every case):")
+        body.extend(f"- {line}" for line in _say_comparison(comp, limit=6, with_note=False))
+        note = comp.get("note")
+        if isinstance(note, str) and note.strip():
+            body.append(_plain(note, 240))
+    elif head is not None:
+        body.extend(_say_case_stats(head))
+    if post is not None and _comparison_of(post.obs):
+        rows = [r for r in _comparison_of(post.obs).get("rows") or [] if isinstance(r, Mapping)]  # type: ignore[union-attr]
+        auto = next((r for r in rows if r.get("label") == "Automation rate"), None)
+        if auto is not None:
+            body.append(f"Automation rate: {_change_text(auto)} "
+                        f"({_value_text((auto.get('values') or [None])[-1], 'percent')} now).")
+    if mix is not None and _comparison_of(mix.obs):
+        lines = _say_comparison(_comparison_of(mix.obs), limit=4, with_note=False)  # type: ignore[arg-type]
+        if lines:
+            body.append(f"By {display_text((mix.obs.get('group_by') or ['severity'])[0], 30).replace('_', ' ')}:")
+            body.extend(f"- {line}" for line in lines)
+    if timing is not None and _comparison_of(timing.obs):
+        said = [str(r.get("label")) for r in (comp or {}).get("rows") or [] if isinstance(r, Mapping)]
+        lines = _say_comparison(_comparison_of(timing.obs), limit=3, skip=said, with_note=False)  # type: ignore[arg-type]
+        if lines:
+            body.append("Response times: " + " ".join(lines))
+    blocks = _keep(
+        _block_titled(head, "comparison", view="kpi_group", title="Change versus the previous period"),
+        _block_titled(mix, "comparison", view="grouped_bar", title="By severity"),
+        _block(post, "kpis", view="kpi_group", title="Security posture with changes"),
+        _block_titled(timing, "comparison", title="Response times with changes"),
+    )
+    follow = ["Show the same comparison by week", "Create an executive report for this month",
+              "Compare with the same period last year"]
+    if ask.compare == "same_period_last_year":
+        follow[2] = "Compare this month with last month"
+    return Final(body=body, blocks=blocks, follow_ups=follow)
+
+
+_PERF_TITLES = {"executive": "SOC performance report", "monthly": "SOC report", "infographic": "Posture infographic",
+                "posture": "Posture report"}
+
+
+def _perf_title(template: str, label: str, all_time: bool) -> str:
+    if template == "monthly":
+        return f"{label} SOC report" if label else "Monthly SOC report"
+    if all_time:
+        return {"executive": "Lifetime performance report", "infographic": "Lifetime posture infographic",
+                "posture": "Lifetime posture report"}.get(template, "Lifetime performance report")
+    base = _PERF_TITLES.get(template, "SOC performance report")
+    return f"{base}, {label}" if label else base
+
+
+def _perf_steps(post: Result | None, noise: Result | None, rules: Result | None, cost: Result | None) -> list[str]:
+    steps = _posture_steps(post, noise)
+    groups = [g for g in (rules.obs.get("groups") if rules else None) or [] if isinstance(g, Mapping)]
+    if groups:
+        steps.append("Review tuning for the rules that open the most cases (see Top rules).")
+    if cost is not None and _num(cost.obs.get("total_cost_usd")):
+        steps.append("Check AI spend against the daily budget in Analytics › Cost.")
+    return list(dict.fromkeys(steps))[:5]
+
+
+def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
+    vol = view.ok("case_stats", where=lambda r: bool(r.obs.get("bucket")) and r.input.get("window") != _ANCHOR_WINDOW)
+    if vol is None:
+        vol = view.ok("case_stats", where=lambda r: bool(r.obs.get("bucket")))
+    sev = view.ok("case_stats", where=lambda r: "severity" in (r.obs.get("group_by") or []))
+    rules = view.ok("case_stats", where=lambda r: "rule" in (r.obs.get("group_by") or []))
+    post, timing = view.ok("soc_metrics", "posture"), view.ok("soc_metrics", "timing")
+    noise, cost, open_cases = view.ok("soc_metrics", "noise_funnel"), view.ok("cost_usage"), view.ok("search_cases")
+    if vol is None and post is None:
+        return None
+    template = ask.report if ask.report in ("executive", "monthly", "infographic", "posture") else "executive"
+    o = (vol or post).obs  # type: ignore[union-attr]
+    label = _window(o, "")
+    all_time = label.lower().startswith("all time")
+    title = _perf_title(template, "" if all_time else label, all_time)
+    if template == "executive" and re.search(r"\bexec(?:utive)? (?:summary|overview|brief)\b", ask.lowered):
+        title = f"Executive summary, {label}" if label and not all_time else "Executive summary"
+    p = post.obs if post else {}
+    quality = p.get("quality") if isinstance(p.get("quality"), Mapping) else {}
+    totals = o.get("totals") if isinstance(o.get("totals"), Mapping) else {}
+    cases = _num(o.get("total") if vol else p.get("case_count"))
+    fp = totals.get("fp_rate") if vol else (_num(quality.get("false_positive_rate")) or 0) * 100
+    automation = quality.get("automation_rate")
+    mttr = _dig(p, "lifecycle_minutes", "mttr_minutes", "p50") if post else totals.get("mttr_p50")
+    open_now = _dig(p, "open_now", "count")
+    facts = [f"**{_plural(cases, 'case')}**"]
+    if _num(fp) is not None:
+        facts.append(f"false-positive rate **{_pct(fp)}**")
+    if _num(automation) is not None:
+        facts.append(f"**{_pct(automation, ratio=True)}** closed automatically")
+    if _num(mttr) is not None:
+        facts.append(f"MTTR median {_minutes(mttr)}")
+    if _num(open_now) is not None:
+        facts.append(f"**{_count(open_now)} open now**")
+    span = (f" ({label.split(' (')[0]}, {label.split(' (', 1)[1].rstrip(')')})" if all_time and " (" in label
+            else "")
+    lead = f"**{title}**{span}: {_join(facts)}."
+    summary_bits = [f"{_plural(cases, 'case')} {_in(label) if label else ''}".strip()]
+    if _num(fp) is not None:
+        summary_bits.append(f"false-positive rate {_pct(fp)}")
+    if _num(automation) is not None:
+        summary_bits.append(f"{_pct(automation, ratio=True)} closed automatically")
+    if _num(mttr) is not None:
+        summary_bits.append(f"MTTR median {_minutes(mttr)}")
+    if _num(open_now) is not None:
+        summary_bits.append(f"{_count(open_now)} open now")
+    stages = _stages(noise.obs) if noise else {}
+    overall = _dig(noise.obs, "reduction_pct", "overall") if noise else None
+    if _num(overall) is not None:
+        summary_bits.append(f"{_pct(overall)} noise reduction from {_count(stages.get('ingested'))} alerts")
+    comp = _comparison_of(vol.obs) if vol else None
+    change_lines = _say_comparison(comp, limit=3) if comp else []
+    summary = _sentence(_join(summary_bits)) + (" " + " ".join(c.replace("**", "") for c in change_lines[:3])
+                                                 if change_lines else "")
+    steps = _perf_steps(post, noise, rules, cost)
+    highlights: list[dict[str, Any]] = []
+    if template == "infographic":
+        if _num(fp) is not None:
+            highlights.append({"type": "callout", "tone": "info",
+                               "text": f"False-positive rate {_pct(fp)} over {_plural(cases, 'case')}."})
+        if _num(automation) is not None:
+            highlights.append({"type": "callout", "tone": "success",
+                               "text": f"{_pct(automation, ratio=True)} of closed cases were closed automatically."})
+        if _num(open_now):
+            highlights.append({"type": "callout", "tone": "warning", "text": f"{_count(open_now)} cases are open now."})
+    sections = [
+        {"heading": "Summary", "items": _keep(
+            {"type": "markdown", "text": _plain(summary, 1100)},
+            _block(post, "kpis", view="kpi_group", title="Security posture"), *highlights)},
+        {"heading": "Volume", "items": _keep(
+            _block(vol, "series", view="bar", title="Cases opened per " + str(o.get("bucket") or "period")),
+            _block(sev, "categories", view=_first_view(sev, "categories", ("donut", "hbar")), title="Cases by severity"),
+            _block_titled(vol, "comparison", view="kpi_group", title="Change versus the previous period"))},
+        {"heading": "Quality", "items": _keep(
+            _block_titled(vol, "series", "rates", view="line", title="False-positive and true-positive rates"),
+            _block_titled(vol, "series", "counts", view="bar", title="Closed automatically"))},
+        {"heading": "Response times", "items": _keep(
+            _block(timing, "kpis", view="kpi_group", title="Response times"),
+            _block_titled(vol, "series", "response times", view="line", title="MTTR median per period"))},
+        {"heading": "Noise reduction", "items": _keep(_block(noise, "funnel", view="funnel", title="Noise reduction"))},
+        {"heading": "Top rules", "items": _keep(_block(rules, "categories", view="hbar", title="Rules that opened the most cases"))},
+        {"heading": "Open work", "items": _keep(_block(open_cases, "case_list", view="case_list", title="Highest-risk open cases"))},
+        {"heading": "AI cost", "items": _keep(_block(cost, "kpis", view="kpi_group", title="AI cost"))},
+        {"heading": "Next steps", "items": [{"type": "markdown", "text": "\n".join(
+            f"{i}. {s}" for i, s in enumerate(steps, start=1))}]},
+    ]
+    sections = [s for s in sections if s["items"]]
+    envelope: dict[str, Any] = {"type": "report", "title": title, "template": template, "sections": sections}
+    if label:
+        envelope["subtitle"] = label[:200]
+    if template == "infographic":
+        envelope["layout"] = "infographic"
+    body = [lead]
+    if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
+        body.append("No period was named, so the report covers the last 30 days; ask for a lifetime report to cover "
+                    "all time.")
+    follow = ["Create the same report for all time" if not all_time else "Create the same report for the last 90 days",
+              "Compare this month with last month", "Make an infographic of our posture this quarter"]
+    if template == "infographic":
+        follow[2] = "Create an executive summary for this quarter"
+    final = Final(body=body, blocks=[envelope], follow_ups=follow, lead=body[:2], closing=_REPORT_READY)
+    return final
+
+
+def _confidence_word(value: Any) -> str:
+    number = _num(value)
+    if number is None:
+        return "unknown"
+    return "high" if number >= 0.85 else "medium" if number >= 0.6 else "low"
+
+
+def _case_missing(view: PromptView, ask: Ask) -> Final | None:
+    """The case the question names does not exist (or the caller cannot see it): a
+    clear data answer, never "chat cannot read that data" (SPEC D9)."""
+    failed = next((r for r in view.results() if r.tool in ("get_case", "explain_decision") and not r.ok), None)
+    if failed is None or view.ok("get_case") is not None:
+        return None
+    reason = display_text(failed.summary, 120).lower()
+    if "not found" not in reason and "no case" not in reason:
+        return None
+    named = _code(ask.case_id, 60) if ask.case_id else "that id"
+    body = [f"No case with the id {named} was found: it does not exist, or it is outside what you can see. "
+            "Check the id, or find the case by searching for words from its title."]
+    follow = ["List the open cases", "Which cases were escalated this week?", "Show the newest escalated case"]
+    return Final(body=body, follow_ups=follow, narrated={r.ordinal for r in view.failed()})
+
+
+def _final_brief(view: PromptView, ask: Ask) -> Final | None:
+    missing = _case_missing(view, ask)
+    if missing is not None:
+        return missing
+    got, decision = view.ok("get_case"), view.ok("explain_decision")
+    if got is None:
+        return None
+    case = _dig(got.obs, "case")
+    case = case if isinstance(case, Mapping) else {}
+    case_id = display_text(case.get("case_id"), 60) or (ask.case_id or "")
+    stats = view.ok("log_stats")
+    related = view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity")))
+    mitre = view.ok("mitre_lookup")
+    lookup = view.ok("lookup_indicator")
+    confidence = _confidence_word(case.get("confidence"))
+    status = display_text(case.get("status"), 30).replace("_", " ")
+    # The brief's own text leaves: numbers, enums and the case id only (no case text).
+    assessment = (f"Advisory: this brief does not decide the case; the deterministic policy does. The case "
+                  f"{_case_facts(case)}, status {status}. Confidence in the recorded verdict: {confidence}.")
+    findings: list[str] = []
+    if decision is not None:
+        sentence = _say_decision(decision)
+        if sentence:
+            findings.append(sentence)
+    if stats is not None:
+        findings.append(f"Its entity appears in {_log_figure(stats.obs)}.")
+    if related is not None:
+        count = _num(related.obs.get("count")) or 0
+        findings.append(f"{_plural(count, 'case')} carry the same entity." if count != 1 else
+                        "Only this case carries the entity.")
+    if lookup is not None and _num(lookup.obs.get("reputation_score")) is not None:
+        findings.append(f"The indicator scores {_count(lookup.obs.get('reputation_score'))}/100 "
+                        f"({display_text(lookup.obs.get('verdict'), 30) or 'unknown'}).")
+    techniques = [m for m in got.obs.get("mitre") or [] if isinstance(m, Mapping) and m.get("id")]
+    if techniques:
+        findings.append(f"It maps to {_plural(len(techniques), 'ATT&CK technique')}.")
+    couldnt: list[str] = []
+    entity = _entity_of(got.obs)
+    if entity is None:
+        couldnt.append("The case has no entity, so its activity in the logs and related cases were not checked.")
+    elif not _LOOKUP_KIND.get(entity[0]):
+        couldnt.append("The entity is not an indicator (IP, domain, URL or hash), so no reputation was looked up.")
+    for r in view.failed():
+        couldnt.append(f"{_TOOL_NAMES.get(r.tool, r.tool)[:1].upper()}{_TOOL_NAMES.get(r.tool, r.tool)[1:]} "
+                       f"did not complete ({display_text(r.status, 20)}).")
+    if stats is not None and not stats.obs.get("total"):
+        couldnt.append("Logs older than the sources keep were not available.")
+    couldnt = couldnt or ["Everything this brief relies on was read."]
+    steps = ["Confirm the recorded decision with the case owner.",
+             "Check the other cases that carry the same entity before closing.",
+             "Act on the recommendation recorded on the case." if case.get("recommended_action") else
+             "Record a recommendation on the case once it is decided."]
+    sections = [
+        {"heading": "Assessment", "items": _keep({"type": "markdown", "text": _plain(assessment, 1100)},
+                                                 _block(decision, "kpis", view="kpi_group", title="Decision inputs"))},
+        {"heading": "Key findings", "items": [{"type": "markdown", "text": "\n".join(
+            f"- {f}" for f in findings[:5])}] if findings else []},
+        {"heading": "Affected entities", "items": _keep(
+            _block(got, "entity", view="entity", title="Case entity"),
+            _block(stats, "categories", view="hbar", title="Entity activity in the logs"),
+            _block(lookup, "entity", view="entity", title="Indicator reputation"))},
+        {"heading": "ATT&CK", "items": _keep(_block(mitre, "mitre", view="mitre", title="ATT&CK techniques")
+                                             or _block(got, "mitre", view="mitre", title="ATT&CK techniques"))},
+        {"heading": "Timeline", "items": _keep(_block(got, "timeline", view="timeline", title="Status history"))},
+        {"heading": "Related cases", "items": _keep(_block(related, "case_list", view="case_list",
+                                                           title="Cases with the same entity")
+                                                    if related and _num(related.obs.get("count")) else None)},
+        {"heading": "Next steps", "items": [{"type": "markdown", "text": "\n".join(
+            f"{i}. {s}" for i, s in enumerate(steps, start=1))}]},
+        {"heading": "What I couldn't check", "items": [{"type": "markdown", "text": "\n".join(
+            f"- {c}" for c in couldnt[:5])}]},
+    ]
+    sections = [s for s in sections if s["items"]]
+    title = f"Investigation brief: {case_id}" if case_id else "Investigation brief"
+    envelope = {"type": "report", "title": title[:120], "template": "investigation_brief", "sections": sections,
+                "subtitle": "Advisory · the case decision is made by policy"}
+    name = _case_name(case)
+    lead = [f"**Investigation brief for {_code(case_id, 60)}**" + (f" ({name})" if name else "")
+            + f": the case {_case_facts(case)}, status **{status}**; confidence in the verdict is {confidence}.",
+            "The brief is advisory: the case decision is made by the deterministic policy, not by this brief."]
+    action = _plain(_dig(case, "recommended_action"), 200)
+    body = lead + ([f"Recorded recommendation: {action}"] if action else [])
+    return Final(body=body, blocks=[envelope], follow_ups=["Why was this case decided this way?",
+                                                           "Show the other cases for the same entity",
+                                                           "Investigate the newest escalated case"],
+                 lead=body, closing=_REPORT_READY)
+
+
+def _final_deep(view: PromptView, ask: Ask) -> Final | None:
+    if ask.entity is None:
+        return None
+    kind, value = ask.entity
+    results = [r for r in view.results() if r.ok and r.observation is not None]
+    if not results:
+        return None
+    noun = {"host": "host", "user": "user", "ip": "IP"}.get(kind, kind)
+    log_results = [r for r in results if r.tool == "log_stats"]
+    window = _window(log_results[0].obs) if log_results else _window(results[0].obs)
+    body = [f"**In-depth investigation of {noun} {_code(value)} {_in(window)}**: "
+            f"{_plural(len(view.results()), 'lookup')} across logs, cases, decisions and threat intel."]
+    lookup = view.ok("lookup_indicator")
+    if lookup is not None:
+        body.append(_say_lookup(lookup))
+    said_total = False
+    for r in log_results:
+        group = (r.obs.get("group_by") or [""])[0]
+        if group not in ("user", "host", "ip", "rule"):
+            continue
+        sentence = _say_log_stats(r, subject=f"for {_code(value)}")
+        if said_total:
+            # The total is the same for every grouping: say it once, then each ranking.
+            sentence = sentence.split("; ", 1)[1] if "; " in sentence else ""
+            sentence = sentence[:1].upper() + sentence[1:]
+        if sentence:
+            body.append(f"- {sentence}")
+            said_total = True
+    logs = view.ok("search_logs")
+    if logs is not None:
+        body.append(_say_search_logs(logs, subject=_code(value)))
+    cases = view.ok("search_cases")
+    stats = view.ok("case_stats")
+    if stats is not None:
+        body.extend(_say_case_stats(stats)[:2])
+    elif cases is not None:
+        body.append(_say_search_cases(cases))
+    got = view.ok("get_case")
+    if got is not None:
+        body.append("Riskiest related case: " + " ".join(_say_get_case(got)[:2]))
+        decision = view.ok("explain_decision")
+        if decision is not None:
+            sentence = _say_decision(decision)
+            if sentence:
+                body.append(sentence)
+    mitre = view.ok("mitre_lookup")
+    if mitre is not None:
+        body.extend(_say_mitre(mitre)[:2])
+    camps = view.ok("list_campaigns")
+    if camps is not None:
+        body.append(_say_campaigns(camps))
+    audit = view.ok("audit_search")
+    if audit is not None:
+        body.append("Audit trail of that case: " + _say_audit(audit))
+    if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
+        body.append("No period was named, so the logs and cases cover the last 30 days.")
+    blocks = _keep(
+        _block(lookup, "entity", view="entity", title="Indicator reputation"),
+        *[_block(r, "categories", view="hbar") for r in log_results[:3]],
+        _block_titled(next((r for r in log_results if (r.obs.get("group_by") or [""])[0] == "severity"), None),
+                      "series", view="stacked_bar"),
+        _block(logs, "table", view="table", title="Matching log events") if logs and _num(logs.obs.get("total")) else None,
+        _block(cases, "case_list", view="case_list", title="Cases that carry it")
+        if cases and _num(cases.obs.get("count")) else None,
+        _block(stats, "categories", view="donut", title="Its cases by verdict") if stats and _num(stats.obs.get("total")) else None,
+        _block(got, "timeline", view="timeline", title="Riskiest case: status history"),
+        _block(mitre, "mitre", view="mitre", title="ATT&CK techniques"),
+        _block(camps, "table", view="table", title="Campaigns"),
+    )
+    follow = [f"Give me an investigation brief for {display_text(_dig(got.obs, 'case', 'case_id'), 60)}"
+              if got is not None and _dig(got.obs, "case", "case_id") else "Investigate the newest escalated case",
+              "Which hosts generated the most alerts this week?", "Compare this month with last month"]
+    return Final(body=body, blocks=blocks[:12], follow_ups=follow)
+
+
+def _final_clarify(view: PromptView, ask: Ask) -> Final:
+    question, options = CLARIFY_OPTIONS.get(ask.clarify or "trend", CLARIFY_OPTIONS["trend"])
+    text = {
+        "trend": "Which trend do you want: alerts, cases, AI cost or the false-positive rate?",
+        "compare": "Which periods should I compare? Pick one, or name your own (for example Q3 vs Q2).",
+        "count": "What should I count? Pick one, or say what you need.",
+        "breakdown": "What should I break down, and by what? Pick one, or say what you need.",
+    }.get(ask.clarify or "trend", question)
+    return Final(body=[text], answer_kind="conversation",
+                 clarify={"question": question, "options": list(options), "allow_custom": True})
+
+
 _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "posture": _final_posture, "noise": _final_noise, "metric": _final_metric, "shift": _final_shift,
     "cost": _final_cost, "top": _final_top, "brute": _final_brute, "tp": _final_tp, "case": _final_case,
@@ -4733,6 +6068,8 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "explain_metric": _final_explain_metric, "change": _final_change, "unsupported": _final_unsupported,
     "remember": _final_remember, "reshape": _final_reshape, "rerun": _final_rerun,
     "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
+    "breakdown": _final_breakdown, "trend": _final_trend, "compare": _final_compare,
+    "perf_report": _final_perf_report, "brief": _final_brief, "deep": _final_deep, "clarify": _final_clarify,
 }
 
 
@@ -4786,8 +6123,8 @@ def _window_note(view: PromptView, ask: Ask) -> str:
         which, held = ("1 lookup", "it was") if len(limited) == 1 else (f"{len(limited)} lookups", "they were")
         return (f"Window: {which} asked for a window reaching outside the {chip} you selected, so {held} "
                 f"limited to the {chip}; a selected range is never widened.")
-    if ask.hours is not None:
-        return (f"Window: your question named {_hours_phrase(ask.hours)}, so the lookups used that window "
+    if ask.win is not None and ask.win.spec is not None:
+        return (f"Window: your question named {ask.win.phrase}, so the lookups used that window "
                 f"instead of the {chip} you selected.")
     return f"Window: the {chip} you selected applies to the windowed lookups above."
 
@@ -4882,6 +6219,14 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
     window_note = _window_note(view, ask)
     if window_note:
         final.body.append(window_note)
+    envelope = next((b for b in final.blocks if b.get("type") == "report"), None)
+    if ask.save and not view.case_scoped and envelope is not None:
+        # SPEC D11: "create/make/build … a report" asks the SERVER to save it to
+        # Reports once the answer persists; the title and template are the envelope's
+        # own (engine words, the window label and case ids only).
+        final.report_request = {"title": display_text(envelope.get("title"), 120) or "Report",
+                                "template": str(envelope.get("template") or "custom")}
+        final.closing = _REPORT_SAVING
     if final.closing and not view.case_scoped:
         # After every note (what is missing or failed, the time limit, the window):
         # the "ready to add" sentence ends the answer.
@@ -4901,6 +6246,10 @@ def _render_final(final: Final) -> str:
     }
     if final.unsupported:
         header["unsupported"] = True
+    if final.clarify:
+        header["clarify"] = final.clarify
+    if final.report_request:
+        header["report"] = final.report_request
     body = "\n\n".join(_join_lists(final.body)).strip() or "No answer could be written."
     return json.dumps(header, ensure_ascii=True) + "\n" + ANSWER_SEPARATOR + "\n" + body
 

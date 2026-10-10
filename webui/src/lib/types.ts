@@ -2718,6 +2718,14 @@ export interface CasesResponse {
    * this to stop asking rather than to discover the ceiling as an error.
    */
   max_offset?: number | null;
+  /**
+   * Round 12 (WP-CM): the queue filters the server applied, echoed only when the
+   * request sent them (`q`, `assignee`, `severity`). The search echo is the normalised,
+   * case-folded term list joined by single spaces.
+   */
+  search_applied?: string | null;
+  assignee_applied?: string | null;
+  severity_applied?: string | null;
   /** The multi-status lifecycle group that was applied, if any. */
   status_group_applied?: string | null;
 }
@@ -4415,7 +4423,7 @@ export interface AgentImprovementEvidence {
 // math). The ONE shared provenance vocabulary consumed by `ProvenanceTag` + the
 // `DataTableColumn.provenance` header tag + the per-cell severity provenance.
 // --------------------------------------------------------------------------- //
-export type Provenance = 'source' | 'ai' | 'code';
+export type Provenance = 'source' | 'ai' | 'code' | 'analyst';
 
 // --------------------------------------------------------------------------- //
 // Noise-Reduction funnel (Round-7 ★) — GET /api/metrics/noise-reduction?window_hours=.

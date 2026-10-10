@@ -255,6 +255,10 @@ class _ReplayCaseStore(CaseStore):
     case by cluster signature.
     """
 
+    #: A replay never publishes ``case.changed`` (Round 12): its cases are an isolated
+    #: experiment and must never nudge an operator's live queue.
+    publishes_case_events = False
+
     def __init__(self, es: InMemoryESClient, job_id: str) -> None:
         super().__init__(es)
         self._replay_es = es

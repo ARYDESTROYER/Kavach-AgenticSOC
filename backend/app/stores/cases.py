@@ -20,6 +20,7 @@ from ..constants import (
 )
 from ..es.base import BaseESClient
 from ..models import Case
+from ..realtime import publish_case_changed
 from ..utils import relative_to_iso_utc_strict
 from .base import CaseRepository, status_group_statuses, window_bounds_proven
 
@@ -91,6 +92,13 @@ def case_sort_clause(sort_field: str, sort_order: str) -> list[dict[str, dict[st
 
 
 class CaseStore(CaseRepository):
+    #: Round 12 (WP-CM): every successful :meth:`save` publishes one ``case.changed``
+    #: nudge on the ``cases`` realtime topic so the Case Manager queue refreshes live.
+    #: ``case_event_bus`` ``None`` means the process singleton; the demo stack binds its
+    #: own isolated bus, and the replay stack turns publishing off entirely.
+    case_event_bus: Any = None
+    publishes_case_events: bool = True
+
     def __init__(self, es: BaseESClient) -> None:
         self._es = es
 
@@ -115,6 +123,11 @@ class CaseStore(CaseRepository):
             doc_id=persisted.case_id,
             refresh=True,
         )
+        if self.publishes_case_events:
+            # Ids, status and timestamps only (#7/#9); never fails the write.
+            publish_case_changed(
+                persisted, created=existing is None, bus=self.case_event_bus
+            )
 
     async def get(self, case_id: str) -> Case | None:
         body = {"size": 1, "query": {"term": {"case_id": case_id}}}

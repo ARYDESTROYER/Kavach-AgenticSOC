@@ -48,6 +48,7 @@ from ...constants import (
     SourceSurface,
 )
 from ...models import AuditDoc, Case, Cursor, UsageDoc
+from ...realtime import publish_case_changed
 from ...utils import (
     now_utc,
     parse_es_timestamp,
@@ -199,6 +200,11 @@ def _case_order_by(sort_field: str, sort_order: str) -> list[Any]:
 class SqlCaseRepository(CaseRepository):
     """Cases persisted as JSON with materialised filter/sort columns."""
 
+    #: Round 12 (WP-CM): see ``CaseStore.case_event_bus`` — one ``case.changed`` nudge
+    #: on the ``cases`` realtime topic after every successful save.
+    case_event_bus: Any = None
+    publishes_case_events: bool = True
+
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
         self._sm = _sessionmaker(engine)
@@ -235,12 +241,16 @@ class SqlCaseRepository(CaseRepository):
                 updated_at=persisted.updated_at or "",
                 doc=doc,
             )
+            created = row is None
             if row is None:
                 session.add(CaseRow(case_id=case.case_id, **values))
             else:
                 for k, v in values.items():
                     setattr(row, k, v)
             await session.commit()
+        if self.publishes_case_events:
+            # Ids, status and timestamps only (#7/#9); never fails the write.
+            publish_case_changed(persisted, created=created, bus=self.case_event_bus)
 
     async def get(self, case_id: str) -> Case | None:
         async with self._sm() as session:

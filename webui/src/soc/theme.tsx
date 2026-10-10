@@ -26,6 +26,7 @@ import {
   type Material,
 } from './theme-tokens';
 import { LOGIN_BRANDING_DEFAULTS } from './components/auth/login.api';
+import { setBaseDocumentTitle } from './chat-activity/document-title';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -103,7 +104,11 @@ function applyFavicon(branding: Branding): void {
   link.href = href;
 }
 
-/** Set document.title from org + product names. */
+/**
+ * Set the document title's BASE from org + product names. The chat activity prefix
+ * ("●" / "✓") is composed on top by `chat-activity/document-title.ts`, so a branding
+ * refresh never wipes it and it never leaks into a branding value.
+ */
 function applyDocumentTitle(branding: Branding): void {
   if (typeof document === 'undefined') return;
   const org = branding.org_name.trim();
@@ -112,7 +117,7 @@ function applyDocumentTitle(branding: Branding): void {
   // instead of clobbering it to a different fallback string, which flickers on load.
   if (!org && !product) return;
   const title = Array.from(new Set([org || 'Agentic SOC', product].filter(Boolean))).join(' · ');
-  if (title) document.title = title;
+  if (title) setBaseDocumentTitle(title);
 }
 
 /**

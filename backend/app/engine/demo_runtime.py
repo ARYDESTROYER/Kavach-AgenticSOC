@@ -106,6 +106,9 @@ class DemoStack:
         # this bus below so ``_emit_step``'s ``get_event_bus()`` fallback never fires.
         self.event_bus = EventBus(history_per_topic=0)
         self.cases = _DemoCaseStore(self.es, run_id)
+        # Round 12 (WP-CM): demo case saves nudge the demo's OWN bus (the one the SSE
+        # endpoint serves while the demo is active), never the global singleton.
+        self.cases.case_event_bus = self.event_bus
         self.audit = AuditLogger(self.es)
         self.usage_store = UsageStore(self.es)
         # A KV adapter over the demo ES (same one the real _wire() uses for the ES

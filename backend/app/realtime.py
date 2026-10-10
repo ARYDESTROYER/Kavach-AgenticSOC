@@ -95,6 +95,7 @@ CASE_ACTIVITY_EVENT = "case.activity"  # case collaboration timeline, room cases
 INAPP_EVENT = "inapp"                # in-app notifications, topics notifications/inbox
 JOB_EVENT = "job"                    # durable background-job progress, topic jobs
 CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, topic chat
+CASE_CHANGED_EVENT = "case.changed"  # a case was saved (created or updated), topic cases
 OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
 
 SSE_EVENT_TYPES: frozenset[str] = frozenset({
@@ -103,11 +104,15 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     INAPP_EVENT,
     JOB_EVENT,
     CHAT_TURN_EVENT,
+    CASE_CHANGED_EVENT,
     OVERFLOW_EVENT,
 })
 
 # The topic chat turn frames are published on (``GET /api/events?topics=chat``).
 CHAT_TOPIC = "chat"
+
+# The topic case-save frames are published on (``GET /api/events?topics=cases``).
+CASES_TOPIC = "cases"
 
 
 # --------------------------------------------------------------------------- #
@@ -474,6 +479,38 @@ def publish_chat_turn(
     if not name:
         return None
     return bus.publish(CHAT_TOPIC, CHAT_TURN_EVENT, payload, audience=[name], retain=retain)
+
+
+def publish_case_changed(
+    case: Any, *, created: bool = False, bus: "EventBus | None" = None,
+) -> str | None:
+    """Publish one ``case.changed`` frame on the ``cases`` topic after a case was saved.
+
+    Round 12 (WP-CM): the Case Manager queue refreshes live instead of waiting for a
+    manual reload. The frame is a NUDGE only: the console refetches the authoritative
+    page, it never renders the payload. The payload therefore carries identifiers, the
+    lifecycle status and timestamps ONLY — never a title, summary, entity, evidence or
+    any log-derived text (#7/#9) — and nothing here decides anything (#3).
+
+    Called by the bundled case repositories immediately after a successful write, so
+    every save path (pipeline, ingest, analyst actions, bulk jobs, demo) is covered by
+    one producer. FIRE-AND-FORGET: any failure is swallowed so a realtime problem can
+    never fail a case write. Returns the event id, or ``None`` when nothing was sent."""
+    try:
+        case_id = str(getattr(case, "case_id", "") or "").strip()
+        if not case_id:
+            return None
+        status = getattr(case, "status", None)
+        status = getattr(status, "value", status)
+        payload = {
+            "case_id": case_id,
+            "status": str(status or ""),
+            "updated_at": str(getattr(case, "updated_at", "") or ""),
+            "created": bool(created),
+        }
+        return (bus or get_event_bus()).publish(CASES_TOPIC, CASE_CHANGED_EVENT, payload)
+    except Exception:  # noqa: BLE001 — realtime is advisory; a save must never fail on it
+        return None
 
 
 def _encode(data: Any) -> str:
