@@ -17,6 +17,9 @@ export const SCREEN_DOC_ID = 'agentic-soc-report-screen';
  * on-screen document instead: every element that neither is, holds nor sits inside it
  * is hidden, its ancestors drop their fixed heights and scroll clipping, and it takes
  * the light tokens. It stands down whenever the report's own print root is present.
+ * Its table rules match the print root's (`export/print.tsx`): every cell wraps anywhere
+ * (numbers and times only at their spaces), and screen-reader-only tables (the charts'
+ * data tables on screen) are not laid out, so none can widen the page and shrink the PDF.
  */
 export function screenPrintCss(): string {
   const D = `#${SCREEN_DOC_ID}`;
@@ -32,8 +35,11 @@ export function screenPrintCss(): string {
   ${off} ${D} [data-print-hide], ${off} ${D} button[aria-label^="Copy"], ${off} ${D} button[aria-label^="Copied"] { display: none !important; }
   ${off} ${D} * { content-visibility: visible !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   ${off} ${D} .overflow-auto, ${off} ${D} .overflow-x-auto, ${off} ${D} .overflow-hidden { overflow: visible !important; max-height: none !important; }
-  ${off} ${D} table { width: 100% !important; }
+  ${off} ${D} table:not(.sr-only) { width: 100% !important; }
+  ${off} ${D} table.sr-only { display: none !important; }
   ${off} ${D} th, ${off} ${D} td { white-space: normal !important; overflow-wrap: anywhere; }
+  ${off} ${D} th *, ${off} ${D} td .whitespace-nowrap { white-space: normal !important; }
+  ${off} ${D} td .tabular-nums { overflow-wrap: normal; }
   ${off} ${D} tr, ${off} ${D} li { break-inside: avoid; }
 }
 `.trim();

@@ -800,6 +800,9 @@ class AppState:
             "runbooks": getattr(self, "runbooks", None),
             "playbooks": getattr(self, "playbooks", None),
             "rule_versions": getattr(self, "rule_versions", None),
+            # Round 12 (P1-4): the caller's chat answer ratings, over the ACTIVE chat
+            # KV (the demo stack's in Demo Mode), read as aggregates only.
+            "chat_feedback": self._chat_feedback_store(),
             "scopes": frozenset(getattr(body, "scopes", None) or ()),
             "source_id": source_id or None,
         }

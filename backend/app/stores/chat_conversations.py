@@ -142,7 +142,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Iterator, Literal, TypeVar
+from typing import Any, Awaitable, Callable, Iterable, Iterator, Literal, TypeVar
 
 from ..agents.blocks import (
     STORED_QUERY_CHARS,
@@ -315,6 +315,20 @@ class ChatRequestInProgress(RuntimeError):
     """The same idempotency key currently owns an unexpired model invocation."""
 
 
+class ChatRequestFailed(ChatRequestInProgress):
+    """The same idempotency key belongs to a BILLED turn whose answer could not be
+    saved (an ENDED reservation, :meth:`ChatConversationStore.end_reservation`).
+    Nothing is running: the key stays held until its lease runs out (a retry never
+    bills the same answer twice), but a retry is told the request failed instead of
+    waiting for a turn that will never finish. A subclass of
+    :class:`ChatRequestInProgress`, so older callers still refuse the retry."""
+
+
+CHAT_REQUEST_FAILED_MESSAGE = (
+    "This request was answered but could not be saved. Ask again to start a new request."
+)
+
+
 class ChatRequestCapacityBusy(RuntimeError):
     """A principal already owns the maximum number of live request leases."""
 
@@ -427,6 +441,37 @@ class _Removed:
             self.conversations.append(conversation)
             if conversation.id in archives:
                 self.archives[conversation.id] = dict(archives[conversation.id])
+
+
+# Background cleanup tasks are named with this prefix, so a shutdown or factory reset
+# can finish the ones running on its own event loop (``drain_background_cleanup``).
+CLEANUP_TASK_PREFIX = "chat-history-cleanup"
+
+
+async def drain_background_cleanup(timeout: float = 10.0) -> int:
+    """Wait (bounded) for the chat-history cleanup tasks of the running event loop —
+    called on shutdown and factory reset, so best-effort blanking finishes instead of
+    being dropped with the loop. Returns how many were pending."""
+    current = asyncio.current_task()
+    pending = [
+        task for task in asyncio.all_tasks()
+        if task is not current and not task.done() and task.get_name().startswith(CLEANUP_TASK_PREFIX)
+    ]
+    if pending:
+        await asyncio.wait(pending, timeout=max(0.1, timeout))
+    return len(pending)
+
+
+def _supports_concurrent_writes(kv: Any) -> bool:
+    """Whether best-effort cleanup may write several documents at once (and off the
+    request path). Not on SQLite: it serialises writers, and an in-memory database
+    shares ONE connection on which concurrent transactions fail — there, cleanup
+    stays sequential and inline, as before (local writes are fast)."""
+    engine = getattr(kv, "_engine", None)
+    try:
+        return engine.url.get_backend_name() != "sqlite"
+    except AttributeError:
+        return True
 
 
 def normalize_user_id(user_id: str | None) -> str:
@@ -1637,6 +1682,10 @@ class ChatConversationStore:
         self._kv = kv
         self._locks: dict[str, asyncio.Lock] = {}
         self._index_lock = asyncio.Lock()
+        # Background cleanup of conversations a turn's write evicted (tracked, so a
+        # task is never garbage-collected mid-run; ``wait_for_cleanup`` awaits them).
+        self._cleanup: set[asyncio.Future] = set()
+        self._concurrent_writes = _supports_concurrent_writes(kv)
         self._opaque_rows = opaque_rows_for(kv) if opaque_rows is None else bool(opaque_rows)
         self._storage_form = OPAQUE_STORAGE_FORM if self._opaque_rows else KEYED_STORAGE_FORM
 
@@ -2122,35 +2171,85 @@ class ChatConversationStore:
         except Exception as exc:  # noqa: BLE001 -- the answer is already saved
             logger.warning("chat conversation not archived (%s)", type(exc).__name__)
 
-    async def _blank_archive(self, partition_key: str, conversation_id: str, info: dict[str, Any]) -> None:
+    async def _blank_archive(
+        self, partition_key: str, conversation_id: str, info: dict[str, Any],
+        gate: asyncio.Semaphore | None = None,
+    ) -> None:
         """Blank a removed conversation's archive pages and the exchange documents only
-        they reference (best effort). The page past the count is probed too: an
-        interrupted archive write may have left one."""
+        they reference (best effort), pages concurrently behind ``gate``. The page past
+        the count is probed too: an interrupted archive write may have left one."""
+        gate = gate or self._cleanup_gate()
         count = int((info or {}).get("count") or 0)
-        for number in range(count // ARCHIVE_PAGE_MESSAGES + 1 + (1 if count else 0)):
-            try:
-                messages = await self._load_archive_page(partition_key, conversation_id, number)
-            except ChatHistoryUnavailable:
-                messages = []
+
+        async def _page(number: int) -> None:
+            async with gate:
+                try:
+                    messages = await self._load_archive_page(partition_key, conversation_id, number)
+                except ChatHistoryUnavailable:
+                    messages = []
             if messages is None:
-                continue
-            for message in messages:
-                if exchange_backed(message):
-                    await self._blank_exchange(partition_key, message.id)
-            await self._blank(archive_page_key(partition_key, conversation_id, number))
+                return
+            await asyncio.gather(*(
+                self._gated(gate, self._blank_exchange(partition_key, message.id))
+                for message in messages if exchange_backed(message)
+            ))
+            async with gate:
+                await self._blank(archive_page_key(partition_key, conversation_id, number))
+
+        await asyncio.gather(*(
+            _page(number) for number in range(count // ARCHIVE_PAGE_MESSAGES + 1 + (1 if count else 0))
+        ))
+
+    def _cleanup_gate(self) -> asyncio.Semaphore:
+        return asyncio.Semaphore(HYDRATE_CONCURRENCY if self._concurrent_writes else 1)
+
+    @staticmethod
+    async def _gated(gate: asyncio.Semaphore, work: Awaitable[Any]) -> Any:
+        async with gate:
+            return await work
+
+    def _in_background(self, work: Awaitable[Any], name: str) -> None:
+        """Run best-effort cleanup off the caller's critical path, as a TRACKED task
+        (kept referenced until done; :meth:`wait_for_cleanup` awaits them all)."""
+        task = asyncio.ensure_future(work)
+        try:
+            task.set_name(name)
+        except AttributeError:  # pragma: no cover - every supported runtime has it
+            pass
+        self._cleanup.add(task)
+        task.add_done_callback(self._cleanup_done)
+
+    def _cleanup_done(self, task: asyncio.Future) -> None:
+        self._cleanup.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("chat history cleanup failed (%s)", type(task.exception()).__name__)
+
+    async def wait_for_cleanup(self) -> None:
+        """Await every background cleanup started so far (tests, factory reset)."""
+        while self._cleanup:
+            await asyncio.gather(*list(self._cleanup), return_exceptions=True)
 
     async def _blank_removed(self, partition_key: str, removed: _Removed) -> None:
-        """Blank every auxiliary document of conversations a write removed."""
+        """Blank every auxiliary document of conversations a write removed —
+        concurrently behind one semaphore (:data:`HYDRATE_CONCURRENCY`), since an
+        evicted or deleted conversation can be very long (one exchange document per
+        answer, plus its archive pages)."""
         if not removed.conversations:
             return
         ids: set[str] = set()
+        gate = self._cleanup_gate()
+        jobs: list[Awaitable[Any]] = []
         for conversation in removed.conversations:
             ids.add(conversation.id)
-            for message in conversation.messages:
-                if exchange_backed(message):
-                    await self._blank_exchange(partition_key, message.id)
-            await self._blank_archive(partition_key, conversation.id, removed.archives.get(conversation.id) or {})
-            await self._blank(summary_key(partition_key, conversation.id))
+            jobs.extend(
+                self._gated(gate, self._blank_exchange(partition_key, message.id))
+                for message in conversation.messages if exchange_backed(message)
+            )
+            jobs.append(self._blank_archive(
+                partition_key, conversation.id, removed.archives.get(conversation.id) or {}, gate,
+            ))
+            jobs.append(self._gated(gate, self._blank(summary_key(partition_key, conversation.id))))
+        await asyncio.gather(*jobs)
         try:
             await self._scrub_observations(partition_key, ids)
         except Exception as exc:  # noqa: BLE001 -- best effort, like the blanks above
@@ -2181,14 +2280,18 @@ class ChatConversationStore:
         only: set[str] | None = None,
         last: int | None = None,
         first: int | None = None,
+        strict: bool = False,
     ) -> ChatConversation:
         """Restore exchange-backed messages whose inline copy is partial from their
         exchange documents (STORED form in, stored form out). Which ones:
         ``after`` — only messages after that message id (the engine replays a running
         summary for the rest); ``only`` — these assistant message ids; ``last`` /
         ``first`` — only among the newest / oldest that many messages. A restored
-        answer also restores its question (the message before it). A missing or
-        unreadable document leaves the inline copy, still ``truncated``."""
+        answer also restores its question (the message before it). A missing
+        document leaves the inline copy, still ``truncated``; so does an unreadable
+        one, unless ``strict``: then it raises :class:`ChatHistoryUnavailable` (a
+        caller about to SNAPSHOT the answer — a report — must never mistake "could
+        not read" for the stored preview)."""
         messages = list(conversation.messages)
         start = 0
         if after:
@@ -2210,7 +2313,7 @@ class ChatConversationStore:
             if known and mid in known:
                 return index, known[mid]
             async with gate:
-                return index, await self._load_exchange(partition_key, mid)
+                return index, await self._load_exchange(partition_key, mid, strict=strict)
 
         for index, record in await asyncio.gather(*(_load(i) for i in targets)):
             if record is None:
@@ -2421,6 +2524,7 @@ class ChatConversationStore:
         hydrate_last: int | None = None,
         hydrate_first: int | None = None,
         hydrate: bool = True,
+        strict: bool = False,
     ) -> ChatConversation | None:
         """One owned conversation with decoded message responses.
 
@@ -2430,7 +2534,9 @@ class ChatConversationStore:
         restored to its full text unless narrowed: ``hydrate_after`` (only after that
         message id — the turn route passes the running summary's ``covers_through``),
         ``hydrate_last``/``hydrate_first`` (only the newest/oldest that many), or
-        ``hydrate=False`` (inline copies only)."""
+        ``hydrate=False`` (inline copies only). ``strict``: an exchange document that
+        cannot be read raises :class:`ChatHistoryUnavailable` instead of leaving the
+        inline preview (callers that snapshot answers, e.g. a report)."""
         key, doc = await self._partition_doc(user_id)
         conversation, info = _decode_row(doc, str(conversation_id))
         if conversation is None:
@@ -2449,6 +2555,7 @@ class ChatConversationStore:
             window_conversation = await self._hydrate(
                 key, window_conversation, after=hydrate_after, last=hydrate_last,
                 first=None if hydrate_first is None else hydrate_first + (start - lo),
+                strict=strict,
             )
         kept = window_conversation.messages[start - lo:] if total else []
         return _decoded(conversation.model_copy(update={
@@ -2486,11 +2593,12 @@ class ChatConversationStore:
         return [_decoded_message(m) for m in kept], start
 
     async def _locate(
-        self, user_id: str | None, conversation_id: str, message_id: str,
+        self, user_id: str | None, conversation_id: str, message_id: str, *, strict: bool = False,
     ) -> tuple[ChatConversation | None, list[ChatConversationMessage], int | None]:
         """``(conversation row, restored neighbourhood, index of the message in it)``:
         the message, the one before and the one after, read from the row or the
-        archive and restored to their full text (one exchange document per answer)."""
+        archive and restored to their full text (one exchange document per answer;
+        ``strict``: an unreadable one raises instead of leaving the preview)."""
         key, doc = await self._partition_doc(user_id)
         conversation, info = _decode_row(doc, str(conversation_id))
         if conversation is None:
@@ -2506,7 +2614,9 @@ class ChatConversationStore:
         lo = max(0, index - 1)
         hi = min(count + len(conversation.messages), index + 2)
         window = await self._slice(key, conversation, info, lo, hi)
-        restored = await self._hydrate(key, conversation.model_copy(update={"messages": window}))
+        restored = await self._hydrate(
+            key, conversation.model_copy(update={"messages": window}), strict=strict,
+        )
         target = next((i for i, m in enumerate(restored.messages) if m.id == str(message_id)), None)
         return conversation, list(restored.messages), target
 
@@ -2519,26 +2629,30 @@ class ChatConversationStore:
         return _decoded_message(window[target]) if target is not None else None
 
     async def get_exchange(
-        self, user_id: str | None, conversation_id: str, message_id: str,
+        self, user_id: str | None, conversation_id: str, message_id: str, *, strict: bool = False,
     ) -> ChatConversation | None:
         """The owned conversation (its fields) whose ``messages`` are only the answer
         ``message_id`` and its neighbours — the question before it — restored to full
         text. ``messages`` is empty when the message is not part of the conversation;
         ``None`` when the conversation is not owned. Reports resolve an answer through
-        this instead of the whole transcript."""
-        conversation, window, target = await self._locate(user_id, conversation_id, message_id)
+        this instead of the whole transcript, with ``strict=True``: an exchange
+        document that cannot be read raises :class:`ChatHistoryUnavailable`, so a
+        report never snapshots the inline preview as the answer."""
+        conversation, window, target = await self._locate(
+            user_id, conversation_id, message_id, strict=strict,
+        )
         if conversation is None:
             return None
         kept = window[: target + 1] if target is not None else []
         return _decoded(conversation.model_copy(update={"messages": kept, "earlier_message_count": 0}))
 
     async def get_message(
-        self, user_id: str | None, conversation_id: str, message_id: str,
+        self, user_id: str | None, conversation_id: str, message_id: str, *, strict: bool = False,
     ) -> tuple[ChatConversation, ChatConversationMessage] | None:
         """``(conversation, decoded message)`` for one owned message (the reports
         package resolves "Add to report" through this, SPEC §9.2). The conversation's
         ``messages`` hold only that message and the question before it."""
-        conversation = await self.get_exchange(user_id, conversation_id, message_id)
+        conversation = await self.get_exchange(user_id, conversation_id, message_id, strict=strict)
         if conversation is None:
             return None
         message = next((m for m in conversation.messages if m.id == str(message_id)), None)
@@ -2957,6 +3071,8 @@ class ChatConversationStore:
                 if conversation_id is not None and request_cid not in rows:
                     raise ChatConversationMissing("conversation not found")
                 if _lease_held(idempotency_key, request, live):
+                    if request.get("ended"):
+                        raise ChatRequestFailed(CHAT_REQUEST_FAILED_MESSAGE)
                     raise ChatRequestInProgress("This chat request is already in progress.")
                 # A crashed worker's bounded lease may be reclaimed only by the exact
                 # same request fingerprint and conversation target.
@@ -3105,6 +3221,13 @@ class ChatConversationStore:
             appended[0] = False
             data = _decode_partition(current)
             request = data["requests"].get(idempotency_key)
+            if (
+                request is None and requested_existing_conversation
+                and conversation_id not in data["conversations"]
+            ):
+                # The conversation was deleted while its turn ran (a delete drops its
+                # reservations): say so, not "the reservation no longer matches".
+                raise ChatConversationMissing("conversation not found")
             if request is None or request.get("fingerprint") != request_fingerprint:
                 raise ChatIdempotencyConflict("The chat reservation no longer matches.")
             if str(request.get("conversation_id") or "") != conversation_id:
@@ -3175,7 +3298,14 @@ class ChatConversationStore:
             raise
         if not appended[0]:
             await self._blank_exchange(key, assistant_mid)
-        await self._blank_removed(key, removed)
+        if removed.conversations and self._concurrent_writes:
+            # Retention evicted another (possibly very long) conversation: its
+            # documents are blanked in the background, so this turn's answer is
+            # never kept waiting for an unrelated thread's cleanup (best effort; the
+            # factory reset covers anything left).
+            self._in_background(self._blank_removed(key, removed), f"{CLEANUP_TASK_PREFIX}:evicted")
+        elif removed.conversations:
+            await self._blank_removed(key, removed)
         if appended[0]:
             await self._mark_answered(key, conversation_id, response, idempotency_key)
             await self._maybe_archive(key, conversation_id)
@@ -3468,6 +3598,60 @@ class ChatConversationStore:
             return None
         return {**step, "stored_at": payload.get("stored_at"), "conversation_id": payload.get("conversation_id")}
 
+    async def discard_observations(self, user_id: str | None, observation_ref: str) -> bool:
+        """Blank one answer's ring slot again (its answer was never saved). Only the
+        slot that still holds that answer is blanked: a ring that has since reused
+        it for a newer answer is left alone. True when something was blanked."""
+        match = OBSERVATION_REF_RE.match(str(observation_ref or ""))
+        if match is None or int(match.group("slot")) >= OBSERVATION_RING_SIZE:
+            return False
+        key = partition_key_for_user(user_id)
+        slot, turn_id = match.group("slot"), match.group("turn")
+        index_key = observation_index_key(key)
+
+        def _drop(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, bool]:
+            payload = _load_row((current or {}).get(OBSERVATION_INDEX_FIELD)) or {}
+            slots = payload.get("slots") if isinstance(payload.get("slots"), dict) else {}
+            entry = slots.get(slot)
+            if not isinstance(entry, dict) or entry.get("turn_id") != turn_id:
+                return None, False
+            slots.pop(slot, None)
+            payload["slots"] = slots
+            return {"schema": AUX_SCHEMA, OBSERVATION_INDEX_FIELD: canonical_json(payload)}, True
+
+        if not await self._strict_mutate(index_key, _drop):
+            return False
+        stored = await self._get_aux(observation_slot_key(key, int(slot)), OBSERVATION_FIELD)
+        if isinstance(stored, dict) and stored.get("turn_id") == turn_id:
+            await self._blank(observation_slot_key(key, int(slot)))
+        return True
+
+    async def _clear_observations(self, partition_key: str) -> None:
+        """Blank the owner's WHOLE observation ring and its index (every slot ever
+        used, whatever conversation it names — a clear or a factory reset leaves no
+        step observation behind, even one whose conversation was already gone).
+        Best effort."""
+        index_key = observation_index_key(partition_key)
+        try:
+            payload = await self._get_aux(index_key, OBSERVATION_INDEX_FIELD)
+        except ChatHistoryUnavailable:
+            payload = None
+            used = OBSERVATION_RING_SIZE  # unknown: every slot
+        else:
+            counter = payload.get("next") if isinstance(payload, dict) else None
+            used = min(OBSERVATION_RING_SIZE, counter) if isinstance(counter, int) and counter > 0 else 0
+            slots = payload.get("slots") if isinstance(payload, dict) and isinstance(payload.get("slots"), dict) else {}
+            listed = [int(s) for s in slots if str(s).isdigit() and int(s) < OBSERVATION_RING_SIZE]
+            used = max([used, *(s + 1 for s in listed)])
+        gate = self._cleanup_gate()
+
+        async def _one(slot: int) -> None:
+            async with gate:
+                await self._blank(observation_slot_key(partition_key, slot))
+
+        await asyncio.gather(*(_one(slot) for slot in range(used)))
+        await self._blank(index_key)
+
     async def _scrub_observations(self, partition_key: str, conversation_ids: set[str]) -> None:
         """Blank the ring slots of removed conversations (best effort)."""
         if not conversation_ids:
@@ -3702,6 +3886,7 @@ class ChatConversationStore:
 
         cleared = await self._strict_mutate(key, _change)
         await self._blank_removed(key, removed)
+        await self._clear_observations(key)
         await self._blank(live_state_key(key))
         return cleared
 
@@ -3709,6 +3894,7 @@ class ChatConversationStore:
         """Factory-reset every registered hashed partition plus the legacy index,
         blanking every conversation's auxiliary documents and each owner's live
         state (Round 12)."""
+        await self.wait_for_cleanup()
         index = await self._strict_get(CHAT_CONVERSATIONS_KEY) or {}
         keys = sorted({str(item) for item in (index.get("partitions") or [])})
         cleared = 0
@@ -3723,6 +3909,7 @@ class ChatConversationStore:
 
             cleared += await self._strict_mutate(key, _clear)
             await self._blank_removed(key, removed)
+            await self._clear_observations(key)
             await self._blank(live_state_key(key))
 
         def _clear_index(current: dict[str, Any] | None) -> tuple[dict[str, Any], None]:

@@ -271,6 +271,10 @@ class ChatToolContext:
     runbooks: Any = None
     playbooks: Any = None
     rule_versions: Any = None
+    # Round 12 (SYNTHESIS-chat P1-4): the caller's chat answer ratings
+    # (``stores.chat_feedback.ChatFeedbackStore`` over the ACTIVE chat KV). Tools read
+    # aggregates only (``breakdown``), never a comment. None = not measured.
+    chat_feedback: Any = None
     # Request selection the tools must respect (never widen).
     scopes: frozenset[str] = frozenset()
     source_id: str | None = None

@@ -302,9 +302,11 @@ function failureFromError(error: unknown, fallback: string): ChatTurnFailure {
       status,
       // Busy, in-progress, rate-limited, unavailable and unreachable are transient. An
       // idempotency conflict is not: the same key fails the same way every time, so the
-      // host offers Ask again (a new key) instead of Retry same request.
+      // host offers Ask again (a new key) instead of Retry same request. Neither is
+      // `chat_request_failed`: the turn under this key was answered but not saved.
       retryable:
         code !== 'chat_idempotency_conflict' &&
+        code !== 'chat_request_failed' &&
         (status === 0 || status === 409 || status === 429 || status === 502 || status === 503 || status === 504),
       notice: null,
     };

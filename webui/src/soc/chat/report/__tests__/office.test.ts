@@ -13,7 +13,9 @@
  *   - Excel: formula-led strings take the quote-prefix style; any that could act as a
  *     formula elsewhere also keep a literal `'` (a plain "+10 vs previous window" shows
  *     none); a literal `_xHHHH_` reads back literally (never a decoded `=` or NUL);
- *     numbers stay numeric, sheet names are sanitised and unique, nothing is defanged;
+ *     numbers stay numeric, sheet names are sanitised and unique; the "Report" sheet is
+ *     defanged by default (a human document, like Word) while the table sheets stay
+ *     exact (data, like CSV);
  *   - Word: every section title and every KPI value is present, defanged by default.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -265,7 +267,7 @@ describe('Excel export', () => {
     // Markup stays text; control characters are dropped.
     expect(strings).toContain('<script>alert(1)</script> & "q"');
     expect(strings).toContain('bell nul vt ok');
-    // A data format is never defanged.
+    // The table sheets are data: never defanged.
     expect(strings.some((s) => s.includes('203.0.113.10 via http://evil.example/x'))).toBe(true);
     // Numbers are numeric cells (a negative count is a number, not a defused string).
     const numbers = cells.filter((c) => !c.getAttribute('t')).map((c) => c.textContent);
@@ -322,6 +324,50 @@ describe('Excel export', () => {
     }
     // A sheet name never carries the pattern.
     expect(sheetName('rule_x003D_name', new Set(), 'x')).not.toMatch(/_x[0-9A-Fa-f]{4}_/);
+  });
+
+  it('defangs the Report sheet by default and keeps every table sheet exact (P1-7)', () => {
+    const texts = (sheet: { rows: Array<Array<{ kind: string; text?: string; value?: number } | null>> }) =>
+      sheet.rows.flat().map((c) => (c ? (c.kind === 'text' ? (c.text ?? '') : String(c.value)) : ''));
+    const base = hostileReport();
+    const iocTable = { ...(base.items[base.items.length - 1].block as Record<string, unknown>), id: 'ioc-table', title: 'Hits for 198.51.100.7' };
+    const report: Report = {
+      ...base,
+      items: [
+        ...base.items,
+        { ...base.items[base.items.length - 1], id: 'it-ioc', block: iocTable, note: 'Seen at evil.example' },
+      ] as Report['items'],
+    };
+    const model = workbookModel(doc(report));
+    const [overview, ...tables] = model.sheets;
+    const human = texts(overview).join('\n');
+    // The summary, next steps, prose and notes: no live indicator.
+    expect(human).toContain('Brute force from 203[.]0[.]113[.]14 against vpn-gw-2');
+    expect(human).toContain('Block 203[.]0[.]113[.]14 at the edge');
+    expect(human).toContain('hxxp://evil[.]example/x');
+    expect(human).toContain('Seen at evil[.]example');
+    expect(human).not.toMatch(/203\.0\.113\.14|198\.51\.100\.7|https?:\/\/evil\.example|\bevil\.example/);
+    // The overview names the table (and the sheet it links to) defanged …
+    const line = texts(overview).find((t) => t.startsWith('Table ') && t.includes('Hits for'))!;
+    expect(line).toMatch(/^Table \d+: Hits for 198\[\.\]51\[\.\]100\[\.\]7 \(sheet "\d+ Hits for 198\[\.\]51\[\.\]100\[\.\]7"\)$/);
+    // … while the data sheets keep the exact values, titles and sheet names.
+    const ioc = tables.find((t) => t.name.endsWith('Hits for 198.51.100.7'))!;
+    expect(ioc).toBeDefined();
+    expect(texts(ioc)[0]).toBe('Hits for 198.51.100.7');
+    const data = tables.flatMap(texts);
+    expect(data).toContain('203.0.113.10 via http://evil.example/x');
+    expect(data.join('\n')).not.toMatch(/\[\.\]|\[@\]|hxxp/);
+    // The toggle off: the Report sheet is exact too; the table sheets never change.
+    const raw = workbookModel(doc(report), { defang: false });
+    const rawHuman = texts(raw.sheets[0]).join('\n');
+    expect(rawHuman).toContain('Block 203.0.113.14 at the edge');
+    expect(rawHuman).toContain('http://evil.example/x');
+    expect(rawHuman).not.toContain('[.]');
+    expect(raw.sheets.slice(1)).toEqual(tables);
+    // The package follows the model: defanged by default, exact when asked.
+    const sheet1 = (bytes: Uint8Array) => textOf(parseXml(zipMap(bytes).get('xl/worksheets/sheet1.xml')!.text));
+    expect(sheet1(reportToXlsx(doc(report), { now: NOW }))).toContain('203[.]0[.]113[.]14');
+    expect(sheet1(reportToXlsx(doc(report), { now: NOW, defang: false }))).toContain('203.0.113.14');
   });
 
   it('lays out each table with a title, a caption, a frozen header and a filter', () => {
@@ -496,6 +542,15 @@ describe('exportReport (files)', () => {
     expect(outcome).toMatchObject({ ok: true, message: 'CSV downloaded', filename: 'agentic-soc-report-brute-force-on-vpn-gw-2-20261008-1405Z.csv' });
     const bytes = await bytesOf(blobs[0].blob);
     expect(Array.from(bytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+  });
+
+  it('passes the defang toggle to the Excel Report sheet (on by default)', async () => {
+    const blobs = capture();
+    await exportReport(sampleReport(), 'xlsx', { now: NOW });
+    await exportReport(sampleReport(), 'xlsx', { now: NOW, defang: false });
+    const sheet1 = async (blob: Blob) => textOf(parseXml(zipMap(await bytesOf(blob)).get('xl/worksheets/sheet1.xml')!.text));
+    expect(await sheet1(blobs[0].blob)).toContain('Block 203[.]0[.]113[.]14 at the edge');
+    expect(await sheet1(blobs[1].blob)).toContain('Block 203.0.113.14 at the edge');
   });
 
   it('saves Word and Excel packages with their MIME types and names', async () => {

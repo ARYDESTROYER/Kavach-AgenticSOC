@@ -32,7 +32,6 @@ step is indistinguishable from an absent one (404).
 from __future__ import annotations
 
 import logging
-import weakref
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
@@ -42,7 +41,7 @@ from ..constants import ActionType
 from ..models import ChatConversationMessage, ChatFeedbackRequest
 from ..state import AppState
 from ..stores.chat_conversations import MAX_MESSAGE_PAGE, ChatHistoryUnavailable, ChatMessageMissing
-from ..stores.chat_feedback import FEEDBACK_REASONS, ChatFeedbackStore
+from ..stores.chat_feedback import FEEDBACK_REASONS, ChatFeedbackStore, feedback_store_for
 from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.chat_library")
@@ -50,8 +49,6 @@ logger = logging.getLogger("tlsoc.api.chat_library")
 router = APIRouter(prefix="/api")
 
 _SAFE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
-
-_FEEDBACK_STORES: "weakref.WeakKeyDictionary[Any, ChatFeedbackStore]" = weakref.WeakKeyDictionary()
 
 
 class ChatFeedbackEntryOut(BaseModel):
@@ -129,12 +126,7 @@ def _history_unavailable(exc: Exception | None = None) -> HTTPException:
 def feedback_store(state: AppState) -> ChatFeedbackStore:
     """The feedback store over the ACTIVE chat KV: the same boundary as Workspace
     history (Demo Mode writes to the demo stack's throwaway KV, never the tenant's)."""
-    kv = getattr(state.chat_conversations, "_kv", None) or state.kv
-    store = _FEEDBACK_STORES.get(kv)
-    if store is None:
-        store = ChatFeedbackStore(kv)
-        _FEEDBACK_STORES[kv] = store
-    return store
+    return feedback_store_for(getattr(state.chat_conversations, "_kv", None) or state.kv)
 
 
 async def _owned_answer(state: AppState, user: str, conversation_id: str, message_id: str) -> Any:

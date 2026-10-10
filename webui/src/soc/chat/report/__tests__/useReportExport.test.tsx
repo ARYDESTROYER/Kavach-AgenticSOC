@@ -27,7 +27,8 @@ type Outcome = { ok: boolean; message: string; filename?: string; retryable?: bo
 const exportReport = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<Outcome>>());
 vi.mock('@/soc/chat/report/export/run', () => ({ exportReport }));
 
-import { DownloadPdfButton, ExportErrorNote, ExportMenu } from '../ExportMenu';
+import { DEFANG_TOGGLE_LABEL, DownloadPdfButton, ExportErrorNote, ExportMenu } from '../ExportMenu';
+import { emitReportChanged } from '../report-sync';
 import { CHUNK_ERROR_MESSAGE, UNREACHABLE_MESSAGE, exportFailureMessage, isChunkLoadError, useReportExport } from '../useReportExport';
 import { clearSourceTurnCache } from '../useSourceTurns';
 import { REPORT_EXPORT_FORMATS, REPORT_EXPORT_LABEL } from '../export/formats';
@@ -109,7 +110,9 @@ describe('Export menu', () => {
     await user.click(screen.getByTestId('export-trigger'));
     const items = await screen.findAllByRole('menuitem');
     expect(items.map((i) => i.textContent)).toEqual(REPORT_EXPORT_FORMATS.map((f) => REPORT_EXPORT_LABEL[f]));
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Defang indicators (PDF, Word, Markdown, HTML)' })).toBeInTheDocument();
+    // The toggle names every document it applies to, the Excel report sheet included.
+    expect(DEFANG_TOGGLE_LABEL).toBe('Defang indicators (PDF, Word, Markdown, HTML and the Excel report sheet)');
+    expect(screen.getByRole('menuitemcheckbox', { name: DEFANG_TOGGLE_LABEL })).toBeInTheDocument();
     expect(document.querySelector('[data-radix-menu-content] [aria-haspopup="menu"]')).toBeNull();
   });
 });
@@ -281,6 +284,56 @@ describe('useReportExport', () => {
     await user.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByTestId('report-export-error')).toBeNull();
     expect(document.activeElement).toBe(screen.getByTestId('export-trigger'));
+  });
+
+  it('lets a retryable failure be dismissed, focus back on its control', async () => {
+    const user = userEvent.setup();
+    const unreachable = new ApiError(0, 'Cannot reach backend: Failed to fetch');
+    const report = sampleReport({ title: 'Network weekly' });
+    render(<Harness report={report} loaders={{ [report.id]: () => Promise.reject(unreachable) }} />);
+    await user.click(screen.getByTestId('export-trigger'));
+    await user.click(await screen.findByRole('menuitem', { name: 'HTML (.html)' }));
+    const note = await screen.findByTestId('report-export-error');
+    expect(note).toHaveAttribute('data-retryable', 'true');
+    // A failure that keeps failing (the server stays unreachable) can still be closed.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('report-export-error')).toHaveTextContent(UNREACHABLE_MESSAGE);
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByTestId('report-export-error')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId('export-trigger'));
+    expect(exportReport).not.toHaveBeenCalled();
+  });
+
+  it('drops the failure of a report that was deleted (its Retry could only fail again)', async () => {
+    const user = userEvent.setup();
+    const a = sampleReport({ id: 'rep-A', title: 'Network weekly' });
+    const b = sampleReport({ id: 'rep-B', title: 'Second report' });
+    const unreachable = new ApiError(0, 'Cannot reach backend: Failed to fetch');
+    const slowB = deferred<Report>();
+    render(<Harness reports={[a, b]} loaders={{ 'rep-A': () => Promise.reject(unreachable), 'rep-B': () => slowB.promise }} />);
+    await user.click(screen.getByTestId('export-trigger-rep-A'));
+    await user.click(await screen.findByRole('menuitem', { name: 'HTML (.html)' }));
+    expect(await screen.findByTestId('report-export-error')).toHaveTextContent('Network weekly');
+    // Another report's deletion leaves this failure alone.
+    act(() => emitReportChanged({ reportId: 'rep-other', report: null }));
+    expect(screen.getByTestId('report-export-error')).toHaveTextContent('Network weekly');
+    // A rename of the same report (a new copy, not a deletion) leaves it too.
+    act(() => emitReportChanged({ reportId: 'rep-A', report: { ...a, title: 'Renamed' } }));
+    expect(screen.getByTestId('report-export-error')).toBeInTheDocument();
+    // Deleting the failed report removes its note and its Retry.
+    act(() => emitReportChanged({ reportId: 'rep-A', report: null }));
+    expect(screen.queryByTestId('report-export-error')).toBeNull();
+    // An export still running when its report is deleted never shows a late failure.
+    await user.click(screen.getByTestId('export-trigger-rep-B'));
+    await user.click(await screen.findByRole('menuitem', { name: 'Markdown (.md)' }));
+    act(() => emitReportChanged({ reportId: 'rep-B', report: null }));
+    await act(async () => {
+      slowB.reject(unreachable);
+      await slowB.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(screen.getByTestId('export-trigger-rep-B')).not.toHaveAttribute('aria-busy'));
+    expect(screen.queryByTestId('report-export-error')).toBeNull();
   });
 
   it('reports an unavailable download as a neutral notice (outcome not ok, not retryable)', async () => {

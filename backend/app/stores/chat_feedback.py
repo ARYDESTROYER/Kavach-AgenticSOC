@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import weakref
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar, get_args
 
@@ -38,6 +39,7 @@ FEEDBACK_FIELD = "chat_feedback_json"
 FEEDBACK_SCHEMA = 1
 MAX_FEEDBACK_PER_USER = 500
 CAS_RETRIES = 8
+_STORES: "weakref.WeakKeyDictionary[Any, ChatFeedbackStore]" = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,17 @@ def _rev(doc: dict[str, Any] | None) -> int:
         return max(0, int((doc or {}).get("_rev", 0)))
     except (TypeError, ValueError):
         return 0
+
+
+def feedback_store_for(kv: KVStore) -> "ChatFeedbackStore":
+    """THE feedback store over ``kv`` (one per KV, so its per-user locks serialise
+    every in-process write). Callers pass the ACTIVE chat KV — the chat history
+    store's — so Demo Mode reads and writes the demo stack's throwaway KV."""
+    store = _STORES.get(kv)
+    if store is None:
+        store = ChatFeedbackStore(kv)
+        _STORES[kv] = store
+    return store
 
 
 class ChatFeedbackStore:

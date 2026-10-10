@@ -127,6 +127,7 @@ from ..stores.chat_conversations import (
     ChatHistoryUnavailable,
     ChatIdempotencyConflict,
     ChatRequestCapacityBusy,
+    ChatRequestFailed,
     ChatRequestInProgress,
     IDEMPOTENCY_PENDING_TTL_SECONDS,
     normalize_user_id,
@@ -663,6 +664,11 @@ class ChatTurnRegistry:
         cleanups = [task for task in self._cleanups if not task.done()]
         if cleanups:
             await asyncio.wait(cleanups, timeout=max(0.1, deadline - loop.time()))
+        # Chat history's background cleanup (documents of conversations retention
+        # evicted) finishes too, instead of being dropped with the loop.
+        from ..stores.chat_conversations import drain_background_cleanup
+
+        await drain_background_cleanup(timeout=max(0.1, deadline - loop.time()))
         # A reset or shutdown also forgets the finished turns' event rings: their text
         # (partial answers included) must never replay to whoever signs in next.
         self._recent.clear()
@@ -850,6 +856,9 @@ class _TurnPlan:
     summary: Any = None
     # The caller's account generation (turns are bound to it, see ChatTurnHandle).
     generation: str = ""
+    # The ring ref of this turn's stored step observations (P1-1), discarded again
+    # when the answer is never saved (no conversation is left to own them).
+    observation_ref: str | None = None
 
     @property
     def billed(self) -> bool:
@@ -988,28 +997,84 @@ async def _lease_heartbeat(plan: "_TurnPlan") -> None:
             return
 
 
+class AccountRegistryUnavailable(RuntimeError):
+    """The account registry could not be read, so the caller's account generation is
+    unknown. Mapped to a retryable 503 (:func:`_account_http`) BEFORE a turn is
+    admitted or looked up: a turn never carries a generation nobody can match."""
+
+
+ACCOUNT_RETRY_AFTER_S = 2
+
+
+def _account_http() -> HTTPException:
+    return HTTPException(status_code=503, detail={
+        "code": "chat_account_unavailable",
+        "message": "Your account details could not be read. Try again in a moment.",
+        "retry_after": ACCOUNT_RETRY_AFTER_S,
+    }, headers={"Retry-After": str(ACCOUNT_RETRY_AFTER_S)})
+
+
 async def account_generation_for(state: AppState, author: str | None) -> str:
     """The caller's ACCOUNT generation (``engine.jobs.account_generation`` over the
     username and the account's creation time), binding turns, their event rings and
     Stop to one account: a deleted and re-created username is a different account.
     ``""`` with auth off or for an account without a stored record (an environment
-    account cannot be re-created). A user store that cannot be read gives a value no
-    turn carries (fail closed: the caller sees none of the turns of that moment)."""
+    account cannot be re-created).
+
+    The account record is read STRICTLY (like the Jobs routes): ``UserStore`` reads
+    swallow storage errors and return nothing, which would bind a turn started during
+    a storage blip to ``""`` for its whole life — every later request computes the
+    real generation, so Stop, ``turns/active`` and re-attach would never find it.
+    A failed read raises :class:`AccountRegistryUnavailable` instead."""
     name = str(author or "").strip()
     users = getattr(state, "users", None)
-    getter = getattr(users, "get", None)
-    if not name or not callable(getter):
+    if not name or users is None:
         return ""
-    try:
-        user = await getter(name)
-    except Exception:  # noqa: BLE001 -- never matches a turn's generation
-        return "unavailable:" + new_id("gen-")
-    created = getattr(user, "created_at", None) if user is not None else None
-    if not isinstance(created, str) or not created:
-        return ""
+    from ..constants import USERS_KEY, USERS_NS
     from ..engine.jobs import account_generation
+    from ..models import User
 
-    return account_generation(name, created)
+    kv = getattr(users, "_kv", None)
+    getter = getattr(kv, "get_strict", None) or getattr(kv, "get", None)
+    if not callable(getter):
+        # A user store without a KV document (a test double): its own lookup, which
+        # must raise rather than answer "no such user" when it cannot read.
+        lookup = getattr(users, "get", None)
+        if not callable(lookup):
+            return ""
+        try:
+            user = await lookup(name)
+        except Exception as exc:  # noqa: BLE001
+            raise AccountRegistryUnavailable("account registry unavailable") from exc
+        created = getattr(user, "created_at", None) if user is not None else None
+        return account_generation(name, created) if isinstance(created, str) and created else ""
+    try:
+        doc = await getter(USERS_NS, USERS_KEY)
+        if doc is not None and not isinstance(doc, dict):
+            raise ValueError("invalid account registry")
+        raw = (doc or {}).get("entries", [])
+        if not isinstance(raw, list):
+            raise ValueError("invalid account registry")
+    except Exception as exc:  # noqa: BLE001
+        raise AccountRegistryUnavailable("account registry unavailable") from exc
+    needle = name.lower()
+    for row in raw:
+        try:
+            user = User.model_validate(row)
+        except Exception:  # noqa: BLE001 -- one corrupt row never hides the others
+            continue
+        if user.username.strip().lower() != needle:
+            continue
+        created = getattr(user, "created_at", None)
+        return account_generation(name, created) if isinstance(created, str) and created else ""
+    return ""
+
+
+async def _generation_or_503(state: AppState, author: str | None) -> str:
+    try:
+        return await account_generation_for(state, author)
+    except AccountRegistryUnavailable as exc:
+        raise _account_http() from exc
 
 
 def _in_progress_http(handle: ChatTurnHandle | None, message: str) -> HTTPException:
@@ -1087,6 +1152,11 @@ async def _prepare(
             )
         except ChatHistoryUnavailable as exc:
             raise _history_http(exc) from exc
+        except ChatRequestFailed as exc:
+            # A billed turn under this key ended without a saved answer: nothing is
+            # running, so the retry is told so (not retryable with this key; the
+            # key stays held, so the answer is never billed twice).
+            raise _conflict_http("chat_request_failed", str(exc)) from exc
         except ChatRequestInProgress as exc:
             raise _in_progress_http(
                 registry.running_with_key(owner, plan.request_key, generation), str(exc),
@@ -1161,11 +1231,22 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
     author = current_username(request)
     owner = normalize_user_id(author)
     grants = await state.chat_grants(request)
-    generation = await account_generation_for(state, author)
+    # Before any slot is taken: a turn is never admitted without a generation its
+    # owner can match later (Stop, turns/active, re-attach).
+    generation = await _generation_or_503(state, author)
     cfg = state.execution_prefs.chat_agent
     registry = state.chat_turns
     per_user = int(getattr(cfg, "max_concurrent_turns_per_user", 4) or 4)
     global_limit = int(getattr(cfg, "max_concurrent_turns_global", 16) or 16)
+    effective_case_id = body.case_id or (body.context.case_id if body.context else None)
+    if body.persist_conversation and not effective_case_id and body.idempotency_key:
+        holder = registry.running_with_key(owner, body.idempotency_key, generation)
+        if holder is not None:
+            # A same-key retry of the caller's OWN running turn (a dropped stream
+            # re-attaching) is answered before concurrency admission: that turn
+            # already holds its slot, so at the bound the retry must still learn
+            # which turn it is (409 naming it), never get 429 ``chat_busy``.
+            raise _in_progress_http(holder, "This chat request is already in progress.")
     try:
         slot = registry.acquire(owner, per_user=per_user, global_limit=global_limit)
     except ChatTurnBusy as exc:
@@ -1309,6 +1390,8 @@ async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, s
         if heartbeat is not None:
             heartbeat.cancel()
         try:
+            if plan.observation_ref and not plan.completed:
+                await _discard_observations(plan)
             await _close_owned(plan)
         finally:
             # Synchronous, so a cancel landing on the await above cannot skip it.
@@ -1458,10 +1541,26 @@ async def _store_observations(
     if not saved:
         return response
     ref, stored = saved
+    plan.observation_ref = ref
     return response.model_copy(update={"steps": [
         step.model_copy(update={"observation_ref": ref}) if step.index in stored else step
         for step in response.steps
     ]})
+
+
+async def _discard_observations(plan: _TurnPlan) -> None:
+    """Blank the step observations of a turn whose answer was never saved (its save
+    failed, or the conversation was deleted mid-turn): log-derived aggregates are
+    never left tied to a conversation that does not hold the answer. Best effort;
+    the factory reset clears the whole ring either way."""
+    ref, plan.observation_ref = plan.observation_ref, None
+    discard = getattr(plan.store, "discard_observations", None)
+    if not ref or not callable(discard):
+        return
+    try:
+        await discard(plan.author, ref)
+    except Exception as exc:  # noqa: BLE001 -- the turn's own outcome is what matters
+        logger.warning("chat step observations not discarded (%s)", type(exc).__name__)
 
 
 async def _persist_summary(plan: _TurnPlan, outcome: Any, conversation_id: str) -> None:
@@ -1559,8 +1658,8 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
         )
     except ChatHistoryUnavailable as exc:
         if plan.billed:
-            # The reservation is kept, so "Retry same request" would only meet 409
-            # chat_request_in_progress until the lease expires: offer Ask again.
+            # The reservation is kept (ended), so "Retry same request" would only meet
+            # 409 chat_request_failed until the lease expires: offer Ask again.
             raise _TurnFailure(
                 "history_unavailable", _HISTORY_BILLED_MESSAGE, retryable=False,
                 http=_history_http(ChatHistoryUnavailable(_HISTORY_BILLED_MESSAGE)),
@@ -1571,6 +1670,9 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
         message = _CONFLICT_MESSAGE if isinstance(exc, ChatConversationMissing) else str(exc)
         raise _TurnFailure("history_unavailable", message, retryable=False,
                            http=_conflict_http("chat_idempotency_conflict", message)) from exc
+    except ChatRequestFailed as exc:
+        raise _TurnFailure("history_unavailable", str(exc), retryable=False,
+                           http=_conflict_http("chat_request_failed", str(exc))) from exc
     except ChatRequestInProgress as exc:
         raise _TurnFailure("history_unavailable", str(exc), retryable=True,
                            http=_conflict_http("chat_request_in_progress", str(exc),
@@ -1808,7 +1910,7 @@ async def cancel_chat_turn(
     ``cancelled`` notice. 404 when unknown, finished or not the caller's (ownership
     is indistinguishable from absence)."""
     author = current_username(request)
-    generation = await account_generation_for(state, author)
+    generation = await _generation_or_503(state, author)
     if not state.chat_turns.request_stop(turn_id, normalize_user_id(author), generation):
         raise HTTPException(status_code=404, detail="turn not found")
     try:
@@ -1836,7 +1938,7 @@ async def active_chat_turns(
     disabled (targeted ``chat.turn`` frames never reach anonymous subscribers) the
     client polls this every 5 s while it knows a turn is running."""
     author = current_username(request)
-    generation = await account_generation_for(state, author)
+    generation = await _generation_or_503(state, author)
     return [
         handle.active_view()
         for handle in state.chat_turns.running_for(normalize_user_id(author), generation)
@@ -1892,7 +1994,7 @@ async def chat_turn_events(
     unknown or expired turn and for anyone else's (ownership is indistinguishable
     from absence). Reading never holds a concurrency slot and never stops the turn."""
     author = current_username(request)
-    generation = await account_generation_for(state, author)
+    generation = await _generation_or_503(state, author)
     handle = state.chat_turns.find(turn_id, normalize_user_id(author), generation)
     if handle is None:
         raise HTTPException(status_code=404, detail="turn not found")

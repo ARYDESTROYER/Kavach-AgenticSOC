@@ -325,10 +325,13 @@ def test_save_failure_after_billing_keeps_the_reservation() -> None:
         # client offers Ask again, a new key.
         assert streamed[-1].code == "history_unavailable" and streamed[-1].retryable is False
         assert "Ask again" in streamed[-1].message
-        # Billed, so never aborted: a retry with the same key waits instead of re-billing.
+        # Billed, so never aborted: a retry with the same key never re-bills, and it is
+        # told the request failed (nothing is running) instead of "in progress".
         again = client.post("/api/chat", json=body)
         assert again.status_code == 409
-        assert again.json()["detail"]["code"] == "chat_request_in_progress"
+        assert again.json()["detail"]["code"] == "chat_request_failed"
+        assert "retry_after" not in again.json()["detail"]
+        assert "Ask again" in again.json()["detail"]["message"]
         assert _chat_calls(provider) == 2
 
 

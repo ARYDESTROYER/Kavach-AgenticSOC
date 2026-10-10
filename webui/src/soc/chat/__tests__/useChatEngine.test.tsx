@@ -1082,6 +1082,31 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
     expect(recoveryDelayMs(0, 3_600)).toBe(15_000);
   });
 
+  it('stops recovering when the server says the request was answered but not saved', async () => {
+    let attempt = 0;
+    const message = 'This request was answered but could not be saved. Ask again to start a new request.';
+    override = (call) => {
+      if (call.url !== '/api/chat/stream') return undefined;
+      attempt += 1;
+      if (attempt >= 2) return json({ detail: { code: 'chat_request_failed', message } }, 409);
+      return undefined;
+    };
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Saved?');
+    });
+    await settle();
+    await act(async () => {
+      streams[0].close();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(attempt).toBe(2);
+    expect(assistant(result.current)).toMatchObject({
+      status: 'error',
+      failure: { kind: 'http', status: 409, code: 'chat_request_failed', retryable: false, message },
+    });
+  });
+
   it('marks an idempotency conflict as not retryable with the same key', async () => {
     override = (call) =>
       call.url === '/api/chat/stream'

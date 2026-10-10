@@ -17,9 +17,19 @@
  *      list items) — never a whole block, which left half-empty pages; headings stay with
  *      what follows and table headers repeat on every page. Only `[data-print-hide]`
  *      elements and copy controls ({@link PRINT_HIDDEN}) are hidden: content rendered
- *      as a button (a KPI tile with a link, a case id) prints. Static data tables have
- *      a fixed layout and wrap anywhere, so none runs past the page edge.
- *      `@media screen` keeps the root invisible.
+ *      as a button (a KPI tile with a link, a case id) prints. Every table cell wraps
+ *      anywhere (`overflow-wrap: anywhere` lowers a cell's minimum width, `break-word`
+ *      does not): one long host name, hash or path can no longer make a table wider than
+ *      the A4 column, which made the browser shrink EVERY page and cut off the right
+ *      columns. A number or a time (`.tabular-nums`) is the one exception: it wraps only
+ *      where it has a space ("2026-10-01 / 00:00 UTC"), never inside "1,000". Static
+ *      data tables also have a fixed layout. Screen-reader-only tables
+ *      (`.sr-only`, e.g. the ATT&CK heatmap's) take no part in the printed layout: the
+ *      width rule skips them (stretched to the column at a card's inset they widened
+ *      the document and shrank the whole print) and print does not lay them out at all
+ *      (`display: none` — a table is never narrower than its one-line caption, so even
+ *      clipped it could widen the page). They print nothing visible either way, and the
+ *      print root is `aria-hidden`. `@media screen` keeps the root invisible.
  *   4. Set `document.title` to the export file name (the dialog suggests it as the PDF
  *      name), wait until a closing menu released its scroll lock, show the caller's
  *      guidance (`onBeforePrint`: "Choose Save as PDF" must paint BEFORE the dialog,
@@ -80,9 +90,13 @@ export const PRINT_CSS = `
   ${R} .overflow-auto, ${R} .overflow-x-auto, ${R} .overflow-y-auto, ${R} .overflow-hidden { overflow: visible !important; max-height: none !important; }
   ${R} .truncate { overflow: visible !important; text-overflow: clip !important; white-space: normal !important; }
   ${R} .line-clamp-3 { display: block !important; -webkit-line-clamp: unset !important; overflow: visible !important; }
-  ${R} table { width: 100% !important; max-width: 100% !important; table-layout: auto; }
+  ${R} table:not(.sr-only) { width: 100% !important; max-width: 100% !important; table-layout: auto; }
+  ${R} table.sr-only { display: none !important; }
   ${R} thead { display: table-header-group; }
-  ${R} th, ${R} td { white-space: normal !important; overflow-wrap: break-word; padding-left: 6px !important; padding-right: 6px !important; }
+  ${R} th, ${R} td { white-space: normal !important; overflow-wrap: anywhere; }
+  ${R} table:not(.sr-only) th, ${R} table:not(.sr-only) td { padding-left: 6px !important; padding-right: 6px !important; }
+  ${R} th *, ${R} td .whitespace-nowrap { white-space: normal !important; }
+  ${R} td .tabular-nums { overflow-wrap: normal; }
   ${R} td .font-mono, ${R} td code, ${R} td .break-all { overflow-wrap: anywhere; word-break: break-all; }
   ${R} table[data-static-table] { table-layout: fixed !important; }
   ${R} table[data-static-table] th, ${R} table[data-static-table] td { overflow-wrap: anywhere; }

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
 import math
 import re
@@ -435,16 +436,32 @@ def _scope_for(answer: _Answer, conversation: Any, *, block: dict[str, Any] | No
 
 def _build_item(answer: _Answer, conversation: Any, *, conversation_id: str, message_id: str,
                 block_id: str | None, demo: bool) -> ReportItem:
-    """Snapshot one stored block (or the whole answer as a ``section``) into a report
-    item. Raises 404 when the block never existed and 409 ``block_unavailable`` when it
-    was trimmed or expired from saved history."""
+    """The first (or only) item of :func:`_build_items`."""
+    return _build_items(answer, conversation, conversation_id=conversation_id,
+                        message_id=message_id, block_id=block_id, demo=demo)[0]
+
+
+def _build_items(answer: _Answer, conversation: Any, *, conversation_id: str, message_id: str,
+                 block_id: str | None, demo: bool) -> list[ReportItem]:
+    """Snapshot one stored block (or the whole answer as a ``section``) into report
+    items. Raises 404 when the block never existed and 409 ``block_unavailable`` when
+    it was trimmed or expired from saved history.
+
+    A whole answer keeps ALL of its text (Round 12: answers are not truncated): the
+    text is split into Markdown blocks on paragraph breaks, followed by the turn's
+    blocks. When that is more than one section snapshot holds
+    (``MAX_SECTION_BLOCKS``), the answer continues in further ``section`` items
+    titled "(continued)", whose source block id is ``#<n>``; the first item keeps the
+    whole-answer identity (block id ``None``)."""
+    from ..agents.blocks import MAX_SECTION_BLOCKS
+    from ..stores.reports import continuation_block_id
+
     blocks = list(answer.response.blocks)
     unavailable = _http(409, "block_unavailable",
                         "That result has expired from saved history; ask again to refresh it.")
     if answer.presentation_lost:
         raise _http(409, "block_unavailable",
                     "That answer could not be read back from saved history; ask again to refresh it.")
-    source = {"conversation_id": conversation_id, "message_id": message_id, "block_id": block_id}
     if block_id is not None:
         block = next((b for b in _all_blocks(blocks) if b.get("id") == block_id), None)
         if block is None:
@@ -453,34 +470,38 @@ def _build_item(answer: _Answer, conversation: Any, *, conversation_id: str, mes
             raise _not_found("block_not_found", "That block is not part of this answer.")
         if _unusable(block):
             raise unavailable
-        snapshot: dict[str, Any] = block
-        kind = "block"
-    else:
-        if any(_unusable(b) for b in _all_blocks(blocks)):
+        item = ReportItem.model_validate({
+            "id": new_item_id(), "kind": "block", "block": block, "note": None,
+            "source": {"conversation_id": conversation_id, "message_id": message_id, "block_id": block_id},
+            "scope": _scope_for(answer, conversation, block=block, demo=demo),
+            "added_at": iso_now(),
+        })
+        # Re-validation (ReportItem → parse_persisted_blocks) replaces an unreadable
+        # block with the fallback stub; never snapshot that as if it were the evidence.
+        if _unusable(item.block):
             raise unavailable
-        parts: list[dict[str, Any]] = []
-        text = (answer.response.answer or "").strip()
-        if text:
-            parts.append({"id": "answer", "type": "markdown", "provenance": "ai",
-                          "text": text[:MAX_MARKDOWN]})
-        parts.extend(blocks)
-        if not parts:
-            raise _http(409, "block_unavailable", "This answer has nothing to add.")
-        # Saved history cut this answer (its text carries "[truncated in saved
-        # history]", or its presentation was reduced): the section says so (G4).
-        snapshot = {"title": answer.question or "Answer", "blocks": parts,
-                    "truncated": answer.stored_truncated}
-        kind = "section"
-    item = ReportItem.model_validate({
-        "id": new_item_id(), "kind": kind, "block": snapshot, "note": None, "source": source,
-        "scope": _scope_for(answer, conversation, block=snapshot if kind == "block" else None, demo=demo),
-        "added_at": iso_now(),
-    })
-    # Re-validation (ReportItem → parse_persisted_blocks) replaces an unreadable block
-    # with the fallback stub; never snapshot that as if it were the evidence.
-    if kind == "block" and _unusable(item.block):
+        return [item]
+    if any(_unusable(b) for b in _all_blocks(blocks)):
         raise unavailable
-    return item
+    parts = [*_text_blocks(answer.response.answer or "", prefix="answer"), *blocks]
+    if not parts:
+        raise _http(409, "block_unavailable", "This answer has nothing to add.")
+    title = answer.question or "Answer"
+    scope = _scope_for(answer, conversation, block=None, demo=demo)
+    items: list[ReportItem] = []
+    for part, start in enumerate(range(0, len(parts), MAX_SECTION_BLOCKS)):
+        # Saved history cut this answer (its text carries "[truncated in saved
+        # history]", or its presentation was reduced): every section says so (G4).
+        snapshot = {"title": title if part == 0 else f"{title} (continued)",
+                    "blocks": parts[start:start + MAX_SECTION_BLOCKS],
+                    "truncated": answer.stored_truncated}
+        items.append(ReportItem.model_validate({
+            "id": new_item_id(), "kind": "section", "block": snapshot, "note": None,
+            "source": {"conversation_id": conversation_id, "message_id": message_id,
+                       "block_id": None if part == 0 else continuation_block_id(part + 1)},
+            "scope": scope, "added_at": iso_now(),
+        }))
+    return items
 
 
 # --------------------------------------------------------------------------- #
@@ -656,14 +677,26 @@ async def save_answer_as_report(
     )
 
 
+def _takes_strict(func: Any) -> bool:
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return "strict" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
 async def _owned_exchange(state: AppState, owner: str, conversation_id: str, message_id: str) -> Any:
     """The owned conversation holding only the answer ``message_id`` and its question
     (``ChatConversationStore.get_exchange``; ``None`` when not owned). A store
-    without it falls back to the whole conversation. Raises
-    :class:`ChatHistoryUnavailable`."""
+    without it falls back to the whole conversation. Read STRICTLY: every caller
+    snapshots the answer into a report, so an exchange document that cannot be read
+    raises :class:`ChatHistoryUnavailable` (a retryable 503) instead of handing back
+    the stored preview as if it were the whole answer."""
     store = state.chat_conversations
     getter = getattr(store, "get_exchange", None)
     if callable(getter):
+        if _takes_strict(getter):
+            return await getter(owner, conversation_id, message_id, strict=True)
         return await getter(owner, conversation_id, message_id)
     return await store.get(owner, conversation_id)
 
@@ -709,8 +742,12 @@ async def report_from_conversation(
     try:
         # Only the oldest answers a report can hold are restored to full text: each
         # answer is at least one item and the report keeps MAX_REPORT_ITEMS.
-        conversation = await state.chat_conversations.get(
+        getter = state.chat_conversations.get
+        conversation = await getter(
             owner, body.conversation_id, window=None, hydrate_first=2 * MAX_REPORT_ITEMS + 2,
+            # Strict: an answer whose full text cannot be read is a retryable 503,
+            # never its stored preview saved as the answer.
+            **({"strict": True} if _takes_strict(getter) else {}),
         )
     except ChatHistoryUnavailable as exc:
         raise _http(503, "chat_history_unavailable", "Chat history is temporarily unavailable.") from exc
@@ -960,7 +997,7 @@ async def add_to_report(
     answer = _resolve_answer(conversation, body.message_id)
     if answer is None:
         raise _not_found("message_not_found", "That answer is not in this conversation.")
-    item = _build_item(
+    item, *continuations = _build_items(
         answer, conversation, conversation_id=body.conversation_id, message_id=body.message_id,
         block_id=body.block_id, demo=bool(getattr(state, "demo_active", False)),
     )
@@ -969,7 +1006,7 @@ async def add_to_report(
         outcome = await _store(state).add_item(
             owner, item, report_id=body.report_id,
             draft_conversation_id=body.conversation_id if body.report_id is None else None,
-            draft_title=title,
+            draft_title=title, continuations=continuations,
         )
     except _STORE_ERRORS as exc:
         raise _map_store_error(exc) from exc
@@ -980,6 +1017,7 @@ async def add_to_report(
         await _audit(
             state, owner,
             f"report item added: {outcome.report.id} item={outcome.item_id} kind={item.kind} "
+            f"parts={1 + len(continuations)} "
             f"message={body.message_id} block={body.block_id or '-'} version={outcome.report.version}",
         )
     return ReportAddResponse(

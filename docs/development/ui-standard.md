@@ -142,7 +142,8 @@ that carried velocity, never for click-driven motion. `HOUSE_SPRING` is a deprec
 alias of `SPRING_UI`. Exits are short tweens. CSS overlays use the same curve through
 `ease-spring` (a sampled critically damped `linear()` where supported) with
 `duration-ui` / `duration-pane`. Overlays scale from their trigger: menus, popovers,
-hover cards, tooltips and selects use their Radix `--radix-*-transform-origin`, and a
+hover cards, tooltips and selects zoom from Radix's `--radix-popper-transform-origin`
+through one base rule in `theme.css` (no per-primitive class), and a
 dialog opened from state passes `origin` (the trigger's centre) to `DialogContent`.
 Enter and exit follow the same path. Press feedback is immediate: buttons settle to
 97% in 100ms on pointer-down (`motion-safe` only; link-styled buttons never scale),

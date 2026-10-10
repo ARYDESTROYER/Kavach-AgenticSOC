@@ -3,7 +3,9 @@
  * point the panel's and the library's Export menus call. Formats:
  *
  *   print · docx · markdown · html   human documents — content defanged by default;
- *   xlsx · csv                        data: every table-like block (never defanged);
+ *   xlsx                              a "Report" sheet (defanged by default, like the
+ *                                     documents) plus one exact sheet per table;
+ *   csv                               data: every table-like block (never defanged);
  *   json                              `{ blocks_version, report }` exactly as received.
  *
  * Everything runs client-side from the report already in memory; no request is made.
@@ -147,7 +149,8 @@ export async function exportReport(
   if (format === 'xlsx') {
     const { reportToXlsx } = await import('./xlsx');
     const filename = exportFileName('report', report.title, 'xlsx', now);
-    return saved(downloadBlob(filename, bytesBlob(reportToXlsx(doc, { now }), EXPORT_MIME.xlsx)), REPORT_EXPORT_NAME.xlsx, filename);
+    const xlsx = reportToXlsx(doc, { now, defang: options.defang !== false });
+    return saved(downloadBlob(filename, bytesBlob(xlsx, EXPORT_MIME.xlsx)), REPORT_EXPORT_NAME.xlsx, filename);
   }
   return exportDocument(doc, format, { defang: options.defang, kind: 'report', now, onPrintOpening: options.onPrintOpening });
 }

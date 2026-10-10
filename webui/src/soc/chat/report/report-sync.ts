@@ -57,11 +57,14 @@ export function reportItemKey(messageId: string, blockId?: string | null): strin
 /**
  * What a report already holds, keyed by {@link reportItemKey} → item id: the
  * transcript's "In report ✓" state and the item to remove on a second click.
+ * The first item per key wins: a long whole answer is stored as its first section
+ * plus "(continued)" sections, and removing that first section removes the rest.
  */
 export function reportItemIndex(report: Report | null | undefined): Map<string, string> {
   const out = new Map<string, string>();
   for (const item of report?.items ?? []) {
-    out.set(reportItemKey(item.source.message_id, item.kind === 'section' ? null : item.source.block_id), item.id);
+    const key = reportItemKey(item.source.message_id, item.kind === 'section' ? null : item.source.block_id);
+    if (!out.has(key)) out.set(key, item.id);
   }
   return out;
 }

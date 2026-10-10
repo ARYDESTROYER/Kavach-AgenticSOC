@@ -302,6 +302,61 @@ async def test_document_size_bound_refuses_the_item():
     assert (await store.get("alice", report.id)).items == []
 
 
+def _section(message_id: str, block_id: str | None, text: str = "Part") -> ReportItem:
+    return make_item({"title": "Q", "blocks": [{"id": "answer", "type": "markdown",
+                                                "provenance": "ai", "text": text}]},
+                     kind="section", message_id=message_id, block_id=block_id)
+
+
+async def test_a_whole_answer_with_continuations_is_one_write_and_one_unit():
+    """Round 12: a long whole answer is its first section plus "(continued)" sections
+    (source block id ``#n``) appended in one write; the size bound keeps what fits and
+    marks the last kept section truncated; removing the first section removes the
+    continuations, while a continuation alone can still be removed by itself."""
+    store = ReportStore(_kv())
+    report = await store.create("alice", title="A")
+    outcome = await store.add_item(
+        "alice", _section("m1", None, "one"), report_id=report.id,
+        continuations=[_section("m1", "#2", "two"), _section("m1", "#3", "three")],
+    )
+    assert outcome.added and outcome.report.version == 2
+    items = outcome.report.items
+    assert [i.source.block_id for i in items] == [None, "#2", "#3"]
+    assert outcome.item_id == items[0].id and not any(i.block["truncated"] for i in items)
+    # Idempotent on the whole answer's identity.
+    again = await store.add_item("alice", _section("m1", None, "one"), report_id=report.id,
+                                 continuations=[_section("m1", "#2", "two")])
+    assert not again.added and len(again.report.items) == 3
+
+    # A continuation alone is removable; the first section takes the rest with it.
+    other = await store.add_item("alice", _section("m2", None), report_id=report.id,
+                                 continuations=[_section("m2", "#2")])
+    current = await store.update("alice", report.id, expected_version=other.report.version,
+                                 patch=ReportPatch(remove_items=[items[2].id]))
+    assert [i.id for i in current.items][:2] == [items[0].id, items[1].id]
+    current = await store.update("alice", report.id, expected_version=current.version,
+                                 patch=ReportPatch(remove_items=[items[0].id]))
+    assert [(i.source.message_id, i.source.block_id) for i in current.items] == [("m2", None), ("m2", "#2")]
+
+
+async def test_continuations_past_the_bound_mark_the_kept_part_truncated(monkeypatch):
+    store = ReportStore(_kv())
+    report = await store.create("alice", title="A")
+    first = await store.add_item("alice", _section("m0", None, "x" * 2_000), report_id=report.id)
+    doc = reports_mod.encode_report(first.report)
+    bound = reports_mod._content_bytes(doc) + 32 + SUMMARY_RESERVE_BYTES + 3_000
+    monkeypatch.setattr(reports_mod, "MAX_REPORT_DOC_BYTES", bound)
+    outcome = await store.add_item(
+        "alice", _section("m1", None, "y" * 1_500), report_id=report.id,
+        continuations=[_section("m1", "#2", "z" * 1_500)],
+    )
+    kept = [i for i in outcome.report.items if i.source.message_id == "m1"]
+    assert [i.source.block_id for i in kept] == [None]
+    assert kept[0].block["truncated"] is True
+    stored = await store.get("alice", report.id)
+    assert stored.items[-1].block["truncated"] is True
+
+
 async def test_patch_and_summary_respect_the_document_bound(monkeypatch):
     """The 512 kB bound holds for every write, not just adds: content writes keep
     room for the largest summary, a PATCH that GROWS the document past it is refused,

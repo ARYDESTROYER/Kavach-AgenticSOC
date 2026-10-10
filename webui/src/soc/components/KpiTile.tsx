@@ -172,10 +172,12 @@ function useNumeralFit(
   const stepRef = React.useRef(step);
   stepRef.current = step;
 
+  // After the numeral renders at a size: one more step if it still does not fit. Each
+  // step is a synchronous re-render before paint, so a too-large frame is never shown.
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (el && step < maxStep && numeralOverflows(el)) setFit({ key, step: step + 1 });
-  });
+  }, [ref, key, step, maxStep]);
 
   React.useEffect(() => {
     const el = ref.current;

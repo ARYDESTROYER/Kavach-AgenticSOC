@@ -11,8 +11,14 @@
  *     Numbers stay NUMERIC (the walker's raw values) with a number format for their
  *     unit; text is an inline string.
  *
- * Like CSV, a spreadsheet is a DATA format: it is never defanged (the toggle applies to
- * the human documents). Safety (#9):
+ * Defang (SYNTHESIS-chat P1-7: on by default, the export-menu toggle): the "Report"
+ * sheet is a human document — title, AI summary, next steps, notes, prose — so its
+ * indicators are defanged like the Word, PDF, Markdown and HTML exports (a workbook
+ * forwarded or opened in a tool that turns URL text into links carries no clickable
+ * indicator). The per-table sheets are DATA and stay exact, like CSV: their cells, titles,
+ * captions and sheet names come from an undefanged walk of the same document (the
+ * walker's table nodes do not depend on the toggle, so the two walks list the same
+ * tables in the same order). Safety (#9):
  *   - every string goes through `xmlText` (XML 1.0-invalid characters dropped, markup
  *     characters escaped) — an inline string is never parsed as markup or a formula;
  *   - Excel and LibreOffice DECODE `_xHHHH_` inside cell text (ST_Xstring), so a literal
@@ -33,6 +39,7 @@
  *     characters, unique ignoring case, never the reserved "History").
  */
 import { defuseFormula } from '@/lib/csv';
+import { maybeDefang } from '@/lib/defang';
 
 import type { MdBlock, MdInline } from '../../ChatMarkdown';
 import type { ValueUnit } from '../../blocks/schema';
@@ -417,6 +424,8 @@ function tableSheet(node: TableNode, name: string, index: number): Sheet {
 export interface WorkbookOptions {
   /** Export instant (DOS timestamps and document properties; tests pin it). */
   now?: Date;
+  /** Defang indicators on the "Report" sheet (default true; the table sheets stay exact). */
+  defang?: boolean;
 }
 
 export interface WorkbookModel {
@@ -424,9 +433,14 @@ export interface WorkbookModel {
 }
 
 /** Build the workbook model from a document (pure; exported for tests). */
-export function workbookModel(doc: ReportDoc): WorkbookModel {
-  // A spreadsheet is a data format: never defanged (like CSV and JSON).
-  const nodes: DocNode[] = documentNodes(doc, { defang: false });
+export function workbookModel(doc: ReportDoc, options: { defang?: boolean } = {}): WorkbookModel {
+  const defang = options.defang !== false;
+  // The "Report" sheet is read by people: defanged with the toggle (like Word and PDF).
+  const nodes: DocNode[] = documentNodes(doc, { defang });
+  // The table sheets are data (like CSV): the exact values, from an undefanged walk.
+  const rawTables: TableNode[] = defang
+    ? documentNodes(doc, { defang: false }).filter((n): n is TableNode => n.k === 'table')
+    : [];
   const taken = new Set<string>();
   const overviewName = sheetName('Report', taken, 'Report');
   const overview: Sheet = { name: overviewName, rows: [], widths: [110], headerRow: 0, filter: null, links: [] };
@@ -445,7 +459,7 @@ export function workbookModel(doc: ReportDoc): WorkbookModel {
         push(text(lineText(node.line), node.muted ? S.caption : S.wrap));
         break;
       case 'md':
-        for (const line of mdLines(node.blocks, false)) push(line.text ? text(line.text, line.bold ? S.bold : S.wrap) : null);
+        for (const line of mdLines(node.blocks, node.defang)) push(line.text ? text(line.text, line.bold ? S.bold : S.wrap) : null);
         break;
       case 'list':
         node.items.forEach((line, i) => push(text(`${node.ordered ? `${i + 1}. ` : '• '}${lineText(line)}`, S.wrap)));
@@ -462,9 +476,11 @@ export function workbookModel(doc: ReportDoc): WorkbookModel {
         break;
       case 'table': {
         const n = tables.length + 1;
-        const name = sheetName(`${n} ${node.label ?? 'Table'}`, taken, `Table ${n}`);
-        tables.push(tableSheet(node, name, n));
-        const display = `Table ${n}: ${node.label ?? 'data'} (sheet "${name}")`;
+        const data = defang ? (rawTables[n - 1] ?? node) : node;
+        const name = sheetName(`${n} ${data.label ?? 'Table'}`, taken, `Table ${n}`);
+        tables.push(tableSheet(data, name, n));
+        // The overview line is prose: the label and the sheet's name it quotes are defanged.
+        const display = `Table ${n}: ${node.label ?? 'data'} (sheet "${maybeDefang(name, defang)}")`;
         push(text(display, S.link));
         overview.links.push({ ref: `A${overview.rows.length}`, location: `${quoteSheet(name)}!A1`, display });
         break;
@@ -501,7 +517,7 @@ function workbookXml(model: WorkbookModel): string {
 /** The `.xlsx` package bytes of a document. */
 export function reportToXlsx(doc: ReportDoc, options: WorkbookOptions = {}): Uint8Array {
   const at = options.now ?? new Date();
-  const model = workbookModel(doc);
+  const model = workbookModel(doc, { defang: options.defang });
   const sheetParts = model.sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sheetXml(s, i === 0) }));
   return zipStore(
     [

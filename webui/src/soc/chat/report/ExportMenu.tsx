@@ -10,15 +10,15 @@
  *   - `DownloadPdfButton`: the visible one-click "Download PDF" (the browser's print
  *     dialog, already titled with the file name, offers Save as PDF).
  *   - `ExportMenuItems`: the bare item list, for a host that owns its own menu.
- *   - `ExportErrorNote`: an export's failure beside its controls — Retry for a failure a
- *     second try can fix, a neutral notice with Dismiss for one it cannot ("no tables to
- *     export as CSV"). Before the note unmounts, focus returns to the control that
- *     started the export (never to <body>, WCAG 2.4.3).
+ *   - `ExportErrorNote`: an export's failure beside its controls — always closable with
+ *     Dismiss, plus Retry for a failure a second try can fix; one it cannot ("no tables
+ *     to export as CSV") is a neutral notice. Before the note unmounts, focus returns to
+ *     the control that started the export (never to <body>, WCAG 2.4.3).
  *
- * Defanging is ON by default for the human documents (PDF, Word, Markdown, HTML) and
- * never applies to the data formats (Excel, CSV, JSON round-trip exactly). The choice is
- * a per-viewer convenience remembered in localStorage (best effort; every access is
- * guarded).
+ * Defanging is ON by default for the human documents (PDF, Word, Markdown, HTML and the
+ * Excel workbook's "Report" sheet) and never applies to the data (the Excel table
+ * sheets, CSV and JSON round-trip exactly). The choice is a per-viewer convenience
+ * remembered in localStorage (best effort; every access is guarded).
  */
 import * as React from 'react';
 import { Braces, Download, FileCode2, FileDown, FileSpreadsheet, FileText, FileType2, Loader2, RefreshCw, Table2 } from 'lucide-react';
@@ -66,6 +66,9 @@ export function useDefangPreference(): [boolean, (on: boolean) => void] {
   }, []);
   return [on, set];
 }
+
+/** The toggle's name: every document it applies to (`DEFANGED_FORMATS`). */
+export const DEFANG_TOGGLE_LABEL = 'Defang indicators (PDF, Word, Markdown, HTML and the Excel report sheet)';
 
 type Icon = React.ComponentType<{ className?: string }>;
 
@@ -124,7 +127,7 @@ export function ExportMenuItems({ onExport, defang, onDefangChange, formats, dis
         // Keep the menu open so the toggle reads as a setting, not an action.
         onSelect={(e) => e.preventDefault()}
       >
-        Defang indicators (PDF, Word, Markdown, HTML)
+        {DEFANG_TOGGLE_LABEL}
       </DropdownMenuCheckboxItem>
     </>
   );
@@ -315,15 +318,18 @@ export function ExportErrorNote({ error, onRetry, onDismiss, returnFocus, varian
         ) : null}
         {error.message}
       </span>
-      {error.retryable ? (
-        <Button variant="outline" size="sm" className="h-7 shrink-0" onClick={act(onRetry)}>
-          <RefreshCw aria-hidden /> Retry
-        </Button>
-      ) : (
+      <span className="flex shrink-0 items-center gap-1">
+        {error.retryable ? (
+          <Button variant="outline" size="sm" className="h-7 shrink-0" onClick={act(onRetry)}>
+            <RefreshCw aria-hidden /> Retry
+          </Button>
+        ) : null}
+        {/* Always closable: a failure that keeps failing (an unreachable server, a report
+            deleted meanwhile) must not stay on the page until it reloads. */}
         <Button variant="ghost" size="sm" className="h-7 shrink-0" onClick={act(onDismiss)}>
           Dismiss
         </Button>
-      )}
+      </span>
     </div>
   );
 }

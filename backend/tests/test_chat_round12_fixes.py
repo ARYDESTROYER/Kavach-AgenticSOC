@@ -47,6 +47,7 @@ from tests.test_chat_routes_stream import (
     _chat_calls,
     _client,
     _drain,
+    _request,
     _start,
     gated_state,  # noqa: F401 -- pytest fixture
 )
@@ -126,10 +127,13 @@ async def test_an_ended_reservation_holds_its_key_but_no_longer_runs(backend: st
         # The existing conversation reads "failed"; the new thread's temporary row is gone.
         assert [(c.id, c.status) for c in page.conversations] == [(cid, "failed")]
         assert (await store.get("bea", cid)).status == "failed"
-        # The key is still held: a same-key retry waits instead of billing again.
+        # The key is still held: a same-key retry never bills again, and it learns the
+        # request failed (nothing is running) rather than "in progress".
         for args, target in ((existing, cid), (brand_new, None)):
-            with pytest.raises(cc.ChatRequestInProgress):
+            with pytest.raises(cc.ChatRequestFailed) as failed:
                 await store.reserve_exchange("bea", conversation_id=target, **args)
+            assert isinstance(failed.value, cc.ChatRequestInProgress)  # older callers still refuse
+            assert "could not be saved" in str(failed.value)
         # The heartbeat of an ended reservation stops.
         assert await store.renew_exchange("bea", lease_token=reserved.lease_token or "", **existing) is False
         # The next answer clears "failed".
@@ -161,10 +165,15 @@ def test_a_billed_save_failure_reads_failed_not_running() -> None:
         # No temporary "running" row for the failed new thread; the existing one failed.
         assert [(r["id"], r["status"]) for r in rows] == [(cid, "failed")]
         assert client.get("/api/chat/turns/active").json() == []
-        # Billed: a same-key retry still waits (never bills the same answer twice).
+        # Billed: a same-key retry never bills the same answer twice, and it is told
+        # the request failed (not retryable), never that it is still running.
         again = client.post("/api/chat", json={"message": "brand new", "persist_conversation": True,
                                                "idempotency_key": "f-billed-0002"})
-        assert again.status_code == 409 and again.json()["detail"]["code"] == "chat_request_in_progress"
+        assert again.status_code == 409 and again.json()["detail"]["code"] == "chat_request_failed"
+        streamed = client.post("/api/chat/stream", json={
+            "message": "brand new", "persist_conversation": True, "idempotency_key": "f-billed-0002",
+        })
+        assert streamed.status_code == 409 and streamed.json()["detail"]["code"] == "chat_request_failed"
         assert _chat_calls(provider) == 3
 
 
@@ -197,6 +206,71 @@ async def test_a_failed_exchange_read_never_strips_the_full_text() -> None:
     assert await store.update_message_response("cal", cid, mid, {"saved_report": {"id": "rpt-1", "title": "R", "items": 1}})
     restored = (await store.get("cal", cid)).messages[1]
     assert restored.content == answer and restored.response["saved_report"]["id"] == "rpt-1"
+
+
+async def test_a_report_snapshot_never_reads_a_preview_as_the_answer() -> None:
+    """Report snapshots read strictly: an exchange document that cannot be read is
+    ChatHistoryUnavailable (the routes answer a retryable 503), never the stored
+    preview saved as the answer. Plain readers still fall back to the preview."""
+    from app.api.routes_reports import _owned_exchange, _resolve_answer, items_for_answer
+
+    kv = FlakyKV()
+    store = cc.ChatConversationStore(kv)
+    answer = "Finding. " * 5_000
+    done = await turn(store, "fay", 1, answer=answer, response={"answer": answer})
+    cid, mid = done.conversation_id, done.assistant_message.id
+    state = type("S", (), {"chat_conversations": store})()
+
+    kv.fail_prefix = cc.EXCHANGE_KEY_PREFIX
+    with pytest.raises(cc.ChatHistoryUnavailable):
+        await _owned_exchange(state, "fay", cid, mid)
+    kv.fail_prefix = cc.EXCHANGE_KEY_PREFIX
+    with pytest.raises(cc.ChatHistoryUnavailable):
+        await store.get("fay", cid, window=None, strict=True)
+    # A plain read (display) still shows the preview, flagged truncated.
+    kv.fail_prefix = cc.EXCHANGE_KEY_PREFIX
+    preview = await store.get_exchange("fay", cid, mid)
+    assert len(preview.messages[-1].content) < len(answer)
+    # Once the store reads again, the snapshot holds the whole answer.
+    conversation = await _owned_exchange(state, "fay", cid, mid)
+    resolved = _resolve_answer(conversation, mid)
+    items = items_for_answer(resolved, conversation, conversation_id=cid, message_id=mid, demo=False)
+    text = "".join(b["text"] for item in items for b in item.block["blocks"] if b["type"] == "markdown")
+    assert text.split() == answer.split()
+
+
+async def test_report_routes_answer_503_when_an_answer_cannot_be_read(monkeypatch) -> None:
+    from tests.test_reports_routes import add, harness
+
+    async with harness() as h:
+        store = h.state.chat_conversations
+        answer = "Finding. " * 5_000
+        conversation = await store.append_exchange(
+            "", conversation_id=None, user_content="q?", assistant_content=answer,
+            response={"answer": answer, "blocks": []}, model="m",
+        )
+        cid = conversation.id
+        mid = [m for m in conversation.messages if m.role == "assistant"][-1].id
+        real = store._get_aux
+        failing = {"on": True}
+
+        async def flaky(key: str, field_name: str):  # noqa: ANN202
+            if failing["on"] and key.startswith(cc.EXCHANGE_KEY_PREFIX):
+                raise cc.ChatHistoryUnavailable("Chat history could not be read.")
+            return await real(key, field_name)
+
+        monkeypatch.setattr(store, "_get_aux", flaky)
+        whole = await add(h.client, cid, mid)
+        assert whole.status_code == 503 and whole.json()["detail"]["code"] == "chat_history_unavailable"
+        saved = await h.client.post("/api/reports/from-conversation", json={"conversation_id": cid})
+        assert saved.status_code == 503 and saved.json()["detail"]["code"] == "chat_history_unavailable"
+        assert (await h.client.get("/api/reports")).json()["reports"] == []
+        failing["on"] = False
+        ok = await add(h.client, cid, mid)
+        assert ok.status_code == 200
+        text = "".join(b["text"] for item in ok.json()["report"]["items"]
+                       for b in item["block"]["blocks"] if b["type"] == "markdown")
+        assert text.split() == answer.split()
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -363,6 +437,70 @@ async def test_search_reads_concurrently_and_says_when_it_was_cut_short(monkeypa
     assert cut.conversations == [] and cut.search_incomplete is True
 
 
+class SlowBlankKV(MemoryKV):
+    """Blanking an exchange document waits for ``release`` and records how many
+    blanks were in flight at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.release.set()
+        self.in_flight = 0
+        self.peak = 0
+
+    async def put(self, namespace: str, key: str, value: dict[str, Any]) -> None:
+        if key.startswith(cc.EXCHANGE_KEY_PREFIX) and cc.EXCHANGE_FIELD not in value:
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+            try:
+                await asyncio.sleep(0.001)
+                await self.release.wait()
+            finally:
+                self.in_flight -= 1
+        await super().put(namespace, key, value)
+
+
+async def test_an_evicted_conversation_is_cleaned_up_off_the_turn_path() -> None:
+    """Retention cleanup of an evicted (long) conversation never delays the answer
+    that evicted it: the new answer is saved and returned while the old documents
+    are still being blanked, and they are all blanked afterwards."""
+    kv = SlowBlankKV()
+    store = cc.ChatConversationStore(kv)
+    long = await turn(store, "kim", 0, answer="old secret " * 3_000)
+    for n in range(1, 30):
+        await turn(store, "kim", n, conversation_id=long.conversation_id, answer="old secret " * 3_000)
+    for n in range(30, 30 + cc.MAX_CONVERSATIONS_PER_USER - 1):
+        await turn(store, "kim", n)
+    pk = cc.partition_key_for_user("kim")
+    old_keys = [cc.exchange_key(pk, m.id) for m in (await store.get("kim", long.conversation_id, window=None)).messages
+                if m.role == "assistant"]
+    kv.release.clear()
+    done = await asyncio.wait_for(turn(store, "kim", 999, answer="the new answer"), 5)
+    assert done.status == "completed" and done.assistant_message.content == "the new answer"
+    assert await store.get("kim", long.conversation_id) is None
+    kv.release.set()
+    await asyncio.wait_for(store.wait_for_cleanup(), 10)
+    for key in old_keys:
+        assert "old secret" not in json.dumps(await kv.get(CHAT_CONVERSATIONS_NS, key))
+    assert kv.peak > 1  # blanked concurrently, not one document at a time
+
+
+async def test_delete_blanks_a_long_conversation_concurrently() -> None:
+    kv = SlowBlankKV()
+    store = cc.ChatConversationStore(kv)
+    first = await turn(store, "lou", 0, answer="secret " * 3_000)
+    for n in range(1, 20):
+        await turn(store, "lou", n, conversation_id=first.conversation_id, answer="secret " * 3_000)
+    pk = cc.partition_key_for_user("lou")
+    keys = [cc.exchange_key(pk, m.id) for m in (await store.get("lou", first.conversation_id, window=None)).messages
+            if m.role == "assistant"]
+    assert await store.delete("lou", first.conversation_id) is True
+    # delete() awaits its cleanup: everything is blank when it returns.
+    for key in keys:
+        assert "secret" not in json.dumps(await kv.get(CHAT_CONVERSATIONS_NS, key))
+    assert kv.peak > 1
+
+
 async def test_the_previous_build_reads_an_archived_row() -> None:
     """SQL image rollback: the previous build reads the row's inline window and ignores
     the archive record; rolled forward, every message is there again."""
@@ -466,6 +604,142 @@ async def test_account_generation_comes_from_the_account_record(gated_state) -> 
     assert await routes_chat.account_generation_for(state, "zoe") not in ("", first)
 
 
+async def test_an_unreadable_account_registry_is_503_never_an_unmatchable_turn(
+    gated_state, monkeypatch,  # noqa: F811
+) -> None:
+    """A users-document read that fails is a retryable 503 BEFORE the turn is
+    admitted (no slot is taken), and on Stop / turns/active / re-attach — never a
+    turn bound to a generation its owner can no longer match."""
+    from app.auth.passwords import hash_password
+    from app.constants import USERS_NS
+
+    state, provider = gated_state
+    await state.users.create(username="zoe", password_hash=hash_password("zoe-pass-123456"))
+    monkeypatch.setattr(routes_chat, "current_username", lambda request: "zoe")
+    kv = state.users._kv
+    failures = {"n": 0}
+    for name in ("get", "get_strict"):
+        real = getattr(kv, name, None)
+        if real is None:
+            continue
+
+        async def flaky(ns, key, _real=real):  # noqa: ANN001
+            if ns == USERS_NS and failures["n"] > 0:
+                failures["n"] -= 1
+                raise ConnectionError("transient users read failure")
+            return await _real(ns, key)
+
+        monkeypatch.setattr(kv, name, flaky)
+
+    failures["n"] = 1
+    with pytest.raises(HTTPException) as refused:
+        await _start(state, idempotency_key="gen-flake-key-01")
+    assert refused.value.status_code == 503
+    assert refused.value.detail["code"] == "chat_account_unavailable"
+    assert refused.value.detail["retry_after"] > 0
+    assert state.chat_turns.active == 0  # no concurrency slot was taken
+
+    # The store recovered: the retry starts a turn its owner can find and stop.
+    start, _ = await _start(state, idempotency_key="gen-flake-key-01")
+    handle = start.handle
+    assert handle.generation
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    request = _request(state)
+    for call in (
+        lambda: routes_chat.active_chat_turns(request, state),
+        lambda: routes_chat.cancel_chat_turn(request, handle.turn_id, state),
+        lambda: routes_chat.chat_turn_events(request, handle.turn_id, 0, state),
+    ):
+        failures["n"] = 1
+        with pytest.raises(HTTPException) as blip:
+            await call()
+        assert blip.value.status_code == 503
+        assert blip.value.detail["code"] == "chat_account_unavailable"
+    assert [t.turn_id for t in await routes_chat.active_chat_turns(request, state)] == [handle.turn_id]
+    stopped = await routes_chat.cancel_chat_turn(request, handle.turn_id, state)
+    assert stopped.ok
+    provider.gate.set()
+    await asyncio.wait_for(reader, 10)
+
+
+# --------------------------------------------------------------------------- #
+# Step observations never outlive an answer that was not saved.
+# --------------------------------------------------------------------------- #
+async def _ring(store: cc.ChatConversationStore, user: str = "") -> tuple[Any, list[Any]]:
+    key = cc.partition_key_for_user(user)
+    index = await store._get_aux(cc.observation_index_key(key), cc.OBSERVATION_INDEX_FIELD)
+    slots = [await store._get_aux(cc.observation_slot_key(key, n), cc.OBSERVATION_FIELD) for n in range(3)]
+    return index, slots
+
+
+async def test_observations_of_a_turn_whose_conversation_was_deleted_are_discarded(
+    gated_state,  # noqa: F811
+) -> None:
+    from tests.test_chat_routes_stream import FINAL
+
+    state, provider = gated_state
+    provider.gate.set()
+    provider.push("chat", FINAL)
+    first, _ = await _start(state, idempotency_key="obs-orphan-0001")
+    await asyncio.wait_for(_drain(_relay(first.handle)), 10)
+    cid = first.handle.conversation_id
+    provider.gate.clear()
+    provider.entered.clear()
+    provider.push("chat", TOOL_STEP)
+    provider.push("chat", FINAL)
+    store = state.chat_conversations
+    saved_refs: list[Any] = []
+    real_save = store.save_observations
+
+    async def recording_save(*args: Any, **kwargs: Any) -> Any:
+        saved_refs.append(await real_save(*args, **kwargs))
+        return saved_refs[-1]
+
+    store.save_observations = recording_save  # the instance attribute shadows the method
+    second, _ = await _start(state, idempotency_key="obs-orphan-0002", conversation_id=cid)
+    reader = asyncio.ensure_future(_drain(_relay(second.handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    assert await state.chat_conversations.delete("", cid)
+    provider.gate.set()
+    events = await asyncio.wait_for(reader, 10)
+    await asyncio.wait_for(second.handle.finished.wait(), 5)
+    # The user is told what happened (not the raw store wording).
+    assert events[-1].type == "turn.error"
+    assert events[-1].message == routes_chat._CONFLICT_MESSAGE
+    assert saved_refs and saved_refs[0] is not None  # the lookup's observation WAS stored
+    index, slots = await _ring(state.chat_conversations)
+    assert not (index or {}).get("slots")
+    assert not any(isinstance(slot, dict) and slot.get("steps") for slot in slots)
+
+
+async def test_observations_of_a_saved_answer_are_kept_and_a_clear_removes_every_slot() -> None:
+    store = cc.ChatConversationStore(MemoryKV())
+    done = await turn(store, "ora", 1)
+    obs = {1: {"tool": "log_stats", "observation": {"top": [["10.0.0.1", 5]]}, "truncated": False}}
+    kept_ref, _ = await store.save_observations("ora", turn_id="turn-kept", conversation_id=done.conversation_id,
+                                                steps=obs)
+    # An orphan: its conversation never held the answer.
+    orphan_ref, _ = await store.save_observations("ora", turn_id="turn-orphan", conversation_id="chat-gone",
+                                                  steps=obs)
+    assert await store.discard_observations("ora", orphan_ref) is True
+    assert await store.get_observation("ora", orphan_ref, 1) is None
+    assert await store.discard_observations("ora", orphan_ref) is False      # already gone
+    assert await store.discard_observations("ora", "o0:turn-other") is False  # slot names another turn
+    assert await store.get_observation("ora", kept_ref, 1) is not None
+    # A slot whose index entry was lost (a blank that failed) is still cleared.
+    stray_ref, _ = await store.save_observations("ora", turn_id="turn-stray", conversation_id="chat-gone",
+                                                 steps=obs)
+    await store._strict_mutate(cc.observation_index_key(cc.partition_key_for_user("ora")),
+                               lambda cur: ({"schema": cc.AUX_SCHEMA, cc.OBSERVATION_INDEX_FIELD:
+                                             cc.canonical_json({"next": 3, "slots": {}})}, None))
+    await store.clear_all()
+    index, slots = await _ring(store, "ora")
+    assert not index and not any(isinstance(slot, dict) and slot.get("steps") for slot in slots)
+    assert await store.get_observation("ora", kept_ref, 1) is None
+    assert await store.get_observation("ora", stray_ref, 1) is None
+
+
 # --------------------------------------------------------------------------- #
 # A same-key retry learns which turn holds the key.
 # --------------------------------------------------------------------------- #
@@ -483,6 +757,34 @@ async def test_a_same_key_retry_names_the_running_turn(gated_state) -> None:  # 
     provider.gate.set()
     events = await asyncio.wait_for(reader, 10)
     assert events[-1].type == "turn.done"
+
+
+async def test_a_same_key_retry_at_the_concurrency_bound_still_names_its_turn(
+    gated_state,  # noqa: F811
+) -> None:
+    """At the per-user bound, a same-key retry of the caller's own running turn is
+    409 naming that turn (so the client re-attaches), not 429 ``chat_busy``; a new
+    request at the bound is still 429."""
+    state, provider = gated_state
+    cfg = state.prefs.chat_agent.model_copy(update={"max_concurrent_turns_per_user": 2})
+    await state.update_prefs(state.prefs.model_copy(update={"chat_agent": cfg}))
+    a, _ = await _start(state, idempotency_key="busy-key-000A")
+    b, _ = await _start(state, idempotency_key="busy-key-000B")
+    readers = [asyncio.ensure_future(_drain(_relay(h.handle))) for h in (a, b)]
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    assert state.chat_turns.active == 2
+    with pytest.raises(HTTPException) as retry:
+        await _start(state, idempotency_key="busy-key-000A")
+    assert retry.value.status_code == 409
+    assert retry.value.detail["code"] == "chat_request_in_progress"
+    assert retry.value.detail["turn_id"] == a.handle.turn_id
+    assert state.chat_turns.active == 2  # the retry took no slot
+    with pytest.raises(HTTPException) as fresh:
+        await _start(state, idempotency_key="busy-key-000C")
+    assert fresh.value.status_code == 429 and fresh.value.detail["code"] == "chat_busy"
+    provider.gate.set()
+    for events in await asyncio.wait_for(asyncio.gather(*readers), 10):
+        assert events[-1].type == "turn.done"
 
 
 # --------------------------------------------------------------------------- #

@@ -53,6 +53,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, TypeVar
 
@@ -352,6 +353,41 @@ def _encode_index(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _source_identity(item: ReportItem) -> tuple[str, str, str | None]:
     return (item.source.conversation_id, item.source.message_id, item.source.block_id)
+
+
+# A whole answer longer than one section snapshot continues in further ``section``
+# items whose source block id is ``#<n>`` (n ≥ 2). ``#`` never appears in a block id a
+# client can request (``BLOCK_ID_PATTERN``), so a continuation can never collide with
+# an added block.
+_CONTINUATION_RE = re.compile(r"^#[0-9]{1,3}$")
+
+
+def continuation_block_id(part: int) -> str:
+    """The source block id of the ``part``-th (1-based, ≥ 2) section of a whole answer."""
+    return f"#{part}"
+
+
+def _is_whole_answer(item: ReportItem) -> bool:
+    return item.kind == "section" and item.source.block_id is None
+
+
+def _continues(item: ReportItem, primary: ReportItem) -> bool:
+    """``item`` is a continuation section of the whole-answer item ``primary``."""
+    return (
+        item.kind == "section"
+        and item.source.conversation_id == primary.source.conversation_id
+        and item.source.message_id == primary.source.message_id
+        and isinstance(item.source.block_id, str)
+        and bool(_CONTINUATION_RE.match(item.source.block_id))
+    )
+
+
+def _mark_truncated(item: ReportItem) -> ReportItem:
+    """``item`` (a section) with its ``truncated`` flag set: the rest of that answer
+    did not fit in the report, and the report says so (G4)."""
+    block = dict(item.block) if isinstance(item.block, dict) else {}
+    block["truncated"] = True
+    return item.model_copy(update={"block": block})
 
 
 # --------------------------------------------------------------------------- #
@@ -659,13 +695,21 @@ class ReportStore:
         report_id: str | None = None,
         draft_conversation_id: str | None = None,
         draft_title: str = "Untitled report",
+        continuations: Iterable[ReportItem] = (),
     ) -> ReportAddOutcome:
         """Append ``item`` to ``report_id``, or — when it is None — to the draft of
         ``draft_conversation_id``, creating that draft first if it does not exist.
 
+        ``continuations`` (Round 12): the further sections of a whole answer longer
+        than one section snapshot, appended right after ``item`` in the same write.
+        Those that do not fit (the item or size bound) are left out and the last kept
+        section is marked ``truncated``, so the cut is visible, never silent.
+
         Idempotent per source: an item with the same (conversation, message, block) is
         returned instead of duplicated. Raises :class:`ReportNotFound`,
-        :class:`ReportFull` or :class:`ReportLimitReached` (draft creation)."""
+        :class:`ReportFull` (``item`` itself does not fit) or
+        :class:`ReportLimitReached` (draft creation)."""
+        extra = list(continuations)
         async with self._lock_for(owner):
             created = False
             target = report_id
@@ -701,14 +745,39 @@ class ReportStore:
                     raise ReportFull("items")
                 ids = {i.id for i in report.items}
                 new_item = item if item.id not in ids else item.model_copy(update={"id": new_item_id()})
-                updated = report.model_copy(update={
-                    "items": [*report.items, new_item],
-                    "version": report.version + 1,
-                    "updated_at": iso_now(),
-                })
-                doc = encode_report(updated, summary_key=record.summary_key)
+                ids.add(new_item.id)
+                now = iso_now()
+
+                def _with(items: list[ReportItem]) -> tuple[Report, dict[str, Any]]:
+                    candidate = report.model_copy(update={
+                        "items": [*report.items, *items],
+                        "version": report.version + 1,
+                        "updated_at": now,
+                    })
+                    return candidate, encode_report(candidate, summary_key=record.summary_key)
+
+                added = [new_item]
+                updated, doc = _with(added)
                 if not _content_fits(doc):
                     raise ReportFull("size")
+                for continuation in extra:
+                    if len(report.items) + len(added) >= MAX_REPORT_ITEMS:
+                        cut = True
+                    else:
+                        part = (continuation if continuation.id not in ids
+                                else continuation.model_copy(update={"id": new_item_id()}))
+                        trial, trial_doc = _with([*added, part])
+                        cut = not _content_fits(trial_doc)
+                        if not cut:
+                            added.append(part)
+                            ids.add(part.id)
+                            updated, doc = trial, trial_doc
+                    if cut:
+                        logger.info("whole answer added in part: %d of %d sections fit",
+                                    len(added), len(extra) + 1)
+                        added[-1] = _mark_truncated(added[-1])
+                        updated, doc = _with(added)
+                        break
                 return doc, ReportAddOutcome(updated, new_item.id, True, created)
 
             outcome = await self._strict_mutate(report_key(owner, target), _change)
@@ -738,6 +807,11 @@ class ReportStore:
                     if unknown:
                         raise ReportItemUnknown(unknown)
                     drop = set(patch.remove_items)
+                    # Removing a whole answer removes its continuation sections too
+                    # (one answer, added as one unit; a continuation alone can still
+                    # be removed by its own id).
+                    for primary in [i for i in items if i.id in drop and _is_whole_answer(i)]:
+                        drop.update(i.id for i in items if _continues(i, primary))
                     items = [i for i in items if i.id not in drop]
                 remaining = {i.id for i in items}
                 if patch.notes:

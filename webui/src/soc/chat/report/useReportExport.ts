@@ -14,7 +14,10 @@
  *     change (no tables for CSV, no download support) is `retryable: false`: the host
  *     shows it as a neutral notice without Retry.
  *   - Retry re-runs the export that FAILED (its own report, loader, format and defang),
- *     never merely the last one started: two library rows can export at once.
+ *     never merely the last one started: two library rows can export at once. Every
+ *     failure can be dismissed, and a report deleted anywhere in this tab (a
+ *     report-changed event with `report: null`) takes its failure with it: a Retry of a
+ *     deleted report could only fail again.
  *   - Resilience: the lazy export chunk is retried once when its download fails (a
  *     network blip); a stale deploy (the chunk is gone) says to reload the page. A
  *     backend that cannot be reached (`ApiError`, "Failed to fetch") is NOT a stale
@@ -30,7 +33,7 @@ import { ApiError } from '@/lib/api';
 import type { Report } from '@/lib/types';
 import { useAnnouncer } from '@/soc/components/announcer';
 
-import { reportErrorMessage } from './report-sync';
+import { onReportChanged, reportErrorMessage } from './report-sync';
 import { cachedReportSourceContext } from './useSourceTurns';
 import { PRINT_OPENED_MESSAGE, REPORT_EXPORT_NAME, type ReportExportFormat } from './export/formats';
 import type { ExportOutcome } from './export/run';
@@ -135,6 +138,8 @@ export function useReportExport({ author }: { author: string | null }): ReportEx
   const inflight = React.useRef(new Set<string>());
   // The arguments of each report's failed export: Retry re-runs exactly that one.
   const failed = React.useRef(new Map<string, RunArgs>());
+  // Reports deleted while this host is mounted: a late failure of theirs is not shown.
+  const gone = React.useRef(new Set<string>());
   const alive = React.useRef(true);
   React.useEffect(() => {
     alive.current = true;
@@ -168,6 +173,7 @@ export function useReportExport({ author }: { author: string | null }): ReportEx
       if (errorRef.current?.reportId === reportId) setError(null);
       failed.current.delete(reportId);
       const fail = (message: string, retryable: boolean) => {
+        if (gone.current.has(reportId)) return;
         announce(message);
         failed.current.set(reportId, args);
         setError({ reportId, format, message, retryable, title: meta.title ?? null });
@@ -231,6 +237,18 @@ export function useReportExport({ author }: { author: string | null }): ReportEx
     if (current) failed.current.delete(current.reportId);
     setError(null);
   }, [setError]);
+
+  // A deleted report's failure goes with it (its Retry would read a report that is gone).
+  React.useEffect(
+    () =>
+      onReportChanged((detail) => {
+        if (detail.report !== null || !detail.reportId) return;
+        gone.current.add(detail.reportId);
+        failed.current.delete(detail.reportId);
+        if (errorRef.current?.reportId === detail.reportId) setError(null);
+      }),
+    [setError],
+  );
   const exporting = React.useCallback((reportId: string) => running.get(reportId) ?? null, [running]);
 
   return { exporting, busy: running.size > 0, run, warm, error, retry, dismissError };

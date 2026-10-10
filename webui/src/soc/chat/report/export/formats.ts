@@ -31,8 +31,11 @@ export const REPORT_EXPORT_NAME: Readonly<Record<ReportExportFormat, string>> = 
   json: 'JSON',
 };
 
-/** Formats the defang toggle applies to (SPEC §9.3: never JSON; CSV and Excel are data). */
-export const DEFANGED_FORMATS: readonly ReportExportFormat[] = ['print', 'docx', 'markdown', 'html'];
+/**
+ * Formats the defang toggle applies to (SPEC §9.3: never JSON; CSV is data). Excel: its
+ * "Report" sheet only — the per-table sheets stay exact, like CSV (SYNTHESIS-chat P1-7).
+ */
+export const DEFANGED_FORMATS: readonly ReportExportFormat[] = ['print', 'docx', 'xlsx', 'markdown', 'html'];
 
 /** What a print opens with (the browser's dialog, where the analyst picks Save as PDF). */
 export const PRINT_OPENED_MESSAGE = 'Print dialog opened. Choose Save as PDF.';
