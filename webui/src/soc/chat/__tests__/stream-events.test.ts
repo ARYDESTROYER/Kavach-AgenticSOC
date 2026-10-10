@@ -11,6 +11,8 @@ import {
   displayText,
   isPing,
   isStepEnd,
+  isStepProgress,
+  isTextContinued,
   isTerminalEvent,
   isTextDelta,
   isTurnDone,
@@ -49,6 +51,8 @@ const VALID_LINES: Record<string, unknown> = {
   'turn.done': { type: 'turn.done', response: { answer: 'done', blocks: [{ type: 'markdown' }] } },
   'turn.error': { type: 'turn.error', code: 'budget_blocked', message: 'Budget reached', retryable: false, notice: null },
   ping: { type: 'ping' },
+  'step.progress': { type: 'step.progress', index: 2, done: 42_000, total: 118_402, unit: 'cases' },
+  'text.continued': { type: 'text.continued', part: 2 },
 };
 
 describe('parseStreamEvent', () => {
@@ -116,6 +120,45 @@ describe('parseStreamEvent', () => {
     });
     const delta = parseStreamEvent(line({ type: 'text.delta', text: 'a‮b\nc' }));
     expect(delta).toEqual({ type: 'text.delta', text: 'ab\nc' });
+  });
+});
+
+describe('Round 12 stream events (SPEC §3.3)', () => {
+  it('parses step.progress and text.continued and sanitises the unit', () => {
+    const progress = parseStreamEvent(line({ type: 'step.progress', index: 3, done: 10, unit: 'cases\u202e' }));
+    expect(progress && isStepProgress(progress) ? progress : null).toEqual({
+      type: 'step.progress',
+      index: 3,
+      done: 10,
+      total: null,
+      unit: 'cases',
+    });
+    const continued = parseStreamEvent(line({ type: 'text.continued', part: 3 }));
+    expect(continued && isTextContinued(continued) ? continued.part : null).toBe(3);
+  });
+
+  it.each([
+    '{"type":"step.progress","done":1}', // no index
+    '{"type":"step.progress","index":-1}',
+    '{"type":"text.continued","part":1}', // part 1 is the answer itself
+    '{"type":"text.continued"}',
+  ])('drops a malformed Round 12 line: %j', (raw) => {
+    expect(parseStreamEvent(raw)).toBeNull();
+  });
+
+  it('keeps a step\'s inspector ref and progress, and drops invalid ones', () => {
+    const step = normaliseChatStep({
+      index: 2,
+      label: 'Counted cases',
+      status: 'ok',
+      observation_ref: 't1',
+      progress: { done: 3000, total: 3000, unit: 'cases' },
+    });
+    expect(step?.observation_ref).toBe('t1');
+    expect(step?.progress).toEqual({ done: 3000, total: 3000, unit: 'cases' });
+    const bad = normaliseChatStep({ index: 2, observation_ref: 7, progress: 'lots' });
+    expect(bad && 'observation_ref' in bad).toBe(false);
+    expect(bad && 'progress' in bad).toBe(false);
   });
 });
 

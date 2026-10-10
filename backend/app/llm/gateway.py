@@ -16,6 +16,7 @@ cancellation (#6).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -50,6 +51,29 @@ logger = logging.getLogger("tlsoc.gateway")
 #: the model layer; the gateway writes it only when the contract carries it, so the
 #: estimate flag lands the moment the field does and nothing breaks before then.
 _USAGE_DOC_HAS_ESTIMATED = "usage_estimated" in UsageDoc.model_fields
+
+#: Round 12 (SPEC D5): ledger surfaces OUTSIDE the daily AI budget. A chat call
+#: (``role="chat"`` on ``surface="chat"``) is never blocked by the budget gate, and its
+#: spend is excluded from what the gate measures for every other call, so chat can
+#: neither be paused by investigations' spend nor push investigations to NEEDS_HUMAN.
+#: Every chat call is still metered here exactly like any other (#6); the optional
+#: chat daily cap (``chat_agent.chat_daily_cap_usd``) is enforced by the chat engine.
+BUDGET_EXEMPT_SURFACES: tuple[str, ...] = ("chat",)
+
+
+def budget_exempt(role: str, surface: str) -> bool:
+    """True for a chat call (D5): the daily AI budget never blocks it."""
+    return role == Role.CHAT.value and surface in BUDGET_EXEMPT_SURFACES
+
+
+def _accepts_keyword(fn: Any, name: str) -> bool:
+    """Whether ``fn`` takes ``name`` (or ``**kwargs``): an out-of-tree or replay
+    budget gate keeps its historical ``check`` signature."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 class GatewayError(RuntimeError):
@@ -823,7 +847,7 @@ class LLMGateway:
         # Budget pre-flight (Feature 9, Track B): a PURE ceiling check that RAISES on
         # block BEFORE the provider call + BEFORE any ledger write, so a blocked call
         # fails to NEEDS_HUMAN and NEVER closes a case (#3). Demo/mock ($0) bypasses.
-        await self._budget_preflight(role_str, messages, model_cfg)
+        await self._budget_preflight(role_str, messages, model_cfg, surface=surface)
         # Fill in a runtime-added custom model's endpoint (base_url) when the per-role
         # config carried none, so a role bound to a self-hosted / LiteLLM model routes
         # to the right server. No-op for every model with an explicit / registry base_url.
@@ -1279,21 +1303,30 @@ class LLMGateway:
         return None
 
     async def _budget_preflight(self, role: str, messages: list[dict[str, str]],
-                                model_cfg: ModelConfig) -> None:
+                                model_cfg: ModelConfig, *, surface: str = "") -> None:
         """Run the optional BudgetGate BEFORE a billable call. On a ``block`` decision
         it RAISES :class:`BudgetBlocked` (a GatewayError: caller fails to NEEDS_HUMAN —
         never closes #3). Demo/mock / $0 models bypass the gate. Best-effort: a gate
         evaluation glitch never hard-blocks a call (logged) — the budget is
-        governance, not a safety stop."""
+        governance, not a safety stop.
+
+        Round 12 (SPEC D5): a chat call (:func:`budget_exempt`) is not checked, and
+        every other call is checked against spend that excludes the exempt surfaces
+        (when the gate supports ``exclude_surfaces``). The call is ledgered as usual."""
         if self._budget is None or self._demo:
             return
         if str(model_cfg.provider) == "mock" or model_cfg.model.startswith("mock"):
             return
+        if budget_exempt(role, surface):
+            return
         try:
             prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            extra: dict[str, Any] = {}
+            if _accepts_keyword(self._budget.check, "exclude_surfaces"):
+                extra["exclude_surfaces"] = BUDGET_EXEMPT_SURFACES
             decision = await self._budget.check(
                 prompt_chars=prompt_chars, max_tokens=model_cfg.max_tokens, model=model_cfg.model,
-                overlay=await self._effective_price_tuple(model_cfg.model),
+                overlay=await self._effective_price_tuple(model_cfg.model), **extra,
             )
         except GatewayError:
             raise

@@ -13,7 +13,9 @@
     "text.reset",
     "turn.done",
     "turn.error",
-    "ping"
+    "ping",
+    "step.progress",
+    "text.continued"
   ],
   "terminal_event_types": [
     "turn.done",
@@ -141,8 +143,8 @@
     "chat_prompts": 50,
     "chat_prompt_title_chars": 60,
     "chat_prompt_text_chars": 2000,
-    "time_range_max_days": 90,
-    "report_items": 40,
+    "time_range_max_days": null,
+    "report_items": 60,
     "report_note_chars": 500,
     "report_title_chars": 120
   }

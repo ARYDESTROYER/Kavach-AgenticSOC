@@ -276,8 +276,10 @@ def fake_catalogue(monkeypatch: pytest.MonkeyPatch):
 
 
 def make_prefs(**cfg: Any) -> Preferences:
+    # These tests pin the BOUNDED loop (today's caps and knobs, SPEC D1). The
+    # unlimited default is covered by tests/test_chat_engine_unlimited.py.
     prefs = Preferences()
-    agent = ChatAgentConfig()
+    agent = ChatAgentConfig(limits_mode="bounded")
     for key, value in cfg.items():
         setattr(agent, key, value)  # bypass the clamp so tests can use tiny limits
     return prefs.model_copy(update={"chat_agent": agent})
@@ -382,7 +384,7 @@ async def test_system_prompt_lists_only_granted_tools_and_marks_the_question() -
     messages = gateway.calls[0]["messages"]
     system = messages[0]["content"]
     assert "- search_cases(" in system and "- log_stats(" not in system and "- audit_search(" not in system
-    assert "last 7d" in system
+    assert "last 7 days" in system
     live = messages[-1]["content"]
     assert live.startswith(f"{USER_TURN_MARKER}\nhi ") and live.count(USER_TURN_MARKER) == 1
 
@@ -574,10 +576,49 @@ async def test_finish_reason_length_is_a_partial_notice() -> None:
 
 
 async def test_unsupported_answers_are_product_help() -> None:
+    # D9: honoured only because NO data lookup ran; without a resolved console link
+    # the notice does not send the analyst to a page that does not exist.
     gateway = FakeGateway([final("Chat cannot read user accounts.", unsupported=True, answer_kind="data")])
     prefs = make_prefs()
     _, resp, _ = await run(make_engine(gateway), "list users", prefs, make_ctx(prefs))
     assert resp.answer_kind == "product_help" and resp.notice.kind == "unsupported"
+    assert resp.notice.message == NOTICE_MESSAGES["unsupported_no_link"]
+    assert "linked console page" not in resp.notice.message
+
+
+async def test_unsupported_names_the_console_page_only_when_a_link_resolved() -> None:
+    gateway = FakeGateway([final("Users live in Settings.", unsupported=True,
+                                 console_links=["settings:users"])])
+    prefs = make_prefs()
+    engine = make_engine(gateway)
+    engine.app_knowledge = FakeKnowledge()
+    _, resp, _ = await run(engine, "list users", prefs, make_ctx(prefs))
+    assert resp.notice.kind == "unsupported" and resp.notice.message == NOTICE_MESSAGES["unsupported"]
+    assert [link.id for link in resp.console_links] == ["settings:users"]
+
+
+@pytest.mark.parametrize("stated,expected", [("data", "data"), ("mixed", "mixed"), ("product_help", "data"),
+                                             (None, "data")])
+async def test_data_lookups_plus_unsupported_is_an_answer_with_limits(stated: str | None, expected: str) -> None:
+    """The screenshot case (D9): lookups ran, the model flagged part of the question as
+    beyond them. That is an answer with limits, never "Product help" or a refusal."""
+    header: dict[str, Any] = {"unsupported": True}
+    if stated is not None:
+        header["answer_kind"] = stated
+    gateway = FakeGateway([tool_call("log_stats", group_by="source.ip"),
+                           final("Lifetime totals by month are below; weekly detail is not available.", **header)])
+    prefs = make_prefs()
+    _, resp, _ = await run(make_engine(gateway), "lifetime performance by month", prefs, make_ctx(prefs))
+    assert resp.notice is not None and resp.notice.kind == "limited"
+    assert resp.notice.message == NOTICE_MESSAGES["limited"] and resp.notice.retryable is False
+    assert resp.answer_kind == expected and resp.answer_kind != "product_help"
+
+
+async def test_answer_kind_follows_the_model_when_no_flag_is_set() -> None:
+    gateway = FakeGateway([tool_call("log_stats", group_by="source.ip"), final("Mixed.", answer_kind="mixed")])
+    prefs = make_prefs()
+    _, resp, _ = await run(make_engine(gateway), "q", prefs, make_ctx(prefs))
+    assert resp.answer_kind == "mixed" and resp.notice is None
 
 
 # --------------------------------------------------------------------------- #

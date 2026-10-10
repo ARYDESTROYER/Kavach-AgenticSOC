@@ -149,6 +149,10 @@ export const CHAT_STREAM_EVENT_TYPES = [
   'turn.done',
   'turn.error',
   'ping',
+  // Round 12 (SPEC §3.3): a long lookup's progress, and a quiet "the answer was
+  // continued" marker (the text keeps streaming; no `text.reset`).
+  'step.progress',
+  'text.continued',
 ] as const;
 export type ChatStreamEventType = (typeof CHAT_STREAM_EVENT_TYPES)[number];
 export const TERMINAL_EVENT_TYPES = ['turn.done', 'turn.error'] as const;
@@ -267,8 +271,9 @@ export const CHAT_LIMITS = {
   chat_prompts: 50,
   chat_prompt_title_chars: 60,
   chat_prompt_text_chars: 2000,
-  time_range_max_days: 90,
-  report_items: 40,
+  /** Round 12 (SPEC D7a): chat windows have no span limit. */
+  time_range_max_days: null,
+  report_items: 60,
   report_note_chars: 500,
   report_title_chars: 120,
 } as const;
@@ -332,6 +337,21 @@ export interface TurnErrorEvent {
 export interface PingEvent {
   type: 'ping';
 }
+/** Round 12: progress of a running step (an exact aggregate scan). */
+export interface StepProgressEvent {
+  type: 'step.progress';
+  index: number;
+  done: number;
+  /** `null` when the store cannot say up front. */
+  total: number | null;
+  /** Engine noun such as "cases". */
+  unit: string;
+}
+/** Round 12: the answer was cut at the output limit and continues as `part` (≥ 2). */
+export interface TextContinuedEvent {
+  type: 'text.continued';
+  part: number;
+}
 
 export type ChatStreamEvent =
   | TurnStartEvent
@@ -342,7 +362,9 @@ export type ChatStreamEvent =
   | TextResetEvent
   | TurnDoneEvent
   | TurnErrorEvent
-  | PingEvent;
+  | PingEvent
+  | StepProgressEvent
+  | TextContinuedEvent;
 
 /* Type guards. */
 export const isTurnStart = (e: ChatStreamEvent): e is TurnStartEvent => e.type === 'turn.start';
@@ -354,6 +376,8 @@ export const isTextReset = (e: ChatStreamEvent): e is TextResetEvent => e.type =
 export const isTurnDone = (e: ChatStreamEvent): e is TurnDoneEvent => e.type === 'turn.done';
 export const isTurnError = (e: ChatStreamEvent): e is TurnErrorEvent => e.type === 'turn.error';
 export const isPing = (e: ChatStreamEvent): e is PingEvent => e.type === 'ping';
+export const isStepProgress = (e: ChatStreamEvent): e is StepProgressEvent => e.type === 'step.progress';
+export const isTextContinued = (e: ChatStreamEvent): e is TextContinuedEvent => e.type === 'text.continued';
 /** `turn.done` or `turn.error`: the stream's last line. */
 export const isTerminalEvent = (e: ChatStreamEvent): e is TurnDoneEvent | TurnErrorEvent =>
   e.type === 'turn.done' || e.type === 'turn.error';
@@ -507,7 +531,24 @@ export function normaliseChatStep(raw: unknown): ChatStep | null {
     sources: stringList(raw.sources, 20, 120),
     usage: normaliseStepUsage(raw.usage),
     group: count(raw.group, null),
+    ...normaliseStepExtras(raw),
   };
+}
+
+/** Round 12 (SPEC §3.1): the step inspector key and a long lookup's progress, when valid. */
+function normaliseStepExtras(raw: Obj): Pick<ChatStep, 'observation_ref' | 'progress'> {
+  const out: Pick<ChatStep, 'observation_ref' | 'progress'> = {};
+  if (typeof raw.observation_ref === 'string' && raw.observation_ref.length > 0 && raw.observation_ref.length <= 200) {
+    out.observation_ref = raw.observation_ref;
+  }
+  if (isObj(raw.progress)) {
+    out.progress = {
+      done: count(raw.progress.done, 0),
+      total: count(raw.progress.total, null),
+      unit: displayText(raw.progress.unit, 40),
+    };
+  }
+  return out;
 }
 
 export function normaliseNotice(raw: unknown): TurnNotice | null {
@@ -749,6 +790,21 @@ function toEvent(payload: Obj): ChatStreamEvent | null {
       };
     case 'ping':
       return { type: 'ping' };
+    case 'step.progress': {
+      const index = count(payload.index, null);
+      if (index === null) return null;
+      return {
+        type: 'step.progress',
+        index,
+        done: count(payload.done, 0),
+        total: count(payload.total, null),
+        unit: displayText(payload.unit, 40),
+      };
+    }
+    case 'text.continued': {
+      const part = count(payload.part, null);
+      return part !== null && part >= 2 ? { type: 'text.continued', part } : null;
+    }
     default:
       return null;
   }

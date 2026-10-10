@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace as dataclass_replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
 from ...audit.audit_log import AuditLogger
 from ...cache import Cache
@@ -34,7 +34,7 @@ from ...connectors.base import PullConnector, SearchResult, StructuredQuery
 from ...connectors.elastic import ElasticConnector
 from ...constants import SourceSurface
 from ...es.fake import InMemoryESClient
-from ...llm.gateway import GatewayError, LLMGateway
+from ...llm.gateway import GatewayError, LLMGateway, _accepts_keyword
 from ...models import Case, Cursor, EnrichmentResult, RawEvent
 from ...realtime import EventBus
 from ...stores.cases import CaseStore
@@ -135,12 +135,19 @@ class ReplayBudgetGate:
     async def check(
         self, *, prompt_chars: int = 0, max_tokens: int = 0, model: str = "",
         overlay: tuple[float, float] | None = None,
+        exclude_surfaces: Sequence[str] = (),
     ) -> dict[str, Any]:
+        """``exclude_surfaces`` (Round 12, SPEC D5) is forwarded to the tenant gate
+        when it supports it, so chat spend (outside the daily AI budget) can never
+        trip a replay's ``tenant_budget`` stop."""
         if self._tenant is not None:
+            extra: dict[str, Any] = {}
+            if exclude_surfaces and _accepts_keyword(self._tenant.check, "exclude_surfaces"):
+                extra["exclude_surfaces"] = tuple(exclude_surfaces)
             try:
                 decision = await self._tenant.check(
                     prompt_chars=prompt_chars, max_tokens=max_tokens,
-                    model=model, overlay=overlay,
+                    model=model, overlay=overlay, **extra,
                 )
             except Exception as exc:  # noqa: BLE001 — the tenant gate is fail-open
                 logger.warning("replay tenant budget check failed (%s); continuing", exc)
