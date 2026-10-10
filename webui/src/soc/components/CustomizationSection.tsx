@@ -2,8 +2,10 @@
  * CustomizationSection — Settings > Appearance & customization (Wave 7).
  *
  * Two-store model surfaced in one panel:
- *  - PERSONAL (every signed-in user): the colour-mode theme + a manager for the
- *    user's saved views (delete + clone an org-shared one into the personal set).
+ *  - PERSONAL (every signed-in user): the colour-mode theme, "Reduce transparency"
+ *    (Round 12: the in-app override for browsers that never report
+ *    `prefers-reduced-transparency`) + a manager for the user's saved views (delete +
+ *    clone an org-shared one into the personal set).
  *  - ORG (admin-only, wrapped in <Can>): the terminology label editor + the org
  *    default theme. Org edits go through `api.prefs.putOrg` / `api.terminology.put`,
  *    then the cascade is refreshed so the change applies immediately.
@@ -27,6 +29,12 @@ import { Label } from '@/ui/label';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { SectionTitle } from '@/soc/pages/settings/primitives';
 import {
+  applyTransparencyPreference,
+  readTransparencyPreference,
+  TRANSPARENCY_PREF_KEY,
+  type TransparencyPreference,
+} from '@/design-system/transparency';
+import {
   Select,
   SelectTrigger,
   SelectValue,
@@ -41,6 +49,11 @@ const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; icon: typeof Sun }
   { value: 'dark', label: 'Dark', icon: Moon },
 ];
 
+const TRANSPARENCY_OPTIONS: Array<{ value: TransparencyPreference; label: string }> = [
+  { value: 'system', label: 'System' },
+  { value: 'reduced', label: 'On' },
+];
+
 /** The high-traffic terminology keys offered in the editor (each defaulted). */
 const TERM_KEYS: Array<{ key: string; help: string }> = [
   { key: 'cases', help: 'The "Cases" nav + page title' },
@@ -53,8 +66,30 @@ const TERM_KEYS: Array<{ key: string; help: string }> = [
 ];
 
 export const CustomizationSection: React.FC = () => {
-  const { themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh } = usePrefs();
+  const { prefs, themeMode, setThemeMode, savedViews, deleteView, cloneView, refresh } = usePrefs();
   const isAdmin = useCan('settings', 'manage');
+
+  // "Reduce transparency": this device's mirror first (what the page is showing right
+  // now), then the account's stored choice once the cascade hydrates (prefs.tsx has
+  // already applied that value to <html>).
+  const [transparency, setTransparency] = React.useState<TransparencyPreference>(() =>
+    readTransparencyPreference(),
+  );
+  const storedTransparency = prefs.misc?.[TRANSPARENCY_PREF_KEY];
+  React.useEffect(() => {
+    if (storedTransparency === 'reduced' || storedTransparency === 'system') {
+      setTransparency(storedTransparency);
+    }
+  }, [storedTransparency]);
+  const changeTransparency = React.useCallback((next: TransparencyPreference) => {
+    // Optimistic, like the theme: apply now, persist to the account in the background.
+    // The device mirror keeps the choice here even if the save fails.
+    setTransparency(next);
+    applyTransparencyPreference(next);
+    void api.prefs.putUser({ misc: { [TRANSPARENCY_PREF_KEY]: next } }).catch(() => {
+      /* best-effort — the local apply already happened */
+    });
+  }, []);
 
   // ORG terminology draft (admin). Hydrated from the org prefs on mount.
   const [terms, setTerms] = React.useState<Record<string, string>>({});
@@ -167,6 +202,27 @@ export const CustomizationSection: React.FC = () => {
             label: <span className="sr-only">{label}</span>,
             icon: <Icon aria-hidden />,
           }))}
+          className="max-w-full"
+        />
+      </section>
+
+      {/* ---- Reduce transparency (personal) --------------------------------- */}
+      <section className="space-y-3 border-t border-border py-5">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Reduce transparency</h3>
+          <p className="text-sm text-muted-foreground">
+            Shows the top bar and sticky toolbars as solid surfaces instead of frosted
+            glass. “System” follows your device’s Reduce transparency setting, but Safari
+            and Firefox don’t pass that setting on, so choose “On” to apply it there.
+            Saved to your account.
+          </p>
+        </div>
+        <SegmentedControl
+          aria-label="Reduce transparency"
+          value={transparency}
+          onValueChange={changeTransparency}
+          size="sm"
+          options={TRANSPARENCY_OPTIONS}
           className="max-w-full"
         />
       </section>

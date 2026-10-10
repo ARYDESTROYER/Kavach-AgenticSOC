@@ -411,12 +411,13 @@ class InMemoryESClient(BaseESClient):
         frm = int(body.get("from", 0) or 0)
         size = int(body.get("size", 10))
         window = matched[frm: frm + size] if size > 0 else []
+        source_filter = body.get("_source")
         hits = [
             {
                 "_index": idx,
                 "_id": did,
                 "_score": None,
-                "_source": src,
+                "_source": _project_source(src, source_filter),
                 "sort": _sort_values(did, src, _normalise_sort(sort)) if sort else None,
             }
             for (idx, did, src) in window
@@ -428,6 +429,45 @@ class InMemoryESClient(BaseESClient):
         if aggs:
             result["aggregations"] = _aggregate(aggs, [src for (_i, _d, src) in matched])
         return result
+
+
+def _project_source(src: Any, spec: Any) -> Any:
+    """Elasticsearch ``_source`` filtering for a hit: a field list (or one field, or
+    ``{"includes": [...], "excludes": [...]}``) returns only the matching fields
+    (wildcards and dotted paths into objects allowed). Boolean and absent specs return
+    the document unchanged, as before (callers asking for ``_source: false`` never read
+    it)."""
+    if not isinstance(src, dict) or spec is None or isinstance(spec, bool):
+        return src
+    if isinstance(spec, str):
+        includes, excludes = [spec], []
+    elif isinstance(spec, (list, tuple)):
+        includes, excludes = [str(x) for x in spec], []
+    elif isinstance(spec, dict):
+        raw_in = spec.get("includes", spec.get("include"))
+        raw_ex = spec.get("excludes", spec.get("exclude"))
+        includes = [raw_in] if isinstance(raw_in, str) else [str(x) for x in raw_in or []]
+        excludes = [raw_ex] if isinstance(raw_ex, str) else [str(x) for x in raw_ex or []]
+    else:
+        return src
+
+    def pick(node: dict[str, Any], prefix: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            path = f"{prefix}{key}"
+            if any(fnmatch.fnmatchcase(path, pat) for pat in excludes):
+                continue
+            if not includes or any(fnmatch.fnmatchcase(path, pat) for pat in includes):
+                out[key] = _tree_copy(value)
+            elif isinstance(value, dict) and any(
+                pat.startswith(path + ".") or pat.startswith("*") for pat in includes
+            ):
+                inner = pick(value, path + ".")
+                if inner:
+                    out[key] = inner
+        return out
+
+    return pick(src, "")
 
 
 _ATOMIC_TYPES = (str, int, float, bool, type(None))

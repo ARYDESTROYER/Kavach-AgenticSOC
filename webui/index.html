@@ -24,7 +24,8 @@
          tiny BLOCKING script stamps the SAME `.dark` class + `colorScheme` the
          ThemeProvider uses (storage key `soc.theme`; 'system'/unset → OS), BEFORE
          first paint, so there is no flash. It is intentionally a pure mirror of
-         theme.tsx's readStoredMode()+resolveDark(no branding)+applyDarkClass. -->
+         theme.tsx's readStoredMode()+resolveDark(no branding)+applyDarkClass, plus
+         the "Reduce transparency" device mirror (design-system/transparency.ts). -->
     <script>
       (function () {
         try {
@@ -41,6 +42,12 @@
           var el = document.documentElement;
           el.classList.toggle('dark', !!dark);
           el.style.colorScheme = dark ? 'dark' : 'light';
+          // "Reduce transparency: On" (design-system/transparency.ts, storage key
+          // `soc.transparency`): stamp the solid-material override before first paint so
+          // the top bar never flashes translucent for an operator who turned it off.
+          if (window.localStorage.getItem('soc.transparency') === 'reduced') {
+            el.setAttribute('data-transparency', 'reduced');
+          }
         } catch (e) {
           /* storage/matchMedia unavailable — leave the default light theme */
         }

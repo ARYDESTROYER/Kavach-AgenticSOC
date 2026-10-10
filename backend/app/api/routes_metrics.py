@@ -28,6 +28,7 @@ also assert the narrow ``metrics:view`` grant. No non-GET routes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import date, datetime, time, timedelta, timezone
@@ -41,16 +42,23 @@ from ..engine.clustering_explain import build_case_lineage
 from ..engine.metrics import (
     _window_filter,
     auto_close_health,
+    compute_metrics,
     posture_metrics,
     recorded_auto_close_health,
     trend_metrics,
+    truncation_marker,
 )
 from ..engine.mitre_coverage import compute_mitre_coverage, navigator_layer
 from ..engine.noise_counters import build_noise_reduction
 from ..state import AppState
 from ..utils import iso_now
 from .deps import get_state, require_permission
-from .metrics_shared import CasePopulation, fetch_case_population, fetch_ledger_span
+from .metrics_shared import (
+    CasePopulation,
+    fetch_case_breakdown,
+    fetch_case_population,
+    fetch_ledger_span,
+)
 
 logger = logging.getLogger("tlsoc.api.metrics")
 router = APIRouter(prefix="/api")
@@ -80,6 +88,20 @@ def _window(window_hours: Any) -> int:
     except (TypeError, ValueError, OverflowError):
         return 0
     return max(0, min(hours, _MAX_WINDOW_HOURS))
+
+
+# A rollup over at least this many cases runs in a worker thread (they are pure
+# functions over shared, read-only Case objects), so a 20,000-case rollup never holds
+# the event loop that also streams chat answers, SSE heartbeats and ingest. Smaller
+# rollups run inline (no thread hop for the common small deployment).
+_OFFLOAD_AT = 2000
+
+
+async def _rollup(fn: Any, cases: list, *args: Any, **kwargs: Any) -> Any:
+    """``fn(cases, *args, **kwargs)`` — in a worker thread when ``cases`` is large."""
+    if len(cases) >= _OFFLOAD_AT:
+        return await asyncio.to_thread(fn, cases, *args, **kwargs)
+    return fn(cases, *args, **kwargs)
 
 
 async def _population(state: AppState, span_hours: int | None) -> CasePopulation:
@@ -112,6 +134,46 @@ async def _load_cases_ok(state: AppState) -> tuple[list, int, bool]:
     proven-complete empty store)."""
     population = await _population(state, None)
     return population.cases, population.scope_total, population.load_ok
+
+
+async def legacy_metrics_payload(state: AppState, window_hours: int) -> dict[str, Any]:
+    """The body of ``GET /api/metrics`` (the Metrics page tiles and the custom-dashboard
+    KPI widgets; the route itself lives in the base router).
+
+    * The headline COUNTS — ``total_cases``, ``open_cases``, ``needs_human_cases``,
+      ``closed_cases``, ``by_status``, ``by_verdict``, ``by_disposition`` — are exact
+      store-wide aggregates (``metrics_shared.fetch_case_breakdown``: COUNT/GROUP BY
+      push-downs where the backend has them, else a fold that keeps only counters), so
+      they agree with chat's ``case_stats`` at any store size. ``counts_exact`` is True
+      when every one of them was counted exactly; a part that could not be counted falls
+      back to the tally over the analysed cases and ``counts_exact`` goes False, with the
+      reason in ``counts_note``.
+    * Every OTHER figure (average risk, the active risk index, MTTR, cases per day, the
+      burndown, timing trend, persona/playbook usage, feedback, retrieval history) is
+      computed over the shared all-time case population: every case when the store holds
+      no more than ``_STORE_FETCH_LIMIT``, else its newest cases. ``truncated`` /
+      ``store_total`` / ``fetched`` say which (``store_total`` = the exact case count,
+      ``fetched`` = cases analysed), so a lower bound is never presented as complete.
+
+    An unreadable store is a 503, never a page of zeros."""
+    population = await _population(state, None)
+    if not population.load_ok:
+        raise HTTPException(status_code=503, detail="The case store could not be read")
+    breakdown = await fetch_case_breakdown(state.cases)
+    counts = breakdown.counts()
+    if "total" not in counts and population.store_total is not None:
+        counts["total"] = int(population.store_total)  # the population's own exact COUNT
+    out = await _rollup(
+        compute_metrics, population.cases, total_cases=population.scope_total, counts=counts,
+    )
+    out.update(truncation_marker(population.fetched, population.scope_total))
+    out["counts_exact"] = breakdown.exact
+    out["counts_note"] = "; ".join(breakdown.errors)
+    try:
+        out["cost"] = await state.usage_store.summary(window_hours=max(1, int(window_hours)))
+    except Exception:  # noqa: BLE001 — cost is best-effort on the metrics view
+        out["cost"] = {}
+    return out
 
 
 def _subtract_counter_bands(
@@ -452,7 +514,8 @@ async def metrics_posture(
     span = (wh * 2 if mode == "prev" else wh) if wh > 0 else None
     population = await _population(state, span)
     sla_policy = getattr(state.prefs, "sla", None)
-    return posture_metrics(
+    return await _rollup(
+        posture_metrics,
         population.cases,
         sla_policy=sla_policy,
         window_hours=wh,
@@ -517,7 +580,8 @@ async def metrics_trends(
     except Exception as exc:  # noqa: BLE001 — a counter glitch degrades to null alerts
         logger.warning("trends counter read soft-failed: %s", exc)
         alert_counters = None
-    return trend_metrics(
+    return await _rollup(
+        trend_metrics,
         population.cases,
         window_hours=wh,
         store_total=population.scope_total,
@@ -551,7 +615,8 @@ async def metrics_auto_close_health(
     # Decision-time windows plus a "lifetime" tally: a case created long ago can be
     # decided today, so this rollup reads the ALL-TIME population.
     population = await _population(state, None)
-    return auto_close_health(
+    return await _rollup(
+        auto_close_health,
         population.cases,
         window_hours=int(window_hours),
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
@@ -691,16 +756,19 @@ async def metrics_auto_close_health_recorded(
     decisions that have already been made — nothing here is ever an input to
     ``decide()`` (#3)."""
     population = await _population(state, None)
-    return recorded_auto_close_health(
+    decision_audit_rows = await _load_decision_audit(state, window_hours=int(window_hours))
+    rag_health = await _rag_health_record(state)
+    return await _rollup(
+        recorded_auto_close_health,
         population.cases,
         window_hours=int(window_hours),
         policy=getattr(getattr(state, "prefs", None), "auto_close", None),
         store_total=population.scope_total,
         anchor=anchor,
-        decision_audit_rows=await _load_decision_audit(state, window_hours=int(window_hours)),
+        decision_audit_rows=decision_audit_rows,
         decision_audit_span_hours=_decision_audit_span_hours(int(window_hours)),
         provider_health=_provider_health_snapshot(state),
-        rag_health=await _rag_health_record(state),
+        rag_health=rag_health,
     )
 
 
@@ -747,7 +815,8 @@ async def metrics_agent_improvement(
         baseline_days=baseline_days,
         end=report_end,
     )
-    return agent_improvement_metrics(
+    return await _rollup(
+        agent_improvement_metrics,
         population.cases,
         as_of=as_of,
         current_days=current_days,
@@ -790,7 +859,8 @@ async def metrics_noise_reduction(
     except Exception as exc:  # noqa: BLE001 — a counter glitch degrades to case-only funnel
         logger.warning("noise-reduction counter read soft-failed: %s", exc)
         counters = {"available": False}
-    return build_noise_reduction(
+    return await _rollup(
+        build_noise_reduction,
         population.cases,
         counters,
         window_hours=wh,

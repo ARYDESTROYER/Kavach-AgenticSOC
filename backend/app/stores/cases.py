@@ -372,13 +372,16 @@ class CaseStore(CaseRepository):
         raw: bool = False,
         statuses: Any = None,
         newest_first: bool = False,
+        fields: Any = None,
     ) -> tuple[list[Case], Any | None, int | None, str]:
         """PIT scan page with the ``created_at`` window pushed down as the never-drop
         complement (see :meth:`list_window`), half-open ``[created_from, created_to)``,
         and an optional ``statuses`` ``terms`` pre-filter. ``newest_first`` orders by
         ``created_at`` desc (a missing date last), then ``case_id``; otherwise the
         cheapest ``_shard_doc`` order. ``next_cursor`` is ``None`` once exhausted, and
-        the snapshot is then already released.
+        the snapshot is then already released. ``fields`` (raw pages only) limits each
+        returned document to those stored fields (``_source`` filtering), so a
+        count-style fold transfers a few bytes per case instead of whole documents.
 
         A partial response (a failed shard, a timed-out search) raises
         :class:`PartialSearchError` rather than being read as the last page. A snapshot
@@ -416,6 +419,8 @@ class CaseStore(CaseRepository):
             body: dict[str, Any] = {
                 "size": cap, "track_total_hits": True, "query": query, "sort": sort,
             }
+            if raw and fields:
+                body["_source"] = {"includes": sorted({str(f) for f in fields})}
             if pit_id:
                 body["pit"] = {"id": pit_id, "keep_alive": "10m"}
                 consistency = "point_in_time"

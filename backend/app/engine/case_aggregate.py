@@ -1239,6 +1239,7 @@ async def scan_cases(
     statuses: Any = None,
     newest_first: bool = False,
     stop: Callable[[], bool] | None = None,
+    fields: tuple[str, ...] | None = None,
 ) -> ScanOutcome:
     """Feed every case page of ``store`` to ``consume`` (sync or async).
 
@@ -1250,7 +1251,10 @@ async def scan_cases(
     keeps its own order, so the CONSUMER must still apply its own exact predicate and
     must not rely on the order unless ``ScanOutcome.newest_first`` says it held.
     ``stop()`` is checked after every page: True ends the scan early (complete=False is
-    NOT set — the caller asked to stop; ``stopped`` says so).
+    NOT set — the caller asked to stop; ``stopped`` says so). ``fields`` (raw scans only)
+    names the stored document fields the consumer reads; a ``scan_page`` that declares
+    ``fields`` may return just those (Elasticsearch ``_source`` filtering), so a
+    count-style fold never transfers or decodes whole case documents.
 
     Uses the repository's ``scan_page`` (half-open ``[created_from, created_to)`` window
     pre-filter, never-drop for unparseable timestamps) when it exists, else
@@ -1271,6 +1275,8 @@ async def scan_cases(
             optional["statuses"] = sorted({str(s) for s in statuses})
         if newest_first:
             optional["newest_first"] = True
+        if raw and fields:
+            optional["fields"] = tuple(sorted({str(f) for f in fields}))
         scan_kwargs = _accepted_kwargs(scan_page, optional)
     outcome.newest_first = bool(scan_kwargs.get("newest_first"))
     cursor: Any = None
@@ -1471,6 +1477,44 @@ async def _open_stock(
     return await aggregate_cases(store, stock_spec, cancel=cancel)
 
 
+# What a COUNT-style fold reads from a stored document, per group field / filter. A
+# spec whose every group field and filter is here, and whose metrics are only ``count``
+# / ``open_now``, needs just these fields (plus the identity, creation time and status
+# every row is checked against); anything else — a derived band, the analyst ground
+# truth, lifecycle clocks, the free-text haystack — needs the whole document.
+_RAW_FIELDS_OF: dict[str, tuple[str, ...]] = {
+    "verdict": ("verdict",),
+    "status": ("status",),
+    "status_group": ("status",),
+    "rule": ("rule_ids",),
+    "assignee": ("assignee",),
+    "source": ("source_id", "source_name"),
+    "surface": ("source_surface",),
+    "disposition": ("disposition",),
+    "decided_by": ("decision_by",),
+    "closed_by": ("status", "decision_by", "analyst_policy"),
+    "mitre_tactic": ("mitre",),
+    "mitre_technique": ("mitre",),
+    "entity": ("entity",),
+}
+_PROJECTABLE_METRICS = frozenset({"count", "open_now"})
+
+
+def _raw_projection(spec: CaseAggregateSpec, norm: dict[str, list[str]]) -> tuple[str, ...] | None:
+    """The stored fields a fold of ``spec`` reads, or ``None`` when it needs whole
+    documents (see :data:`_RAW_FIELDS_OF`). Used only as a transfer hint: a repository
+    that ignores it returns whole documents and the fold reads the same values."""
+    if not set(spec.metrics) <= _PROJECTABLE_METRICS:
+        return None
+    needed = {"case_id", "created_at", "status"}
+    for name in tuple(spec.group_by) + tuple(norm):
+        wanted = _RAW_FIELDS_OF.get(name)
+        if wanted is None:
+            return None
+        needed.update(wanted)
+    return tuple(sorted(needed))
+
+
 async def fold_cases(
     store: Any,
     spec: CaseAggregateSpec,
@@ -1532,6 +1576,7 @@ async def fold_cases(
         created_from=window.start,
         created_to=None if window.open_end else window.end,
         progress=progress, cancel=cancel, raw=True, statuses=_scan_statuses(norm),
+        fields=_raw_projection(spec, norm),
     )
     state.scanned = outcome.scanned
     exact = outcome.complete

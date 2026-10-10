@@ -68,7 +68,7 @@ from ..engine.log_rows import demo_browse_targets, fan_out, tenant_browse_target
 from ..engine.log_rows import log_message as _log_message  # noqa: F401
 from ..engine.log_rows import log_row as _log_row
 from ..engine.log_rows import source_can_browse as _source_can_browse
-from ..engine.metrics import compute_metrics, feedback_stats
+from ..engine.metrics import feedback_stats
 from ..engine.priority import advisory_bands
 from ..engine.source_health import coverage_rollup, cursor_millis, sources_health_rows
 from ..engine.source_health import (  # noqa: F401
@@ -2927,28 +2927,13 @@ async def playbook_update(
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
 async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
-    # Round 12: the SAME all-time case population the posture rollups read (shared
-    # short-TTL cache, api/metrics_shared — one read serves the Overview's whole LIVE
-    # fan-out), not a newest-2,000 page: every case when the store holds no more than
-    # the rollups' bound, else its newest cases with the EXACT store total, so the
-    # ``retrieval_history`` truncation flag stays honest. Keyed by store identity —
-    # Demo Mode's store swap self-invalidates. An unreadable store is an error, never
-    # a page of zeros.
+    # Round 12: exact store-wide headline counts (status / verdict / disposition
+    # aggregates) beside figures over the SAME shared all-time case population the
+    # posture rollups read, with a truncation marker for the latter. See
+    # ``routes_metrics.legacy_metrics_payload``. An unreadable store is a 503.
     from . import routes_metrics
-    from .metrics_shared import fetch_case_population
 
-    population = await fetch_case_population(
-        state.cases, span_hours=None, limit=routes_metrics._STORE_FETCH_LIMIT
-    )
-    if not population.load_ok:
-        raise HTTPException(status_code=503, detail="The case store could not be read")
-    cases, total = population.cases, population.scope_total
-    out = compute_metrics(cases, total_cases=total)
-    try:
-        out["cost"] = await state.usage_store.summary(window_hours=max(1, window_hours))
-    except Exception:  # noqa: BLE001 — cost is best-effort on the metrics view
-        out["cost"] = {}
-    return out
+    return await routes_metrics.legacy_metrics_payload(state, window_hours)
 
 
 @router.get("/feedback/stats")

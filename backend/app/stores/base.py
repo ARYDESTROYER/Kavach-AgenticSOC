@@ -494,6 +494,7 @@ class CaseRepository(ABC):
         created_to: Any = None,
         raw: bool = False,
         statuses: Any = None,
+        fields: Any = None,
     ) -> tuple[list[Case], Any | None, int | None, str]:
         """One page of a full scan, optionally PRE-filtered to ``[created_from, created_to)``.
 
@@ -514,6 +515,9 @@ class CaseRepository(ABC):
         * ``raw=True`` MAY return each case's stored JSON document instead of a validated
           ``Case`` (the aggregate fold's fast path); callers must accept either.
         * ``statuses`` (optional list of status values) MAY pre-filter to those statuses.
+        * ``fields`` (optional, raw pages only) names the stored fields the caller reads;
+          a repository MAY return only those (the Elasticsearch store filters
+          ``_source``). It is a transfer hint: returning whole documents is correct.
         * A repository that can read NEWEST-FIRST by ``created_at`` (then ``case_id``)
           declares a ``newest_first`` keyword (the bundled stores do; this default does
           not, so callers know its order is the export order). The dashboards' bounded
@@ -523,7 +527,7 @@ class CaseRepository(ABC):
         window and statuses in Python and always returns ``Case`` objects; the bundled
         stores push both into the backend. An unfinished scan's cursor is released with
         :meth:`close_scan_cursor`."""
-        del raw
+        del raw, fields
         inner = cursor.get("inner") if isinstance(cursor, dict) else None
         rows, nxt, total, consistency = await self.export_page(limit=limit, cursor=inner)
         lo = _bound_millis(created_from)

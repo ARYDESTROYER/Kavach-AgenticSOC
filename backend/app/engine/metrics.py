@@ -233,14 +233,40 @@ def retrieval_history(
 
 
 def compute_metrics(
-    cases: list[Case], *, trend_days: int = 14, total_cases: int | None = None
+    cases: list[Case],
+    *,
+    trend_days: int = 14,
+    total_cases: int | None = None,
+    counts: dict[str, Any] | None = None,
 ) -> dict:
-    """Case analytics for the dashboard. Pure; deterministic given the inputs."""
-    total = len(cases)
-    by_status = Counter((c.status.value if c.status else "unknown") for c in cases)
-    by_verdict = Counter((c.verdict.value if c.verdict else "none") for c in cases)
-    by_disposition = Counter(
-        (c.disposition.value if getattr(c, "disposition", None) else "undetermined") for c in cases
+    """Case analytics for the dashboard. Pure; deterministic given the inputs.
+
+    ``counts`` (optional) carries EXACT store-wide headline counts —
+    ``{"total": int, "by_status": {...}, "by_verdict": {...}, "by_disposition": {...}}``,
+    any subset (``api.metrics_shared.fetch_case_breakdown``). Each part given replaces
+    the tally over ``cases`` for ``total_cases`` / the status-derived counts / the
+    breakdowns, so a store larger than the case list a caller could hold still reports
+    exact counts. Every other figure is computed over ``cases``. Without ``counts`` the
+    output is unchanged."""
+    exact = counts if isinstance(counts, dict) else {}
+    total = int(exact["total"]) if exact.get("total") is not None else len(cases)
+    by_status = (
+        Counter({str(k): int(v) for k, v in exact["by_status"].items()})
+        if isinstance(exact.get("by_status"), dict)
+        else Counter((c.status.value if c.status else "unknown") for c in cases)
+    )
+    by_verdict = (
+        Counter({str(k): int(v) for k, v in exact["by_verdict"].items()})
+        if isinstance(exact.get("by_verdict"), dict)
+        else Counter((c.verdict.value if c.verdict else "none") for c in cases)
+    )
+    by_disposition = (
+        Counter({str(k): int(v) for k, v in exact["by_disposition"].items()})
+        if isinstance(exact.get("by_disposition"), dict)
+        else Counter(
+            (c.disposition.value if getattr(c, "disposition", None) else "undetermined")
+            for c in cases
+        )
     )
     by_persona = Counter((c.agent_persona or "generalist") for c in cases)
     by_playbook = Counter((c.playbook_id or "none") for c in cases)

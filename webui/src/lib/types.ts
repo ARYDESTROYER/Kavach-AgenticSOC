@@ -3944,6 +3944,22 @@ export interface Metrics {
    * headline and is never presented as zero or as retrieval quality.
    */
   retrieval_history?: RetrievalHistoryMetrics;
+  /**
+   * Round 12 (additive). `total_cases`, `open_cases`, `needs_human_cases`,
+   * `closed_cases`, `by_status`, `by_verdict` and `by_disposition` are exact store-wide
+   * counts when `counts_exact` is true; when false, `counts_note` says which could not
+   * be counted (those fall back to the analysed cases).
+   */
+  counts_exact?: boolean;
+  counts_note?: string;
+  /**
+   * Round 12 (additive). Every other figure (average risk, active risk index, MTTR,
+   * cases per day, burndown, timing trend, usage, feedback) is computed over the newest
+   * `fetched` of `store_total` cases; `truncated` is true when that is not every case.
+   */
+  truncated?: boolean;
+  store_total?: number;
+  fetched?: number;
   /** Compact cost summary (shares the UsageSummary shape; fields optional). */
   cost: Partial<UsageSummary> & Record<string, unknown>;
   window_hours?: number;

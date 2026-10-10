@@ -26,6 +26,7 @@ import type {
   ThemeMode,
 } from '@/lib/types';
 import { useTheme } from './theme';
+import { applyTransparencyPreference, TRANSPARENCY_PREF_KEY } from '@/design-system/transparency';
 
 /**
  * The built-in default labels `t(key)` falls back to when an org/user terminology
@@ -121,6 +122,9 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Drive the actual colour mode from the resolved cascade (org default unless
       // the user chose their own). ThemeProvider resolves 'system' against the OS.
       if (merged.theme_mode) setTheme(merged.theme_mode);
+      // The user's "Reduce transparency" choice (Round 12): a stored value wins over this
+      // device's mirror; an absent one leaves the mirror (and the pre-paint stamp) alone.
+      applyTransparencyPreference(merged.misc?.[TRANSPARENCY_PREF_KEY]);
     },
     [setTheme],
   );

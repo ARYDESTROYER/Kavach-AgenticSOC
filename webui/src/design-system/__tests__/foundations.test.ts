@@ -244,6 +244,17 @@ describe('materials: solid fallbacks', () => {
     }
   });
 
+  it("fades the scroll edge in the recipe's own colour, not the page background", () => {
+    // A thick pane (`--popover`) over card content would otherwise trail a darker
+    // page-coloured band below itself.
+    const fade = blockAfter(css, ".material-surface[data-scrolled='true']::after {");
+    const gradient = fade.match(/background:\s*linear-gradient\(([\s\S]*?)\);/)?.[1] ?? '';
+    const stops = [...gradient.matchAll(/hsl\(([^/]*?)\s*\/\s*([\d.]+)\)/g)];
+    expect(stops).toHaveLength(2);
+    for (const [, colour] of stops) expect(colour).toBe('var(--material-solid, var(--background))');
+    expect(gradient).not.toMatch(/hsl\(var\(--background\)/);
+  });
+
   it('paints the material solid under reduced transparency', () => {
     const blocks = css.split('@media (prefers-reduced-transparency: reduce)').slice(1);
     expect(blocks.some((b) => /\.material-surface\s*\{[^}]*backdrop-filter:\s*none/.test(b))).toBe(true);

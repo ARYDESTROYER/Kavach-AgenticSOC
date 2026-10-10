@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import (
     Float,
     Integer,
+    Text,
     and_,
     cast,
     delete,
@@ -436,6 +437,7 @@ class SqlCaseRepository(CaseRepository):
         raw: bool = False,
         statuses: Any = None,
         newest_first: bool = False,
+        fields: Any = None,
     ) -> tuple[list[Case], Any | None, int | None, str]:
         """Keyset page over ``(created_at, case_id)`` — O(page) per call at any depth,
         unlike the inherited OFFSET export (diagnosis E7).
@@ -452,8 +454,11 @@ class SqlCaseRepository(CaseRepository):
         column order cannot place (empty, or a legacy non-canonical spelling — few),
         then the canonical rows newest first. A reader that stops after the newest N
         rows therefore never misses a legacy row that string order would have put out
-        of place."""
+        of place. ``fields`` is accepted and ignored (whole documents are read; a raw
+        page's JSON is decoded in a worker thread, off the event loop)."""
         from ...engine.case_aggregate import iso_bound
+
+        del fields
 
         cap = max(1, min(int(limit or 1000), 5000))
         state = dict(cursor) if isinstance(cursor, dict) else {}
@@ -467,7 +472,11 @@ class SqlCaseRepository(CaseRepository):
             filters.append(CaseRow.status.in_(wanted))
         after = state.get("after")
         phase = str(state.get("phase") or ("legacy" if newest_first else "asc"))
-        stmt = select(CaseRow.created_at, CaseRow.case_id, CaseRow.doc).where(*filters)
+        # A raw page reads the document as TEXT and decodes it in a worker thread (see
+        # ``_decode_docs``): a 1,000-row page of JSON decoded by the driver's result
+        # processing would otherwise run on the event loop.
+        doc_col = cast(CaseRow.doc, Text).label("doc") if raw else CaseRow.doc
+        stmt = select(CaseRow.created_at, CaseRow.case_id, doc_col).where(*filters)
         if phase == "legacy":
             stmt = stmt.where(_not_canonical_created())
             if isinstance(after, list) and len(after) == 1:
@@ -496,7 +505,7 @@ class SqlCaseRepository(CaseRepository):
                 count_stmt = select(func.count()).select_from(CaseRow).where(*filters)
                 total = int((await session.execute(count_stmt)).scalar() or 0)
         cases: list[Any] = (
-            [dict(row.doc or {}) for row in rows] if raw
+            await asyncio.to_thread(_decode_docs, [row.doc for row in rows]) if raw
             else [Case.model_validate(row.doc) for row in rows]
         )
         if len(rows) < cap:
@@ -593,6 +602,25 @@ async def _begin_snapshot(session: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 — no snapshot: fold instead
         logger.debug("snapshot transaction unavailable: %s", exc)
     return False
+
+
+def _decode_docs(values: list[Any]) -> list[dict[str, Any]]:
+    """Stored case documents read as JSON text (or, from a driver that already
+    decoded them, as mappings) → fresh dicts; a NULL or non-object document is ``{}``,
+    as before. Pure; called in a worker thread for raw scan pages."""
+    import json
+
+    out: list[dict[str, Any]] = []
+    for value in values:
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+        out.append(dict(value) if isinstance(value, dict) else {})
+    return out
 
 
 def _created_keep(lo: str | None, hi: str | None) -> Any | None:
