@@ -444,7 +444,8 @@ class SocMetricsTool(ChatTool):
         "soc_metrics(kind=posture|trends|noise_funnel|case_mix|timing|mitre_coverage|auto_close_health|"
         "agent_improvement|feedback, window? (default last 24 hours), bucket?=auto|hour|day|week|month|quarter|"
         "year (trends, timing), compare? (posture, trends, case_mix, timing)) -- SOC analytics; posture, "
-        "trends, case_mix and timing are exact over every case"
+        "trends, case_mix and timing are exact over every case; feedback is analyst case grading plus the "
+        "caller's own chat answer ratings (counts only)"
     )
     display_keys: ClassVar[tuple[str, ...]] = ("kind", "window", "window_hours", "bucket", "compare",
                                                "compare_previous")
@@ -1261,8 +1262,53 @@ class SocMetricsTool(ChatTool):
         summary = f"Analyst feedback ({mw.label}): {fmt_int(graded)} graded cases"
         if graded:
             summary += f", agreement {fmt_pct(fb.get('agreement_rate'), ratio=True)}"
+        chat = await _chat_answer_feedback(ctx, mw)
+        observation["chat_answer_feedback"] = chat
+        if chat.get("measured"):
+            artifacts.append(Artifact(id="a3", kind="kpis", title="Your ratings of chat answers",
+                                      title_trusted=True, data={"items": [
+                kpi("chat_up", "Thumbs up", chat["up"]),
+                kpi("chat_down", "Thumbs down", chat["down"]),
+            ]}, provenance="code"))
+            if chat["down"]:
+                reasons = [(_FEEDBACK_REASON_LABELS.get(k, k), v) for k, v in chat["down_by_reason"].items() if v]
+                if chat["down_without_reason"]:
+                    reasons.append(("No reason given", chat["down_without_reason"]))
+                artifacts.append(Artifact(id="a4", kind="categories", title="Why answers were rated down",
+                                          title_trusted=True, data=categories(reasons, dimension="reason"),
+                                          provenance="code"))
+            summary += f"; your chat answer ratings: {fmt_int(chat['up'])} up, {fmt_int(chat['down'])} down"
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts, basis="exact",
                            coverage=_page_note(cases, store_total))
+
+
+_FEEDBACK_REASON_LABELS = {"wrong": "Wrong", "incomplete": "Incomplete", "slow": "Too slow", "other": "Other"}
+
+
+async def _chat_answer_feedback(ctx: ChatToolContext, mw: MetricWindow) -> dict[str, Any]:
+    """The caller's OWN ratings of chat answers in the window (SYNTHESIS-chat P1-4),
+    as aggregates only: thumbs up and down, and the thumbs-down reasons — never a
+    comment or which answer was rated (#7, #9). ``measured: False`` when the ratings
+    could not be read. Ratings are never used to train or tune a model."""
+    store = getattr(ctx, "chat_feedback", None)
+    breakdown = getattr(store, "breakdown", None)
+    if not callable(breakdown):
+        return {"measured": False}
+    since = None if mw.all_time or mw.hours <= 0 else mw.start.astimezone(timezone.utc).isoformat()
+    try:
+        counts = await breakdown(ctx.user, since=since, until=mw.end.astimezone(timezone.utc).isoformat())
+    except Exception as exc:  # noqa: BLE001 -- the analyst figures still stand
+        logger.info("chat answer ratings not read (%s)", type(exc).__name__)
+        return {"measured": False}
+    reasons = counts.get("down_by_reason") if isinstance(counts.get("down_by_reason"), dict) else {}
+    return {
+        "measured": True,
+        "scope": "your own ratings",
+        "up": int(counts.get("up") or 0),
+        "down": int(counts.get("down") or 0),
+        "down_by_reason": {str(k): int(v or 0) for k, v in reasons.items()},
+        "down_without_reason": int(counts.get("down_without_reason") or 0),
+    }
 
 
 class _StoreDown(Exception):

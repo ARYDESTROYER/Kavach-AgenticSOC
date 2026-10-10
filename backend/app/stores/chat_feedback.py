@@ -215,16 +215,20 @@ class ChatFeedbackStore:
             out[entry.rating] = out.get(entry.rating, 0) + 1
         return out
 
-    async def breakdown(self, owner: str | None, *, since: str | None = None) -> dict[str, Any]:
+    async def breakdown(
+        self, owner: str | None, *, since: str | None = None, until: str | None = None,
+    ) -> dict[str, Any]:
         """The owner's ratings as AGGREGATES only (SYNTHESIS-chat P1-4): totals, the
         thumbs-down reasons and how many came with a comment — never a comment, a
-        conversation or a message id. ``since`` (ISO): only ratings given or changed
-        at or after it. Never used to train or tune a model (#3)."""
+        conversation or a message id. ``since``/``until`` (ISO): only ratings given or
+        changed in ``[since, until]``. Never used to train or tune a model (#3)."""
         reasons = {reason: 0 for reason in FEEDBACK_REASONS}
         out: dict[str, Any] = {"up": 0, "down": 0, "total": 0, "with_comment": 0,
                                "down_by_reason": reasons, "down_without_reason": 0}
         for entry in await self.list(owner):
             if since and entry.updated_at < since:
+                continue
+            if until and entry.updated_at > until:
                 continue
             out["total"] += 1
             out[entry.rating] = out.get(entry.rating, 0) + 1

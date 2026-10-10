@@ -812,6 +812,16 @@ class AppState:
             ))
         return ChatToolContext(**fields)
 
+    def _chat_feedback_store(self):
+        """The chat feedback store over the ACTIVE chat KV (Round 12, P1-4), or None
+        when it cannot be built (the tool then reports it as not measured)."""
+        try:
+            from .stores.chat_feedback import feedback_store_for
+
+            return feedback_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
+        except Exception:  # noqa: BLE001 -- a missing store never fails a chat turn
+            return None
+
     @property
     def rag_service(self):
         # In demo, the RAG service is the demo's SHARED (pipeline+chat) vector store so
