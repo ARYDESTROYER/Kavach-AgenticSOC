@@ -1390,9 +1390,10 @@ async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, s
         if heartbeat is not None:
             heartbeat.cancel()
         try:
-            if plan.observation_ref and not plan.completed:
-                await _discard_observations(plan)
             await _close_owned(plan)
+            if plan.observation_ref and not plan.completed:
+                # The answer was never saved: its step observations go too.
+                await _discard_observations(plan)
         finally:
             # Synchronous, so a cancel landing on the await above cannot skip it.
             _settle(state, handle, plan, slot)

@@ -102,6 +102,7 @@ async def test_a_running_turn_keeps_its_conversation_through_retention(backend: 
         # Once the turn has ended, the next write applies retention as usual.
         await turn(store, "ann", 1001)
         assert len((await store.list_page("ann", limit=cc.MAX_LIST_LIMIT)).conversations) == cc.MAX_CONVERSATIONS_PER_USER
+        await store.wait_for_cleanup()  # the evicted conversation's documents (background)
 
 
 # --------------------------------------------------------------------------- #
@@ -483,6 +484,16 @@ async def test_an_evicted_conversation_is_cleaned_up_off_the_turn_path() -> None
     for key in old_keys:
         assert "old secret" not in json.dumps(await kv.get(CHAT_CONVERSATIONS_NS, key))
     assert kv.peak > 1  # blanked concurrently, not one document at a time
+
+    # Shutdown and factory reset (ChatTurnRegistry.cancel_all) finish pending cleanup
+    # instead of dropping it with the event loop.
+    kv.release.clear()
+    for n in range(1000, 1002):
+        await turn(store, "kim", n)
+    assert await cc.drain_background_cleanup(timeout=0.05) >= 1      # still blocked: bounded
+    asyncio.get_running_loop().call_later(0.05, kv.release.set)
+    await routes_chat.ChatTurnRegistry().cancel_all(timeout=5)
+    assert await cc.drain_background_cleanup(timeout=0.05) == 0
 
 
 async def test_delete_blanks_a_long_conversation_concurrently() -> None:
@@ -1068,3 +1079,61 @@ def test_a_stream_reattach_resumes_mid_answer(monkeypatch) -> None:
             rest = _ndjson(client.get(f"/api/chat/turns/{turn_id}/events", params={"after": line["seq"]}).text)
             text = "".join(x.get("text", "") for x in [*seen, *rest] if x["type"] == "text.delta")
             assert text == full
+
+
+# --------------------------------------------------------------------------- #
+# P1-4: soc_metrics kind=feedback reports the caller's chat answer ratings.
+# --------------------------------------------------------------------------- #
+async def test_soc_metrics_feedback_includes_the_callers_chat_answer_ratings() -> None:
+    from app.agents.chat_tools.metrics import SocMetricsTool
+    from app.es.fake import InMemoryESClient
+    from app.stores.cases import CaseStore
+    from app.stores.chat_feedback import ChatFeedbackStore
+    from tests.test_chat_tools_support import assert_artifacts_render, make_ctx
+
+    feedback = ChatFeedbackStore(MemoryKV())
+    ratings = [("up", None, ""), ("up", None, ""), ("down", "wrong", ""),
+               ("down", "wrong", "SECRET-COMMENT-TEXT"), ("down", None, "")]
+    for n, (rating, reason, comment) in enumerate(ratings):
+        await feedback.record("ann", ChatFeedbackRequest(conversation_id="chat-1", message_id=f"chatmsg-{n}",
+                                                          rating=rating, reason=reason, comment=comment))
+    await feedback.record("bob", ChatFeedbackRequest(conversation_id="chat-2", message_id="chatmsg-9",
+                                                      rating="down", reason="slow"))
+    ctx = make_ctx(cases=CaseStore(InMemoryESClient()), chat_feedback=feedback, user="ann")
+    out = await SocMetricsTool().run(ctx, kind="feedback", window="all")
+    assert out.ok
+    chat = out.observation["chat_answer_feedback"]
+    assert chat == {
+        "measured": True, "scope": "your own ratings", "up": 2, "down": 3,
+        "down_by_reason": {"wrong": 2, "incomplete": 0, "slow": 0, "other": 0},
+        "down_without_reason": 1,
+    }
+    assert "2 up, 3 down" in out.summary
+    titles = [a.title for a in out.artifacts]
+    assert "Your ratings of chat answers" in titles and "Why answers were rated down" in titles
+    # Aggregates only: never a comment, an answer or a conversation id (#7, #9).
+    blob = json.dumps(out.observation) + json.dumps([a.data for a in out.artifacts])
+    assert "SECRET-COMMENT-TEXT" not in blob and "chatmsg-" not in blob and "chat-1" not in blob
+    assert_artifacts_render(out)
+    # A window that ended before the ratings counts none of them.
+    past = await SocMetricsTool().run(ctx, kind="feedback", window={"from": "2020-01-01T00:00:00Z",
+                                                                    "to": "2020-01-02T00:00:00Z"})
+    assert past.observation["chat_answer_feedback"]["up"] == 0
+
+    class Down:
+        async def breakdown(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise cc.ChatHistoryUnavailable("down")
+
+    broken = await SocMetricsTool().run(make_ctx(cases=CaseStore(InMemoryESClient()), chat_feedback=Down()),
+                                        kind="feedback", window="all")
+    assert broken.ok and broken.observation["chat_answer_feedback"] == {"measured": False}
+    assert "chat answer ratings" not in broken.summary
+
+
+async def test_the_chat_tool_context_reads_ratings_from_the_active_chat_store(gated_state) -> None:  # noqa: F811
+    from app.api.routes_chat_library import feedback_store
+
+    state, _provider = gated_state
+    ctx = await state.build_chat_tool_context(_request(state), None)
+    assert ctx.chat_feedback is feedback_store(state)
+    assert ctx.chat_feedback._kv is state.chat_conversations._kv
