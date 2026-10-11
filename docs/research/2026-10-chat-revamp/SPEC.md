@@ -319,8 +319,9 @@ History replay: one exchange = one user + assistant pair. Keep the last 12 excha
 `role=user` messages. Assistant prose is replayed as `role=assistant` through
 `fence_block(answer, source="prior_answer")` inside the existing UNTRUSTED fence (no new
 delimiter), followed by an engine-written lookup digest built from the stored steps
-("Lookups m3: log_stats(source=wazuh-prod, from=now-24h, group_by=source.ip) → 1,284 events; …",
-≤ 600 chars, values untrusted) and the ids of that message's stored blocks (`m3.b1 hbar "…"`), so
+("Lookups m3: step 2 log_stats(source=wazuh-prod, from=now-24h, group_by=source.ip) → 1,284
+events; …", ≤ 600 chars plus the `step N` prefixes (A60), values untrusted) and the ids of that
+message's stored blocks (`m3.b1 hbar "…"`), so
 follow-ups such as "now chart that by host" or "same for last 7 days" reuse exact filters or switch
 views without a new lookup.
 
@@ -2108,3 +2109,15 @@ of the round, with the final gates: the number lives in `PRE_REVAMP_ENTRY_BYTES`
 (`webui/src/soc/__tests__/bundle-first-paint.test.ts`), and its value and rationale are
 recorded in one place, the "Entry bundle" item of the Round 12 SPEC §7.3. Byte figures
 are not repeated here.
+
+**A60 — Lookup digest step numbers (§4.3; Round 12 WP-GEN-A).** Each lookup in the replayed
+digest carries the run-log number the console shows for that step: "Lookups m3: step 2
+log_stats(…) → …; step 5 log_stats(…) → …". Model steps and lookups are numbered together in
+the run log, so the numbers have gaps and model steps are not listed. The number lets a step
+inspector follow-up ("Explain step 5 …", "Run step 5 … again") name exactly one lookup when an
+answer ran several rounds of the same tool. A stored step without a number (an older record)
+is listed without one, and a follow-up that names it is matched by label and position, never
+guessed when that is ambiguous. In bounded mode the 600-character digest bound is measured
+without the `step N` prefixes, so the numbers never cost a lookup its place; unlimited mode
+does not bound the digest. The values stay untrusted: a summary that imitates a numbered
+lookup makes the step ambiguous rather than choosing it.

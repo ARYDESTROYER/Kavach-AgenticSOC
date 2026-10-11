@@ -36,6 +36,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEBUI_ROOT = path.resolve(HERE, '..', '..', '..');
 const DIST = path.join(WEBUI_ROOT, 'dist');
 const HAS_DIST = fs.existsSync(path.join(DIST, 'index.html'));
+// The CI production-build lane runs this file after `npm run build` with
+// REQUIRE_DIST_BUILD=1, so the build-artifact cases below run there and can never pass by
+// skipping; the test lane (no build) still skips them and keeps the source guards.
+const REQUIRE_DIST = process.env.REQUIRE_DIST_BUILD === '1';
 
 const HINT = 'no dist/ build present — run `vite build` first (CI/integrator does)';
 
@@ -61,8 +65,8 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * overlay origins: ~0.9 kB net). WP-GEN-A then moved code first
  * paint never needs out of the entry, keeping every feature:
  *   - the command palette body (CommandPalette, cmdk, ui/command: ~20 kB) is a fail-soft
- *     lazy chunk AppShell mounts on the first Cmd/Ctrl-K or search click (warmed when the
- *     browser is idle or an opener is hovered);
+ *     lazy chunk AppShell mounts on the first Cmd/Ctrl-K or search click (its chunks are
+ *     prefetched into the HTTP cache when the browser is idle, never imported early);
  *   - the Settings section metadata (settings-sections-meta + settings-dirty: ~15.5 kB)
  *     left with it, once the shell's unsaved-changes hook took `deepEqual` from the
  *     dependency-free lib/deep-equal.ts instead of settings-dirty.ts;
@@ -70,6 +74,12 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  *     lib/download-blob.ts, whose deferred revoke cannot cancel a download (+223 B).
  * Measured with `npm run build:app`: 365,547 B, 34,420 B less than before the pass. The
  * baseline is that measurement; later work keeps the +1,024 B budget over it.
+ * The review fixes that keep a network blip from disabling search, Chat or Settings
+ * spend ~1 kB of that budget: the retrying chunk loader and the prefetch-only warm in
+ * soc/lazy-retry.ts, the build-written list of the palette's chunks (vite.config.ts
+ * `chunkListPlugin`) and the palette's one-toast Reload path. With the rest of the
+ * working tree at its state then, the entry measured 365,885 B before those fixes and
+ * 366,517 B after them (`vite build`, the same way), 54 B under the budget.
  */
 const PRE_REVAMP_ENTRY_BYTES = 365_547;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
@@ -84,8 +94,19 @@ function readEntry(): string {
   return fs.readFileSync(path.join(DIST, 'assets', m[1]), 'utf8');
 }
 
-describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
-  if (!HAS_DIST) it.skip(HINT, () => undefined);
+/** Chunk file names the entry imports statically (`from"./x.js"`). */
+function entryStaticImports(): string[] {
+  return [...readEntry().matchAll(/from\s*["']\.\/([A-Za-z0-9._-]+\.js)["']/g)].map((mm) => mm[1]);
+}
+
+describe.runIf(REQUIRE_DIST)('first-paint bundle graph is checked on the built output', () => {
+  it('a production build is present', () => {
+    expect(HAS_DIST, 'REQUIRE_DIST_BUILD=1 but dist/index.html is missing: run `npm run build` first').toBe(true);
+  });
+});
+
+describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
+  if (!HAS_DIST && !REQUIRE_DIST) it.skip(HINT, () => undefined);
 
   it('does NOT modulepreload recharts on first paint', () => {
     expect(readHtml()).not.toMatch(/modulepreload[^>]*recharts/);
@@ -157,6 +178,41 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     const assets = fs.readdirSync(path.join(DIST, 'assets'));
     expect(assets.some((f) => /^CommandPalette-[^/]+\.js$/.test(f))).toBe(true);
     expect(readHtml()).not.toMatch(/modulepreload[^>]*CommandPalette/);
+    // The Settings section metadata (settings-sections-meta, settings-dirty) rides only
+    // with lazy chunks: never modulepreloaded, never a static import of the entry, and
+    // none of its section keywords inside the entry itself.
+    expect(readHtml()).not.toMatch(/modulepreload[^>]*settings-(?:sections-meta|dirty)/);
+    const statics = entryStaticImports();
+    expect(statics.filter((name) => /settings|CommandPalette|cmdk/i.test(name))).toEqual([]);
+    expect(entry).not.toContain(SETTINGS_META_MARKER);
+    const metaChunk = assets
+      .filter((f) => f.endsWith('.js'))
+      .find((f) => fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(SETTINGS_META_MARKER));
+    expect(metaChunk, 'the Settings section metadata must be emitted in some lazy chunk').toBeDefined();
+    expect(statics).not.toContain(metaChunk);
+  });
+
+  it('the entry prefetches exactly the palette chunks first paint lacks (a build-written list)', () => {
+    // vite.config.ts `chunkListPlugin` replaces AppShell's `__TLSOC_CHUNKS:` mark with the
+    // palette chunk and its static imports, minus what the entry already loads. AppShell
+    // warms them with <link rel="prefetch"> (lazy-retry.ts), never through import().
+    const entry = readEntry();
+    expect(entry).not.toContain('__TLSOC_CHUNKS:');
+    const lists = [...entry.matchAll(/\[(?:\\?"[A-Za-z0-9._-]+\.js\\?",?)+\]/g)]
+      .map((mm) => mm[0].replace(/\\"/g, '"'))
+      .filter((text) => text.includes('CommandPalette-'));
+    expect(lists, 'one chunk list naming the palette chunk').toHaveLength(1);
+    const listed = JSON.parse(lists[0]) as string[];
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    for (const name of listed) expect(assets, name).toContain(name);
+    const holding = (marker: string) =>
+      assets.filter((f) => f.endsWith('.js') && fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(marker));
+    expect(listed.some((name) => /^CommandPalette-/.test(name))).toBe(true);
+    expect(listed.some((name) => holding('cmdk-input').includes(name)), 'the cmdk chunk is listed').toBe(true);
+    expect(listed.some((name) => holding(SETTINGS_META_MARKER).includes(name)), 'the Settings metadata chunk is listed')
+      .toBe(true);
+    const statics = entryStaticImports();
+    expect(listed.filter((name) => statics.includes(name))).toEqual([]);
   });
 
   it("the entry's preload lists never repeat a chunk the entry already imports statically", () => {
@@ -210,14 +266,103 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
   });
 });
 
+/*
+ * Search keywords only the Settings section metadata carries (settings-sections-meta.ts;
+ * no other source module has them). Their absence from the entry chunk proves the module
+ * stayed off first paint, whatever chunk Vite puts it in.
+ */
+const SETTINGS_META_MARKERS = ["'analysis bundle'", "'severity weight'"];
+const SETTINGS_META_MARKER = readSettingsMetaMarker();
+
+function readSettingsMetaMarker(): string {
+  const file = path.join(WEBUI_ROOT, 'src', 'soc', 'pages', 'settings', 'settings-sections-meta.ts');
+  const text = fs.readFileSync(file, 'utf8');
+  const marker = SETTINGS_META_MARKERS.find((m) => text.includes(m));
+  // A renamed keyword must fail loudly here, never turn the bundle check into a no-op.
+  if (!marker) throw new Error(`settings-sections-meta.ts no longer has ${SETTINGS_META_MARKERS.join(' or ')}`);
+  return marker.slice(1, -1);
+}
+
+/*
+ * The STATIC import graph of the first-paint entry (src/main.tsx), read from source: value
+ * imports and re-exports only (`import type` / `export type` are erased, `import()` is a
+ * lazy chunk). Runs without a build, so the CI test lane checks it too.
+ */
+function firstPaintGraph(): { files: Map<string, string>; packages: Map<string, string> } {
+  const SRC = path.join(WEBUI_ROOT, 'src');
+  const IMPORT_RE = /(?:^|[\n;])\s*(?:import|export)\s+(?!type\b)(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g;
+  const files = new Map<string, string>(); // file -> the file that first imported it
+  const packages = new Map<string, string>();
+  const resolve = (from: string, spec: string): string | null => {
+    const bare = spec.split('?')[0];
+    let base: string;
+    if (bare.startsWith('@/')) base = path.join(SRC, bare.slice(2));
+    else if (bare.startsWith('.')) base = path.resolve(path.dirname(from), bare);
+    else return null;
+    for (const candidate of [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts'), path.join(base, 'index.tsx')]) {
+      if (/\.tsx?$/.test(candidate) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+    return null;
+  };
+  const start = path.join(SRC, 'main.tsx');
+  const stack = [start];
+  files.set(start, '');
+  while (stack.length) {
+    const file = stack.pop() as string;
+    const text = fs.readFileSync(file, 'utf8');
+    for (const match of text.matchAll(IMPORT_RE)) {
+      const spec = match[1];
+      if (!spec.startsWith('.') && !spec.startsWith('@/')) {
+        const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+        if (!packages.has(name)) packages.set(name, path.relative(WEBUI_ROOT, file));
+        continue;
+      }
+      const target = resolve(file, spec);
+      if (target && !files.has(target)) {
+        files.set(target, path.relative(WEBUI_ROOT, file));
+        stack.push(target);
+      }
+    }
+  }
+  return { files, packages };
+}
+
 describe('first-paint shell keeps the palette and Settings metadata lazy (source guard)', () => {
   const read = (...seg: string[]) => fs.readFileSync(path.join(WEBUI_ROOT, 'src', ...seg), 'utf8');
+
+  it('no first-paint module statically imports the palette, cmdk or the Settings metadata', () => {
+    const { files, packages } = firstPaintGraph();
+    expect(files.size).toBeGreaterThan(20); // the walk really followed the entry graph
+    const lazyOnly = [
+      ['soc', 'components', 'CommandPalette.tsx'],
+      ['ui', 'command.tsx'],
+      ['soc', 'pages', 'settings', 'settings-sections-meta.ts'],
+      ['soc', 'pages', 'settings-dirty.ts'],
+    ].map((seg) => path.join(WEBUI_ROOT, 'src', ...seg));
+    const reached = lazyOnly
+      .filter((file) => files.has(file))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, 'lazy-only modules on the first-paint graph').toEqual([]);
+    expect(packages.has('cmdk') ? `cmdk (imported by ${packages.get('cmdk')})` : null).toBeNull();
+  });
 
   it('AppShell reaches the command palette only through import()', () => {
     const text = read('soc', 'AppShell.tsx');
     // A type-only import is erased; a value import would put cmdk back on first paint.
     expect(text).not.toMatch(/^import\s+(?!type\b)[^;]*['"]\.\/components\/CommandPalette['"]/m);
     expect(text).toMatch(/import\(\s*['"]\.\/components\/CommandPalette['"]\s*\)/);
+  });
+
+  it('AppShell warms the palette with a prefetch of its build-written chunk list, never import()', () => {
+    const text = read('soc', 'AppShell.tsx');
+    const warm = text.match(/function warmCommandPalette\(\)[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(warm).toContain('prefetchChunks(');
+    expect(warm).not.toMatch(/loadCommandPalette|import\(/);
+    // The mark names the module the palette chunk is built from (vite.config.ts fails the
+    // build when no chunk is built from it).
+    const mark = text.match(/'__TLSOC_CHUNKS:([^']+)__'/)?.[1];
+    expect(mark).toBe('src/soc/components/CommandPalette.tsx');
+    expect(fs.existsSync(path.join(WEBUI_ROOT, mark as string))).toBe(true);
   });
 
   it('the eager draft hook takes deepEqual from the dependency-free lib module', () => {

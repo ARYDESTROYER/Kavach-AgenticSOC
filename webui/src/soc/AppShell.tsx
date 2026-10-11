@@ -102,6 +102,7 @@ import type { HealthDegradation } from './components/health-diagnostics-state';
 // mounted on first open — see `LazyCommandPalette` below.
 import type { CommandPaletteProps } from './components/CommandPalette';
 import { GlassSurface } from './components/GlassSurface';
+import { prefetchChunks, retryingLoader } from './lazy-retry';
 import { NavSidebar, useNavPrefs } from './components/NavSidebar';
 import { NotificationBell } from './components/NotificationBell';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -132,29 +133,40 @@ import type { RouteMotionProps } from './components/motion/RouteMotion';
  * The command palette is not needed for first paint: nothing renders it until an operator
  * presses Cmd/Ctrl-K or a search opener. Its body (cmdk, the Settings search metadata and
  * the palette itself, ~35 kB) is therefore a lazy chunk that mounts on first open and stays
- * mounted afterwards. The chunk is warmed when the browser is idle and when an opener is
- * hovered or focused, so opening it normally shows no wait.
+ * mounted afterwards. Its chunks are prefetched into the browser cache once the browser is
+ * idle, so opening it normally shows no wait.
+ *
+ * The warm is a plain prefetch, never `import()` (soc/lazy-retry.ts): a module fetch that
+ * fails stays failed for the life of the page, and the palette shares chunks with Chat,
+ * Case Manager chat and Settings, so a warm during a network blip would break those too.
+ * Only the analyst's own open imports the chunk.
  *
  * The import fails soft: the shell renders outside the page error boundary, so a rejected
  * chunk (a stale hashed file after an update, a proxy, going offline) resolves to a
- * placeholder that closes the palette and says how to recover. A failure is never
- * remembered (`retryingLoader`): a background warm that failed during a network blip does
- * not disable search, and the next open tries again.
+ * placeholder that closes the palette and offers a reload. A failure is never remembered
+ * (`retryingLoader`), so the next open still tries again (under a fresh URL), but the
+ * message never promises that: a module the palette imports that failed stays failed for
+ * the life of the page, and only a reload clears it.
  */
 const loadCommandPalette = retryingLoader(() => import('./components/CommandPalette'));
 
-/** Warm the palette chunk without rendering it (no state change, so nothing re-renders). */
+/** The palette's chunks, written in by the build (vite.config.ts `chunkListPlugin`). */
+const COMMAND_PALETTE_CHUNKS = '__TLSOC_CHUNKS:src/soc/components/CommandPalette.tsx__';
+
+/** Prefetch the palette chunks without loading them (no state change, nothing re-renders). */
 function warmCommandPalette(): void {
   // Offline a warm can only fail; the analyst's own open loads the chunk when it can.
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-  loadCommandPalette().catch(() => undefined);
+  if (navigator.onLine === false) return;
+  prefetchChunks(COMMAND_PALETTE_CHUNKS, import.meta.url);
 }
 
 /**
- * A lazy palette for one load attempt. `onUnavailable` runs when the analyst opened it and
- * the chunk could not load, so the shell can start a fresh attempt on the next open.
+ * A lazy palette for load attempt `attempt` (a new attempt is a new component).
+ * `onUnavailable` runs when the analyst opened it and the chunk could not load, so the
+ * shell can start a fresh attempt on the next open.
  */
-function lazyCommandPalette(onUnavailable: () => void) {
+function lazyCommandPalette(onUnavailable: () => void, attempt: number) {
+  void attempt;
   return React.lazy(
     (): Promise<{ default: React.ComponentType<CommandPaletteProps> }> =>
       loadCommandPalette().catch(() => ({ default: unavailablePalette(onUnavailable) })),
@@ -166,7 +178,8 @@ function unavailablePalette(onUnavailable: () => void): React.ComponentType<Comm
     React.useEffect(() => {
       if (!open) return;
       // One toast however often the analyst retries (a fixed id replaces it in place).
-      toast.error('Search could not load. Try again, or reload the page.', {
+      // Reload, never "try again": the shell cannot clear a failed module from the page.
+      toast.error('Search could not load. Reload the page to use search.', {
         id: 'command-palette-load',
         action: { label: 'Reload', onClick: () => window.location.reload() },
       });
@@ -971,13 +984,16 @@ export const AppShell: React.FC<AppShellProps> = ({
   // When its chunk could not load, it unmounts and the next open starts a new attempt.
   const [paletteMounted, setPaletteMounted] = React.useState(false);
   if (paletteOpen && !paletteMounted) setPaletteMounted(true);
-  const [LazyCommandPalette, setLazyCommandPalette] = React.useState(() =>
-    lazyCommandPalette(() => {}),
-  );
+  const [paletteAttempt, setPaletteAttempt] = React.useState(0);
   const retryCommandPalette = React.useCallback(() => {
     setPaletteMounted(false);
-    setLazyCommandPalette(() => lazyCommandPalette(() => {}));
+    setPaletteAttempt((n) => n + 1);
   }, []);
+  // React.lazy keeps its first result for good, so each load attempt is a new component.
+  const LazyCommandPalette = React.useMemo(
+    () => lazyCommandPalette(retryCommandPalette, paletteAttempt),
+    [retryCommandPalette, paletteAttempt],
+  );
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [compactControlsOpen, setCompactControlsOpen] = React.useState(false);
   const paletteReturnFocusRef = React.useRef<HTMLElement | null>(null);
@@ -1271,8 +1287,9 @@ export const AppShell: React.FC<AppShellProps> = ({
     };
   }, []);
 
-  // Warm the lazy palette chunk once the browser is idle so Cmd/Ctrl-K opens without a
-  // wait. Browsers without `requestIdleCallback` warm it on opener hover/focus instead.
+  // Prefetch the lazy palette chunks once the browser is idle so Cmd/Ctrl-K opens without
+  // a wait (once per page; a hover adds nothing a prefetch has not already done). A
+  // browser without `requestIdleCallback` loads the palette on its first open.
   React.useEffect(() => {
     const idle = window as Window & {
       requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
@@ -1505,8 +1522,6 @@ export const AppShell: React.FC<AppShellProps> = ({
           <button
             type="button"
             onClick={(event) => openPalette(event.currentTarget)}
-            onPointerEnter={warmCommandPalette}
-            onFocus={warmCommandPalette}
             aria-label="Search cases, sources, and actions"
             aria-keyshortcuts="Control+K Meta+K"
             className={cn(
@@ -1539,8 +1554,6 @@ export const AppShell: React.FC<AppShellProps> = ({
               size="icon"
               className="h-8 w-8 md:hidden"
               onClick={(event) => openPalette(event.currentTarget)}
-              onPointerEnter={warmCommandPalette}
-              onFocus={warmCommandPalette}
               aria-label="Open search"
               aria-keyshortcuts="Control+K Meta+K"
             >

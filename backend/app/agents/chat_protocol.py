@@ -571,8 +571,11 @@ def lookup_digest(key: str, steps: Iterable[Any], *, limit: int = HISTORY_DIGEST
     are numbered together), so "Explain step 8" names exactly one lookup even when an
     answer ran several rounds of the same tool; a stored step without a number (older
     or hand-built records) is listed without it. The values are untrusted (the caller
-    fences the digest). Bounded to ``limit``."""
+    fences the digest). Bounded to ``limit`` plus the length of the ``step N``
+    prefixes, so the numbers never cost a lookup its place in a bounded digest
+    (chat-revamp SPEC A60)."""
     parts: list[str] = []
+    numbering = 0
     for raw in steps:
         step = _step_dict(raw)
         if step.get("kind", "tool") != "tool" or not isinstance(step.get("tool"), str):
@@ -588,11 +591,15 @@ def lookup_digest(key: str, steps: Iterable[Any], *, limit: int = HISTORY_DIGEST
         summary = display_text(step.get("summary"), 160)
         outcome = summary if status == "ok" else f"{status}" + (f": {summary}" if summary else "")
         parts.append(f"{number}{step['tool']}({args}) → {outcome}".strip())
+        numbering += len(number)
     if not parts:
         return ""
     text = f"Lookups {key}: " + "; ".join(parts)
     # ``limit <= 0``: no bound (unlimited chat; compaction manages the size).
-    return text if limit <= 0 or len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+    if limit <= 0:
+        return text
+    limit += numbering
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _unbounded_fence(text: str) -> int:

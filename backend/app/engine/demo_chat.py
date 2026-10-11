@@ -712,6 +712,17 @@ def _plain(value: Any, limit: int = 240) -> str:
     return _MARKDOWN_SPECIALS_RE.sub("", text).strip()
 
 
+_MARKDOWN_ESCAPE_RE = re.compile(r"([\\`*_\[\]<>#|~])")
+
+
+def _escaped(value: Any, limit: int = 240) -> str:
+    """Untrusted text shown as written: every Markdown special is backslash-escaped
+    rather than deleted, so ``NEEDS_HUMAN``, ``svc_backup`` and ``161 alerts -> 95
+    cases`` keep every character and none of them becomes formatting."""
+    text = display_text(value if isinstance(value, str) else "", limit).strip()
+    return _MARKDOWN_ESCAPE_RE.sub(r"\\\1", text)
+
+
 def _join(items: Sequence[str], conj: str = "and") -> str:
     items = [i for i in items if i]
     if not items:
@@ -1046,7 +1057,10 @@ _RECENCY_WORDS = {"latest": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
 
 
 def _step_ask(question: str) -> StepRef | None:
-    """The step a step inspector follow-up names, or None for any other question."""
+    """The step a step inspector follow-up names, or None for any other question.
+    The parenthesised label must be one the run log writes (a lookup's template
+    label or a model step's): "Run step 3 (block the IP) again on the firewall" is
+    the analyst's own request, never a rerun of an unrelated lookup."""
     match = _STEP_ASK_RE.match(question.strip())
     if not match:
         return None
@@ -1056,11 +1070,22 @@ def _step_ask(question: str) -> StepRef | None:
         return None
     if verb == "run" and not rest.lstrip().startswith("again"):
         return None
+    if not _is_step_label(match.group("label")):
+        return None
     which = (match.group("which") or "").lower()
     recency = _RECENCY_WORDS.get(which) or (int(re.sub(r"\D", "", which)) if which else 0)
     return StepRef(verb="explain" if verb == "explain" else "rerun", index=int(match.group("index")),
                    label=match.group("label").strip(), quote=(match.group("quote") or "").strip() or None,
                    recency=recency)
+
+
+def _step_shaped_change(question: str) -> bool:
+    """"Run step 3 (block the IP) again": the rerun shape around the analyst's own
+    write request (not a run-log label) asks for that change, which chat cannot make.
+    "Explain step 2 (isolate the host): why …?" asks a question, not for the change."""
+    match = _STEP_ASK_RE.match(question.strip())
+    return (match is not None and match.group("verb").lower() == "run"
+            and _is_change(match.group("label").strip().lower()))
 
 
 _REMEMBER_RE = re.compile(r"^\s*(?:please\s+)?(?:remember|note)\s+(?:that\s+)?(.{3,500})$", re.IGNORECASE)
@@ -2640,7 +2665,7 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     remember = _REMEMBER_RE.match(q)
     if remember and not re.search(r"\?\s*$", q):
         return ask("remember", memory=display_text(remember.group(1).strip(), 500))
-    if _is_change(low):
+    if _is_change(low) or _step_shaped_change(q):
         return ask("change", save=False)
 
     # Follow-ups that reuse an earlier answer (SPEC §4.3 digest + stored block ids).
@@ -3263,6 +3288,8 @@ _MODEL_STEP_PURPOSES: dict[str, str] = {
     "model call failed": "a model call that failed",
     "stopped": "where the answer was stopped",
     "summarised earlier messages": "the model summarising earlier messages so the conversation fits its context",
+    "wrapped up after a very long investigation": ("the model writing the answer from what the lookups had "
+                                                   "gathered, once the investigation had run very long"),
 }
 _CONTINUED_STEP_RE = re.compile(r"^continued the answer \(part \d{1,3}\)$")
 #: Each chat tool's input model (module under ``agents/chat_tools``, class name): a
@@ -3280,9 +3307,10 @@ _TOOL_INPUT_MODELS: dict[str, tuple[str, str]] = {
     "app_status": ("app_status", "AppStatusInput"),
 }
 #: Lookups a step rerun never repeats, and why (the answer says so in plain words).
+#: An indicator lookup is re-run like any other: the engine's taint rule decides
+#: whether its value may be sent out (a value the analyst typed may; any other value
+#: is refused visibly), exactly as it would for a model.
 _NO_STEP_RERUN: dict[str, str] = {
-    "lookup_indicator": ("an indicator lookup sends a value to an outside reputation service, so it runs only "
-                         "when you name the value yourself"),
     "recall_observation": ("it re-read another lookup's result inside that answer, so there is nothing to repeat "
                            "on its own"),
 }
@@ -3297,6 +3325,12 @@ def _model_step_purpose(label: str) -> str | None:
     if _CONTINUED_STEP_RE.match(low):
         return "the model continuing an answer that had reached its output length"
     return _MODEL_STEP_PURPOSES.get(low)
+
+
+def _is_step_label(label: str) -> bool:
+    """``label`` is one the run log writes: a model step's, a chat tool's template
+    label or the recall step's. Free text in the label position is not a step."""
+    return _model_step_purpose(label) is not None or bool(_tools_for_label(label))
 
 
 def _tools_for_label(label: str) -> tuple[str, ...]:
@@ -3349,9 +3383,10 @@ def _step_call(view: PromptView, step: StepRef, key: str) -> StepMatch:
     """The lookup step ``step.index`` of answer ``key`` was. The digest numbers each
     lookup with its run-log step (``step 8 log_stats(…)``), so the number names it
     exactly, also when the answer ran several rounds of the same tool; the label must
-    agree. A digest without numbers (an older record) is matched by label and position
-    (a step's lookup sits at position ``index - 1`` or earlier): when more than one
-    lookup with that label fits, the step is ambiguous and nothing is guessed."""
+    name that lookup's tool (an unknown label never matches). A digest without
+    numbers (an older record) is matched by label and position (a step's lookup sits
+    at position ``index - 1`` or earlier): when more than one lookup with that label
+    fits, the step is ambiguous and nothing is guessed."""
     calls = tuple(c for c in view.prior_calls if c.key == key)
     tools = _tools_for_label(step.label)
     if any(c.step is not None for c in calls):
@@ -3360,7 +3395,7 @@ def _step_call(view: PromptView, step: StepRef, key: str) -> StepMatch:
             # Two lookups claim one step number (a value that imitates the digest):
             # the step cannot be told apart, so it is not guessed.
             return StepMatch(None, calls, ambiguous=True)
-        if exact and (not tools or exact[0].tool in tools):
+        if exact and exact[0].tool in tools:
             return StepMatch(exact[0], calls)
         return StepMatch(None, calls)
     fits = [c for position, c in enumerate(calls, start=1) if c.tool in tools and position <= step.index - 1]
@@ -6712,9 +6747,9 @@ def _final_rerun(view: PromptView, ask: Ask, *, head: str | None = None,
 
 def _step_head(step: StepRef, answer: tuple[str, str] | None) -> str:
     """"Step 2 (Counted cases) of my answer to “…”" (engine words, the analyst's quote)."""
-    question = _plain(answer[1] if answer is not None and answer[1] else (step.quote or ""), 120)
+    question = _escaped(answer[1] if answer is not None and answer[1] else (step.quote or ""), 120)
     of = f" of my answer to \u201c{question}\u201d" if question else ""
-    return f"Step {step.index} ({_plain(step.label, 80)}){of}"
+    return f"Step {step.index} ({_escaped(step.label, 80)}){of}"
 
 
 def _step_args(prior: PriorCall) -> str:
@@ -6727,8 +6762,11 @@ def _step_distinct_args(prior: PriorCall, same: Sequence[PriorCall]) -> str:
     """What sets this lookup apart from its siblings of the same tool, as code spans
     ("`kind=posture`"), or "these inputs" when nothing in the digest does."""
     others = [c for c in same if c is not prior]
-    shown = [_code(f"{name}={value}", 100) for name, value in prior.args
-             if value and others and any(c.arg(name) != value for c in others)][:3]
+    differs = [(name, value) for name, value in prior.args
+               if value and others and any(c.arg(name) != value for c in others)]
+    # Inputs no sibling shares name it best ("`group_by=ip`"); otherwise any that differ.
+    unique = [(name, value) for name, value in differs if all(c.arg(name) != value for c in others)]
+    shown = [_code(f"{name}={value}", 100) for name, value in (unique or differs)][:3]
     return _join(shown) if shown else "these inputs"
 
 
@@ -6779,7 +6817,7 @@ def _final_explain_step(view: PromptView, ask: Ask) -> Final | None:
     if answer is None:
         return Final(body=[(
             f"I can no longer see the answer step {step.index} belongs to in this conversation, so I cannot "
-            f"explain {_plain(step.label, 80) or 'that step'} from here. Open the step in that answer's run log to "
+            f"explain {_escaped(step.label, 80) or 'that step'} from here. Open the step in that answer's run log to "
             "see what it looked up and what it returned.")], answer_kind="conversation")
     match = _step_call(view, step, answer[0])
     prior, calls = match.call, match.calls
@@ -6790,7 +6828,8 @@ def _final_explain_step(view: PromptView, ask: Ask) -> Final | None:
             f"I cannot explain {head[:1].lower() + head[1:]} from here: {why}. Open the step in that answer's run "
             "log to see exactly what it looked up and what it returned.")], answer_kind="conversation")
     source = _TOOL_NAMES.get(prior.tool, prior.tool.replace("_", " "))
-    found = _plain(prior.outcome, 240) or "no summary was kept"
+    # The stored outcome as it was written (``NEEDS_HUMAN``, ``a -> b``), escaped, never cut down.
+    found = _escaped(prior.outcome, 240) or "no summary was kept"
     body = [
         f"{head} read {source} ({_code(prior.tool)}).",
         f"- **What it looked up:** {_step_args(prior)}.",
@@ -6853,9 +6892,38 @@ def _final_rerun_step(view: PromptView, ask: Ask) -> Final | None:
     else:
         rerun_head = f"Re-ran {lowered} with the same inputs:"
     final = _final_rerun(view, ask, head=rerun_head, origin=origin)
-    if final is not None:
-        final.answer_kind = "data"
+    if final is None:
+        # The re-run did not complete: the answer still names the step it re-ran.
+        failed_head = (f"{rerun_head[:-1]}. It" if dropped else f"Re-ran {lowered} with the same inputs: it")
+        return _rerun_step_failed(view, prior, failed_head)
+    final.answer_kind = "data"
     return final
+
+
+def _rerun_step_failed(view: PromptView, prior: PriorCall, head: str) -> Final | None:
+    """A step re-run whose lookup did not complete: ``head`` ("Re-ran step 2 (…) of my
+    answer to “…” with the same inputs: it"), whether it failed again (the run log's
+    record says it failed before) or only this time, why, and what to do next. The
+    failure is told here, so it is not listed again below."""
+    failed = next((r for r in view.failed() if r.tool == prior.tool), None)
+    if failed is None:
+        return None
+    reason = _escaped(failed.summary, 160) or failed.status
+    before = bool(_FAILED_OUTCOME_RE.match(prior.outcome.strip().lower()))
+    again = "failed again" if before else "did not complete this time"
+    body = [f"{head} {again} ({_code(failed.tool)} {failed.status}: {reason})."]
+    if REFUSED_TAINT in (failed.summary or ""):
+        body.append("Indicator lookups run only for a value you typed yourself or one a lookup found as evidence "
+                    "for the same question, and a retried step cannot show where its value came from. Ask about "
+                    "the indicator by name to look it up again.")
+    elif before:
+        body.append("The same inputs fail the same way, so running this step again will not change the result "
+                    "until what it reads changes. Ask the original question again, or ask it another way, to look "
+                    "it up differently.")
+    else:
+        body.append("The earlier result still stands in that answer. Try the step again in a moment, or ask the "
+                    "original question again.")
+    return Final(body=body, answer_kind="data", narrated={failed.ordinal})
 
 
 def _default_blocks(results: Sequence[Result], limit: int = 8) -> list[dict[str, Any]]:

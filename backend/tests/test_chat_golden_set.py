@@ -1227,6 +1227,55 @@ def test_step_follow_ups_name_the_exact_step_of_a_multi_round_answer(client: Tes
                                           "with the same inputs:"), (index, rerun["answer"][:300])
 
 
+def test_a_retried_step_that_fails_again_names_the_step(client: TestClient) -> None:
+    """WP-GEN-A final review: "Retry step" on a failed step (its main use) keeps the
+    step context when the lookup fails again, instead of a bare failure list."""
+    question = "Show me case demo-9999-0000"
+    first = _stream(client, question, persist_conversation=True, idempotency_key=_key("fail-again", "1"))
+    step = next(s for s in _tool_steps(first) if s["tool"] == "get_case")
+    assert step["status"] == "error", step
+    rerun = _stream(client, f"Run step {step['index']} ({step['label']}) of your answer to \u201c{question}\u201d "
+                            "again with the same inputs and update the answer.", origin="retry_step",
+                    persist_conversation=True, conversation_id=first["conversation_id"],
+                    idempotency_key=_key("fail-again", "2"))
+    (again,) = _tool_steps(rerun)
+    assert again["tool"] == "get_case" and again["status"] == "error"
+    assert rerun["answer"].startswith(f"Re-ran step {step['index']} (Read a case) of my answer to \u201c{question}"
+                                      "\u201d with the same inputs: it failed again (`get_case` error: "), rerun["answer"]
+    assert "Lookups that did not complete" not in rerun["answer"]
+
+
+def test_a_retried_indicator_lookup_the_analyst_typed_runs_again(client: TestClient) -> None:
+    """WP-GEN-A final review: the analyst typed the indicator, so the engine's taint
+    rule allows the retried lookup (the planner no longer refuses it on its own)."""
+    question = "What is the reputation of 8.8.8.8?"
+    first = _stream(client, question, persist_conversation=True, idempotency_key=_key("ioc-retry", "1"))
+    step = next(s for s in _tool_steps(first) if s["tool"] == "lookup_indicator")
+    rerun = _stream(client, f"Run step {step['index']} ({step['label']}) of your answer to \u201c{question}\u201d "
+                            "again with the same inputs and update the answer.", origin="retry_step",
+                    persist_conversation=True, conversation_id=first["conversation_id"],
+                    idempotency_key=_key("ioc-retry", "2"))
+    (again,) = _tool_steps(rerun)
+    assert again["tool"] == "lookup_indicator" and again["status"] == "ok", again
+    assert again["params"] == step["params"]
+    assert rerun["answer"].startswith(f"Re-ran step {step['index']} ({step['label']}) of my answer to "), rerun["answer"]
+    assert "name the value yourself" not in rerun["answer"]
+
+
+def test_explain_step_keeps_identifiers_as_stored(client: TestClient) -> None:
+    """WP-GEN-A final review: "What it found" shows the stored outcome as written
+    (``NEEDS_HUMAN`` keeps its underscore), escaped for Markdown, never stripped."""
+    question = "Deep dive into user pnair this month"
+    first = _stream(client, question, persist_conversation=True, idempotency_key=_key("as-stored", "1"))
+    step = next(s for s in _tool_steps(first) if s["status"] == "ok" and "_" in (s.get("summary") or ""))
+    explain = _stream(client, f"Explain step {step['index']} ({step['label']}) of your answer to \u201c{question}"
+                              "\u201d: what it looked up, what it found and how it shaped the answer.",
+                      origin="follow_up", persist_conversation=True, conversation_id=first["conversation_id"],
+                      idempotency_key=_key("as-stored", "2"))
+    found = next(line for line in explain["answer"].splitlines() if line.startswith("- **What it found:**"))
+    assert re.sub(r"\\(.)", r"\1", found[len("- **What it found:** "):]).rstrip(".") == step["summary"].rstrip("."), found
+
+
 # --------------------------------------------------------------------------- #
 # A scripted model: the inputs a real model sends for the screenshot questions.
 # --------------------------------------------------------------------------- #

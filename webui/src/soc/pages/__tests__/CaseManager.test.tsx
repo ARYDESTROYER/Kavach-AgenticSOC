@@ -950,7 +950,13 @@ describe('CaseManager', () => {
       target: { value: 'CASE-1000' },
     });
     expect(await screen.findByText('Active case 0')).toBeInTheDocument();
-  });
+    // Settle the search's own page before the test ends, so a slow run never leaves a
+    // queue update to land (outside act) in the next test.
+    expect(await screen.findByText(/^(?:1 of )?1 active · 1 loaded$/)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'CASE-1000' })));
+    // Two pages of 50 full queue rows: ~2.3 s alone, and several times that on a loaded CI
+    // runner, so this test gets its own budget instead of Vitest's 5 s default.
+  }, 20_000);
 
   it('Mine asks the server for the signed-in analyst’s active cases', async () => {
     mocks.listCases.mockImplementation(

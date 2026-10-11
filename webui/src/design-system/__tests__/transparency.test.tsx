@@ -13,7 +13,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 
 import {
   applyTransparencyPreference,
@@ -45,8 +45,8 @@ vi.mock('@/lib/api', () => {
   };
 });
 
-import { ThemeProvider } from '@/soc/theme';
-import { PrefsProvider } from '@/soc/prefs';
+import { ThemeProvider, useTheme } from '@/soc/theme';
+import { PrefsProvider, usePrefs } from '@/soc/prefs';
 
 const root = document.documentElement;
 
@@ -130,11 +130,20 @@ describe('PrefsProvider applies the per-user choice on hydration', () => {
     last_list_state: {},
     org: { terminology: {}, default_theme: 'system', default_saved_views: [], default_pinned_view_ids: [] },
   };
+  /** Says when both providers have settled their mount-time loads (branding, prefs). */
+  function Settled() {
+    const theme = useTheme();
+    const prefs = usePrefs();
+    return theme.ready && prefs.ready ? <span>settled</span> : null;
+  }
+  // Every test waits for "settled" (inside waitFor's act), so no provider update
+  // lands after the test outside act (a stderr warning that fails test:strict).
   const mount = () =>
     render(
       <ThemeProvider>
         <PrefsProvider>
           <span>app</span>
+          <Settled />
         </PrefsProvider>
       </ThemeProvider>,
     );
@@ -142,6 +151,7 @@ describe('PrefsProvider applies the per-user choice on hydration', () => {
   it('a stored "reduced" turns the override on, on a device that never chose it', async () => {
     effective.mockResolvedValue({ ...base, misc: { [TRANSPARENCY_PREF_KEY]: 'reduced' } });
     mount();
+    await screen.findByText('settled');
     await waitFor(() => expect(root.getAttribute('data-transparency')).toBe('reduced'));
     expect(window.localStorage.getItem(TRANSPARENCY_STORAGE_KEY)).toBe('reduced');
   });
@@ -150,6 +160,7 @@ describe('PrefsProvider applies the per-user choice on hydration', () => {
     applyTransparencyPreference('reduced');
     effective.mockResolvedValue({ ...base, misc: { [TRANSPARENCY_PREF_KEY]: 'system' } });
     mount();
+    await screen.findByText('settled');
     await waitFor(() => expect(root.hasAttribute('data-transparency')).toBe(false));
     expect(window.localStorage.getItem(TRANSPARENCY_STORAGE_KEY)).toBe('system');
   });
@@ -158,9 +169,9 @@ describe('PrefsProvider applies the per-user choice on hydration', () => {
     applyTransparencyPreference('reduced');
     effective.mockResolvedValue({ ...base, misc: {} });
     mount();
-    await waitFor(() => expect(effective).toHaveBeenCalled());
-    // Let the hydration settle, then confirm nothing was cleared.
-    await new Promise((r) => setTimeout(r, 0));
+    // Both providers settled (the prefs hydrate ran to the end), so nothing is pending.
+    await screen.findByText('settled');
+    expect(effective).toHaveBeenCalled();
     expect(root.getAttribute('data-transparency')).toBe('reduced');
   });
 });

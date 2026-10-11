@@ -18,6 +18,7 @@ synthetic observations. Covered (SPEC D2-D4, D7-D11; diagnosis/routing.md):
 from __future__ import annotations
 
 from collections.abc import Callable
+import re
 from typing import Any
 
 import pytest
@@ -1212,9 +1213,48 @@ def test_run_step_again_for_a_model_step_explains_why_nothing_ran() -> None:
     "Run step 2 again",
     "explain step 2 of the runbook",
     "How do I run step 3 of the onboarding wizard again?",
+    # The step shape with the analyst's own words where the run log's label goes.
+    "Run step 3 (block the IP) again on the firewall",
+    "Explain step 2 (isolate the host): why does the ransomware runbook do this first?",
 ])
 def test_other_questions_about_steps_are_not_step_follow_ups(question: str) -> None:
     assert classify(question).intent not in ("explain_step", "rerun_step")
+    # Not even with an earlier answer whose step 2 or 3 is a lookup.
+    rounds, _header, body = drive(question, history=(_TWO_LOOKUPS,))
+    assert not body.startswith(("Step 2 (", "Step 3 (", "Re-ran step", "I could not run step")), body
+    assert "(block the IP)" not in body and "(isolate the host)" not in body
+
+
+def test_a_free_text_label_in_the_step_shape_is_classified_as_the_request_it_is() -> None:
+    # A write request inside the step shape is the change it asks for (chat is read-only).
+    assert classify("Run step 3 (block the IP) again on the firewall").intent == "change"
+    assert classify("Block the IP 203.0.113.9 on the firewall again").intent == "change"
+    _r, header, body = drive("Run step 3 (block the IP) again on the firewall", history=(_TWO_LOOKUPS,))
+    assert body.startswith("I can't change that from chat")
+    assert classify("Explain step 2 (isolate the host): why does the ransomware runbook do this first?").intent \
+        == classify("Why does the ransomware runbook isolate the host first?").intent
+
+
+def test_only_run_log_labels_make_a_step_follow_up() -> None:
+    from app.agents.chat_tools.registry import catalogue
+
+    labels = [t.label for t in catalogue()] + ["Re-read an earlier lookup result", "Planned lookups", "Thinking",
+                                               "Wrote the answer", "Writing the answer", "Continued the answer (part 2)",
+                                               "Summarised earlier messages",
+                                               "Wrapped up after a very long investigation"]
+    for label in labels:
+        assert classify(_explain(2, label, "How are we doing?")).intent == "explain_step", label
+        assert classify(_rerun(2, label, "How are we doing?")).intent == "rerun_step", label
+    for label in ("block the IP", "Counted cases twice", "soc_metrics"):
+        assert classify(_explain(2, label, "How are we doing?")).intent != "explain_step", label
+        assert classify(_rerun(2, label, "How are we doing?")).intent != "rerun_step", label
+
+
+def test_explain_the_wrap_up_step_says_it_is_a_model_step() -> None:
+    _r, header, body = drive(_explain(4, "Wrapped up after a very long investigation", "How are we doing?"),
+                             history=(_TWO_LOOKUPS,))
+    assert header["answer_kind"] == "conversation"
+    assert "It is a model step, not a lookup" in body
 
 
 def test_step_follow_ups_are_deterministic() -> None:
@@ -1354,7 +1394,7 @@ def test_run_step_again_repeats_harmless_reads(tool: str, label: str, params: di
     assert "cannot be repeated" not in body
 
 
-def test_run_step_again_names_an_input_it_could_not_read_back_and_refuses_indicator_lookups() -> None:
+def test_run_step_again_names_an_input_it_could_not_read_back_and_reruns_indicator_lookups() -> None:
     long_text = "x" * 80  # the digest shows at most 60 characters of a value, ending "…"
     history = (PriorExchange(
         user="Find powershell logs", answer="Logs.", message_id="msg-t",
@@ -1369,6 +1409,146 @@ def test_run_step_again_names_an_input_it_could_not_read_back_and_refuses_indica
     from app.agents.chat_tools.registry import catalogue
 
     label = next(t.label for t in catalogue() if t.name == "lookup_indicator")
+    # An indicator lookup is re-run like any other: the engine's taint rule (not the
+    # planner) decides whether the value may leave (a value the analyst typed may).
     rounds, header, body = drive(_rerun(3, label, "Find powershell logs"), history=history)
-    assert rounds == [] and header["answer_kind"] == "conversation"
-    assert "an indicator lookup sends a value to an outside reputation service" in body
+    assert ran(rounds) == [("lookup_indicator", {"indicator": "8.8.8.8"})]
+    assert "outside reputation service" not in body and "only when you name the value" not in body
+
+
+def test_explain_step_names_the_input_no_sibling_shares() -> None:
+    rounds = PriorExchange(
+        user="Deep dive into user pnair", answer="Deep dive.", message_id="msg-d",
+        steps=(_step(1, None, "Planned lookups"),
+               _step(2, "log_stats", "Counted log events", {"group_by": "host", "top_n": 10}, "12 events"),
+               _step(3, None, "Planned lookups"),
+               _step(4, "log_stats", "Counted log events", {"group_by": "ip", "top_n": 10}, "9 events"),
+               _step(5, "log_stats", "Counted log events", {"group_by": "severity", "interval": "1w"}, "9 events")))
+    _r, _h, body = drive(_explain(4, "Counted log events", rounds.user), history=(rounds,))
+    assert "- **What it looked up:** `group_by=ip` and `top_n=10`." in body
+    assert "the figures for `group_by=ip` came from this result and the rest from the other 2." in body, body
+
+
+# --------------------------------------------------------------------------- #
+# Final review fixes (WP-GEN-A): a retried step that fails again keeps its step head;
+# the explanation shows stored values as written; an indicator rerun is the taint
+# rule's decision, refused visibly with the real reason.
+# --------------------------------------------------------------------------- #
+_MISSING_CASE = PriorExchange(
+    user="Show me case demo-9999-0000", answer="That case was not found.", message_id="msg-m",
+    steps=(_step(1, None, "Planned lookups"),
+           _step(2, "get_case", "Read a case", {"case_id": "demo-9999-0000"}, "Case not found", status="error"),
+           _step(3, None, "Wrote the answer")))
+
+
+def test_a_retried_step_that_fails_again_says_which_step_and_that_it_failed_again() -> None:
+    question = _rerun(2, "Read a case", "Show me case demo-9999-0000")
+    rounds, header, body = drive(question, lambda _tool, _inp: None, history=(_MISSING_CASE,))
+    assert ran(rounds) == [("get_case", {"case_id": "demo-9999-0000"})]
+    assert body.startswith("Re-ran step 2 (Read a case) of my answer to “Show me case demo-9999-0000” with the "
+                           "same inputs: it failed again (`get_case` error: Not found)."), body
+    assert "The same inputs fail the same way" in body
+    # Told once, in the head: not listed again as a bare failure list.
+    assert "Lookups that did not complete" not in body
+    assert header["answer_kind"] == "data"
+
+
+def test_a_retried_step_that_worked_before_and_fails_now_says_so() -> None:
+    question = _rerun(2, "Counted log events", "Which hosts generate the most alerts?")
+    rounds, header, body = drive(question, lambda _tool, _inp: None, history=(_TOP_HOSTS,))
+    assert ran(rounds) == [("log_stats", {"group_by": ["host"], "top_n": 10, "time_from": "now-7d"})]
+    assert body.startswith("Re-ran step 2 (Counted log events) of my answer to “Which hosts generate the most "
+                           "alerts?” with the same inputs: it did not complete this time (`log_stats` error: Not "
+                           "found)."), body
+    assert "The earlier result still stands in that answer." in body
+    assert header["answer_kind"] == "data"
+
+
+def test_a_retried_step_without_a_readable_input_that_fails_keeps_both_notes() -> None:
+    history = (PriorExchange(
+        user="Find powershell logs", answer="Logs.", message_id="msg-t",
+        steps=(_step(1, None, "Planned lookups"),
+               _step(2, "search_logs", "Searched logs", {"contains": "x" * 80, "time_from": "now-7d"}, "3 events"))),)
+    _rounds, _h, body = drive(_rerun(2, "Searched logs", "Find powershell logs"), lambda _t, _i: None,
+                              history=history)
+    assert body.startswith("Re-ran step 2 (Searched logs) of my answer to “Find powershell logs” without "
+                           "`contains`: the conversation no longer holds its full value, so this run used the "
+                           "lookup's default for that input. Its other inputs are the same. It did not complete "
+                           "this time (`search_logs` error: Not found)."), body
+
+
+def test_explain_step_shows_stored_values_as_written() -> None:
+    lifetime = PriorExchange(
+        user="Deep dive into user svc_backup this month", answer="Deep dive.", message_id="msg-e",
+        steps=(_step(1, None, "Planned lookups"),
+               _step(2, "get_case", "Read a case", {"case_id": "case-0012"},
+                     "Case read: status investigating, verdict NEEDS_HUMAN, rule web_apache_access"),
+               _step(3, "soc_metrics", "Read SOC metrics", {"kind": "noise_funnel", "window": "all"},
+                     "Noise funnel (all time): 161 alerts ingested -> 95 cases -> 18 needing a human"),
+               _step(4, None, "Wrote the answer")))
+    _r, _h, body = drive(_explain(2, "Read a case", lifetime.user), history=(lifetime,))
+    assert body.startswith("Step 2 (Read a case) of my answer to “Deep dive into user svc\\_backup this month”")
+    assert ("- **What it found:** Case read: status investigating, verdict NEEDS\\_HUMAN, rule "
+            "web\\_apache\\_access.") in body, body
+    _r, _h, body = drive(_explain(3, "Read SOC metrics", lifetime.user), history=(lifetime,))
+    assert "161 alerts ingested -\\> 95 cases -\\> 18 needing a human" in body, body
+
+
+def test_escaped_text_renders_back_to_the_stored_characters() -> None:
+    # Every special is escaped (never deleted), so a Markdown renderer shows the text
+    # exactly as stored and no character becomes formatting.
+    stored = "NEEDS_HUMAN *bold* `code` [link](x) <b> #1 a|b ~x~ C:\\temp -> done"
+    escaped = demo_chat._escaped(stored)
+    assert re.sub(r"\\(.)", r"\1", escaped) == stored
+    for special in "_*`[]<>#|~":
+        assert all(escaped[i - 1] == "\\" for i, ch in enumerate(escaped) if ch == special), special
+
+
+def test_an_indicator_rerun_the_taint_rule_refuses_says_why_truthfully() -> None:
+    from app.agents.chat_tools.registry import catalogue
+    from app.agents.chat_tools.taint import REFUSED_TAINT
+    from tests.test_demo_chat_planner import call as make_call
+
+    label = next(t.label for t in catalogue() if t.name == "lookup_indicator")
+    history = (PriorExchange(
+        user="What is the reputation of 8.8.8.8?", answer="Clean.", message_id="msg-i",
+        steps=(_step(1, None, "Planned lookups"),
+               _step(2, "lookup_indicator", label, {"indicator": "8.8.8.8", "kind": "ip"}, "clean"))),)
+    question = _rerun(2, label, "What is the reputation of 8.8.8.8?")
+    reply = plan_turn(prompt(question, history=history))
+    assert tools_of(reply) == [("lookup_indicator", {"indicator": "8.8.8.8", "kind": "ip"})]
+    refused = [make_call("lookup_indicator", {}, status="denied", summary=f"Not looked up: {REFUSED_TAINT}",
+                         inp={"indicator": "8.8.8.8", "kind": "ip"})]
+    header, body = final_of(plan_turn(prompt(question, refused, history=history)))
+    assert body.startswith("Re-ran step 2 (Looked up an indicator) of my answer to “What is the reputation of "
+                           "8.8.8.8?” with the same inputs: it did not complete this time (`lookup_indicator` "
+                           "denied: Not looked up: indicator not from user or evidence)."), body
+    assert "Ask about the indicator by name to look it up again." in body
+    assert "you name the value yourself" not in body
+
+
+def test_bounded_digest_numbers_never_cost_a_lookup_its_place() -> None:
+    # chat-revamp SPEC A60: the 600-character bound is measured without the "step N "
+    # prefixes, so a bounded digest holds exactly the lookups it held before numbering.
+    from app.agents.chat_protocol import HISTORY_DIGEST_MAX_CHARS, lookup_digest
+
+    def lookups(numbered: bool) -> list[dict[str, Any]]:
+        out = []
+        for n in range(5):
+            step = _step(10 + n, "log_stats", "Counted log events", {"group_by": f"field_{n}", "top_n": 10},
+                         f"{'x' * 70} {n}")
+            if not numbered:
+                step.pop("index")
+            out.append(step)
+        return out
+
+    plain = lookup_digest("m1", lookups(False))
+    numbered = lookup_digest("m1", lookups(True))
+    assert len(plain) <= HISTORY_DIGEST_MAX_CHARS and not plain.endswith("…")  # all five fit unnumbered
+    assert not numbered.endswith("…") and numbered.count("log_stats(") == 5
+    assert numbered.count("step ") == 5 and "step 14 log_stats(group_by=field_4" in numbered
+    assert len(numbered) == len(plain) + 5 * len("step 10 ")
+    # Beyond the bound it is still cut, at the same lookup as the unnumbered digest.
+    longer = lookups(True) + [_step(15, "log_stats", "Counted log events", {"group_by": "field_5"}, "y" * 200)]
+    cut = lookup_digest("m1", longer)
+    assert cut.endswith("…") and len(cut) <= HISTORY_DIGEST_MAX_CHARS + 6 * len("step 10 ")

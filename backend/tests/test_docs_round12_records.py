@@ -283,6 +283,8 @@ def test_scope_popover_default_hint_is_recorded_while_it_ships():
             "The scope popover hint was fixed: remove its entry from known-limitations.md "
             "(and the ROADMAP G item)"
         )
+        roadmap = " ".join(_read(REPO_ROOT / "ROADMAP.md").split())
+        assert "**Scope popover default hint**" not in roadmap, "retire the ROADMAP G item too"
 
 
 def test_context_note_overstatement_is_recorded_while_it_ships():
@@ -294,4 +296,3 @@ def test_context_note_overstatement_is_recorded_while_it_ships():
     assert "known-limitations.md" in item and "ROADMAP G" in item
     roadmap = " ".join(_read(REPO_ROOT / "ROADMAP.md").split())
     assert "**Context note only where a summary is stored**" in roadmap
-    assert "**Scope popover default hint**" in roadmap
