@@ -921,7 +921,10 @@ and, just as importantly, makes each of these conditions a state an operator can
   chat is off screen. Leaving the chat detaches instead of aborting; returning or
   reloading rejoins the answer live (`GET /api/chat/turns/active`,
   `GET /api/chat/turns/{turn_id}/events?after=`, owner-only `chat.turn` events on the
-  `chat` topic). Case chat keeps its transcript across tab switches.
+  `chat` topic). An answer, question or failure seen on one console is no news on the
+  others: marking a conversation read and showing a turn's outcome
+  (`POST /api/chat/turns/{turn_id}/seen`) publish an owner-only `chat.read` event on the
+  same topic. Case chat keeps its transcript across tab switches.
 - **Conversation width**: Comfortable, Wide (default) or Full width in the thread menu,
   saved per user; prose keeps a readable measure while blocks use the whole lane. Charts
   gain Group by, zoom, legend toggles, PNG and SVG download and per-block Full width;

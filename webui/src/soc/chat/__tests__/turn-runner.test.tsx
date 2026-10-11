@@ -4,14 +4,22 @@
  * read, the run-log line while a question waits for chat capacity (and its limit),
  * parking (a run nobody views holds no connection; one poll follows it and it reads the
  * rest after its last event), turns followed for the server (`trackRun`) settling with
- * their real outcome, and the settle rules (D1 is no "answer", a new thread that saved
- * nothing leaves no mark, a Stop is never "Answer ready").
+ * their real outcome (after the settle policy's grace, so another console's "seen" can
+ * land first), and the settle rules (D1 is no "answer", a new thread that saved nothing
+ * leaves no mark, a Stop is never "Answer ready").
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 import type { ChatOrigin, ChatRequest } from '@/lib/types';
-import { clearChatActivity, getChatActivity, onChatActivity, viewChatActivity, type ChatActivitySettled } from '../../chat-activity/activity';
+import {
+  clearChatActivity,
+  getChatActivity,
+  onChatActivity,
+  setChatSettlePolicy,
+  viewChatActivity,
+  type ChatActivitySettled,
+} from '../../chat-activity/activity';
 import { RunLogHeader } from '../message/RunLog';
 import { live } from '../message/__tests__/fixtures';
 import {
@@ -388,6 +396,53 @@ describe('parking: a run nobody views holds no connection', () => {
     await until(() => entryOf('case:case-w')?.parked === true && tail.signal?.aborted === true, 'the park again');
     expect(run.state).toBe('running');
     expect(openReads()).toHaveLength(0);
+  });
+
+  it('a followed turn waits out the settle policy’s grace before it marks anything; one seen elsewhere meanwhile leaves none', async () => {
+    TURN_RUNNER_TIMING.parkPollMs = 60_000;
+    const seenElsewhere = new Set<string>();
+    setChatSettlePolicy({ seenElsewhere: (entry) => !!entry.turnId && seenElsewhere.has(entry.turnId), followedGraceMs: () => 300 });
+    try {
+      const answer = trackRun({ scope: 'conv:g1', kind: 'workspace', conversationId: 'g1', turnId: 'turn-g1' }) as TurnRun;
+      const failure = trackRun({ scope: 'case:case-g', kind: 'case', caseId: 'case-g', turnId: 'turn-g2' }) as TurnRun;
+      await wait(20);
+      wakeParkedRun('turn-g1');
+      wakeParkedRun('turn-g2');
+      const first = await waitForWire((wire) => wire.url.includes('turn-g1'));
+      const second = await waitForWire((wire) => wire.url.includes('turn-g2'));
+      first.push(startEvent('turn-g1', 'g1'), 1);
+      first.push(done({ answer: 'Two hosts.', message_id: 'mg', conversation_id: 'g1' }), 2);
+      second.push(startEvent('turn-g2'), 1);
+      second.push({ type: 'turn.error', code: 'internal', message: 'The assistant could not answer.', retryable: true }, 2);
+      await until(() => answer.state !== 'running' && failure.state !== 'running', 'the ends');
+      // Read, but not marked yet: they still read as running, and nothing is announced.
+      expect(entryOf('conv:g1')?.status).toBe('running');
+      expect(entryOf('case:case-g')?.status).toBe('running');
+      expect(settled).toEqual([]);
+      // The console that asked shows the failure.
+      seenElsewhere.add('turn-g2');
+      await until(() => settled.length === 2, 'the grace');
+      expect(entryOf('conv:g1')).toMatchObject({ status: 'unread' });
+      expect(entryOf('case:case-g')).toBeNull();
+      expect(settled.find((event) => event.activity.turnId === 'turn-g2')).toMatchObject({ outcome: 'error', viewed: true });
+      expect(settled.find((event) => event.activity.turnId === 'turn-g1')).toMatchObject({ outcome: 'done', viewed: false });
+    } finally {
+      setChatSettlePolicy(null);
+    }
+  });
+
+  it('a turn this tab started is not held back by the grace', async () => {
+    setChatSettlePolicy({ seenElsewhere: () => false, followedGraceMs: () => 10_000 });
+    try {
+      ask('Mine', { conversation_id: 'c-own' });
+      await wait(5);
+      wires[0].push(startEvent('turn-own', 'c-own'));
+      wires[0].push(done({ answer: 'One host.', message_id: 'm-own', conversation_id: 'c-own' }));
+      await until(() => settled.length > 0, 'the end');
+      expect(entryOf('conv:c-own')).toMatchObject({ status: 'unread' });
+    } finally {
+      setChatSettlePolicy(null);
+    }
   });
 
   it('a followed question settles as one that needs input', async () => {

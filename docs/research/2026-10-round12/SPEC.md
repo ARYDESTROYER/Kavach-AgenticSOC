@@ -190,8 +190,10 @@ Additive only. Names are binding:
 - `POST /api/chat/feedback` → 204; per-user KV + audit row; never used for training.
 - Realtime: targeted `chat.turn` events `{turn_id, conversation_id, case_id, phase: started |
   progress | finished | failed | needs_input, label, lookups, tokens}` on the existing EventBus with
-  `audience = {owner}`; `POST …/read` adds a targeted `chat.read` event `{conversation_id}` (§7.1
-  #17). When auth is disabled the client polls `turns/active` every 5 s while a turn is known to
+  `audience = {owner}`; `POST …/read` adds a targeted `chat.read` event `{conversation_id}`, and
+  `POST /api/chat/turns/{turn_id}/seen` (204, stores nothing, owner-checked like re-attach) the
+  same event naming a turn whose outcome is on screen, `{turn_id, conversation_id | case_id}`
+  (§7.1 #17). When auth is disabled the client polls `turns/active` every 5 s while a turn is known to
   run.
 - Remember me: `POST /api/auth/login` accepts `remember: bool = False` and returns
   `remembered: bool` plus `remember_reason` when refused (`role_excluded`, `insecure_transport`,
@@ -652,8 +654,18 @@ detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
     `chat`, and the other consoles drop that conversation's mark and toast, plus any mark
     for it already on its way (a followed run that ends, a list read before the read),
     with no toast, until a new turn's frame arrives there (30 s at most; an `overflow`
-    ends every such hold). Polling stays the fallback (on load, on becoming visible, after an
-    `overflow`, and the 5 s park poll); with authentication off no frame is sent.
+    ends every such hold). Case chat and failed turns keep no stored unread state, so a
+    console that shows a turn's outcome (it settles in view, or its mark is looked at)
+    posts `POST /api/chat/turns/{turn_id}/seen` once per turn (signed in only); the route
+    stores nothing and publishes the same owner-only `chat.read` frame naming the turn
+    (`{turn_id, conversation_id}` or `{turn_id, case_id}`, from the server's own record),
+    and the other consoles drop that turn's mark and toast whenever it lands (a case
+    chat's earlier marks go too). A turn a console only follows (it did not start it)
+    waits a short grace before it marks or announces anything (`FRAME_TIMING.followGraceMs`,
+    2.5 s, still shown as running), so the asking console's "seen" lands first and no
+    "Answer ready" flashes on a console nobody is reading. Polling stays the fallback (on
+    load, on becoming visible, after an `overflow`, and the 5 s park poll); with
+    authentication off no frame is sent, nothing is posted, and nothing waits.
 
 ### 7.3 Known limitations
 

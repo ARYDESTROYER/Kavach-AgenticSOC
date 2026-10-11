@@ -942,6 +942,9 @@ function finish(run: RunInternals, state: Exclude<TurnRunState, 'running'>, fiel
       // A view attached to this run has it on screen, even before that view has
       // registered the run's new `conv:` scope (a fast answer on a new thread).
       attached: run.attached > 0,
+      // A turn this tab did not start (followed after a reload, for another console, or
+      // for a tab that closed): the console that asked may be showing it right now.
+      followed: run.request === null,
       ...(unreachable
         ? {
             unreachable,

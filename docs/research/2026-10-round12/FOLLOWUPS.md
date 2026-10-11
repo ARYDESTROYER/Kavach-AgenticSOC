@@ -40,7 +40,7 @@
 ## From WP-OV / WP-BLK / WP-ACT / WP-CHATUI / WP-DEMO (wave 2)
 - ENTRY BUDGET: entry 399,958 B vs 400,000 B ceiling (42 B headroom); "+1 kB over baseline" check failing (~+7-8 kB this round: WP-AUTH ~3 KB, WP-DS ~0.7 KB, WP-ACT ~2.5 KB, others ReauthDialog/ThemeModePill). Need a WP-BUNDLE pass: trim entry (lazy Login remember bits etc.) to restore >= 3 KB headroom, then rebase PRE_REVAMP_ENTRY_BYTES with a SPEC amendment.
 - KpiTile.round7 'countTo runs through format' failing (WP-DS area) -> fix.
-- chat topic on an existing shell stream (JobMonitor/NotificationBell) for faster settling: optional; 5 s poll used now.
+- ~~chat topic on an existing shell stream (JobMonitor/NotificationBell) for faster settling: optional; 5 s poll used now.~~ Done: `chat.turn` and `chat.read` frames ride the job stream (SPEC §7.1 #17); the 5 s park poll remains the fallback.
 - src/test/setup.ts afterEach clears activity store (WP-ACT) - note.
 - WP-FEAT: clarify option chips (backend returns them), zero-result chips, RunLog waiting line exists; ReportPanel "REPORT/Report" duplicate heading; Reports library infographic layout for saved infographic briefs; chart tooltip blocking drag on phones (WP-BLK minor follow-up).
 - WP-DOC: Help Center + console map label updates ("AI-verdict FP rate", "Response time", "Total cases (all time)", per-user Deeper analytics), Group by/zoom/image download/full width in BLOCKS.md + ui-standard, nav badge wording, Settings "Animate the logo while chat works", "Waiting for another answer to finish", openapi + types regen; SPEC §10.1 reference widths (WP-CHATUI report numbers).

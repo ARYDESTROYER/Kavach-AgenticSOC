@@ -483,22 +483,32 @@ def publish_chat_turn(
     return bus.publish(CHAT_TOPIC, CHAT_TURN_EVENT, payload, audience=[name], retain=retain)
 
 
-def publish_chat_read(bus: "EventBus", owner: str | None, conversation_id: str) -> str | None:
+def publish_chat_read(
+    bus: "EventBus", owner: str | None, conversation_id: str | None = None, *,
+    turn_id: str | None = None, case_id: str | None = None,
+) -> str | None:
     """Publish one ``chat.read`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
 
     The owner has the conversation's newest answer on screen somewhere (another tab,
-    device or browser posted ``…/read``), so every other console of theirs drops the
-    "new answer" mark it may hold for it. Targeted like ``chat.turn`` (never broadcast,
-    never to an anonymous subscriber) and never retained, for the same reason. The
-    payload is the conversation id only. Returns the event id, or ``None`` when there is
-    no owner to address (nothing is published)."""
+    device or browser posted ``…/read``), or one turn's outcome (an answer, a question or
+    a failure, in a Workspace or a Case Manager chat: ``POST /chat/turns/{id}/seen``), so
+    every other console of theirs drops the mark it may hold for it. Targeted like
+    ``chat.turn`` (never broadcast, never to an anonymous subscriber) and never retained,
+    for the same reason. The payload carries ids only (``conversation_id``, plus
+    ``turn_id`` and ``case_id`` for a turn), never a title, prompt or answer. Returns the
+    event id, or ``None`` when there is no owner or nothing to name (nothing is
+    published)."""
     name = str(owner or "").strip().lower()
-    if not name:
+    payload: dict[str, str] = {}
+    if turn_id:
+        payload["turn_id"] = str(turn_id)
+    if conversation_id:
+        payload["conversation_id"] = str(conversation_id)
+    if case_id:
+        payload["case_id"] = str(case_id)
+    if not name or not payload:
         return None
-    return bus.publish(
-        CHAT_TOPIC, CHAT_READ_EVENT, {"conversation_id": str(conversation_id)},
-        audience=[name], retain=False,
-    )
+    return bus.publish(CHAT_TOPIC, CHAT_READ_EVENT, payload, audience=[name], retain=False)
 
 
 def publish_case_changed(

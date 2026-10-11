@@ -39,7 +39,9 @@ Round 12 (SPEC D1, D6, D11, D13, §3.2, §3.6):
   published on the ``chat`` topic to the owner only (``realtime.publish_chat_turn``):
   engine labels and counts, never prompt, answer or log text, and never retained in
   the bus's replay ring. Anonymous subscribers (auth disabled) never receive them;
-  that client polls ``turns/active``. Turns, their event rings and Stop are bound to
+  that client polls ``turns/active``. ``POST /api/chat/turns/{id}/seen`` publishes an
+  owner-only ``chat.read`` frame naming a turn whose outcome is on screen, so the
+  owner's other consoles drop its mark (it stores nothing). Turns, their event rings and Stop are bound to
   the owner's ACCOUNT generation (a deleted and re-created username sees none of its
   predecessor's turns), and a reset or shutdown forgets finished turns' rings.
 * **Concurrency** comes from ``ChatAgentConfig`` (defaults 4 per user, 16 per
@@ -81,7 +83,7 @@ from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, AsyncIterator, Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..agents.chat import TurnOutcome
@@ -133,7 +135,7 @@ from ..stores.chat_conversations import (
     IDEMPOTENCY_PENDING_TTL_SECONDS,
     normalize_user_id,
 )
-from ..realtime import publish_chat_turn
+from ..realtime import publish_chat_read, publish_chat_turn
 from ..stores.sessions import SessionStore
 from ..utils import iso_now, new_id, now_utc
 from .deps import (
@@ -2391,6 +2393,36 @@ async def chat_turn_events(
     if handle is None:
         raise HTTPException(status_code=404, detail="turn not found")
     return NDJSONStreamingResponse(_reattach(handle, after), headers=dict(STREAM_HEADERS))
+
+
+@router.post("/chat/turns/{turn_id}/seen", status_code=204, response_class=Response)
+async def chat_turn_seen(
+    request: Request,
+    turn_id: str = Path(..., max_length=128, pattern=_SAFE_ID_PATTERN),
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> Response:
+    """The caller has their own turn's outcome on screen (an answer, a question or a
+    failure, in a Workspace or a Case Manager chat). Their other consoles hear it and
+    drop the mark they may hold for it. Nothing is stored. 404 for an unknown or expired
+    turn (finished turns are kept for 5 minutes) and for anyone else's."""
+    # An owner-only ``chat.read`` frame naming the turn and where it ran (SPEC §7.1 #17).
+    # Case chat and failures have no stored "unread" state to clear, so this is their
+    # only cross-console signal. Best effort: a frame that cannot go out is not an error.
+    # (A comment, not the docstring: the docstring is the published OpenAPI description.)
+    author = current_username(request)
+    generation = await _generation_or_503(state, author)
+    handle = state.chat_turns.find(turn_id, normalize_user_id(author), generation)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="turn not found")
+    try:
+        publish_chat_read(
+            state.event_bus, author, handle.conversation_id,
+            turn_id=handle.turn_id, case_id=handle.case_id,
+        )
+    except Exception:  # noqa: BLE001 -- a nudge; nothing else depends on it
+        logger.debug("chat.read frame not published", exc_info=True)
+    return Response(status_code=204)
 
 
 # --------------------------------------------------------------------------- #

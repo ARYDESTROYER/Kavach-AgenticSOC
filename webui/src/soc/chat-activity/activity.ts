@@ -70,12 +70,52 @@ export interface ChatActivitySettleOptions {
    * tab is visible, even before that view has registered the turn's scope.
    */
   attached?: boolean;
+  /**
+   * This tab followed the turn without starting it (a reload, another console, a closing
+   * tab): the console that asked may be showing it, so off screen it waits out the
+   * policy's grace before it leaves a mark or a notice (see {@link ChatSettlePolicy}).
+   */
+  followed?: boolean;
+}
+
+/**
+ * What the shell's observer (`ActivityEffects`) knows that the settle rules ask. With no
+ * policy set, a turn settles at once and only this tab's screen counts.
+ */
+export interface ChatSettlePolicy {
+  /** The analyst already saw this turn's outcome on another console (`chat.read`). */
+  seenElsewhere(entry: ChatActivity): boolean;
+  /**
+   * How long a turn followed off screen waits before it leaves a mark or a notice (0:
+   * none): another console's "seen" can land a moment after this tab reads the end.
+   */
+  followedGraceMs(): number;
 }
 
 type Listener = () => void;
 
 const settledListeners = new Set<(event: ChatActivitySettled) => void>();
+const shownListeners = new Set<(entry: ChatActivity) => void>();
 const clearListeners = new Set<Listener>();
+let policy: ChatSettlePolicy | null = null;
+/**
+ * Followed turns waiting out their grace, by scope (their entry still reads `running`).
+ * `seen` records a look meanwhile: on this tab's screen, or on another console.
+ */
+interface PendingSettle {
+  turnId: string | null;
+  seen: 'here' | 'elsewhere' | null;
+  timer: ReturnType<typeof setTimeout>;
+}
+const pending = new Map<string, PendingSettle>();
+
+function cancelPending(scope?: string): void {
+  for (const [key, held] of Array.from(pending)) {
+    if (scope !== undefined && key !== scope) continue;
+    clearTimeout(held.timer);
+    pending.delete(key);
+  }
+}
 /**
  * Mounted views, one token each. A token follows its turn when a new thread's
  * `draft:` scope becomes `conv:<id>` (`rekeyChatActivity`), synchronously: the view
@@ -180,29 +220,55 @@ export function setChatActivitySink(next: ((message: ChatActivityMessage) => voi
   sink = next;
 }
 
+/** `ActivityEffects` sets what it knows about other consoles; `null` lets go. */
+export function setChatSettlePolicy(next: ChatSettlePolicy | null): void {
+  policy = next;
+}
+
+/** Is this scope's followed turn waiting out its grace (its entry still reads `running`)? */
+export function isChatActivitySettling(scope: string): boolean {
+  return pending.has(scope);
+}
+
 /** Sign-out or another user: forget everything and stop this tab's turns (the runner listens). */
 export function clearChatActivity(local = true): void {
+  cancelPending();
   if (getChatActivity().entries.length) commit([]);
   caseChatRequest = null;
   for (const listener of Array.from(clearListeners)) listener();
   send({ t: 'clear' }, local);
 }
 
-/** `settled` fires once per finished turn; `clear` on sign-out (the runner aborts). */
+/**
+ * `settled` fires once per finished turn; `shown` when this tab put a turn's outcome on
+ * screen (it settled in view, or its mark was looked at), for the other consoles to
+ * hear; `clear` on sign-out (the runner aborts).
+ */
 export function onChatActivity(event: 'settled', listener: (event: ChatActivitySettled) => void): () => void;
+export function onChatActivity(event: 'shown', listener: (entry: ChatActivity) => void): () => void;
 export function onChatActivity(event: 'clear', listener: Listener): () => void;
 export function onChatActivity(
-  event: 'settled' | 'clear',
-  listener: Listener | ((event: ChatActivitySettled) => void),
+  event: 'settled' | 'shown' | 'clear',
+  listener: Listener | ((event: ChatActivitySettled) => void) | ((entry: ChatActivity) => void),
 ): () => void {
   if (event === 'clear') {
     const plain = listener as Listener;
     clearListeners.add(plain);
     return () => clearListeners.delete(plain);
   }
+  if (event === 'shown') {
+    const shown = listener as (entry: ChatActivity) => void;
+    shownListeners.add(shown);
+    return () => shownListeners.delete(shown);
+  }
   const typed = listener as (event: ChatActivitySettled) => void;
   settledListeners.add(typed);
   return () => settledListeners.delete(typed);
+}
+
+function emitShown(entry: ChatActivity): void {
+  if (!entry.turnId) return;
+  for (const listener of Array.from(shownListeners)) listener(entry);
 }
 
 export function setAnimatedBrand(value: boolean): void {
@@ -250,6 +316,7 @@ export function rekeyChatActivity(from: string, to: string, patch: Partial<ChatA
 }
 
 export function dropChatActivity(scope: string, local = true): void {
+  cancelPending(scope);
   if (!find(scope)) return;
   replace(null, scope);
   send({ t: 'drop', s: scope }, local);
@@ -261,7 +328,10 @@ export function isChatActivityViewed(scope: string): boolean {
 
 /**
  * A turn finished: on screen it simply ends; elsewhere it leaves its mark, unless
- * nothing could ever show it (`unreachable`: a new thread that saved nothing).
+ * nothing could ever show it (`unreachable`: a new thread that saved nothing) or the
+ * analyst already saw it on another console (the policy's `seenElsewhere`). A turn this
+ * tab only followed waits out the policy's grace first, still reading as running, so a
+ * "seen" from the console that asked can land: no mark, no notice, nothing to take back.
  */
 export function settleChatActivity(
   scope: string,
@@ -271,7 +341,38 @@ export function settleChatActivity(
 ): void {
   const current = find(scope);
   if (!current) return;
-  const viewed = isChatActivityViewed(scope) || (options.attached === true && visible());
+  cancelPending(scope);
+  const here = isChatActivityViewed(scope) || (options.attached === true && visible());
+  const grace = local && options.followed === true && !here && outcome !== 'stopped' ? (policy?.followedGraceMs() ?? 0) : 0;
+  if (grace > 0 && policy?.seenElsewhere(current) !== true) {
+    const held: PendingSettle = {
+      turnId: current.turnId,
+      seen: null,
+      timer: setTimeout(() => {
+        if (pending.get(scope) !== held) return;
+        pending.delete(scope);
+        const now = find(scope);
+        // Replaced meanwhile (a new turn there, a sign-out, a thread that is gone).
+        if (!now || now.status !== 'running' || now.turnId !== held.turnId) return;
+        finishSettle(now, outcome, local, options, held.seen);
+      }, grace),
+    };
+    pending.set(scope, held);
+    return;
+  }
+  finishSettle(current, outcome, local, options, here ? 'here' : null);
+}
+
+function finishSettle(
+  current: ChatActivity,
+  outcome: ChatActivityOutcome,
+  local: boolean,
+  options: ChatActivitySettleOptions,
+  seen: PendingSettle['seen'],
+): void {
+  const { scope } = current;
+  const here = seen === 'here' || isChatActivityViewed(scope) || (options.attached === true && visible());
+  const viewed = here || seen === 'elsewhere' || policy?.seenElsewhere(current) === true;
   const status: ChatActivityStatus | null = options.unreachable
     ? null
     : outcome === 'needs_input'
@@ -283,6 +384,8 @@ export function settleChatActivity(
           : 'failed';
   if (status) putChatActivity({ ...current, status, seen: viewed, label: null, parked: false }, local);
   else dropChatActivity(scope, local);
+  // On this tab's screen: the analyst's other consoles may hold a mark for it.
+  if (here && outcome !== 'stopped') emitShown(current);
   const event: ChatActivitySettled = { activity: current, outcome, viewed };
   if (options.unreachable) {
     event.unreachable = true;
@@ -294,13 +397,24 @@ export function settleChatActivity(
   for (const listener of Array.from(settledListeners)) listener(event);
 }
 
-/** The analyst looked at this chat: an answer or failure is read; a question stays. */
-export function markChatActivitySeen(scope: string, local = true): void {
+/**
+ * The analyst looked at this chat: an answer or failure is read; a question stays.
+ * `elsewhere`: they looked on another console (its `chat.read`), which already told the
+ * others; otherwise a look on this tab's screen is passed on (`shown`). A followed turn
+ * still waiting out its grace settles as seen.
+ */
+export function markChatActivitySeen(scope: string, local = true, options: { elsewhere?: boolean } = {}): void {
   const current = find(scope);
-  if (!current || current.status === 'running' || current.seen) return;
+  if (!current || current.seen) return;
+  if (current.status === 'running') {
+    const held = pending.get(scope);
+    if (held && held.seen !== 'here') held.seen = local && !options.elsewhere ? 'here' : 'elsewhere';
+    return;
+  }
   if (current.status === 'needs_input') replace({ ...current, seen: true }, scope);
   else replace(null, scope);
   send({ t: 'seen', s: scope }, local);
+  if (local && !options.elsewhere) emitShown(current);
 }
 
 /** Mark every on-screen chat seen (the tab became visible again). */

@@ -498,9 +498,12 @@ backend/app/
                      429 `chat_busy`); Round 12: `GET /api/chat/turns/active`, the bounded
                      per-turn event ring + `GET /api/chat/turns/{id}/events?after=`
                      rejoin, owner-only `chat.turn` SSE frames, lease heartbeat,
+                     `POST /api/chat/turns/{id}/seen` (an outcome shown on one console:
+                     owner-only `chat.read` naming the turn, stores nothing),
                      server-side report save from the answer header; `/api/chat`
                      delegates here] · routes_chat_library [Round 12: answer feedback,
-                     step inspector, message paging, mark-read] · routes_chat_entity
+                     step inspector, message paging, mark-read (+ owner-only
+                     `chat.read` SSE frame)] · routes_chat_entity
                      [Round 12: `POST /api/chat/entity-question` for Ask AI chips] ·
                      routes_reports [`/api/reports*` owner-scoped reports,
                      server-resolved add, one-call AI summary with dry-run estimate;
@@ -1130,7 +1133,7 @@ a retelling — do not re-derive round detail from here.
   from the answer header, step inspector, answer ratings, Add to case, prompt library +
   promptbooks, `/compact`, Ask AI entity chips, conversation width, chart Group by/zoom/
   image download); the **agent-working indicator** + live rejoin (process-local turn
-  registry, per-turn event ring, owner-only `chat.turn` SSE); **Remember me**
+  registry, per-turn event ring, owner-only `chat.turn` and `chat.read` SSE); **Remember me**
   (server-bounded 6/12/24 h sessions, browser-managed passwords, browser-session cookie
   otherwise, registry-aware `/auth/me`); reliable report downloads + Word/Excel; Overview
   and Case Manager redesigns with the **analyst-classification headline** (`caseOutcome`,

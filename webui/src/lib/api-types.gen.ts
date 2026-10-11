@@ -2043,6 +2043,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/chat/turns/{turn_id}/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Turn Seen
+         * @description The caller has their own turn's outcome on screen (an answer, a question or a
+         *     failure, in a Workspace or a Case Manager chat). Their other consoles hear it and
+         *     drop the mark they may hold for it. Nothing is stored. 404 for an unknown or expired
+         *     turn (finished turns are kept for 5 minutes) and for anyone else's.
+         */
+        post: operations["chat_turn_seen_api_chat_turns__turn_id__seen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/connectors": {
         parameters: {
             query?: never;
@@ -14461,6 +14484,35 @@ export interface operations {
                 content: {
                     "application/x-ndjson": components["schemas"]["ChatStreamEventModel"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_turn_seen_api_chat_turns__turn_id__seen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
