@@ -228,6 +228,27 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(body).not.toHaveProperty('assessment');
   });
 
+  it('a duplicate close the analyst rated posts the stars with no assessment (nothing to compare)', async () => {
+    // The backend's Agreement rate counts only grades that carry an assessment, so a
+    // star-only grade here neither inflates nor deflates it (Round 12 final review).
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'TRUE_POSITIVE' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'TRUE_POSITIVE', status: 'closed', disposition: 'duplicate' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/Duplicate/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: /rate in detail/i }));
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Accuracy: 4 of 5' }));
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    const [, body] = caseFeedback.mock.calls[0];
+    expect(body).toMatchObject({ accuracy: 0.8 });
+    expect(body).not.toHaveProperty('assessment');
+  });
+
   it('POSTs the assessment DERIVED from the FINAL disposition even if the grading section was collapsed first', async () => {
     // Regression: the derived agree/override was previously synced into parent state by
     // an effect INSIDE GradingFields, which unmounts when the analyst collapses the
@@ -376,6 +397,9 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
 
     await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
     expect(caseFeedback.mock.calls[0][1].actual_outcome).toBe('false_positive');
+    // No AI verdict, nothing to compare: the stated outcome carries no assessment, and the
+    // backend's Agreement rate counts only grades that do (Round 12 final review).
+    expect(caseFeedback.mock.calls[0][1]).not.toHaveProperty('assessment');
   });
 
   it('closing a NO-VERDICT case issues ONLY the action POST (grading skipped)', async () => {

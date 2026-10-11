@@ -852,6 +852,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   const selectCase = React.useCallback(
     (caseId: string, opts: { focusRow?: boolean } = {}) => {
+      gapStopRef.current = null;
       setSelectedCaseId(caseId);
       setFocusId(caseId);
       setDismissedSelection(false);

@@ -75,7 +75,12 @@ zero.
 
 The posture response includes lifecycle and verdict mix, aging, backlog, SLA state,
 period-over-period comparisons, and analyst feedback coverage. Interpret agreement
-rates together with graded-case and feedback counts.
+rates together with graded-case and feedback counts. The agreement rate counts only grades
+that compare the analyst's judgement with the AI verdict (agree, partial or disagree). A
+grade with nothing to compare—an analyst settling a Needs-human hand-off, a duplicate
+close, or a case with no AI verdict—still counts as feedback and in the quality scores,
+but not toward agreement; when no grade compares, agreement shows as not measured rather
+than 0%.
 
 SLA targets and impact × urgency priority are operator-configured advisory policies.
 They rank work and measure response; they do not authorize automatic closure.

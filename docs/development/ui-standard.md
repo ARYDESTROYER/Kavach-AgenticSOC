@@ -277,7 +277,13 @@ Enter moves into the case, / searches, ? lists the shortcuts) and rows update li
 the `cases` realtime topic. A live change is checked against the whole view (scope,
 status, owner, search, severity): a row that no longer matches leaves the window and the
 total, a case that now lists inside the loaded window appears, and Load more re-reads the
-window rather than skip a case when the live order has shifted. A single-letter shortcut
+window rather than skip a case when the live order has shifted. "N new cases · Show"
+re-reads the window grown by the new cases, never just the first page, so rows the
+analyst loaded (and the open case) keep their place. When the open case leaves the view
+(a plain Close, or a live change), the roving stop moves to the row that took its place
+and the first J/↓ (K/↑ when the last row closed) or Enter opens that row rather than
+skipping it. A count that claims an exact total (the Cases "Needs human" tile) is made
+from structured filters (status, AI verdict), never the free-text search. A single-letter shortcut
 never fires while focus is in a control that takes letters itself (text, a select, a
 menu, a radio group).
 
@@ -315,7 +321,9 @@ focus to the control that opened it, or, when that control left with its row, to
 row that took its place ("Close & next" lands on the next case's row). The confirmation
 after a close offers **Reopen**, never "Undo": reopening keeps the recorded outcome until
 the case is closed again with a new one, and the toast says so. Closing a Needs-human
-case the analyst did not grade records no AI agreement either way.
+case the analyst did not grade records no AI agreement either way; a grade the analyst
+does give there (or on a duplicate close, or a case with no AI verdict) carries no
+assessment, and the Agreement rate counts only grades that compare with the AI verdict.
 
 Campaigns is analyst-first. The default **Campaign review** workspace owns the current
 group list, detail, and read-only refresh; manual correlation and saved cadence belong

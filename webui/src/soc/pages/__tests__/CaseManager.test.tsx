@@ -1297,6 +1297,130 @@ describe('CaseManager', () => {
     expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument();
   });
 
+  // ---- final review: the "new cases" pill and Close → J (Round 12 final fixer) ------- //
+
+  const queueRowButton = (id: string) =>
+    within(document.querySelector(`[data-queue-row][data-case-id="${id}"]`) as HTMLElement).getAllByRole('button')[0];
+
+  it('"N new cases · Show" keeps a window grown with Load more and adds the new case on top', async () => {
+    const dataset = activeDataset(70);
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 70 active · 50 loaded')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    expect(await screen.findByText('All 70 loaded')).toBeInTheDocument();
+
+    // The analyst works a case deep in the grown window (the oldest loaded row).
+    fireEvent.click(queueRowButton('case-0000'));
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000'),
+    );
+
+    // The poller creates a case: the prompt appears; Show must not shrink the window to 50.
+    const created: Case = {
+      ...dataset[0],
+      case_id: 'case-new',
+      case_number: 'CASE-9999',
+      title: 'Brand new case',
+      updated_at: '2026-10-05T00:00:00Z',
+    };
+    dataset.push(created);
+    liveChanged(created.case_id, true);
+    const show = await screen.findByRole('button', { name: '1 new case · Show' }, { timeout: 3000 });
+    const callsBeforeShow = mocks.listCases.mock.calls.length;
+    fireEvent.click(show);
+
+    await waitFor(() => expect(screen.getAllByTestId('case-queue-row')).toHaveLength(71));
+    expect(screen.getByText('Brand new case')).toBeInTheDocument();
+    expect(screen.getByText('All 71 loaded')).toBeInTheDocument();
+    // The open case keeps its row, its place and the detail pane.
+    expect(document.querySelector('[data-queue-row][data-case-id="case-0000"]')).not.toBeNull();
+    expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000');
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('71 of 71 active');
+    expect(screen.queryByTestId('case-queue-show-new')).not.toBeInTheDocument();
+    // One window re-read sized to the grown window — never a first-page-only read.
+    const reads = mocks.listCases.mock.calls.slice(callsBeforeShow).map(([query]) => query as Record<string, unknown>);
+    expect(reads).toContainEqual(expect.objectContaining({ offset: 0, limit: 71 }));
+    expect(reads).not.toContainEqual(expect.objectContaining({ offset: 0, limit: 50 }));
+  });
+
+  /** Close the OPEN case (as the detail's plain Close does) and land where the dialog would. */
+  async function plainCloseOpenCase(dataset: Case[], id: string, neighbourId: string) {
+    const opener = queueRowButton(id);
+    const index = dataset.findIndex((c) => c.case_id === id);
+    dataset[index] = { ...dataset[index], status: 'closed' };
+    mocks.detailNext = dataset[index];
+    fireEvent.click(screen.getByRole('button', { name: 'Mock reopen' }));
+    await waitFor(() => expect(document.querySelector(`[data-queue-row][data-case-id="${id}"]`)).toBeNull());
+    const target = mocks.resolveDialogFocus?.(opener, false) ?? null;
+    expect(target?.closest('[data-queue-row]')).toHaveAttribute('data-case-id', neighbourId);
+    act(() => target?.focus());
+    // The closed case stays in the detail pane; the row that took its place is not open.
+    expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', id);
+    return target as HTMLElement;
+  }
+
+  it('plain Close, then J opens the row that took the closed row\'s place (never skips it)', async () => {
+    // Latest first: case-0003, case-0002, case-0001, case-0000.
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0002" />);
+    await screen.findByText('2 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0002', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
+    );
+    await waitFor(() => expect(queueRowButton('case-0001')).toHaveFocus());
+
+    // From there J moves on as usual.
+    fireEvent.keyDown(queueRowButton('case-0001'), { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0000'),
+    );
+  });
+
+  it('plain Close, then K still moves up past the gap to the case before the closed one', async () => {
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0002" />);
+    await screen.findByText('2 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0002', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'ArrowUp' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0003'),
+    );
+  });
+
+  it('closing the LAST row: K opens the row above it (the stop) instead of skipping it', async () => {
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0000" />);
+    await screen.findByText('4 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0000', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'k' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
+    );
+  });
+
+  it('Enter on the stop after a plain Close opens that row', async () => {
+    const dataset = activeDataset(4);
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId="case-0002" />);
+    await screen.findByText('2 of 4 active · 4 loaded');
+
+    const stop = await plainCloseOpenCase(dataset, 'case-0002', 'case-0001');
+    fireEvent.keyDown(stop, { key: 'Enter' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
+    );
+  });
+
   it('has no detectable accessibility violations in the split workspace', async () => {
     const user = userEvent.setup();
     const view = render(<CaseManager />);
