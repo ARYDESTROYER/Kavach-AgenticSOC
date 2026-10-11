@@ -26,14 +26,12 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { useAuth } from '@/soc/auth';
 import { Composer, type ComposerHandle } from '@/soc/chat/composer/Composer';
-import { withClientHistory } from '@/soc/chat/composer/format';
 import { EmptyState } from '@/soc/chat/empty/EmptyState';
 import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
 import { Transcript } from '@/soc/chat/message/Transcript';
-import { useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
+import { announcedLookupBound, useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
 import { useChatContext } from '@/soc/chat/useChatContext';
-import { CONTINUE_PROMPT, useChatEngine } from '@/soc/chat/useChatEngine';
-import { estimateNextRequest } from '@/soc/chat/display';
+import { useChatEngine } from '@/soc/chat/useChatEngine';
 import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -81,27 +79,13 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
     turnBounds: ctx?.bounds ?? null,
   });
   React.useEffect(() => setModel(engine.model), [engine.model]);
-  useTurnAnnouncer(engine, ctx?.bounds.max_tool_calls ?? null);
+  // A lookup limit is spoken only in `bounded` mode (chat is unlimited by default, D1).
+  useTurnAnnouncer(engine, announcedLookupBound(ctx));
   const composerRef = React.useRef<ComposerHandle>(null);
   const busy = engine.busy;
   const focusComposer = React.useCallback(() => composerRef.current?.focus(), []);
   // A quick action is disabled (and a starter replaced) while the turn runs: focus
   // moves to the composer instead of dropping to <body> (SPEC §10.9).
-  // "Continue where this stopped (≈ +N tokens)": calibrated on every part, exactly
-  // like the composer meter and Workspace Chat (SPEC §10.3).
-  // The history part is the engine's own (case history travels with the request).
-  const historySize = engine.historySize;
-  const continueEstimate = React.useMemo(() => {
-    if (!ctx) return null;
-    const withHistory = withClientHistory(ctx, historySize);
-    return estimateNextRequest({
-      staticPromptTokens: withHistory.static_prompt_tokens,
-      historyTokens: withHistory.history_tokens,
-      draft: CONTINUE_PROMPT,
-      charsPerToken: withHistory.chars_per_token,
-      calibration: withHistory.calibration ?? null,
-    }).total;
-  }, [ctx, historySize]);
   const send = (prompt: string) => {
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
@@ -133,7 +117,6 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
         compact
         label={`Case ${caseId} messages`}
         onFocusComposer={focusComposer}
-        continueEstimate={continueEstimate}
         empty={
           <EmptyState
             context={ctx}

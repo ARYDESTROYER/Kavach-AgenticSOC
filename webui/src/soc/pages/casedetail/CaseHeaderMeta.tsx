@@ -36,6 +36,7 @@ import type { PickableUser } from '@/soc/pages/CaseDetail.api';
 import { CampaignChip } from '@/soc/pages/Campaigns';
 import type { Campaign } from '@/soc/pages/Campaigns.api';
 
+import { AskAi } from './AskAi';
 import { AssigneePicker } from './CollaborationPanel';
 import {
   caseDisplayId,
@@ -191,11 +192,14 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
       data-testid="case-detail-meta"
       className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-muted-foreground"
     >
-      <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
+      <span className="group/ask inline-flex min-w-0 max-w-full items-center gap-0.5">
         <span data-testid="case-detail-id" className="min-w-0 break-all font-mono text-foreground/80">
           {displayId}
         </span>
         <CopyId value={displayId} />
+        {/* Round 12 WP-ASK: a NEW Workspace chat about this case, never this case's
+            own chat thread (#5); an icon the size of the copy button beside it. */}
+        <AskAi kind="case" value={displayId} />
       </span>
 
       {severity ? (

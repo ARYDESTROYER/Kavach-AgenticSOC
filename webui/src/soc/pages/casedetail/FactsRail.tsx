@@ -58,6 +58,7 @@ import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTa
 import { scoreBand } from '@/soc/components/palette';
 import type { PickableUser, TriageChips } from '@/soc/pages/CaseDetail.api';
 
+import { AskAi } from './AskAi';
 import { AssigneePicker } from './CollaborationPanel';
 import { SignalProfile } from './SignalProfile';
 import { confidenceCalibration, type FpPolicy } from './shared';
@@ -319,13 +320,15 @@ export const FactsRail: React.FC<FactsRailProps> = ({
             <span className={cn('block', FIELD_LABEL)}>Detection rule{ruleIds.length === 1 ? '' : 's'}</span>
             <div className="flex flex-wrap gap-1">
               {ruleIds.map((rule, index) => (
-                <Badge
-                  key={`${rule}-${index}`}
-                  variant="outline"
-                  className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
-                >
-                  {rule}
-                </Badge>
+                <span key={`${rule}-${index}`} className="group/ask inline-flex min-w-0 max-w-full items-center gap-1">
+                  <Badge
+                    variant="outline"
+                    className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
+                  >
+                    {rule}
+                  </Badge>
+                  <AskAi kind="rule" value={rule} />
+                </span>
               ))}
             </div>
           </div>
@@ -334,9 +337,11 @@ export const FactsRail: React.FC<FactsRailProps> = ({
 
       {entityValue ? (
         <RailSection title="Primary entity" icon={Crosshair} testId="facts-entity">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="group/ask flex flex-wrap items-center gap-1.5">
             <InlineCode className="break-all">{entityValue}</InlineCode>
             {entityType ? <Badge variant="outline">{entityTypeLabel(String(entityType))}</Badge> : null}
+            {/* Round 12 WP-ASK: a NEW Workspace chat, never this case's chat (#5). */}
+            <AskAi type={String(entityType || '')} value={entityValue} />
           </div>
           {ruleIds[0] || c.source_name ? (
             <p className="text-xs text-muted-foreground">

@@ -12,7 +12,11 @@
  *
  * "Ask about this" (`NavOpts.topic`): the page resolves the topic to its server-side
  * templated question and sends THAT (origin `starter`, with the topic id) in a fresh
- * chat; it never sends free text from a link. The palette's "Ask AI: <text>"
+ * chat; it never sends free text from a link. An "Ask AI" chip's typed reference
+ * (`NavOpts.entity`, Round 12 WP-ASK) follows the same pattern: the server checks the
+ * value's shape for its kind and words the question, which the page sends with origin
+ * `starter`, so the log- or case-derived value is never analyst-authored for the
+ * indicator taint rule (#9). The palette's "Ask AI: <text>"
  * (`NavOpts.ask`) only PREFILLS a fresh chat's composer (the workspace focuses it); the
  * analyst sends it, so it is never sent on their behalf. A deep-linked `#/chat?conversationId=` is cleared from the
  * hash as soon as the selection moves elsewhere, so a refresh does not reopen it.
@@ -23,11 +27,13 @@
 import * as React from 'react';
 import { toast } from 'sonner';
 
+import { ApiError } from '@/lib/api';
 import type { ChatConversationSummary, NavOpts } from '@/lib/types';
 import { useAuth } from '@/soc/auth';
 import { useConfirm } from '@/soc/components/ConfirmDialog';
 import { useRoute } from '@/soc/router';
 import { getChatTopic } from '../chat/chat-api';
+import { getChatEntityQuestion } from '../chat/entity-ask';
 import { useChatContext } from '../chat/useChatContext';
 import { useChatConversations } from '../chat/useChatConversations';
 import { useChatEngine } from '../chat/useChatEngine';
@@ -166,6 +172,27 @@ export default function Chat({ caseId, opts }: ChatProps = {}) {
         if (mountedRef.current) toast.error('That topic is not available to ask about.');
       });
   }, [clearTopic, conv.activeId, engine.busy, send, topic]);
+
+  // An "Ask AI" chip (Round 12 WP-ASK): once the fresh draft is in place, ask the
+  // server's question about the referenced value, consumed first so a re-render can
+  // never ask twice. Origin `starter`: the value came from the console, not the analyst.
+  const { entity, clearEntity } = conv;
+  React.useEffect(() => {
+    if (!entity || conv.activeId !== null || engine.busy) return;
+    clearEntity();
+    getChatEntityQuestion(entity)
+      .then(({ question }) => {
+        if (mountedRef.current) send(question, { origin: 'starter' });
+      })
+      .catch((error: unknown) => {
+        if (!mountedRef.current) return;
+        toast.error(
+          error instanceof ApiError && error.status === 422
+            ? 'There is no question to ask about that value.'
+            : 'Could not start that question. Try again.',
+        );
+      });
+  }, [clearEntity, conv.activeId, engine.busy, entity, send]);
 
   // A deep-linked conversation stops being the URL once the rail selection moves on.
   React.useEffect(() => {

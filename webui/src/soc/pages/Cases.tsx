@@ -85,6 +85,8 @@ import { usePrefs } from '@/soc/prefs';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
+import type { AskAiChipProps } from '@/soc/components/AskAiChip';
+import { useAuth } from '@/soc/auth';
 import { CaseHoverCard } from '@/soc/components/CaseHoverCard';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { useDemo } from '@/soc/demo';
@@ -128,6 +130,49 @@ import { motion, AnimatePresence, MotionProvider, HOUSE_SPRING } from '@/soc/com
 
 const LIST_LIMIT = 200;
 const CASE_MANAGER_HANDOFF_MS = 500;
+
+/**
+ * Round 12 WP-ASK: the "Ask AI" chip, loaded on demand so it never becomes a shared
+ * chunk every route's preload list (in the entry chunk) must name (see AskAiChip.tsx,
+ * "Loading"). The load starts when this module loads; the chip renders once it has
+ * arrived, and never if it cannot load (the chip is optional, so it fails soft).
+ */
+type AskAiChipModule = typeof import('@/soc/components/AskAiChip');
+let askAiChipModule: AskAiChipModule | null = null;
+const askAiChipLoad: Promise<AskAiChipModule | null> = import('@/soc/components/AskAiChip').then(
+  (loaded) => (askAiChipModule = loaded),
+  () => null,
+);
+/**
+ * A shell context, or null outside it. `useAuth` / `useRoute` read their context before
+ * they throw, so hook order is stable; the hook is looked up inside the guard too (a test
+ * double of the module may not export it).
+ */
+function useOptionalContext<T>(pick: () => () => T): T | null {
+  try {
+    return pick()();
+  } catch {
+    return null;
+  }
+}
+function AskAiChip(props: AskAiChipProps) {
+  const auth = useOptionalContext(() => useAuth);
+  const route = useOptionalContext(() => useRoute);
+  const [loaded, setLoaded] = React.useState(askAiChipModule);
+  React.useEffect(() => {
+    if (loaded) return undefined;
+    let live = true;
+    void askAiChipLoad.then((next) => {
+      if (live && next) setLoaded(next);
+    });
+    return () => {
+      live = false;
+    };
+  }, [loaded]);
+  return loaded ? (
+    <loaded.AskAiChip {...props} navigate={route?.navigate} hasPermission={auth?.hasPermission} />
+  ) : null;
+}
 
 /** Stable id for the Cases table's per-user column state (Wave 7). */
 const CASES_TABLE_ID = 'cases';
@@ -1167,7 +1212,7 @@ export default function Cases({
       width: '9.5rem',
       lockVisible: true,
       cell: (c) => (
-        <div className="flex items-center gap-1.5">
+        <div className="group/ask flex items-center gap-1.5">
           <CaseHoverCard case={c}>
             <button
               type="button"
@@ -1181,6 +1226,8 @@ export default function Cases({
             </button>
           </CaseHoverCard>
           <DemoBadge show={isDemoCase(c)} iconless className="px-1 py-0 text-2xs" />
+          {/* Round 12 WP-ASK: a new Workspace chat that asks the server's question about this case. */}
+          <AskAiChip kind="case" value={c.case_number || c.case_id} />
         </div>
       ),
     },
@@ -1388,15 +1435,23 @@ export default function Cases({
       id: 'entity',
       header: 'Entity',
       width: '11rem',
-      cell: (c) =>
-        c.entity ? (
-          <span className="text-sm text-foreground">
-            <span className="text-muted-foreground">{c.entity.type}:</span>{' '}
-            <InlineCode>{c.entity.value}</InlineCode>
-          </span>
-        ) : (
-          <span className="text-muted-foreground">{DASH}</span>
-        ),
+      cell: (c) => {
+        if (!c.entity) return <span className="text-muted-foreground">{DASH}</span>;
+        return (
+          // The value stays on one line (a long one truncates, whole in its title) so
+          // the cell is never squeezed into a letter-per-line column; the Ask AI chip
+          // shows beside it on hover or focus of the cell.
+          <div className="group/ask flex items-center gap-1.5">
+            <span className="flex min-w-0 items-center gap-1 whitespace-nowrap text-sm text-foreground">
+              <span className="text-muted-foreground">{c.entity.type}:</span>
+              <InlineCode className="max-w-[16rem] truncate break-normal" title={c.entity.value}>
+                {c.entity.value}
+              </InlineCode>
+            </span>
+            <AskAiChip type={c.entity.type} value={c.entity.value} />
+          </div>
+        );
+      },
     },
     {
       id: 'updated_at',

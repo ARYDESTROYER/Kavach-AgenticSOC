@@ -25,7 +25,7 @@
  * Revamp additions: server-side content search (`?q=`, debounced, with snippets),
  * pinning (≤ 10; 409 `chat_pin_limit`), `report_id` on rows, and a REQUESTED selection
  * from the route (`NavOpts` `conversationId` / `messageId` / `newChat` / `topic` / the
- * palette's `ask`).
+ * palette's `ask` / an "Ask AI" chip's typed `entity` reference).
  *
  * The list is one page of 60: the server keeps the newest 50 unpinned conversations plus
  * up to 10 pin-exempt ones, so every kept thread fits (SPEC A9). A thread can still be
@@ -71,6 +71,7 @@ import {
   updateConversation,
 } from './chat-api';
 import { clampAsk } from './ask';
+import { chatEntityRef, type ChatEntityRef } from './entity-ask';
 import { displayText } from './stream-events';
 import { consoleTopic } from './topic';
 import { HISTORY_CHANNEL, consumeRun, findRun, markConversationRead } from './turn-runner';
@@ -190,23 +191,37 @@ export interface ChatNavRequest {
   topic: string | null;
   /** The palette's "Ask AI" text, prefilled into the new chat's composer (never sent). */
   ask: string | null;
+  /**
+   * An "Ask AI" chip's typed reference (Round 12 WP-ASK): the page resolves it to the
+   * server's question and sends that (origin `starter`), like a topic.
+   */
+  entity: ChatEntityRef | null;
 }
 
 /**
  * Read the chat keys of `NavOpts`, validated (an invalid id is dropped, a message id
  * without its conversation is dropped). `null` when nothing chat-related was asked.
- * A `topic` or an `ask` implies a fresh chat; a `conversationId` wins over `newChat`,
- * and a `topic` (a templated question the page sends) wins over a free-text `ask`.
+ * A `topic`, an `entity` or an `ask` implies a fresh chat; a `conversationId` wins over
+ * `newChat`, and a `topic` or an `entity` (server-worded questions the page sends) wins
+ * over a free-text `ask`.
  */
 export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRequest | null {
   if (!opts) return null;
   const conversationId = isSafeChatId(opts.conversationId) ? opts.conversationId : null;
   const messageId = conversationId && isSafeChatId(opts.messageId) ? opts.messageId : null;
   const topic = consoleTopic(opts.topic);
-  const ask = topic ? null : clampAsk(opts.ask);
-  const newChat = !conversationId && (opts.newChat === true || topic !== null || ask !== null);
+  const entity = topic ? null : chatEntityRef(opts.entity);
+  const ask = topic || entity ? null : clampAsk(opts.ask);
+  const newChat = !conversationId && (opts.newChat === true || topic !== null || entity !== null || ask !== null);
   if (!conversationId && !newChat) return null;
-  return { conversationId, messageId, newChat, topic: conversationId ? null : topic, ask: conversationId ? null : ask };
+  return {
+    conversationId,
+    messageId,
+    newChat,
+    topic: conversationId ? null : topic,
+    ask: conversationId ? null : ask,
+    entity: conversationId ? null : entity,
+  };
 }
 
 export interface UseChatConversationsOptions {
@@ -319,6 +334,9 @@ export interface ChatConversationsController {
    */
   ask: string | null;
   clearAsk: () => void;
+  /** The typed reference of the last "Ask AI" chip request (the page asks its question). */
+  entity: ChatEntityRef | null;
+  clearEntity: () => void;
   /**
    * Increments whenever the controller deliberately enters a fresh New-chat draft
    * (New chat, deleting the last thread, a `newChat` / `topic` request). Pass it to
@@ -398,6 +416,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [highlight, setHighlight] = React.useState<ChatHighlightRequest | null>(null);
   const [topic, setTopic] = React.useState<string | null>(null);
   const [ask, setAsk] = React.useState<string | null>(null);
+  const [entity, setEntity] = React.useState<ChatEntityRef | null>(null);
   const [newDraftEpoch, setNewDraftEpoch] = React.useState(0);
   const [transcriptEpoch, setTranscriptEpoch] = React.useState(0);
   const [searchQuery, setSearchQueryState] = React.useState('');
@@ -502,6 +521,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       // The latest navigation decides: an unconsumed ask from an earlier one never
       // prefills a draft it was not meant for.
       setAsk(request.newChat ? request.ask : null);
+      setEntity(request.newChat ? request.entity : null);
       if (request.newChat) {
         if (request.topic) setTopic(request.topic);
         applyTarget(null);
@@ -1093,6 +1113,8 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     clearTopic: React.useCallback(() => setTopic(null), []),
     ask,
     clearAsk: React.useCallback(() => setAsk(null), []),
+    entity,
+    clearEntity: React.useCallback(() => setEntity(null), []),
     newDraftEpoch,
     transcriptEpoch,
     busy,

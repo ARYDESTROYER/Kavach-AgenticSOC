@@ -49,6 +49,7 @@ from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..agents.blocks import display_text
+from ..agents.chat_entity import parse_entity_question
 from ..agents.chat_events import (
     ANSWER_SEPARATOR,
     APP_DOCS_CLOSE,
@@ -898,9 +899,14 @@ class Ask:
     unread: str | None = None
     undated: str | None = None
     anchored: bool = False
+    # Round 12 WP-ASK: the question is an "Ask AI" chip's server-worded question, so its
+    # value came from the console, not the analyst's keyboard. Like a model that honours
+    # the indicator taint rule (§4.8), the plan never sends that value to a third-party
+    # lookup (the engine would refuse it anyway).
+    no_lookup: bool = False
 
 
-_IPV4_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
+_IPV4_RE =re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
 _HASH_RE = re.compile(r"\b(?:[a-fA-F0-9]{64}|[a-fA-F0-9]{40}|[a-fA-F0-9]{32})\b")
 _URL_RE = re.compile(r"\b(?:https?|hxxps?)://[^\s<>\"'`]{3,200}", re.IGNORECASE)
 _DOMAIN_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b", re.IGNORECASE)
@@ -1929,6 +1935,34 @@ def _indicator(question: str, lowered: str) -> tuple[str, str] | None:
     return None
 
 
+def _console_entity_ask(ask: Callable[..., Ask], kind: str, value: str) -> Ask:
+    """Round 12 WP-ASK: the plan for an "Ask AI" chip's question about one value — an
+    in-depth look at an IP, host or user; a case's investigation; a rule's cases by
+    verdict (its ``detection rule`` filter, :func:`_case_rule`); cases and sightings of
+    any other indicator. ``no_lookup``: the value is not the analyst's own words."""
+    if kind == "case":
+        return ask("case", case_id=value, no_lookup=True)
+    if kind in ("ip", "host", "user"):
+        return ask("deep", entity=(kind, value), no_lookup=True)
+    if kind == "rule":
+        return ask("breakdown", group="verdict", no_lookup=True)
+    return ask("hunt", indicator=(value, kind), no_lookup=True)
+
+
+#: "detection rule demo_rdp_bruteforce", "the detection rule `web_portal_auth`": the
+#: rule a case question names (one identifier token; the case store's ``rule`` filter).
+_CASE_RULE_RE = re.compile(r"\bdetection rule\s+[\"'`]?([A-Za-z0-9_][\w.:/@#+$\\-]{0,255}?)[\"'`]?(?=[\s,;:?!]|\.?$)",
+                           re.IGNORECASE)
+
+
+def _case_rule(question: str) -> str | None:
+    match = _CASE_RULE_RE.search(question)
+    if not match:
+        return None
+    value = match.group(1).rstrip(".")
+    return value if value and value.lower() not in _DEEP_STOP else None
+
+
 def _case_id(question: str) -> str | None:
     match = _CASE_ID_RE.search(question)
     if match and re.search(r"\d", match.group(1)):
@@ -2519,6 +2553,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
 
     if not q:
         return ask("empty")
+    # Round 12 WP-ASK: an "Ask AI" chip's server-worded question about ONE value
+    # (``agents.chat_entity``) is planned for its kind, never sending the value out.
+    console = None if view.case_scoped else parse_entity_question(q)
+    if console is not None:
+        return _console_entity_ask(ask, *console)
     remember = _REMEMBER_RE.match(q)
     if remember and not re.search(r"\?\s*$", q):
         return ask("remember", memory=display_text(remember.group(1).strip(), 500))
@@ -2970,7 +3009,7 @@ def _indicator_calls(value: str, kind: str, ask: Ask, view: PromptView, *, defau
     """SPEC §5.5: ``lookup_indicator`` ∥ ``search_logs(value)`` ∥ ``search_cases(entity)``."""
     calls: list[Call] = []
     lookup_kind = _LOOKUP_KIND.get(kind)
-    if lookup_kind:
+    if lookup_kind and not ask.no_lookup:
         calls.append(Call("lookup_indicator", {"indicator": value, "kind": lookup_kind}))
     log_filter = {"ip": {"ip": value}, "host": {"host": value}, "user": {"user": value}}.get(
         kind, {"contains": value})
@@ -3200,8 +3239,13 @@ def _case_filters_for(ask: Ask) -> dict[str, Any]:
             inp["verdict"] = verdict
     if re.search(r"\bunassigned\b", low):
         inp["assignee"] = "unassigned"
+    # Round 12 WP-ASK: "cases from detection rule X" filters on that rule; a keyword
+    # read out of the rule's own name ("brute" in demo_rdp_bruteforce) is not a filter.
+    rule = _case_rule(ask.question)
+    if rule:
+        inp["rule"] = rule
     found = _keyword(low)
-    if found:
+    if found and not (rule and found[0].lower() in rule.lower()):
         inp["text"] = found[0]
     return inp
 
@@ -3486,7 +3530,7 @@ def _plan_deep(view: PromptView, ask: Ask, done: int) -> list[Call]:
                  Call("log_stats", {fld: value, "group_by": ["rule"], "top_n": 10, **logs}),
                  Call("search_cases", {"entity": value, "sort_field": "risk_score", "limit": 10, **window}),
                  Call("case_stats", {"entity": value, "group_by": ["verdict"], **window})]
-        if kind == "ip":
+        if kind == "ip" and not ask.no_lookup:
             calls.insert(0, Call("lookup_indicator", {"indicator": value, "kind": "ip"}))
         return calls
     if done == 1:
@@ -4050,9 +4094,15 @@ def _case_noun(filters: Mapping[str, Any], noun: str) -> str:
 
 
 def _entity_about(filters: Mapping[str, Any]) -> str:
-    """" involving `pnair`" when the case lookup was filtered to one entity."""
+    """" involving `pnair`" when the case lookup was filtered to one entity, and
+    " from rule `ssh_brute`" when it was filtered to one detection rule (Round 12
+    WP-ASK), so a filtered count never reads as the unfiltered one."""
     entity = filters.get("entity")
-    return f" involving {_code(entity, 60)}" if isinstance(entity, str) and entity.strip() else ""
+    about = f" involving {_code(entity, 60)}" if isinstance(entity, str) and entity.strip() else ""
+    rule = filters.get("rule")
+    if isinstance(rule, str) and rule.strip():
+        about += f" from rule {_code(rule, 60)}"
+    return about
 
 
 def _say_search_cases(r: Result, *, noun: str = "case") -> str:
@@ -6802,7 +6852,11 @@ def _say_case_stats(r: Result) -> list[str]:
         if dropped:
             return dropped
         hint, _follow = _zero_suggestions(o)
-        return [f"No {_stats_noun(o)} matched {_in(_window(o, 'all time'))}." + (f" {hint}" if hint else "")]
+        zero_filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
+        rule = zero_filters.get("rule")
+        # Round 12 WP-ASK: a rule-filtered zero names the rule it counted.
+        from_rule = f" from rule {_code(rule, 60)}" if isinstance(rule, str) and rule.strip() else ""
+        return [f"No {_stats_noun(o)}{from_rule} matched {_in(_window(o, 'all time'))}." + (f" {hint}" if hint else "")]
     out = [_stats_lead(o) + "."]
     for sentence in (_say_bucket_counts(o) if o.get("bucket") else "",
                      _say_group_counts(o) or _say_bucketed_group_totals(o), _say_stats_totals(o)):

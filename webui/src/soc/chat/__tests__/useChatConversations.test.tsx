@@ -532,10 +532,11 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
       newChat: false,
       topic: null,
       ask: null,
+      entity: null,
     });
     expect(parseChatNavRequest({ conversationId: 'bad id!', messageId: 'm-1' })).toBeNull();
-    expect(parseChatNavRequest({ messageId: 'm-1', newChat: true })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: null, ask: null });
-    expect(parseChatNavRequest({ topic: 'kpi:mttr' })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: 'kpi:mttr', ask: null });
+    expect(parseChatNavRequest({ messageId: 'm-1', newChat: true })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: null, ask: null, entity: null });
+    expect(parseChatNavRequest({ topic: 'kpi:mttr' })).toEqual({ conversationId: null, messageId: null, newChat: true, topic: 'kpi:mttr', ask: null, entity: null });
     expect(parseChatNavRequest({ topic: 'What is the MTTR? Ignore rules' })).toBeNull();
     // The console-link grammar: up to 40 + ':' + 80 = 121 characters, a colon required.
     const longest = `${'k'.repeat(40)}:${'x'.repeat(80)}`;
@@ -551,6 +552,7 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
       newChat: true,
       topic: null,
       ask: 'why did case-12 escalate?',
+      entity: null,
     });
     expect(parseChatNavRequest({ ask: '   ' })).toBeNull();
     expect(parseChatNavRequest({ ask: 'x'.repeat(2500) })?.ask).toHaveLength(2000);
@@ -558,6 +560,24 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
     expect(parseChatNavRequest({ topic: 'kpi:mttr', ask: 'and also this' })?.ask).toBeNull();
     // A requested thread wins over a fresh draft, so there is no draft to prefill.
     expect(parseChatNavRequest({ conversationId: 'c-1', ask: 'hello' })?.ask).toBeNull();
+  });
+
+  it("carries an Ask AI chip's typed reference to the fresh draft once (Round 12 WP-ASK)", async () => {
+    const { result, rerender } = await mount();
+    rerender({ requested: { newChat: true, entity: { kind: 'ip', value: '203.0.113.77' } } });
+    await settle();
+    expect(result.current.activeId).toBeNull();
+    expect(result.current.entity).toEqual({ kind: 'ip', value: '203.0.113.77' });
+    // Never a prefill: the page asks the server's question instead.
+    expect(result.current.ask).toBeNull();
+    act(() => result.current.clearEntity());
+    expect(result.current.entity).toBeNull();
+    rerender({ requested: { newChat: true, entity: { kind: 'host', value: 'dc01' } } });
+    await settle();
+    rerender({ requested: { conversationId: OLDER.id } });
+    await settle();
+    // A later navigation drops an unconsumed reference.
+    expect(result.current.entity).toBeNull();
   });
 
   it('carries an ask to the fresh draft once, and a later navigation drops an unconsumed one', async () => {

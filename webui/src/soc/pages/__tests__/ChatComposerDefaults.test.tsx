@@ -13,9 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({ username: 'analyst', hasPermission: () => true }),
-}));
+vi.mock('@/soc/auth', () => {
+  const auth = { username: 'analyst', hasPermission: () => true };
+  // An answer reads the optional form (Round 12: "Add to case", report export author).
+  return { useAuth: () => auth, useOptionalAuth: () => auth };
+});
 vi.mock('@/soc/chat/report/ReportPanel', () => ({ default: () => null, ReportPanel: () => null }));
 vi.mock('@/soc/chat/shortcuts/ShortcutSheet', () => ({ ShortcutSheet: () => null }));
 

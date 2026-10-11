@@ -61,6 +61,13 @@ export type NavOpts = {
    * link never carries free text.
    */
   ask?: string;
+  /**
+   * Chat (Round 12 WP-ASK): an "Ask AI" chip's TYPED reference to one entity value. The
+   * page resolves it to the server's question (`POST /api/chat/entity-question`) and
+   * sends that with `origin: "starter"` in a new chat; never free text, never prefilled.
+   * In memory only: the router never writes it to the hash.
+   */
+  entity?: { kind: string; value: string };
   /** Reports library: the report to open (`#/reports?reportId=…`). */
   reportId?: string;
   /** Logs: an exact query to pre-fill (untrusted text, bounded, control/bidi-free). */

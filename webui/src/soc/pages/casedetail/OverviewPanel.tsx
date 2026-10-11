@@ -80,6 +80,7 @@ import {
   severityBand,
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance, type Provenance } from '@/soc/components/ProvenanceTag';
+import { AskAi } from './AskAi';
 import { DecisionCard } from './DecisionCard';
 import {
   aiHeadline,
@@ -1567,6 +1568,10 @@ export const OverviewPanel: React.FC<{
                 ) : null}
                 <div className="flex flex-wrap gap-2">
                   <CopyChip value={entityValue} label="Copy indicator" />
+                  {/* Round 12 WP-ASK: an action row, so always shown, as a labelled chip
+                      in the Copy chip's shape (with its own hover). Opens a NEW Workspace
+                      chat, never the case chat (#5). */}
+                  <AskAi type={entityType} value={entityValue} reveal={false} />
                 </div>
               </div>
             ) : (

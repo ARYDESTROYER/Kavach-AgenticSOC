@@ -38,17 +38,16 @@ import { useAnnouncer } from '@/soc/components/announcer';
 import { getConversation } from '../chat-api';
 import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
-import { estimateNextRequest } from '../display';
 import { EmptyState } from '../empty/EmptyState';
 import { LANE_COL, LANE_GRID, laneVars } from '../message/lane';
 import { NoticeCallout } from '../message/NoticeCallout';
 import { Transcript } from '../message/Transcript';
-import { useTurnAnnouncer } from '../message/useTurnAnnouncer';
+import { announcedLookupBound, useTurnAnnouncer } from '../message/useTurnAnnouncer';
 import { ShortcutSheet } from '../shortcuts/ShortcutSheet';
 import { CHAT_KEYSHORTCUTS, useChatShortcuts } from '../shortcuts/useChatShortcuts';
 import type { ChatConversationsController } from '../useChatConversations';
 import type { ChatContextController } from '../useChatContext';
-import { CONTINUE_PROMPT, type ChatEngine, type ChatUserItem } from '../useChatEngine';
+import { type ChatEngine, type ChatUserItem } from '../useChatEngine';
 import { HistoryRail, HistoryStrip, type ConversationExportFormat } from './HistoryRail';
 import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
@@ -99,7 +98,8 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const busy = engine.busy;
   const ctx = context.context;
 
-  useTurnAnnouncer(engine, ctx?.bounds.max_tool_calls ?? null);
+  // A lookup limit is spoken only in `bounded` mode (chat is unlimited by default, D1).
+  useTurnAnnouncer(engine, announcedLookupBound(ctx));
 
   const activeId = typeof conv.activeId === 'string' ? conv.activeId : null;
   const summary = conv.activeSummary;
@@ -235,18 +235,6 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   }, [ask, busy, clearAsk, conv.activeId]);
 
   /* -------------------------------------------------------------- derived -- */
-
-  // Calibrated on every part, exactly like the composer meter (display.estimateNextRequest).
-  const continueEstimate = React.useMemo(() => {
-    if (!ctx) return null;
-    return estimateNextRequest({
-      staticPromptTokens: ctx.static_prompt_tokens,
-      historyTokens: ctx.history_tokens,
-      draft: CONTINUE_PROMPT,
-      charsPerToken: ctx.chars_per_token,
-      calibration: ctx.calibration ?? null,
-    }).total;
-  }, [ctx]);
 
   const disabledReason = conv.restoring
     ? 'Restoring this conversation…'
@@ -461,7 +449,6 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onHighlightDone={conv.clearHighlight}
           onFocusComposer={focusComposer}
           reportFor={caseScoped ? undefined : report.bindingFor}
-          continueEstimate={continueEstimate}
           onSavePrompt={caseScoped ? undefined : onSavePrompt}
         />
 

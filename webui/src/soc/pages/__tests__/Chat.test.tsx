@@ -26,12 +26,14 @@ const { authState, savePromptMock } = vi.hoisted(() => ({
   authState: { denied: new Set<string>() },
   savePromptMock: vi.fn(),
 }));
-vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({
+vi.mock('@/soc/auth', () => {
+  const auth = () => ({
     username: 'analyst',
     hasPermission: (resource: string, action: string) => !authState.denied.has(`${resource}:${action}`),
-  }),
-}));
+  });
+  // An answer reads the optional form (Round 12: "Add to case", report export author).
+  return { useAuth: auth, useOptionalAuth: auth };
+});
 
 vi.mock('@/soc/chat/composer/Composer', async () => {
   const React = await import('react');
