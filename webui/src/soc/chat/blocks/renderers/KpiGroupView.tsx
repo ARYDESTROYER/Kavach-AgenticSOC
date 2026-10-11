@@ -6,8 +6,13 @@
  * - The columns FOLLOW THE ITEM COUNT (`kpiGridColumns`): three figures make three equal
  *   columns that fill the card, six make six from ~60rem, and a narrow container steps
  *   down to a balanced count. No empty track is ever drawn.
- * - The grid sits inside a framed block card, so it draws only its inner hairlines
- *   (`framed={false}`): no card-border-plus-grid-border double frame.
+ * - Inside a framed host (a block card, an entity's own frame: 0.75rem padding each) the
+ *   grid draws only its inner hairlines (`framed={false}`, no card-border-plus-grid-border
+ *   double frame) and HANGS by the tiles' own padding (`-mx-3` = KpiTile's `px-3`), so
+ *   every label and numeral starts on the host's content edge, the same edge as the card
+ *   title and the prose above it; the frame's clip still hides the outermost rules. A
+ *   group with no frame around it (a report leaf, the expanded sheet, a report panel
+ *   item) passes `framed`, keeps its own closed frame and does not hang.
  * - A caption ("in the returned page", "of 22 acknowledged cases") is the tile's
  *   `secondary` line, on its own line UNDER the numeral, wrapping; the numeral and the
  *   caption can never truncate each other ("≥…" / "in the returned …").
@@ -142,14 +147,23 @@ export function KpiItemCell({ item, testId, staticMode = false }: { item: KpiIte
   );
 }
 
+/**
+ * The unframed grid's hang: out by the tiles' side padding (KpiTile `strip`/`compact`
+ * `px-3`, the gauge cell's `px-3`), so tile text sits on the host's content edge.
+ */
+export const KPI_HANG = '-mx-3';
+
 export interface KpiGroupViewProps {
   items: KpiItem[];
   idPrefix: string;
   /** Print / static export: delta chips on their own line, no tile buttons. */
   staticMode?: boolean;
   /**
-   * Draw the grid's own closed frame. Default `false`: a `kpi_group` always renders
-   * inside a framed block card (or an entity card), whose border is the frame.
+   * Draw the grid's own closed frame. Default `false`, for a group inside a framed host
+   * with 0.75rem side padding (a top-level block card, an entity's own frame): the host's
+   * border is the frame and the grid hangs into that padding (see the module note). The
+   * host passes `true` when nothing frames the group (a report leaf, the expanded sheet,
+   * a report panel item), so a bare group still reads as one closed box.
    */
   framed?: boolean;
   className?: string;
@@ -158,7 +172,7 @@ export interface KpiGroupViewProps {
 export function KpiGroupView({ items, idPrefix, staticMode = false, framed = false, className }: KpiGroupViewProps) {
   return (
     <div className={cn('min-w-0', className)} data-testid="block-kpis" data-static={staticMode || undefined}>
-      <KpiTileGrid count={items.length} framed={framed} role="list">
+      <KpiTileGrid count={items.length} framed={framed} containerClassName={framed ? undefined : KPI_HANG} role="list">
         {items.map((item, i) => (
           <KpiItemCell key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} staticMode={staticMode} />
         ))}

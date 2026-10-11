@@ -63,8 +63,18 @@ export const CONTENT_COL = 'col-start-2 col-end-3 min-w-0 w-full max-w-[48rem] j
 export const BLOCK_HANG =
   '[&>*>*:not([data-block-type=markdown]):not([data-block-type=callout])]:-mx-[calc(0.75rem+1px)]';
 
-/** Answer blocks: the whole lane, framed cards hanging into the gutter (above). */
-export const WIDE_COL = `${LANE_COL} ${BLOCK_HANG}`;
+/**
+ * The prose measure for the bare prose blocks in the block column: a model-written
+ * `markdown` block is prose, and a `callout` is a note like the message's notices, so
+ * both keep the 48rem measure on the lane's left edge (the callout's box sits on the
+ * prose edge, as the notices do) instead of running the whole lane under a 48rem
+ * paragraph. A literal, so Tailwind's compiler sees it.
+ */
+export const BLOCK_PROSE_CAP =
+  '[&>*>*[data-block-type=markdown]]:max-w-[48rem] [&>*>*[data-block-type=callout]]:max-w-[48rem]';
+
+/** Answer blocks: the whole lane, framed cards hanging into the gutter, prose capped (above). */
+export const WIDE_COL = `${LANE_COL} ${BLOCK_HANG} ${BLOCK_PROSE_CAP}`;
 
 /**
  * The meta row under an answer WITH blocks: the whole lane, so its actions end on the

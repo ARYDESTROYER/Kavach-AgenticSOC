@@ -106,6 +106,16 @@ export interface PrefsContextValue {
 
   /** Re-fetch the effective cascade (e.g. after an org-terminology admin edit). */
   refresh: () => Promise<void>;
+
+  /**
+   * Set + persist keys of the user's `misc` bag (a presentation preference such as the
+   * chat width). Optimistic: `prefs.misc` holds the new value at once, so a component
+   * that mounts later in this session reads it instead of the copy loaded at start, and
+   * a later hydrate cannot bring back an older value this session already replaced. The
+   * server deep-merges `misc`, so other keys are kept. Best-effort: the local value
+   * applies even if the save fails.
+   */
+  patchMisc: (patch: Record<string, unknown>) => void;
 }
 
 const PrefsContext = React.createContext<PrefsContextValue | null>(null);
@@ -114,10 +124,17 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const { setTheme } = useTheme();
   const [prefs, setPrefs] = React.useState<EffectivePrefs>(EMPTY_EFFECTIVE);
   const [ready, setReady] = React.useState(false);
+  /** `misc` keys this session wrote (patchMisc): newer than any fetched copy. */
+  const sessionMiscRef = React.useRef<Record<string, unknown>>({});
 
   const applyEffective = React.useCallback(
     (eff: EffectivePrefs) => {
-      const merged: EffectivePrefs = { ...EMPTY_EFFECTIVE, ...eff };
+      const fetched: EffectivePrefs = { ...EMPTY_EFFECTIVE, ...eff };
+      // A fetch that started before this session's own misc writes landed must not bring
+      // the older values back (a hydrate racing a first change, a later refresh()).
+      const merged: EffectivePrefs = Object.keys(sessionMiscRef.current).length
+        ? { ...fetched, misc: { ...(fetched.misc ?? {}), ...sessionMiscRef.current } }
+        : fetched;
       setPrefs(merged);
       // Drive the actual colour mode from the resolved cascade (org default unless
       // the user chose their own). ThemeProvider resolves 'system' against the OS.
@@ -138,7 +155,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // `theme_mode` so the Appearance / account-menu picker keeps matching the colour
       // mode ThemeProvider is actually applying (owned by localStorage). Resetting it to
       // EMPTY_EFFECTIVE's 'system' desynced the control from the visible theme.
-      setPrefs((p) => ({ ...EMPTY_EFFECTIVE, theme_mode: p.theme_mode }));
+      setPrefs((p) => ({ ...EMPTY_EFFECTIVE, theme_mode: p.theme_mode, misc: { ...sessionMiscRef.current } }));
     }
   }, [applyEffective]);
 
@@ -164,6 +181,19 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     },
     [setTheme],
   );
+
+  const patchMisc = React.useCallback((patch: Record<string, unknown>) => {
+    if (!patch || typeof patch !== 'object' || !Object.keys(patch).length) return;
+    sessionMiscRef.current = { ...sessionMiscRef.current, ...patch };
+    setPrefs((p) => ({ ...p, misc: { ...(p.misc ?? {}), ...patch } }));
+    try {
+      Promise.resolve(api.prefs.putUser({ misc: patch })).catch(() => {
+        /* best-effort — the local apply already happened */
+      });
+    } catch {
+      /* no preferences API (an embedding without it): the local value still applies */
+    }
+  }, []);
 
   const saveView = React.useCallback<PrefsContextValue['saveView']>(async (name, config) => {
     try {
@@ -264,6 +294,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updateTableColumns,
       t,
       refresh,
+      patchMisc,
     }),
     [
       prefs,
@@ -277,6 +308,7 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updateTableColumns,
       t,
       refresh,
+      patchMisc,
     ],
   );
 

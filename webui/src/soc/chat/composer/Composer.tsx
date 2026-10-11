@@ -4,7 +4,9 @@
  * Workspace variant: a textarea plus ONE 32 px control row (≤ 88 px at rest):
  *   left  — Read-only lock chip (tooltip + access popover), Scope chip ("<source> ·
  *           24h"), removable @-scope chips, the removable non-default model chip;
- *   right — "≈ 1.2k" estimate + budget ring (hover card), Options ⋯, Send ↔ Stop.
+ *   right — "≈ 1.2k" estimate + context-window ring (hover card: the next request,
+ *           the context window and, for a `models:read` viewer, today's AI budget),
+ *           Options ⋯, Send ↔ Stop.
  * Below 560 px of composer width the Scope and @ chips merge into "Scope · n" and the
  * lock chip keeps only its icon. The compact Case Manager variant is the textarea,
  * the estimate, Options (Model, Type out answers) and Send/Stop on one line.
@@ -177,8 +179,8 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
 
   const draft = engine.draft;
   const running = engine.busy;
-  // Only the host blocks Send. A spent budget never does (SPEC §10.3): the server still
-  // answers product questions from the Help Center at $0 and says why for the rest.
+  // Only the host blocks Send. A spent AI budget never does: it limits automatic
+  // investigations, not chat (SPEC D5).
   const blockReason = disabledReason || null;
   const canSend = !running && !blockReason && draft.trim().length > 0;
   const canChooseModel =

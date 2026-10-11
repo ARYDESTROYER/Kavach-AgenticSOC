@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 import type { SourceInstance } from '@/lib/types';
 import {
   budgetMeterValue,
-  budgetPausesAnswers,
   budgetValueText,
   calibratedNextRequest,
   calibrationFactor,
@@ -148,12 +147,6 @@ describe('budget meter', () => {
     expect(sim && budgetValueText(sim)).toMatch(/\(simulated\)$/);
   });
 
-  it('pauses AI answers only when reached AND on_exceed is block', () => {
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'reached', budget }))).toBe(true);
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'reached', budget: { ...budget, on_exceed: 'warn' } }))).toBe(false);
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'reached', budget: null }))).toBe(false);
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'approaching', budget }))).toBe(false);
-  });
 });
 
 describe('projectedCostRange', () => {

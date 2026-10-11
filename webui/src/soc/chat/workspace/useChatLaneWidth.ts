@@ -7,6 +7,12 @@
  * hydrated — the server value in `UserPrefs.misc.chat_lane_width` wins, so the choice
  * follows the viewer across devices, unless the viewer changed it in the meantime. Every
  * change writes both, best-effort: everything works without storage or a server.
+ *
+ * The server write goes through the provider's `patchMisc`, so the provider's
+ * `prefs.misc` learns the new value at once. The Chat page remounts on every visit and
+ * reconciles from that snapshot again; a snapshot that still held the value loaded at
+ * app start would undo the viewer's choice (and its local mirror) on the way back.
+ * Without a provider (a lazy chunk rendered on its own) it writes the server directly.
  */
 import * as React from 'react';
 
@@ -57,15 +63,27 @@ export function useChatLaneWidth(): ChatLaneWidthPreference {
     writeStored(stored);
   }, [ready, misc]);
 
-  const setWidth = React.useCallback((next: ChatLaneWidth) => {
-    if (!isLaneWidth(next)) return;
-    touchedRef.current = true;
-    setWidthState(next);
-    writeStored(next);
-    void api.prefs.putUser({ misc: { [LANE_WIDTH_PREF_KEY]: next } }).catch(() => {
-      /* best-effort: the local choice already applies */
-    });
-  }, []);
+  const patchMisc = prefs?.patchMisc;
+  const setWidth = React.useCallback(
+    (next: ChatLaneWidth) => {
+      if (!isLaneWidth(next)) return;
+      touchedRef.current = true;
+      setWidthState(next);
+      writeStored(next);
+      if (patchMisc) {
+        patchMisc({ [LANE_WIDTH_PREF_KEY]: next });
+        return;
+      }
+      try {
+        Promise.resolve(api.prefs.putUser({ misc: { [LANE_WIDTH_PREF_KEY]: next } })).catch(() => {
+          /* best-effort: the local choice already applies */
+        });
+      } catch {
+        /* no preferences API: the local mirror still holds */
+      }
+    },
+    [patchMisc],
+  );
 
   return { width, setWidth };
 }

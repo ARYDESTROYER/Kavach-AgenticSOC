@@ -10,7 +10,9 @@ import { act, renderHook } from '@testing-library/react';
 
 const { putUserMock, prefsState } = vi.hoisted(() => ({
   putUserMock: vi.fn(),
-  prefsState: { value: null as null | { ready: boolean; prefs: { misc: Record<string, unknown> } } },
+  prefsState: {
+    value: null as null | { ready: boolean; prefs: { misc: Record<string, unknown> }; patchMisc?: (patch: Record<string, unknown>) => void },
+  },
 }));
 
 vi.mock('@/lib/api', async (importOriginal) => {
@@ -77,6 +79,17 @@ describe('useChatLaneWidth', () => {
     prefsState.value = { ready: true, prefs: { misc: { [LANE_WIDTH_PREF_KEY]: 'comfortable' } } };
     rerender();
     expect(result.current.width).toBe('full');
+  });
+
+  it('writes through the provider when there is one, so its snapshot learns the choice', async () => {
+    const patchMisc = vi.fn();
+    prefsState.value = { ready: true, prefs: { misc: {} }, patchMisc };
+    const { result } = renderHook(() => useChatLaneWidth());
+    await act(async () => result.current.setWidth('comfortable'));
+    expect(patchMisc).toHaveBeenCalledWith({ [LANE_WIDTH_PREF_KEY]: 'comfortable' });
+    // The provider persists it; no second, direct write.
+    expect(putUserMock).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(LANE_WIDTH_STORAGE_KEY)).toBe('comfortable');
   });
 
   it('survives a failing server write and a throwing storage', async () => {

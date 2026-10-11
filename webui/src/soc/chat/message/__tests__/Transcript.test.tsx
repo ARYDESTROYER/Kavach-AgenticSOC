@@ -20,16 +20,18 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { AnnouncerProvider } from '@/soc/components/announcer';
 import { TooltipProvider } from '@/ui/tooltip';
 import type { ChatEngine, ChatTranscriptItem } from '../../useChatEngine';
-import { CONTENT_COL, LANE_COL, LANE_GRID } from '../lane';
+import { BLOCK_PROSE_CAP, CONTENT_COL, LANE_COL, LANE_GRID, WIDE_COL } from '../lane';
 import {
   ANCHOR_PEEK_PX,
   FOLLOW_THRESHOLD_PX,
   HIGHLIGHT_MS,
+  JUMP_BAND_GUARD,
   JUMP_MASK,
   JUMP_SCROLL_PADDING,
   JUMP_THRESHOLD_PX,
   Transcript,
   groupExchanges,
+  scrollbarGutter,
   type TranscriptProps,
 } from '../Transcript';
 import { useTurnAnnouncer } from '../useTurnAnnouncer';
@@ -184,6 +186,10 @@ describe('Transcript', () => {
     fireEvent.scroll(lane);
     const bar = screen.getByTestId('jump-to-latest-bar');
     expect(bar).toHaveClass('px-1', '[scrollbar-gutter:stable_both-edges]');
+    // The bar clips (for its gutter), so it leaves 6 px above and below the pill: the
+    // focus ring (2 px + 2 px offset) and the shadow are never cut off (WCAG 2.4.7).
+    expect(bar).toHaveClass('overflow-hidden', 'bottom-0', 'py-1.5');
+    expect(bar).not.toHaveClass('bottom-1.5');
     const column = screen.getByRole('button', { name: 'Jump to latest' }).parentElement as HTMLElement;
     expect(column.className).toContain(CONTENT_COL);
     expect(column).toHaveClass('justify-center');
@@ -279,11 +285,69 @@ describe('Transcript', () => {
     expect(lane).toHaveAttribute('data-jump-mask', 'true');
     for (const cls of JUMP_MASK.split(' ')) expect(lane).toHaveClass(cls);
     expect(JUMP_MASK).toContain('transparent_2.5rem');
+    // The fade never reaches the scrollbar: two solid strips, one scrollbar gutter wide
+    // (`--chat-sbw`, measured on the lane), are added at the left and right edges.
+    expect(JUMP_MASK).toContain('[mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]');
+    expect(JUMP_MASK).toContain('[mask-position:0_0,0_0,100%_0]');
+    expect(JUMP_MASK).toContain('[mask-repeat:no-repeat]');
+    expect(JUMP_MASK).toContain('[-webkit-mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]');
+    expect(lane.style.getPropertyValue('--chat-sbw')).toBe('0px');
+    // Masking does not affect hit-testing: a transparent band inside the lane takes the
+    // pointer over the faded strip, so an invisible link there cannot be clicked.
+    const guard = screen.getByTestId('jump-band-guard');
+    expect(lane.contains(guard)).toBe(true);
+    expect(guard).toBe(lane.lastElementChild);
+    expect(guard).toHaveAttribute('aria-hidden', 'true');
+    for (const cls of JUMP_BAND_GUARD.split(' ')) expect(guard).toHaveClass(cls);
+    expect(guard).toHaveClass('pointer-events-auto', 'sticky', 'bottom-0', 'h-10', '-mt-10');
+    expect(guard).toBeEmptyDOMElement();
     // A keyboard focus that scrolls into view lands clear of the faded band.
     expect(lane).toHaveClass(JUMP_SCROLL_PADDING);
     fireEvent.click(screen.getByRole('button', { name: 'Jump to latest' }));
     expect(lane).not.toHaveAttribute('data-jump-mask');
     expect(lane).not.toHaveClass(JUMP_SCROLL_PADDING);
+    expect(screen.queryByTestId('jump-band-guard')).toBeNull();
+  });
+
+  it('measures one scrollbar gutter for the mask (both gutters are reserved, so half the difference)', () => {
+    const el = document.createElement('div');
+    Object.defineProperty(el, 'offsetWidth', { configurable: true, value: 1112 });
+    Object.defineProperty(el, 'clientWidth', { configurable: true, value: 1092 });
+    expect(scrollbarGutter(el)).toBe(10);
+    // Overlay scrollbars (no gutter) and jsdom (no layout) give 0: no strips.
+    Object.defineProperty(el, 'clientWidth', { configurable: true, value: 1112 });
+    expect(scrollbarGutter(el)).toBe(0);
+    expect(scrollbarGutter(document.createElement('div'))).toBe(0);
+  });
+
+  it('keeps model prose blocks (markdown, callout) at the prose measure inside the block column', async () => {
+    const blocks = [
+      { id: 'md', type: 'markdown', provenance: 'ai', text: 'A model-written paragraph.' },
+      { id: 'note', type: 'callout', provenance: 'ai', tone: 'info', text: 'Keep an eye on 203.0.113.0/24.' },
+      {
+        id: 'tbl',
+        type: 'table',
+        title: 'Hosts',
+        provenance: 'source',
+        artifact_kind: 'table',
+        allowed_views: ['table'],
+        columns: [{ key: 'h', label: 'Host', type: 'text' }],
+        rows: [['web-01']],
+      },
+    ];
+    renderTranscript({ engine: engineWith([userItem('q'), assistantItem({ response: response({ blocks } as never) })]) });
+    const root = await screen.findByTestId('answer-blocks', {}, { timeout: 15000 });
+    const column = root.parentElement as HTMLElement;
+    // The block column spans the lane, hangs framed cards, and caps the bare prose blocks.
+    expect(column.className).toBe(WIDE_COL);
+    for (const cls of BLOCK_PROSE_CAP.split(' ')) expect(column).toHaveClass(cls);
+    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-type=markdown]]:max-w-[48rem]');
+    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-type=callout]]:max-w-[48rem]');
+    // The variant's selector (`column > * > [data-block-type=…]`) reaches exactly the
+    // prose blocks, and the framed table is not capped.
+    const capped = Array.from(column.querySelectorAll(':scope > * > [data-block-type=markdown], :scope > * > [data-block-type=callout]'));
+    expect(capped.map((el) => el.getAttribute('data-block-type'))).toEqual(['markdown', 'callout']);
+    expect(column.querySelector(':scope > * > [data-block-type=table]')).not.toBeNull();
   });
 
   it('brings Jump to latest back after a jump when new content lands below the reader', () => {

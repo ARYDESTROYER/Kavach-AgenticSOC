@@ -18,7 +18,10 @@
  *    8 px, Round 12), never only past the 72 px follow threshold. It sits OUTSIDE the
  *    content: a round pill centred on the lane's bottom edge over a band the lane fades
  *    out (a scroll-edge mask, applied only while the pill shows), so it never covers a
- *    line of text, a chip or a row.
+ *    line of text, a chip or a row. The mask spares the scrollbar gutters (the thumb and
+ *    arrows stay visible), and a transparent sticky band over the faded strip takes the
+ *    pointer, so nothing that cannot be seen there can be clicked or hovered; wheel and
+ *    touch scrolling over it still move the lane (it is inside the lane).
  *  - The scroll lane is the containing block of everything inside it (`relative`), so an
  *    absolutely positioned descendant (each turn's sr-only heading, a chart overlay) is
  *    clipped and scrolled by the lane and can never give the chat frame a scroll height
@@ -63,10 +66,37 @@ export const HIGHLIGHT_MS = 2000;
  * The lane's scroll-edge mask while "Jump to latest" shows: the bottom 2.5rem (the pill
  * and its margin) is faded out completely and the content fades back in over the next
  * 1.5rem, so the pill sits on empty canvas, never on a line of text (Apple scroll-edge
- * effect). Literal strings so Tailwind's compiler sees them.
+ * effect). It takes the lane's own colour whatever the host's background is.
+ *
+ * The fade never reaches the scrollbar: two solid strips, each as wide as one scrollbar
+ * gutter (`--chat-sbw`, measured on the lane: `scrollbar-gutter: stable both-edges`
+ * reserves one on each side), are added over the fade at the left and right edges, so
+ * the thumb and the arrows stay fully visible. (A `padding-box` mask clip does not do
+ * it: Chromium paints a scroller's padding-box mask under its scrollbar too.) Literal
+ * strings so Tailwind's compiler sees them.
  */
-export const JUMP_MASK =
-  '[-webkit-mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem)] [mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem)]';
+export const JUMP_MASK = [
+  '[-webkit-mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem),linear-gradient(#000,#000),linear-gradient(#000,#000)]',
+  '[mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem),linear-gradient(#000,#000),linear-gradient(#000,#000)]',
+  '[-webkit-mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]',
+  '[mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]',
+  '[-webkit-mask-position:0_0,0_0,100%_0]',
+  '[mask-position:0_0,0_0,100%_0]',
+  '[-webkit-mask-repeat:no-repeat]',
+  '[mask-repeat:no-repeat]',
+].join(' ');
+/** One scrollbar gutter's width on the lane (`--chat-sbw`): both gutters ÷ 2. */
+export function scrollbarGutter(el: HTMLElement): number {
+  const both = el.offsetWidth - el.clientWidth;
+  return Number.isFinite(both) && both > 0 ? both / 2 : 0;
+}
+/**
+ * The pointer guard over the faded band (2.5rem, the fully transparent part): masking
+ * does not affect hit-testing, so without it an invisible link or chart beside the pill
+ * would still take clicks and hovers. Sticky inside the lane, so it stays on the lane's
+ * bottom edge, never covers the scrollbar, and wheel or touch over it still scrolls.
+ */
+export const JUMP_BAND_GUARD = 'pointer-events-auto sticky bottom-0 z-10 -mt-10 h-10';
 /** Focus scrolled into view clears the masked band (4rem: the band and its fade). */
 export const JUMP_SCROLL_PADDING = 'scroll-pb-16';
 
@@ -299,7 +329,11 @@ export function Transcript({
   React.useEffect(() => {
     const el = scrollRef.current;
     if (!el) return undefined;
-    const measure = () => setLaneHeight(el.clientHeight);
+    const measure = () => {
+      setLaneHeight(el.clientHeight);
+      // The scrollbar gutters the Jump to latest mask keeps opaque (JUMP_MASK).
+      el.style.setProperty('--chat-sbw', `${scrollbarGutter(el)}px`);
+    };
     measure();
     if (typeof ResizeObserver !== 'function') return undefined;
     const laneObserver = new ResizeObserver(() => {
@@ -519,6 +553,7 @@ export function Transcript({
             <div className={LANE_COL}>{empty}</div>
           )}
         </div>
+        {showJump ? <div aria-hidden="true" className={JUMP_BAND_GUARD} data-testid="jump-band-guard" /> : null}
       </div>
       {showJump ? (
         // Outside the content: a round pill centred on the lane's bottom edge, over the
@@ -526,11 +561,13 @@ export function Transcript({
         // text. A solid control (not a material: it floats over a faded band, and menus,
         // popovers and controls are opaque). Only the button takes pointer events.
         // The compact embed centres it on its one 48rem column (the same grid, inset and
-        // scrollbar gutter as the content), the workspace on its centred lane.
+        // scrollbar gutter as the content), the workspace on its centred lane. The compact
+        // bar clips (its gutter needs an overflow box), so it keeps 6 px above and below
+        // the pill for the focus ring (2 px + 2 px offset) and the shadow.
         <div
           className={cn(
             'pointer-events-none absolute inset-x-0',
-            compact ? 'bottom-1.5 overflow-hidden px-1 [scrollbar-gutter:stable_both-edges]' : 'bottom-2 flex justify-center',
+            compact ? 'bottom-0 overflow-hidden px-1 py-1.5 [scrollbar-gutter:stable_both-edges]' : 'bottom-2 flex justify-center',
           )}
           data-testid="jump-to-latest-bar"
         >
