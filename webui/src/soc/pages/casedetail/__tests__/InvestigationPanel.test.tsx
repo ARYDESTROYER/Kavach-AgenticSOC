@@ -166,6 +166,20 @@ describe('InvestigationPanel — Case Manager presentation (Round 12, CM-6)', ()
     );
   }
 
+  it('shows a machine decision record as a mono record line, prose as prose', () => {
+    const record = 'verdict=TRUE_POSITIVE status=escalated decision_by=system risk=7.41';
+    const { unmount } = renderCm({
+      rationale: { decision_rationale: record } as unknown as InvestigationPanelProps['rationale'],
+    });
+    expect(screen.getByTestId('investigation-decision-line')).toHaveTextContent(record);
+    expect(screen.getByTestId('investigation-decision-line')).toHaveClass('font-mono');
+    unmount();
+    renderCm({
+      rationale: { decision_rationale: 'Escalated for a person to review.' } as unknown as InvestigationPanelProps['rationale'],
+    });
+    expect(screen.getByTestId('investigation-decision-line')).not.toHaveClass('font-mono');
+  });
+
   it('leads with the decision, then the AI assessment, with the trace collapsed and counted', () => {
     const { container } = renderCm();
     const decision = screen.getByTestId('investigation-decision');

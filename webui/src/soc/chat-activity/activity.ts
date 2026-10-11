@@ -1,7 +1,9 @@
 /**
  * Chat activity writers (Round 12, SPEC D13): the rules behind the store's snapshot.
  * Imported only by lazy chunks (the turn runner, the chat views, `ActivityEffects`), so
- * none of this rides the first-paint bundle; `store.ts` keeps the eager core.
+ * none of this rides the first-paint bundle; `store.ts` keeps the eager core. Every
+ * write goes through `commit`, which also precomputes the navigation summaries the eager
+ * glyph hosts read (`workspace`, `case`, `all`).
  *
  * Writers:
  *  - the turn runner (`soc/chat/turn-runner.ts`) for this tab's own turns;
@@ -15,19 +17,22 @@
  */
 import {
   BRAND_KEY,
-  clearChatActivity,
   getChatActivity,
-  onChatActivityClear,
-  sendChatActivity,
   writeChatActivity,
   type ChatActivity,
-  type ChatActivityMessage,
   type ChatActivityStatus,
+  type ChatActivitySummary,
 } from './store';
 
 export * from './store';
 
 export type ChatActivityOutcome = 'done' | 'needs_input' | 'error' | 'stopped';
+
+/** Messages for other tabs (`ActivityEffects` sends them on a BroadcastChannel). */
+export type ChatActivityMessage =
+  | { t: 'put'; a: ChatActivity }
+  | { t: 'drop' | 'seen'; s: string }
+  | { t: 'clear' };
 
 export interface ChatActivitySettled {
   activity: ChatActivity;
@@ -39,18 +44,81 @@ export interface ChatActivitySettled {
 type Listener = () => void;
 
 const settledListeners = new Set<(event: ChatActivitySettled) => void>();
+const clearListeners = new Set<Listener>();
 const viewing = new Map<string, number>();
+let sink: ((message: ChatActivityMessage) => void) | null = null;
 
 const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
 const find = (scope: string) => getChatActivity().entries.find((entry) => entry.scope === scope);
 
+/** Most important first: [state, one, several]. */
+const PHRASES: Array<[ChatActivityStatus, string, string]> = [
+  ['running', 'answer in progress', 'answers in progress'],
+  ['needs_input', 'question needs your input', 'questions need your input'],
+  ['failed', 'answer failed', 'answers failed'],
+  ['unread', 'new answer', 'new answers'],
+];
+
+/**
+ * The glyph state and its text for a set of entries ("Chat: 1 answer in progress:
+ * <title>"). A question the analyst has already looked at keeps its dot but is not
+ * repeated in the text.
+ */
+export function describeChatActivity(entries: readonly ChatActivity[], label = 'Chat'): ChatActivitySummary {
+  const parts: string[] = [];
+  let status: ChatActivityStatus | null = null;
+  for (const [kind, one, several] of PHRASES) {
+    const group = entries.filter((entry) => entry.status === kind);
+    if (!group.length) continue;
+    status ??= kind;
+    const fresh = group.filter((entry) => !entry.seen);
+    if (fresh.length === 1) parts.push(`1 ${one}${fresh[0].title ? `: ${fresh[0].title}` : ''}`);
+    else if (fresh.length) parts.push(`${fresh.length} ${several}`);
+  }
+  return { status, text: parts.length ? `${label}: ${parts.join('; ')}` : '' };
+}
+
+/** The previous summary while nothing it shows changed (hosts select it by identity). */
+const keep = (previous: ChatActivitySummary, next: ChatActivitySummary) =>
+  previous.status === next.status && previous.text === next.text ? previous : next;
+
+/** The one write path: the entries, the brand switch, and the summaries derived from them. */
+function commit(entries: readonly ChatActivity[], animatedBrand = getChatActivity().animatedBrand): void {
+  const before = getChatActivity();
+  writeChatActivity({
+    entries,
+    animatedBrand,
+    workspace: keep(before.workspace, describeChatActivity(entries.filter((entry) => entry.kind === 'workspace'))),
+    case: keep(
+      before.case,
+      describeChatActivity(
+        entries.filter((entry) => entry.kind === 'case'),
+        'Case chat',
+      ),
+    ),
+    all: keep(before.all, describeChatActivity(entries)),
+  });
+}
+
 function replace(entry: ChatActivity | null, scope: string): void {
   const rest = getChatActivity().entries.filter((item) => item.scope !== scope);
-  writeChatActivity(entry ? [entry, ...rest] : rest);
+  commit(entry ? [entry, ...rest] : rest);
 }
 
 function send(message: ChatActivityMessage, local: boolean): void {
-  if (local) sendChatActivity(message);
+  if (local) sink?.(message);
+}
+
+/** Where this tab's own changes go (the BroadcastChannel); `null` detaches. */
+export function setChatActivitySink(next: ((message: ChatActivityMessage) => void) | null): void {
+  sink = next;
+}
+
+/** Sign-out or another user: forget everything and stop this tab's turns (the runner listens). */
+export function clearChatActivity(local = true): void {
+  if (getChatActivity().entries.length) commit([]);
+  for (const listener of Array.from(clearListeners)) listener();
+  send({ t: 'clear' }, local);
 }
 
 /** `settled` fires once per finished turn; `clear` on sign-out (the runner aborts). */
@@ -60,7 +128,11 @@ export function onChatActivity(
   event: 'settled' | 'clear',
   listener: Listener | ((event: ChatActivitySettled) => void),
 ): () => void {
-  if (event === 'clear') return onChatActivityClear(listener as Listener);
+  if (event === 'clear') {
+    const plain = listener as Listener;
+    clearListeners.add(plain);
+    return () => clearListeners.delete(plain);
+  }
   const typed = listener as (event: ChatActivitySettled) => void;
   settledListeners.add(typed);
   return () => settledListeners.delete(typed);
@@ -69,7 +141,7 @@ export function onChatActivity(
 export function setAnimatedBrand(value: boolean): void {
   const current = getChatActivity();
   if (current.animatedBrand === value) return;
-  writeChatActivity(current.entries, value);
+  commit(current.entries, value);
   try {
     window.localStorage.setItem(BRAND_KEY, value ? '1' : '0');
   } catch {

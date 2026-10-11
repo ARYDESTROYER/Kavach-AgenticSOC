@@ -447,29 +447,44 @@ const RiskDerivation: React.FC<{ stage: TimelineStage }> = ({ stage }) => {
   );
 };
 
-/** Keep source/log material fenced while reproducing the prototype's recessed block. */
-const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => (
-  <div className="mt-3 max-w-3xl border border-border bg-surface-sunken p-3">
-    <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-      {step.label || humanizeToken(step.kind) || 'Detail'}
-      {step.trusted ? null : (
-        <span className="inline-flex items-center gap-1 font-normal">
-          <Lock className="h-3 w-3" aria-hidden />
-          Untrusted source data
-        </span>
-      )}
-    </div>
-    {step.body ? (
-      step.trusted ? (
+/**
+ * One evidence step under a stage. Untrusted source/log material stays FENCED in a
+ * CodeBlock (#9), whose own header carries the step label, the untrusted marker and the
+ * copy control — one flat block, never a box inside a box with an empty header bar (CM-8).
+ */
+const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => {
+  const label = step.label || humanizeToken(step.kind) || 'Detail';
+  if (step.body && !step.trusted) {
+    return (
+      <div className="mt-3 max-w-3xl" data-story-step="untrusted">
+        <CodeBlock
+          value={step.body}
+          wrap
+          copyable
+          maxHeightClassName="max-h-36"
+          caption={
+            <span className="inline-flex items-center gap-1.5 font-sans">
+              {label}
+              <span aria-hidden>·</span>
+              <Lock className="h-3 w-3" aria-hidden />
+              Untrusted source data
+            </span>
+          }
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 max-w-3xl" data-story-step="trusted">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">{label}</div>
+      {step.body ? (
         <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-foreground/85">
           {step.body}
         </p>
-      ) : (
-        <CodeBlock value={step.body} wrap copyable maxHeightClassName="max-h-36" />
-      )
-    ) : null}
-  </div>
-);
+      ) : null}
+    </div>
+  );
+};
 
 function storyStageTitle(stage: TimelineStage): string {
   const supplied = stage.label.trim();

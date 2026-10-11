@@ -87,6 +87,7 @@ import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { CaseHoverCard } from '@/soc/components/CaseHoverCard';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
+import { useDemo } from '@/soc/demo';
 import { LoadingBar } from '@/soc/components/LoadingBar';
 import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
 import {
@@ -730,6 +731,8 @@ export default function Cases({
   initialWindowHours: initialWindowHoursProp,
 }: CasesProps) {
   const route = useRoute();
+  // Bulk changes run as durable jobs, which the server refuses in Demo Mode.
+  const { active: demoActive } = useDemo();
   const navigate = onNavigate ?? route.navigate;
   const initialStatus = initialStatusProp ?? route.opts?.status;
   const initialAssignee = initialAssigneeProp ?? route.opts?.assignee;
@@ -1844,6 +1847,9 @@ export default function Cases({
         }
         onReinvestigate={() => setReinvestConfirmOpen(true)}
         onClear={() => setSelected([])}
+        unavailableReason={
+          demoActive ? 'Bulk changes are off in Demo Mode. Open a case to change it.' : null
+        }
       />
 
       <CaseManagerHandoff target={handoffTarget} />
@@ -1935,6 +1941,8 @@ const BulkActionBar: React.FC<{
   onSetDisposition: (disposition: string) => void;
   onReinvestigate: () => void;
   onClear: () => void;
+  /** Why bulk changes cannot run right now (Demo Mode); disables the actions, keeps Clear. */
+  unavailableReason?: string | null;
 }> = ({
   count,
   busy,
@@ -1947,7 +1955,9 @@ const BulkActionBar: React.FC<{
   onSetDisposition,
   onReinvestigate,
   onClear,
+  unavailableReason = null,
 }) => {
+  const locked = busy || Boolean(unavailableReason);
   const [assignOpen, setAssignOpen] = React.useState(false);
   const [assignee, setAssignee] = React.useState('');
   const [tagOpen, setTagOpen] = React.useState(false);
@@ -2001,6 +2011,11 @@ const BulkActionBar: React.FC<{
         <span className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
           {count} selected
         </span>
+        {unavailableReason ? (
+          <span role="note" data-testid="cases-bulk-demo-note" className="text-xs text-muted-foreground">
+            {unavailableReason}
+          </span>
+        ) : null}
 
         {/* cases:write tier — primary CTA of the bar: the single most common bulk
             action, so it gets the filled/primary treatment (matches the "N selected"
@@ -2008,7 +2023,7 @@ const BulkActionBar: React.FC<{
             (theme.css `--secondary` === `--muted` === `--surface-sunken`, all
             `--slate-3`) and read as a disabled/washed-out control next to the bordered
             `outline` buttons beside it. */}
-        <Button size="sm" variant="default" onClick={onAcknowledge} disabled={busy}>
+        <Button size="sm" variant="default" onClick={onAcknowledge} disabled={locked}>
           <Check className="mr-1.5 size-4" aria-hidden />
           Acknowledge
         </Button>
@@ -2017,7 +2032,7 @@ const BulkActionBar: React.FC<{
             status use "Set status → Escalated" below. */}
         <Popover open={assignOpen} onOpenChange={setAssignOpen}>
           <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={busy}>
+            <Button size="sm" variant="outline" disabled={locked}>
               <UserPlus className="mr-1.5 size-4" aria-hidden />
               Assign
             </Button>
@@ -2055,7 +2070,7 @@ const BulkActionBar: React.FC<{
         {/* Add tag (cases:write) */}
         <Popover open={tagOpen} onOpenChange={setTagOpen}>
           <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={busy}>
+            <Button size="sm" variant="outline" disabled={locked}>
               <TagIcon className="mr-1.5 size-4" aria-hidden />
               Add tag
             </Button>
@@ -2091,7 +2106,7 @@ const BulkActionBar: React.FC<{
         </Popover>
 
         {/* Set status (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={busy}>
+        <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
           <SelectTrigger className="h-8 w-[9.5rem]" aria-label="Set status for selected cases">
             <span className="inline-flex items-center text-sm">
               <SlidersHorizontal className="mr-1.5 size-4" aria-hidden />
@@ -2108,7 +2123,7 @@ const BulkActionBar: React.FC<{
         </Select>
 
         {/* Set disposition (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={busy}>
+        <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={locked}>
           <SelectTrigger
             className="h-8 w-[10.5rem]"
             aria-label="Set disposition for selected cases"
@@ -2131,7 +2146,7 @@ const BulkActionBar: React.FC<{
             the single-case Reinvestigate button in CaseDetail, which is also ungated
             pending the tracked RBAC follow-up). Gated behind a ConfirmDialog by the
             caller since it spends LLM tokens per case (#6). */}
-        <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={busy}>
+        <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={locked}>
           {busy ? (
             <RefreshCw className="mr-1.5 size-4 animate-spin" aria-hidden />
           ) : (
@@ -2142,11 +2157,11 @@ const BulkActionBar: React.FC<{
 
         {/* Close / resolve — cases:close. Hidden unless granted (RBAC-mirrored). */}
         <Can resource="cases" action="close">
-          <Button size="sm" variant="outline" onClick={() => onResolve('')} disabled={busy}>
+          <Button size="sm" variant="outline" onClick={() => onResolve('')} disabled={locked}>
             <Check className="mr-1.5 size-4" aria-hidden />
             Resolve
           </Button>
-          <Button size="sm" variant="destructive" onClick={onClose} disabled={busy}>
+          <Button size="sm" variant="destructive" onClick={onClose} disabled={locked}>
             <X className="mr-1.5 size-4" aria-hidden />
             Close
           </Button>

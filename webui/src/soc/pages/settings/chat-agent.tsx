@@ -57,11 +57,12 @@ export const CHAT_AGENT_DEFAULTS: Readonly<ChatAgentConfig> = Object.freeze({
   allow_text_streaming: true,
   internal_domains: [],
   allow_email_lookup: false,
+  animated_brand: true,
 });
 
 /** The numeric knobs of the block. */
 export type ChatAgentNumericKey = {
-  [K in keyof ChatAgentConfig]: ChatAgentConfig[K] extends number ? K : never;
+  [K in keyof ChatAgentConfig]-?: ChatAgentConfig[K] extends number ? K : never;
 }[keyof ChatAgentConfig];
 
 /** Inclusive `[min, max]` per numeric knob: the backend `Field(ge=…, le=…)` ranges. */
@@ -245,6 +246,12 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
           help="Lets answers appear word by word. When off, the composer switch is disabled and says why."
           checked={cfg.allow_text_streaming}
           onChange={(value) => set({ allow_text_streaming: value })}
+        />
+        <SwitchPref
+          label="Animate the logo while chat works"
+          help="A thin ring turns around the logo while an answer is being written. A custom logo itself never moves; the Chat item keeps its own indicator either way."
+          checked={cfg.animated_brand !== false}
+          onChange={(value) => set({ animated_brand: value })}
         />
       </section>
 

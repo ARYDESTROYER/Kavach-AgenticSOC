@@ -118,6 +118,9 @@ const DisclosureTrigger: React.FC<{
   </CollapsibleTrigger>
 );
 
+/** A machine decision record (`verdict=… status=… risk=…`), not a sentence. */
+const DECISION_RECORD = /^[a-z_]+=\S+(\s+[a-z_]+=\S+)+/i;
+
 /**
  * The Case Manager Investigation tab, DECISION FIRST (CM-6): what settled the case →
  * the AI assessment (neutral; red only for a critical RISK band) → its evidence → the
@@ -224,7 +227,19 @@ const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presenta
               </h2>
               <ProvenanceTag kind={humanClosed && !policyClosed ? 'analyst' : 'code'} />
             </div>
-            <p className="mt-1 text-sm leading-relaxed text-foreground/90">{decisionLine}</p>
+            {/* The server's decision record is a `key=value` audit line: show it as the
+                record it is (mono, wrapping) rather than as a prose sentence. */}
+            <p
+              data-testid="investigation-decision-line"
+              className={cn(
+                'mt-1 leading-relaxed text-foreground/90',
+                DECISION_RECORD.test(decisionLine)
+                  ? 'font-mono text-xs [overflow-wrap:anywhere]'
+                  : 'text-sm',
+              )}
+            >
+              {decisionLine}
+            </p>
             {humanClosed && !policyClosed && decisionSummary ? (
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 Before the analyst: {decisionSummary}

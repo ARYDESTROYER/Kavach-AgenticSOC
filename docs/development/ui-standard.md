@@ -265,13 +265,45 @@ light tint) and open (a stronger tint, a primary edge rail and `aria-current`) n
 look alike. Labels and titles are sentence case, never tracked capitals. Panels inside a
 resizable pane lay out against the pane width with container queries, not the viewport.
 
+The Case Manager queue (Round 12) keeps that grammar and adds to it. Its scope (Active,
+Mine, All), filters, search and sort are answered by the server over every case, paged
+with Load more, and the scope line always states loaded against total; a client-side
+filter of a recent window is never the queue. The comfortable row may carry a third
+line (the middle-ellipsised id and the secondary fact, which shrinks first and hides in
+a narrow queue but stays in the row's accessible name); a compact density is one line.
+The second line names the case outcome (§ Case outcome) beside severity and risk. The
+list is one tab stop with a roving focus (↑/↓ or J/K move and open, X or Space select,
+Enter moves into the case, / searches, ? lists the shortcuts) and rows update live from
+the `cases` realtime topic.
+
 Row selection is independent of row navigation. “Select visible” means the filtered
-rows in the loaded client window and never implies every server match. A row checkbox is
-a sibling of the row's open control, never nested in it; it may appear on hover or
-focus, but stays visible on touch screens and once anything is selected. Mixed bulk
-operations expose progress and per-record partial failures; successful records leave
-the selection while failures remain retryable. Permission hiding in the Console is
-guidance—the API must recheck every action.
+rows in the loaded client window and never implies every server match; "Select all N
+matching" is a separate, explicit control that snapshots the server's matches. A row
+checkbox is a sibling of the row's open control, never nested in it; it may appear on
+hover or focus, but stays visible on touch screens and once anything is selected (the
+Case Manager shows it always). Mixed bulk operations expose progress and per-record
+partial failures; successful records leave the selection while failures remain
+retryable. Every bulk or single path that ends a case (close, resolve) collects a
+disposition first. Permission hiding in the Console is guidance—the API must recheck
+every action.
+
+**Case outcome.** Status answers "where is the work", the outcome answers "what was it"
+and the AI verdict answers "what did the model think"; the three never share a style
+(status is glyph and text, the outcome a filled disposition badge with an `Analyst`
+tag, the AI verdict an outline chip with the AI glyph). Once an analyst classifies a
+case (the classification history entry, exactly as the ground-truth authority reads
+it), the classification is the headline ("Closed as false positive") and the AI verdict
+stays as a labelled secondary line. One shared helper decides it for the case header,
+queue rows, the Cases list, hover cards and grading; a disposition value alone is never
+treated as an analyst's call.
+
+**Case header.** The header stays put above every tab: the title (one line in a narrow
+pane, its full text on hover and in its accessible name), one meta row (id, severity,
+risk with its band, status, outcome, AI verdict, owner, tags, times and SLA, campaign),
+one primary contextual action plus the full Take action menu. Facts about the case live
+once, in a facts rail beside every tab (a non-blocking Details sheet in a narrow pane);
+the tabs hold the evidence narrative. Lifecycle dialogs keep their actions in a footer
+that never scrolls away, and every dialog returns focus to the control that opened it.
 
 Campaigns is analyst-first. The default **Campaign review** workspace owns the current
 group list, detail, and read-only refresh; manual correlation and saved cadence belong
@@ -352,18 +384,26 @@ focus trap cannot pull focus out of the field.
 `@container`; the lane is `min(conversation − 2·gutter, cap)` with the gutter
 `clamp(1rem, 2.5cqi, 2.5rem)` and the cap the viewer's **Width** preference: Comfortable
 64rem, Wide 88rem (default), Full width (no cap), kept in localStorage and
-`UserPrefs.misc.chat_lane_width`. Prose, notices and the run log keep a ≤ 48rem measure on
-the lane's LEFT edge (never centred); answer blocks span the whole lane from that edge,
-and a framed card hangs into the gutter by its border and padding so its title and table
-text start on the prose edge; the user bubble sits on the lane's RIGHT edge; the composer,
+`UserPrefs.misc.chat_lane_width` (written through the prefs provider, so the choice
+survives leaving Chat and coming back). Prose, notices and the run log keep a ≤ 48rem
+measure on the lane's LEFT edge (never centred), and so do the bare prose blocks a model
+may add (`markdown`, and `callout`, whose box sits on the prose edge like a notice);
+answer blocks span the whole lane from that edge, and a framed card hangs into the gutter
+by its border and padding so its title and table text start on the prose edge; the user bubble sits on the lane's RIGHT edge; the composer,
 follow-ups and a meta row under blocks span the lane. The gutters are grid tracks, never
 padding, so the transcript and the composer resolve the same edges. Every exchange repeats
 the same three-track list (an off-screen exchange uses `content-visibility: auto`, whose
 layout containment turns a subgrid into a plain grid) and each message subgrids its
 exchange, so every turn and the composer share the same edges. The scroll lane is
 `relative`, the containing block of every absolutely positioned descendant (the sr-only
-turn headings), so none can escape its clip. A `kpi_group` uses `KpiTileGrid` with as many
-columns as figures (never an empty track) and no frame of its own inside the block card.
+turn headings), so none can escape its clip. A `kpi_group` (a period comparison's tiles
+included) uses `KpiTileGrid` with as many
+columns as figures (never an empty track). Inside a framed host (a block card, an entity's
+own frame) it draws no frame of its own and hangs by the tiles' padding, so every label and
+numeral starts on the card's content edge, the same edge as the card title and the prose;
+where nothing frames it (a report leaf, the expanded sheet, a report panel item) it keeps
+its own closed frame. Its static and print form, an entity's counts included, has no tile
+buttons and puts each change chip on its own line.
 The
 transcript is the only scrolling region and the composer stays docked below it in the
 empty, restoring, error and populated states. The empty state is top-aligned in the
@@ -422,9 +462,14 @@ notice is retryable. A capped answer offers "Continue where this stopped (≈ +N
 when it is the latest turn; an answer stopped by the time limit offers Retry instead.
 A failed turn offers **Retry same request** (same idempotency key) or, when retrying
 cannot help, **Ask again** (a new key). A locally stopped turn says "Stopped. The saved
-version appears after refresh." Budget state appears as one window-neutral alert above the
-composer; a spent budget never disables Send, because product questions still get the $0
-Help Center answer and every other question gets the budget notice.
+version appears after refresh." The daily AI budget never limits chat (Round 12 SPEC D5):
+it bounds automatic investigations, and chat's spend is recorded in the cost ledger without
+counting against it. So budget state appears as one window-neutral, dismissible warning
+above the composer that says what happens to automatic investigations ("paused until it
+resets, so new cases wait for an analyst") and that chat keeps answering; it never uses a
+critical tone, never says AI answers are paused, and a spent budget never disables Send.
+Only the optional chat cap, off by default, stops a chat answer, and then the answer's own
+budget notice says so.
 
 **Composer.** A textarea over ONE 32 px control row of 28 px chips, about 86 px at rest and
 never more than 88 px; there is no permanent footer line. Left: the **Read-only** chip (it
@@ -455,7 +500,12 @@ can access.", with **Retry** replaces the access list and the empty-state starte
 within 72 px of the bottom and only until that turn's top reaches the lane top.
 **Jump to latest** shows whenever any content is hidden below the fold (more than 8 px),
 as a round pill centred on the lane's bottom edge over a band the lane fades out with a
-scroll-edge mask while the pill shows, so it never covers a line of text, a chip or a row. After a jump, or when a thread opens, the lane sticks
+scroll-edge mask while the pill shows, so it never covers a line of text, a chip or a row.
+The mask spares the scrollbar gutters (the thumb and arrows stay visible), and a
+transparent band inside the lane takes the pointer over the faded strip, so nothing that
+cannot be seen there is clickable or hoverable, while wheel and touch still scroll. The
+pill's focus ring is never clipped (the compact embed's bar keeps room above and below
+it). After a jump, or when a thread opens, the lane sticks
 to the bottom while a turn runs or late content lands (lazy answer blocks), until the
 reader scrolls, points or focuses inside it; content growth is observed, so **Jump to
 latest** returns whenever new content lands below a reader who scrolled away. A requested

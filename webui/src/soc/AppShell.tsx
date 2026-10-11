@@ -114,10 +114,21 @@ import { useHasUnsavedChanges } from './hooks/useDirtyDraft';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion';
 import { JobMonitor } from './jobs/JobMonitor';
-import { ChatActivityMonitor } from './chat-activity/monitor';
-import { ActivityGlyph, useChatActivitySummary } from './chat-activity/glyph';
+import { ActivityGlyph } from './chat-activity/glyph';
+import { useChatActivity } from './chat-activity/store';
+import type { ActivityEffectsProps } from './chat-activity/ActivityEffects';
 import { navItem, navLabel, navParentOf, type PageId } from './nav';
 import type { Navigate } from './router';
+
+/**
+ * The shell's chat-turn observer (Round 12, SPEC D13): sign-out, other tabs, turns the
+ * server reports after a reload, the "Answer ready" toast and announcement, the tab-title
+ * prefix. Lazy, so only the activity store and the glyph ride first paint; a chunk that
+ * fails to load costs only those extras, never the shell.
+ */
+const ChatActivityEffects = React.lazy<React.ComponentType<ActivityEffectsProps>>(() =>
+  import('./chat-activity/ActivityEffects').catch(() => ({ default: () => null })),
+);
 // TYPE-ONLY import (elided at build → zero runtime import): motion.dev must NEVER ride
 // the eager App/AppShell first-paint graph, so RouteMotion is reached purely through the
 // DYNAMIC `import()` below. See soc/components/motion/* + bundle-first-paint.test.ts.
@@ -920,7 +931,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   const isMobile = useIsMobile();
   const reducedMotion = usePrefersReducedMotion();
   // The mobile menu button carries the chat activity glyph (the nav is off-canvas there).
-  const menuActivity = useChatActivitySummary('all');
+  const menuActivity = useChatActivity((snapshot) => snapshot.all);
   const releasePresentation = resolveReleasePresentation(CONSOLE_RELEASE_IDENTITY, buildInfo);
   const sourceNotice = releasePresentation.mismatch
     ? null
@@ -1255,7 +1266,9 @@ export const AppShell: React.FC<AppShellProps> = ({
       <HealthAnnouncer degradations={agentDegradations} />
       <JobMonitor actor={username} onNavigate={onNavigate} />
       {/* Chat turns that outlive their page (SPEC D13): toasts, title, other tabs. */}
-      <ChatActivityMonitor username={username} onNavigate={onNavigate} />
+      <React.Suspense fallback={null}>
+        <ChatActivityEffects username={username} onNavigate={onNavigate} />
+      </React.Suspense>
       {/* `overflow-x-clip`, never `-hidden`: both keep a wide child from widening the
           Console, but `hidden` silently makes the element a vertical scroll container
           (a lone hidden axis forces the other to `auto`), so every `sticky` descendant,

@@ -5,6 +5,17 @@
  * browser APIs that EUI touches at render time but jsdom does not implement.
  */
 import '@testing-library/jest-dom/vitest';
+import { afterEach } from 'vitest';
+
+// Round 12 (SPEC D13): chat turns outlive their view in a module-level turn runner, and
+// the app-level activity store remembers them. Within one test file, a turn a test left
+// running would otherwise carry into the next test (e.g. open that thread busy). Forget
+// every turn after each test. The dynamic import also yields once, so the Testing
+// Library unmount (a synchronous afterEach) has run before the store notifies anyone.
+afterEach(async () => {
+  const { clearChatActivity } = await import('@/soc/chat-activity/activity');
+  clearChatActivity();
+});
 
 // EUI's responsive hooks read `window.matchMedia`, which jsdom omits.
 if (typeof window !== 'undefined' && !window.matchMedia) {

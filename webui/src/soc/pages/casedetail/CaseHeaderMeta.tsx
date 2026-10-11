@@ -236,7 +236,12 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
 
       <OutcomeBadge outcome={outcome} />
       {c.verdict ? (
-        <AiVerdictChip verdict={c.verdict} confidence={c.confidence} className="h-5" />
+        <AiVerdictChip
+          verdict={c.verdict}
+          confidence={c.confidence}
+          className="h-5"
+          labelClassName="hidden @[48rem]/case:inline"
+        />
       ) : null}
 
       <Dot />
@@ -391,7 +396,20 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
         </span>
       ) : null}
 
-      {campaign ? <CampaignChip campaign={campaign} onOpen={onOpenCampaign} /> : null}
+      {campaign ? (
+        /* A generated campaign id can be very long: cap the chip, keep the full name in
+           its accessible name and on hover. */
+        <span
+          className="inline-flex min-w-0 max-w-[12rem] @[56rem]/case:max-w-[16rem]"
+          title={campaign.name || campaign.id}
+        >
+          <CampaignChip
+            campaign={campaign}
+            onOpen={onOpenCampaign}
+            className="inline-flex min-w-0 max-w-full"
+          />
+        </span>
+      ) : null}
       <DemoBadge show={isDemoCase(c)} className="h-5 px-1.5 text-2xs" />
     </div>
   );

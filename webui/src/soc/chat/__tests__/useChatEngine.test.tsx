@@ -287,9 +287,10 @@ describe('useChatEngine — streaming a turn', () => {
   });
 
   it('surfaces a pre-stream HTTP failure with its friendly message', async () => {
+    // (429 `chat_busy` is not a failure any more: the turn waits for capacity, SPEC D6.)
     override = (call) =>
       call.url === '/api/chat/stream'
-        ? json({ detail: { code: 'chat_busy', message: 'Two answers are still running.' } }, 429)
+        ? json({ detail: { code: 'chat_unavailable', message: 'Chat is starting up; try again shortly.' } }, 503)
         : undefined;
     const { result } = await mountEngine();
     act(() => {
@@ -298,7 +299,7 @@ describe('useChatEngine — streaming a turn', () => {
     await settle();
     expect(assistant(result.current)).toMatchObject({
       status: 'error',
-      failure: { kind: 'http', status: 429, code: 'chat_busy', message: 'Two answers are still running.', retryable: true },
+      failure: { kind: 'http', status: 503, code: 'chat_unavailable', message: 'Chat is starting up; try again shortly.', retryable: true },
     });
     expect(result.current.busy).toBe(false);
   });
@@ -1166,6 +1167,56 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
     expect(assistant(result.current).response?.answer).toBe('Saved late');
   });
 
+  it('waits for capacity on 429 chat_busy and sends the same request again (SPEC D6)', async () => {
+    let attempt = 0;
+    override = (call) => {
+      if (call.url !== '/api/chat/stream') return undefined;
+      attempt += 1;
+      if (attempt <= 2) {
+        return json({ detail: { code: 'chat_busy', message: 'You already have the maximum number of chat answers running', retry_after: 0.25, scope: 'user', limit: 4 } }, 429);
+      }
+      return undefined;
+    };
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Fifth question');
+    });
+    await settle();
+    expect(assistant(result.current)).toMatchObject({ status: 'running', failure: null });
+    expect(assistant(result.current).live?.waiting).toBe(true);
+    expect(result.current.busy).toBe(true);
+    await settle(700);
+    expect(attempt).toBe(3);
+    const keys = recorded.filter((call) => call.url === '/api/chat/stream').map((call) => call.body?.idempotency_key);
+    expect(new Set(keys).size).toBe(1);
+    await push(streams[0], start('t-busy'));
+    expect(assistant(result.current).live?.waiting).toBe(false);
+    await push(streams[0], done({ answer: 'Answered after the wait', message_id: 'm-busy', conversation_id: 'c-busy' }));
+    expect(assistant(result.current).response?.answer).toBe('Answered after the wait');
+  });
+
+  it('Stop while waiting for capacity ends the question at once (nothing ran)', async () => {
+    override = (call) =>
+      call.url === '/api/chat/stream'
+        ? json({ detail: { code: 'chat_busy', message: 'Busy', retry_after: 5, scope: 'global' } }, 429)
+        : undefined;
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Busy question');
+    });
+    await settle();
+    expect(assistant(result.current).live?.waiting).toBe(true);
+    expect(result.current.canStop).toBe(true);
+    await act(async () => {
+      result.current.stop();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(assistant(result.current)).toMatchObject({ status: 'done', response: { notice: { kind: 'cancelled' } } });
+    expect(result.current.busy).toBe(false);
+    expect(recorded.some((call) => call.url.endsWith('/cancel'))).toBe(false);
+    expect(result.current.items[0]).toMatchObject({ kind: 'user', failed: true });
+  });
+
   it('keeps waiting while the server says the turn still runs: turns have no time limit', async () => {
     const realNow = Date.now.bind(Date);
     let offset = 0;
@@ -1636,6 +1687,31 @@ describe('useChatEngine — turns outlive their view (Round 12, SPEC D13)', () =
     // The prompt was not known after the reload: the saved thread is loaded again.
     expect(persisted).toHaveBeenCalledWith('conv-r', '', { rehydrate: true });
     expect(streamCalls()).toHaveLength(0);
+  });
+
+  it('follows a running turn the server reports only after the thread restored (reload race)', async () => {
+    const { result } = await mountEngine({ conversation: thread('conv-late') });
+    expect(eventStreams).toHaveLength(0);
+    expect(result.current.busy).toBe(false);
+    // `GET /chat/turns/active` answers after the thread load.
+    await act(async () => {
+      putChatActivity({
+        scope: 'conv:conv-late', kind: 'workspace', conversationId: 'conv-late', caseId: null, turnId: 'turn-late', requestKey: null,
+        title: 'Late report', label: 'Thinking', lookups: 0, status: 'running', startedAt: Date.now(), source: 'server',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(eventStreams.map((entry) => entry.url)).toEqual(['/api/chat/turns/turn-late/events?after=0']);
+    expect(result.current.busy).toBe(true);
+    // A report for another thread is not followed here.
+    await act(async () => {
+      putChatActivity({
+        scope: 'conv:other', kind: 'workspace', conversationId: 'other', caseId: null, turnId: 'turn-other', requestKey: null,
+        title: '', label: null, lookups: 0, status: 'running', startedAt: Date.now(), source: 'server',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(eventStreams).toHaveLength(1);
   });
 
   it('a turn the server no longer knows after a reload is dropped and the thread reloaded', async () => {

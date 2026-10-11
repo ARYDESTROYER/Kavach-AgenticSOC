@@ -1,6 +1,10 @@
 /**
- * ActivityEffects — the lazy half of the chat activity monitor (Round 12, SPEC D13).
+ * ActivityEffects — the shell's observer for chat turns (Round 12, SPEC D13), mounted
+ * by AppShell beside `JobMonitor` through a lazy import, so none of it rides the
+ * first-paint bundle (the eager side is only the store and the glyph).
  *
+ *  - Lifetime: sign-out (the shell unmounts) and a change of user forget every turn and
+ *    stop reading them (the server still finishes and saves them).
  *  - Other tabs: one BroadcastChannel carries this tab's own changes and applies the
  *    others' (scoped to the signed-in user), so two tabs agree; a closing tab hands its
  *    running turns over to the server poll.
@@ -23,9 +27,10 @@ import { useEventStream, type StreamEvent } from '@/lib/useEventStream';
 import { useOptionalAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
 import type { Navigate } from '@/soc/router';
-import { setDocumentTitlePrefix } from './document-title';
+import { setDocumentTitlePrefix } from './title-prefix';
 import {
   applyChatActivityMessage,
+  clearChatActivity,
   dropChatActivity,
   getChatActivity,
   markViewedChatActivitySeen,
@@ -47,6 +52,9 @@ export const ACTIVE_POLL_MS = 5_000;
 export const ACTIVE_POLL_LIVE_MS = 30_000;
 const LIST_LIMIT = 20;
 const TOAST_SEEN_LIMIT = 100;
+
+/** Mounted shells (a development double mount must not clear a live store). */
+let mounted = 0;
 
 type Envelope =
   | { u: string; m: ChatActivityMessage }
@@ -111,7 +119,14 @@ export function settledCopy(event: ChatActivitySettled): { heading: string; spok
   return { heading: 'The answer could not be completed', spoken: `Error: ${title}`, title };
 }
 
-export default function ActivityEffects({ username, onNavigate }: { username: string; onNavigate: Navigate }) {
+export interface ActivityEffectsProps {
+  /** The signed-in user ('' when auth is off): other tabs and a change of user key on it. */
+  username?: string | null;
+  onNavigate: Navigate;
+}
+
+export default function ActivityEffects({ username: user, onNavigate }: ActivityEffectsProps) {
+  const username = user ?? '';
   const auth = useOptionalAuth();
   const authEnabled = auth?.authEnabled ?? false;
   const canRead = auth ? auth.hasPermission('cases', 'read') : true;
@@ -119,6 +134,28 @@ export default function ActivityEffects({ username, onNavigate }: { username: st
   const { entries } = useChatActivity();
   const navigateRef = React.useRef(onNavigate);
   navigateRef.current = onNavigate;
+
+  /* ------------------------------------------------------------ lifetime -- */
+
+  // Another user in the same shell: nothing of the previous one may show.
+  const userRef = React.useRef(username);
+  React.useEffect(() => {
+    if (userRef.current === username) return;
+    userRef.current = username;
+    clearChatActivity();
+  }, [username]);
+
+  // The shell goes away on sign-out (or a session that ended): forget every turn and
+  // stop reading them. Deferred one tick so a development double mount does not clear.
+  React.useEffect(() => {
+    mounted += 1;
+    return () => {
+      mounted -= 1;
+      setTimeout(() => {
+        if (mounted === 0) clearChatActivity();
+      }, 0);
+    };
+  }, []);
 
   /* ---------------------------------------------------------- other tabs -- */
 
@@ -306,7 +343,7 @@ export default function ActivityEffects({ username, onNavigate }: { username: st
         const key = activity.turnId ?? activity.requestKey ?? `${activity.scope}@${activity.startedAt}`;
         if (toastedRef.current.includes(key)) return;
         toastedRef.current = [...toastedRef.current.slice(-TOAST_SEEN_LIMIT), key];
-        announce(copy.spoken);
+        announce(copy.spoken, 'polite');
         const open = () => {
           if (activity.kind === 'case' && activity.caseId) navigateRef.current('case_manager', { caseId: activity.caseId, tab: 'chat' });
           else if (activity.conversationId) navigateRef.current('chat', { conversationId: activity.conversationId });

@@ -1,5 +1,5 @@
 /**
- * ActivityEffects + ChatActivityMonitor (Round 12, SPEC D13): other tabs agree through a
+ * ActivityEffects (Round 12, SPEC D13), the shell's lazy chat-turn observer: other tabs agree through a
  * BroadcastChannel (per user), a reload mid-turn recovers from `GET /chat/turns/active`,
  * a turn that finished off screen announces once and toasts once with Open, the tab
  * title carries ● / ✓, owner-only `chat.turn` frames or a poll keep it current, and
@@ -35,7 +35,6 @@ vi.mock('@/lib/useEventStream', () => ({
 }));
 
 import ActivityEffects, { ACTIVITY_CHANNEL, settledCopy, titlePrefix } from '../ActivityEffects';
-import { ChatActivityMonitor } from '../monitor';
 import {
   clearChatActivity,
   getChatActivity,
@@ -163,7 +162,7 @@ describe('ActivityEffects', () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
     expect(find('conv:c1')?.status).toBe('unread');
-    expect(announceMock).toHaveBeenCalledWith('Answer ready: Investigate host X');
+    expect(announceMock).toHaveBeenCalledWith('Answer ready: Investigate host X', 'polite');
     expect(toastMock.success).toHaveBeenCalledTimes(1);
     expect(document.title).toBe('✓ Agentic SOC');
     expect(streamState.enabled).toBe(false);
@@ -256,11 +255,11 @@ describe('ActivityEffects', () => {
   });
 });
 
-describe('ChatActivityMonitor', () => {
-  it('forgets every turn on sign-out and on another user, and loads its effects after first paint', async () => {
-    const view = render(<ChatActivityMonitor username="alice" onNavigate={vi.fn()} />);
+describe('ActivityEffects lifetime', () => {
+  it('forgets every turn on sign-out and on another user', async () => {
+    const view = render(<ActivityEffects username="alice" onNavigate={vi.fn()} />);
     act(() => putChatActivity(entry({ scope: 'conv:a' })));
-    view.rerender(<ChatActivityMonitor username="bob" onNavigate={vi.fn()} />);
+    view.rerender(<ActivityEffects username="bob" onNavigate={vi.fn()} />);
     expect(getChatActivity().entries).toEqual([]);
     await waitFor(() => expect(getMock).toHaveBeenCalledWith('chat/turns/active'));
     act(() => putChatActivity(entry({ scope: 'conv:b' })));
@@ -274,7 +273,7 @@ describe('ChatActivityMonitor', () => {
   it('survives a development double mount without clearing', async () => {
     const view = render(
       <React.StrictMode>
-        <ChatActivityMonitor username="alice" onNavigate={vi.fn()} />
+        <ActivityEffects username="alice" onNavigate={vi.fn()} />
       </React.StrictMode>,
     );
     act(() => putChatActivity(entry({ scope: 'conv:a' })));

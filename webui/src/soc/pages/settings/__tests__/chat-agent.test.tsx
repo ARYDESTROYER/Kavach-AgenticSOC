@@ -92,6 +92,8 @@ describe('the editor mirrors backend ChatAgentConfig', () => {
     expect(CHAT_AGENT_DEFAULTS.allow_text_streaming).toBe(true);
     expect(body).toMatch(/allow_email_lookup: bool = Field\(\s*default=False/);
     expect(CHAT_AGENT_DEFAULTS.allow_email_lookup).toBe(false);
+    expect(body).toMatch(/animated_brand: bool = Field\(\s*default=True/);
+    expect(CHAT_AGENT_DEFAULTS.animated_brand).toBe(true);
     expect(CHAT_AGENT_DEFAULTS.internal_domains).toEqual([]);
     expect(source.slice(start)).toMatch(new RegExp(`_MAX_INTERNAL_DOMAINS: ClassVar\\[int\\] = ${MAX_INTERNAL_DOMAINS}\\b`));
   });
@@ -209,6 +211,14 @@ describe('ChatAgentSection', () => {
     expect(lastPatch().allow_text_streaming).toBe(false);
     fireEvent.click(screen.getByRole('switch', { name: 'Allow e-mail lookups' }));
     expect(lastPatch().allow_email_lookup).toBe(true);
+  });
+
+  it('turns the logo ring off and on (SPEC D13; a stored config without it reads as on)', () => {
+    const { lastPatch } = renderSection({ ...CHAT_AGENT_DEFAULTS, animated_brand: undefined });
+    const ring = screen.getByRole('switch', { name: 'Animate the logo while chat works' });
+    expect(ring).toBeChecked();
+    fireEvent.click(ring);
+    expect(lastPatch().animated_brand).toBe(false);
   });
 
   it('adds internal domains in their stored form and refuses an invalid one', () => {

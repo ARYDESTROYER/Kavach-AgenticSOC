@@ -95,17 +95,49 @@ export function CaseHoverCard({
     if (forceClosed) setOpen(false);
   }, [forceClosed]);
 
+  // Round 12 (CM-9): a preview must never float ABOVE a case sheet or dialog. Activating
+  // the trigger (it usually opens that sheet) closes the card and refuses re-opens for a
+  // moment — Radix can leak an open timer on click (see `forceClosed`) — and no open is
+  // accepted while a modal dialog that does not contain this trigger is on screen. This
+  // covers every consumer, including the ones that do not pass `forceClosed`.
+  const triggerRef = React.useRef<HTMLElement | null>(null);
+  const suppressUntilRef = React.useRef(0);
+  const suppress = React.useCallback(() => {
+    suppressUntilRef.current = Date.now() + 1500;
+    setOpen(false);
+  }, []);
+  const blockedByModal = React.useCallback((): boolean => {
+    if (typeof document === 'undefined') return false;
+    const dialogs = document.querySelectorAll('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]');
+    for (const dialog of Array.from(dialogs)) {
+      if (!triggerRef.current || !dialog.contains(triggerRef.current)) return true;
+    }
+    return false;
+  }, []);
+
   return (
     <HoverCard
       open={forceClosed ? false : open}
       onOpenChange={(next) => {
         if (forceClosed) return;
+        if (next && (Date.now() < suppressUntilRef.current || blockedByModal())) return;
         setOpen(next);
       }}
       openDelay={openDelay}
       closeDelay={closeDelay}
     >
-      <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
+      <HoverCardTrigger
+        asChild
+        ref={(node: HTMLElement | null) => {
+          triggerRef.current = node;
+        }}
+        onClick={suppress}
+        onKeyDown={(event: React.KeyboardEvent) => {
+          if (event.key === 'Enter' || event.key === ' ') suppress();
+        }}
+      >
+        {trigger}
+      </HoverCardTrigger>
       <HoverCardContent
         side={side}
         align={align}

@@ -13,7 +13,7 @@
  * pinned DecisionCard; Case Manager consolidates the same projection into CODE DECIDED.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render as testingRender, screen, within } from '@testing-library/react';
+import { fireEvent, render as testingRender, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
@@ -729,6 +729,12 @@ describe('OverviewPanel — the case outcome (Round 12, D15)', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'Analyst resolved' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 3, name: 'Code decided' })).toBeNull();
     expect(screen.getByTestId('overview-authority')).toHaveTextContent(/closed by an analyst/i);
+    // The authority sentence is said ONCE; the lane keeps the facts behind it.
+    expect(screen.getAllByText(/the deterministic policy did not close this case/i)).toHaveLength(1);
+    const lane = screen.getByTestId('overview-analyst-lane');
+    expect(within(lane).getByText('False positive')).toBeInTheDocument();
+    expect(within(lane).getByText('aryan')).toBeInTheDocument();
+    expect(within(lane).getByText('Not applied')).toBeInTheDocument();
     // The AI's triage recommendation is kept but demoted, never the next step.
     expect(screen.queryByRole('heading', { name: 'Recommended action' })).toBeNull();
     expect(screen.getByTestId('overview-triage-recommendation')).toHaveTextContent(
@@ -748,6 +754,42 @@ describe('OverviewPanel — the case outcome (Round 12, D15)', () => {
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
       /^Closed by analyst: outcome not recorded$/,
     );
+  });
+
+  it('offers an inline Set disposition beside an unrecorded human close, and only there', () => {
+    const onSetDisposition = vi.fn();
+    const unrecorded = {
+      ...closedAsFp,
+      verdict: 'TRUE_POSITIVE',
+      disposition: 'true_positive',
+      history: [{ event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z' }],
+    } as unknown as Case;
+    const { unmount } = render(
+      <OverviewPanel
+        c={unrecorded}
+        fpPolicy={null}
+        triage={null}
+        triageLoading={false}
+        presentation="case-manager"
+        onSetDisposition={onSetDisposition}
+      />,
+    );
+    const button = screen.getByTestId('overview-set-disposition');
+    fireEvent.click(button);
+    expect(onSetDisposition).toHaveBeenCalledWith(button);
+    unmount();
+    // A classified close needs no prompt.
+    render(
+      <OverviewPanel
+        c={closedAsFp}
+        fpPolicy={null}
+        triage={null}
+        triageLoading={false}
+        presentation="case-manager"
+        onSetDisposition={onSetDisposition}
+      />,
+    );
+    expect(screen.queryByTestId('overview-set-disposition')).toBeNull();
   });
 
   it('an AI auto-close keeps the code lane and says so', () => {

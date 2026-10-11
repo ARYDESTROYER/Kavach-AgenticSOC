@@ -158,6 +158,10 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   className,
 }) => {
   const entry = classificationEntry(c);
+  const recordedDisposition = (() => {
+    const value = typeof c.disposition === 'string' ? c.disposition.trim().toLowerCase() : '';
+    return value && value !== 'none' ? value : null;
+  })();
   const humanSettled = outcome.source === 'analyst' || outcome.source === 'analyst_policy';
   const severity =
     severityBand(triage?.severity?.band ?? c.severity_band) ?? severityBand(c.risk_score);
@@ -218,6 +222,15 @@ export const FactsRail: React.FC<FactsRailProps> = ({
               {outcome.aiLine}
               {agreementWords(outcome.agreement) ? ` · ${agreementWords(outcome.agreement)}` : ''}
             </span>
+          </p>
+        ) : null}
+        {/* The disposition stored on the case when no analyst classified it (triage maps
+            it from the AI verdict). Kept visible, and labelled for what it is (D15). */}
+        {outcome.source !== 'analyst' && recordedDisposition ? (
+          <p data-testid="facts-recorded-disposition" className="text-xs text-muted-foreground">
+            Recorded disposition:{' '}
+            <span className="text-foreground">{dispositionWords(recordedDisposition)}</span> (not
+            confirmed by an analyst)
           </p>
         ) : null}
         {outcome.source === 'analyst_unrecorded' && onSetDisposition ? (

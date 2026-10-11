@@ -274,6 +274,46 @@ describe('print content is never hidden (R6, R7, R13)', () => {
     for (const tile of tiles) expect(tile.tagName).not.toBe('BUTTON');
   });
 
+  it('prints an entity\'s linked, changed counts as plain tiles with the change on its own line', async () => {
+    // Review (WP-CHATUI): the static KPI contract reached kpi_group blocks but not an
+    // entity's counts, which stayed buttons with an inline chip on paper.
+    const entity = {
+      id: 'ioc-linked',
+      type: 'entity',
+      provenance: 'source',
+      artifact_kind: 'entity',
+      allowed_views: ['entity'],
+      entity: { kind: 'ip', value: '203.0.113.14' },
+      facts: [],
+      reputation: [],
+      counts: [
+        {
+          key: 'cases',
+          label: 'Open cases',
+          value: 4,
+          unit: 'count',
+          delta: { value: 2, period_label: 'vs last week', good_direction: 'down' },
+          ref: { page: 'cases', opts: { status: 'open' } },
+        },
+      ],
+      related_cases: [],
+    };
+    const linked = buildReportDoc(sampleReport({ items: [blockItem('it-ioc', entity)] }), { generatedAt: NOW.toISOString() });
+    await act(async () => {
+      await printDocument(linked, { defang: false });
+    });
+    const root = document.getElementById(PRINT_ROOT_ID)!;
+    const counts = root.querySelector('[data-testid="block-entity"] [data-testid="block-kpis"]') as HTMLElement;
+    expect(counts).toHaveAttribute('data-static', 'true');
+    const tile = counts.querySelector('[data-testid^="kpi-"]') as HTMLElement;
+    expect(tile).toHaveTextContent('Open cases');
+    expect(tile.tagName).not.toBe('BUTTON');
+    expect(counts.querySelector('button')).toBeNull();
+    // The numeral row that holds the change chip is a column on paper.
+    expect(tile.className).toContain('[&_div:has(>[role=img])]:flex-col');
+    expect(tile.querySelector('[role="img"]')).not.toBeNull();
+  });
+
   it('lays static data tables out fixed and wrapping, never a row label forced onto one line', () => {
     expect(PRINT_CSS).not.toMatch(/white-space:\s*nowrap/);
     expect(PRINT_CSS).toContain('table[data-static-table] { table-layout: fixed !important; }');

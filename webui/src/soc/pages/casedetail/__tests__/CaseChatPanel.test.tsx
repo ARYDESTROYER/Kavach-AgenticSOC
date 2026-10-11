@@ -74,7 +74,7 @@ import type { Case } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { clearChatContextCache } from '@/soc/chat/useChatContext';
 import { resetTurnRunnerForTests } from '@/soc/chat/turn-runner';
-import { clearChatActivity } from '@/soc/chat-activity/store';
+import { clearChatActivity } from '@/soc/chat-activity/activity';
 import { ChatTab } from '../CaseChatPanel';
 
 const encoder = new TextEncoder();

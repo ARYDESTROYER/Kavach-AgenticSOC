@@ -380,9 +380,9 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
       {badgeText ? (
         <Badge
           variant={isOverride ? 'warning' : agreement.kind === 'resolved' ? 'info' : 'success'}
-          className="gap-1.5"
+          className="h-auto max-w-full gap-1.5 whitespace-normal py-0.5 text-left"
         >
-          {isOverride ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
+          {isOverride ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden />}
           {badgeText}
         </Badge>
       ) : null}

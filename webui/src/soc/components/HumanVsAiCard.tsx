@@ -127,6 +127,13 @@ export interface HumanVsAiCardProps {
   stale?: boolean;
   /** Raw alerts ingested in the window (labelled ingest tally), or null/undefined. */
   alertsIngested?: number | null;
+  /**
+   * One quiet cross-reference line (Round 12): ties a band count to the page figure it
+   * repeats ("AI agent is the same count as Auto Closed above"), so a repeat reads as one
+   * measurement shown twice. The caller states it ONLY when the two figures are equal;
+   * it is withheld with the counts while they are stale.
+   */
+  crossReference?: string;
   className?: string;
 }
 
@@ -212,6 +219,7 @@ export function HumanVsAiCard({
   truncated = false,
   stale = false,
   alertsIngested,
+  crossReference,
   className,
 }: HumanVsAiCardProps) {
   // A stale partition belongs to the previous window; `windowLabel` already names the
@@ -368,6 +376,11 @@ export function HumanVsAiCard({
           // is an ingest-hour tally rather than a slice of these cases — is in the help.
           <p className="text-xs text-muted-foreground" data-testid="human-vs-ai-alerts">
             {fmtNumber(alertsIngested)} alerts ingested
+          </p>
+        ) : null}
+        {crossReference && shown ? (
+          <p className="text-xs text-muted-foreground" data-testid="human-vs-ai-cross-reference">
+            {crossReference}
           </p>
         ) : null}
         {/* The §3 advisory line that used to sit here was removed at the operator's

@@ -139,6 +139,54 @@ function humanizeMinutes(mins?: number | null): string {
   return remH ? `${days}d ${remH}h` : `${days}d`;
 }
 
+/**
+ * The honest sub-line under "Total cases (all time)" (Round 12).
+ *
+ * The bound is tied to the TOTAL itself, not to `counts_exact`: that flag goes false when
+ * ANY breakdown (status × verdict, or disposition) could not be counted, while the total
+ * is still the store's own exact COUNT (`store_total`). So:
+ *
+ *   - the total is a floor only when it is demonstrably below the store's count, or — on a
+ *     server that does not report one — when it is exactly the number of cases analysed
+ *     out of a truncated read;
+ *   - an exact total beside a partial breakdown says "Exact" and names the breakdown that
+ *     is partial, from the server's own `counts_note`;
+ *   - a total whose exactness cannot be checked at all keeps the cautious wording.
+ */
+export function totalCasesSub(data: Metrics): string | undefined {
+  const total = data.total_cases;
+  const storeTotal =
+    typeof data.store_total === 'number' && Number.isFinite(data.store_total)
+      ? data.store_total
+      : undefined;
+  const fetched =
+    typeof data.fetched === 'number' && Number.isFinite(data.fetched) ? data.fetched : undefined;
+  const belowStore = typeof total === 'number' && storeTotal !== undefined && total < storeTotal;
+  const floorOfRead =
+    storeTotal === undefined && data.truncated === true && fetched !== undefined && total === fetched;
+  if (belowStore || floorOfRead) {
+    return fetched !== undefined && storeTotal !== undefined
+      ? `Lower bound · counted from the newest ${fmtNumber(fetched)} of ${fmtNumber(storeTotal)}`
+      : 'Lower bound · not every case could be counted';
+  }
+  if (data.counts_exact === false) {
+    const exactTotal = storeTotal !== undefined && total === storeTotal;
+    const note = (data.counts_note || '').toLowerCase();
+    const statusPartial = note.includes('status');
+    const dispositionPartial = note.includes('disposition');
+    const partial =
+      statusPartial && dispositionPartial
+        ? 'status, verdict and disposition breakdowns partial'
+        : statusPartial
+          ? 'status and verdict breakdowns partial'
+          : dispositionPartial
+            ? 'disposition breakdown partial'
+            : 'some breakdowns partial';
+    return exactTotal ? `Exact · ${partial}` : `Not every breakdown could be counted · ${partial}`;
+  }
+  return data.counts_exact === true ? 'Every case in the store' : undefined;
+}
+
 /** Map a humanized verdict-legend label to a Cases status filter for drill-through. */
 function verdictStatus(label: string): string | undefined {
   return label.toLowerCase().includes('needs human') ? 'needs_human' : undefined;
@@ -513,19 +561,11 @@ export default function MetricsPage({
         {
           key: 'total',
           // ALL TIME, not the selected window (Round 12): `total_cases` is the store-wide
-          // count, so the old "(7d)" suffix put a window on a number that has none. When the
-          // server could not count it exactly it falls back to the cases it analysed, and
-          // the sub says so rather than presenting a floor as the total.
+          // count, so the old "(7d)" suffix put a window on a number that has none. A floor
+          // is called a floor only when the total itself is one (see `totalCasesSub`).
           label: 'Total cases (all time)',
           value: fmtNumber(data.total_cases),
-          sub:
-            data.counts_exact === false
-              ? typeof data.fetched === 'number' && typeof data.store_total === 'number'
-                ? `Lower bound · counted from the newest ${fmtNumber(data.fetched)} of ${fmtNumber(data.store_total)}`
-                : 'Lower bound · not every case could be counted'
-              : data.counts_exact === true
-                ? 'Every case in the store'
-                : undefined,
+          sub: totalCasesSub(data),
           icon: ShieldCheck,
           accent: 'primary',
           onClick: onNavigate ? () => onNavigate('cases') : undefined,

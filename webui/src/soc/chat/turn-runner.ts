@@ -24,6 +24,11 @@
  *  - a case turn is never re-sent (A4: the thread append is not idempotent), so without
  *    a turn id it ends as "Connection lost" with Retry.
  *
+ * Capacity (SPEC D6): over the per-user or per-backend bound the server refuses the
+ * send with 429 `chat_busy` before anything starts. The run then waits ("Waiting for
+ * another answer to finish") and sends the same request again with backoff, at the
+ * server's `retry_after`; Stop while waiting simply ends it (nothing ran).
+ *
  * Abort happens only on a forced Stop and on sign-out (`clearChatActivity`). Memory
  * only: transcripts and titles are never written to storage (#9).
  */
@@ -131,6 +136,11 @@ export interface ChatLiveTurn {
   stopping: boolean;
   /** `recovering`: the stream dropped and the engine is checking for the saved answer. */
   connection: 'open' | 'recovering';
+  /**
+   * The server is at its chat capacity (429 `chat_busy`, SPEC D6): the question waits for
+   * another answer to finish and is then sent again (nothing has run yet).
+   */
+  waiting?: boolean;
   startedAt: number;
   /** The answer was continued past the output limit (`text.continued` part, ≥ 2). */
   continued?: number;
@@ -631,7 +641,8 @@ export function reattachRun(options: ReattachOptions): TurnRun | null {
 export function stopRun(run: TurnRun, force = false): void {
   const target = internals(run);
   if (target.state !== 'running' || target.transport === 'blocking') return;
-  if (force || target.stopRequested) {
+  // Still waiting for capacity: nothing started server-side, so Stop simply ends it.
+  if (force || target.stopRequested || target.live.waiting) {
     target.forcedStop = true;
     target.controller.abort();
     return;
@@ -841,6 +852,7 @@ function onTurnStart(run: RunInternals, event: TurnStartEvent): void {
     usage: null,
     text: '',
     connection: 'open',
+    waiting: false,
   }));
   patchChatActivity(run.scope, { turnId: event.turn_id, conversationId: run.conversationId });
   // A new thread learnt its id: the run is `conv:<id>` from now on, so leaving and
@@ -968,6 +980,7 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
   let after = 0;
   let resent = false;
   let waits = 0;
+  let busyWaits = 0;
   let drops = 0;
   /** The server no longer knows the turn (404): re-attaching again is pointless. */
   let gone = false;
@@ -1061,6 +1074,14 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
         continue;
       }
       if (error instanceof ApiError) {
+        if ((mode === 'post' || mode === 'blocking') && error.status === 429 && apiErrorCode(error) === 'chat_busy') {
+          // SPEC D6: at capacity, refused before anything started. Wait for another
+          // answer to finish, then send the same request again (same key).
+          if (!run.live.waiting) setLive(run, (live) => ({ ...live, waiting: true }));
+          await sleep(recoveryDelayMs(busyWaits, apiRetryAfterSeconds(error)), signal);
+          busyWaits += 1;
+          continue;
+        }
         if (mode === 'post' && canResend && error.status === 409 && apiErrorCode(error) === 'chat_request_in_progress') {
           // The turn under this key still runs server-side. A 409 that names it is
           // re-attached (a Retry of a turn whose stream was lost included); while

@@ -164,6 +164,7 @@ import {
   type HumanVsAiTotals,
 } from '@/soc/components/HumanVsAiCard';
 import { NoiseFunnel } from '@/soc/components/NoiseFunnel';
+import { useOptionalPrefs } from '@/soc/prefs';
 import { Reveal } from '@/soc/components/Reveal';
 import { CountUp } from '@/soc/components/CountUp';
 import { Stagger } from '@/soc/components/Stagger';
@@ -182,6 +183,7 @@ import { AutomationNudge } from './AutomationNudge';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { usePosture } from '@/soc/hooks/usePosture';
+import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { caseOutcome } from '@/soc/components/outcome';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { Badge } from '@/ui/badge';
@@ -432,6 +434,13 @@ const SNAPSHOT_RING_PX = 128;
  * 150px ring with tracked uppercase "VERDICTS" overflowed onto the ring.
  */
 const VERDICT_RING_PX = 160;
+
+/**
+ * Lets a Deeper-analytics strip tile's one-line context/state (`[data-kpi-line]`, which
+ * KpiTile truncates) wrap instead. Applied from the page so the shared tile keeps its
+ * one-line contract on the main strip, where six numerals share a baseline.
+ */
+const DEEPER_LINE_WRAP = '[&_[data-kpi-line]]:whitespace-normal';
 
 /** Round a resolved range down to whole hours (min 1) for the window-scoped fetches. */
 function rangeHours(range: TimeRange): number {
@@ -705,6 +714,8 @@ function SnapshotCard({
   onClick,
   trend,
   footnote,
+  bound,
+  roll = true,
   className,
 }: {
   title: string;
@@ -723,11 +734,28 @@ function SnapshotCard({
    * this cohort figure to the strip figure it is easily confused with.
    */
   footnote?: React.ReactNode;
+  /**
+   * The snapshot's BOUND, when its total and severity split are counted over a partial
+   * case page ("Lower bound · counted from the newest 200 of 450"). Shown under the
+   * caption exactly when it is true.
+   */
+  bound?: string;
+  /**
+   * Whether the centre numeral may COUNT UP to a new value (Round 12 review): only on the
+   * first load and on a window change — a LIVE or manual refresh shows the new value
+   * without motion, like the KPI strip (`KpiTile roll`).
+   */
+  roll?: boolean;
   /** Layout-only overrides for the card's own root. */
   className?: string;
 }) {
   const segments = sevSegments(counts);
   const legend = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
+  const centerClass = cn(
+    'font-semibold tabular-nums text-foreground',
+    total >= 1000 ? 'text-2xl' : 'text-3xl',
+    'leading-none',
+  );
   const content = (
     <>
       {segments.length ? (
@@ -739,15 +767,13 @@ function SnapshotCard({
           className="w-32 shrink-0"
           ariaLabel={ariaLabel}
           center={
-            <CountUp
-              value={total}
-              format={fmtSnapshotCenter}
-              className={cn(
-                'font-semibold tabular-nums text-foreground',
-                total >= 1000 ? 'text-2xl' : 'text-3xl',
-                'leading-none',
-              )}
-            />
+            roll ? (
+              <CountUp value={total} format={fmtSnapshotCenter} className={centerClass} />
+            ) : (
+              <span className={centerClass} data-testid="snapshot-center">
+                {fmtSnapshotCenter(total)}
+              </span>
+            )
           }
         />
       ) : (
@@ -800,16 +826,30 @@ function SnapshotCard({
       type="button"
       onClick={onClick}
       aria-label={ctaLabel}
-      className="-mx-1 mt-3 flex w-full min-w-0 items-center gap-4 rounded-md px-1 py-1 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="-mx-1 mt-3 flex w-full min-w-0 items-center gap-4 self-start rounded-md px-1 py-1 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {content}
     </button>
   ) : (
-    <div className="mt-3 flex items-center gap-4 py-1">{content}</div>
+    <div className="mt-3 flex items-center gap-4 self-start py-1">{content}</div>
   );
 
+  /*
+   * FOUR rows, always (header · bound · donut · footnote), even when the bound or the
+   * footnote is absent. Side by side (`@[35rem]`, see the parent), the two snapshots share
+   * those rows through `grid-rows-subgrid`, so a caption that wraps to two lines in one
+   * snapshot moves BOTH donuts and BOTH footnotes down together instead of putting the
+   * pair 18px out of line (measured at 1920 before this). Stacked, each card is a plain
+   * block and the empty rows take no space.
+   */
   return (
-    <section className={cn('min-w-0', className)}>
+    <section
+      className={cn(
+        'min-w-0 @[35rem]:row-span-4 @[35rem]:grid @[35rem]:grid-rows-subgrid',
+        className,
+      )}
+      data-testid="snapshot-card"
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">{title}</h2>
@@ -817,12 +857,19 @@ function SnapshotCard({
         </div>
         <TrendChip delta={delta} goodDirection={goodDirection} />
       </div>
+      {bound ? (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="snapshot-bound">
+          {bound}
+        </p>
+      ) : (
+        <div aria-hidden />
+      )}
       {trend ? (
         // The CTA button (when present) is the focus stop; the wrapper only adds the
         // hover/focus-reachable trend card (WCAG 1.4.13 via MetricHoverTrend).
         // `h-auto`: the wrapper's default `h-full` would take the whole (stretched) card
         // and push the footnote below it.
-        <MetricHoverTrend {...trend} focusable={!onClick} side="top" className="h-auto">
+        <MetricHoverTrend {...trend} focusable={!onClick} side="top" className="h-auto self-start">
           {body}
         </MetricHoverTrend>
       ) : (
@@ -832,7 +879,9 @@ function SnapshotCard({
         <p className="mt-2 text-xs text-muted-foreground" data-testid="snapshot-footnote">
           {footnote}
         </p>
-      ) : null}
+      ) : (
+        <div aria-hidden />
+      )}
     </section>
   );
 }
@@ -915,11 +964,31 @@ function latestCaseStatus(status: string | null | undefined): {
  */
 const LATEST_MIN_ROWS = 5;
 const LATEST_MAX_ROWS = 8;
+/**
+ * The floor from 1920px up (Round 12 review). There the two snapshots sit side by side,
+ * so the band is SHORTER than at 1440 and a pure fill showed five rows — fewer than the
+ * six a 1440 screen gets. The widest screens must never show the least of the queue, so
+ * from `3xl` the queue reserves six rows and the band grows the ~50px that costs.
+ */
+const LATEST_MIN_ROWS_WIDE = 6;
+const LATEST_WIDE_QUERY = '(min-width: 1920px)';
 /** Pre-measurement estimate of one queue row (title 20 + 2 gap + metadata 16 + 2 × 8
- *  padding), rounded up so the in-flow floor never undershoots. */
+ *  padding), rounded up so the in-flow floor never undershoots — in REM (Round 12
+ *  review), so a larger browser text size grows the floor with the rows it reserves
+ *  (WCAG 1.4.4) instead of letting them overrun the band below. 3.5rem = 56px at 16px. */
+const LATEST_ROW_ESTIMATE_REM = 3.5;
+/** The space between two latest-case rows (`gap-1`), in rem. */
+const LATEST_ROW_GAP_REM = 0.25;
+/** Fallback px estimate for the measurement before a row exists (16px root). */
 const LATEST_ROW_ESTIMATE_PX = 56;
-/** The space between two latest-case rows (`gap-1`). */
+/** The space between two latest-case rows (`gap-1`), in px for the fit arithmetic. */
 const LATEST_ROW_GAP_PX = 4;
+
+/** The out-of-flow list's in-flow floor for `rows` rows, in rem (never px). */
+export function latestFloorCss(rows: number): string {
+  if (rows <= 0) return '0rem';
+  return `${rows * (LATEST_ROW_ESTIMATE_REM + LATEST_ROW_GAP_REM) - LATEST_ROW_GAP_REM}rem`;
+}
 
 /**
  * Measure how many queue rows fit the box the band gives the list (see LATEST_*).
@@ -931,8 +1000,9 @@ const LATEST_ROW_GAP_PX = 4;
 function useFittingRows(
   boxRef: React.RefObject<HTMLElement | null>,
   listRef: React.RefObject<HTMLElement | null>,
+  minRows: number = LATEST_MIN_ROWS,
 ): number {
-  const [rows, setRows] = React.useState(LATEST_MIN_ROWS);
+  const [rows, setRows] = React.useState(minRows);
   React.useEffect(() => {
     const box = boxRef.current;
     if (!box || typeof window === 'undefined' || typeof window.ResizeObserver !== 'function') {
@@ -945,15 +1015,16 @@ function useFittingRows(
       const rowHeight = first?.getBoundingClientRect().height || LATEST_ROW_ESTIMATE_PX;
       // + the 4px gap between rows (`gap-1`): n rows need n·row + (n−1)·gap.
       const fit = Math.floor((height + LATEST_ROW_GAP_PX) / (rowHeight + LATEST_ROW_GAP_PX));
-      const next = Math.max(LATEST_MIN_ROWS, Math.min(LATEST_MAX_ROWS, fit));
+      const next = Math.max(minRows, Math.min(LATEST_MAX_ROWS, fit));
       setRows((current) => (current === next ? current : next));
     };
     measure();
     const observer = new window.ResizeObserver(measure);
     observer.observe(box);
     return () => observer.disconnect();
-  }, [boxRef, listRef]);
-  return rows;
+  }, [boxRef, listRef, minRows]);
+  // The floor itself can rise (a resize across 1920px) before the next measurement.
+  return Math.max(rows, minRows);
 }
 
 /** The real-time work queue: the newest cases, filling the band's height. */
@@ -982,11 +1053,13 @@ function TopCasesPanel({
 }) {
   const boxRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLUListElement>(null);
-  const fit = useFittingRows(boxRef, listRef);
+  const wide = useMediaQuery(LATEST_WIDE_QUERY);
+  const minRows = wide ? LATEST_MIN_ROWS_WIDE : LATEST_MIN_ROWS;
+  const fit = useFittingRows(boxRef, listRef, minRows);
   const shown = cases.slice(0, fit);
   // The out-of-flow list needs a floor in flow: the rows it will hold before measuring
-  // (never more than five, so a short queue does not reserve empty rows).
-  const floorRows = Math.min(cases.length, LATEST_MIN_ROWS);
+  // (never more than the floor, so a short queue does not reserve empty rows).
+  const floorRows = Math.min(cases.length, minRows);
   return (
     <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col">
       <div className="flex items-start justify-between gap-3">
@@ -1009,9 +1082,7 @@ function TopCasesPanel({
         <div
           ref={boxRef}
           className="relative mt-2 min-h-0 flex-1"
-          style={{
-            minHeight: `${floorRows * (LATEST_ROW_ESTIMATE_PX + LATEST_ROW_GAP_PX) - LATEST_ROW_GAP_PX}px`,
-          }}
+          style={{ minHeight: latestFloorCss(floorRows) }}
           data-testid="latest-cases-box"
         >
           {/* A flat list: rows separated by space, not hairlines and not bordered boxes
@@ -1064,9 +1135,9 @@ function TopCasesPanel({
                       }
                     >
                       {/* The TITLE leads (14px), because it is what the operator scans for;
-                          the identifier, age and outcome sit under it as 12px metadata. The
-                          id keeps its mono face and truncates only against the real space —
-                          the old 160px cap cut it at every width. */}
+                          the identifier and age sit under it as 12px metadata. The id keeps
+                          its mono face and truncates only against the real space — the old
+                          160px cap cut it at every width. */}
                       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <span className="truncate text-base text-foreground" title={displayTitle}>
                           {displayTitle}
@@ -1077,25 +1148,27 @@ function TopCasesPanel({
                           </span>
                           <span aria-hidden>·</span>
                           <span className="shrink-0 tabular-nums">{age || 'Just now'}</span>
-                          {outcomeWord ? (
-                            <>
-                              <span aria-hidden>·</span>
-                              <span
-                                className="shrink-0 text-foreground"
-                                data-testid="latest-case-outcome"
-                              >
-                                {outcomeWord}
-                              </span>
-                            </>
-                          ) : null}
                         </span>
                       </span>
-                      <Badge
-                        variant={status.variant}
-                        className="shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium"
-                      >
-                        {status.label}
-                      </Badge>
+                      {/* Status badge over the terminal OUTCOME (Round 12 review): on the
+                          metadata line the outcome word took the identifier's room, so the
+                          most common rows (auto-closed) showed the least of their id. */}
+                      <span className="flex shrink-0 flex-col items-end gap-0.5">
+                        <Badge
+                          variant={status.variant}
+                          className="shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium"
+                        >
+                          {status.label}
+                        </Badge>
+                        {outcomeWord ? (
+                          <span
+                            className="whitespace-nowrap text-xs text-muted-foreground"
+                            data-testid="latest-case-outcome"
+                          >
+                            {outcomeWord}
+                          </span>
+                        ) : null}
+                      </span>
                     </button>
                   </CaseHoverCard>
                 </li>
@@ -1119,15 +1192,20 @@ const CoverageMetric: React.FC<{
   value: string;
   tone?: 'default' | 'warning';
 }> = ({ icon: Icon, label, value, tone = 'default' }) => (
-  <div className="min-w-0">
-    {/* Sentence case at 13px (Round 12) — tracked capitals at 11px read as chrome. */}
-    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{label}</span>
+  <div className="flex h-full min-w-0 flex-col justify-between">
+    {/* Sentence case at 13px (Round 12) — tracked capitals at 11px read as chrome. The
+        label WRAPS (Round 12 review): truncated at 1280 with the navigation pinned it read
+        "Triaged 2…" over "48", which looks like a different figure. The value sits at the
+        bottom, so the three values stay on one line when one label takes two. */}
+    <div className="flex items-start gap-1.5 text-sm leading-tight text-muted-foreground">
+      <Icon className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0" data-testid="coverage-metric-label">
+        {label}
+      </span>
     </div>
     <div
       className={cn(
-        'mt-1 text-2xl font-semibold leading-none tabular-nums',
+        'mt-1.5 text-2xl font-semibold leading-none tabular-nums',
         tone === 'warning' ? 'text-warning-text' : 'text-foreground',
       )}
     >
@@ -1147,9 +1225,12 @@ const CoverageMetric: React.FC<{
 function CoverageTile({
   coverage,
   onNavigate,
+  roll = true,
 }: {
   coverage: SourceCoverage;
   onNavigate?: Navigate;
+  /** Count the hero up only on a load the operator caused, never on a LIVE refresh. */
+  roll?: boolean;
 }) {
   const reporting = Math.max(0, coverage.sources_enabled - coverage.sources_silent);
   const pctReporting =
@@ -1163,7 +1244,7 @@ function CoverageTile({
       <div>
         <div className="flex items-baseline gap-2">
           <span className="text-4xl font-semibold leading-none tabular-nums text-foreground">
-            <CountUp value={reporting} />
+            {roll ? <CountUp value={reporting} /> : fmtNumber(reporting)}
           </span>
           <span className="text-lg tabular-nums text-muted-foreground">
             / {fmtNumber(coverage.sources_enabled)}
@@ -1422,11 +1503,27 @@ function Band({
 }
 
 /** A sub-band title inside Deeper analytics (h3 under its h2). */
-function SubBandTitle({ id, children }: { id: string; children: React.ReactNode }) {
+function SubBandTitle({
+  id,
+  caption,
+  children,
+}: {
+  id: string;
+  /** The sub-band's time span, when one span covers what sits directly under the title. */
+  caption?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <h3 id={id} className="mb-4 text-base font-semibold text-foreground">
-      {children}
-    </h3>
+    <div className="mb-4">
+      <h3 id={id} className="text-base font-semibold text-foreground">
+        {children}
+      </h3>
+      {caption ? (
+        <p className="mt-0.5 text-sm text-muted-foreground" data-testid="subband-caption">
+          {caption}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -1437,29 +1534,58 @@ function Instrument({
   count,
   className,
   children,
+  'data-scope': scope,
 }: {
   title: string;
+  /**
+   * The instrument's caption, which in Deeper analytics always names its time span
+   * ("last 24 hours", "all time", "right now"): the band mixes window, all-time and live
+   * figures, and each says which it is. It WRAPS rather than truncating — a cut span is
+   * exactly the part a reader needs.
+   */
   caption?: string;
   count?: number;
   className?: string;
   children: React.ReactNode;
+  /** Which population the instrument reads (`window` / `all` / `sample` / `live`). */
+  'data-scope'?: string;
 }) {
   return (
-    <section aria-label={title} className={cn('flex h-full min-w-0 flex-col', className)}>
-      <div className="mb-3 flex items-baseline gap-2">
+    <section
+      aria-label={title}
+      className={cn('flex h-full min-w-0 flex-col', className)}
+      data-scope={scope}
+    >
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <h3 className="text-base font-semibold text-foreground">{title}</h3>
         {count != null ? (
           <span className="text-sm tabular-nums text-muted-foreground">{fmtNumber(count)}</span>
         ) : null}
-        {caption ? <span className="min-w-0 truncate text-sm text-muted-foreground">{caption}</span> : null}
+        {caption ? (
+          <span className="min-w-0 text-sm text-muted-foreground" data-testid="instrument-caption">
+            {caption}
+          </span>
+        ) : null}
       </div>
       {children}
     </section>
   );
 }
 
-/** Per-browser open/closed state of the Deeper analytics disclosure (Round 12). */
+/**
+ * The open/closed state of the Deeper analytics disclosure (Round 12, SYNTHESIS-ux §2.6):
+ * collapsed on a first visit, then the viewer's own choice. It is a presentation
+ * preference stored like the chat lane width — the localStorage mirror paints first (no
+ * flash), then, once the effective prefs have hydrated, the server copy in
+ * `UserPrefs.misc.overview_deeper_open` wins, so the choice follows the analyst across
+ * browsers unless they changed it in the meantime. Every change writes both,
+ * best-effort: the page works with neither storage nor a server. The server write goes
+ * through the prefs provider (`patchMisc`), so leaving the Overview and coming back in
+ * the same session keeps the latest choice.
+ */
 const DEEPER_OPEN_KEY = 'soc.overview.deeperOpen';
+/** `UserPrefs.misc` key of the server mirror. */
+export const DEEPER_OPEN_PREF_KEY = 'overview_deeper_open';
 
 function readDeeperOpen(): boolean {
   try {
@@ -1467,6 +1593,61 @@ function readDeeperOpen(): boolean {
   } catch {
     return false;
   }
+}
+
+function writeDeeperOpen(open: boolean): void {
+  try {
+    localStorage.setItem(DEEPER_OPEN_KEY, open ? '1' : '0');
+  } catch {
+    /* storage blocked: the choice simply lasts for this visit */
+  }
+}
+
+function useDeeperOpen(): [boolean, (open: boolean) => void] {
+  const prefs = useOptionalPrefs();
+  const [open, setOpen] = React.useState<boolean>(readDeeperOpen);
+  const touchedRef = React.useRef(false);
+  const reconciledRef = React.useRef(false);
+  const ready = prefs?.ready ?? false;
+  const misc = prefs?.prefs.misc;
+  React.useEffect(() => {
+    if (!ready || reconciledRef.current) return;
+    reconciledRef.current = true;
+    const stored =
+      misc && typeof misc === 'object'
+        ? (misc as Record<string, unknown>)[DEEPER_OPEN_PREF_KEY]
+        : undefined;
+    // A choice made on this page before the prefs arrived is newer than the server copy.
+    if (touchedRef.current || typeof stored !== 'boolean') return;
+    setOpen(stored);
+    writeDeeperOpen(stored);
+  }, [ready, misc]);
+  // The save goes through the provider's `patchMisc` (as `useChatLaneWidth` does), so the
+  // provider's `prefs.misc` learns the new value at once. This page remounts on every
+  // visit and reconciles from that snapshot; a snapshot still holding the value loaded at
+  // app start would reopen (or re-close) the section, and rewrite the local mirror, the
+  // next time the analyst came back. Without a provider it writes the server directly.
+  const patchMisc = prefs?.patchMisc;
+  const change = React.useCallback(
+    (next: boolean) => {
+      touchedRef.current = true;
+      setOpen(next);
+      writeDeeperOpen(next);
+      if (patchMisc) {
+        patchMisc({ [DEEPER_OPEN_PREF_KEY]: next });
+        return;
+      }
+      try {
+        Promise.resolve(api.prefs.putUser({ misc: { [DEEPER_OPEN_PREF_KEY]: next } })).catch(() => {
+          /* best-effort: the local choice already applies */
+        });
+      } catch {
+        /* no preferences API (an embedding without it): the local mirror still holds */
+      }
+    },
+    [patchMisc],
+  );
+  return [open, change];
 }
 
 export default function Overview({ onNavigate }: OverviewProps) {
@@ -1508,6 +1689,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
     null,
   );
   const [prevCases, setPrevCases] = React.useState<Case[] | null>(null);
+  /** The previous window's page is provably cut short (its delta would compare floors). */
+  const [prevTruncated, setPrevTruncated] = React.useState(false);
   const [metrics, setMetrics] = React.useState<Metrics | null>(null);
   const [usage, setUsage] = React.useState<UsageSummary | null>(null);
   const [noise, setNoise] = React.useState<NoiseReduction | null>(null);
@@ -1615,6 +1798,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
       // cards show "No trend data yet.") rather than showing another window's trend.
       setTrends(t.status === 'fulfilled' ? t.value ?? null : null);
       setPrevCases(pc.status === 'fulfilled' ? pc.value.cases ?? [] : null);
+      setPrevTruncated(
+        pc.status === 'fulfilled' &&
+          (pc.value as CasesResponse).window_total_exact === true &&
+          typeof pc.value.total === 'number' &&
+          pc.value.total > (pc.value.cases?.length ?? 0),
+      );
       // Only surface a page-level error if the load is wholly empty.
       if (c.status === 'rejected' && m.status === 'rejected') {
         setError(c.reason ?? m.reason ?? new Error('Failed to load dashboard data.'));
@@ -1719,15 +1908,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   }, [refreshAll]);
 
   // ----- Deeper analytics: one persisted disclosure (Round 12) ------------- //
-  const [deeperOpen, setDeeperOpen] = React.useState<boolean>(readDeeperOpen);
-  const onDeeperOpenChange = React.useCallback((next: boolean) => {
-    setDeeperOpen(next);
-    try {
-      localStorage.setItem(DEEPER_OPEN_KEY, next ? '1' : '0');
-    } catch {
-      /* storage blocked: the choice simply lasts for this visit */
-    }
-  }, []);
+  const [deeperOpen, onDeeperOpenChange] = useDeeperOpen();
 
   // ----- Noise-Reduction funnel: per-user hide toggle (persisted) --------- //
   const [noiseHidden, setNoiseHidden] = React.useState<boolean>(() => {
@@ -1786,6 +1967,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
     }
     setShowNudge(false);
   }, []);
+
+  /**
+   * Is the fetched case page the WHOLE window? Only the store can say (`#103`
+   * `window_total_exact`), and only when the page holds every row it counted. Everything
+   * this page tallies over `cases` — the two snapshots, their severity splits, the top
+   * signatures and entities — is a lower bound / a sample when it is not.
+   */
+  const casePageComplete = caseWindow?.exact === true && caseWindow.total <= cases.length;
 
   // ----- Derived case-shape breakdowns ------------------------------------ //
   const derived = React.useMemo(() => {
@@ -1933,22 +2122,65 @@ export default function Overview({ onNavigate }: OverviewProps) {
   }, [cases]);
 
   // ----- Case outcomes (verdict mix) — Deeper analytics ------------------- //
-  const verdictMix = React.useMemo<{ segments: DonutSegment[]; total: number }>(() => {
-    const bv = metrics?.by_verdict;
-    const src: Record<string, number> = bv
-      ? {
-          TRUE_POSITIVE: bv.TRUE_POSITIVE ?? 0,
-          NEEDS_HUMAN: bv.NEEDS_HUMAN ?? 0,
-          FALSE_POSITIVE: bv.FALSE_POSITIVE ?? 0,
-          none: bv.none ?? 0,
-        }
-      : cases.reduce<Record<string, number>>((acc, k) => {
-          const v = (k.verdict || 'none').toUpperCase();
-          const key =
-            v === 'TRUE_POSITIVE' || v === 'FALSE_POSITIVE' || v === 'NEEDS_HUMAN' ? v : 'none';
-          acc[key] = (acc[key] ?? 0) + 1;
-          return acc;
-        }, {});
+  /**
+   * ONE population per instrument (Round 12 review). The donut, its centre, its legend and
+   * the analyst-confirmed row under it must all describe the same cases, so the source is
+   * chosen once:
+   *
+   *   'window' — `posture.quality` for the selected window (the agent-worked cohort that
+   *              arrived in it; policy closes never got an AI verdict). Used whenever the
+   *              rollup measured the window in full — the analyst-confirmed count comes
+   *              from the very same block, so it is only shown with this source.
+   *   'all'    — `GET /api/metrics` `by_verdict`, an exact store-wide count, captioned
+   *              "all time" and shown WITHOUT the analyst row (a window count beside
+   *              all-time verdicts was read as "analysts confirmed 30 of the 47").
+   *   'sample' — the fetched case page, when neither server rollup is available.
+   *
+   * The centre is the VERDICTED count, so "AI verdicts" never counts a case that has no
+   * verdict; the unverdicted remainder keeps its own legend row and ring segment.
+   */
+  const verdictMix = React.useMemo<{
+    segments: DonutSegment[];
+    total: number;
+    verdicted: number;
+    scope: 'window' | 'all' | 'sample';
+  }>(() => {
+    const q = posture?.quality;
+    const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+    let src: Record<string, number>;
+    let scope: 'window' | 'all' | 'sample';
+    if (
+      q &&
+      !postureUnmeasured &&
+      postureCovered &&
+      [q.total_cases, q.verdicted_cases, q.true_positive_cases, q.needs_human_cases, q.false_positive_cases].every(finite)
+    ) {
+      scope = 'window';
+      src = {
+        TRUE_POSITIVE: q.true_positive_cases,
+        NEEDS_HUMAN: q.needs_human_cases,
+        FALSE_POSITIVE: q.false_positive_cases,
+        none: Math.max(0, q.total_cases - q.verdicted_cases),
+      };
+    } else if (metrics?.by_verdict) {
+      scope = 'all';
+      const bv = metrics.by_verdict;
+      src = {
+        TRUE_POSITIVE: bv.TRUE_POSITIVE ?? 0,
+        NEEDS_HUMAN: bv.NEEDS_HUMAN ?? 0,
+        FALSE_POSITIVE: bv.FALSE_POSITIVE ?? 0,
+        none: bv.none ?? 0,
+      };
+    } else {
+      scope = 'sample';
+      src = cases.reduce<Record<string, number>>((acc, k) => {
+        const v = (k.verdict || 'none').toUpperCase();
+        const key =
+          v === 'TRUE_POSITIVE' || v === 'FALSE_POSITIVE' || v === 'NEEDS_HUMAN' ? v : 'none';
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {});
+    }
     const defs: Array<{ key: string; label: string; colorName: string }> = [
       { key: 'TRUE_POSITIVE', label: 'True positive', colorName: VERDICT_COLOR.true_positive },
       { key: 'NEEDS_HUMAN', label: 'Needs human', colorName: VERDICT_COLOR.needs_human },
@@ -1959,17 +2191,27 @@ export default function Overview({ onNavigate }: OverviewProps) {
       .map((d) => ({ label: d.label, value: src[d.key] ?? 0, color: token(d.colorName) }))
       .filter((s) => s.value > 0);
     const total = segments.reduce((a, s) => a + s.value, 0);
-    return { segments, total };
-  }, [metrics, cases]);
+    const verdicted = total - (src.none ?? 0);
+    return { segments, total, verdicted, scope };
+  }, [posture, postureCovered, postureUnmeasured, metrics, cases]);
 
   const caseVolume = React.useMemo(
     () => (metrics?.cases_per_day ?? []).map((d) => ({ x: d.date, y: d.count })),
     [metrics],
   );
 
-  const workloadItems = React.useMemo(() => {
-    const byStatus = metrics?.by_status ?? {};
-    const entries = Object.entries(byStatus);
+  /**
+   * Case workload state. `metrics.by_status` is an exact STORE-WIDE (all-time) count, so
+   * the instrument says "all time" and each row opens the Cases list WITHOUT a window —
+   * the list then holds the number the row shows. Only when that rollup is missing does
+   * it fall back to the window's case page, and then the rows carry the window.
+   */
+  const workload = React.useMemo<{
+    items: Array<{ status: string; value: number }>;
+    scope: 'all' | 'sample';
+  }>(() => {
+    const entries = Object.entries(metrics?.by_status ?? {});
+    const scope: 'all' | 'sample' = entries.length ? 'all' : 'sample';
     const source = entries.length
       ? entries
       : Object.entries(
@@ -1979,8 +2221,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
             return acc;
           }, {}),
         );
-    return source.sort((a, b) => b[1] - a[1]).map(([status, value]) => ({ status, value }));
+    return {
+      items: source.sort((a, b) => b[1] - a[1]).map(([status, value]) => ({ status, value })),
+      scope,
+    };
   }, [metrics, cases]);
+  const workloadItems = workload.items;
 
   // ----- Hover trendlines — honest server series only ---------------------- //
   // The bucket payload echoes its measured window; mirror the posture projection's
@@ -2890,6 +3136,38 @@ export default function Overview({ onNavigate }: OverviewProps) {
     analystConfirmedFp,
   ]);
 
+  // ----- Cross-references for figures the page repeats (Round 12) --------- //
+  /**
+   * Three instruments repeat a strip figure under their own label (diagnosis/overview.md,
+   * glitch 4): the flow's "Cases opened" is Total Cases, the "Cases resolved" snapshot is
+   * Resolved / Closed by severity, and Human vs AI's "AI agent" is Auto Closed. Each
+   * repeat gets one quiet line naming the tile it repeats, so it reads as one measurement
+   * shown twice rather than as clutter or a coincidence.
+   *
+   * ONLY when the two numbers on screen are equal and current. The line is a statement of
+   * fact about what the reader is looking at; a bounded page, a stale rollup or a fallback
+   * derivation can make the pair differ, and then the line says nothing rather than
+   * claiming an identity the screen contradicts. Each figure is read from the very tile
+   * it names (`countTo`), not re-derived.
+   */
+  const crossRefs = React.useMemo(() => {
+    const stripValue = (testId: string): number | undefined => {
+      const v = kpis.find((k) => k.testId === testId)?.countTo;
+      return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    };
+    if (postureStale) return { flowCases: null, resolved: false, aiAgent: false };
+    const total = stripValue('total-cases');
+    const terminal = stripValue('resolved-closed');
+    const auto = stripValue('auto-closed');
+    const flowCases = noise?.stages?.find((s) => s.key === 'cases')?.total;
+    return {
+      flowCases:
+        total !== undefined && typeof flowCases === 'number' && flowCases === total ? total : null,
+      resolved: terminal !== undefined && terminal === derived.resolved,
+      aiAgent: auto !== undefined && humanVsAi.totals?.ai === auto,
+    };
+  }, [kpis, postureStale, noise, derived.resolved, humanVsAi.totals]);
+
   // ----- KPI drill-down disclosure ---------------------------------------- //
   /**
    * ONE panel at a time, docked under the strip. This is a DISCLOSURE, not a dialog:
@@ -3079,8 +3357,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         `${fmtNumber(coverage.sources_silent)} silent source${coverage.sources_silent === 1 ? '' : 's'}`,
       );
     }
-    const topSignature = signatureItems[0]?.label;
-    if (topSignature) parts.push(`top signature: ${topSignature}`);
+    // Only a genuine LEADER is named (Round 12 review): when every signature is tied —
+    // titles are often unique per case — item 0 is just the newest case, not the top one.
+    const [lead, runnerUp] = signatureItems;
+    if (lead && lead.value > 1 && lead.value > (runnerUp?.value ?? 0)) {
+      parts.push(`top signature: ${lead.label} (${fmtNumber(lead.value)} cases)`);
+    }
     return parts.join(' · ');
   }, [timing, usage, usageLoad.availability, coverage, signatureItems]);
 
@@ -3144,6 +3426,30 @@ export default function Overview({ onNavigate }: OverviewProps) {
     : 'Retry spend telemetry';
   /** "last 24 hours" / "last 7 days" — the ONE window wording on this page. */
   const windowPhrase = `last ${trendSpanLabel(hours)}`;
+  /**
+   * The span of everything tallied over the fetched case page: the window itself when the
+   * page is provably the whole window, otherwise the newest rows read out of it.
+   */
+  const caseSampleScope = casePageComplete
+    ? windowPhrase
+    : caseWindow?.exact === true
+      ? `newest ${fmtNumber(cases.length)} of ${fmtNumber(caseWindow.total)}, ${windowPhrase}`
+      : `newest ${fmtNumber(cases.length)} cases read, ${windowPhrase}`;
+  /**
+   * The snapshots' bound line when their totals are counted over a partial page (Round 12
+   * review): the flow beside them states the exact cohort, so an unmarked sample here read
+   * as a second, smaller count of the same cases.
+   */
+  const snapshotBound = casePageComplete
+    ? undefined
+    : caseWindow?.exact === true
+      ? `Lower bound · counted from the newest ${fmtNumber(cases.length)} of ${fmtNumber(caseWindow.total)}`
+      : caseWindow
+        ? `Approximate · counted from the ${fmtNumber(cases.length)} newest cases read`
+        : undefined;
+  /** A change chip between two floors is not a change: withheld when either page is cut. */
+  const snapshotDeltaHonest =
+    !(caseWindow?.exact === true && caseWindow.total > cases.length) && !prevTruncated;
   // The most recent of the two independently loaded halves (case/metric batch, posture).
   const pageFreshness = [loadedAt, posture?.generated_at ?? null]
     .filter((v): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v)))
@@ -3381,7 +3687,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
             <Band
               id="overview-band-flow"
               title="Alert flow"
-              caption={`How the ${windowPhrase} of alerts became cases, and who closed them`}
+              caption={
+                crossRefs.flowCases != null
+                  ? `How the ${windowPhrase} of alerts became cases (the ${fmtNumber(crossRefs.flowCases)} in Total Cases above), and who closed them`
+                  : `How the ${windowPhrase} of alerts became cases, and who closed them`
+              }
               aside={<Freshness at={noise?.generated_at ?? null} />}
             >
               <div
@@ -3459,6 +3769,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     truncated={humanVsAi.truncated}
                     stale={humanVsAi.stale}
                     alertsIngested={humanVsAi.alerts}
+                    crossReference={
+                      crossRefs.aiAgent ? 'AI agent is the same count as Auto Closed above.' : undefined
+                    }
                     className="h-full w-full"
                   />
                 </div>
@@ -3487,12 +3800,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   {/* `content-start`: the band stretches this cell, and a grid's auto rows
                       would otherwise share that stretch and push each snapshot's footnote
                       away from its own donut. */}
-                  <div className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2">
+                  <div className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0">
                     <SnapshotCard
                       title="Open cases"
                       caption={`Arrived in the ${windowPhrase}, still open`}
                       total={derived.open}
-                      delta={countDelta(derived.open, prev?.open ?? null)}
+                      delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
+                      bound={snapshotBound}
+                      roll={rollKpis}
                       goodDirection="down"
                       counts={derived.openSev}
                       ariaLabel="Open cases by severity"
@@ -3521,7 +3836,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       title="Cases resolved"
                       caption={`Arrived in the ${windowPhrase}, now resolved or closed`}
                       total={derived.resolved}
-                      delta={countDelta(derived.resolved, prev?.resolved ?? null)}
+                      delta={
+                        snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null
+                      }
+                      bound={snapshotBound}
+                      roll={rollKpis}
                       goodDirection="up"
                       counts={derived.resolvedSev}
                       ariaLabel="Resolved cases by severity"
@@ -3537,6 +3856,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       // `derived.resolved` counts BOTH terminal statuses, so the deep link
                       // uses the `__terminal__` facet (a `status: 'closed'` link silently
                       // dropped every RESOLVED case).
+                      footnote={
+                        crossRefs.resolved
+                          ? 'The same cases as Resolved / Closed above, by severity.'
+                          : undefined
+                      }
                       onClick={
                         navigate
                           ? () =>
@@ -3663,17 +3987,29 @@ export default function Overview({ onNavigate }: OverviewProps) {
               </h2>
 
               <CollapsibleContent id="overview-deeper-region" className="pt-6">
+                {/* From 1920px the two sub-bands sit side by side. The efficiency column is
+                    capped at 38rem so its four-tile strip stays a 2 × 2 (the strip turns
+                    four-across at 40rem of its own width): four-across in a 5/12 column
+                    left ~165px tiles that cut "no case has been acknowledged yet" and
+                    "43K tokens · 36 calls" to an ellipsis — data a reader could no longer
+                    see. MEASURED at 1920 and 2560. */}
                 <div
                   className={cn(
-                    'grid min-w-0 items-stretch gap-x-6 gap-y-10 3xl:grid-cols-12 3xl:gap-x-10',
+                    'grid min-w-0 items-stretch gap-x-6 gap-y-10 3xl:gap-x-10',
+                    '3xl:grid-cols-[minmax(0,38rem)_minmax(0,1fr)]',
                   )}
                 >
                   {/* -- Sub-band: Efficiency and cost -------------------------------- */}
                   <section
                     aria-labelledby="overview-deeper-efficiency"
-                    className="flex min-w-0 flex-col 3xl:col-span-5"
+                    className="flex min-w-0 flex-col"
                   >
-                    <SubBandTitle id="overview-deeper-efficiency">Efficiency and cost</SubBandTitle>
+                    <SubBandTitle
+                      id="overview-deeper-efficiency"
+                      caption={`Timing and spend over the ${windowPhrase}`}
+                    >
+                      Efficiency and cost
+                    </SubBandTitle>
                     {/* A second continuous strip — the same KpiTile strip grammar as the
                         page's strip, four cells, its own dividers (KpiTileGrid draws one
                         hairline grammar at every column count, with no empty tracks). */}
@@ -3713,6 +4049,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 : s.help
                             }
                             askTopic={kpiTopic(s.key)}
+                            // The context/state line WRAPS here (Round 12 review): at 1280
+                            // with the navigation pinned these tiles are ~215px, and a server
+                            // reason such as "no case has been acknowledged yet" lost its last
+                            // word to an ellipsis. Two lines at most in practice; the strip's
+                            // rows stretch, so the four tiles keep one height.
+                            className={DEEPER_LINE_WRAP}
                           />
                         );
                         if (s.key === 'dwell') {
@@ -3754,6 +4096,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           numeral="hero"
                           size="fluid"
                           testId="llm-spend-detail"
+                          className={DEEPER_LINE_WRAP}
                           label="LLM spend"
                           value={
                             usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)
@@ -3780,14 +4123,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       </MetricHoverTrend>
                     </KpiTileGrid>
 
-                    <div className="mt-8 grid flex-1 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:grid-cols-1">
+                    {/* Stacked in the narrow column from 1920px, coverage keeps its own
+                        height and the volume chart takes whatever the taller neighbouring
+                        sub-band leaves (no dead space inside the coverage block). */}
+                    <div className="mt-8 grid flex-1 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:grid-cols-1 3xl:grid-rows-[auto_minmax(0,1fr)]">
                       <Instrument
                         title="Ingest coverage"
-                        caption="Am I seeing everything?"
-                        className="xl:col-span-4 3xl:col-span-1"
+                        caption="Right now · am I seeing everything?"
+                        className="xl:col-span-5 2xl:col-span-4 3xl:col-span-1"
+                        data-scope="live"
                       >
                         {coverage ? (
-                          <CoverageTile coverage={coverage} onNavigate={navigate} />
+                          <CoverageTile coverage={coverage} onNavigate={navigate} roll={rollKpis} />
                         ) : (
                           <EmptyState
                             compact
@@ -3799,8 +4146,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       </Instrument>
                       <Instrument
                         title="Case volume"
-                        caption="Cases opened per UTC day"
-                        className="xl:col-span-8 3xl:col-span-1"
+                        caption={
+                          metrics?.truncated === true &&
+                          typeof metrics.fetched === 'number' &&
+                          typeof metrics.store_total === 'number'
+                            ? `Cases opened per UTC day · newest ${fmtNumber(metrics.fetched)} of ${fmtNumber(metrics.store_total)} cases`
+                            : 'Cases opened per UTC day · all time'
+                        }
+                        className="xl:col-span-7 2xl:col-span-8 3xl:col-span-1"
+                        data-scope="all"
                       >
                         <VolumeColumns data={caseVolume} />
                       </Instrument>
@@ -3810,11 +4164,25 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   {/* -- Sub-band: What's driving volume ------------------------------ */}
                   <section
                     aria-labelledby="overview-deeper-volume"
-                    className="flex min-w-0 flex-col 3xl:col-span-7"
+                    className="flex min-w-0 flex-col"
                   >
-                    <SubBandTitle id="overview-deeper-volume">What&rsquo;s driving volume</SubBandTitle>
+                    <SubBandTitle
+                      id="overview-deeper-volume"
+                      caption="Each instrument names its own time span"
+                    >
+                      What&rsquo;s driving volume
+                    </SubBandTitle>
                     <div className="grid flex-1 items-stretch gap-x-6 gap-y-8 md:grid-cols-2">
-                      <Instrument title="Case workload state" count={workloadItems.length}>
+                      <Instrument
+                        title="Case workload state"
+                        count={workloadItems.length}
+                        caption={
+                          workload.scope === 'all'
+                            ? 'All time · every case in the store'
+                            : caseSampleScope
+                        }
+                        data-scope={workload.scope}
+                      >
                         {workloadItems.length ? (
                           <ul className="flex flex-col gap-3">
                             {workloadItems.map(({ status, value }) => {
@@ -3828,7 +4196,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                     disabled={!clickable}
                                     onClick={
                                       clickable
-                                        ? () => navigate?.('cases', { status, window: navWindow })
+                                        ? () =>
+                                            navigate?.(
+                                              'cases',
+                                              // An all-time count opens an all-time list
+                                              // (no window), so the list holds the number
+                                              // the row shows.
+                                              workload.scope === 'all'
+                                                ? { status }
+                                                : { status, window: navWindow },
+                                            )
                                         : undefined
                                     }
                                     className={cn(
@@ -3875,7 +4252,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       <Instrument
                         title="Case outcomes"
                         count={verdictMix.total}
-                        caption="AI-verdict mix"
+                        caption={
+                          verdictMix.scope === 'window'
+                            ? `AI-verdict mix · ${windowPhrase}`
+                            : verdictMix.scope === 'all'
+                              ? 'AI-verdict mix · all time, every case in the store'
+                              : `AI-verdict mix · ${caseSampleScope}`
+                        }
+                        data-scope={verdictMix.scope}
                       >
                         {verdictMix.total > 0 ? (
                           <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
@@ -3890,8 +4274,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                               ariaLabel="Case outcomes by AI verdict"
                               center={
                                 <>
+                                  {/* The VERDICTED count: unverdicted cases are not "AI
+                                      verdicts" (they keep their own legend row). */}
                                   <span className="text-2xl font-semibold leading-none tabular-nums text-foreground">
-                                    {fmtNumber(verdictMix.total)}
+                                    {fmtNumber(verdictMix.verdicted)}
                                   </span>
                                   <span className="text-xs leading-tight text-muted-foreground">
                                     AI verdicts
@@ -3921,7 +4307,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                   </li>
                                 );
                               })}
-                              {typeof analystConfirmedFp === 'number' ? (
+                              {/* Only beside the WINDOW mix it was counted with: never under
+                                  all-time verdicts (two spans read as one population). */}
+                              {verdictMix.scope === 'window' && typeof analystConfirmedFp === 'number' ? (
                                 <li
                                   className="flex items-center gap-2 pt-1 text-sm"
                                   data-testid="analyst-confirmed-fp"
@@ -3951,7 +4339,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       <Instrument
                         title="Top signatures"
                         count={signatureItems.length}
-                        caption="Most frequent detections"
+                        caption={`Most frequent detections · ${caseSampleScope}`}
+                        data-scope={casePageComplete ? 'window' : 'sample'}
                       >
                         <BarList items={signatureItems} showRank showPercent emptyLabel="No signatures yet" />
                       </Instrument>
@@ -3959,7 +4348,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       <Instrument
                         title="Top entities"
                         count={entityItems.length}
-                        caption="Most-implicated assets"
+                        caption={`Most-implicated assets · ${caseSampleScope}`}
+                        data-scope={casePageComplete ? 'window' : 'sample'}
                       >
                         <BarList items={entityItems} showRank showPercent emptyLabel="No entities yet" />
                       </Instrument>

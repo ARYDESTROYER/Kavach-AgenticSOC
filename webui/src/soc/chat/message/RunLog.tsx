@@ -278,7 +278,9 @@ export function RunLogHeader({ live, open, onToggle, controls }: RunLogHeaderPro
       ? 'Connection lost — checking whether the answer was saved'
       : live.stopping
         ? 'Stopping after the current step'
-        : 'Working';
+        : live.waiting
+          ? 'Waiting for another answer to finish'
+          : 'Working';
   const parts = [state];
   if (lookups) parts.push(lookupsLabel(lookups));
   if (live.usage) {

@@ -3520,6 +3520,8 @@ export interface ChatAgentConfig {
   /** Domain suffixes never sent to third-party enrichment. */
   internal_domains: string[];
   allow_email_lookup: boolean;
+  /** Round 12 (SPEC D13): the turning ring around the console logo while chat works (default on). */
+  animated_brand?: boolean;
 }
 
 /** Declaration-merges the chat agent bounds onto `Preferences`. */

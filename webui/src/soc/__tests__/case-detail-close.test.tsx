@@ -185,7 +185,11 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
 
     // The human title is the heading, in the foreground (no longer a muted subtitle).
     const title = await screen.findByRole('heading', { level: 2, name: 'Suspicious login burst' });
-    expect(title).toHaveClass('text-xl', 'font-semibold', 'text-foreground');
+    // Round 12 (casemanager.md §4.1): one line at text-lg in a narrow pane (the full title
+    // stays in its hover title and accessible name), up to two lines at text-xl from 56rem.
+    expect(title).toHaveClass('text-lg', 'truncate', 'font-semibold', 'text-foreground');
+    expect(title).toHaveClass('@[56rem]/case:text-xl', '@[56rem]/case:line-clamp-2');
+    expect(title).toHaveAttribute('title', 'Suspicious login burst');
     expect(title).not.toHaveClass('text-muted-foreground');
 
     // The machine id is a secondary mono line AFTER the title: quiet, small, untruncated

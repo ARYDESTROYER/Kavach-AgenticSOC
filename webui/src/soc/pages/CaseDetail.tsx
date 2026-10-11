@@ -1085,13 +1085,42 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       commitCase(next);
       setPending(null);
       resetActionFields();
-      // Completion feedback names the outcome that was recorded (Apple §16).
+      // Completion feedback names the outcome that was recorded (Apple §16). A close or
+      // resolve offers Undo for 8 s: it posts the existing `reopen` analyst verb (#3) —
+      // the recorded classification stays in the case history, as every reopen keeps it.
       if (pending.fields.includes('disposition') && actionDisposition) {
         const verb = (pending.wireAction ?? pending.key) === 'resolve' ? 'Resolved' : 'Closed';
         if (pending.key === 'set_disposition') {
           toast.success(`Recorded as ${humanizeToken(actionDisposition).toLowerCase()}.`);
         } else {
-          toast.success(`${verb} as ${humanizeToken(actionDisposition).toLowerCase()}.`);
+          const closedId = id;
+          const canReopen = hasPermission(ACTION_PERMISSION.reopen.resource, ACTION_PERMISSION.reopen.action);
+          toast.success(`${verb} as ${humanizeToken(actionDisposition).toLowerCase()}.`, {
+            duration: 8000,
+            ...(canReopen
+              ? {
+                  action: {
+                    label: 'Undo',
+                    onClick: () => {
+                      void api
+                        .caseActionExec(closedId, {
+                          action: 'reopen',
+                          note: 'Reopened with Undo right after it was closed.',
+                        })
+                        .then((reopened) => {
+                          // Sync the queue always; the detail only if it still shows this case.
+                          if (activeIdRef.current === closedId) commitCase(reopened);
+                          else onCaseChange?.(reopened);
+                          toast.success('Reopened.');
+                        })
+                        .catch((err: unknown) => {
+                          toast.error(errorMessage(err, 'The case could not be reopened.'));
+                        });
+                    },
+                  },
+                }
+              : {}),
+          });
         }
       }
       if (andNext && onAdvance) onAdvance();
@@ -1187,6 +1216,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     activity,
     commitCase,
     onAdvance,
+    hasPermission,
+    onCaseChange,
   ]);
 
   const runReinvestigate = React.useCallback(async () => {
@@ -1459,57 +1490,39 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 label="Loading case"
                 className="absolute inset-x-0 top-0 rounded-none"
               />
-              <header className="flex flex-wrap items-start gap-x-4 gap-y-2">
-                <div className="min-w-0 flex-1 basis-[18rem]">
-                  {c ? (
-                    <>
-                      {/* UNTRUSTED title — plain text node. The full title is in the
-                          accessible name and the hover title when it clamps. */}
-                      <h2
-                        ref={titleRef}
-                        tabIndex={-1}
-                        title={c.title || c.case_id}
-                        data-case-title
-                        className={cn(
-                          'line-clamp-2 text-xl font-semibold leading-snug tracking-tight text-foreground outline-none',
-                          !shownIsCurrent && 'opacity-60',
-                        )}
-                      >
-                        {c.title || c.case_id}
-                      </h2>
-                      {outcome ? (
-                        <CaseHeaderMeta
-                          c={c}
-                          outcome={outcome}
-                          campaign={campaign}
-                          onOpenCampaign={onNavigate ? () => onNavigate('campaigns') : undefined}
-                          users={pickUsers}
-                          currentUser={currentUser}
-                          canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
-                          canTag={canWriteCase && shownIsCurrent}
-                          slaPolicy={slaPolicy}
-                          onCaseChange={commitCase}
-                          ownerOpen={ownerOpen}
-                          onOwnerOpenChange={setOwnerOpen}
-                          tagsOpen={tagsOpen}
-                          onTagsOpenChange={setTagsOpen}
-                        />
-                      ) : null}
-                    </>
-                  ) : (
-                    <div className="space-y-2 py-1">
-                      <Skeleton className="h-6 w-72 max-w-full" />
-                      <Skeleton className="h-4 w-96 max-w-full" />
-                    </div>
-                  )}
+              {/* Line 1: the title and the actions share ONE row; below a 56rem pane the
+                  title is a single line (full title on hover and in its accessible name)
+                  and the secondary buttons fold into the Take action menu, so the evidence
+                  keeps its height (casemanager.md §4.1). Line 2: the meta row, full width. */}
+              <header className="flex items-start gap-x-3">
+                <div className="min-w-0 flex-1">
+                  {/* UNTRUSTED title — plain text node. The full title is in the accessible
+                      name and the hover title when it clamps. The SAME heading element is
+                      rendered while the case loads (visually hidden, "Loading case"), so the
+                      sheet can focus it on open and keep that focus when the case arrives —
+                      never an icon button whose tooltip would then open by itself (CM-9). */}
+                  <h2
+                    ref={titleRef}
+                    tabIndex={-1}
+                    title={c ? c.title || c.case_id : undefined}
+                    data-case-title
+                    className={cn(
+                      'truncate text-lg font-semibold leading-8 tracking-tight text-foreground outline-none',
+                      '@[56rem]/case:line-clamp-2 @[56rem]/case:whitespace-normal @[56rem]/case:text-xl @[56rem]/case:leading-snug',
+                      !c && 'sr-only',
+                      c && !shownIsCurrent && 'opacity-60',
+                    )}
+                  >
+                    {c ? c.title || c.case_id : 'Loading case'}
+                  </h2>
                 </div>
 
-                <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+                <div className="flex shrink-0 items-center justify-end gap-2">
                   {c && actionPlan.close && canCloseSecondary ? (
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8"
+                      className="hidden h-8 @[56rem]/case:inline-flex"
                       disabled={busy}
                       aria-keyshortcuts="C"
                       onClick={(event) => openFromControl(actionPlan.close!, event.currentTarget)}
@@ -1714,10 +1727,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     size="sm"
                     className="h-8 px-2 @[60rem]/case:hidden"
                     disabled={!c}
+                    aria-label="Details"
                     onClick={() => setDetailsOpen(true)}
                   >
                     <PanelRight className="h-4 w-4" aria-hidden />
-                    Details
+                    <span className="hidden @[48rem]/case:inline">Details</span>
                   </Button>
 
                   <Tooltip>
@@ -1749,6 +1763,33 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   ) : null}
                 </div>
               </header>
+              {c ? (
+                <>
+                  {outcome ? (
+                    <CaseHeaderMeta
+                      c={c}
+                      outcome={outcome}
+                      campaign={campaign}
+                      onOpenCampaign={onNavigate ? () => onNavigate('campaigns') : undefined}
+                      users={pickUsers}
+                      currentUser={currentUser}
+                      canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
+                      canTag={canWriteCase && shownIsCurrent}
+                      slaPolicy={slaPolicy}
+                      onCaseChange={commitCase}
+                      ownerOpen={ownerOpen}
+                      onOwnerOpenChange={setOwnerOpen}
+                      tagsOpen={tagsOpen}
+                      onTagsOpenChange={setTagsOpen}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <div className="space-y-2 py-1">
+                  <Skeleton className="h-6 w-72 max-w-full" />
+                  <Skeleton className="h-4 w-96 max-w-full" />
+                </div>
+              )}
 
               {c ? (
                 <div className="-mx-1 mt-2 overflow-x-auto px-1">
@@ -1836,6 +1877,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           onOpenTab={(next) => setTab(next)}
                           onNavigate={onNavigate}
                           presentation="case-manager"
+                          onSetDisposition={
+                            setDispositionAction && shownIsCurrent
+                              ? (opener) => openFromControl(setDispositionAction, opener)
+                              : undefined
+                          }
                         />
                       </TabPanelMotion>
                     </TabsContent>

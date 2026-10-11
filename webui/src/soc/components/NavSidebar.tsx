@@ -38,9 +38,8 @@
  * drawer): a small turning ring while an answer is being written, an accent dot for an
  * unread answer, amber when a question waits on the analyst, red when one failed. The
  * state is also text: a tooltip / flyout line and `aria-describedby` ("Chat: 1 answer in
- * progress: <title>", one hidden description per item, `nav-activity-<id>`); never
- * `aria-busy` on a nav button. Case-scoped turns mark Case
- * Manager the same way. With reduced motion the ring stands still and the text starts
+ * progress: <title>", one hidden description per destination, `nav-activity-<id>`);
+ * never `aria-busy` on a nav button. Case-scoped turns mark Case Manager the same way. With reduced motion the ring stands still and the text starts
  * with "Working". While any answer is being written a thin ring turns around the brand
  * tile (`ChatAgentConfig.animated_brand`); an operator's logo itself never moves.
  * Titles in that text are prompt- or model-derived and render as text only (#9).
@@ -59,12 +58,8 @@ import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
 import { useAuth } from '../auth';
 import { usePrefs } from '../prefs';
-import {
-  ActivityGlyph,
-  BrandActivityRing,
-  useChatActivitySummary,
-  type ChatActivitySummary,
-} from '../chat-activity/glyph';
+import { ActivityGlyph, BrandActivityRing } from '../chat-activity/glyph';
+import { useChatActivity, type ChatActivitySummary } from '../chat-activity/store';
 import {
   NAV_FOOTER_ITEMS,
   NAV_GROUPS,
@@ -267,15 +262,10 @@ function activityText(activity: ChatActivitySummary, reducedMotion: boolean): st
 }
 
 /**
- * The visually hidden description an item's buttons point at (`aria-describedby`; the
- * buttons keep their plain label as their name), or null when idle.
+ * The id of the visually hidden description an item's buttons point at
+ * (`aria-describedby`; the buttons keep their plain label as their name). NavSidebar
+ * renders one description per destination with activity.
  */
-const describe = (id: string, activity: ChatActivitySummary | undefined) =>
-  activity?.text ? (
-    <span id={`nav-activity-${id}`} className="sr-only">
-      {activity.text}
-    </span>
-  ) : null;
 const describedBy = (id: string, activity: ChatActivitySummary | undefined) =>
   activity?.text ? `nav-activity-${id}` : undefined;
 /** The trailing glyph of a labelled row. */
@@ -360,7 +350,6 @@ const ExpandedItem: React.FC<{
   if (!hasChildren) {
     return (
       <li>
-        {describe(item.id, own)}
         <button
           type="button"
           onClick={() => onNavigate(item.id)}
@@ -403,7 +392,6 @@ const ExpandedItem: React.FC<{
         ) : null}
         {/* Primary destination — navigating ALSO opens the group (destinations are
             never hidden behind the disclosure). */}
-        {describe(item.id, own)}
         <button
           type="button"
           onClick={() => onNavigate(item.id)}
@@ -665,16 +653,13 @@ const CollapsedItem: React.FC<{
   // Childless item → a simple tooltip'd icon button.
   if (!hasChildren) {
     return (
-      <>
-        {describe(item.id, own)}
-        <Tooltip>
-          <TooltipTrigger asChild>{railButton}</TooltipTrigger>
-          <TooltipContent side="right" className="max-w-xs break-words">
-            {item.label}
-            {own?.text ? <span className="block text-muted-foreground">{activityText(own, reducedMotion)}</span> : null}
-          </TooltipContent>
-        </Tooltip>
-      </>
+      <Tooltip>
+        <TooltipTrigger asChild>{railButton}</TooltipTrigger>
+        <TooltipContent side="right" className="max-w-xs break-words">
+          {item.label}
+          {own?.text ? <span className="block text-muted-foreground">{activityText(own, reducedMotion)}</span> : null}
+        </TooltipContent>
+      </Tooltip>
     );
   }
 
@@ -714,7 +699,6 @@ const CollapsedItem: React.FC<{
         }
       }}
     >
-      {describe(item.id, own)}
       {railButton}
       {open ? (
         <div
@@ -835,10 +819,10 @@ export function NavSidebar({
   );
   const [openFlyoutId, setOpenFlyoutId] = React.useState<string | null>(null);
   // Workspace chat marks the Workspace parent and its Chat leaf (both id `chat`); case
-  // chat marks Case Manager.
+  // chat marks Case Manager. The summaries are precomputed by the store's writers.
   const activity: NavActivity = {
-    chat: useChatActivitySummary('workspace'),
-    case_manager: useChatActivitySummary('case'),
+    chat: useChatActivity((snapshot) => snapshot.workspace),
+    case_manager: useChatActivity((snapshot) => snapshot.case),
   };
 
   React.useEffect(() => {
@@ -899,6 +883,14 @@ export function NavSidebar({
           {/* Turns while any answer is being written; the logo itself never moves. */}
           <BrandActivityRing />
         </span>
+        {/* The descriptions the chat destinations' buttons point at (aria-describedby). */}
+        {Object.entries(activity).map(([id, own]) =>
+          own?.text ? (
+            <span key={id} id={`nav-activity-${id}`} className="sr-only">
+              {own.text}
+            </span>
+          ) : null,
+        )}
         {!collapsed ? (
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
             {productName || 'Agentic SOC'}

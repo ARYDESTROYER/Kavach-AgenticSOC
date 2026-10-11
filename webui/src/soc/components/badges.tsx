@@ -783,13 +783,24 @@ export interface AiVerdictChipProps {
   className?: string;
   /** Prefix the words with "AI verdict" (default) — keeps the attribution explicit. */
   labelled?: boolean;
+  /**
+   * Extra classes for the "AI verdict" prefix (a narrow header can hide it visually; the
+   * Bot glyph, the chip's title and its screen-reader text keep the attribution).
+   */
+  labelClassName?: string;
 }
 
 /**
  * The AI verdict as an OUTLINE chip with the Bot glyph — visibly a machine
  * recommendation, never styled like the analyst's filled outcome badge.
  */
-export function AiVerdictChip({ verdict, confidence, className, labelled = true }: AiVerdictChipProps) {
+export function AiVerdictChip({
+  verdict,
+  confidence,
+  className,
+  labelled = true,
+  labelClassName,
+}: AiVerdictChipProps) {
   const words = verdictWords(verdict);
   const pct = confidencePercent(confidence);
   const hasVerdict = Boolean(canonicalVerdict(verdict));
@@ -801,7 +812,17 @@ export function AiVerdictChip({ verdict, confidence, className, labelled = true 
       title={hasVerdict ? 'The AI verdict is a recommendation; a person or the deterministic policy decides.' : undefined}
     >
       <Bot className="size-3 shrink-0 text-primary" aria-hidden />
-      {labelled ? <span className="text-muted-foreground">AI verdict</span> : null}
+      {labelled ? (
+        <>
+          <span
+            className={cn('text-muted-foreground', labelClassName)}
+            aria-hidden={labelClassName ? true : undefined}
+          >
+            AI verdict
+          </span>
+          {labelClassName ? <span className="sr-only">AI verdict</span> : null}
+        </>
+      ) : null}
       <span className="font-medium">{words}</span>
       {hasVerdict && pct !== null ? <span className="tabular-nums text-muted-foreground">{pct}%</span> : null}
     </Badge>

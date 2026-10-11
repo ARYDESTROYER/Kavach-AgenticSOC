@@ -155,7 +155,7 @@ export function slaReading(
   };
 
   if (terminal) {
-    return { text: `${priority} SLA closed`, state: 'met', priority };
+    return { text: 'SLA closed', state: 'met', priority };
   }
   if (acknowledged === null) return phrase('Response', target.response_minutes);
   return phrase('Resolution', target.resolve_minutes);

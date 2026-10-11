@@ -221,6 +221,8 @@ export interface BlockBodyProps {
   staticMode?: boolean;
   /** A leaf inside a report section. */
   nested?: boolean;
+  /** The card dropped its frame for a host that frames it (see {@link BlockCardProps.bare}). */
+  bare?: boolean;
   /** `"<section>-<leaf>"` for a report leaf (see `leafAnchorKey`). */
   leafKey?: string;
 }
@@ -233,9 +235,14 @@ export function BlockBody({
   expanded = false,
   staticMode = false,
   nested = false,
+  bare = false,
   leafKey,
 }: BlockBodyProps) {
   const { compact, citationOwner } = useBlocks();
+  // The body sits inside the card's own frame (border + 0.75rem padding) only in a
+  // top-level card. A report leaf, a bare card and the expanded sheet have no frame
+  // around the body, so KPI tiles draw their own closed frame there (KpiGroupView).
+  const inCardFrame = !nested && !bare && !expanded;
   if (showTable) {
     const t = tableBlockOf(block);
     if (t) return <TableView block={t} title={title} paged={expanded} staticMode={staticMode} />;
@@ -244,11 +251,12 @@ export function BlockBody({
     case 'markdown':
       return <MarkdownView block={block} />;
     case 'kpi_group':
-      // A period comparison's tiles read absolute AND relative change (Round 12 P0-6).
+      // A period comparison's tiles read absolute AND relative change (Round 12 P0-6),
+      // and follow the same host-frame rule as any other KPI group.
       if (block.artifact_kind === 'comparison') {
-        return <ComparisonTiles items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} />;
+        return <ComparisonTiles items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} framed={!inCardFrame} />;
       }
-      return <KpiGroupView items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} />;
+      return <KpiGroupView items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} framed={!inCardFrame} />;
     case 'chart':
       return <ChartBlockView block={block} title={title} compact={compact} expanded={expanded} staticMode={staticMode} />;
     case 'heatmap':
@@ -260,7 +268,16 @@ export function BlockBody({
     case 'timeline':
       return <TimelineView block={block} />;
     case 'entity':
-      return <EntityView block={block} idPrefix={`chat-${index}`} framed={nested} />;
+      return (
+        <EntityView
+          block={block}
+          idPrefix={`chat-${index}`}
+          framed={nested}
+          // Its count tiles: framed by the entity's own frame (a leaf) or the card's.
+          countsFramed={!nested && !inCardFrame}
+          staticMode={staticMode}
+        />
+      );
     case 'mitre':
       return <MitreView block={block} title={title} />;
     case 'query':
@@ -674,6 +691,7 @@ export function BlockCard({
           index={index}
           showTable={showTable}
           nested={nested}
+          bare={bare}
           leafKey={leafKey}
           staticMode={staticMode}
         />

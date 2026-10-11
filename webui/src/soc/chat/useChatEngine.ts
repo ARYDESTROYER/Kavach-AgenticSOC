@@ -56,7 +56,7 @@ import type {
   ChatTimeRange,
   ChatTurn,
 } from '@/lib/types';
-import { getChatActivity, setAnimatedBrand, viewChatActivity } from '../chat-activity/activity';
+import { getChatActivity, setAnimatedBrand, useChatActivity, viewChatActivity } from '../chat-activity/activity';
 import { CHAT_SCOPES, CHAT_STREAM_MODES, displayText } from './stream-events';
 import { REQUEST_TOPIC_RE } from './topic';
 import {
@@ -833,6 +833,18 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     adoptReported(`conv:${conversation.id}`, 'workspace');
     refreshViewScope();
   }, [conversation, adoptReported, commitItems, detach, refreshViewScope, resetTranscript, writeHistory]);
+
+  // A turn another tab or the server reports for the scope on screen joins it live, also
+  // when that report lands after the thread restored (a reload: `GET /chat/turns/active`
+  // and the thread load race).
+  const reportedTurn = useChatActivity((snapshot) => {
+    const entry = viewScope ? snapshot.entries.find((item) => item.scope === viewScope) : undefined;
+    return entry?.status === 'running' && entry.source !== 'local' ? entry.turnId : null;
+  });
+  React.useEffect(() => {
+    if (!reportedTurn || !viewScope || attachedRef.current) return;
+    adoptReported(viewScope, viewScope.startsWith('case:') ? 'case' : 'workspace');
+  }, [adoptReported, reportedTurn, viewScope]);
 
   React.useEffect(() => {
     callbacksRef.current.onBusyChange?.(busy);

@@ -24,6 +24,7 @@ import { SEMANTIC_ICON, token } from '@/soc/components/palette';
 import { DASH, MINUS, changeParts, formatValue, unitWord } from '../format';
 import type { KpiItem, SemanticKey } from '../schema';
 import { TrendColumns, trendSentence } from '../charts/SparklineChart';
+import { KPI_HANG } from './KpiGroupView';
 
 const ACCENT: Partial<Record<SemanticKey, KpiAccent>> = {
   critical: 'critical',
@@ -159,14 +160,23 @@ export interface ComparisonTilesProps {
   items: KpiItem[];
   idPrefix: string;
   staticMode?: boolean;
+  /**
+   * The same host-frame rule as `KpiGroupView.framed`. Default `false`: inside a framed
+   * host (a top-level block card, 0.75rem side padding) the grid draws only its inner
+   * hairlines and hangs by the tiles' own `px-3` (`KPI_HANG`), so tile text, the trend
+   * row and the small-sample note all start on the card's content edge, with the title
+   * and the prose. `true` when nothing frames it (a report leaf, the expanded sheet, a
+   * report panel item): its own closed frame, no hang.
+   */
+  framed?: boolean;
   className?: string;
 }
 
-export function ComparisonTiles({ items, idPrefix, staticMode = false, className }: ComparisonTilesProps) {
+export function ComparisonTiles({ items, idPrefix, staticMode = false, framed = false, className }: ComparisonTilesProps) {
   const small = items.map((it) => comparisonFacts(it).smallSample).find((n): n is number => n !== null);
   return (
     <div className={cn('min-w-0', className)} data-testid="block-comparison">
-      <KpiTileGrid count={items.length} framed={false} role="list">
+      <KpiTileGrid count={items.length} framed={framed} containerClassName={framed ? undefined : KPI_HANG} role="list">
         {items.map((item, i) => (
           <ComparisonTile key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} staticMode={staticMode} />
         ))}

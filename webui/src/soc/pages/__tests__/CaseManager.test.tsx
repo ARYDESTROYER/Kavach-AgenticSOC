@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   routeOpts: undefined as { caseId?: string } | undefined,
   username: 'analyst.one' as string | null,
+  demoActive: false,
   permissions: new Set<string>(),
   toastLoading: vi.fn(() => 'case-manager-bulk'),
   toastSuccess: vi.fn(),
@@ -69,6 +70,19 @@ vi.mock('@/soc/auth', () => ({
       mocks.permissions.has(`${resource}:${action}`),
   }),
 }));
+
+vi.mock('@/soc/demo', async () => {
+  const actual = await vi.importActual<typeof import('@/soc/demo')>('@/soc/demo');
+  return {
+    ...actual,
+    useDemo: () => ({
+      status: { mode: mocks.demoActive ? 'live' : 'off', active: mocks.demoActive, run_id: null },
+      active: mocks.demoActive,
+      loading: false,
+      refresh: async () => ({ mode: 'off', active: false, run_id: null }),
+    }),
+  };
+});
 
 vi.mock('@/soc/router', () => ({
   useRoute: () => ({ page: 'case_manager', opts: mocks.routeOpts, navigate: mocks.navigate }),
@@ -222,6 +236,7 @@ describe('CaseManager', () => {
     mocks.navigate.mockReset();
     mocks.routeOpts = undefined;
     mocks.username = 'analyst.one';
+    mocks.demoActive = false;
     mocks.permissions = new Set([
       'cases:write',
       'cases:assign',
@@ -447,6 +462,11 @@ describe('CaseManager', () => {
     const row = screen.getAllByTestId('case-queue-row')[0];
     expect(within(row).queryByText('IP 203.0.113.77')).not.toBeInTheDocument();
     expect(within(row).getByText('IBM QRadar SIEM')).toBeInTheDocument();
+    // The fact shrinks first and hides below a 360px queue (container query), and it
+    // never leaves the row: the open control's accessible name still carries it.
+    const fact = within(row).getByTestId('case-queue-fact');
+    expect(fact).toHaveClass('hidden', '@[22.5rem]/queue:flex');
+    expect(within(row).getByRole('button', { name: /IBM QRadar SIEM/ })).toBeInTheDocument();
   });
 
   it('keeps open, selected, hovered and focused rows visually distinct', async () => {
@@ -993,6 +1013,19 @@ describe('CaseManager', () => {
     expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' })).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByText('Case is closed')).toBeInTheDocument();
+  });
+
+  it('says up front that bulk changes are off in Demo Mode instead of failing after the dialog', async () => {
+    mocks.demoActive = true;
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' }));
+    expect(await screen.findByTestId('case-bulk-demo-note')).toHaveTextContent(
+      'Bulk changes run as background jobs, which are off in Demo Mode.',
+    );
+    expect(screen.getByRole('button', { name: /^close…$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /more bulk actions for/i })).toBeDisabled();
+    expect(mocks.submitJob).not.toHaveBeenCalled();
   });
 
   it('has no detectable accessibility violations in the split workspace', async () => {

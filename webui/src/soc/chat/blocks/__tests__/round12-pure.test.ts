@@ -12,7 +12,8 @@ import { sliceChart } from '../charts/CartesianChart';
 import { changeParts, shortCalendarLabel, xAxisHeader, xPositionLabel, xTickLabel } from '../format';
 import { comparisonFacts } from '../renderers/ComparisonView';
 import { highlightColumns, infographicParts, spanPlan } from '../renderers/InfographicView';
-import { reportLayout } from '../renderers/ReportView';
+import { TEMPLATE_NAME, reportLayout } from '../renderers/ReportView';
+import { TEMPLATE_LABEL } from '../../report/model';
 import { allowedRebin, parseBlock } from '../schema';
 import type { ChartBlock, KpiGroupBlock, ReportBlock } from '../schema';
 import { ROUND12_RAW, dailyCount, istDays, round12Block } from '../__fixtures__/round12';
@@ -264,6 +265,11 @@ describe('infographic layout plan', () => {
     expect(highlightColumns(3)).toBe('grid-cols-1 @[48rem]:grid-cols-3');
     expect(highlightColumns(3)).not.toContain('grid-cols-2');
     expect(highlightColumns(4)).toContain('@[64rem]:grid-cols-4');
+  });
+
+  it('names every template exactly as the Reports library does', () => {
+    // The Brief's template chip and the library's template column must never disagree.
+    expect(TEMPLATE_NAME).toEqual(TEMPLATE_LABEL);
   });
 
   it('spans wide leaves and an odd chart out, so no grid track is left empty', () => {

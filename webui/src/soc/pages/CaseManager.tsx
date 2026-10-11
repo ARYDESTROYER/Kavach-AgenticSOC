@@ -90,6 +90,7 @@ import { semanticIcon } from '@/soc/components/palette';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { AnimatePresence, MotionProvider, SPRING_UI, motion, useReducedMotion } from '@/soc/components/motion';
 import { useAuth } from '@/soc/auth';
+import { useDemo } from '@/soc/demo';
 import { useRoute } from '@/soc/router';
 import {
   announceJobAccepted,
@@ -328,6 +329,7 @@ const QueueRow: React.FC<{
   const accessibleName = [
     title,
     displayId,
+    fact,
     `${humanizeToken(severity)} severity${sourceAsserted ? ' (reported by the source)' : ''}`,
     risk !== null ? `risk ${risk}` : null,
     statusText,
@@ -495,10 +497,15 @@ const QueueRow: React.FC<{
                 {middleEllipsis(displayId)}
               </span>
               {fact ? (
-                <>
+                /* The fact shrinks first and hides in a queue narrower than 360px; it
+                   stays in the row's accessible name, the hover card and the header. */
+                <span
+                  data-testid="case-queue-fact"
+                  className="hidden min-w-0 shrink-[3] items-center gap-1.5 @[22.5rem]/queue:flex"
+                >
                   <MetaDot />
-                  <span className="min-w-0 shrink-[3] truncate @[22.5rem]/queue:inline">{fact}</span>
-                </>
+                  <span className="min-w-0 truncate">{fact}</span>
+                </span>
               ) : null}
             </span>
             {job?.failure ? (
@@ -564,6 +571,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const announce = useAnnouncer();
   const reduceMotion = useReducedMotion();
   const { username: currentUser, hasPermission } = useAuth();
+  const { active: demoActive } = useDemo();
   const routeCaseId = initialCaseId ?? route.opts?.caseId;
 
   // ---- queue query --------------------------------------------------------- //
@@ -1391,6 +1399,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   const canAssign = hasPermission('cases', 'assign');
   const canClose = hasPermission('cases', 'close');
+  // Bulk work runs as durable background jobs, which the server refuses in Demo Mode.
+  // Say so up front instead of letting an analyst fill a dialog that can only fail.
+  const bulkUnavailable = demoActive;
 
   return (
     <ProtectedRoute resource="cases" action="read">
@@ -1638,7 +1649,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                             variant="outline"
                             size="sm"
                             className="h-7 px-2 text-xs"
-                            disabled={bulkBusy}
+                            disabled={bulkBusy || bulkUnavailable}
                             onClick={() => openBulkForm('assign')}
                           >
                             <UserCheck className="h-3.5 w-3.5" aria-hidden />
@@ -1649,7 +1660,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                           <Button
                             size="sm"
                             className="h-7 px-2 text-xs"
-                            disabled={bulkBusy}
+                            disabled={bulkBusy || bulkUnavailable}
                             onClick={() => setBulkTerminal('close')}
                           >
                             <Check className="h-3.5 w-3.5" aria-hidden />
@@ -1663,7 +1674,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                               variant="outline"
                               size="sm"
                               className="h-7 px-2 text-xs"
-                              disabled={bulkBusy}
+                              disabled={bulkBusy || bulkUnavailable}
                               aria-label={`More bulk actions for ${selectedCount} selected case${selectedCount === 1 ? '' : 's'}`}
                             >
                               {bulkBusy ? (
@@ -1743,6 +1754,12 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                   )}
                 </div>
 
+                {selectedCount > 0 && bulkUnavailable ? (
+                  <p role="note" data-testid="case-bulk-demo-note" className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                    Bulk changes run as background jobs, which are off in Demo Mode. Open a case to
+                    change it on its own.
+                  </p>
+                ) : null}
                 {trackedJob ? (
                   <div className="mt-1.5 space-y-1" role="status">
                     <p className="text-xs text-foreground">

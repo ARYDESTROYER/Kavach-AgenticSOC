@@ -82,4 +82,20 @@ describe('CaseDetail — focus return on close', () => {
     expect(opener).toHaveFocus();
     expect(document.body).not.toHaveFocus();
   });
+
+  it('focuses the case title on open (never an icon button whose tooltip would open itself)', async () => {
+    render(<Host />);
+    const opener = screen.getByTestId('opener');
+    opener.focus();
+    await act(async () => {
+      fireEvent.click(opener);
+    });
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
+    // The SAME heading is rendered while the case loads and after, so focus that lands
+    // on it at open survives the load (Round 12, CM-9).
+    await waitFor(() =>
+      expect(document.activeElement?.hasAttribute('data-case-title')).toBe(true),
+    );
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
 });

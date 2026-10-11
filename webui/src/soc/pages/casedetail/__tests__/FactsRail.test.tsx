@@ -154,4 +154,23 @@ describe('FactsRail', () => {
     expect(outcome).toHaveTextContent('Closed by analyst: outcome not recorded');
     expect(within(outcome).getByRole('button', { name: 'Set disposition' })).toBeInTheDocument();
   });
+
+  it('keeps a triage-recorded disposition visible, labelled as not an analyst call', () => {
+    const open = {
+      ...FULL,
+      status: 'investigating',
+      decision_by: 'agent',
+      disposition: 'suspicious',
+      history: [],
+    } as unknown as Case;
+    renderRail(open);
+    expect(screen.getByTestId('facts-recorded-disposition')).toHaveTextContent(
+      'Recorded disposition: Suspicious (not confirmed by an analyst)',
+    );
+  });
+
+  it('never repeats the disposition line once an analyst classified the case', () => {
+    renderRail();
+    expect(screen.queryByTestId('facts-recorded-disposition')).toBeNull();
+  });
 });

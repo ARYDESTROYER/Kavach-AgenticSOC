@@ -1675,8 +1675,9 @@ select:-webkit-autofill:focus {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  /* Console chrome: navigation, the top bar (the header beside <main>), the skip link,
-     toasts. */
+  /* Console chrome: navigation (and the frame that reserves its width beside <main>),
+     the top bar (the header beside <main>), the skip link, toasts. */
+  [data-testid='desktop-navigation-frame'],
   aside[aria-label='Primary navigation'],
   header:has(~ #socMain),
   a[href='#socMain'],
@@ -1715,5 +1716,11 @@ select:-webkit-autofill:focus {
   #socMain li,
   #socMain [data-testid='kpi-strip'] {
     break-inside: avoid;
+  }
+  /* A chart that sizes itself by measuring its box on screen keeps those dimensions on
+     paper (scripts do not run between the print reflow and the printout), so its box
+     clips rather than letting bars run over the band below. */
+  #socMain [data-testid='human-vs-ai-chart'] {
+    overflow: hidden !important;
   }
 }

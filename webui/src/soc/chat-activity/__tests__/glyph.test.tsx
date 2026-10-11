@@ -1,6 +1,7 @@
 /**
  * The activity glyph grammar (Round 12, SPEC D13): ring while working, accent dot for
- * unread, amber for needs input, red for failed; the text a host points at; the brand
+ * unread, amber for needs input, red for failed; the text a host points at (precomputed
+ * into the snapshot by the writers, so the entry carries no wording logic); the brand
  * ring (only the ring moves, never an operator's logo); the document-title composer.
  */
 import { readFileSync } from 'node:fs';
@@ -8,10 +9,18 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 
-import { ActivityGlyph, BrandActivityRing, describeChatActivity } from '../glyph';
+import { ActivityGlyph, BrandActivityRing } from '../glyph';
 import { CaseChatActivityGlyph } from '../case-glyph';
-import { setBaseDocumentTitle, setDocumentTitlePrefix } from '../document-title';
-import { clearChatActivity, putChatActivity, setAnimatedBrand, type ChatActivity } from '../activity';
+import { setBaseDocumentTitle } from '../document-title';
+import { setDocumentTitlePrefix } from '../title-prefix';
+import {
+  clearChatActivity,
+  describeChatActivity,
+  getChatActivity,
+  putChatActivity,
+  setAnimatedBrand,
+  type ChatActivity,
+} from '../activity';
 
 function entry(patch: Partial<ChatActivity> & { scope: string }): ChatActivity {
   return {
@@ -89,6 +98,17 @@ describe('describeChatActivity', () => {
     expect(seen).toEqual({ status: 'needs_input', text: '' });
   });
 
+  it('is precomputed into the snapshot per destination on every write', () => {
+    putChatActivity(entry({ scope: 'conv:a', title: 'Investigate host X' }));
+    putChatActivity(entry({ scope: 'case:k', kind: 'case', caseId: 'k', status: 'unread', title: 'Summarize' }));
+    const snap = getChatActivity();
+    expect(snap.workspace).toEqual({ status: 'running', text: 'Chat: 1 answer in progress: Investigate host X' });
+    expect(snap.case).toEqual({ status: 'unread', text: 'Case chat: 1 new answer: Summarize' });
+    expect(snap.all.status).toBe('running');
+    clearChatActivity();
+    expect(getChatActivity()).toMatchObject({ workspace: { status: null, text: '' }, case: { status: null, text: '' }, all: { status: null } });
+  });
+
   it('keeps a model-written title as plain text (never markup)', () => {
     const { container } = render(<span>{describeChatActivity([entry({ scope: 'conv:x', title: '<img src=x onerror=alert(1)>' })]).text}</span>);
     expect(container.querySelector('img')).toBeNull();
@@ -139,6 +159,20 @@ describe('document title', () => {
     setDocumentTitlePrefix('');
     expect(document.title).toBe('Acme · Agentic SOC');
     setBaseDocumentTitle('Agentic SOC');
+  });
+
+  it('writes the base straight to the title until the prefix composer loads', async () => {
+    vi.resetModules();
+    const fresh = await import('../document-title');
+    fresh.setBaseDocumentTitle('Acme · Agentic SOC');
+    expect(document.title).toBe('Acme · Agentic SOC');
+    const prefix = await import('../title-prefix');
+    prefix.setDocumentTitlePrefix('●');
+    expect(document.title).toBe('● Acme · Agentic SOC');
+    fresh.setBaseDocumentTitle('Agentic SOC');
+    expect(document.title).toBe('● Agentic SOC');
+    prefix.setDocumentTitlePrefix('');
+    expect(document.title).toBe('Agentic SOC');
   });
 
   it('waits while someone else holds the title (the print export), then takes it back', () => {

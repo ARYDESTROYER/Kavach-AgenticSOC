@@ -72,7 +72,22 @@ function CopyValue({ value }: { value: string }) {
   );
 }
 
-export function EntityView({ block, idPrefix, framed = false }: { block: EntityBlock; idPrefix: string; framed?: boolean }) {
+export interface EntityViewProps {
+  block: EntityBlock;
+  idPrefix: string;
+  /** Draw the entity's own frame (a report leaf: no block card around it). */
+  framed?: boolean;
+  /**
+   * The count tiles draw their own closed frame: nothing frames them (a bare card in a
+   * report panel item, the expanded sheet). Otherwise they sit in the entity's or the
+   * card's frame and hang to its content edge (KpiGroupView).
+   */
+  countsFramed?: boolean;
+  /** Print / static export: count tiles are not buttons and their deltas take their own line. */
+  staticMode?: boolean;
+}
+
+export function EntityView({ block, idPrefix, framed = false, countsFramed = false, staticMode = false }: EntityViewProps) {
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const canInvestigate = isPageId('investigate');
@@ -169,7 +184,9 @@ export function EntityView({ block, idPrefix, framed = false }: { block: EntityB
         </div>
       ) : null}
 
-      {block.counts.length ? <KpiGroupView items={block.counts} idPrefix={`${idPrefix}-counts`} /> : null}
+      {block.counts.length ? (
+        <KpiGroupView items={block.counts} idPrefix={`${idPrefix}-counts`} framed={countsFramed} staticMode={staticMode} />
+      ) : null}
 
       {block.related_cases.length ? (
         <div>

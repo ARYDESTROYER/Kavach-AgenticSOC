@@ -61,6 +61,7 @@ import { copyText } from '@/lib/clipboard';
 import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
 import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
 import { Skeleton } from '@/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
@@ -704,6 +705,11 @@ export const OverviewPanel: React.FC<{
   onOpenTab?: (tab: OverviewTab) => void;
   onNavigate?: Navigate;
   presentation?: CasePanelPresentation;
+  /**
+   * Opens the Set disposition dialog. Offered beside the headline when a person closed
+   * the case without recording an outcome (D15 row 3) — the honest next step.
+   */
+  onSetDisposition?: (opener: HTMLElement) => void;
 }> = ({
   c,
   fpPolicy,
@@ -717,6 +723,7 @@ export const OverviewPanel: React.FC<{
   onOpenTab,
   onNavigate,
   presentation = 'default',
+  onSetDisposition,
 }) => {
   const isCaseManager = presentation === 'case-manager';
   const trigger = c.trigger_reason as
@@ -980,6 +987,21 @@ export const OverviewPanel: React.FC<{
                   </span>
                 ) : null}
               </p>
+            ) : null}
+            {outcome.source === 'analyst_unrecorded' && onSetDisposition ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span>No disposition was recorded when this case was closed.</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  data-testid="overview-set-disposition"
+                  onClick={(event) => onSetDisposition(event.currentTarget)}
+                >
+                  Set disposition
+                </Button>
+              </div>
             ) : null}
 
             {recommendationIsSummary && !terminal ? (
@@ -1385,25 +1407,34 @@ export const OverviewPanel: React.FC<{
           >
             {isCaseManager ? (
               humanClosed ? (
-                <>
-                  <p className="text-sm leading-relaxed text-foreground/90">
-                    {outcome.source === 'analyst_policy'
-                      ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
-                      : 'Closed by an analyst (a human lifecycle action). The deterministic policy did not close this case.'}
-                  </p>
-                  <dl className="space-y-2.5 text-sm">
+                /* The authority SENTENCE lives once, in the outcome band above; this lane
+                   keeps the facts behind it (who, what, when). */
+                <dl className="space-y-2.5 text-sm" data-testid="overview-analyst-lane">
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className={FIELD_LABEL}>Authority</dt>
+                    <dd className="text-right text-foreground">
+                      {c.decision_by ? humanizeToken(c.decision_by) : 'Analyst'}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className={FIELD_LABEL}>Outcome</dt>
+                    <dd className="text-right text-foreground">{outcome.shortLabel}</dd>
+                  </div>
+                  {outcome.source === 'analyst' && (outcome.by || outcome.at) ? (
                     <div className="flex items-center justify-between gap-3">
-                      <dt className={FIELD_LABEL}>Authority</dt>
+                      <dt className={FIELD_LABEL}>Classified</dt>
+                      {/* The analyst name is case data — plain text (#9). */}
                       <dd className="text-right text-foreground">
-                        {c.decision_by ? humanizeToken(c.decision_by) : 'Analyst'}
+                        {outcome.by ? outcome.by : 'By an analyst'}
+                        {outcome.at ? <span className="text-muted-foreground"> · {humanizeAge(outcome.at)}</span> : null}
                       </dd>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className={FIELD_LABEL}>Outcome</dt>
-                      <dd className="text-right text-foreground">{outcome.shortLabel}</dd>
-                    </div>
-                  </dl>
-                </>
+                  ) : null}
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className={FIELD_LABEL}>Deterministic policy</dt>
+                    <dd className="text-right text-foreground">Not applied</dd>
+                  </div>
+                </dl>
               ) : (
                 <>
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-muted/25 px-3 py-2">

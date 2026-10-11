@@ -5,14 +5,21 @@
  * failure), with its text for screen readers. Lives outside `glyph.tsx` so only the
  * lazy case pages carry it.
  */
-import { ActivityGlyph, describeChatActivity, type ChatActivitySummary } from './glyph';
-import { useChatActivity } from './store';
+import * as React from 'react';
 
-/** This case's chat state and its text ("Case chat: 1 answer in progress: <title>"). */
+import { describeChatActivity, useChatActivity, type ChatActivitySummary } from './activity';
+import { ActivityGlyph } from './glyph';
+
+const IDLE: ChatActivitySummary = { status: null, text: '' };
+
+/**
+ * This case's chat state and its text ("Case chat: 1 answer in progress: <title>").
+ * Selects only this case's entry, so a queue of many rows re-renders just the row whose
+ * case chat changed.
+ */
 export function useCaseChatActivity(caseId: string): ChatActivitySummary {
-  const { entries } = useChatActivity();
-  const entry = entries.find((item) => item.scope === `case:${caseId}`);
-  return entry ? describeChatActivity([entry], 'Case chat') : { status: null, text: '' };
+  const entry = useChatActivity((snapshot) => snapshot.entries.find((item) => item.scope === `case:${caseId}`) ?? null);
+  return React.useMemo(() => (entry ? describeChatActivity([entry], 'Case chat') : IDLE), [entry]);
 }
 
 /** The glyph plus its visually hidden text (for hosts named by their content). */

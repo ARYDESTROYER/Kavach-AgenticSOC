@@ -36,6 +36,17 @@ const { listCasesMock, getMetricsMock, usageMock, noiseMock, coverageMock, trend
     trendsMock: vi.fn(),
   }));
 
+// The Deeper analytics choice is mirrored to the viewer's server prefs (Round 12). Null
+// (no provider) unless a test hands the page hydrated prefs.
+const { useOptionalPrefsMock, putUserMock } = vi.hoisted(() => ({
+  useOptionalPrefsMock: vi.fn((): unknown => null),
+  putUserMock: vi.fn(),
+}));
+vi.mock('@/soc/prefs', async () => ({
+  ...(await vi.importActual<typeof import('@/soc/prefs')>('@/soc/prefs')),
+  useOptionalPrefs: useOptionalPrefsMock,
+}));
+
 vi.mock('@/lib/api', async () => ({
   // ApiError is real: LoadError's message helper narrows on it.
   ApiError: (await vi.importActual<typeof import('@/lib/api')>('@/lib/api')).ApiError,
@@ -46,6 +57,7 @@ vi.mock('@/lib/api', async () => ({
     noiseReduction: noiseMock,
     sourcesCoverage: coverageMock,
     metricsTrends: trendsMock,
+    prefs: { putUser: putUserMock },
   },
 }));
 
@@ -183,6 +195,8 @@ function mountMocks() {
   noiseMock.mockReset().mockResolvedValue(NOISE);
   coverageMock.mockReset().mockResolvedValue(COVERAGE);
   trendsMock.mockReset().mockResolvedValue(TRENDS);
+  putUserMock.mockReset().mockResolvedValue({});
+  useOptionalPrefsMock.mockReset().mockReturnValue(null);
 }
 
 async function mount() {
@@ -295,6 +309,10 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(within(card).getByTestId('human-vs-ai-chart')).toBeInTheDocument();
     expect(card).toHaveTextContent(/times in UTC/);
     expect(within(card).getByTestId('human-vs-ai-alerts')).toHaveTextContent('30 alerts ingested');
+    // Additive: the repeat is named — AI agent IS the Auto Closed tile's count.
+    expect(within(card).getByTestId('human-vs-ai-cross-reference')).toHaveTextContent(
+      'AI agent is the same count as Auto Closed above.',
+    );
   });
 
   it('Cases and response band: snapshots, cross-reference, response time with p90, the live queue', async () => {
@@ -356,13 +374,16 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     // Additive: what the fold holds, in one line, while it is closed.
     await waitFor(() =>
       expect(screen.getByTestId('deeper-summary')).toHaveTextContent(
-        'MTTA 45m · MTTR 3h · Dwell 30m · $1.25 spend · 1 silent source · top signature: Impossible travel',
+        'MTTA 45m · MTTR 3h · Dwell 30m · $1.25 spend · 1 silent source',
       ),
     );
+    // Every signature is tied at one case, so none is named as the "top" one.
+    expect(screen.getByTestId('deeper-summary')).not.toHaveTextContent(/top signature/);
     await userEvent.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    // The choice is remembered.
+    // The choice is remembered: locally, and in the viewer's own prefs.
     expect(localStorage.getItem('soc.overview.deeperOpen')).toBe('1');
+    expect(putUserMock).toHaveBeenCalledWith({ misc: { overview_deeper_open: true } });
 
     // Efficiency and cost: the second strip.
     expect(await screen.findByRole('heading', { name: 'Efficiency and cost' })).toBeInTheDocument();
@@ -400,9 +421,20 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(screen.getByRole('heading', { name: 'What’s driving volume' })).toBeInTheDocument();
     const workload = screen.getByRole('region', { name: 'Case workload state' });
     expect(within(workload).getAllByRole('progressbar')).toHaveLength(3);
-    expect(within(workload).getByRole('button', { name: /^View needs human cases$/i })).toBeInTheDocument();
+    // An ALL-TIME count (store-wide `by_status`) says so, and opens an all-time list.
+    expect(workload).toHaveAttribute('data-scope', 'all');
+    expect(within(workload).getByTestId('instrument-caption')).toHaveTextContent('All time · every case in the store');
+    await userEvent.click(within(workload).getByRole('button', { name: /^View needs human cases$/i }));
+    expect(onNavigate).toHaveBeenLastCalledWith('cases', { status: 'needs_human' });
+    // Every Deeper instrument names its time span.
+    expect(within(screen.getByRole('region', { name: 'Ingest coverage' })).getByTestId('instrument-caption')).toHaveTextContent(/^Right now/);
+    expect(within(screen.getByRole('region', { name: 'Case volume' })).getByTestId('instrument-caption')).toHaveTextContent('Cases opened per UTC day · all time');
+    expect(screen.getAllByTestId('subband-caption')[0]).toHaveTextContent('Timing and spend over the last 24 hours');
 
     const outcomes = screen.getByRole('region', { name: 'Case outcomes' });
+    // One population: the window's posture quality block, captioned with the window.
+    expect(outcomes).toHaveAttribute('data-scope', 'window');
+    expect(within(outcomes).getByTestId('instrument-caption')).toHaveTextContent('AI-verdict mix · last 24 hours');
     const donut = within(outcomes).getByRole('img', { name: 'Case outcomes by AI verdict' });
     // The centre reads in sentence case under the numeral (the "VERDICTS" overflow fix).
     expect(within(donut).getByText('AI verdicts')).toBeInTheDocument();
@@ -417,8 +449,10 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
 
     const signatures = screen.getByRole('region', { name: 'Top signatures' });
     expect(within(signatures).getByText('Impossible travel')).toBeInTheDocument();
+    expect(within(signatures).getByTestId('instrument-caption')).toHaveTextContent('Most frequent detections · last 24 hours');
     const entities = screen.getByRole('region', { name: 'Top entities' });
     expect(within(entities).getByText('10.0.0.1')).toBeInTheDocument();
+    expect(within(entities).getByTestId('instrument-caption')).toHaveTextContent('Most-implicated assets · last 24 hours');
   });
 
   it('KPI drill-down: identity, switcher, filters, partition, trend, stats, table, footer', async () => {
@@ -448,6 +482,8 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
 
     const trend = within(panel).getByTestId('kpi-drilldown-trend');
     expect(trend).toHaveTextContent('False positive rate');
+    // The shared hover-card body's 11px captions take the dialog's 12px floor here.
+    expect(trend.className).toContain('[&_.text-2xs]:text-xs');
     const stats = within(panel).getByTestId('kpi-drilldown-stats');
     for (const label of ['Unassigned', 'Acknowledged', 'Median age', 'Oldest']) {
       expect(within(stats).getByText(label)).toBeInTheDocument();
@@ -484,5 +520,237 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(await screen.findByText('No triage activity yet')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect a source' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start demo' })).toBeInTheDocument();
+  });
+});
+
+describe('Overview — Round 12 cross-references and the remembered Deeper choice', () => {
+  beforeEach(() => {
+    localStorage.removeItem('soc.overview.deeperOpen');
+    mountMocks();
+  });
+
+  it('names each repeated figure only when the two numbers on screen are equal', async () => {
+    // Every case of the window is on the page and terminal, and the flow opened exactly
+    // the window's cases: each repeat now equals the strip tile it repeats.
+    const closed = CASES.map((c) => ({ ...c, status: 'closed' })) as Case[];
+    listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+      Promise.resolve(
+        params?.to?.startsWith('now-')
+          ? { cases: PREV_CASES, total: PREV_CASES.length }
+          : { cases: closed, total: closed.length, window_total_exact: true },
+      ),
+    );
+    noiseMock.mockReset().mockResolvedValue({
+      ...NOISE,
+      stages: NOISE.stages.map((st) => (st.key === 'cases' ? { ...st, total: 3 } : st)),
+    });
+    await mount();
+
+    const flow = screen.getByRole('region', { name: 'Alert flow' });
+    await waitFor(() =>
+      expect(
+        within(flow).getByText(
+          'How the last 24 hours of alerts became cases (the 3 in Total Cases above), and who closed them',
+        ),
+      ).toBeInTheDocument(),
+    );
+    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const footnotes = within(lifecycle).getAllByTestId('snapshot-footnote');
+    expect(footnotes.map((f) => f.textContent)).toEqual([
+      'Part of the 7 open now, any arrival date (Open Cases above).',
+      'The same cases as Resolved / Closed above, by severity.',
+    ]);
+    expect(within(screen.getByTestId('human-vs-ai')).getByTestId('human-vs-ai-cross-reference')).toBeInTheDocument();
+  });
+
+  it('says nothing when the repeat and its tile differ', async () => {
+    // The flow opened 40 cases against a window of 3; only one of the three window cases
+    // on the page is terminal while the rollup counts three; and the rollup's close
+    // partition does not reconcile (2 + 1 + 1 ≠ 3), so Human vs AI falls back to the
+    // bucket sums (AI agent 1) while the Auto Closed tile reads the rollup's 2.
+    fetchPostureMock.mockReset().mockResolvedValue({
+      ...POSTURE,
+      quality: { ...POSTURE.quality, auto_closed_cases: 2 },
+    });
+    render(<Overview onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('kpi-auto-closed')).toHaveTextContent('2'));
+    await waitFor(() => expect(screen.getByTestId('human-vs-ai-ai')).toHaveTextContent('1'));
+    const flow = screen.getByRole('region', { name: 'Alert flow' });
+    await waitFor(() => expect(within(flow).getByTestId('noise-funnel')).toBeInTheDocument());
+    expect(
+      within(flow).getByText('How the last 24 hours of alerts became cases, and who closed them'),
+    ).toBeInTheDocument();
+    expect(within(flow).queryByText(/in Total Cases above/)).toBeNull();
+    expect(screen.queryByText('The same cases as Resolved / Closed above, by severity.')).toBeNull();
+    expect(screen.queryByTestId('human-vs-ai-cross-reference')).toBeNull();
+  });
+
+  it('opens Deeper analytics from the viewer\u2019s server prefs and mirrors a change back', async () => {
+    useOptionalPrefsMock.mockReturnValue({
+      ready: true,
+      prefs: { misc: { overview_deeper_open: true } },
+    });
+    await mount();
+    const trigger = screen.getByRole('button', { name: /Deeper analytics/i });
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'true'));
+    expect(localStorage.getItem('soc.overview.deeperOpen')).toBe('1');
+
+    await userEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(localStorage.getItem('soc.overview.deeperOpen')).toBe('0');
+    expect(putUserMock).toHaveBeenLastCalledWith({ misc: { overview_deeper_open: false } });
+  });
+
+  it('keeps the local choice when the server copy is absent, and survives a failing save', async () => {
+    localStorage.setItem('soc.overview.deeperOpen', '1');
+    useOptionalPrefsMock.mockReturnValue({ ready: true, prefs: { misc: {} } });
+    putUserMock.mockReset().mockRejectedValue(new Error('prefs down'));
+    await mount();
+    const trigger = screen.getByRole('button', { name: /Deeper analytics/i });
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await userEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(localStorage.getItem('soc.overview.deeperOpen')).toBe('0');
+  });
+});
+
+describe('Overview — Round 12 review: one population per instrument, honest bounds, no re-roll', () => {
+  beforeEach(() => {
+    localStorage.removeItem('soc.overview.deeperOpen');
+    mountMocks();
+  });
+
+  async function openDeeper() {
+    const trigger = screen.getByRole('button', { name: /Deeper analytics/i });
+    await userEvent.click(trigger);
+    return screen.findByRole('region', { name: 'Case outcomes' });
+  }
+
+  it('Case outcomes reads the WINDOW rollup when posture measured it, never all-time verdicts beside a window count', async () => {
+    // The two payloads disagree on purpose: all-time verdicts (83) vs the window (5).
+    getMetricsMock.mockResolvedValue({
+      ...METRICS,
+      by_verdict: { TRUE_POSITIVE: 23, NEEDS_HUMAN: 13, FALSE_POSITIVE: 47, none: 3 },
+    });
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      quality: {
+        ...POSTURE.quality,
+        total_cases: 5, verdicted_cases: 4, true_positive_cases: 1,
+        false_positive_cases: 2, needs_human_cases: 1, analyst_confirmed_fp: 1,
+      },
+    });
+    await mount();
+    const outcomes = await openDeeper();
+    expect(outcomes).toHaveAttribute('data-scope', 'window');
+    expect(within(outcomes).getByTestId('instrument-caption')).toHaveTextContent('AI-verdict mix · last 24 hours');
+    const donut = within(outcomes).getByRole('img', { name: 'Case outcomes by AI verdict' });
+    // The centre counts VERDICTS only (4), not the unverdicted case beside them (5 in all).
+    expect(within(donut).getByText('4')).toBeInTheDocument();
+    const legend = Array.from(outcomes.querySelectorAll('li')).map((li) => li.textContent);
+    expect(legend).toContain('False positive240%');
+    expect(legend).toContain('Unverdicted120%');
+    expect(outcomes).not.toHaveTextContent('47');
+    expect(within(outcomes).getByTestId('analyst-confirmed-fp')).toHaveTextContent(
+      'Confirmed false positive by an analyst1',
+    );
+  });
+
+  it('falls back to all-time verdicts captioned "all time", without the window-only analyst row', async () => {
+    getMetricsMock.mockResolvedValue({
+      ...METRICS,
+      by_verdict: { TRUE_POSITIVE: 23, NEEDS_HUMAN: 13, FALSE_POSITIVE: 47, none: 3 },
+    });
+    fetchPostureMock.mockReset().mockRejectedValue(new Error('posture down'));
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    const outcomes = await openDeeper();
+    await waitFor(() => expect(outcomes).toHaveAttribute('data-scope', 'all'));
+    expect(within(outcomes).getByTestId('instrument-caption')).toHaveTextContent(
+      'AI-verdict mix · all time, every case in the store',
+    );
+    const donut = within(outcomes).getByRole('img', { name: 'Case outcomes by AI verdict' });
+    expect(within(donut).getByText('83')).toBeInTheDocument();
+    expect(within(outcomes).queryByTestId('analyst-confirmed-fp')).toBeNull();
+  });
+
+  it('names a top signature only when it genuinely leads, with its count', async () => {
+    const repeated = [
+      CASES[0],
+      { ...CASES[1], title: 'Impossible travel' },
+      CASES[2],
+    ] as Case[];
+    listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+      Promise.resolve(
+        params?.to?.startsWith('now-')
+          ? { cases: PREV_CASES, total: PREV_CASES.length }
+          : { cases: repeated, total: repeated.length, window_total_exact: true },
+      ),
+    );
+    await mount();
+    await waitFor(() =>
+      expect(screen.getByTestId('deeper-summary')).toHaveTextContent(
+        'top signature: Impossible travel (2 cases)',
+      ),
+    );
+  });
+
+  it('marks the snapshots as a lower bound when the case page is not the whole window', async () => {
+    listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+      Promise.resolve(
+        params?.to?.startsWith('now-')
+          ? { cases: PREV_CASES, total: PREV_CASES.length }
+          : { cases: CASES, total: 450, window_total_exact: true },
+      ),
+    );
+    await mount();
+    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const bounds = within(lifecycle).getAllByTestId('snapshot-bound');
+    expect(bounds.map((b) => b.textContent)).toEqual([
+      'Lower bound · counted from the newest 3 of 450',
+      'Lower bound · counted from the newest 3 of 450',
+    ]);
+    // A change between two floors is not a change.
+    expect(within(lifecycle).queryByRole('img', { name: /^changed / })).toBeNull();
+    await openDeeper();
+    expect(
+      within(screen.getByRole('region', { name: 'Top signatures' })).getByTestId('instrument-caption'),
+    ).toHaveTextContent('Most frequent detections · newest 3 of 450, last 24 hours');
+  });
+
+  it('shows no bound when the page provably holds the whole window', async () => {
+    await mount();
+    expect(screen.queryByTestId('snapshot-bound')).toBeNull();
+  });
+
+  it('a quiet refresh shows the new snapshot and coverage counts without counting up', async () => {
+    await mount();
+    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    // First load: the centre is a count-up (static on mount).
+    expect(within(lifecycle).getAllByTestId('count-up').length).toBeGreaterThan(0);
+    const more = [
+      ...CASES,
+      { ...CASES[0], case_id: 'c-open-2', case_number: 'CASE-1004' },
+    ] as Case[];
+    listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+      Promise.resolve(
+        params?.to?.startsWith('now-')
+          ? { cases: PREV_CASES, total: PREV_CASES.length }
+          : { cases: more, total: more.length, window_total_exact: true },
+      ),
+    );
+    coverageMock.mockResolvedValue({ ...COVERAGE, sources_silent: 0 });
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }));
+    await waitFor(() =>
+      expect(
+        within(lifecycle).getByRole('img', { name: 'Open cases by severity' }),
+      ).toHaveTextContent('3'),
+    );
+    expect(within(lifecycle).queryAllByTestId('count-up')).toHaveLength(0);
+    expect(within(lifecycle).getAllByTestId('snapshot-center')[0]).toHaveTextContent('3');
+    await openDeeper();
+    const coverage = screen.getByTestId('coverage-tile');
+    expect(within(coverage).queryAllByTestId('count-up')).toHaveLength(0);
+    expect(coverage).toHaveTextContent('3/ 3');
   });
 });

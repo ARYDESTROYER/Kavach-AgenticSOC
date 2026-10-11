@@ -716,6 +716,35 @@ describe('CloseAttributionChart — hover/focus breakdown and keyboard', () => {
     expect(cells[3][0]).toBe('Jul 1, 08:00–09:00 UTC (in progress)');
   });
 
+  it('states a cross-reference line only while it has counts to refer to', () => {
+    const ref = 'AI agent is the same count as Auto Closed above.';
+    const { rerender } = render(
+      <HumanVsAiCard
+        totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+        series={SERIES}
+        windowLabel="last 24 hours · 1h buckets"
+        crossReference={ref}
+      />,
+    );
+    expect(screen.getByTestId('human-vs-ai-cross-reference')).toHaveTextContent(ref);
+    // While the counts are the previous window's they are withheld — and so is the line
+    // that would point at them.
+    rerender(
+      <HumanVsAiCard
+        totals={{ ai: 5, human: 2, system: 1, closed: 8 }}
+        series={SERIES}
+        windowLabel="last 7 days · 6h buckets"
+        stale
+        crossReference={ref}
+      />,
+    );
+    expect(screen.queryByTestId('human-vs-ai-cross-reference')).toBeNull();
+    rerender(
+      <HumanVsAiCard totals={null} series={null} windowLabel="last 24 hours" crossReference={ref} />,
+    );
+    expect(screen.queryByTestId('human-vs-ai-cross-reference')).toBeNull();
+  });
+
   it('names a bucket that ends at midnight on its own day', () => {
     expect(
       bucketRangeLabel({ x: '18:00', start: '2026-07-01T18:00:00.000Z', end: '2026-07-02T00:00:00.000Z' }),

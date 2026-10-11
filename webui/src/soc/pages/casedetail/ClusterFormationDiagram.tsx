@@ -102,7 +102,9 @@ function NodeCard({
               <span className="block text-xs font-medium text-muted-foreground">
                 {eyebrow}
               </span>
-              <span className="mt-1 block truncate text-base font-semibold text-foreground">
+              {/* Wraps instead of clipping: an already middle-ellipsised id must not be
+                  cut a second time by CSS (CM-8). */}
+              <span className="mt-1 line-clamp-2 block text-base font-semibold text-foreground [overflow-wrap:anywhere]">
                 {title}
               </span>
               <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">

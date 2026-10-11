@@ -156,6 +156,31 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(feedbackBody.assessment).toBe('agree');
   });
 
+  it('confirms the close with the recorded outcome and offers Undo, which posts the reopen verb', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
+    caseActionExec
+      .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' })
+      .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'open', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+    toastMock.success.mockReset();
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    const [message, options] = toastMock.success.mock.calls[0] as [string, { action?: { label: string; onClick: () => void }; duration?: number }];
+    expect(message).toBe('Closed as false positive.');
+    expect(options?.duration).toBe(8000);
+    expect(options?.action?.label).toBe('Undo');
+
+    options!.action!.onClick();
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(2));
+    expect(caseActionExec.mock.calls[1][1]).toMatchObject({ action: 'reopen' });
+  });
+
   it('POSTs the assessment DERIVED from the FINAL disposition even if the grading section was collapsed first', async () => {
     // Regression: the derived agree/override was previously synced into parent state by
     // an effect INSIDE GradingFields, which unmounts when the analyst collapses the

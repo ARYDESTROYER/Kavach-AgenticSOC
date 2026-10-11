@@ -1316,8 +1316,12 @@ export function KpiDrilldownPanel({
           className,
         )}
       >
-        {/* ---- BAND 1a — IDENTITY (shrink-0) ------------------------------------- */}
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-5 py-3">
+        {/* ---- BAND 1a — IDENTITY (shrink-0) -------------------------------------
+            Below `sm` the actions sit UNDER the title instead of beside it (Round 12
+            review): beside it at 390px they left the breadcrumb and the title a ~110px
+            column, wrapping "Resolved / Closed · details" onto three lines and leaving the
+            evidence a 72px sliver. */}
+        <div className="flex shrink-0 flex-col gap-2 border-b border-border px-5 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
           <div className="min-w-0">
           {/* Where the operator is. Plain text, product vocabulary only. */}
           <p
@@ -1390,7 +1394,7 @@ export function KpiDrilldownPanel({
             ) : null}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="-ml-2.5 flex shrink-0 items-center gap-1 sm:ml-0" data-testid="kpi-drilldown-actions">
           {/* Exports the LISTED rows, which is why the label says so rather than
               "Export report" — the panel reads bounded pages and must not offer what
               looks like a population export. Hidden with nothing to export. */}
@@ -1422,6 +1426,17 @@ export function KpiDrilldownPanel({
         </div>
       </div>
 
+        {/* ---- BODY — switcher, toolbar and evidence -------------------------------
+            From `md` up this wrapper is inert (a flex column) and the evidence band below is
+            the ONE scroll port. Below `md` (Round 12 review) the wrapper itself scrolls and
+            the evidence band takes its content height (`max-md:flex-none`), so on a phone the
+            switcher and the filters scroll away with the evidence instead of standing as
+            three fixed bands over a sliver of it. The evidence band keeps its own port for
+            the table's horizontal scroll at every width. */}
+        <div
+          data-testid="kpi-drilldown-body"
+          className="flex min-h-0 min-w-0 flex-1 flex-col max-md:overflow-y-auto"
+        >
         {/* ---- BAND 1b — METRIC SWITCHER (shrink-0) -------------------------------
             This band is LOAD-BEARING, not chrome. Behind a modal scrim the four
             neighbouring tiles are `aria-hidden` and unclickable, so this is the only
@@ -1643,7 +1658,7 @@ export function KpiDrilldownPanel({
         tabIndex={0}
         role="group"
         aria-label={`${spec.title} cases — scrollable evidence`}
-        className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring max-md:flex-none"
       >
       {/* ONE row above the table (Round 12): the trend (60%) beside a column (40%) that
           holds the numeral's WHOLE-WINDOW partition, when the tile has one, over the four
@@ -1662,7 +1677,13 @@ export function KpiDrilldownPanel({
           )}
         >
           {spec.trend ? (
-            <div data-testid="kpi-drilldown-trend" className="min-w-0">
+            <div
+              data-testid="kpi-drilldown-trend"
+              // The shared trend body is sized for a hover card (11px captions). In this
+              // dialog its captions, readout and first / peak / latest line are chrome
+              // text, so they take the dialog's 12px floor (Round 12).
+              className="min-w-0 [&_.text-2xs]:text-xs"
+            >
               <MetricTrendBody {...spec.trend} />
             </div>
           ) : null}
@@ -1672,13 +1693,17 @@ export function KpiDrilldownPanel({
               <div data-testid="kpi-drilldown-partition-block" className="min-w-0">
                 <p className="mb-1.5 text-xs text-muted-foreground">
                   {spec.partitionCaption ??
-                    'Who closed them, over the whole window — the server rollup behind the numeral above, not the cases listed below. The bands sum to that numeral.'}
+                    'Who closed them over the whole window (the server rollup, not the rows below). The bands sum to the numeral.'}
                 </p>
-                {/* `max-w-sm` is load-bearing: uncapped, a band's label and its value sit
-                    ~1500px apart at the widest cap and read as two unrelated columns. */}
+                {/* Two label · value PAIRS per row wherever the column is 24rem wide (Round 12
+                    review): four stacked rows made this column taller than the trend beside
+                    it and cost the table two rows at 1440. The <dt>/<dd> stay direct
+                    children (axe's definition-list rule); the grid's four tracks pair them.
+                    `max-w-sm` / `max-w-2xl` are load-bearing: uncapped, a band's label and
+                    its value sit ~1500px apart at the widest cap and read as unrelated. */}
                 <dl
                   data-testid="kpi-drilldown-partition"
-                  className="grid min-w-0 max-w-sm grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-1 text-sm"
+                  className="grid min-w-0 max-w-sm grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-1 text-sm @[24rem]:max-w-2xl @[24rem]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
                 >
                   {spec.partition.map((row) => (
                     <React.Fragment key={row.label}>
@@ -1862,6 +1887,7 @@ export function KpiDrilldownPanel({
           </div>
         )}
       </div>
+        </div>
 
         {/* ---- FOOTER — PINNED (shrink-0) -----------------------------------------
             A SIBLING of the scroller, never a child of it. In normal flow this could not clip;

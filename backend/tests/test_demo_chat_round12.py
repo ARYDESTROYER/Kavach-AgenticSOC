@@ -58,7 +58,8 @@ def _generic_obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
         return {**POSTURE_OBS, "kind": inp.get("kind", "posture"), "window": _label(inp)}
     if tool == "search_cases":
         filters = {k: inp[k] for k in ("entity", "status_group", "severity", "verdict", "text") if k in inp}
-        return {"filters": filters, "window": "all time", "count": 1, "total": 1, "exact": True,
+        # The real search_cases observation shape: ``count`` (never ``total``).
+        return {"filters": filters, "window": "all time", "count": 1, "returned": 1, "exact": True,
                 "cases": [{"case_id": "demo-1", "entity": "host:dc01", "title": "demo rule", "risk_score": 70,
                            "verdict": "NEEDS_HUMAN", "status": "escalated", "severity": "high"}]}
     if tool == "get_case":
@@ -423,3 +424,363 @@ def test_plans_and_finals_are_byte_identical(question: str) -> None:
     assert plan_turn(prompt(question)) == plan_turn(prompt(question))
     first, second = drive(question), drive(question)
     assert first == second
+
+
+# --------------------------------------------------------------------------- #
+# Regressions from the WP-DEMO review (the finding number is in each docstring).
+# --------------------------------------------------------------------------- #
+#: The anchor lookup's observation: its latest monthly bucket names the current month.
+ANCHOR_OBS = {"total": 95, "exact": True, "window": "last 12 months (since Nov 2025)", "bucket": "month",
+              "buckets": [{"label": "Sep 2026"}, {"label": "Oct 2026", "in_progress": True}], "filters": {},
+              "group_by": [], "groups": [{"bucket": "Sep 2026", "metrics": {"count": 31}},
+                                         {"bucket": "Oct 2026", "metrics": {"count": 45}}]}
+
+
+def _anchored_obs(labels: dict[str, str]) -> Obs:
+    """Synthetic observations where the anchor lookup and the real lookups DIFFER, so a
+    final that narrates the anchor is caught."""
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if inp.get("window") == "now-12M" and inp.get("bucket") == "month" and set(inp) <= {"window", "bucket", "kind"}:
+            return dict(ANCHOR_OBS)
+        out = _generic_obs(tool, inp)
+        window = inp.get("window") or inp.get("time_from")
+        if isinstance(window, str) and window in labels and "window" in out:
+            out["window"] = labels[window]
+        return out
+    return obs
+
+
+@pytest.mark.parametrize("question, log_filter, dated_later", [
+    ("Show me the logs for host dc01 in October", (("host", "dc01"),), True),
+    ("Search logs for mimikatz in September", (("contains", "mimikatz"),), True),
+    ("Search logs for powershell since March", (("contains", "powershell"),), True),
+    ("Show me the logs for host dc01 over all time", (("host", "dc01"),), False),
+    ("Search logs for user pnair this quarter", (("user", "pnair"),), False),
+    ("Search logs for mimikatz over all time", (("contains", "mimikatz"),), False),
+])
+def test_a_window_phrase_never_ends_up_in_the_log_search(question: str, log_filter: tuple[Any, ...],
+                                                         dated_later: bool) -> None:
+    """Finding 1: the window phrase is removed before the field or text filter is built."""
+    ask = classify(question)
+    assert ask.intent == "logs" and ask.log_filter == log_filter
+    assert ask.win is not None and (ask.win.pending is not None) is dated_later
+
+
+@pytest.mark.parametrize("question, spec", [
+    ("Monthly report for this month", "this_month"),
+    ("Quarterly report for this quarter", "this_quarter"),
+    ("Give me a weekly report for last week", "last_week"),
+    # Only without a named period does the cadence choose the window.
+    ("Generate a weekly report", "now-7d"),
+])
+def test_a_cadence_word_never_overrides_the_named_period(question: str, spec: str) -> None:
+    """Finding 2."""
+    ask = classify(question)
+    assert ask.intent == "perf_report" and ask.win is not None and ask.win.spec == spec
+
+
+def test_a_relative_period_report_title_names_the_dated_period() -> None:
+    """A saved report outlives "last week": its title names the week it covered."""
+    comparison = {"subject": "W40 2026", "baseline": "W39 2026", "periods": ["W39 2026", "W40 2026"],
+                  "rows": [{"label": "Cases", "unit": "count", "values": [5, 7], "change": 2}]}
+
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        if inp.get("window") == "last_week" and "window" in out:
+            out["window"] = "last week"
+        if tool == "case_stats" and inp.get("bucket") and inp.get("compare"):
+            out["comparison"] = comparison
+        return out
+
+    _rounds, header, body = drive("Give me a weekly report for last week", obs)
+    (envelope,) = header["blocks"]
+    assert header["report"]["title"] == envelope["title"] == "SOC performance report, W40 2026"
+    assert envelope["subtitle"] == "last week (W40 2026)"
+    assert body.startswith("**SOC performance report, W40 2026**")
+
+
+@pytest.mark.parametrize("question, tool, subset", [
+    ("How many cases were escalated this week?", "case_stats", {"status": "escalated", "window": "this_week"}),
+    ("Show escalated cases by month", "case_stats", {"status": "escalated", "bucket": "month"}),
+    ("Show cases for user pnair", "search_cases", {"entity": "pnair"}),
+    ("Cases involving host dc01", "search_cases", {"entity": "dc01"}),
+    ("How many cases did pnair have this month?", "case_stats", {"entity": "pnair", "window": "this_month"}),
+    # Finding 21: a true/false-positive count keeps its comparison.
+    ("How many false positives did we have this month compared to last month?", "case_stats",
+     {"verdict": "FALSE_POSITIVE", "window": "this_month", "compare": "previous_period"}),
+    ("How many true positives this week vs last week?", "case_stats",
+     {"verdict": "TRUE_POSITIVE", "window": "this_week", "compare": "previous_period"}),
+    # Finding 23: "which analysts" groups closed cases by the assigned person.
+    ("Which analysts closed the most cases last week?", "case_stats",
+     {"group_by": ["assignee"], "status_group": "terminal", "window": "last_week"}),
+])
+def test_status_entity_and_comparison_filters_reach_the_lookup(question: str, tool: str,
+                                                               subset: dict[str, Any]) -> None:
+    """Finding 3 (and 21, 23): the filter the question names is sent, never dropped."""
+    plan = tools_of(plan_turn(prompt(question)))
+    inp = next(i for t, i in plan if t == tool)
+    assert subset.items() <= inp.items(), inp
+
+
+@pytest.mark.parametrize("question, spec, intent", [
+    ("List critical cases from 2024", "2024", "cases"),
+    ("cases from 1 Sep to 15 Sep", {"from": "2026-09-01", "to": "2026-09-15"}, "cases"),
+    ("How many cases are older than 7 days and still open?", {"from": "all", "to": "now-7d"}, "breakdown"),
+    ("Cases opened before September", {"from": "all", "to": "2026-08"}, "cases"),
+    # "Between two months" is one range, never a comparison.
+    ("Cases between August and September", {"from": "2026-08", "to": "2026-09"}, "cases"),
+    # Finding 14: case age is an upper bound on the opening date.
+    ("Which open cases are older than 3 days?", {"from": "all", "to": "now-3d"}, "cases"),
+    ("How many cases have been open for over 14 days?", {"from": "all", "to": "now-14d"}, "breakdown"),
+])
+def test_date_phrasings_map_to_the_window_they_name(question: str, spec: Any, intent: str) -> None:
+    """Findings 5 and 14."""
+    ask = classify(question)
+    assert ask.intent == intent and ask.compare is None
+    win = demo_chat._anchored(ask.win, (2026, 10))
+    assert win is not None and win.spec == spec, (win.spec if win else None)
+
+
+def test_an_age_question_lists_the_oldest_and_never_the_newest() -> None:
+    """Finding 14: "older than N days" plans an oldest-first list over the open-ended window."""
+    plan = tools_of(plan_turn(prompt("Which open cases are older than 3 days?")))
+    assert plan == [("search_cases", {"status_group": "active", "window": {"from": "all", "to": "now-3d"},
+                                       "sort_field": "created_at", "sort_order": "asc", "limit": 10})]
+
+
+@pytest.mark.parametrize("question, intent, extra", [
+    # Finding 6: "What's the <metric> trend?" is a trend, not a definition.
+    ("What's the FP rate trend?", "trend", {"subject": "rates"}),
+    ("What is the MTTR trend?", "trend", {"subject": "timing"}),
+    # Finding 7: everyday comparison, improvement, breakdown and summary phrasings.
+    ("Compare last month with the month before", "compare", {"compare": "previous_period", "win": "last_month"}),
+    ("Is MTTR improving?", "compare", {"compare": "previous_period", "win": "this_month"}),
+    ("Weekly breakdown of false positives this quarter", "breakdown", {"bucket": "week", "win": "this_quarter"}),
+    ("Weekly summary for this week", "perf_report", {"win": "this_week", "save": True}),
+    # Finding 16: "since last X" compares the current period with the named one.
+    ("Has the case volume changed since last week?", "compare", {"compare": "previous_period", "win": "this_week"}),
+    ("How did our FP rate change since last month?", "compare", {"compare": "previous_period", "win": "this_month"}),
+    ("Have we improved since last month?", "compare", {"compare": "previous_period", "win": "this_month"}),
+    # Finding 15: open vs closed groups by both, never filters to open.
+    ("How many cases are open vs closed?", "breakdown", {"group": "status_group"}),
+    # Finding 22: everyday period questions are data answers, never product help.
+    ("How did we do this week?", "posture", {"win": "this_week"}),
+    ("What happened in the last 2 weeks?", "summary", {"win": "now-2w"}),
+    ("Can I get the stats for March 2026?", "summary", {"win": "2026-03"}),
+    ("Give me the Q3 numbers", "summary", {}),
+    # Finding 17: a write request that mentions an answer word stays a refused change.
+    ("Create a review task for case demo-00000539-0004", "change", {}),
+    ("Create a dashboard with the alert trend", "change", {}),
+    ("Create a suppression list for 203.0.113.42", "change", {}),
+])
+def test_review_phrasings_classify_to_the_question_asked(question: str, intent: str, extra: dict[str, Any]) -> None:
+    ask = classify(question)
+    assert ask.intent == intent, ask.intent
+    for key, value in extra.items():
+        got = getattr(ask, key)
+        if key == "win":
+            got = got.spec if got is not None else None
+        assert got == value, (key, got)
+
+
+def test_open_vs_closed_counts_both_groups() -> None:
+    """Finding 15."""
+    plan = tools_of(plan_turn(prompt("How many cases are open vs closed?")))
+    assert plan == [("case_stats", {"group_by": ["status_group"]})]
+    by_severity = tools_of(plan_turn(prompt("How many open vs closed cases by severity?")))
+    assert by_severity[0] == ("case_stats", {"group_by": ["status_group", "severity"]})
+
+
+def test_alert_counts_read_the_logs_never_the_cases() -> None:
+    """Finding 8: "how many alerts" is a log count."""
+    for question in ("How many alerts did we get today?", "How many alerts did we get in the last 24 hours?"):
+        tools = {tool for tool, _ in tools_of(plan_turn(prompt(question)))}
+        assert tools == {"log_stats"}, (question, tools)
+
+
+def test_two_months_named_in_date_order_keep_the_later_one_as_the_subject() -> None:
+    """Finding 10."""
+    rounds, _header, _body = drive("Compare August and September", _anchored_obs({}))
+    lookups = ran(rounds)
+    assert lookups[0] == ("case_stats", {"window": "now-12M", "bucket": "month"})
+    posture = next(inp for tool, inp in lookups if tool == "soc_metrics" and inp.get("kind") == "posture")
+    assert posture["window"] == "2026-09" and posture["compare"] == "2026-08"
+
+
+def test_a_brief_without_an_id_resolves_the_case_first() -> None:
+    """Finding 11: the newest escalated case is found, then briefed with the brief's layout."""
+    rounds, header, body = drive("Write me an investigation brief for the newest escalated case")
+    lookups = ran(rounds)
+    assert lookups[0][0] == "search_cases" and lookups[0][1]["status"] == "escalated"
+    assert ("get_case", {"case_id": "demo-1"}) in lookups
+    assert header["report"] == {"title": "Investigation brief: demo-1", "template": "investigation_brief"}
+    assert [s["heading"] for s in header["blocks"][0]["sections"]][:2] == ["Assessment", "Key findings"]
+    assert body.endswith(SAVED)
+
+
+@pytest.mark.parametrize("question, label", [
+    ("Show the MTTR trend for Q3", "Q3 2026"),
+    ("False positive rate trend in September", "September 2026"),
+    ("Investigate everything about user pnair in September", "September 2026"),
+    ("How many cases did we have in September?", "September 2026"),
+])
+def test_the_anchor_lookup_is_never_narrated_as_the_answer(question: str, label: str) -> None:
+    """Findings 12 and 13: the anchor dates the period; the finals narrate the real
+    lookups and never claim that no period was named."""
+    rounds, _header, body = drive(question, _anchored_obs({"2026-Q3": "Q3 2026", "2026-09": "September 2026"}))
+    assert ran(rounds)[0] == ("case_stats", {"window": "now-12M", "bucket": "month"})
+    assert label in body, body
+    assert "last 12 months" not in body and "No period was named" not in body and "95 cases" not in body
+
+
+@pytest.mark.parametrize("question, title", [
+    ("Q3 report", "SOC performance report, Q3 2026"),
+    ("Create a report for September", "September 2026 SOC report"),
+])
+def test_an_anchored_report_names_its_period(question: str, title: str) -> None:
+    """Finding 13."""
+    _rounds, header, body = drive(question, _anchored_obs({"2026-Q3": "Q3 2026", "2026-09": "September 2026"}))
+    assert header["report"]["title"] == title
+    assert "No period was named" not in body
+
+
+@pytest.mark.parametrize("question", ["How do I create a report for September?", "Where do I see the Q3 numbers?"])
+def test_a_product_question_that_names_a_period_runs_no_data_lookup(question: str) -> None:
+    """Finding 19: only data intents are dated by the anchor lookup."""
+    plan = tools_of(plan_turn(prompt(question)))
+    assert [tool for tool, _ in plan] == ["app_help"]
+
+
+@pytest.mark.parametrize("question, window", [
+    ("Show me the logs for host jan-laptop", None),
+    ("Search logs for SEP", None),
+    ("Investigate everything about host dec-web01", None),
+    ("Show me the logs for host jan-laptop in October", "October"),
+])
+def test_a_month_name_inside_a_value_is_not_a_month(question: str, window: str | None) -> None:
+    """Finding 18."""
+    ask = classify(question)
+    assert (ask.win.phrase if ask.win is not None else None) == window
+
+
+@pytest.mark.parametrize("question, admin", [
+    ("How do I hunt for a user in the logs?", False),
+    ("How do I investigate a suspicious user account?", False),
+    ("How do I search the logs for a session ID?", False),
+    ("How do I add a user?", True),
+])
+def test_data_how_tos_keep_their_own_help_topic(question: str, admin: bool) -> None:
+    """Finding 20: the administration hints apply only to administration questions."""
+    query = demo_chat._help_query(classify(question))
+    assert (query in demo_chat._ADMIN_HINTS) is admin, query
+
+
+def test_minutes_stay_minutes_for_logs_and_case_lookups_say_they_count_hours() -> None:
+    """Finding 24 (1): logs take now-30m; the case, metric and cost tools refuse a minute
+    window, so they use the last hour and the answer says so."""
+    assert classify("How many cases in the last 30 minutes?").win.spec == "now-30m"
+    logs = tools_of(plan_turn(prompt("Search logs for mimikatz in the last 30 minutes")))
+    assert logs == [("search_logs", {"contains": "mimikatz", "window": "now-30m"})]
+    rounds, _header, body = drive("How many cases in the last 30 minutes?")
+    assert ran(rounds)[0][1]["window"] == "now-1h"
+    assert "Case, metric and cost lookups count whole hours, so they cover the last hour rather than the last " \
+           "30 minutes." in body
+    # Under a scope chip, the window sentence does not contradict that caveat.
+    _rounds, _header, body = drive("How many cases in the last 30 minutes?", window="last 90 days")
+    assert "Window: your question named the last 30 minutes, which replaces the last 90 days you selected." in body
+
+
+@pytest.mark.parametrize("question", ["Case volume trend since August",
+                                      "Show the case trend from 2026-08-01 to 2026-09-30"])
+def test_a_trend_over_an_open_or_dated_range_is_never_bucketed_by_hour(question: str) -> None:
+    """Finding 24 (2)."""
+    rounds, _header, _body = drive(question, _anchored_obs({}))
+    buckets = {inp.get("bucket") for tool, inp in ran(rounds) if tool in ("case_stats", "soc_metrics")}
+    assert "hour" not in buckets and buckets & {"day", "week", "month"}, buckets
+
+
+def test_the_oldest_first_intro_reads_the_real_observation_count() -> None:
+    """Finding 25: search_cases carries ``count`` (the synthetic observation above has no ``total``)."""
+    _rounds, _header, body = drive("Show the cases contributing to the acknowledgement delay")
+    assert "Oldest first: these have waited longest for someone to pick them up." in body
+
+
+def test_a_case_noun_names_every_filter_and_a_zero_match_says_what_was_searched() -> None:
+    assert demo_chat._case_noun({"status_group": "active", "severity": "critical"}, "case") == "open critical case"
+    assert demo_chat._case_noun({"severity": "critical", "verdict": "FALSE_POSITIVE"}, "case") == (
+        "critical false positive case")
+    assert demo_chat._case_noun({"status": "escalated"}, "case") == "escalated case"
+
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        return {"filters": {"severity": "critical"}, "window": "2024", "count": 0, "returned": 0, "exact": True,
+                "cases": [], "suggestions": [{"label": "All time"}, {"label": "without the severity filter"}]}
+
+    _rounds, header, body = drive("List critical cases from 2024", obs)
+    assert body.startswith("No critical case matched in 2024. To widen it, look over all time or drop the severity "
+                           "filter.")
+    assert header["follow_ups"][:2] == ["Show the same for all time", "Show the same without the severity filter"]
+
+
+def test_a_volume_change_question_leads_with_the_direction() -> None:
+    comparison = {"subject": "W41 2026 to date", "baseline": "W40 2026 to date", "rows": [
+        {"label": "Cases", "unit": "count", "values": [6, 41], "change": 35, "change_pct": 583.3,
+         "small_sample": False}]}
+
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        if tool == "case_stats" and inp.get("compare") and not inp.get("group_by"):
+            out["comparison"] = comparison
+        return out
+
+    _rounds, _header, body = drive("Has the case volume changed since last week?", obs)
+    assert body.startswith("**Up**: the number of cases went from 6 to 41 (+35, +583.3%).")
+
+
+def test_a_named_metric_leads_the_posture_answer() -> None:
+    _rounds, _header, body = drive("What's our automation rate this month?")
+    assert body.startswith("Automation rate **90%**")
+
+
+def test_a_question_about_failed_logins_leads_with_the_log_figures() -> None:
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        if tool == "log_stats":
+            out["top"] = {"ip": [{"value": "10.0.0.5", "count": 2}]}
+        return out
+
+    _rounds, _header, body = drive("Show failed logins by source IP in the last 24 hours", obs)
+    assert body.startswith("Log events matching the text filter `fail`:")
+    _rounds, _header, body = drive("Any brute force on our VPN?", obs)
+    assert body.startswith("**1 brute-force case**")
+
+
+@pytest.mark.parametrize("question, said", [
+    ("How many cases did we have in September?", "September could not be dated"),
+    ("Q3 report", "Q3 could not be dated"),
+    ("Show the MTTR trend for Q3", "Q3 could not be dated"),
+])
+def test_a_period_the_anchor_could_not_date_is_said_never_dropped(question: str, said: str) -> None:
+    """Finding 13: when the anchor lookup fails, the answer says the named period could
+    not be dated; it never claims that no period was named."""
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any] | None:
+        if inp.get("window") == "now-12M" and inp.get("bucket") == "month":
+            return None
+        return _generic_obs(tool, inp)
+
+    _rounds, _header, body = drive(question, obs)
+    assert said in body and "No period was named" not in body, body
+
+
+def test_a_zero_case_search_before_an_investigation_says_so_once() -> None:
+    """The zero-match sentence is not nested inside the "nothing to investigate" one."""
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if tool == "search_cases":
+            return {"filters": {"status": "escalated"}, "window": "last 7 days", "count": 0, "returned": 0,
+                    "exact": True, "cases": [], "suggestions": [{"label": "All time"}]}
+        return {}
+
+    _rounds, _header, body = drive("Investigate the newest escalated case", obs)
+    assert body == ("No escalated case was found in the last 7 days, so there is nothing to investigate. To widen "
+                    "it, look over all time.")
+    _rounds, _header, body = drive("Hunt the source IP behind the newest SQL injection case", obs)
+    assert body == "No SQL injection case was found in the last 7 days to pivot from. To widen it, look over all time."
