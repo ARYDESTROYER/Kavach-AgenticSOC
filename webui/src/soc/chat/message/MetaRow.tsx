@@ -6,7 +6,8 @@
  *
  *  - the left figure is a disclosure that reopens the run log in place
  *    (`aria-expanded` / `aria-controls`); a turn without lookups reads
- *    "Answered in 1.1 s" instead; a stopped, partial or failed turn leads with that word;
+ *    "Answered in 1.1 s" instead; a stopped, failed or partial turn (a real failure, never
+ *    a limit, Round 12) leads with that word;
  *  - the token figure opens the usage card (click, tap, Enter; or hover with a mouse);
  *  - a turn without recorded usage reads "Usage not recorded · —", never 0, followed by
  *    the model and source the turn ran on when the response names them (compatibility
@@ -25,10 +26,11 @@ import { cn } from '@/lib/cn';
 import type { ChatResponse } from '@/lib/types';
 import { displayText } from '../stream-events';
 import { formatDuration, lookupCount, lookupsLabel, turnDurationMs } from './format';
+import type { TurnOutcomeWord } from './notice-copy';
 import type { RunLogStep } from './RunLog';
 import { UsageCard } from './UsageCard';
 
-export type TurnOutcomeWord = 'Stopped' | 'Partial' | 'Failed';
+export type { TurnOutcomeWord };
 
 const DISCLOSURE =
   'inline-flex min-h-6 min-w-0 items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -88,19 +90,28 @@ export function MetaRow({
   // cost (both stay in the run log, the usage card and its accessible name) so the
   // lookup count, the token figure, the Demo marker and Sources stay whole on its ONE
   // line (SPEC §10.3) instead of every item being cut mid-word.
+  const word = outcome ? <span data-testid="turn-outcome">{outcome}</span> : null;
   const lead: React.ReactNode = (() => {
-    const prefix = outcome ? `${outcome} · ` : '';
     if (lookups > 0) {
       return (
         <>
-          {prefix}
+          {word}
+          {word ? ' · ' : null}
           {lookupsLabel(lookups)}
           {timeText ? <span className={WIDE_ONLY}>{` · ${timeText}`}</span> : null}
         </>
       );
     }
-    if (timeText) return `${prefix}${outcome ? '' : 'Answered in '}${timeText}`;
-    return outcome ?? '';
+    if (timeText) {
+      return word ? (
+        <>
+          {word} · {timeText}
+        </>
+      ) : (
+        `Answered in ${timeText}`
+      );
+    }
+    return word;
   })();
   const simulated = usage?.simulated === true && !(usage.calls === 0 && usage.total_tokens === 0);
 

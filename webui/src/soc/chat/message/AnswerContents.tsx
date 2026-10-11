@@ -8,6 +8,11 @@
  *     Markdown nesting. Their text is the model's: it is copied as text, never markup.
  *   - Entries are buttons that scroll to and focus the heading; never `#fragment` links
  *     (the console router owns `location.hash`). Reduced motion: no smooth scrolling.
+ *     An empty heading (`## ` alone) is not listed, and the jump looks the entry up in
+ *     the same filtered list, so an entry always lands on its own heading.
+ *   - "Jump to end" scrolls to an IN-FLOW end marker (never an absolutely positioned
+ *     `sr-only` one, whose static position in the answer's grid is the article's first
+ *     line) with a bottom scroll margin taller than the transcript's jump band.
  *   - A labelled `role="group"`, not a `<nav>`: a transcript of long answers would flood
  *     the landmark list.
  */
@@ -17,6 +22,7 @@ import { ArrowDownToLine } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
+import { REVEAL_SCROLL_MARGIN } from './reveal';
 
 /** Headings that earn a table of contents. */
 export const TOC_MIN_HEADINGS = 4;
@@ -30,12 +36,19 @@ export interface AnswerHeading {
   level: number;
 }
 
-/** The rendered headings of an answer container, in document order. */
-export function readHeadings(container: HTMLElement | null): AnswerHeading[] {
+function headingText(el: Element): string {
+  return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** The listed heading ELEMENTS of an answer container: non-empty, in document order. */
+export function headingElements(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
-  return Array.from(container.querySelectorAll<HTMLElement>(HEADING_SELECTOR))
-    .map((el) => ({ text: (el.textContent ?? '').replace(/\s+/g, ' ').trim(), level: Number(el.tagName.slice(1)) || 4 }))
-    .filter((heading) => heading.text.length > 0);
+  return Array.from(container.querySelectorAll<HTMLElement>(HEADING_SELECTOR)).filter((el) => headingText(el).length > 0);
+}
+
+/** The rendered headings of an answer container, in document order (empty ones skipped). */
+export function readHeadings(container: HTMLElement | null): AnswerHeading[] {
+  return headingElements(container).map((el) => ({ text: headingText(el), level: Number(el.tagName.slice(1)) || 4 }));
 }
 
 /**
@@ -68,6 +81,24 @@ export interface AnswerContentsProps {
   className?: string;
 }
 
+/**
+ * The end marker "Jump to end" lands on: an in-flow, zero-height line (so it sits where
+ * the answer ends, not at the grid's start), focusable, with a bottom scroll margin
+ * taller than the transcript's jump band. Its text is for screen readers only.
+ */
+export const AnswerEnd = React.forwardRef<HTMLParagraphElement, { className?: string }>(function AnswerEnd({ className }, ref) {
+  return (
+    <p
+      ref={ref}
+      tabIndex={-1}
+      className={cn('h-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring', REVEAL_SCROLL_MARGIN, className)}
+      data-testid="answer-end"
+    >
+      <span className="sr-only">End of answer</span>
+    </p>
+  );
+});
+
 export function AnswerContents({ headings, answerRef, showJump, endRef, className }: AnswerContentsProps) {
   const reduceMotion = usePrefersReducedMotion();
   const showToc = headings.length >= TOC_MIN_HEADINGS;
@@ -75,7 +106,8 @@ export function AnswerContents({ headings, answerRef, showJump, endRef, classNam
   const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth';
 
   const goTo = (index: number) => {
-    const el = answerRef.current?.querySelectorAll<HTMLElement>(HEADING_SELECTOR)[index];
+    // The same filtered list the entries were built from (an empty heading is skipped).
+    const el = headingElements(answerRef.current)[index];
     if (!el) return;
     if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
     el.scrollIntoView?.({ block: 'start', behavior });

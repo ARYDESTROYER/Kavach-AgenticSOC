@@ -107,3 +107,46 @@ describe('RunLogList', () => {
     expect(screen.getByText('No lookups yet.')).toBeInTheDocument();
   });
 });
+
+describe('RunLogList — Round 12', () => {
+  it('appends the host’s quiet notes and draws model notes without a status word', () => {
+    render(
+      <RunLogList
+        id="log-n"
+        steps={[model(1, 'ok', 'Summarised earlier messages'), ...stepsFromResponse([step(2)]), model(3, 'running', 'Continued the answer (part 2)')]}
+        notes={[{ key: 'n-repeat', text: 'Stopped repeating the same lookup', kind: 'repeat' }]}
+      />,
+    );
+    const list = screen.getByRole('list', { name: 'Lookups' });
+    const notes = Array.from(list.querySelectorAll('[data-run-note]')).map((n) => [n.getAttribute('data-run-note'), n.textContent]);
+    expect(notes).toEqual([
+      ['compacted', 'Earlier messages were summarised to keep going'],
+      ['continued', 'Continued the answer (part 2)'],
+      ['repeat', 'Stopped repeating the same lookup'],
+    ]);
+    // The running continuation shows the shared glyph, never a status word.
+    expect(within(list.querySelector('[data-run-note="continued"]') as HTMLElement).getByTestId('console-loading-glyph')).toBeInTheDocument();
+    expect(list.querySelector('[data-run-note="continued"]')).not.toHaveTextContent('Running');
+  });
+
+  it('offers Inspect on settled lookups only and hands the opener to the host', () => {
+    const calls: Array<[number, string | null]> = [];
+    const running: RunLogStep = { ...stepsFromResponse([step(3)])[0], status: 'running', result: null };
+    render(
+      <RunLogList
+        id="log-i"
+        steps={[...stepsFromResponse([step(1), step(2, { status: 'error' })]), running, model(4, 'ok', 'Wrote the answer')]}
+        onInspect={(s, opener) => calls.push([s.index, opener.getAttribute('aria-label')])}
+      />,
+    );
+    const buttons = screen.getAllByTestId('run-log-inspect');
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Inspect step 1: Searched logs', 'Inspect step 2: Searched logs']);
+    fireEvent.click(buttons[1]);
+    expect(calls).toEqual([[2, 'Inspect step 2: Searched logs']]);
+  });
+
+  it('offers no Inspect without a host handler (a live run log)', () => {
+    render(<RunLogList id="log-x" steps={stepsFromResponse([step(1)])} />);
+    expect(screen.queryByTestId('run-log-inspect')).toBeNull();
+  });
+});

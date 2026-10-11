@@ -54,9 +54,14 @@ export function zeroResultSteps(steps: readonly ChatStep[] | undefined): ChatSte
   );
 }
 
-/** Follow-ups that a chip already offers are not shown twice (case-insensitive). */
-export function withoutChipQuestions(followUps: readonly string[], chips: readonly ZeroChip[]): string[] {
-  if (!chips.length) return [...followUps];
-  const asked = new Set(chips.map((chip) => chip.question.toLowerCase()));
-  return followUps.filter((text) => !asked.has(text.trim().toLowerCase()));
+/**
+ * Chips a follow-up does not already offer (case-insensitive). The chips arrive AFTER the
+ * answer (one read of the stored observation), so they never take anything away from
+ * what is already on screen: a follow-up the analyst may be about to click stays, and a
+ * chip asking the same question is the one left out (no content swap, no layout shift).
+ */
+export function chipsNotInFollowUps(chips: readonly ZeroChip[], followUps: readonly string[]): ZeroChip[] {
+  if (!followUps.length) return [...chips];
+  const offered = new Set(followUps.map((text) => text.trim().toLowerCase()));
+  return chips.filter((chip) => !offered.has(chip.question.toLowerCase()));
 }

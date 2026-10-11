@@ -9,8 +9,12 @@
  * guarded runner as the library: progress on the trigger, an inline failure with Retry).
  *
  * A save that could not happen (`saved_report_error`) is one quiet line with the
- * server's sentence; when the same save may work later, "Save as report" creates the
- * report from the answer explicitly (a new report holding the whole answer).
+ * server's sentence; when the same save may work later, "Save as report" asks the server
+ * to save it now (`POST /api/reports/from-answer`): the SAME report the answer asked for
+ * (its title and template, read server-side), idempotent per answer (a second click or a
+ * click after a reload returns the same report, never a duplicate), and recorded on the
+ * stored answer, so a reopened thread shows the saved line instead of the offer. Focus
+ * moves to the new line's "Open" (the activated button is replaced).
  */
 import * as React from 'react';
 import { toast } from 'sonner';
@@ -19,11 +23,11 @@ import { ChevronDown, FileText } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import type { ChatReportSaveError, ChatSavedReport } from '@/lib/types';
-import { useAuth } from '@/soc/auth';
+import { useOptionalAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { useNavigateOptional } from '@/soc/router';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/ui/dropdown-menu';
-import { addToReport, createReport, getReport } from '../chat-api';
+import { apiErrorCode, getReport, saveAnswerAsReport } from '../chat-api';
 import { ExportErrorNote, ExportMenuItems, useDefangPreference } from '../report/ExportMenu';
 import { useReportExport } from '../report/useReportExport';
 import type { ReportExportFormat } from '../report/export/formats';
@@ -41,14 +45,22 @@ function Dot() {
 export interface SavedReportLineProps {
   report: ChatSavedReport;
   className?: string;
+  /** Focus "Open" once mounted (the line replaced the button the analyst pressed). */
+  focusOpen?: boolean;
 }
 
-export function SavedReportLine({ report, className }: SavedReportLineProps) {
+export function SavedReportLine({ report, className, focusOpen = false }: SavedReportLineProps) {
   const navigate = useNavigateOptional();
-  const { username } = useAuth();
-  const exports = useReportExport({ author: username });
+  const auth = useOptionalAuth();
+  const exports = useReportExport({ author: auth?.username ?? null });
   const [defang, setDefang] = useDefangPreference();
   const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const openRef = React.useRef<HTMLButtonElement>(null);
+  // Read once, on mount: a later re-render never steals focus.
+  const focusOnMount = React.useRef(focusOpen);
+  React.useEffect(() => {
+    if (focusOnMount.current) openRef.current?.focus();
+  }, []);
   const busy = exports.exporting(report.id);
   const title = report.title || 'Untitled report';
   const run = (format: ReportExportFormat, on: boolean) =>
@@ -71,7 +83,7 @@ export function SavedReportLine({ report, className }: SavedReportLineProps) {
           </>
         ) : null}
         <Dot />
-        <button type="button" className={LINK} onClick={() => navigate('reports', { reportId: report.id })}>
+        <button ref={openRef} type="button" className={LINK} onClick={() => navigate('reports', { reportId: report.id })}>
           Open<span className="sr-only"> {title} in Reports</span>
         </button>
         <Dot />
@@ -118,38 +130,50 @@ export interface ReportSaveErrorLineProps {
   error: ChatReportSaveError;
   conversationId: string | null;
   messageId: string | null;
-  /** The answer's question, for the new report's title. */
-  title?: string | null;
   className?: string;
 }
 
+/** What a failed "Save as report" says, by the route's error code. */
+export function saveAsReportFailure(code: string | null): string {
+  switch (code) {
+    case 'report_limit':
+      return 'Reports is full. Delete a report in Reports, then save this answer again.';
+    case 'report_empty':
+      return 'This answer has nothing that can be saved to Reports.';
+    case 'message_not_found':
+      return 'This answer is no longer in the conversation.';
+    default:
+      return 'The report could not be saved. Try again.';
+  }
+}
+
 /** "The report could not be saved …" and, when it may work later, "Save as report". */
-export function ReportSaveErrorLine({ error, conversationId, messageId, title, className }: ReportSaveErrorLineProps) {
+export function ReportSaveErrorLine({ error, conversationId, messageId, className }: ReportSaveErrorLineProps) {
   const announce = useAnnouncer();
   const navigate = useNavigateOptional();
   const [saving, setSaving] = React.useState(false);
-  const [saved, setSaved] = React.useState<{ id: string; title: string } | null>(null);
+  const [saved, setSaved] = React.useState<ChatSavedReport | null>(null);
   const canSave = error.retryable && !!conversationId && !!messageId;
 
   const save = async () => {
     if (!conversationId || !messageId || saving) return;
     setSaving(true);
     try {
-      const created = await createReport({ title: (title ?? '').trim().slice(0, 120) || 'Chat answer' });
-      const added = await addToReport({ conversationId, messageId, reportId: created.id });
-      const done = { id: added.report.id, title: added.report.title || created.title };
+      // The server saves the report this answer asked for, once per answer.
+      const done = await saveAnswerAsReport(conversationId, messageId);
       setSaved(done);
-      announce(`Saved to Reports: ${done.title}`);
+      announce(`Saved to Reports: ${done.title || 'Untitled report'}`);
       toast.success('Saved to Reports', { action: { label: 'Open', onClick: () => navigate('reports', { reportId: done.id }) } });
-    } catch {
-      announce('The report could not be saved. Try again.');
-      toast.error('The report could not be saved. Try again.');
+    } catch (err) {
+      const message = saveAsReportFailure(apiErrorCode(err));
+      announce(message);
+      toast.error(message);
     } finally {
       setSaving(false);
     }
   };
 
-  if (saved) return <SavedReportLine report={{ id: saved.id, title: saved.title, items: 1, skipped: 0 }} className={className} />;
+  if (saved) return <SavedReportLine report={saved} className={className} focusOpen />;
   return (
     <p
       className={cn('flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground', className)}

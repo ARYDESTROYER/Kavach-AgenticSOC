@@ -48,6 +48,7 @@ import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
 import type { ChatAssistantItem, ChatEngine, ChatTranscriptItem, ChatUserItem } from '../useChatEngine';
 import { CONTENT_COL, LANE_COL, LANE_EXCHANGE, LANE_GRID, LANE_SUBGRID } from './lane';
 import { Message, type MessageEngine, type MessageReportBinding } from './Message';
+import { answerRecencies } from './StepInspector';
 import { UserTurn } from './UserTurn';
 
 /** Distance from the bottom that still counts as "following the latest" (SPEC §10.3). */
@@ -165,7 +166,6 @@ export interface TranscriptProps {
   onFocusComposer?: () => void;
   /** Report state for one assistant message (Workspace only). */
   reportFor?: (item: ChatAssistantItem) => MessageReportBinding | null;
-  continueEstimate?: number | null;
   onSavePrompt?: (item: ChatUserItem) => void;
   className?: string;
 }
@@ -200,7 +200,6 @@ export function Transcript({
   onHighlightDone,
   onFocusComposer,
   reportFor,
-  continueEstimate = null,
   onSavePrompt,
   className,
 }: TranscriptProps) {
@@ -234,6 +233,9 @@ export function Transcript({
   // action that sends hands focus to the composer: the activated control (a follow-up
   // chip, Continue, a replaced failed turn) usually unmounts (SPEC §10.9).
   const { busy, retry, askAgain, continueAnswer, send } = engine;
+  // The saved conversation (Workspace): answer feedback, the step inspector and the
+  // zero-result chips read an answer by its conversation and message ids (Round 12).
+  const conversationId = engine.conversationId ?? null;
   const messageEngine = React.useMemo<MessageEngine>(() => {
     const thenFocus =
       <A extends unknown[]>(action: (...args: A) => boolean) =>
@@ -248,9 +250,22 @@ export function Transcript({
       askAgain: thenFocus(askAgain),
       continueAnswer: thenFocus(continueAnswer),
       send: thenFocus(send),
+      conversationId,
     };
-  }, [busy, retry, askAgain, continueAnswer, send]);
+  }, [busy, retry, askAgain, continueAnswer, send, conversationId]);
   const exchanges = React.useMemo(() => groupExchanges(items), [items]);
+  // Which of several answers to the same question each one is (newest first), so a step
+  // question from the run log names the right answer (Round 12 P1-1). A failed turn left
+  // no answer to name, so it is not counted.
+  const recencies = React.useMemo(
+    () =>
+      answerRecencies(
+        exchanges.map((exchange) =>
+          exchange.assistant && exchange.assistant.status !== 'error' ? (exchange.user?.content ?? null) : null,
+        ),
+      ),
+    [exchanges],
+  );
   const running = items.find((item): item is ChatAssistantItem => item.kind === 'assistant' && item.status === 'running');
   const latestAssistantKey = [...items].reverse().find((item) => item.kind === 'assistant')?.key ?? null;
 
@@ -468,6 +483,9 @@ export function Transcript({
   };
 
   const hasTurns = exchanges.length > 0;
+  // "Jump to latest" points at the latest turn: an empty transcript (the new-chat
+  // starters, squeezed by a card above the composer on a phone) has none to jump to.
+  const jumpShown = showJump && hasTurns && !replace;
   const lastIndex = exchanges.length - 1;
   // Lane height minus the peek and the lane's bottom padding (py-3 / py-6): exactly
   // enough room to scroll a fresh user turn to 48 px below the lane top.
@@ -484,10 +502,10 @@ export function Transcript({
           'relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable_both-edges]',
           // While the pill shows, keyboard focus is scrolled clear of the faded band
           // (scroll-padding is honoured when focus scrolls into view: WCAG 2.4.11, C43).
-          showJump && cn(JUMP_MASK, JUMP_SCROLL_PADDING),
+          jumpShown && cn(JUMP_MASK, JUMP_SCROLL_PADDING),
         )}
         data-chat-scroll-lane="true"
-        data-jump-mask={showJump || undefined}
+        data-jump-mask={jumpShown || undefined}
       >
         {/* No side padding: the gutters are the lane grid's own side tracks (lane.ts). The
             compact embed has no host gutter, so it keeps its 4 px inset. */}
@@ -541,7 +559,8 @@ export function Transcript({
                         compact={compact}
                         stoppedLocally={stoppedLocally.has(exchange.assistant.key)}
                         report={reportFor ? reportFor(exchange.assistant) : null}
-                        continueEstimate={continueEstimate}
+                        question={exchange.user?.content ?? null}
+                        questionRecency={recencies[index] ?? 0}
                         highlighted={!!highlighted && exchange.assistant.messageId === highlighted}
                       />
                     ) : null}
@@ -553,9 +572,9 @@ export function Transcript({
             <div className={LANE_COL}>{empty}</div>
           )}
         </div>
-        {showJump ? <div aria-hidden="true" className={JUMP_BAND_GUARD} data-testid="jump-band-guard" /> : null}
+        {jumpShown ? <div aria-hidden="true" className={JUMP_BAND_GUARD} data-testid="jump-band-guard" /> : null}
       </div>
-      {showJump ? (
+      {jumpShown ? (
         // Outside the content: a round pill centred on the lane's bottom edge, over the
         // band the lane's scroll-edge mask has faded out (JUMP_MASK), so it never covers
         // text. A solid control (not a material: it floats over a faded band, and menus,

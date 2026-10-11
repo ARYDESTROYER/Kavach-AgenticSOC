@@ -736,13 +736,14 @@ export const CLARIFY_LIMITS = { question_chars: 200, options: 4, option_chars: 8
  * text nodes; a pick is sent with `origin: "clarify"`. Options are deduplicated.
  */
 export function normaliseClarify(raw: unknown): ChatResponse['clarify'] {
-  if (!isObj(raw)) return null;
+  if (!isObj(raw) || typeof raw.question !== 'string') return null;
   const question = displayText(raw.question, CLARIFY_LIMITS.question_chars);
   if (!question) return null;
   const options: string[] = [];
   if (Array.isArray(raw.options)) {
     for (const option of raw.options) {
-      const text = displayText(option, CLARIFY_LIMITS.option_chars);
+      // Strings only, like the backend's validator (a number is not an option).
+      const text = typeof option === 'string' ? displayText(option, CLARIFY_LIMITS.option_chars) : '';
       if (text && !options.includes(text)) options.push(text);
       if (options.length >= CLARIFY_LIMITS.options) break;
     }

@@ -21,7 +21,7 @@ import type { TurnNotice, TurnNoticeKind } from '@/lib/types';
 export type NoticeTone = 'warning' | 'critical' | 'info' | 'neutral';
 
 /** The meta row's leading outcome word. */
-export type TurnOutcomeWord = 'Stopped' | 'Partial' | 'Failed' | 'Needs input';
+export type TurnOutcomeWord = 'Stopped' | 'Partial' | 'Failed';
 
 export const NOTICE_TITLE: Record<TurnNoticeKind, string> = {
   partial: 'Partial answer',

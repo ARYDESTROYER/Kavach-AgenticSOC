@@ -17,6 +17,7 @@ import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import type { ChatClarify } from '@/lib/types';
 import { Button } from '@/ui/button';
+import { REVEAL_SCROLL_MARGIN, revealAndFocus } from './reveal';
 
 export const CLARIFY_CUSTOM_LABEL = 'Something else…';
 export const NEEDS_INPUT_LABEL = 'Needs input';
@@ -41,10 +42,13 @@ export function ClarifyCard({ clarify, active, disabled = false, onPick, classNa
   const [custom, setCustom] = React.useState(false);
   const [text, setText] = React.useState('');
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const formRef = React.useRef<HTMLFormElement>(null);
   const customButtonRef = React.useRef<HTMLButtonElement>(null);
 
   React.useEffect(() => {
-    if (custom) inputRef.current?.focus();
+    // The field opens at the bottom of the latest answer: bring the whole row (field,
+    // Send, Cancel) clear of the transcript's bottom band, then focus the field.
+    if (custom) revealAndFocus(formRef.current, inputRef.current);
   }, [custom]);
 
   if (!active) {
@@ -107,7 +111,8 @@ export function ClarifyCard({ clarify, active, disabled = false, onPick, classNa
       </div>
       {clarify.allow_custom && custom ? (
         <form
-          className="flex min-w-0 items-center gap-1.5"
+          ref={formRef}
+          className={cn('flex min-w-0 items-center gap-1.5', REVEAL_SCROLL_MARGIN)}
           onSubmit={(event) => {
             event.preventDefault();
             sendCustom();

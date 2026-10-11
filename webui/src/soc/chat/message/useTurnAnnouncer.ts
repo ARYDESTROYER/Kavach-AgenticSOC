@@ -4,17 +4,44 @@
  * without `aria-live`, so nothing else in the chat speaks.
  *
  *   turn starts      → "Working"
- *   lookups finish   → "Searched logs, 3 of up to 10 lookups" (at most one per 2 s,
- *                      always the latest)
- *   turn settles     → "Answer ready" | "Stopped" | "Error: <message>"
+ *   lookups finish   → "Searched logs, 3 lookups" (at most one per 2 s, always the
+ *                      latest). Only an operator's `bounded` limits mode has a lookup
+ *                      limit to name ("3 of up to 10 lookups"); chat is unlimited by
+ *                      default (Round 12 D1), so callers pass `announcedLookupBound(ctx)`
+ *                      and a count past the bound never claims one.
+ *   turn settles     → "Answer ready" | "Needs your input" (a clarify question,
+ *                      Round 12 D10) | "Stopped" | "Error: <message>"
  */
 import * as React from 'react';
 
+import type { ChatContextInfo } from '@/lib/types';
 import { useAnnouncer } from '@/soc/components/announcer';
 import type { ChatAssistantItem, ChatEngine } from '../useChatEngine';
 
+/** What a settled clarify question announces (SPEC D10). */
+export const NEEDS_INPUT_ANNOUNCEMENT = 'Needs your input';
+
 /** Minimum gap between two progress announcements. */
 export const PROGRESS_ANNOUNCE_MS = 2000;
+
+/**
+ * The lookup limit worth naming: the configured `max_tool_calls` in `bounded` mode only.
+ * The backend reports the knob even in `unlimited` mode, where it limits nothing.
+ */
+export function announcedLookupBound(
+  context: (Pick<ChatContextInfo, 'limits_mode'> & { bounds?: { max_tool_calls?: number | null } | null }) | null | undefined,
+): number | null {
+  if (context?.limits_mode !== 'bounded') return null;
+  const bound = context.bounds?.max_tool_calls;
+  return typeof bound === 'number' && Number.isFinite(bound) && bound > 0 ? bound : null;
+}
+
+/** "Searched logs, 3 lookups" / "…, 3 of up to 10 lookups" (a bound is named only while it holds). */
+export function progressAnnouncement(label: string, count: number, maxLookups?: number | null): string {
+  const bounded = typeof maxLookups === 'number' && maxLookups > 0 && count <= maxLookups;
+  const of = bounded ? ` of up to ${maxLookups}` : '';
+  return `${label || 'Lookup finished'}, ${count}${of} ${count === 1 && !of ? 'lookup' : 'lookups'}`;
+}
 
 export function useTurnAnnouncer(engine: Pick<ChatEngine, 'items' | 'running'>, maxLookups?: number | null): void {
   const announce = useAnnouncer();
@@ -41,6 +68,7 @@ export function useTurnAnnouncer(engine: Pick<ChatEngine, 'items' | 'running'>, 
       );
       if (settled?.status === 'error') announce(`Error: ${settled.failure?.message || 'the assistant could not answer.'}`);
       else if (settled?.response?.notice?.kind === 'cancelled') announce('Stopped');
+      else if (settled?.status === 'done' && settled.response?.clarify) announce(NEEDS_INPUT_ANNOUNCEMENT);
       else if (settled?.status === 'done') announce('Answer ready');
     }
     if (runningKey && runningKey !== previous) announce('Working');
@@ -55,8 +83,7 @@ export function useTurnAnnouncer(engine: Pick<ChatEngine, 'items' | 'running'>, 
   const lastLabel = finished[finished.length - 1]?.label ?? '';
   React.useEffect(() => {
     if (!runningKey || finishedCount === 0) return;
-    const of = typeof maxLookups === 'number' && maxLookups > 0 ? ` of up to ${maxLookups}` : '';
-    pendingRef.current = `${lastLabel || 'Lookup finished'}, ${finishedCount}${of} ${finishedCount === 1 && !of ? 'lookup' : 'lookups'}`;
+    pendingRef.current = progressAnnouncement(lastLabel, finishedCount, maxLookups);
     if (timerRef.current !== null) return;
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;

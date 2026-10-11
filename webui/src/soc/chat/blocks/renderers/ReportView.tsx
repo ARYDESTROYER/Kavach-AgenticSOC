@@ -29,7 +29,7 @@ import { focusRing } from '@/lib/ui-recipes';
 import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 
 import { sectionAnchorId, useBlocks } from '../context';
-import { formatUtc } from '../format';
+import { INVESTIGATION_BRIEF_ADVISORY, formatUtc } from '../format';
 import type { LeafBlock, ReportBlock, ReportLayout, ReportTemplate } from '../schema';
 import { InfographicView } from './InfographicView';
 
@@ -46,6 +46,10 @@ export const TEMPLATE_NAME: Readonly<Record<ReportTemplate, string>> = {
   infographic: 'Infographic',
   investigation_brief: 'Investigation brief',
 };
+
+// The investigation brief's label (P1-3, #3) lives with the pure format helpers, so the
+// report document and every static export (export/walker.ts) print the same words.
+export { INVESTIGATION_BRIEF_ADVISORY } from '../format';
 
 /** Templates whose first section summary is the lead (an executive reads it first). */
 const LEAD_TEMPLATES: ReadonlyArray<ReportTemplate> = ['executive', 'monthly', 'investigation_brief'];
@@ -123,6 +127,12 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }
           {prov.ai} AI-stated
         </span>
       </div>
+      {block.template === 'investigation_brief' ? (
+        // Round 12 P1-3 (#3): a brief recommends; the case decision is the policy's.
+        <p className="text-xs font-medium text-foreground" data-testid="report-advisory">
+          {INVESTIGATION_BRIEF_ADVISORY}
+        </p>
+      ) : null}
 
       {layout === 'infographic' ? (
         <InfographicView block={block} blockIndex={blockIndex} renderLeaf={renderLeaf} staticMode={staticMode} />

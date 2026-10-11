@@ -8,6 +8,10 @@
  * Reads are cached per step for the session, so re-renders and remounts never fetch
  * the same observation twice, and a failed read just shows no chips (the answer's own
  * text already says how to widen the search).
+ *
+ * The chips arrive after the answer has rendered, so they only ever APPEND: they render
+ * last, below the follow-ups (nothing above them moves), and a chip that a follow-up
+ * already offers is left out instead of removing that follow-up (`chipsNotInFollowUps`).
  */
 import * as React from 'react';
 import { CornerDownRight, SearchX } from 'lucide-react';
@@ -74,13 +78,15 @@ export function useZeroResultChips(
 
 export interface ZeroResultChipsProps {
   chips: readonly ZeroChip[];
+  /** Other lookups of the answer did find data: say that only some found nothing. */
+  some?: boolean;
   disabled?: boolean;
   onPick: (question: string) => void;
   className?: string;
 }
 
-/** "Nothing matched. Widen the search:" and the chips. */
-export function ZeroResultChips({ chips, disabled = false, onPick, className }: ZeroResultChipsProps) {
+/** "Nothing matched. Widen the search:" (or "Some lookups found nothing.") and the chips. */
+export function ZeroResultChips({ chips, some = false, disabled = false, onPick, className }: ZeroResultChipsProps) {
   if (!chips.length) return null;
   return (
     <div
@@ -91,7 +97,7 @@ export function ZeroResultChips({ chips, disabled = false, onPick, className }: 
     >
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <SearchX className="size-3.5" aria-hidden />
-        Nothing matched. Widen the search:
+        {some ? 'Some lookups found nothing. Widen them:' : 'Nothing matched. Widen the search:'}
       </span>
       {chips.map((chip) => (
         <button

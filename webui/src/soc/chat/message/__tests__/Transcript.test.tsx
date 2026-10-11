@@ -34,7 +34,7 @@ import {
   scrollbarGutter,
   type TranscriptProps,
 } from '../Transcript';
-import { useTurnAnnouncer } from '../useTurnAnnouncer';
+import { announcedLookupBound, progressAnnouncement, useTurnAnnouncer } from '../useTurnAnnouncer';
 import { assistantItem, response, runningItem, stubEngine, userItem } from './fixtures';
 
 type TestEngine = Pick<ChatEngine, 'items'> & ReturnType<typeof stubEngine>;
@@ -265,6 +265,19 @@ describe('Transcript', () => {
     m.height = 1100;
     deliverResize();
     expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
+  });
+
+  it('never offers Jump to latest on an empty transcript (a card above the composer squeezes the starters)', () => {
+    const deliverResize = captureResizeObservers();
+    const { container } = renderTranscript({ engine: engineWith([]), empty: <div style={{ height: 900 }}>Starters</div> });
+    const { lane, m } = laneMetrics(container, { top: 0, height: 900, client: 400 });
+    // The lane shrank below the empty state (the values card opened on a phone).
+    deliverResize();
+    m.top = 0;
+    fireEvent.scroll(lane);
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+    expect(lane).not.toHaveAttribute('data-jump-mask');
+    expect(screen.queryByTestId('jump-band-guard')).toBeNull();
   });
 
   it('puts Jump to latest outside the content: a centred pill over a masked band', () => {
@@ -499,5 +512,43 @@ describe('useTurnAnnouncer', () => {
       vi.advanceTimersByTime(200);
     });
     expect(region()).toContain('Answer ready');
+  });
+});
+
+describe('useTurnAnnouncer lookup limits (Round 12 D1)', () => {
+  it('names a lookup limit only in bounded mode, and never a count past it', () => {
+    expect(announcedLookupBound({ limits_mode: 'unlimited', bounds: { max_tool_calls: 10 } })).toBeNull();
+    expect(announcedLookupBound({ bounds: { max_tool_calls: 10 } })).toBeNull();
+    expect(announcedLookupBound(null)).toBeNull();
+    expect(announcedLookupBound({ limits_mode: 'bounded', bounds: { max_tool_calls: 10 } })).toBe(10);
+    expect(progressAnnouncement('Searched logs', 11, null)).toBe('Searched logs, 11 lookups');
+    expect(progressAnnouncement('Searched logs', 1, null)).toBe('Searched logs, 1 lookup');
+    expect(progressAnnouncement('Searched logs', 3, 10)).toBe('Searched logs, 3 of up to 10 lookups');
+    expect(progressAnnouncement('Searched logs', 11, 10)).toBe('Searched logs, 11 lookups');
+  });
+
+  it('says "11 lookups" in unlimited mode, though the backend still reports a bound', () => {
+    vi.useFakeTimers();
+    const user = userItem('q');
+    const steps = Array.from({ length: 11 }, (_, i) => ({
+      index: i + 1, ordinal: i + 1, kind: 'tool' as const, tool: 'search_logs', label: 'Searched logs',
+      params: {}, group: null, status: 'ok' as const, result: null, startedAt: 0,
+    }));
+    const running = runningItem({ steps });
+    function Unlimited({ engine }: { engine: Pick<ChatEngine, 'items' | 'running'> }) {
+      useTurnAnnouncer(engine, announcedLookupBound({ limits_mode: 'unlimited', bounds: { max_tool_calls: 10 } }));
+      return null;
+    }
+    render(
+      <AnnouncerProvider>
+        <Unlimited engine={{ items: [user, running], running }} />
+      </AnnouncerProvider>,
+    );
+    act(() => {
+      vi.advanceTimersByTime(2200);
+    });
+    const region = document.body.textContent ?? '';
+    expect(region).toContain('Searched logs, 11 lookups');
+    expect(region).not.toContain('of up to');
   });
 });
