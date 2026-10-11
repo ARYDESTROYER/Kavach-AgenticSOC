@@ -227,7 +227,10 @@
         "ask",
         "question",
         "conversation",
-        "reports"
+        "reports",
+        "prompt library",
+        "saved prompts",
+        "promptbook"
       ],
       "owned_keys": []
     },
@@ -721,7 +724,11 @@
         "activity",
         "sign out",
         "revoke",
-        "login history"
+        "login history",
+        "remember me",
+        "remembered",
+        "stay signed in",
+        "expires"
       ],
       "owned_keys": []
     },
@@ -752,7 +759,11 @@
         "rename",
         "customize",
         "customization",
-        "columns"
+        "columns",
+        "reduce transparency",
+        "transparency",
+        "frosted glass",
+        "blur"
       ],
       "owned_keys": []
     },
@@ -850,7 +861,7 @@
         "section": "chat_agent"
       },
       "requires": null,
-      "blurb": "Live answer mode, per-question limits, and which indicators chat may send to enrichment.",
+      "blurb": "Per-question limits (unlimited or bounded), the daily chat spending limit, live answer mode, and which indicators chat may send to enrichment.",
       "keywords": [
         "chat",
         "assistant",
@@ -859,7 +870,17 @@
         "type out answers",
         "internal domains",
         "email",
-        "e-mail"
+        "e-mail",
+        "chat limits",
+        "question limits",
+        "unlimited",
+        "bounded",
+        "spending limit",
+        "daily limit",
+        "chat budget",
+        "animated logo",
+        "timeouts",
+        "questions at once"
       ],
       "owned_keys": [
         "chat_agent"
@@ -1258,7 +1279,13 @@
         "idle",
         "access ttl",
         "csrf",
-        "rate limit"
+        "rate limit",
+        "remember me",
+        "stay signed in",
+        "keep me signed in",
+        "session length",
+        "session lifetime",
+        "remembered device"
       ],
       "owned_keys": [
         "sso",
@@ -2279,8 +2306,8 @@
     {
       "id": "kpi:false_positive_rate",
       "kind": "kpi",
-      "label": "False Positive Rate",
-      "question": "How is the False Positive Rate calculated?",
+      "label": "AI-verdict FP rate",
+      "question": "How is the AI-verdict FP rate calculated?",
       "docs": [
         "analyst/kpi-glossary/#false-positive-rate"
       ],

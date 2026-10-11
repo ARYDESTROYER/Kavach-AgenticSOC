@@ -2310,9 +2310,8 @@ class TimeRange(BaseModel):
     (``{"from": "all"}``, the "All time" chip, Round 12, which never clamps); ``from``
     must be strictly before ``to``, else 422. Round 12 (SPEC D7a): chat scope windows
     have no span limit (:attr:`MAX_SPAN_DAYS` is ``None``). It applies to every
-    windowed chat tool;
-    precedence is the model's explicit window from the user's words, then this, then
-    ``context.time_range``, then the tool's own default. Serialises as ``{"from",
+    windowed chat tool; precedence is the model's explicit window from the user's
+    words, then this, then ``context.time_range``, then the tool's own default. Serialises as ``{"from",
     "to"}`` (both keys, always) regardless of ``by_alias`` or ``exclude_defaults``, so
     stored and wire shapes never diverge."""
 

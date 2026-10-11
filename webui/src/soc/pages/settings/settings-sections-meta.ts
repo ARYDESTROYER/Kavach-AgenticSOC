@@ -222,7 +222,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'chat_agent',
     group: 'general',
     title: 'Chat assistant',
-    blurb: 'Question limits, the daily chat spending limit, live answer mode, and which indicators chat may send to enrichment.',
+    blurb: 'Per-question limits (unlimited or bounded), the daily chat spending limit, live answer mode, and which indicators chat may send to enrichment.',
     icon: MessageSquare,
     keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'internal domains', 'email', 'e-mail', 'chat limits', 'question limits', 'unlimited', 'bounded', 'spending limit', 'daily limit', 'chat budget', 'animated logo', 'timeouts', 'questions at once'],
     ownedKeys: ['chat_agent'],
