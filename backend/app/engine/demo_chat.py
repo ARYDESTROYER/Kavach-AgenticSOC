@@ -1036,6 +1036,76 @@ _DEFINITIONAL_RE = re.compile(
     r")")
 # "Can we see brute force attempts?" asks for data, not for how to use the console.
 _DATA_ASK_RE = re.compile(r"^\s*(?:can|could) (?:i|we|you) (?:see|show|get|find|list|pull|look at)\b")
+# Records a question can ask to see: cases and their kinds (the verdict nouns),
+# incidents, alerts. A console noun after one makes it a qualifier ("the cases page",
+# "the open cases KPI", "the false positives rate"): that question is about the console
+# or a measure, not about the records themselves.
+_RECORD_NOUN = (r"(?:cases|incidents|tickets|investigations|escalations|alerts|detections|"
+                r"(?:true|false)[- ]positives)\b")
+_RECORD_ONE = r"(?:case|incident|ticket|alert|detection)\b"
+_NOT_CONSOLE = (r"(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?|settings?|"
+                r"widgets?|panels?|rates?|counts?|polic(?:y|ies)|lifecycles?|workflows?|menus?|buttons?|"
+                r"status(?:es)?|severit(?:y|ies)|priorit(?:y|ies)|fields?|types?|states?|ids?|numbers?|"
+                r"titles?|formats?|templates?|decisions?|model)\b)")
+# "Explain" whose object is the records the answer lists, never a term: "… and explain
+# each", "explain why each one is critical", "explain them", "explain the top 3",
+# "with an explanation for each". "Explain what each severity level means" names no
+# records ("each" governs a console term), so it stays a definition.
+_EXPLAIN_RECORDS_RE = re.compile(
+    r"\bexplain\w*(?:\s+(?:why|how|what))?(?:\s+[a-z']+){0,3}?\s+(?:"
+    r"(?:each|every)(?=\s*(?:[,.?!;:]|$)|\s+(?:one|ones|case|incident|alert|ticket|finding|result|row|match|"
+    r"of|is|was|has|had|got|were|in turn)\b)"
+    r"|them\b|they\b"
+    r"|(?:these|those)(?=\s*(?:[,.?!;:]|$)|\s+(?:ones|cases|incidents|alerts|results|findings|rows|matches|are|"
+    r"were|have|had)\b)"
+    r"|(?:the\s+)?(?:top|first|bottom|last)\s+\d{1,3}\b"
+    r"|the\s+(?:results|list|ones|rows|matches|findings)\b)")
+# A request for records rather than for what a word means: a list verb first ("show
+# the open cases", "list false positives this week"; never a how-to such as "show me
+# how to close cases"), "which <records>", "what are the <records>", "the top 10
+# <records>", "explain the <records>", or each one of them ("what does each open
+# critical case involve").
+_RECORDS_ASK_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+(?:you|i|we)\s+(?:please\s+)?)?"
+    r"(?:see|show|list|give|get|pull|display|find|fetch|rank|enumerate|look at)\b"
+    r"(?!.{0,40}\b(?:how (?:to|do|can|should)|where (?:to|do|can|is|are))\b)"
+    r".{0,80}?\b" + _RECORD_NOUN + _NOT_CONSOLE
+    + r"|\bwhich\s+(?:[a-z0-9-]+\s+){0,3}?" + _RECORD_NOUN + _NOT_CONSOLE
+    + r"|\bwhat(?:'s|\s+is|\s+are|\s+was|\s+were)\s+(?:the|our|my|all|any)\s+(?:[a-z0-9-]+\s+){0,4}?"
+    + _RECORD_NOUN + _NOT_CONSOLE
+    + r"|\bwhat(?:'s|\s+is|\s+was)\s+the\s+(?:riskiest|highest[- ]risk|most critical|worst|biggest|newest|latest|"
+    r"oldest|most recent)\s+(?:[a-z-]+\s+){0,2}?" + _RECORD_ONE + _NOT_CONSOLE
+    + r"|\b(?:top|the)\s+\d{1,3}\s+(?:[a-z-]+\s+){0,3}?" + _RECORD_NOUN + _NOT_CONSOLE
+    + r"|\bexplain\w*\s+(?:the|our|my|all|today's)\s+(?:[a-z0-9-]+\s+){0,3}?" + _RECORD_NOUN + _NOT_CONSOLE
+    + r"|\b(?:each|every)\s+(?:[a-z-]+\s+){0,2}?" + _RECORD_ONE + _NOT_CONSOLE)
+# Defining words that hold even beside a request for records ("list the escalated
+# cases; what does escalated mean?"): unlike a bare "explain" or "what are", they
+# always ask what something means.
+_DEFINES_STRONGLY_RE = re.compile(
+    r"\b(?:meaning|means?|defin(?:e|es|ed|ition)|stands? for)\b|"
+    r"\bhow (?:is|are) .{0,40}(?:calculated|computed|measured|derived|scored)\b|"
+    r"\bhow do (?:you|we) (?:calculate|compute|measure)\b")
+# The verdict nouns as records ("list false positives this week"), never the rate.
+_VERDICT_RECORDS_RE = re.compile(r"\b(?:true|false)[- ]positives\b(?![- ]rates?\b)")
+
+
+def _asks_for_records(lowered: str) -> bool:
+    """Does the question ask to see records (cases, incidents, alerts, true or false
+    positives), or to explain the ones it lists? Such a question is a data request even
+    when it says "explain" or "what are": the definition branches never take it."""
+    return bool(_EXPLAIN_RECORDS_RE.search(lowered) or _RECORDS_ASK_RE.search(lowered))
+
+
+def _defines(lowered: str, records: bool) -> bool:
+    """Does the question ask what a term, measure or setting means? A bare "explain"
+    or "what are" is definitional only when the question asks for no records: "Show
+    the top 10 open cases by risk and explain each" wants the cases, and "Explain the
+    false positive rate" wants the definition (with our figure)."""
+    if not _DEFINITION_RE.search(lowered):
+        return False
+    return not records or bool(_DEFINES_STRONGLY_RE.search(lowered))
+
+
 _ACCESS_RE = re.compile(r"\b(what can (?:i|you|chat) do|my access|my role|my permissions?|permissions?|"
                         r"allowed to|am i able)\b")
 _OVERVIEW_RE = re.compile(r"\b(version|demo mode|what is enabled|which features|deployment|configured)\b")
@@ -2892,6 +2962,14 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         # to that case rather than to a workspace-wide intent.
         return ask("case")
     metric = _metric(low)
+    # A request for records ("show the top 10 open cases by risk and explain each",
+    # "list false positives this week") is a data request: a bare "explain" or "what
+    # are" in it never makes it a definition, and a verdict noun in it names the
+    # cases to list, not the false-positive rate.
+    records = _asks_for_records(low)
+    if records and metric and metric[1] == "false-positive rate" and _VERDICT_RECORDS_RE.search(low) and not (
+            re.search(r"\b(?:rates?|fp rate)\b", low)):
+        metric = None
 
     def compare_ask() -> Ask:
         # Period comparisons (SPEC P0-6), each over its own subject.
@@ -2932,14 +3010,14 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("breakdown")
     # "What's the FP rate trend?", "Is MTTR improving?": a trend or a comparison of a
     # named measure, never its definition (that needs a defining word).
-    defining = bool(re.search(r"\b(?:mean|means|meaning|definition|define[sd]?|explain\w*|calculat\w*|"
-                              r"comput\w*)\b", low))
+    defining = bool(re.search(r"\b(?:mean|means|meaning|definition|define[sd]?|calculat\w*|comput\w*)\b", low)) or (
+        bool(re.search(r"\bexplain\w*\b", low)) and not records)
     if not help_like and not template and not defining:
         if compare is not None and (metric or _trend_subject(low)):
             return compare_ask()
         if _TREND_RE.search(low) and _trend_subject(low):
             return trend_ask()
-    if metric and _DEFINITION_RE.search(low):
+    if metric and _defines(low, records):
         return ask("explain_metric", metric=metric[0], topic=metric[1])
     if help_like or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
         return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
@@ -3069,11 +3147,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("posture")
     if re.search(r"\b(?:fp|tp|false[- ]positive|true[- ]positive|automation|auto[- ]?close) rates?\b", low):
         return ask("posture")
-    if _DEFINITION_RE.search(low) or low.startswith(("what", "how", "where", "why")) and not re.search(
+    if _defines(low, records) or low.startswith(("what", "how", "where", "why")) and not re.search(
             r"\b(cases?|alerts?|incidents?|logs?|events?)\b", low):
         return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
                    wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
-    if re.search(r"\b(cases?|incidents?|alerts?)\b", low):
+    if re.search(r"\b(cases?|incidents?|alerts?)\b", low) or records and _VERDICT_RECORDS_RE.search(low):
         return ask("cases")
     if template == "shift":
         return ask("shift")
@@ -4316,22 +4394,30 @@ def _mitre_query(ask: Ask) -> str:
 
 #: A case question about response times also reads them (over the last 30 days unless
 #: a window is named), so the answer can say how long acknowledgement takes.
-_TIMING_CUE_RE = re.compile(r"\b(acknowledg\w*|mtta|response times?|delay\w*)\b")
+_TIMING_CUE_RE = re.compile(r"\b(acknowledg\w*|mtt[adr]|response times?|delay\w*)\b")
+#: A case list ranked by risk: "top 10 open cases by risk", "the highest-risk cases",
+#: "which cases had the highest risk", "the riskiest incidents" (lowest first when asked).
+_RISK_RANK_RE = re.compile(
+    r"\b(?:by|on|in order of|sorted by|ranked by|ordered by)\s+(?:their\s+)?risk\b|\briskiest\b|"
+    r"\b(?:highest|most|greatest|biggest|top)[- ]risk\b|\b(?:highest|most|greatest|biggest)\s+(?:\w+\s+)?risk\b|"
+    r"\brisk(?:iest)?\s+(?:score\s+)?(?:first|order|descending)\b|\b(?:lowest|least)[- ](?:risk|risky)\b")
 
 
 def _cases_filters(ask: Ask, view: PromptView) -> dict[str, Any]:
     low = ask.lowered
-    inp: dict[str, Any] = {"limit": 10}
+    # "Top 10 open cases", "explain the top 3": the list is as long as the ranking asked.
+    inp: dict[str, Any] = {"limit": _top_n(low)}
     inp.update(_status_filters(ask))
     entity = _case_entity(ask.question)
     if entity:
         inp["entity"] = entity
-    severity = next((s for s in ("critical", "high", "medium", "low") if s in low), None)
+    # Whole words: "the highest risk" names no high severity, "below" no low one.
+    severity = next((s for s in ("critical", "high", "medium", "low") if re.search(rf"\b{s}\b", low)), None)
     if severity:
         inp["severity"] = severity
-    verdict = next((v for p, v in ((r"needs?[- ]human", "NEEDS_HUMAN"), (r"false positive", "FALSE_POSITIVE"),
-                                   (r"true positive", "TRUE_POSITIVE")) if re.search(p, low)), None)
-    if verdict:
+    verdict = next((v for p, v in ((r"needs?[- ]human", "NEEDS_HUMAN"), (r"false[- ]positives?", "FALSE_POSITIVE"),
+                                   (r"true[- ]positives?", "TRUE_POSITIVE")) if re.search(p, low)), None)
+    if verdict and not re.search(r"\b(?:fp|tp|false[- ]positive|true[- ]positive) rates?\b", low):
         inp["verdict"] = verdict
     if re.search(r"\bunassigned\b", low):
         inp["assignee"] = "unassigned"
@@ -4342,6 +4428,9 @@ def _cases_filters(ask: Ask, view: PromptView) -> dict[str, Any]:
         if "status" not in inp:
             inp.setdefault("status_group", "active")
         inp.update({"sort_field": "created_at", "sort_order": "asc"})
+    elif _RISK_RANK_RE.search(low):
+        lowest = re.search(r"\b(?:lowest|least)[- ](?:risk|risky)\b", low)
+        inp.update({"sort_field": "risk_score", "sort_order": "asc" if lowest else "desc"})
     inp.update(_windowed(ask, view))
     return inp
 
@@ -6304,7 +6393,8 @@ def _final_tp(view: PromptView, ask: Ask) -> Final | None:
     body = []
     if tps:
         body.append(_say_search_cases(tps, noun="true positive"))
-        body.extend(_case_bullets(tps))
+        explained = _explained_cases(tps, 10) if _explains_each(ask) else []
+        body.extend(explained or _case_bullets(tps))
     if mix:
         body.append("For context, " + _say_case_mix(mix))
     return Final(body=body, blocks=_keep(
@@ -6647,24 +6737,70 @@ def _final_cases(view: PromptView, ask: Ask) -> Final | None:
     age = _age_lead(ask, cases.obs, count, _case_noun(cases.obs.get("filters") or {}, "case")) if count else None
     if age:
         body[0] = age
-    # The plan's own sort (the call echo names only its display keys).
-    oldest = _cases_filters(ask, view).get("sort_order") == "asc"
+    # The plan's own sort and length (the call echo names only its display keys).
+    planned = _cases_filters(ask, view)
+    oldest = planned.get("sort_field") == "created_at" and planned.get("sort_order") == "asc"
+    ranked = planned.get("sort_order") if planned.get("sort_field") == "risk_score" else None
     if oldest and count:
         body.append("Oldest first: these have waited longest for someone to pick them up.")
-    body.extend(_case_bullets(cases))
+    elif ranked and count:
+        body.append("Highest risk first." if ranked == "desc" else "Lowest risk first.")
+    explained = _explained_cases(cases, int(planned.get("limit") or 10)) if count and _explains_each(ask) else []
+    body.extend(explained or _case_bullets(cases))
     if timing:
         said = _say_timing(timing)
         if said:
             body.append(said)
     if mix:
         body.append("Across the window: " + _say_case_mix(mix))
+    title = ("Oldest open cases" if oldest else "Highest-risk cases" if ranked == "desc"
+             else "Lowest-risk cases" if ranked == "asc" else "Matching cases")
+    # "… with a table": the case list in its table view (the artifact offers both).
+    list_view = "table" if re.search(r"\b(?:tables?|tabular)\b", ask.lowered) else "case_list"
+    first = next((c for c in cases.obs.get("cases") or [] if isinstance(c, Mapping)), {})
+    first_id = first.get("case_id") if isinstance(first.get("case_id"), str) else ""
+    deeper = ([f"Explain case {first_id}"] if explained and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", first_id)
+              else [])
     return Final(body=body, blocks=_keep(
         _block(cases, "kpis", view="kpi_group", title="Key figures"),
-        _block(cases, "case_list", view="case_list", title="Oldest open cases" if oldest else "Matching cases"),
+        _block(cases, "case_list", view=list_view, title=title),
         _block(timing, "kpis", view="kpi_group", title="Response times"),
         _block(mix, "categories", view=_first_view(mix, "categories", ("donut", "hbar")), title="Cases by verdict"),
-    ), follow_ups=list(dict.fromkeys([*(_zero_suggestions(cases.obs)[1] if not count else []),
+    ), follow_ups=list(dict.fromkeys([*deeper, *(_zero_suggestions(cases.obs)[1] if not count else []),
                                        *_follow_ups(view, "cases", charts=bool(mix))]))[:3])
+
+
+#: "… and explain each", "explain why each one is critical", "explain the open cases":
+#: the case list explains every case it shows, not three bare lines.
+_EXPLAIN_EACH_RE = re.compile(r"\bexplain\w*\b|\bwhy (?:each|every|they|these|those)\b")
+
+
+def _explains_each(ask: Ask) -> bool:
+    return bool(_EXPLAIN_EACH_RE.search(ask.lowered))
+
+
+def _explained_cases(r: Result, limit: int) -> list[str]:
+    """One line per listed case (up to ``limit``, the ranking asked for): its verdict
+    and confidence, risk, severity, status and rule, all from the case list itself. The
+    evidence and the decision behind one case are a follow-up ("Explain case …"), so the
+    closing sentence says where they are rather than presenting list facts as more."""
+    cases = [c for c in r.obs.get("cases") or [] if isinstance(c, Mapping)][:max(1, min(limit, 10))]
+    lines: list[str] = []
+    for case in cases:
+        name = _case_name(case)
+        status = display_text(case.get("status"), 30).replace("_", " ")
+        line = (f"- {_code(case.get('case_id'), 60)}" + (f" ({name})" if name else "") + f" {_case_facts(case)}"
+                + (f", status {status}" if status else ""))
+        rules = [x for x in case.get("rules") or [] if isinstance(x, str)][:2]
+        shown = [x for x in rules if _rule_words(x) not in name]
+        if shown:
+            line += ("; rule " if len(shown) == 1 else "; rules ") + _join([_code(x, 60) for x in shown])
+        lines.append(line + ".")
+    if not lines:
+        return []
+    return ["Case by case:", *lines,
+            ("These facts come from the case list (verdict, confidence, risk, severity and status). To see a "
+             "case's evidence and the decision behind it, ask to explain that case.")]
 
 
 def _final_help(view: PromptView, ask: Ask, intent: str = "help") -> Final | None:

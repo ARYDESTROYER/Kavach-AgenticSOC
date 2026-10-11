@@ -289,6 +289,9 @@ export function setAnimatedBrand(value: boolean): void {
 export function putChatActivity(entry: ChatActivity, local = entry.source === 'local'): void {
   const current = find(entry.scope);
   if (entry.source === 'server' && current && current.source !== 'server') return;
+  // Another turn takes the chat: one before it that waited out its grace is no news.
+  const held = pending.get(entry.scope);
+  if (held && held.turnId !== entry.turnId) cancelPending(entry.scope);
   replace(entry, entry.scope);
   send({ t: 'put', a: entry }, local);
 }

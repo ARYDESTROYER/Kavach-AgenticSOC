@@ -64,6 +64,7 @@ import {
   clearChatActivity,
   dropChatActivity,
   getChatActivity,
+  isChatActivitySettling,
   patchChatActivity,
   putChatActivity,
   relayChatFrame,
@@ -682,7 +683,10 @@ describe('a turn seen on another console, and the grace of a followed turn', () 
     await mountShell();
     const scope = await follow('turn-n1', { conversation_id: 'cn' });
     ends(scope, 'done');
+    expect(isChatActivitySettling(scope)).toBe(true);
     await follow('turn-n2', { conversation_id: 'cn' });
+    // The earlier turn's grace ends with it: nothing of it will land.
+    expect(isChatActivitySettling(scope)).toBe(false);
     await settle(GRACE + 40);
     // The new turn reads on; the one before it (the analyst asked again there) is no news.
     expect(find(scope)).toMatchObject({ status: 'running', turnId: 'turn-n2' });
