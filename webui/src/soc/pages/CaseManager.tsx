@@ -84,7 +84,6 @@ import { PageContainer } from '@/soc/components/PageContainer';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
-import { severityBand } from '@/soc/components/badges';
 import { caseOutcome } from '@/soc/components/outcome';
 import { semanticIcon } from '@/soc/components/palette';
 import { useAnnouncer } from '@/soc/components/announcer';
@@ -124,12 +123,18 @@ import {
   QUEUE_STATUS_OPTIONS,
   caseInScope,
   matchesSearch,
+  mergeQueueRow,
+  queueMembership,
   queueQuery,
+  queueSeverity,
   scopeHeading,
   scopeSummary,
+  windowPlacement,
+  type QueueQueryInput,
   type QueueScope,
   type QueueSort,
 } from './casedetail/queue';
+import { shortcutBlocked } from './casedetail/keyboard';
 
 const ANY_SEVERITY = '__any_severity__';
 const ANY_STATUS = '__any_status__';
@@ -233,9 +238,7 @@ function responsiveQueueWidth(frameWidth: number): number {
   return Math.round(Math.min(520, Math.max(360, frameWidth * 0.28)));
 }
 
-function caseSeverity(c: Case) {
-  return severityBand(c.severity_band) ?? severityBand(c.risk_score) ?? 'info';
-}
+const caseSeverity = queueSeverity;
 
 function updatedAt(c: Case): string {
   return c.updated_at || c.created_at || '';
@@ -250,12 +253,6 @@ function millisOf(value: string | null | undefined): number {
 function queueStatusIcon(status: string) {
   const t = status.trim().toLowerCase();
   return semanticIcon(t === 'reopened' ? 'investigating' : t) ?? Circle;
-}
-
-function isTextEntry(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
 /** A quiet separator between meta facts; decorative, so screen readers skip it. */
@@ -345,6 +342,7 @@ const QueueRow: React.FC<{
   return (
     <div
       data-testid="case-queue-row"
+      data-queue-row=""
       data-case-id={item.case_id}
       data-row-state={active ? 'open' : checked ? 'selected' : 'idle'}
       className={cn(
@@ -384,6 +382,8 @@ const QueueRow: React.FC<{
           }
         }}
         onCheckedChange={(next) => onCheckedChange(next === true, false)}
+        // A clicked checkbox takes focus: it becomes the roving stop, so J/K/X act on it.
+        onFocus={onFocusRow}
         aria-label={`Select ${displayId}`}
         className={cn(
           'absolute left-3 z-10 bg-background',
@@ -588,19 +588,23 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     return () => clearTimeout(handle);
   }, [searchInput]);
 
-  const query = React.useMemo(
-    () =>
-      queueQuery({
-        scope,
-        username: currentUser,
-        search,
-        severity: severity === ANY_SEVERITY ? null : severity,
-        status: status === ANY_STATUS ? null : status,
-        sort,
-      }),
+  const queueInput = React.useMemo<QueueQueryInput>(
+    () => ({
+      scope,
+      username: currentUser,
+      search,
+      severity: severity === ANY_SEVERITY ? null : severity,
+      status: status === ANY_STATUS ? null : status,
+      sort,
+    }),
     [scope, currentUser, search, severity, status, sort],
   );
+  const query = React.useMemo(() => queueQuery(queueInput), [queueInput]);
   const queryKey = JSON.stringify(query);
+  const queryKeyRef = React.useRef(queryKey);
+  queryKeyRef.current = queryKey;
+  const queueInputRef = React.useRef(queueInput);
+  queueInputRef.current = queueInput;
 
   // ---- queue data ---------------------------------------------------------- //
   const [rows, setRows] = React.useState<Case[]>([]);
@@ -611,6 +615,20 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const [newCount, setNewCount] = React.useState(0);
   const requestRef = React.useRef(0);
 
+  // The loaded window and its total as of the LAST write, readable synchronously: a live
+  // flush and a detail sync can both land before React re-renders, and each must see
+  // the other's removal (or the total would be decremented twice).
+  const rowsRef = React.useRef<Case[]>(rows);
+  const totalRef = React.useRef(total);
+  const commitRows = React.useCallback((next: Case[]) => {
+    rowsRef.current = next;
+    setRows(next);
+  }, []);
+  const commitTotal = React.useCallback((next: number) => {
+    totalRef.current = Math.max(0, next);
+    setTotal(Math.max(0, next));
+  }, []);
+
   const [selectedCaseId, setSelectedCaseId] = React.useState<string | null>(routeCaseId || null);
   const [dismissedSelection, setDismissedSelection] = React.useState(false);
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
@@ -619,6 +637,64 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const buttonsRef = React.useRef(new Map<string, HTMLButtonElement>());
   const searchRef = React.useRef<HTMLInputElement | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+  const shortcutsOpenerRef = React.useRef<HTMLElement | null>(null);
+  const openShortcuts = React.useCallback(() => {
+    const active = document.activeElement;
+    shortcutsOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    setShortcutsOpen(true);
+  }, []);
+
+  /**
+   * Re-read the loaded window from the top, keeping its size (paged in server-sized
+   * chunks). The server is the authority on membership, order and total, so this is the
+   * answer whenever the client cannot settle a change exactly: a case that moved into
+   * the loaded window, an offset page that came back shifted under a live sort, or an
+   * overflowed live stream. `quiet` keeps the current rows on screen while it runs and
+   * keeps them if it fails.
+   */
+  const resyncWindow = React.useCallback(
+    async (size: number, quiet = true) => {
+      const request = ++requestRef.current;
+      const target = Math.max(QUEUE_PAGE_SIZE, Math.min(QUEUE_SELECT_ALL_LIMIT, size));
+      if (!quiet) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const base = JSON.parse(queryKey) as Record<string, string>;
+        const collected: Case[] = [];
+        const seen = new Set<string>();
+        let nextTotal = 0;
+        for (let offset = 0; offset < target; offset += QUEUE_MAX_PAGE) {
+          const limit = Math.min(QUEUE_MAX_PAGE, target - offset);
+          const response = await api.listCases({ ...base, limit, offset });
+          if (request !== requestRef.current) return;
+          const page = response.cases || [];
+          nextTotal = response.total ?? collected.length + page.length;
+          for (const row of page) {
+            if (seen.has(row.case_id)) continue;
+            seen.add(row.case_id);
+            collected.push(row);
+          }
+          if (page.length < limit) break;
+        }
+        commitRows(collected);
+        commitTotal(nextTotal);
+        setNewCount(0);
+      } catch (nextError) {
+        if (request !== requestRef.current) return;
+        if (!quiet || rowsRef.current.length === 0) setError(nextError);
+      } finally {
+        if (request === requestRef.current) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
+      }
+    },
+    [commitRows, commitTotal, queryKey],
+  );
+  const resyncRef = React.useRef(resyncWindow);
+  resyncRef.current = resyncWindow;
 
   const fetchPage = React.useCallback(
     async (offset: number, mode: 'replace' | 'append', limit = QUEUE_PAGE_SIZE) => {
@@ -637,13 +713,26 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         });
         if (request !== requestRef.current) return;
         const page = response.cases || [];
-        setTotal(response.total ?? page.length);
-        setRows((current) => {
-          if (mode === 'replace') return page;
-          const seen = new Set(current.map((row) => row.case_id));
-          return [...current, ...page.filter((row) => !seen.has(row.case_id))];
-        });
-        if (mode === 'replace') setNewCount(0);
+        const nextTotal = response.total ?? page.length;
+        if (mode === 'replace') {
+          commitRows(page);
+          commitTotal(nextTotal);
+          setNewCount(0);
+          return;
+        }
+        const current = rowsRef.current;
+        const seen = new Set(current.map((row) => row.case_id));
+        const fresh = page.filter((row) => !seen.has(row.case_id));
+        // Offset paging over a live sort: a case that moved up since the window was read
+        // shifts the server's order, so this page repeats rows we have (or comes back
+        // empty while the total says more). Appending it would skip cases for good, so
+        // re-read the whole window, one page larger, instead.
+        if (fresh.length < page.length || (page.length === 0 && current.length < nextTotal)) {
+          void resyncRef.current(current.length + Math.max(page.length, QUEUE_PAGE_SIZE));
+          return;
+        }
+        commitRows([...current, ...fresh]);
+        commitTotal(nextTotal);
       } catch (nextError) {
         if (request !== requestRef.current) return;
         if (mode === 'replace') setError(nextError);
@@ -655,20 +744,55 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         }
       }
     },
-    [queryKey],
+    [commitRows, commitTotal, queryKey],
   );
 
   React.useEffect(() => {
     void fetchPage(0, 'replace');
   }, [fetchPage]);
 
-  const rowsRef = React.useRef(rows);
-  rowsRef.current = rows;
-
   /** Re-read the loaded window in place (refresh / after bulk work), keeping its size. */
   const refreshLoaded = React.useCallback(() => {
-    void fetchPage(0, 'replace', Math.max(QUEUE_PAGE_SIZE, Math.min(QUEUE_MAX_PAGE, rowsRef.current.length)));
-  }, [fetchPage]);
+    void resyncWindow(rowsRef.current.length, false);
+  }, [resyncWindow]);
+
+  // A quiet re-read, coalesced: several live changes in a burst cost one request.
+  const resyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleResync = React.useCallback(() => {
+    if (resyncTimerRef.current) return;
+    resyncTimerRef.current = setTimeout(() => {
+      resyncTimerRef.current = null;
+      void resyncRef.current(rowsRef.current.length);
+    }, 150);
+  }, []);
+
+  // The total alone, for a change outside the loaded window (it may have joined or left
+  // the view, which only moves the count). Skipped when a window read started meanwhile:
+  // that read carries a total at least as fresh.
+  const recountTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRecount = React.useCallback(() => {
+    if (recountTimerRef.current) return;
+    recountTimerRef.current = setTimeout(() => {
+      recountTimerRef.current = null;
+      const startedAt = requestRef.current;
+      const base = JSON.parse(queryKeyRef.current) as Record<string, string>;
+      void api
+        .listCases({ ...base, limit: 1, offset: 0 })
+        .then((response) => {
+          if (startedAt !== requestRef.current || typeof response.total !== 'number') return;
+          commitTotal(Math.max(response.total, rowsRef.current.length));
+        })
+        .catch(() => undefined);
+    }, 400);
+  }, [commitTotal]);
+
+  React.useEffect(
+    () => () => {
+      if (resyncTimerRef.current) clearTimeout(resyncTimerRef.current);
+      if (recountTimerRef.current) clearTimeout(recountTimerRef.current);
+    },
+    [],
+  );
 
   React.useEffect(() => {
     if (!routeCaseId) return;
@@ -710,6 +834,10 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     (selectedCaseId && visibleCases.some((item) => item.case_id === selectedCaseId) && selectedCaseId) ||
     visibleCases[0]?.case_id ||
     null;
+  const selectedIdRef = React.useRef(selectedCaseId);
+  selectedIdRef.current = selectedCaseId;
+  const effectiveFocusIdRef = React.useRef(effectiveFocusId);
+  effectiveFocusIdRef.current = effectiveFocusId;
 
   const selectCase = React.useCallback(
     (caseId: string, opts: { focusRow?: boolean } = {}) => {
@@ -720,24 +848,35 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       if (opts.focusRow) {
         requestAnimationFrame(() => buttonsRef.current.get(caseId)?.focus());
       }
-      const item = rowsRef.current.find((row) => row.case_id === caseId);
-      if (item) {
-        const index = visibleRef.current.findIndex((row) => row.case_id === caseId);
-        announce(
-          `Opened case ${caseDisplayId(item)}: ${caseTitle(item)}.${
-            index >= 0 ? ` ${index + 1} of ${visibleRef.current.length} loaded.` : ''
-          }`,
-        );
-      }
+      // Focus on the row already reads its title and id; the announcement adds only
+      // what focus does not say — where the case sits in the queue (one live region).
+      const index = visibleRef.current.findIndex((row) => row.case_id === caseId);
+      if (index >= 0) announce(`Opened. ${index + 1} of ${visibleRef.current.length} loaded.`);
     },
     [announce, route],
   );
 
+  /** The queue row focus should land on: the given case's row, else the roving tab stop. */
+  const queueRowButton = React.useCallback((caseId?: string | null): HTMLElement | null => {
+    const visible = visibleRef.current;
+    const listed = (id: string | null | undefined) => Boolean(id && visible.some((row) => row.case_id === id));
+    const id = listed(caseId) ? caseId : listed(effectiveFocusIdRef.current) ? effectiveFocusIdRef.current : visible[0]?.case_id;
+    const button = id ? buttonsRef.current.get(id) : undefined;
+    return button && button.isConnected ? button : null;
+  }, []);
+
   const closeDetail = React.useCallback(() => {
+    const previous = selectedIdRef.current;
     setSelectedCaseId(null);
     setDismissedSelection(true);
     route.navigate('case_manager');
-  }, [route]);
+    // The pane that held focus is gone: land on the case's queue row (or the roving
+    // stop, or the search when the queue is empty) instead of <body>.
+    requestAnimationFrame(() => {
+      const target = queueRowButton(previous) ?? searchRef.current;
+      target?.focus();
+    });
+  }, [queueRowButton, route]);
 
   /** "Close & next": open the case after the current one (or before it, at the end). */
   const advance = React.useCallback(() => {
@@ -749,34 +888,125 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   }, [closeDetail, selectCase, selectedCaseId]);
 
   /**
-   * The authoritative case after a detail mutation or a live refresh. A case that no
-   * longer belongs in the scope (closed while viewing Active, reassigned away from Mine)
-   * leaves the loaded window and the total, so "loaded vs total" stays exact.
+   * Where focus goes after a case dialog closes on a submit (CM-3/CM-4). "Close & next"
+   * lands on the next case's row, which `advance` just opened. A plain submit keeps the
+   * dialog's own default (its opener) unless that opener was a queue row the action took
+   * out of the view: then the row that took its place, so a keyboard user keeps their
+   * place instead of falling to <body> when the row animates away.
    */
-  const scopeRef = React.useRef({ scope, currentUser });
-  scopeRef.current = { scope, currentUser };
+  const resolveDialogFocus = React.useCallback(
+    (opener: HTMLElement | null, andNext: boolean): HTMLElement | null => {
+      if (andNext) return queueRowButton(selectedIdRef.current);
+      const openerRow = opener?.closest<HTMLElement>('[data-queue-row]')?.dataset.caseId;
+      if (!openerRow) return null;
+      if (visibleRef.current.some((row) => row.case_id === openerRow)) return null;
+      // No row left to land on: the open case's title.
+      return queueRowButton(effectiveFocusIdRef.current) ?? document.querySelector<HTMLElement>('[data-case-title]');
+    },
+    [queueRowButton],
+  );
+
+  /**
+   * Keep the loaded window honest after cases change (a detail mutation, or the live
+   * `cases` topic). Membership is checked against the WHOLE view — scope, status, owner,
+   * search and severity — not just the scope:
+   *
+   * - a loaded row that no longer matches leaves the window and the total;
+   * - a loaded row that still matches is updated in place (keeping its read-time bands);
+   * - a case we have not loaded that now matches and lists inside the window (an Undo
+   *   reopen, an unloaded case put on hold under "Latest") makes the window re-read, so it
+   *   appears; one that lists beyond it only moves the total;
+   * - a new case that matches is counted in the "N new" prompt and the total.
+   *
+   * Anything the client cannot settle exactly (an action response with no read-time
+   * severity band under a severity filter, a tie with the window's last row) is asked of
+   * the server instead of guessed.
+   */
+  const reconcileCases = React.useCallback(
+    (incoming: Case[], opts: { changed: (item: Case) => boolean; created?: ReadonlySet<string> }) => {
+      if (!incoming.length) return;
+      const input = queueInputRef.current;
+      const current = rowsRef.current;
+      const loaded = new Map(current.map((row) => [row.case_id, row]));
+      const updates = new Map<string, Case | null>();
+      let resync = false;
+      let recount = false;
+      let createdIn = 0;
+      for (const item of incoming) {
+        const membership = queueMembership(item, input);
+        const previous = loaded.get(item.case_id);
+        if (previous) {
+          if (membership === 'out') {
+            updates.set(item.case_id, null);
+            continue;
+          }
+          const merged = mergeQueueRow(previous, item);
+          updates.set(item.case_id, merged);
+          if (membership === 'unknown') resync = true;
+          else if (windowPlacement(merged, current, totalRef.current, input.sort) === 'beyond') resync = true;
+          continue;
+        }
+        if (opts.created?.has(item.case_id)) {
+          if (membership !== 'out') createdIn += 1;
+          continue;
+        }
+        if (!opts.changed(item)) continue;
+        if (membership === 'out') {
+          recount = true;
+          continue;
+        }
+        const placement = membership === 'unknown' ? 'edge' : windowPlacement(item, current, totalRef.current, input.sort);
+        if (placement === 'beyond') recount = true;
+        else resync = true;
+      }
+
+      if (updates.size) {
+        const removedIds = new Set(Array.from(updates).filter(([, value]) => value === null).map(([id]) => id));
+        // The roving stop and the open row move to the row that took a removed row's place.
+        const focus = effectiveFocusIdRef.current;
+        if (focus && removedIds.has(focus)) {
+          const list = visibleRef.current;
+          const at = list.findIndex((row) => row.case_id === focus);
+          const neighbour = list.slice(at + 1).find((row) => !removedIds.has(row.case_id)) ??
+            list.slice(0, Math.max(0, at)).reverse().find((row) => !removedIds.has(row.case_id));
+          setFocusId(neighbour?.case_id ?? null);
+        }
+        commitRows(
+          current.flatMap((row) => {
+            if (!updates.has(row.case_id)) return [row];
+            const next = updates.get(row.case_id);
+            return next ? [next] : [];
+          }),
+        );
+        if (removedIds.size) commitTotal(totalRef.current - removedIds.size);
+      }
+      if (createdIn) {
+        setNewCount((count) => count + createdIn);
+        commitTotal(totalRef.current + createdIn);
+      }
+      if (resync) scheduleResync();
+      else if (recount) scheduleRecount();
+    },
+    [commitRows, commitTotal, scheduleRecount, scheduleResync],
+  );
+
+  /**
+   * The authoritative case after a detail load or mutation. The detail reports a case on
+   * every load as well as after every change, so a case outside the loaded window only
+   * counts as CHANGED when it differs from the last copy the detail reported (an Undo
+   * reopen does; simply opening a deep-linked case does not).
+   */
+  const detailSeenRef = React.useRef(new Map<string, string>());
   const syncCase = React.useCallback(
     (next: Case) => {
-      const { scope: currentScope, currentUser: user } = scopeRef.current;
-      const stillInScope = caseInScope(next, currentScope, user);
-      let removed = false;
-      setRows((current) => {
-        const index = current.findIndex((item) => item.case_id === next.case_id);
-        if (index < 0) return current;
-        if (!stillInScope) {
-          removed = true;
-          return current.filter((item) => item.case_id !== next.case_id);
-        }
-        const updated = [...current];
-        updated[index] = next;
-        return updated;
-      });
-      if (!stillInScope) {
-        // Functional updates run in order, so `removed` is settled by the time this runs.
-        setTotal((count) => (removed ? Math.max(0, count - 1) : count));
-      }
+      const signature = [next.status, next.assignee, next.updated_at, next.disposition].map((v) => String(v ?? '')).join('|');
+      const seen = detailSeenRef.current;
+      const before = seen.get(next.case_id);
+      seen.set(next.case_id, signature);
+      while (seen.size > 200) seen.delete(seen.keys().next().value as string);
+      reconcileCases([next], { changed: () => before !== undefined && before !== signature });
     },
-    [],
+    [reconcileCases],
   );
 
   // Hover prefetch (CM-5): a short-lived copy of the case fetched while the pointer
@@ -821,21 +1051,18 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     pendingLiveRef.current.clear();
     if (!batch.length) return;
     for (const [id] of batch) prefetchedRef.current.delete(id);
-    const loaded = new Set(rowsRef.current.map((row) => row.case_id));
-    const toRefresh = batch.filter(([id]) => loaded.has(id)).map(([id]) => id);
-    const created = batch.filter(([id, isNew]) => isNew && !loaded.has(id)).length;
-    if (created) setNewCount((count) => count + created);
-    if (toRefresh.length > 25) {
-      refreshLoaded();
+    if (batch.length > 25) {
+      // A burst (bulk work, a busy poller): one window re-read beats 25+ case reads.
+      scheduleResync();
       return;
     }
-    const fresh = await Promise.all(
-      toRefresh.map((id) => api.getCase(id).catch(() => null)),
+    const created = new Set(batch.filter(([, isNew]) => isNew).map(([id]) => id));
+    const fresh = await Promise.all(batch.map(([id]) => api.getCase(id).catch(() => null)));
+    reconcileCases(
+      fresh.filter((item): item is Case => Boolean(item)),
+      { changed: () => true, created },
     );
-    for (const item of fresh) {
-      if (item) syncCase(item);
-    }
-  }, [refreshLoaded, syncCase]);
+  }, [reconcileCases, scheduleResync]);
 
   const finishTrackedJob = React.useCallback(
     (job: BackgroundJob) => {
@@ -870,6 +1097,11 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   const onStreamEvent = React.useCallback(
     (event: { type: string; data: unknown }) => {
+      if (event.type === 'overflow') {
+        // The bus dropped frames for this subscriber: some changes were never seen.
+        scheduleResync();
+        return;
+      }
       if (event.type === 'case.changed') {
         const data = event.data as { case_id?: unknown; created?: unknown } | null;
         const id = typeof data?.case_id === 'string' ? data.case_id : '';
@@ -893,7 +1125,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
           );
       }
     },
-    [finishTrackedJob, flushLive],
+    [finishTrackedJob, flushLive, scheduleResync],
   );
   const { live } = useEventStream(['cases', 'jobs'], { enabled: true, onEvent: onStreamEvent });
 
@@ -1228,10 +1460,11 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   // ---- keyboard model (CM-4) ------------------------------------------------- //
   const moveFocus = React.useCallback(
-    (delta: number | 'first' | 'last', opts: { extend?: boolean } = {}) => {
+    (delta: number | 'first' | 'last', opts: { extend?: boolean; fromId?: string } = {}) => {
       const list = visibleRef.current;
       if (!list.length) return;
-      const current = list.findIndex((row) => row.case_id === effectiveFocusId);
+      const from = opts.fromId ?? effectiveFocusId;
+      const current = list.findIndex((row) => row.case_id === from);
       let index =
         delta === 'first' ? 0 : delta === 'last' ? list.length - 1 : Math.max(0, Math.min(list.length - 1, (current < 0 ? 0 : current) + delta));
       if (index < 0) index = 0;
@@ -1250,21 +1483,29 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.altKey || event.ctrlKey || event.metaKey) return;
       const key = event.key;
-      const focused = visibleRef.current.find((row) => row.case_id === effectiveFocusId);
+      // The row the key came from (a row's open button OR its checkbox), else the
+      // roving tab stop — never a different row than the one that has focus.
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const fromId = target?.closest<HTMLElement>('[data-queue-row]')?.dataset.caseId;
+      const focused =
+        visibleRef.current.find((row) => row.case_id === fromId) ??
+        visibleRef.current.find((row) => row.case_id === effectiveFocusId);
+      // Space on a focused checkbox is that checkbox's own toggle; let it through.
+      if (key === ' ' && target?.getAttribute('role') === 'checkbox') return;
       if (key === 'ArrowDown' || key === 'j' || key === 'J') {
         event.preventDefault();
         if (event.shiftKey && focused) {
           anchorIdRef.current = anchorIdRef.current ?? focused.case_id;
           toggleCaseSelection(focused.case_id, true);
         }
-        moveFocus(1, { extend: event.shiftKey });
+        moveFocus(1, { extend: event.shiftKey, fromId: focused?.case_id });
       } else if (key === 'ArrowUp' || key === 'k' || key === 'K') {
         event.preventDefault();
         if (event.shiftKey && focused) {
           anchorIdRef.current = anchorIdRef.current ?? focused.case_id;
           toggleCaseSelection(focused.case_id, true);
         }
-        moveFocus(-1, { extend: event.shiftKey });
+        moveFocus(-1, { extend: event.shiftKey, fromId: focused?.case_id });
       } else if (key === 'Home') {
         event.preventDefault();
         moveFocus('first');
@@ -1292,19 +1533,19 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   // Page-level "/" (search) and "?" (shortcut sheet), outside text entry.
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey || isTextEntry(event.target)) return;
+      if (event.ctrlKey || event.metaKey || event.altKey || shortcutBlocked(event)) return;
       if (document.querySelector('[role="dialog"][data-state="open"]')) return;
       if (event.key === '/') {
         event.preventDefault();
         searchRef.current?.focus();
       } else if (event.key === '?') {
         event.preventDefault();
-        setShortcutsOpen(true);
+        openShortcuts();
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, []);
+  }, [openShortcuts]);
 
   const registerButton = React.useCallback((id: string, el: HTMLButtonElement | null) => {
     if (el) buttonsRef.current.set(id, el);
@@ -1444,11 +1685,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
                       {scopeHeading(scope)}
                     </h1>
-                    <p
-                      className="text-xs tabular-nums text-muted-foreground"
-                      aria-live="polite"
-                      data-testid="case-queue-scope"
-                    >
+                    {/* Not a live region: the app's one announcer already speaks the
+                        position when a case opens (focus reads the row itself). */}
+                    <p className="text-xs tabular-nums text-muted-foreground" data-testid="case-queue-scope">
                       {summary}
                     </p>
                   </div>
@@ -1465,14 +1704,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         size="icon"
                         className="h-8 w-8 shrink-0"
                         onClick={() => changeDensity(density === 'compact' ? 'comfortable' : 'compact')}
-                        aria-label={density === 'compact' ? 'Show comfortable rows' : 'Show compact rows'}
+                        aria-label="Compact rows"
                         aria-pressed={density === 'compact'}
                       >
                         {density === 'compact' ? <Rows2 className="h-4 w-4" /> : <Rows3 className="h-4 w-4" />}
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
-                      {density === 'compact' ? 'Comfortable rows' : 'Compact rows'}
+                      {density === 'compact' ? 'Compact rows: on' : 'Compact rows: off'}
                     </TooltipContent>
                   </Tooltip>
                   <Tooltip>
@@ -1481,7 +1720,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 shrink-0"
-                        onClick={() => setShortcutsOpen(true)}
+                        onClick={openShortcuts}
                         aria-label="Keyboard shortcuts"
                         aria-keyshortcuts="?"
                       >
@@ -1967,6 +2206,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                       onNavigate={route.navigate}
                       onCaseChange={syncCase}
                       onAdvance={advance}
+                      resolveDialogFocus={resolveDialogFocus}
                     />
                   </div>
                 </>
@@ -2089,7 +2329,20 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         />
 
         <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
-          <DialogContent className="max-w-lg">
+          <DialogContent
+            className="max-w-lg"
+            onCloseAutoFocus={(event) => {
+              // Opened from a key press or a button, never a Radix trigger: return focus
+              // to whatever held it (the row, the keyboard button), not <body>.
+              const opener = shortcutsOpenerRef.current;
+              shortcutsOpenerRef.current = null;
+              const target = opener && opener.isConnected ? opener : queueRowButton();
+              if (target) {
+                event.preventDefault();
+                target.focus();
+              }
+            }}
+          >
             <DialogHeader>
               <DialogTitle>Keyboard shortcuts</DialogTitle>
               <DialogDescription>

@@ -38,10 +38,12 @@
  * so selection, New chat, search hits and navigations are never refused (deleting the
  * thread a turn is running in still is). Rows carry live statuses (`running`,
  * `needs_input`, `failed`, `unread`) from the server, overlaid with what this tab and
- * the others know right now (the activity store); a new thread being answered shows as
- * a row before its first answer is saved. The first load prefers a thread that is
- * running, waits on the analyst or has an unread answer over simply the newest, and an
- * answer on screen is marked read (`POST …/read`).
+ * the others know right now (the activity store); a thread the loaded page does not
+ * list yet keeps a row while it has a status (a new thread being answered, an answer
+ * that landed while this thread's own turn holds the list refresh back), except the new
+ * thread whose first answer is on screen (it is still "New chat"). The first load
+ * prefers a thread that is running, waits on the analyst or has an unread answer over
+ * simply the newest, and an answer on screen is marked read (`POST …/read`).
  *
  * Case-scoped chat passes `enabled: false`: no list, no detail, no persistence.
  */
@@ -50,7 +52,15 @@ import * as React from 'react';
 import { ApiError } from '@/lib/api';
 import type { ChatConversation, ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
-import { getChatActivity, markChatActivitySeen, useChatActivity, type ChatActivity } from '../chat-activity/activity';
+import {
+  dropChatActivity,
+  getChatActivity,
+  getViewedChatScopes,
+  markChatActivitySeen,
+  subscribeViewedChatScopes,
+  useChatActivity,
+  type ChatActivity,
+} from '../chat-activity/activity';
 import {
   UNTITLED_CONVERSATION,
   apiErrorCode,
@@ -63,7 +73,7 @@ import {
 import { clampAsk } from './ask';
 import { displayText } from './stream-events';
 import { consoleTopic } from './topic';
-import { HISTORY_CHANNEL, markConversationRead } from './turn-runner';
+import { HISTORY_CHANNEL, consumeRun, findRun, markConversationRead } from './turn-runner';
 
 /** The cross-tab history signal (unchanged from the pre-revamp page; the runner posts it too). */
 export { HISTORY_CHANNEL };
@@ -116,12 +126,16 @@ export function newestConversationFirst(a: ChatConversationSummary, b: ChatConve
 
 /**
  * Rows as the analyst should see them right now: the server's statuses overlaid with
- * what this tab and the others know (the activity store), plus a row for a NEW thread
- * whose first answer is being written (it is not listed until its first save).
+ * what this tab and the others know (the activity store), plus a row for every thread
+ * with a status that the loaded page does not list yet: a NEW thread whose first
+ * answer is being written (not listed until its first save), or an answer that landed
+ * while the list refresh waits for the open thread's turn. `hidden` leaves out the
+ * placeholder of a run that is on screen as "New chat".
  */
 export function overlayActivity(
   rows: readonly ChatConversationSummary[],
   entries: readonly ChatActivity[],
+  hidden: (entry: ChatActivity) => boolean = () => false,
 ): ChatConversationSummary[] {
   const live = new Map<string, ChatActivity>();
   for (const entry of entries) {
@@ -137,8 +151,9 @@ export function overlayActivity(
     return status === row.status && unread === (row.unread === true) ? row : { ...row, status, unread };
   });
   for (const entry of live.values()) {
-    if (entry.status !== 'running' || rows.some((row) => row.id === entry.conversationId)) continue;
+    if (rows.some((row) => row.id === entry.conversationId) || hidden(entry)) continue;
     const at = new Date(entry.startedAt).toISOString();
+    const unread = entry.status === 'unread';
     out.unshift({
       id: entry.conversationId as string,
       title: entry.title || UNTITLED_CONVERSATION,
@@ -146,7 +161,8 @@ export function overlayActivity(
       created_at: at,
       updated_at: at,
       message_count: 0,
-      status: 'running',
+      status: entry.status === 'unread' ? 'idle' : entry.status,
+      ...(unread ? { unread: true } : {}),
     });
   }
   return out;
@@ -389,6 +405,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [searching, setSearching] = React.useState(false);
   const [searchError, setSearchError] = React.useState<string | null>(null);
   const { entries: activity } = useChatActivity();
+  const viewedScopes = React.useSyncExternalStore(subscribeViewedChatScopes, getViewedChatScopes, getViewedChatScopes);
 
   const detailRequestRef = React.useRef(0);
   const listRequestRef = React.useRef(0);
@@ -707,10 +724,13 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       })
       .catch((error) => {
         if (generation !== detailRequestRef.current) return;
-        // A new thread whose first answer is still being written is not saved yet
-        // (404 until then): open it empty, and the engine joins its running turn.
+        // A new thread whose first answer is still being written is not saved yet (404
+        // until then; the server lists it as a temporary running row), and a thread only
+        // this browser knows about (a placeholder row): open it empty, and the engine
+        // joins its run (live, or the answer it settled with).
         const pending = shownRef.current.find((row) => row.id === activeId);
-        if (error instanceof ApiError && error.status === 404 && pending?.status === 'running') {
+        const placeholder = !!pending && !conversationsRef.current.some((row) => row.id === activeId);
+        if (error instanceof ApiError && error.status === 404 && pending && (pending.status === 'running' || placeholder)) {
           setConversation({ ...pending, messages: [] });
           return;
         }
@@ -912,6 +932,10 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       conversationsRef.current = remaining;
       setConversations(remaining);
       setSearchResults((current) => (current ? current.filter((entry) => entry.id !== item.id) : current));
+      // Its marks go with it (in every tab), and so does an answer nobody opened.
+      dropChatActivity(`conv:${item.id}`);
+      const settled = findRun(`conv:${item.id}`);
+      if (settled && settled.state !== 'running') consumeRun(settled);
       setDrafts((current) => {
         if (!(item.id in current)) return current;
         const next = { ...current };
@@ -986,7 +1010,13 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   /* -------------------------------------------------------------- derived -- */
 
-  const shown = React.useMemo(() => overlayActivity(conversations, activity), [activity, conversations]);
+  // The new thread whose first answer is on screen stays "New chat" (no second row);
+  // once the analyst opens its row (or it saves) it is the selected thread instead.
+  const shown = React.useMemo(
+    () =>
+      overlayActivity(conversations, activity, (entry) => viewedScopes.has(entry.scope) && entry.conversationId !== activeId),
+    [activeId, activity, conversations, viewedScopes],
+  );
   shownRef.current = shown;
 
   const activeSummary = React.useMemo(

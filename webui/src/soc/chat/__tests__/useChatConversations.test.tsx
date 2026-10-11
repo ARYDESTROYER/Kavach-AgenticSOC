@@ -37,7 +37,14 @@ vi.mock('../chat-api', async (importOriginal) => {
   };
 });
 
-import { clearChatActivity, putChatActivity, settleChatActivity, type ChatActivity } from '../../chat-activity/activity';
+import {
+  clearChatActivity,
+  getChatActivity,
+  putChatActivity,
+  settleChatActivity,
+  viewChatActivity,
+  type ChatActivity,
+} from '../../chat-activity/activity';
 import {
   HISTORY_CHANNEL,
   NEW_DRAFT_KEY,
@@ -809,6 +816,97 @@ describe('useChatConversations — live statuses (Round 12, SPEC D13)', () => {
     await act(async () => {
       expect(await result.current.remove(OLDER)).toBe(true);
     });
+  });
+
+  it('keeps a placeholder row for every status the page does not list yet', () => {
+    const out = overlayActivity(
+      [NEWEST],
+      [
+        activity({ scope: 'conv:fresh-unread', conversationId: 'fresh-unread', status: 'unread', title: 'Top talkers' }),
+        activity({ scope: 'conv:fresh-failed', conversationId: 'fresh-failed', status: 'failed', title: 'Broken' }),
+        activity({ scope: 'conv:fresh-question', conversationId: 'fresh-question', status: 'needs_input', title: 'Which host?' }),
+      ],
+    );
+    expect(out.map((row) => [row.id, row.status, row.unread === true])).toEqual([
+      ['fresh-question', 'needs_input', false],
+      ['fresh-failed', 'failed', false],
+      ['fresh-unread', 'idle', true],
+      [NEWEST.id, undefined, false],
+    ]);
+  });
+
+  it('keeps a background thread’s row when its answer lands while the open thread is answering', async () => {
+    // Thread A ("Top talkers") answers in the background; the open thread B is busy, so
+    // list refreshes wait. A's row must not vanish when its answer settles.
+    putChatActivity(activity({ scope: 'conv:conv-a', conversationId: 'conv-a', title: 'Top talkers' }));
+    const { result } = await mount();
+    act(() => result.current.select(NEWEST));
+    await settle();
+    act(() => result.current.setBusy(true));
+    expect(result.current.conversations.find((row) => row.id === 'conv-a')?.status).toBe('running');
+    act(() => settleChatActivity('conv:conv-a', 'done'));
+    // The history broadcast and a focus are deferred while B is busy …
+    act(() => window.dispatchEvent(new Event('focus')));
+    await settle();
+    const row = result.current.conversations.find((item) => item.id === 'conv-a');
+    // … but the row stays, now marked unread, and opens.
+    expect(row).toMatchObject({ title: 'Top talkers', unread: true });
+    act(() => result.current.setBusy(false));
+    // The deferred refresh runs now.
+    await settle();
+  });
+
+  it('leaves out the new thread whose first answer is on screen as New chat, and shows it once opened', async () => {
+    const { result } = await mount();
+    act(() => result.current.startNew());
+    await settle();
+    act(() => putChatActivity(activity({ scope: 'conv:conv-new', conversationId: 'conv-new', title: 'First question' })));
+    // The engine on screen views the run (its scope became `conv:<id>` at turn.start).
+    let release: () => void = () => undefined;
+    act(() => {
+      release = viewChatActivity('conv:conv-new');
+    });
+    expect(result.current.activeId).toBeNull();
+    expect(result.current.conversations.some((row) => row.id === 'conv-new')).toBe(false);
+    act(() => release());
+    expect(result.current.conversations.find((row) => row.id === 'conv-new')?.status).toBe('running');
+    // Opened from the rail it is the selected thread (and its row stays).
+    act(() => result.current.select('conv-new'));
+    act(() => {
+      release = viewChatActivity('conv:conv-new');
+    });
+    expect(result.current.conversations.some((row) => row.id === 'conv-new')).toBe(true);
+    act(() => release());
+    await settle();
+  });
+
+  it('opens the server’s temporary running row of a new thread (its detail is 404 until the answer saves)', async () => {
+    // After a reload the list holds the new thread as a running row; nothing is saved yet.
+    listMock.mockResolvedValue({ conversations: [NEWEST, { ...OLDER, id: 'conv-temp', title: 'Investigate host X', status: 'running' }] });
+    const { result } = await mount();
+    expect(result.current.activeId).toBe('conv-temp');
+    await waitFor(() => expect(result.current.conversation).toMatchObject({ id: 'conv-temp', messages: [] }));
+    expect(result.current.threadError).toBeNull();
+  });
+
+  it('opens a placeholder for a thread only this browser knows (its saved copy is 404), whatever its status', async () => {
+    putChatActivity(activity({ scope: 'conv:conv-gone', conversationId: 'conv-gone', status: 'failed', title: 'Investigate host X' }));
+    const { result } = await mount();
+    act(() => result.current.select('conv-gone'));
+    await waitFor(() => expect(result.current.conversation).toMatchObject({ id: 'conv-gone', messages: [] }));
+    expect(result.current.threadError).toBeNull();
+  });
+
+  it('deleting a thread drops its marks (in every tab) and an answer nobody opened', async () => {
+    const confirmDelete = vi.fn(() => Promise.resolve(true));
+    putChatActivity(activity({ scope: `conv:${OLDER.id}`, conversationId: OLDER.id, status: 'unread', title: OLDER.title }));
+    const { result } = await mount({ confirmDelete });
+    act(() => result.current.select(NEWEST));
+    await act(async () => {
+      expect(await result.current.remove(OLDER)).toBe(true);
+    });
+    expect(getChatActivity().entries.find((entry) => entry.scope === `conv:${OLDER.id}`)).toBeUndefined();
+    expect(getChatActivity().workspace.status).toBeNull();
   });
 
   it('reloads the open thread when a followed turn asks for it (rehydrate)', async () => {

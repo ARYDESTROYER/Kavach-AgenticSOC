@@ -10,14 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 
 import { ActivityGlyph, BrandActivityRing } from '../glyph';
-import { CaseChatActivityGlyph } from '../case-glyph';
+import { CaseChatActivityGlyph, useCaseChatRequest } from '../case-glyph';
 import { setBaseDocumentTitle } from '../document-title';
 import { setDocumentTitlePrefix } from '../title-prefix';
 import {
+  chatActivityTitle,
   clearChatActivity,
   describeChatActivity,
   getChatActivity,
   putChatActivity,
+  requestCaseChat,
   setAnimatedBrand,
   type ChatActivity,
 } from '../activity';
@@ -93,9 +95,26 @@ describe('describeChatActivity', () => {
     );
   });
 
-  it('keeps an already seen question’s dot but does not repeat it in the text', () => {
+  it('says a question the analyst already looked at is still waiting (a dot always has text)', () => {
     const seen = describeChatActivity([entry({ scope: 'conv:q', status: 'needs_input', title: 'Which host?', seen: true })]);
-    expect(seen).toEqual({ status: 'needs_input', text: '' });
+    expect(seen).toEqual({ status: 'needs_input', text: 'Chat: 1 question waiting for your answer: Which host?' });
+    const both = describeChatActivity([
+      entry({ scope: 'conv:q', status: 'needs_input', title: 'Which host?', seen: true }),
+      entry({ scope: 'conv:r', status: 'needs_input', title: 'Which user?' }),
+      entry({ scope: 'conv:s', status: 'needs_input', title: 'Which day?', seen: true }),
+    ]);
+    expect(both.text).toBe('Chat: 1 question needs your input: Which user?; 2 questions waiting for your answer');
+  });
+
+  it('names the case of a case chat, so two cases can be told apart', () => {
+    const one = describeChatActivity([entry({ scope: 'case:k1', kind: 'case', caseId: 'case-0539', title: 'Summarize case' })], 'Case chat');
+    expect(one.text).toBe('Case chat: 1 answer in progress: Case case-0539: Summarize case');
+    expect(chatActivityTitle({ kind: 'case', caseId: 'case-0539', title: '' })).toBe('Case case-0539');
+    expect(chatActivityTitle({ kind: 'workspace', caseId: null, title: 'Weekly hunt' })).toBe('Weekly hunt');
+    // Bounded: a long prompt is clipped with an ellipsis.
+    const long = chatActivityTitle({ kind: 'case', caseId: 'case-1', title: 'x'.repeat(200) });
+    expect(Array.from(long)).toHaveLength(120);
+    expect(long.endsWith('…')).toBe(true);
   });
 
   it('is precomputed into the snapshot per destination on every write', () => {
@@ -103,7 +122,7 @@ describe('describeChatActivity', () => {
     putChatActivity(entry({ scope: 'case:k', kind: 'case', caseId: 'k', status: 'unread', title: 'Summarize' }));
     const snap = getChatActivity();
     expect(snap.workspace).toEqual({ status: 'running', text: 'Chat: 1 answer in progress: Investigate host X' });
-    expect(snap.case).toEqual({ status: 'unread', text: 'Case chat: 1 new answer: Summarize' });
+    expect(snap.case).toEqual({ status: 'unread', text: 'Case chat: 1 new answer: Case k: Summarize' });
     expect(snap.all.status).toBe('running');
     clearChatActivity();
     expect(getChatActivity()).toMatchObject({ workspace: { status: null, text: '' }, case: { status: null, text: '' }, all: { status: null } });
@@ -122,7 +141,54 @@ describe('CaseChatActivityGlyph', () => {
     expect(container.firstChild).toBeNull();
     act(() => putChatActivity(entry({ scope: 'case:case-7', kind: 'case', caseId: 'case-7', status: 'unread', title: 'Summarize' })));
     expect(container.querySelector('[data-activity="unread"]')).not.toBeNull();
-    expect(screen.getByText(', Case chat: 1 new answer: Summarize')).toHaveClass('sr-only');
+    expect(screen.getByText(', Case chat: 1 new answer: Case case-7: Summarize')).toHaveClass('sr-only');
+  });
+});
+
+describe('useCaseChatRequest (a case-chat toast’s Open)', () => {
+  function CasePage({ caseId, onChat }: { caseId: string; onChat: () => void }) {
+    useCaseChatRequest(caseId, onChat);
+    return null;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('opens the Chat tab of the case asked for, once, whether its page is open or still loading', () => {
+    const onChat = vi.fn();
+    const other = vi.fn();
+    const { rerender } = render(
+      <>
+        <CasePage caseId="case-1" onChat={onChat} />
+        <CasePage caseId="case-2" onChat={other} />
+      </>,
+    );
+    act(() => requestCaseChat('case-1'));
+    expect(onChat).toHaveBeenCalledTimes(1);
+    expect(other).not.toHaveBeenCalled();
+    // Taken: a later render does not switch tabs again.
+    rerender(
+      <>
+        <CasePage caseId="case-1" onChat={onChat} />
+        <CasePage caseId="case-2" onChat={other} />
+      </>,
+    );
+    expect(onChat).toHaveBeenCalledTimes(1);
+    // The page mounts after the request (a lazy route): it takes it on mount.
+    act(() => requestCaseChat('case-3'));
+    const late = vi.fn();
+    render(<CasePage caseId="case-3" onChat={late} />);
+    expect(late).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a request nobody took lapse, so an old toast never hijacks a later visit', () => {
+    vi.useFakeTimers();
+    act(() => requestCaseChat('case-9'));
+    vi.advanceTimersByTime(31_000);
+    const onChat = vi.fn();
+    render(<CasePage caseId="case-9" onChat={onChat} />);
+    expect(onChat).not.toHaveBeenCalled();
   });
 });
 
@@ -186,5 +252,22 @@ describe('document title', () => {
     document.title = previous;
     vi.advanceTimersByTime(1_000);
     expect(document.title).toBe('● Agentic SOC');
+  });
+});
+
+describe('wiring', () => {
+  it('the case page takes a case-chat toast’s Open request onto its Chat tab', () => {
+    const src = readFileSync(resolve(__dirname, '../../pages/CaseDetail.tsx'), 'utf8');
+    expect(src).toMatch(/useCaseChatRequest\(open \? id : null, \(\) => setTab\('chat'\)\)/);
+  });
+
+  it('draws the brand ring as an outline concentric with the tile, 3px out, never rotating the shape', () => {
+    const css = readFileSync(resolve(__dirname, '../../../styles/activity.css'), 'utf8');
+    const ring = css.match(/\n\.chat-brand-ring \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(ring).toMatch(/inset: -3px/);
+    expect(ring).toMatch(/border-radius: calc\(var\(--radius\) \+ 1px\)/);
+    // Only the highlight inside the outline turns; the outline itself only fades in.
+    expect(css).toMatch(/\.chat-brand-ring::before \{\s*animation: chat-activity-spin/);
+    expect(css).toMatch(/\.chat-brand-ring \{\s*animation: chat-activity-in 300ms ease-out;\s*\}/);
   });
 });

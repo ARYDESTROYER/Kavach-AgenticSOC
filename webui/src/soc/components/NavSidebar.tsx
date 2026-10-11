@@ -867,11 +867,11 @@ export function NavSidebar({
       )}
       aria-label="Primary navigation"
     >
-      {/* Brand + hamburger header. */}
+      {/* Brand + hamburger header (gap-3 keeps the product name clear of the brand ring). */}
       <div
         className={cn(
           'flex h-14 shrink-0 items-center border-b border-border',
-          collapsed ? 'w-full justify-center px-2' : 'gap-2 px-3',
+          collapsed ? 'w-full justify-center px-2' : 'gap-3 px-3',
         )}
       >
         <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary dark:bg-accent">

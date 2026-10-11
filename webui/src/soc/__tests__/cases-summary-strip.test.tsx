@@ -255,4 +255,34 @@ describe('Cases — summary strip', () => {
     await waitFor(() => expect(screen.queryByText('SettledCase')).toBeNull());
     expect(screen.getByText('MedCase')).toBeInTheDocument();
   });
+
+  it('a truncated list shows exact SERVER totals on the lifecycle tiles and labels the severity tiles as loaded-only', async () => {
+    // The analyst's deployment: the newest cases are mostly closed, so the loaded slice
+    // read "Active 1 · Needs human 0" while hundreds of open cases waited.
+    listCasesMock.mockImplementation(async (query: Record<string, unknown> = {}) => {
+      if (query.limit === 1 && query.status_group === 'active' && query.q === 'needs_human') return { cases: [], total: 67 };
+      if (query.limit === 1 && query.status_group === 'active') return { cases: [], total: 68 };
+      if (query.limit === 1 && query.status_group === 'terminal') return { cases: [], total: 252 };
+      return { cases: CASES, total: 320 };
+    });
+    renderCases();
+    await waitFor(() => expect(screen.getByText('CritCase')).toBeInTheDocument());
+
+    await waitFor(() => expect(within(tile('cases-summary-open')).getByText('68')).toBeInTheDocument());
+    expect(within(tile('cases-summary-terminal')).getByText('252')).toBeInTheDocument();
+    expect(within(tile('cases-summary-needs-human')).getByText('67')).toBeInTheDocument();
+    // …each says how many of them the loaded list (what a click filters) can show.
+    expect(screen.getByTestId('cases-summary-open-note')).toHaveTextContent('3 loaded');
+    expect(screen.getByTestId('cases-summary-needs-human-note')).toHaveTextContent('1 loaded');
+    // Severity tiles still count the loaded slice, and now say so on the tile itself.
+    expect(screen.getByTestId('cases-summary-critical-note')).toHaveTextContent('of 5 loaded');
+    expect(listCasesMock).toHaveBeenCalledWith(expect.objectContaining({ status_group: 'active', q: 'needs_human', limit: 1 }));
+  });
+
+  it('a complete list keeps exact loaded counts and asks the server nothing more', async () => {
+    renderCases();
+    await waitFor(() => expect(screen.getByText('CritCase')).toBeInTheDocument());
+    expect(screen.queryByTestId('cases-summary-open-note')).toBeNull();
+    expect(listCasesMock).toHaveBeenCalledTimes(1);
+  });
 });

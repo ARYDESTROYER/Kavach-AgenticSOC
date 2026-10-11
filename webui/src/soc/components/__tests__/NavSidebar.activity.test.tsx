@@ -113,7 +113,7 @@ describe('NavSidebar — chat activity (expanded)', () => {
     renderNav();
     const caseManager = screen.getByTestId('nav-case_manager');
     expect(caseManager.querySelector('[data-activity="running"]')).not.toBeNull();
-    expect(describedText(caseManager)).toBe('Case chat: 1 answer in progress: Summarize Case');
+    expect(describedText(caseManager)).toBe('Case chat: 1 answer in progress: Case case-4: Summarize Case');
     expect(screen.getAllByTestId('nav-chat')[0].querySelector('[data-activity]')).toBeNull();
   });
 
@@ -129,6 +129,22 @@ describe('NavSidebar — chat activity (expanded)', () => {
     expect(container.querySelector('.chat-brand-ring')).toBeNull();
     // The nav glyph stays: the switch only governs the brand ring.
     expect(screen.getAllByTestId('nav-chat')[0].querySelector('[data-activity="running"]')).not.toBeNull();
+  });
+
+  it('explains every glyph it draws, also a question the analyst already looked at', () => {
+    // Seen questions keep their amber dot until answered: the dot is never unexplained.
+    putChatActivity(entry({ scope: 'conv:c1', status: 'needs_input', seen: true, title: 'Which host?' }));
+    putChatActivity(entry({ scope: 'case:k', kind: 'case', caseId: 'k', conversationId: null, status: 'needs_input', seen: true, title: 'Which user?' }));
+    for (const collapsed of [false, true]) {
+      const { container, unmount } = renderNav({ collapsed });
+      const glyphs = Array.from(container.querySelectorAll('[data-activity]'));
+      expect(glyphs.length).toBeGreaterThan(0);
+      for (const glyph of glyphs) {
+        const host = glyph.closest('button') as HTMLElement;
+        expect(describedText(host)).toMatch(/question waiting for your answer: (Case k: )?Which (host|user)\?$/);
+      }
+      unmount();
+    }
   });
 
   it('is axe-clean with activity on', async () => {

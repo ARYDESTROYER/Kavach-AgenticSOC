@@ -105,3 +105,74 @@ describe('MetricHoverTrend — press/tap toggle', () => {
     expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
   });
 });
+
+describe('MetricHoverTrend — suppressFocusOpen (a modal just returned focus here)', () => {
+  /** Wait past `openDelay` (160ms) and its grace, inside act. */
+  const settle = () => act(async () => new Promise((r) => setTimeout(r, 450)));
+
+  it('opens on focus when not held (control)', async () => {
+    render(
+      <MetricHoverTrend metric="Test metric" points={POINTS} windowLabel="last 24 hours">
+        <div>42 things</div>
+      </MetricHoverTrend>,
+    );
+    act(() => screen.getByTestId('metric-trend-trigger').focus());
+    expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
+  });
+
+  it('refuses a focus-only open while held, but a hover still opens the card', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    render(
+      <MetricHoverTrend metric="Test metric" points={POINTS} windowLabel="last 24 hours" suppressFocusOpen>
+        <div>42 things</div>
+      </MetricHoverTrend>,
+    );
+    const trigger = screen.getByTestId('metric-trend-trigger');
+    act(() => trigger.focus());
+    await settle();
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+    await userEvent.hover(trigger);
+    expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
+  });
+
+  it('while held, a pointer already resting on the trigger opens it on its first movement', async () => {
+    render(
+      <MetricHoverTrend metric="Test metric" points={POINTS} windowLabel="last 24 hours" suppressFocusOpen>
+        <div>42 things</div>
+      </MetricHoverTrend>,
+    );
+    const trigger = screen.getByTestId('metric-trend-trigger');
+    // No pointerenter: the browser saw no boundary change when the modal closed.
+    fireEvent.pointerMove(trigger);
+    expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
+  });
+
+  it('while held, a synthetic enter with no movement (a modal closing over a resting pointer) opens nothing', async () => {
+    render(
+      <MetricHoverTrend metric="Test metric" points={POINTS} windowLabel="last 24 hours" suppressFocusOpen>
+        <div>42 things</div>
+      </MetricHoverTrend>,
+    );
+    const trigger = screen.getByTestId('metric-trend-trigger');
+    // The browser's boundary update: over/enter only, no move.
+    fireEvent.pointerOver(trigger);
+    await settle();
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+    // The operator then moves the pointer: that is a hover.
+    fireEvent.pointerMove(trigger);
+    expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
+  });
+
+  it('while held, a pointer that moves and leaves before the delay opens nothing', async () => {
+    render(
+      <MetricHoverTrend metric="Test metric" points={POINTS} windowLabel="last 24 hours" suppressFocusOpen>
+        <div>42 things</div>
+      </MetricHoverTrend>,
+    );
+    const trigger = screen.getByTestId('metric-trend-trigger');
+    fireEvent.pointerMove(trigger);
+    fireEvent.pointerLeave(trigger);
+    await settle();
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+  });
+});

@@ -7,7 +7,13 @@
  */
 import * as React from 'react';
 
-import { describeChatActivity, useChatActivity, type ChatActivitySummary } from './activity';
+import {
+  describeChatActivity,
+  subscribeCaseChatRequest,
+  takeCaseChatRequest,
+  useChatActivity,
+  type ChatActivitySummary,
+} from './activity';
 import { ActivityGlyph } from './glyph';
 
 const IDLE: ChatActivitySummary = { status: null, text: '' };
@@ -20,6 +26,23 @@ const IDLE: ChatActivitySummary = { status: null, text: '' };
 export function useCaseChatActivity(caseId: string): ChatActivitySummary {
   const entry = useChatActivity((snapshot) => snapshot.entries.find((item) => item.scope === `case:${caseId}`) ?? null);
   return React.useMemo(() => (entry ? describeChatActivity([entry], 'Case chat') : IDLE), [entry]);
+}
+
+/**
+ * Call `onRequest` when a case-chat toast's Open asks for this case's Chat tab (also
+ * when this case page mounts after that request, while it is still recent).
+ */
+export function useCaseChatRequest(caseId: string | null | undefined, onRequest: () => void): void {
+  const callback = React.useRef(onRequest);
+  callback.current = onRequest;
+  React.useEffect(() => {
+    if (!caseId) return undefined;
+    const check = () => {
+      if (takeCaseChatRequest(caseId)) callback.current();
+    };
+    check();
+    return subscribeCaseChatRequest(check);
+  }, [caseId]);
 }
 
 /** The glyph plus its visually hidden text (for hosts named by their content). */

@@ -9,10 +9,14 @@ import type { Case } from '@/lib/types';
 import {
   QUEUE_STATUS_OPTIONS,
   caseInScope,
+  compareQueueOrder,
   matchesSearch,
+  mergeQueueRow,
+  queueMembership,
   queueQuery,
   scopeHeading,
   scopeSummary,
+  windowPlacement,
 } from '../queue';
 
 const base = { search: '', severity: null, status: null, sort: 'updated_desc' as const };
@@ -87,5 +91,66 @@ describe('scope + search helpers', () => {
     expect(scopeHeading('mine')).toBe('My cases');
     expect(scopeSummary('active', 50, 253, 23)).toBe('23 of 253 active · 50 loaded');
     expect(scopeSummary('all', 50, 1200, null)).toBe('1,200 cases · 50 loaded');
+  });
+});
+
+describe('queueMembership — the client mirror of the server view (live honesty)', () => {
+  const open: Case = { case_id: 'c1', status: 'needs_human', verdict: 'NEEDS_HUMAN', severity_band: 'high', title: 'SSH brute force', assignee: 'Aryan' };
+
+  it('scope, single status, owner, search and severity all decide membership', () => {
+    expect(queueMembership(open, { ...base, scope: 'active' })).toBe('in');
+    expect(queueMembership({ ...open, status: 'closed' }, { ...base, scope: 'active' })).toBe('out');
+    expect(queueMembership({ ...open, status: 'closed' }, { ...base, scope: 'all' })).toBe('in');
+    expect(queueMembership({ ...open, status: 'investigating' }, { ...base, scope: 'active', status: 'needs_human' })).toBe('out');
+    expect(queueMembership(open, { ...base, scope: 'mine', username: 'aryan' })).toBe('in');
+    expect(queueMembership({ ...open, assignee: 'someone' }, { ...base, scope: 'mine', username: 'aryan' })).toBe('out');
+    expect(queueMembership(open, { ...base, scope: 'all', search: 'ssh brute' })).toBe('in');
+    expect(queueMembership(open, { ...base, scope: 'all', search: 'phishing' })).toBe('out');
+    expect(queueMembership(open, { ...base, scope: 'all', severity: 'critical' })).toBe('out');
+    expect(queueMembership(open, { ...base, scope: 'all', severity: 'high' })).toBe('in');
+  });
+
+  it('an action response with no read-time severity band is unknown under a severity filter', () => {
+    const bare: Case = { ...open, severity_band: undefined, risk_score: 90 };
+    expect(queueMembership(bare, { ...base, scope: 'all', severity: 'high' })).toBe('unknown');
+    expect(queueMembership(bare, { ...base, scope: 'all' })).toBe('in');
+  });
+});
+
+describe('windowPlacement / compareQueueOrder', () => {
+  const at = (id: string, minute: number, extra: Partial<Case> = {}): Case => ({
+    case_id: id,
+    status: 'open',
+    updated_at: new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString(),
+    ...extra,
+  });
+  const loaded = [at('a', 50), at('b', 40), at('c', 30)];
+
+  it('a case updated after the window lists inside it; an older one lists beyond it', () => {
+    expect(windowPlacement(at('x', 60), loaded, 10, 'updated_desc')).toBe('inside');
+    expect(windowPlacement(at('x', 10), loaded, 10, 'updated_desc')).toBe('beyond');
+    expect(windowPlacement(at('x', 30), loaded, 10, 'updated_desc')).toBe('edge');
+    // Everything loaded: anything that matches belongs in the window.
+    expect(windowPlacement(at('x', 10), loaded, 3, 'updated_desc')).toBe('inside');
+  });
+
+  it('the boundary is the row that lists last, not the last row on screen', () => {
+    // Row "c" was updated in place (now the newest) but stays last on screen.
+    const drifted = [at('a', 50), at('b', 40), at('c', 70)];
+    expect(windowPlacement(at('x', 45), drifted, 10, 'updated_desc')).toBe('inside');
+  });
+
+  it('orders risk descending and titles ascending like the server', () => {
+    expect(compareQueueOrder(at('a', 1, { risk_score: 90 }), at('b', 1, { risk_score: 10 }), 'risk_desc')).toBeLessThan(0);
+    expect(compareQueueOrder(at('a', 1, { title: 'Alpha' }), at('b', 1, { title: 'beta' }), 'title_asc')).toBeLessThan(0);
+    expect(compareQueueOrder(at('a', 1, { risk_score: 50 }), at('b', 1, { risk_score: 50 }), 'risk_desc')).toBe(0);
+  });
+
+  it('a row keeps its listed read-time bands when an action response lacks them', () => {
+    const merged = mergeQueueRow(
+      { case_id: 'c1', severity_band: 'critical', severity_source: 'source_asserted' },
+      { case_id: 'c1', status: 'closed' },
+    );
+    expect(merged).toMatchObject({ status: 'closed', severity_band: 'critical', severity_source: 'source_asserted' });
   });
 });

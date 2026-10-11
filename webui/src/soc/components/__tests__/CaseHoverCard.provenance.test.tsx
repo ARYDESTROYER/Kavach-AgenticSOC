@@ -20,11 +20,16 @@ vi.mock('@radix-ui/react-hover-card', () => {
     React.createElement('div', { ref }, props.children as React.ReactNode),
   );
   Content.displayName = 'HoverCardContent';
+  // CaseHoverCard holds a ref on its trigger (it closes the card when the trigger is
+  // activated), so the stand-in must accept one like the real Radix Trigger does.
+  const Trigger = React.forwardRef<HTMLElement, { children?: React.ReactNode }>(({ children }, _ref) =>
+    React.createElement(React.Fragment, null, children),
+  );
+  Trigger.displayName = 'HoverCardTrigger';
   return {
     Root: ({ children }: { children?: React.ReactNode }) =>
       React.createElement(React.Fragment, null, children),
-    Trigger: ({ children }: { children?: React.ReactNode }) =>
-      React.createElement(React.Fragment, null, children),
+    Trigger,
     Portal: ({ children }: { children?: React.ReactNode }) =>
       React.createElement(React.Fragment, null, children),
     Content,

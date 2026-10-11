@@ -1747,4 +1747,18 @@ select:-webkit-autofill:focus {
   #socMain [aria-labelledby='overview-band-flow'] > div > * + * {
     margin-top: 2rem;
   }
+  /* Latest cases: on screen the list is laid out OUT of flow (absolute, over a rem floor)
+     so its length can never drive the band's height. Paper has no such loop, and a box
+     split across a page break let the rows spill past it over the next band's heading
+     (MEASURED in a real A4 PDF from 1920). On paper the list is in flow, the box takes
+     its height, and the header and its rows stay on one page. */
+  #socMain [data-testid='latest-cases-box'] {
+    min-height: 0 !important;
+  }
+  #socMain [data-testid='latest-cases-box'] > ul {
+    position: static !important;
+  }
+  #socMain section[aria-label='Latest cases'] {
+    break-inside: avoid;
+  }
 }

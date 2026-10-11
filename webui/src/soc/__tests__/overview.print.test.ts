@@ -66,6 +66,20 @@ describe('Overview print rules', () => {
     expect(figure).toMatch(/inset:\s*auto !important/);
   });
 
+  it('lays the Latest cases list out in flow on paper and keeps it on one page', () => {
+    // On screen the list is absolute over a rem floor; split across a page break, its rows
+    // spilled past the box over the Deeper analytics heading.
+    expect(rule(block, "#socMain [data-testid='latest-cases-box'] {")).toMatch(
+      /min-height:\s*0 !important/,
+    );
+    expect(rule(block, "#socMain [data-testid='latest-cases-box'] > ul {")).toMatch(
+      /position:\s*static !important/,
+    );
+    expect(rule(block, "#socMain section[aria-label='Latest cases'] {")).toMatch(
+      /break-inside:\s*avoid/,
+    );
+  });
+
   it('still hides the console chrome and releases the shell heights', () => {
     expect(block).toContain("[data-testid='desktop-navigation-frame']");
     expect(block).toContain("aside[aria-label='Primary navigation']");

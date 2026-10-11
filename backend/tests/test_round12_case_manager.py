@@ -492,6 +492,104 @@ def test_case_topics_need_cases_read(client, monkeypatch) -> None:
     assert res.status_code == 204
 
 
+def _enable_realtime(client: TestClient) -> None:
+    state = client.app.state.tlsoc
+    realtime = state.prefs.realtime.model_copy(update={"enabled": True})
+    client.portal.call(state.update_prefs, state.prefs.model_copy(update={"realtime": realtime}))
+
+
+def test_denied_principal_keeps_its_other_topics(client, monkeypatch) -> None:
+    """A mixed request drops ONLY the case topics; the rest of the stream is served."""
+    import app.api.deps as deps
+    from app.realtime import get_event_bus
+
+    _enable_realtime(client)
+
+    class Denied:
+        def allows(self, resource: str, action: str) -> bool:
+            return resource != "cases"
+
+    async def resolve(_request):  # noqa: ANN001
+        return Denied()
+
+    subscribed: list[list[str]] = []
+
+    async def finite(topics, user, *, last_event_id=None):  # noqa: ANN001, ARG001
+        subscribed.append(list(topics))
+        yield b": connected\n\n"
+
+    monkeypatch.setattr(deps, "resolve_access", resolve)
+    monkeypatch.setattr(get_event_bus(), "subscribe", finite)
+    res = client.get("/api/events", params={"topics": "notifications,cases,cases:case-1"})
+    assert res.status_code == 200
+    assert subscribed == [["notifications"]]
+
+
+def test_reader_receives_case_changed_over_the_stream(client, now, monkeypatch) -> None:
+    """End to end: a principal with ``cases:read`` that subscribes to ``cases`` gets the
+    ``case.changed`` frame an analyst action published (replayed from Last-Event-ID)."""
+    from app.realtime import get_event_bus
+
+    _enable_realtime(client)
+    _seed(client, [_case(46, now)])
+    bus = get_event_bus()
+    before = str(bus._seq)  # noqa: SLF001 — the replay cursor a reconnecting client sends
+    res = client.post(
+        "/api/cases/case-0046/action",
+        json={"action": "close", "disposition": "benign", "disposition_declared": True},
+    )
+    assert res.status_code == 200
+
+    real = bus.subscribe
+    subscribed: list[list[str]] = []
+
+    async def finite(topics, user, *, last_event_id=None):  # noqa: ANN001
+        subscribed.append(list(topics))
+        count = 0
+        async for chunk in real(topics, user, last_event_id=last_event_id):
+            yield chunk
+            count += 1
+            if b"case.changed" in chunk or count >= 8:
+                return
+
+    monkeypatch.setattr(bus, "subscribe", finite)
+    stream = client.get("/api/events", params={"topics": "cases", "lastEventId": before})
+    assert stream.status_code == 200
+    assert subscribed == [["cases"]]
+    assert "event: case.changed" in stream.text
+    assert "case-0046" in stream.text and '"status":"closed"' in stream.text
+
+
+def test_demo_mode_serves_the_demo_bus_and_its_saves_reach_a_subscriber(now) -> None:
+    """In Demo Mode ``state.event_bus`` is the demo stack's bus, and a demo case save is
+    delivered to a subscriber on THAT bus (the Case Manager queue stays live in demos)."""
+    import asyncio
+
+    from app.config import Preferences
+    from app.engine.demo_runtime import DemoStack
+    from app.realtime import _Subscriber, reset_event_bus
+
+    reset_event_bus()
+    secrets = Secrets(_env_file=None, es_store_enabled=False, redis_url="")
+    stack = DemoStack(secrets, lambda: Preferences(), run_id="run-demo-2")
+
+    state = AppState.create(secrets=secrets, es=InMemoryESClient())
+    state._demo = stack  # noqa: SLF001 — the property under test reads the active demo
+    try:
+        assert state.event_bus is stack.event_bus
+    finally:
+        state._demo = None  # noqa: SLF001
+
+    async def go() -> list[str]:
+        sub = _Subscriber(None, frozenset({CASES_TOPIC}), 16)
+        stack.event_bus._register(sub)  # noqa: SLF001 — a connected client, minus HTTP
+        await stack.cases.save(_case(47, now))
+        batch = await asyncio.wait_for(sub.drain(), timeout=2)
+        return [ev.event_type for ev in batch if "case-0047" in ev.payload]
+
+    assert asyncio.run(go()) == [CASE_CHANGED_EVENT]
+
+
 def test_title_sort_never_reaches_a_store_sort(client, now, monkeypatch) -> None:
     """``title`` is answered by the route's scan; no store ever receives it as a key."""
     _seed(client, [_case(1, now, title="b"), _case(2, now, title="a")])

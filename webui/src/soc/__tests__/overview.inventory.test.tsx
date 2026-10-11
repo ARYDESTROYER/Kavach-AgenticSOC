@@ -66,7 +66,7 @@ vi.mock('@/soc/components/StartDemoButton', () => ({
   StartDemoButton: () => <button type="button">Start demo</button>,
 }));
 
-import Overview, { PAGE_TITLE, latestFloorCss } from '../pages/Overview';
+import Overview, { PAGE_TITLE, latestFloorCss, summarySignatureLabel } from '../pages/Overview';
 import type { PostureResponse } from '../pages/Metrics.posture.api';
 import type { Case, Metrics, MetricsTrends, NoiseReduction, SourceCoverage } from '@/lib/types';
 
@@ -698,6 +698,43 @@ describe('Overview — Round 12 review: one population per instrument, honest bo
     );
   });
 
+  it('keeps the top signature’s case count visible: the summary wraps and a long label is capped', async () => {
+    const long = 'ip:203.0.113.77 — Entra ID Protection: credential phishing and account takeover';
+    expect(summarySignatureLabel('Impossible travel')).toBe('Impossible travel');
+    expect(summarySignatureLabel(long)).toBe('ip:203.0.113.77 — Entra ID Protection…');
+    expect(summarySignatureLabel(long).length).toBeLessThanOrEqual(40);
+    const repeated = [
+      { ...CASES[0], title: long },
+      { ...CASES[1], title: long },
+      CASES[2],
+    ] as Case[];
+    listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+      Promise.resolve(
+        params?.to?.startsWith('now-')
+          ? { cases: PREV_CASES, total: PREV_CASES.length }
+          : { cases: repeated, total: repeated.length, window_total_exact: true },
+      ),
+    );
+    await mount();
+    const summary = screen.getByTestId('deeper-summary');
+    await waitFor(() =>
+      expect(summary).toHaveTextContent(
+        'top signature: ip:203.0.113.77 — Entra ID Protection… (2 cases)',
+      ),
+    );
+    // Nothing is cut off to one line: the summary wraps (beside the title from `md`,
+    // under it below), and the whole sentence — full label included — is its tooltip.
+    expect(summary.className).not.toMatch(/\btruncate\b/);
+    expect(summary.className).toContain('whitespace-normal');
+    expect(summary.className).toContain('basis-full');
+    expect(summary.getAttribute('title')).toContain(`top signature: ${long} (2 cases)`);
+    expect(summary.getAttribute('title')).toContain('MTTA 45m');
+    // Open, the header names the contents and carries no stale tooltip.
+    await userEvent.click(screen.getByRole('button', { name: /Deeper analytics/i }));
+    expect(summary).toHaveTextContent('Timing, spend, ingest coverage, volume, workload and outcomes');
+    expect(summary).not.toHaveAttribute('title');
+  });
+
   it('marks the snapshots as a lower bound when the case page is not the whole window', async () => {
     listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
       Promise.resolve(
@@ -756,6 +793,35 @@ describe('Overview — Round 12 review: one population per instrument, honest bo
     expect(within(coverage).queryAllByTestId('count-up')).toHaveLength(0);
     expect(coverage).toHaveTextContent('3/ 3');
   });
+
+  it('a quiet refresh shows a changed flow stage total without counting up', async () => {
+    await mount();
+    // The stage rail's first count is "Alerts ingested" (the rail the Detailed view and a
+    // phone's Simple view show). A LIVE tick with steady ingest used to roll it every 5s.
+    const ingested = within(screen.getByTestId('noise-stage-rail')).getAllByTestId('count-up')[0];
+    expect(ingested).toHaveTextContent('1000');
+    noiseMock.mockResolvedValue({
+      ...NOISE,
+      stages: NOISE.stages.map((s) => (s.key === 'ingested' ? { ...s, total: 1400 } : s)),
+    });
+    const seen = [ingested.textContent ?? ''];
+    const observer = new MutationObserver(() => {
+      const text = ingested.textContent ?? '';
+      if (seen[seen.length - 1] !== text) seen.push(text);
+    });
+    observer.observe(ingested, { childList: true, characterData: true, subtree: true });
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'Refresh dashboard' }));
+      await waitFor(() => expect(ingested).toHaveTextContent('1400'), { timeout: 3000 });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+    } finally {
+      observer.disconnect();
+    }
+    // Old value, then new: no frame in between.
+    expect(seen).toEqual(['1000', '1400']);
+  });
 });
 
 describe('Overview — Round 12 review: layout and keyboard contracts', () => {
@@ -781,10 +847,17 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
     await mount();
     // Three cases → a three-row floor.
     expect(screen.getByTestId('latest-cases-box').style.minHeight).toBe('11rem');
+    // Below 1920px the snapshot rings keep the 128px size.
+    const ring = within(screen.getByRole('region', { name: 'Resolved and open cases' })).getByRole(
+      'img',
+      { name: 'Open cases by severity' },
+    );
+    expect(ring).toHaveClass('w-32');
+    expect(ring.style.height).toBe('128px');
   });
 
-  it('Latest cases: from 1920px the queue never shows fewer rows than at 1440 (six)', async () => {
-    const many = Array.from({ length: 8 }, (_, i) => ({
+  it('Latest cases: from 1920px the queue shows eight rows, spanning the snapshots and the response pair', async () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({
       ...CASES[0],
       case_id: `c-${i}`,
       case_number: `CASE-${2000 + i}`,
@@ -811,10 +884,40 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
     try {
       render(<Overview onNavigate={vi.fn()} />);
       const queue = await screen.findByRole('region', { name: 'Latest cases' });
+      // Eight rows (the spec's count at >= 1920), never more: the ninth case stays behind
+      // "View all".
       await waitFor(() =>
-        expect(within(queue).getAllByRole('button', { name: /^Open case / })).toHaveLength(6),
+        expect(within(queue).getAllByRole('button', { name: /^Open case / })).toHaveLength(8),
       );
-      expect(screen.getByTestId('latest-cases-box').style.minHeight).toBe('22.25rem');
+      expect(screen.getByTestId('latest-cases-box').style.minHeight).toBe('29.75rem');
+      // The band is two rows from 3xl: snapshots over the response pair on the left, the
+      // queue spanning both on the right (the 460px rail at 4xl) — so its eight rows fill
+      // the band rather than leaving blank space under a short snapshot row.
+      const grid = screen.getByTestId('cases-band-grid');
+      expect(grid.className).toContain('3xl:grid-rows-[auto_1fr]');
+      expect(grid.className).toContain('4xl:grid-cols-[minmax(0,1fr)_460px]');
+      const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+      expect(lifecycle.className).toContain('3xl:row-start-1');
+      // The snapshot rings grow to 192px there, so the instrument — not blank space —
+      // takes the height the eight-row queue gives the band.
+      const ring = within(lifecycle).getByRole('img', { name: 'Open cases by severity' });
+      expect(ring).toHaveClass('w-48');
+      expect(ring.style.height).toBe('192px');
+      expect(within(lifecycle).getByRole('img', { name: 'Resolved cases by severity (none)' })).toHaveClass(
+        'h-48',
+        'w-48',
+      );
+      const timing = screen.getByRole('region', { name: 'Mean time to detect / respond' });
+      expect(timing.className).toContain('3xl:row-start-2');
+      expect(timing.className).toContain('3xl:col-start-1');
+      const queueCell = queue.parentElement as HTMLElement;
+      expect(queueCell.className).toContain('3xl:row-span-2');
+      expect(queueCell.className).toContain('4xl:col-start-2');
+      // DOM (and heading) order is unchanged: case state, response time, latest cases.
+      const order = Array.from(grid.children).map(
+        (el) => el.getAttribute('aria-label') ?? el.firstElementChild?.getAttribute('aria-label'),
+      );
+      expect(order).toEqual(['Resolved and open cases', 'Mean time to detect / respond', 'Latest cases']);
     } finally {
       window.matchMedia = original;
     }
@@ -852,6 +955,28 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
       await new Promise((r) => setTimeout(r, 400));
     });
     fireEvent.focusIn(tile);
+    expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
+  });
+
+  it('after a mouse Close, hovering the tile still shows its trend card', async () => {
+    await mount();
+    const tile = screen.getByTestId('kpi-total-cases');
+    await userEvent.click(tile);
+    const panel = await screen.findByTestId('kpi-drilldown');
+    // The pointer travels to Close (leaving the tile) and the focus returns to the tile.
+    await userEvent.click(within(panel).getByTestId('kpi-drilldown-close'));
+    await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    // A late FOCUS return still opens nothing…
+    fireEvent.focusIn(tile);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+    // …but pointing at the tile is a hover, and a hover shows the trend.
+    await userEvent.hover(tile);
     expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
   });
 

@@ -120,15 +120,6 @@ import type { ActivityEffectsProps } from './chat-activity/ActivityEffects';
 import { navItem, navLabel, navParentOf, type PageId } from './nav';
 import type { Navigate } from './router';
 
-/**
- * The shell's chat-turn observer (Round 12, SPEC D13): sign-out, other tabs, turns the
- * server reports after a reload, the "Answer ready" toast and announcement, the tab-title
- * prefix. Lazy, so only the activity store and the glyph ride first paint; a chunk that
- * fails to load costs only those extras, never the shell.
- */
-const ChatActivityEffects = React.lazy<React.ComponentType<ActivityEffectsProps>>(() =>
-  import('./chat-activity/ActivityEffects').catch(() => ({ default: () => null })),
-);
 // TYPE-ONLY import (elided at build → zero runtime import): motion.dev must NEVER ride
 // the eager App/AppShell first-paint graph, so RouteMotion is reached purely through the
 // DYNAMIC `import()` below. See soc/components/motion/* + bundle-first-paint.test.ts.
@@ -1196,11 +1187,22 @@ export const AppShell: React.FC<AppShellProps> = ({
   const [HealthWatch, setHealthWatch] = React.useState<React.ComponentType<HealthWatchProps> | null>(
     null,
   );
+  // The shell's chat-turn observer (Round 12, SPEC D13): sign-out, other tabs, turns the
+  // server reports after a reload, the "Answer ready" toast, the tab-title prefix. Loaded
+  // after first paint with HealthWatch (only the activity store and the glyph ride the
+  // entry); a chunk that fails to load costs only those extras, never the shell.
+  const [ChatActivityEffects, setChatActivityEffects] = React.useState<React.ComponentType<ActivityEffectsProps> | null>(
+    null,
+  );
   React.useEffect(() => {
     let alive = true;
     void import('./components/HealthWatch').then((mod) => {
       if (alive) setHealthWatch(() => mod.HealthWatch);
     });
+    import('./chat-activity/ActivityEffects').then(
+      (mod) => alive && setChatActivityEffects(() => mod.default),
+      () => undefined,
+    );
     return () => {
       alive = false;
     };
@@ -1266,9 +1268,7 @@ export const AppShell: React.FC<AppShellProps> = ({
       <HealthAnnouncer degradations={agentDegradations} />
       <JobMonitor actor={username} onNavigate={onNavigate} />
       {/* Chat turns that outlive their page (SPEC D13): toasts, title, other tabs. */}
-      <React.Suspense fallback={null}>
-        <ChatActivityEffects username={username} onNavigate={onNavigate} />
-      </React.Suspense>
+      {ChatActivityEffects ? <ChatActivityEffects username={username} onNavigate={onNavigate} /> : null}
       {/* `overflow-x-clip`, never `-hidden`: both keep a wide child from widening the
           Console, but `hidden` silently makes the element a vertical scroll container
           (a lone hidden axis forces the other to `auto`), so every `sticky` descendant,

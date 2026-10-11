@@ -29,7 +29,7 @@ import {
 } from '@/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 
-import { DispositionPicker } from './DispositionPicker';
+import { DispositionPicker, focusDispositionPicker } from './DispositionPicker';
 import { DURABLE_CONTEXT_NOTE, RESOLUTION_OPTIONS } from './shared';
 
 export type BulkTerminalAction = 'close' | 'resolve';
@@ -73,6 +73,7 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
   const [disposition, setDisposition] = React.useState('');
   const [resolution, setResolution] = React.useState('');
   const [note, setNote] = React.useState('');
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     if (action) return;
@@ -109,6 +110,12 @@ export const BulkCloseDialog: React.FC<BulkCloseDialogProps> = ({
         <DialogContent
           data-testid="bulk-close-dialog"
           className="flex flex-col gap-0 overflow-hidden p-0 sm:max-w-lg"
+          ref={contentRef}
+          // Initial focus on the required disposition (scrolled into view), never the
+          // Resolution select after it, which can sit under the sticky footer (CM-3).
+          onOpenAutoFocus={(event) => {
+            if (focusDispositionPicker(contentRef.current)) event.preventDefault();
+          }}
           onCloseAutoFocus={(event) => {
             const target = returnFocusTo?.current;
             if (target && target.isConnected) {

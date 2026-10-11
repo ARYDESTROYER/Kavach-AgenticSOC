@@ -4,7 +4,7 @@
  * stays disabled until a person chooses, and the payload is declared.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { BulkCloseDialog } from '../BulkCloseDialog';
 import { DispositionPicker, aiSuggestedDisposition } from '../DispositionPicker';
@@ -28,6 +28,12 @@ describe('BulkCloseDialog', () => {
       disposition_declared: true,
       note: 'scanner noise',
     });
+  });
+
+  it('opens with focus inside the required disposition group (scrolled into view), not the Resolution select', async () => {
+    render(<BulkCloseDialog action="close" count={2} onCancel={vi.fn()} onSubmit={vi.fn()} />);
+    await waitFor(() => expect(document.activeElement?.getAttribute('role')).toBe('radio'));
+    expect(screen.getByRole('radiogroup').contains(document.activeElement)).toBe(true);
   });
 
   it('resolve sends the note as the reason too', () => {

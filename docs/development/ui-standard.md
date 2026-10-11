@@ -274,7 +274,12 @@ a narrow queue but stays in the row's accessible name); a compact density is one
 The second line names the case outcome (§ Case outcome) beside severity and risk. The
 list is one tab stop with a roving focus (↑/↓ or J/K move and open, X or Space select,
 Enter moves into the case, / searches, ? lists the shortcuts) and rows update live from
-the `cases` realtime topic.
+the `cases` realtime topic. A live change is checked against the whole view (scope,
+status, owner, search, severity): a row that no longer matches leaves the window and the
+total, a case that now lists inside the loaded window appears, and Load more re-reads the
+window rather than skip a case when the live order has shifted. A single-letter shortcut
+never fires while focus is in a control that takes letters itself (text, a select, a
+menu, a radio group).
 
 Row selection is independent of row navigation. “Select visible” means the filtered
 rows in the loaded client window and never implies every server match; "Select all N
@@ -302,8 +307,15 @@ pane, its full text on hover and in its accessible name), one meta row (id, seve
 risk with its band, status, outcome, AI verdict, owner, tags, times and SLA, campaign),
 one primary contextual action plus the full Take action menu. Facts about the case live
 once, in a facts rail beside every tab (a non-blocking Details sheet in a narrow pane);
-the tabs hold the evidence narrative. Lifecycle dialogs keep their actions in a footer
-that never scrolls away, and every dialog returns focus to the control that opened it.
+the tabs hold the evidence narrative. The title shares its row with the actions only
+when the whole title fits beside them; otherwise the actions wrap below it, so the title
+is never squeezed. Lifecycle dialogs keep their actions in a footer that never scrolls
+away, open with focus on the field the analyst must fill (the disposition), and return
+focus to the control that opened it, or, when that control left with its row, to the
+row that took its place ("Close & next" lands on the next case's row). The confirmation
+after a close offers **Reopen**, never "Undo": reopening keeps the recorded outcome until
+the case is closed again with a new one, and the toast says so. Closing a Needs-human
+case the analyst did not grade records no AI agreement either way.
 
 Campaigns is analyst-first. The default **Campaign review** workspace owns the current
 group list, detail, and read-only refresh; manual correlation and saved cadence belong
@@ -653,8 +665,8 @@ strip that stands alone. Density changes padding and numeral scale only; it must
 the cell count or the per-breakpoint divider rules above, which are tuned to an exact number
 of cells. Numerals roll (count up) on the first load and on a window change, never on a LIVE
 or manual refresh (`roll={false}`): data on an automatic refresh does not animate. The rule
-covers every counting numeral on the page — donut centres and hero counts included — not
-only the strip. A strip tile's focus ring is drawn inset: the tile's cell clips anything
+covers every counting numeral on the page — donut centres, hero counts and flow stage totals
+included — not only the strip; a one-shot sweep may replay on a refresh, its numerals may not. A strip tile's focus ring is drawn inset: the tile's cell clips anything
 drawn outside it, and an outset ring there is invisible to a keyboard user.
 
 A hero strip (`numeral="hero"`, the primary dashboard) reads top to bottom as a quiet
@@ -677,15 +689,20 @@ the gutters do the separating. A band draws at most one rule. Instruments in one
 share one height (`items-stretch`, instruments `h-full flex flex-col`), and a list fills its
 share of that height (a queue shows as many rows as fit, within a floor and a cap) instead of
 driving the row taller. The floor is set in rem, so a larger browser text size grows it with
-the rows, and a wider screen never shows fewer rows than a narrower one (the queue reserves
-six rows from 1920px, where side-by-side instruments make its band shorter). Instruments
+the rows, and a wider screen never shows fewer rows than a narrower one. From 1920px the
+queue holds eight rows: its band becomes two rows (the snapshots over the response pair on
+the left, the queue spanning both on the right — the rail at `4xl`) and the snapshot rings
+grow to 192px, so the instruments, not blank space, take the height the queue sets. On paper
+the queue is laid out in flow and kept on one page with its header. Instruments
 side by side that share a structure (two snapshots) share their rows (`grid-rows-subgrid`),
 so a caption that wraps in one moves both donuts and both footnotes together. The dashbar
 pins from `sm` up; on a phone it scrolls away with the page. Above 1920px a dashboard widens by COLUMN COUNT, not by stretching:
 `wide` width, rising to 2400px at `4xl` (≥2200px), where bands share one track template
 with a 460px rail. A secondary fold is ONE disclosure — flat inside, with no nested cards or
-collapsibles — whose open/closed choice is remembered and whose collapsed header states in
-one line what it holds.
+collapsibles — whose open/closed choice is remembered and whose collapsed header states what
+it holds. That summary wraps (beside the title from `md`, under it below) and never
+truncates; a long item label in it is capped so the count after it stays visible, and the
+whole sentence is the header's tooltip.
 
 Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); band titles 15px semibold
 with a 13px muted caption; instrument titles 14px; KPI numerals fluid (24 → 44px);
@@ -724,7 +741,11 @@ they were read sits behind one "About these rows" disclosure. A whole-window par
 the stats lays its label · value pairs out two per row, so it never makes the stats column
 taller than the trend (Resolved / Closed keeps ten rows at 1440 × 900). Below `sm` the
 dialog's actions sit under its title; below `md` the switcher, the filters and the evidence
-scroll as one body, so a phone never shows three fixed bands over a sliver of rows.
+scroll as one body, so a phone never shows three fixed bands over a sliver of rows. When the
+dialog closes and focus returns to its tile, the tile's hover trend refuses a FOCUS-driven
+open until the operator moves on (Radix restores focus after the exit animation, and a card
+springing back over a strip just dismissed with Escape reads as a bug); pointer movement over
+the tile is a hover and still opens it.
 
 Observed-outcome metrics embedded in another operational page use the integrated
 `ComparisonMetric` variant. Keep the shared reporting window, evidence state, and

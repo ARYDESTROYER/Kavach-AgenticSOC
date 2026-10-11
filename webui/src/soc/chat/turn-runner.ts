@@ -27,7 +27,18 @@
  * Capacity (SPEC D6): over the per-user or per-backend bound the server refuses the
  * send with 429 `chat_busy` before anything starts. The run then waits ("Waiting for
  * another answer to finish") and sends the same request again with backoff, at the
- * server's `retry_after`; Stop while waiting simply ends it (nothing ran).
+ * server's `retry_after`, for up to {@link TURN_RUNNER_TIMING}`.busyWaitLimitMs`; then it
+ * fails with Retry. Stop while waiting simply ends it (nothing ran).
+ *
+ * Connections: a browser opens at most six HTTP/1.1 connections to the console, and the
+ * shell's live updates already hold some. So only answers someone is LOOKING at keep a
+ * live read. A run nobody views is PARKED shortly after its view leaves (the read is
+ * closed; the server turn goes on): one cheap `GET /chat/turns/active` poll follows every
+ * parked run, and a run reads the rest of its events (`after=<seq>`) when a view
+ * returns or when the poll no longer lists its turn. Turns the server reports that this
+ * tab did not start (a reload, another tab that closed) are tracked the same way
+ * (`trackRun`), so their real outcome (answer, question, failure) comes from their
+ * terminal event.
  *
  * Abort happens only on a forced Stop and on sign-out (`clearChatActivity`). Memory
  * only: transcripts and titles are never written to storage (#9).
@@ -51,6 +62,7 @@ import {
   putChatActivity,
   rekeyChatActivity,
   settleChatActivity,
+  type ChatActivityOutcome,
 } from '../chat-activity/activity';
 import {
   apiErrorCode,
@@ -211,6 +223,16 @@ export const MAX_CASE_SESSIONS = 20;
 export const MAX_CASE_SESSION_ITEMS = 50;
 /** The cross-tab history signal every open rail listens to. */
 export const HISTORY_CHANNEL = 'agentic-soc-workspace-chat-history';
+
+/**
+ * Timings (mutable for tests only; `resetTurnRunnerForTests` restores them):
+ *  - `parkDelayMs`: how long a run nobody views keeps its live read (a quick switch
+ *    between threads, or a development double mount, never closes it);
+ *  - `parkPollMs`: the `GET /chat/turns/active` cadence while any run is parked;
+ *  - `busyWaitLimitMs`: how long a question waits for chat capacity (429 `chat_busy`).
+ */
+export const TURN_RUNNER_TIMING = { parkDelayMs: 1_500, parkPollMs: 5_000, busyWaitLimitMs: 5 * 60_000 };
+const DEFAULT_TIMING = { ...TURN_RUNNER_TIMING };
 
 /**
  * D1 (SPEC §4.5): the first model call failed, nothing was billed or saved. Such a
@@ -386,6 +408,15 @@ interface RunInternals extends TurnRun {
   listeners: Set<() => void>;
   text: string;
   frame: FrameHandle | null;
+  /** The read in flight (a POST stream or the event ring), when there is one. */
+  read: AbortController | null;
+  /** The read was closed to park the run (not a Stop, not a sign-out). */
+  parkRequested: boolean;
+  /** Nobody views it and no read is open: the park poll follows the turn. */
+  parked: boolean;
+  /** Ends the parked wait (a view came back, or the turn ended). */
+  wake: (() => void) | null;
+  parkTimer: ReturnType<typeof setTimeout> | null;
 }
 
 let runCounter = 0;
@@ -415,12 +446,17 @@ export function subscribeRun(run: TurnRun, listener: () => void): () => void {
 
 /** A view mounts on this run; returns its detach (the run goes on). */
 export function attachRun(run: TurnRun): () => void {
-  run.attached += 1;
+  const target = internals(run);
+  target.attached += 1;
+  clearParkTimer(target);
+  // Someone looks again: read the rest live (from the last event this tab saw).
+  unpark(target);
   let done = false;
   return () => {
     if (done) return;
     done = true;
-    run.attached = Math.max(0, run.attached - 1);
+    target.attached = Math.max(0, target.attached - 1);
+    if (!target.attached) scheduleParkCheck(target);
   };
 }
 
@@ -522,6 +558,11 @@ function makeRun(fields: {
     listeners: new Set(),
     text: '',
     frame: null,
+    read: null,
+    parkRequested: false,
+    parked: false,
+    wake: null,
+    parkTimer: null,
   };
 }
 
@@ -595,6 +636,9 @@ export interface ReattachOptions {
   /** Display text for the activity entry. */
   title?: string;
   startedAt?: number;
+  /** The engine's step label the server reported (`trackRun`), display text. */
+  label?: string | null;
+  lookups?: number;
 }
 
 /**
@@ -637,6 +681,161 @@ export function reattachRun(options: ReattachOptions): TurnRun | null {
   return run;
 }
 
+/**
+ * Follow a turn the server reports that this tab is not reading (a reload, another tab
+ * that closed, another device) WITHOUT opening a read: it starts parked, so the park
+ * poll follows it, and it reads its events when a view opens it or when it ends (so
+ * its real outcome is known). Returns the scope's running run when there already is
+ * one.
+ */
+export function trackRun(options: ReattachOptions): TurnRun | null {
+  const existing = runs.get(options.scope);
+  if (existing?.state === 'running') return existing;
+  if (!isSafeChatId(options.turnId)) return null;
+  const run = makeRun({
+    scope: options.scope,
+    kind: options.kind,
+    caseId: options.caseId ?? null,
+    request: null,
+    userItem: null,
+    transport: 'stream',
+    streamMode: 'steps',
+    conversationId: options.conversationId ?? null,
+    turnId: options.turnId,
+    startedAt: options.startedAt ?? Date.now(),
+  });
+  register(run);
+  putChatActivity({
+    scope: run.scope,
+    kind: run.kind,
+    conversationId: run.conversationId,
+    caseId: run.caseId,
+    turnId: run.turnId,
+    requestKey: null,
+    title: options.title ?? '',
+    label: options.label ?? null,
+    lookups: options.lookups ?? 0,
+    status: 'running',
+    startedAt: run.startedAt,
+    source: 'local',
+    parked: true,
+  });
+  void drive(run, null, false, true);
+  return run;
+}
+
+/* -------------------------------------------------------------------- parking -- */
+
+function clearParkTimer(run: RunInternals): void {
+  if (run.parkTimer !== null) clearTimeout(run.parkTimer);
+  run.parkTimer = null;
+}
+
+/** Nobody views `run`: park it after a short grace (a quick return keeps the read). */
+function scheduleParkCheck(run: RunInternals): void {
+  if (run.state !== 'running' || run.attached > 0 || run.parked || run.parkTimer !== null) return;
+  run.parkTimer = setTimeout(() => {
+    run.parkTimer = null;
+    requestPark(run);
+  }, TURN_RUNNER_TIMING.parkDelayMs);
+}
+
+/**
+ * Close the read of a run nobody views. Only once its turn is named (a POST that has
+ * not seen `turn.start` cannot be followed by id) and never a blocking `/chat` call or
+ * a question still waiting for capacity (they hold no stream).
+ */
+function requestPark(run: RunInternals): void {
+  if (run.state !== 'running' || run.attached > 0 || run.parked || run.parkRequested) return;
+  if (!run.turnId || !run.read || run.transport === 'blocking' || run.live.waiting) return;
+  run.parkRequested = true;
+  run.read.abort();
+}
+
+/** The drive loop waits here, with no connection open, until `unpark` or an abort. */
+function parkedWait(run: RunInternals): Promise<void> {
+  run.parkRequested = false;
+  const signal = run.controller.signal;
+  if (run.attached > 0 || run.state !== 'running' || signal.aborted) return Promise.resolve();
+  run.parked = true;
+  patchChatActivity(run.scope, { parked: true });
+  scheduleParkPoll();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      signal.removeEventListener('abort', done);
+      run.wake = null;
+      resolve();
+    };
+    run.wake = done;
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+function unpark(run: RunInternals): void {
+  if (!run.parked) return;
+  run.parked = false;
+  if (run.state === 'running') patchChatActivity(run.scope, { parked: false });
+  run.wake?.();
+}
+
+let parkPollTimer: ReturnType<typeof setTimeout> | null = null;
+let parkPolling = false;
+
+const parkedRuns = () => Array.from(runs.values()).filter((run) => run.parked && run.state === 'running');
+
+function scheduleParkPoll(): void {
+  if (parkPollTimer !== null || parkPolling || !parkedRuns().length) return;
+  parkPollTimer = setTimeout(() => {
+    parkPollTimer = null;
+    void pollParkedRuns();
+  }, TURN_RUNNER_TIMING.parkPollMs);
+}
+
+const lookupCount = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+
+/**
+ * Follow every parked run with one `GET /chat/turns/active`: a listed turn updates its
+ * step label; a turn no longer listed has ended, so its run reads the rest of its
+ * events (finished turns stay readable for five minutes) and settles with the real
+ * outcome. Called on its own cadence and, sooner, by `chat.turn` frames.
+ */
+export async function pollParkedRuns(): Promise<void> {
+  if (parkPolling) return;
+  if (parkPollTimer !== null) {
+    clearTimeout(parkPollTimer);
+    parkPollTimer = null;
+  }
+  if (!parkedRuns().length) return;
+  parkPolling = true;
+  let listed: Map<string, Record<string, unknown>> | null = null;
+  try {
+    const response = await request<unknown>('GET', 'chat/turns/active');
+    listed = new Map();
+    for (const turn of Array.isArray(response) ? response : []) {
+      const id = turn && typeof turn === 'object' ? (turn as { turn_id?: unknown }).turn_id : null;
+      if (isSafeChatId(id)) listed.set(id, turn as Record<string, unknown>);
+    }
+  } catch {
+    // Offline, or the server is busy: look again on the next round.
+    listed = null;
+  } finally {
+    parkPolling = false;
+  }
+  if (listed) {
+    for (const run of parkedRuns()) {
+      const turn = run.turnId ? listed.get(run.turnId) : undefined;
+      if (!turn) {
+        unpark(run);
+        continue;
+      }
+      const label = typeof turn.label === 'string' ? displayText(turn.label, 120) : '';
+      patchChatActivity(run.scope, { label: label || null, lookups: lookupCount(turn.lookups) });
+    }
+  }
+  scheduleParkPoll();
+}
+
 /** Stop (server-side cancel; a second call, or `force`, abandons the stream locally). */
 export function stopRun(run: TurnRun, force = false): void {
   const target = internals(run);
@@ -655,9 +854,12 @@ export function stopRun(run: TurnRun, force = false): void {
 
 /** Sign-out: stop reading every turn (the server finishes them) and forget them. */
 export function abortAllRuns(): void {
+  if (parkPollTimer !== null) clearTimeout(parkPollTimer);
+  parkPollTimer = null;
   for (const run of Array.from(runs.values())) {
     run.consumed = true;
     cancelFrame(run);
+    clearParkTimer(run);
     run.controller.abort();
     if (run.state === 'running') {
       // Views let go of it; nothing is applied (the next sign-in starts clean).
@@ -674,15 +876,52 @@ onChatActivity('clear', abortAllRuns);
 
 /* ------------------------------------------------------------------ settle -- */
 
+/** A new thread's turn whose answer saved: its scope is `conv:<id>` from now on. */
+function rekeyRun(run: RunInternals, conversationId: string): void {
+  const to = `conv:${conversationId}`;
+  if (run.scope === to || runs.get(to)?.state === 'running') return;
+  const from = run.scope;
+  if (runs.get(from) === run) runs.delete(from);
+  run.scope = to;
+  run.conversationId = conversationId;
+  runs.set(to, run);
+  rekeyChatActivity(from, to, { conversationId });
+}
+
 function finish(run: RunInternals, state: Exclude<TurnRunState, 'running'>, fields: Partial<TurnRun> = {}): void {
   if (run.state !== 'running') return;
   cancelFrame(run);
+  clearParkTimer(run);
+  run.parked = false;
+  run.wake = null;
   Object.assign(run, fields);
   run.state = state;
-  if (state === 'lost') dropChatActivity(run.scope);
+  // `turn:` — a turn followed for the server with neither a conversation nor a case
+  // (an unsaved chat): nothing could ever show it, so it leaves no mark.
+  if (state === 'lost' || run.scope.startsWith('turn:')) dropChatActivity(run.scope);
   else {
-    const outcome = state === 'done' ? (run.response?.clarify ? 'needs_input' : 'done') : state === 'stopped' ? 'stopped' : 'error';
-    settleChatActivity(run.scope, outcome);
+    const response = state === 'done' ? run.response : null;
+    const saved = !!response?.message_id;
+    // A replay may never have named the new thread at `turn.start`: its saved answer
+    // still lands under `conv:<id>`, where its row and its view find it.
+    if (saved && run.kind === 'workspace' && run.persisted && response?.conversation_id && run.scope.startsWith('draft:')) {
+      rekeyRun(run, response.conversation_id);
+    }
+    // D1: a first call that failed (budget, provider) answered nothing: not "ready".
+    const outcome: ChatActivityOutcome = response
+      ? isUnsavedTurn(response)
+        ? 'error'
+        : response.clarify
+          ? 'needs_input'
+          : 'done'
+      : state === 'stopped'
+        ? 'stopped'
+        : 'error';
+    // A NEW thread that saved nothing has no conversation to reopen (its temporary row
+    // is gone): no mark is left, and the toast offers to ask the question again.
+    const unreachable = run.kind === 'workspace' && !!run.request && !run.request.conversation_id && !saved;
+    settleChatActivity(run.scope, outcome, true, unreachable ? { unreachable, prompt: run.request?.message ?? null } : {});
+    if (unreachable && !run.attached) consumeRun(run);
   }
   if (run.kind === 'workspace') broadcastHistory();
   // A case turn nobody is looking at joins its session transcript now.
@@ -858,16 +1097,12 @@ function onTurnStart(run: RunInternals, event: TurnStartEvent): void {
   // A new thread learnt its id: the run is `conv:<id>` from now on, so leaving and
   // reopening that thread finds it.
   if (run.kind === 'workspace' && run.persisted && event.conversation_id && run.scope.startsWith('draft:')) {
-    const to = `conv:${event.conversation_id}`;
-    if (!runs.has(to) || runs.get(to)?.state !== 'running') {
-      const from = run.scope;
-      runs.delete(from);
-      run.scope = to;
-      runs.set(to, run);
-      rekeyChatActivity(from, to, { conversationId: event.conversation_id });
-      emit(run);
-    }
+    const before = run.scope;
+    rekeyRun(run, event.conversation_id);
+    if (run.scope !== before) emit(run);
   }
+  // Named now: a run nobody views can be parked.
+  if (!run.attached) scheduleParkCheck(run);
 }
 
 /* --------------------------------------------------------------------- read -- */
@@ -973,13 +1208,16 @@ function holderTurnId(error: ApiError): string | null {
 
 /* -------------------------------------------------------------------- drive -- */
 
-async function drive(run: RunInternals, body: ChatRequest | null, blocking: boolean): Promise<void> {
+async function drive(run: RunInternals, body: ChatRequest | null, blocking: boolean, startParked = false): Promise<void> {
   const signal = run.controller.signal;
   const canResend = !!body && body.persist_conversation === true && !!body.idempotency_key && run.kind === 'workspace';
   let mode: 'post' | 'events' | 'blocking' = !body ? 'events' : blocking ? 'blocking' : 'post';
   let after = 0;
+  /** Events read from the POST stream: the ring numbers them 1, 2, 3 … (pings excluded). */
+  let postEvents = 0;
   let resent = false;
   let waits = 0;
+  let busySince: number | null = null;
   let busyWaits = 0;
   let drops = 0;
   /** The server no longer knows the turn (404): re-attaching again is pointless. */
@@ -996,9 +1234,14 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
     }
     handleEvent(run, event);
   };
+  const onPostEvent = (event: ChatStreamEvent) => {
+    if (event.type !== 'ping') postEvents += 1;
+    onEvent(event, null);
+  };
   const resend = () => {
     resent = true;
     mode = 'post';
+    postEvents = 0;
     run.text = '';
     cancelFrame(run);
     setLive(run, (live) => ({ ...live, connection: 'recovering', text: '' }));
@@ -1012,6 +1255,19 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
     setLive(run, (live) => (live.connection === 'recovering' ? live : { ...live, connection: 'recovering' }));
     if (drops > 1) await sleep(recoveryDelayMs(drops - 2, null), signal);
   };
+  /**
+   * The read was closed to park the run: continue from the ring later. A POST stream
+   * that read every line resumes after its last event (the ring numbers the POST's
+   * events 1, 2, 3 …); otherwise the ring is read from its start (`turn.start` rebuilds
+   * the projection).
+   */
+  const park = async (malformed: number | null) => {
+    if (mode === 'post') after = malformed === 0 ? postEvents : 0;
+    mode = 'events';
+    await parkedWait(run);
+  };
+
+  if (startParked) await parkedWait(run);
 
   for (;;) {
     if (signal.aborted) {
@@ -1019,19 +1275,25 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
       return;
     }
     if (run.state !== 'running') return;
+    // One controller per read: parking closes the read, not the run.
+    const read = new AbortController();
+    const closeRead = () => read.abort();
+    signal.addEventListener('abort', closeRead, { once: true });
+    run.read = read;
+    if (!run.attached) scheduleParkCheck(run);
     try {
       if (mode === 'blocking' && run.request) {
         run.transport = 'blocking';
         setLive(run, (live) => ({ ...live, transport: 'blocking' }));
         // The exact request: `/chat` has no live mode.
-        const response = await postChat(run.request, signal);
+        const response = await postChat(run.request, read.signal);
         finish(run, 'done', { response });
         return;
       }
       const outcome =
         mode === 'post' && body
-          ? await streamChat(body, { signal, onEvent: (event) => onEvent(event, null) })
-          : await readTurnEvents(run.turnId as string, after, signal, onEvent);
+          ? await streamChat(body, { signal: read.signal, onEvent: onPostEvent })
+          : await readTurnEvents(run.turnId as string, after, read.signal, onEvent);
       if (run.state !== 'running') return;
       if (outcome.status === 'done') {
         finish(run, 'done', { response: outcome.event.response });
@@ -1042,7 +1304,14 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
         return;
       }
       if (outcome.status === 'aborted') {
-        if (run.forcedStop) finish(run, 'stopped');
+        if (signal.aborted) {
+          if (run.forcedStop) finish(run, 'stopped');
+          return;
+        }
+        if (run.parkRequested) {
+          await park(outcome.malformed);
+          continue;
+        }
         return;
       }
       // Ended without turn.done / turn.error.
@@ -1067,6 +1336,10 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
         if (run.forcedStop) finish(run, 'stopped');
         return;
       }
+      if (run.parkRequested && read.signal.aborted) {
+        await park(null);
+        continue;
+      }
       if (mode === 'post' && !resent && isStreamUnsupportedError(error)) {
         // An older backend without /chat/stream: use blocking /chat from now on.
         run.streamUnsupported = true;
@@ -1076,7 +1349,13 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
       if (error instanceof ApiError) {
         if ((mode === 'post' || mode === 'blocking') && error.status === 429 && apiErrorCode(error) === 'chat_busy') {
           // SPEC D6: at capacity, refused before anything started. Wait for another
-          // answer to finish, then send the same request again (same key).
+          // answer to finish, then send the same request again (same key) — for a
+          // while, not forever: then the question fails with Retry.
+          busySince ??= Date.now();
+          if (Date.now() - busySince >= TURN_RUNNER_TIMING.busyWaitLimitMs) {
+            finish(run, 'error', { failure: failureFromError(error, 'Chat is busy with other answers. Try again in a moment.') });
+            return;
+          }
           if (!run.live.waiting) setLive(run, (live) => ({ ...live, waiting: true }));
           await sleep(recoveryDelayMs(busyWaits, apiRetryAfterSeconds(error)), signal);
           busyWaits += 1;
@@ -1125,6 +1404,9 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
       }
       finish(run, 'error', { failure: failureFromError(error, 'Unexpected error contacting the assistant.') });
       return;
+    } finally {
+      signal.removeEventListener('abort', closeRead);
+      if (run.read === read) run.read = null;
     }
   }
 }
@@ -1188,10 +1470,15 @@ export async function markConversationRead(conversationId: string): Promise<bool
 
 /** Test seam: forget every run and session without touching the activity store. */
 export function resetTurnRunnerForTests(): void {
+  if (parkPollTimer !== null) clearTimeout(parkPollTimer);
+  parkPollTimer = null;
+  parkPolling = false;
   for (const run of Array.from(runs.values())) {
     cancelFrame(run);
+    clearParkTimer(run);
     run.controller.abort();
   }
   runs.clear();
   caseSessions.clear();
+  Object.assign(TURN_RUNNER_TIMING, DEFAULT_TIMING);
 }

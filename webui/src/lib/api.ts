@@ -130,7 +130,8 @@ import type {
 /** Payload for POST /api/cases/{id}/feedback (analyst grading). */
 export interface CaseFeedbackInput {
   analyst?: string;
-  assessment: 'agree' | 'partial' | 'disagree';
+  /** Omitted when the grade states no agreement (the backend defaults it to empty). */
+  assessment?: 'agree' | 'partial' | 'disagree';
   accuracy?: number;
   reasoning_quality?: number;
   action_appropriateness?: number;

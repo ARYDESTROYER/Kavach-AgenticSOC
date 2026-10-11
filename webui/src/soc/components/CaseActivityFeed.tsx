@@ -196,9 +196,7 @@ const LiveAgentSteps: React.FC<{ steps: AgentStep[] }> = ({ steps }) => {
       aria-label="Investigation in progress"
       className="rounded-md border border-info/40 bg-info/5 px-3 py-2"
     >
-      <p className="text-2xs font-medium uppercase tracking-wide text-info">
-        Investigation in progress
-      </p>
+      <p className="text-xs font-medium text-info-text">Investigation in progress</p>
       <ol className="mt-1 space-y-0.5">
         {steps.map((s, i) => (
           <li

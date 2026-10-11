@@ -726,8 +726,8 @@ export const CaseThread: React.FC<CaseThreadProps> = ({
 
       {canComment ? (
         <div className="rounded-lg border border-border bg-muted/20 p-3">
-          <div className="mb-2 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <Check className="h-3 w-3" />
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Check className="h-3 w-3" aria-hidden />
             New message
           </div>
           <ThreadComposer

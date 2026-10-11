@@ -1282,6 +1282,14 @@ export interface NoiseFunnelProps {
   loading?: boolean;
   /** Stagger the stage reveal + count-up (default true; reduced-motion still wins). */
   animate?: boolean;
+  /**
+   * Whether the stage numerals may COUNT UP to a changed value (default true). Separate
+   * from `animate` because `animate` also gates the one-shot ribbon sweep, which a LIVE
+   * refresh replays on purpose (Round 12 motion: "LIVE refresh replays only the noise
+   * sweep; numerals do not re-roll"). The host passes `false` for a quiet refresh, so a
+   * steady-ingest dashboard does not roll its stage totals every five seconds.
+   */
+  rollNumerals?: boolean;
   /** Accessible label for the funnel region. */
   ariaLabel?: string;
   className?: string;
@@ -1403,6 +1411,7 @@ export function NoiseFunnel({
   data,
   loading = false,
   animate = true,
+  rollNumerals = true,
   ariaLabel,
   className,
   onStageClick,
@@ -1670,7 +1679,7 @@ export function NoiseFunnel({
         <span className={cn('flex items-baseline gap-1', flat && 'w-full justify-start')}>
           <CountUp
             value={row.total}
-            duration={animate ? undefined : 0}
+            duration={animate && rollNumerals ? undefined : 0}
             className={cn(
               'font-semibold tabular-nums text-foreground',
               flat ? 'font-mono text-xl' : 'text-sm',
@@ -2448,7 +2457,7 @@ export function NoiseFunnel({
             <span className={cn('flex items-baseline gap-1', flat && 'w-full justify-start')}>
               <CountUp
                 value={simpleLayout.remainingEscalated}
-                duration={animate ? undefined : 0}
+                duration={animate && rollNumerals ? undefined : 0}
                 className={cn(
                   'font-semibold tabular-nums text-foreground',
                   flat ? 'font-mono text-xl' : 'text-sm',

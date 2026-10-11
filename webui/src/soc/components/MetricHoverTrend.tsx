@@ -325,6 +325,16 @@ export interface MetricHoverTrendProps extends MetricTrendSeries {
    * so nothing is lost while it is suppressed.
    */
   forceClosed?: boolean;
+  /**
+   * Refuse FOCUS-driven opens while true; a genuine HOVER still opens the card (Round 12
+   * review). The host sets it on the tile its modal just returned focus to: Radix restores
+   * that focus after the dialog's exit animation — past `forceClosed`'s grace — and the
+   * card then popped open over a strip the operator had just dismissed. Folding the hold
+   * into `forceClosed` instead blocked hover too, so an operator who closed the details
+   * and pointed at the tile for its trend got nothing. An open is accepted only while the
+   * pointer is over the trigger (or from a press).
+   */
+  suppressFocusOpen?: boolean;
   side?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['side'];
   align?: React.ComponentPropsWithoutRef<typeof HoverCardContent>['align'];
   openDelay?: number;
@@ -347,6 +357,7 @@ export function MetricHoverTrend({
   focusable = true,
   toggleOnClick,
   forceClosed = false,
+  suppressFocusOpen = false,
   side,
   align = 'center',
   openDelay = 160,
@@ -396,14 +407,48 @@ export function MetricHoverTrend({
     if (wasForceClosed) suppressOpenUntilRef.current = Date.now() + openDelay * 2;
   }, [forceClosed, openDelay]);
   const effectiveOpen = forceClosed ? false : open;
-  const handleOpenChange = React.useCallback(
-    (next: boolean) => {
+  /**
+   * Whether a (non-touch) pointer has MOVED over the trigger since it last left — a genuine
+   * hover. Movement, not `pointerenter`: when a modal closes over a resting pointer the
+   * browser sends the trigger a synthetic enter with no movement, and that is exactly the
+   * "card pops back after Escape" case a hold exists to refuse. A real entry from outside
+   * always moves.
+   */
+  const pointerInsideRef = React.useRef(false);
+  // A hold starts with NO hover on record: the modal that just closed sat between the
+  // pointer and this trigger, so an "inside" from before it is stale. A pointer that
+  // enters or moves over the trigger after this is a hover again.
+  React.useEffect(() => {
+    if (suppressFocusOpen) pointerInsideRef.current = false;
+  }, [suppressFocusOpen]);
+  /**
+   * During a hold, a pointer RESTING on the trigger when the modal closed got only that
+   * synthetic enter (refused above), so Radix's own hover open has been spent. Its first
+   * real movement is the hover start instead: this timer opens the card one `openDelay`
+   * later, exactly as an enter would, unless the pointer leaves first.
+   */
+  const hoverOpenTimerRef = React.useRef<number | null>(null);
+  const clearHoverOpen = React.useCallback(() => {
+    if (hoverOpenTimerRef.current !== null) {
+      window.clearTimeout(hoverOpenTimerRef.current);
+      hoverOpenTimerRef.current = null;
+    }
+  }, []);
+  React.useEffect(() => clearHoverOpen, [clearHoverOpen]);
+  const commitOpen = React.useCallback(
+    (next: boolean, viaPress: boolean) => {
       if (forceClosed) return;
       // Only OPENS are held off; a close is always honoured.
       if (next && Date.now() < suppressOpenUntilRef.current) return;
+      // A focus-only open is refused while the host holds it; a hover or press is not.
+      if (next && suppressFocusOpen && !viaPress && !pointerInsideRef.current) return;
       setOpen(next);
     },
-    [forceClosed],
+    [forceClosed, suppressFocusOpen],
+  );
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => commitOpen(next, false),
+    [commitOpen],
   );
   // Radix dismisses an open card on pointerdown OUTSIDE the portalled content —
   // and the trigger IS outside it — so by pointerup `open` may already read false
@@ -431,7 +476,7 @@ export function MetricHoverTrend({
     }
     const wasOpen = pressWasOpenRef.current ?? open;
     pressWasOpenRef.current = null;
-    handleOpenChange(!wasOpen);
+    commitOpen(!wasOpen, true);
   };
 
   return (
@@ -451,6 +496,21 @@ export function MetricHoverTrend({
           tabIndex={focusable ? 0 : undefined}
           onPointerDown={toggle ? handlePressStart : undefined}
           onPointerUp={toggle ? handlePressEnd : undefined}
+          onPointerMove={(e) => {
+            if (e.pointerType === 'touch') return;
+            const firstMove = !pointerInsideRef.current;
+            pointerInsideRef.current = true;
+            if (firstMove && suppressFocusOpen && !open && hoverOpenTimerRef.current === null) {
+              hoverOpenTimerRef.current = window.setTimeout(() => {
+                hoverOpenTimerRef.current = null;
+                if (pointerInsideRef.current) commitOpen(true, false);
+              }, openDelay);
+            }
+          }}
+          onPointerLeave={() => {
+            pointerInsideRef.current = false;
+            clearHoverOpen();
+          }}
           className={cn(
             'h-full min-w-0',
             // A quiet "there is more here" affordance on the non-clickable triggers;

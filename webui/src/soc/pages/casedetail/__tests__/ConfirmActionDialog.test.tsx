@@ -26,9 +26,17 @@ function Harness(over: Partial<ConfirmActionDialogProps> & { startOpen?: boolean
         pending={open ? ALL_ACTIONS.close_disposition : null}
         acting={false}
         onClose={() => setOpen(false)}
-        onSubmit={over.onSubmit ?? vi.fn()}
-        onSubmitAndNext={over.onSubmitAndNext}
+        onSubmit={over.onSubmit ?? (() => setOpen(false))}
+        onSubmitAndNext={
+          over.onSubmitAndNext
+            ? () => {
+                over.onSubmitAndNext?.();
+                setOpen(false);
+              }
+            : undefined
+        }
         returnFocusTo={opener}
+        focusAfterSubmit={over.focusAfterSubmit}
         note=""
         onNoteChange={vi.fn()}
         resolution=""
@@ -97,5 +105,43 @@ describe('ConfirmActionDialog', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it('opens with focus on the required disposition, not the Resolution select after it (CM-3)', async () => {
+    render(<Harness startOpen />);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(document.activeElement?.getAttribute('role')).toBe('radio'));
+    expect(within(dialog).getByRole('radiogroup').contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(within(dialog).getByRole('combobox', { name: 'Resolution (optional)' }));
+  });
+
+  it('after "Close & next" focus goes where the caller says (the next queue row), not the departed opener', async () => {
+    const nextRow = document.createElement('button');
+    nextRow.textContent = 'Next case row';
+    document.body.appendChild(nextRow);
+    const focusAfterSubmit = vi.fn(() => nextRow);
+    render(<Harness onSubmitAndNext={vi.fn()} focusAfterSubmit={focusAfterSubmit} />);
+    const opener = screen.getByRole('button', { name: 'Open close dialog' });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('radio', { name: /false positive/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close & next' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(nextRow).toHaveFocus());
+    expect(focusAfterSubmit).toHaveBeenCalledWith(opener, true);
+    nextRow.remove();
+  });
+
+  it('a cancel never consults the submit focus target: focus returns to the opener', async () => {
+    const focusAfterSubmit = vi.fn(() => null);
+    render(<Harness onSubmitAndNext={vi.fn()} focusAfterSubmit={focusAfterSubmit} />);
+    const opener = screen.getByRole('button', { name: 'Open close dialog' });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(opener).toHaveFocus());
+    expect(focusAfterSubmit).not.toHaveBeenCalled();
   });
 });

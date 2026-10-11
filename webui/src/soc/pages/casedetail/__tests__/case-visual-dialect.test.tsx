@@ -34,6 +34,22 @@ describe('casedetail sentence case', () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it('has no tracked or forced capitals on the Collaboration tab (thread, composer, activity)', () => {
+    // The Collaboration tab renders these shared components; D16 / SYNTHESIS-ux §3.6
+    // forbid tracked caps there ("NEW MESSAGE", "INVESTIGATION IN PROGRESS").
+    const COLLAB = ['CaseThread.tsx', 'CaseActivityFeed.tsx'];
+    const offenders: string[] = [];
+    for (const name of COLLAB) {
+      const text = readFileSync(path.resolve(process.cwd(), 'src/soc/components', name), 'utf8');
+      text.split('\n').forEach((line, index) => {
+        if (/className=.*\buppercase\b/.test(line) || /className=.*\btracking-(wide|wider|widest)\b/.test(line)) {
+          offenders.push(`${name}:${index + 1}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe('IOC verdict is tri-state', () => {

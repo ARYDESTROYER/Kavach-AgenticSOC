@@ -836,10 +836,10 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
 
   // A turn another tab or the server reports for the scope on screen joins it live, also
   // when that report lands after the thread restored (a reload: `GET /chat/turns/active`
-  // and the thread load race).
+  // and the thread load race; the runner then follows it as this tab's own, parked run).
   const reportedTurn = useChatActivity((snapshot) => {
     const entry = viewScope ? snapshot.entries.find((item) => item.scope === viewScope) : undefined;
-    return entry?.status === 'running' && entry.source !== 'local' ? entry.turnId : null;
+    return entry?.status === 'running' ? entry.turnId : null;
   });
   React.useEffect(() => {
     if (!reportedTurn || !viewScope || attachedRef.current) return;

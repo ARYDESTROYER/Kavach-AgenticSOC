@@ -45,15 +45,37 @@
   background: hsl(var(--surface));
 }
 
-/* The brand tile's ring: a thin arc around the tile; the logo inside never moves. */
+/* The brand tile's ring: a thin outline that follows the tile's own rounded square
+   3px out (concentric with its corners, clear of the product name). The outline never
+   moves; only a soft highlight travels around it (a rotating conic gradient, clipped
+   to the 1.5px outline). The logo inside never moves either. */
 .chat-brand-ring {
   position: absolute;
-  inset: -6px;
-  border-radius: 9999px;
-  border: 1.5px solid transparent;
-  border-top-color: hsl(var(--primary));
-  border-right-color: hsl(var(--primary) / 0.35);
+  inset: -3px;
+  /* The tile is rounded-md (var(--radius) - 2px); 3px further out: + 3px. */
+  border-radius: calc(var(--radius) + 1px);
+  padding: 1.5px;
+  overflow: hidden;
   pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+.chat-brand-ring::before {
+  content: '';
+  position: absolute;
+  inset: -50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 55%,
+    hsl(var(--primary) / 0.35) 75%,
+    hsl(var(--primary)) 100%
+  );
 }
 
 @keyframes chat-activity-spin {
@@ -74,9 +96,11 @@
   }
 
   .chat-brand-ring {
-    animation:
-      chat-activity-in 300ms ease-out,
-      chat-activity-spin 1.6s linear infinite;
+    animation: chat-activity-in 300ms ease-out;
+  }
+
+  .chat-brand-ring::before {
+    animation: chat-activity-spin 1.6s linear infinite;
   }
 }
 
@@ -96,8 +120,7 @@
     border-top-color: Highlight;
   }
 
-  .chat-brand-ring {
-    border-top-color: Highlight;
-    border-right-color: transparent;
+  .chat-brand-ring::before {
+    background: conic-gradient(from 0deg, transparent 0 55%, Highlight 75% 100%);
   }
 }

@@ -170,4 +170,23 @@ export const DispositionPicker: React.FC<DispositionPickerProps> = ({
   );
 };
 
+/**
+ * Give a dialog's initial focus to its disposition picker — the checked option, else
+ * the first — and scroll it into view. A required, empty radio group is not tabbable on
+ * first render (the roving group has no checked item yet), so Radix's default skipped it
+ * and focused the next control, often out of view under the sticky footer (CM-3).
+ * Returns false when there is no picker in `root`, so the caller keeps the default.
+ */
+export function focusDispositionPicker(root: ParentNode | null | undefined): boolean {
+  const picker = root?.querySelector('[data-testid="disposition-picker"]');
+  if (!picker) return false;
+  const radio =
+    picker.querySelector<HTMLElement>('[role="radio"][data-state="checked"]') ??
+    picker.querySelector<HTMLElement>('[role="radio"]:not([disabled])');
+  if (!radio) return false;
+  radio.focus();
+  radio.scrollIntoView?.({ block: 'nearest' });
+  return true;
+}
+
 export default DispositionPicker;

@@ -427,6 +427,13 @@ const fmtSnapshotCenter = (n: number): string => fmtTokens(n);
  * above asks for.
  */
 const SNAPSHOT_RING_PX = 128;
+/**
+ * The ring from 1920px up (Round 12 review): there the snapshots sit over the response
+ * pair while the queue beside them holds eight rows, and a 128px ring left the snapshot row
+ * short of the queue it shares the band with. 192px (hole ≈ 100px) fills the extra height
+ * with the instrument itself instead of blank space; the legend spreads to match.
+ */
+const SNAPSHOT_RING_WIDE_PX = 192;
 
 /**
  * The Case outcomes donut (Deeper analytics). 160px at a 0.3 ring leaves a ~78px hole —
@@ -716,6 +723,7 @@ function SnapshotCard({
   footnote,
   bound,
   roll = true,
+  ringPx = SNAPSHOT_RING_PX,
   className,
 }: {
   title: string;
@@ -746,9 +754,12 @@ function SnapshotCard({
    * without motion, like the KPI strip (`KpiTile roll`).
    */
   roll?: boolean;
+  /** The donut's ring in px: `SNAPSHOT_RING_PX`, or `SNAPSHOT_RING_WIDE_PX` from 1920px. */
+  ringPx?: number;
   /** Layout-only overrides for the card's own root. */
   className?: string;
 }) {
+  const wideRing = ringPx >= SNAPSHOT_RING_WIDE_PX;
   const segments = sevSegments(counts);
   const legend = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
   const centerClass = cn(
@@ -761,10 +772,10 @@ function SnapshotCard({
       {segments.length ? (
         <DonutChart
           segments={segments}
-          height={SNAPSHOT_RING_PX}
+          height={ringPx}
           thickness={0.26}
           showTooltip={false}
-          className="w-32 shrink-0"
+          className={cn('shrink-0', wideRing ? 'w-48' : 'w-32')}
           ariaLabel={ariaLabel}
           center={
             roll ? (
@@ -780,7 +791,10 @@ function SnapshotCard({
         <div
           role="img"
           aria-label={`${ariaLabel} (none)`}
-          className="flex h-32 w-32 shrink-0 items-center justify-center"
+          className={cn(
+            'flex shrink-0 items-center justify-center',
+            wideRing ? 'h-48 w-48' : 'h-32 w-32',
+          )}
         >
           <span className="text-3xl font-semibold tabular-nums text-muted-foreground">0</span>
         </div>
@@ -790,7 +804,7 @@ function SnapshotCard({
        * label (Round 12). Uncapped and `flex-1`, a 2560px viewport put "Critical" ~470px
        * from its own count, which read as two unrelated columns.
        */}
-      <ul className="min-w-0 max-w-[15rem] flex-1 space-y-1.5">
+      <ul className={cn('min-w-0 max-w-[15rem] flex-1', wideRing ? 'space-y-3' : 'space-y-1.5')}>
         {legend.length ? (
           legend.map((r) => {
             const pct = total > 0 ? Math.round((r.value / total) * 100) : 0;
@@ -965,12 +979,14 @@ function latestCaseStatus(status: string | null | undefined): {
 const LATEST_MIN_ROWS = 5;
 const LATEST_MAX_ROWS = 8;
 /**
- * The floor from 1920px up (Round 12 review). There the two snapshots sit side by side,
- * so the band is SHORTER than at 1440 and a pure fill showed five rows — fewer than the
- * six a 1440 screen gets. The widest screens must never show the least of the queue, so
- * from `3xl` the queue reserves six rows and the band grows the ~50px that costs.
+ * The floor from 1920px up: EIGHT rows, the spec's count for the widest screens (Round 12
+ * review). There the band changes shape so the queue can hold them without leaving blank
+ * space beside it: the response-time pair moves UNDER the two snapshots (one row of two
+ * stats) and the queue spans both rows on the right — the 4xl rail is the same column.
+ * The old six-row floor set the band's height instead, and at 1920 / 2560 left ~160 /
+ * ~190px empty under the snapshots and ~120 / ~140px under Response time.
  */
-const LATEST_MIN_ROWS_WIDE = 6;
+const LATEST_MIN_ROWS_WIDE = 8;
 const LATEST_WIDE_QUERY = '(min-width: 1920px)';
 /** Pre-measurement estimate of one queue row (title 20 + 2 gap + metadata 16 + 2 × 8
  *  padding), rounded up so the in-flow floor never undershoots — in REM (Round 12
@@ -983,6 +999,22 @@ const LATEST_ROW_GAP_REM = 0.25;
 const LATEST_ROW_ESTIMATE_PX = 56;
 /** The space between two latest-case rows (`gap-1`), in px for the fit arithmetic. */
 const LATEST_ROW_GAP_PX = 4;
+
+/** The longest signature label the collapsed Deeper analytics summary prints. */
+const SUMMARY_SIGNATURE_MAX = 40;
+
+/**
+ * A signature label capped for the collapsed Deeper analytics summary (Round 12 review):
+ * detection titles run to 80+ characters, and the case COUNT after the label is the part
+ * the summary exists to show. The whole label stays in the header's tooltip and in Top
+ * signatures inside.
+ */
+export function summarySignatureLabel(label: string, max: number = SUMMARY_SIGNATURE_MAX): string {
+  const clean = label.trim();
+  if (clean.length <= max) return clean;
+  // Cut at the limit, then drop the dangling space or separator ("Protection:…").
+  return `${clean.slice(0, max - 1).replace(/[\s:;,.\-\u2013\u2014]+$/u, '')}\u2026`;
+}
 
 /** The out-of-flow list's in-flow floor for `rows` rows, in rem (never px). */
 export function latestFloorCss(rows: number): string {
@@ -1666,6 +1698,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * that implies something happened when nothing did.
    */
   const [rollKpis, setRollKpis] = React.useState(true);
+  /** From 1920px the Cases band is two rows and the snapshot rings grow (Round 12 review). */
+  const wideScreen = useMediaQuery(LATEST_WIDE_QUERY);
   const changeRange = React.useCallback((next: TimeRange) => {
     setRollKpis(true);
     setRange(next);
@@ -3181,10 +3215,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const [openKpi, setOpenKpi] = React.useState<string | null>(null);
   /**
    * The tile focus was just RETURNED to by a closing drill-down (Round 12 review). Its
-   * hover trend stays shut until the operator moves on — focus leaves the tile or the
-   * pointer leaves it — because Radix restores focus only after the dialog's exit
-   * animation, after `MetricHoverTrend`'s own grace period has run out, and the card then
-   * popped open over a strip the operator had just dismissed it from with Escape.
+   * trend card refuses FOCUS-driven opens until the operator moves on — focus leaves the
+   * tile or the pointer leaves it — because Radix restores focus only after the dialog's
+   * exit animation, after `MetricHoverTrend`'s own grace period has run out, and the card
+   * then popped open over a strip the operator had just dismissed it from with Escape.
+   * HOVER is not held: pointing at the tile after a mouse Close shows its trend as usual
+   * (`suppressFocusOpen`, not `forceClosed`).
    */
   const [returnedKpi, setReturnedKpi] = React.useState<string | null>(null);
   /**
@@ -3367,10 +3403,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   // ----- Collapsed Deeper analytics: an inline summary (Round 12) --------- //
   /**
-   * What the fold holds, stated in one line while it is closed, so nothing hides behind an
-   * unlabelled disclosure: the timing trio, spend, silent sources and the top signature.
-   * Built only from values already on the page; an unmeasured value is left out rather
-   * than shown as a dash in a sentence.
+   * What the fold holds, stated while it is closed, so nothing hides behind an unlabelled
+   * disclosure: the timing trio, spend, silent sources and the top signature. Built only
+   * from values already on the page; an unmeasured value is left out rather than shown as
+   * a dash in a sentence.
+   *
+   * `text` is what the header shows: it WRAPS rather than truncating (Round 12 review — a
+   * one-line `truncate` cut the signature and its case count off at 1280 and below), and a
+   * long signature label is capped (`summarySignatureLabel`) so the count always shows.
+   * `full` is the same sentence with the whole label, for the header's tooltip.
    */
   const deeperSummary = React.useMemo(() => {
     const parts: string[] = [];
@@ -3386,10 +3427,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
     // Only a genuine LEADER is named (Round 12 review): when every signature is tied —
     // titles are often unique per case — item 0 is just the newest case, not the top one.
     const [lead, runnerUp] = signatureItems;
+    let signature: { short: string; full: string } | null = null;
     if (lead && lead.value > 1 && lead.value > (runnerUp?.value ?? 0)) {
-      parts.push(`top signature: ${lead.label} (${fmtNumber(lead.value)} cases)`);
+      const count = `(${fmtNumber(lead.value)} cases)`;
+      signature = {
+        short: `top signature: ${summarySignatureLabel(lead.label)} ${count}`,
+        full: `top signature: ${lead.label} ${count}`,
+      };
     }
-    return parts.join(' · ');
+    return {
+      text: [...parts, ...(signature ? [signature.short] : [])].join(' · '),
+      full: [...parts, ...(signature ? [signature.full] : [])].join(' · '),
+    };
   }, [timing, usage, usageLoad.availability, coverage, signatureItems]);
 
   // ----- The header control cluster --------------------------------------- //
@@ -3668,9 +3717,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       affordance: 'Select for the full population, filters and paging.',
                     }}
                     focusable={false}
-                    forceClosed={
-                      openKpi !== null || helpOpenKpi !== null || returnedKpi === kpi.testId
-                    }
+                    forceClosed={openKpi !== null || helpOpenKpi !== null}
+                    // The tile focus was just returned to: a late FOCUS open stays refused,
+                    // but pointing at the tile still shows its trend (Round 12 review).
+                    suppressFocusOpen={returnedKpi === kpi.testId}
                     side="bottom"
                   >
                     {tile}
@@ -3781,6 +3831,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         onToggleHidden={toggleNoiseHidden}
                         expandable
                         variant="flat"
+                        // The stage numerals follow the strip (Round 12 review): they count
+                        // up on the first load and a window change, never on a LIVE or
+                        // manual refresh. `animate` stays on, because the one-shot ribbon
+                        // sweep is the ONE motion a LIVE refresh replays.
+                        rollNumerals={rollKpis}
                         className="w-full"
                       />
                     ) : null}
@@ -3820,17 +3875,24 @@ export default function Overview({ onNavigate }: OverviewProps) {
               aside={<Freshness at={posture?.generated_at ?? null} />}
             >
               <div
+                // From 1920px the band is TWO rows (Round 12 review): the snapshots over the
+                // response-time pair on the left, the queue spanning both on the right (the
+                // 460px rail at 4xl). Row 2 is `1fr`, so the queue's eight rows set the
+                // band's height and any slack lands under the timing pair, not as a void
+                // beside a short snapshot row. DOM order — and so heading order — is
+                // unchanged: case state, response time, latest cases.
                 className={cn(
                   'grid min-w-0 items-stretch gap-x-6 gap-y-8 md:grid-cols-2 xl:grid-cols-12 3xl:gap-x-8',
-                  '4xl:grid-cols-[minmax(0,5fr)_minmax(0,3fr)_460px]',
+                  '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]',
                 )}
+                data-testid="cases-band-grid"
               >
                 {/* Case state: ONE labelled region holding both snapshots. They sit side by
                     side whenever the cell is at least 35rem (560px) wide and stack below
                     that — a container query, so it follows the cell, not the viewport. */}
                 <section
                   aria-label="Resolved and open cases"
-                  className="@container min-w-0 xl:col-span-5 4xl:col-span-1"
+                  className="@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1"
                 >
                   {/* `content-start`: the band stretches this cell, and a grid's auto rows
                       would otherwise share that stretch and push each snapshot's footnote
@@ -3843,6 +3905,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
                       bound={snapshotBound}
                       roll={rollKpis}
+                      ringPx={wideScreen ? SNAPSHOT_RING_WIDE_PX : SNAPSHOT_RING_PX}
                       goodDirection="down"
                       counts={derived.openSev}
                       ariaLabel="Open cases by severity"
@@ -3876,6 +3939,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       }
                       bound={snapshotBound}
                       roll={rollKpis}
+                      ringPx={wideScreen ? SNAPSHOT_RING_WIDE_PX : SNAPSHOT_RING_PX}
                       goodDirection="up"
                       counts={derived.resolvedSev}
                       ariaLabel="Resolved cases by severity"
@@ -3910,7 +3974,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     between them (the old `justify-center` halves left a ~110px void). */}
                 <section
                   aria-label="Mean time to detect / respond"
-                  className="flex min-w-0 flex-col xl:col-span-3 4xl:col-span-1"
+                  className="flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -3928,7 +3992,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       </Button>
                     ) : null}
                   </div>
-                  <div className="mt-4 grid gap-6 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-1">
+                  <div className="mt-4 grid gap-6 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-1 3xl:grid-cols-2 3xl:gap-x-8">
                     <MetricHoverTrend
                       metric="MTTD · daily mean"
                       points={timingTrends?.mttd}
@@ -3971,7 +4035,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   </div>
                 </section>
 
-                <div className="min-w-0 md:col-span-2 xl:col-span-4 4xl:col-span-1">
+                <div className="min-w-0 md:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2">
                   <TopCasesPanel
                     cases={latestCases}
                     navigate={navigate}
@@ -3993,16 +4057,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
             <section aria-label="Deeper analytics" className="min-w-0 border-t border-border pt-4">
               <h2 className="m-0">
                 <CollapsibleTrigger asChild>
+                  {/* The summary WRAPS (Round 12 review): beside the title from `md`, on
+                      its own line under it below that — never cut to one truncated line. */}
                   <button
                     type="button"
                     aria-expanded={deeperOpen}
                     aria-controls="overview-deeper-region"
-                    className="group/deeper flex w-full min-w-0 items-baseline gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="group/deeper flex w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <ChevronDown
                       aria-hidden
                       className={cn(
-                        'h-4 w-4 shrink-0 self-center text-muted-foreground transition-transform motion-reduce:transition-none',
+                        'mt-0.5 h-4 w-4 shrink-0 self-start text-muted-foreground transition-transform motion-reduce:transition-none',
                         deeperOpen ? 'rotate-0' : '-rotate-90',
                       )}
                     />
@@ -4010,12 +4076,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       Deeper analytics
                     </span>
                     <span
-                      className="min-w-0 truncate text-sm font-normal text-muted-foreground"
+                      className="min-w-0 basis-full whitespace-normal pl-6 text-sm font-normal text-muted-foreground md:basis-0 md:flex-1 md:pl-0"
                       data-testid="deeper-summary"
+                      title={!deeperOpen && deeperSummary.full ? deeperSummary.full : undefined}
                     >
-                      {deeperOpen || !deeperSummary
+                      {deeperOpen || !deeperSummary.text
                         ? 'Timing, spend, ingest coverage, volume, workload and outcomes'
-                        : deeperSummary}
+                        : deeperSummary.text}
                     </span>
                   </button>
                 </CollapsibleTrigger>

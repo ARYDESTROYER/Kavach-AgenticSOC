@@ -65,7 +65,7 @@ import {
   RESOLUTION_OPTIONS,
   TagInput,
 } from './shared';
-import { DispositionPicker } from './DispositionPicker';
+import { DispositionPicker, focusDispositionPicker } from './DispositionPicker';
 import { GradingSection, type GradingDraft } from './grading';
 
 export interface ConfirmActionDialogProps {
@@ -89,6 +89,12 @@ export interface ConfirmActionDialogProps {
    * Radix has no trigger of its own and would otherwise drop focus on <body>.
    */
   returnFocusTo?: React.RefObject<HTMLElement | null>;
+  /**
+   * Where focus goes when a SUBMIT closes the dialog and the opener may have left (the
+   * Case Manager: a queue row the action took out of the view, or "Close & next", which
+   * lands on the next case's row). Return null to keep `returnFocusTo` / the opener.
+   */
+  focusAfterSubmit?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
 
   // Controlled field values + setters (owned by the orchestrator).
   note: string;
@@ -145,6 +151,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   onSubmit,
   onSubmitAndNext,
   returnFocusTo,
+  focusAfterSubmit,
   note,
   onNoteChange,
   resolution,
@@ -178,9 +185,9 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   const [reconcileDismissed, setReconcileDismissed] = React.useState(false);
   React.useEffect(() => {
     if (pending) return;
-    // The content's unmount (and with it `onCloseAutoFocus`) has already run by the
-    // time this parent effect fires, so the captured opener can be released here.
-    openerRef.current = null;
+    // The captured opener is NOT released here: Radix fires `onCloseAutoFocus` from a
+    // timeout after the content unmounts, i.e. after this effect, and it still needs the
+    // opener. `restoreFocus` releases it.
     setReconcileDismissed(false);
   }, [pending]);
 
@@ -208,15 +215,34 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   const canSubmit = !acting && !(hasDisposition && !disposition);
   const offerNext = Boolean(pending && onSubmitAndNext && isTerminalAction(pending));
 
+  // Which submit closed the dialog (null: cancelled or dismissed). Reset on every open.
+  const submitRef = React.useRef<'submit' | 'next' | null>(null);
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    // A fresh dialog starts with no submit recorded. (Not cleared on close: the close
+    // focus handler runs after that render and must still see which submit closed it.)
+    if (pending) submitRef.current = null;
+  }, [pending]);
+
   const restoreFocus = (event: Event) => {
-    const target = [returnFocusTo?.current, openerRef.current].find(
+    const submitted = submitRef.current;
+    submitRef.current = null;
+    const opener = openerRef.current ?? returnFocusTo?.current ?? null;
+    openerRef.current = null;
+    const afterSubmit = submitted && focusAfterSubmit ? focusAfterSubmit(opener, submitted === 'next') : null;
+    const target = [afterSubmit, returnFocusTo?.current, opener].find(
       (el): el is HTMLElement => Boolean(el && el.isConnected),
     );
-    openerRef.current = null;
     if (target) {
       event.preventDefault();
       target.focus();
     }
+  };
+
+  // Initial focus: the disposition the analyst must choose (scrolled into view), not
+  // the first control after it. Other actions keep Radix's default.
+  const focusFirstField = (event: Event) => {
+    if (focusDispositionPicker(contentRef.current)) event.preventDefault();
   };
 
   return (
@@ -228,7 +254,9 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     >
       {pending ? (
         <DialogContent
+          ref={contentRef}
           data-testid="confirm-action-dialog"
+          onOpenAutoFocus={focusFirstField}
           onCloseAutoFocus={restoreFocus}
           className={cn(
             'flex flex-col gap-0 overflow-hidden p-0',
@@ -450,11 +478,24 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
             </Button>
             {offerNext ? (
               <>
-                <Button variant="outline" onClick={onSubmit} disabled={!canSubmit}>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    submitRef.current = 'submit';
+                    onSubmit();
+                  }}
+                  disabled={!canSubmit}
+                >
                   {acting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <pending.icon className="h-4 w-4" />}
                   {pending.label}
                 </Button>
-                <Button onClick={onSubmitAndNext} disabled={!canSubmit}>
+                <Button
+                  onClick={() => {
+                    submitRef.current = 'next';
+                    onSubmitAndNext?.();
+                  }}
+                  disabled={!canSubmit}
+                >
                   {acting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
                   {pending.key === 'resolve' ? 'Resolve & next' : 'Close & next'}
                 </Button>
@@ -462,7 +503,10 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
             ) : (
               <Button
                 variant={pending.variant === 'outline' ? 'default' : pending.variant}
-                onClick={onSubmit}
+                onClick={() => {
+                  submitRef.current = 'submit';
+                  onSubmit();
+                }}
                 disabled={!canSubmit}
               >
                 {acting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <pending.icon className="h-4 w-4" />}

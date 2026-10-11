@@ -156,7 +156,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(feedbackBody.assessment).toBe('agree');
   });
 
-  it('confirms the close with the recorded outcome and offers Undo, which posts the reopen verb', async () => {
+  it('confirms the close with the recorded outcome and offers Reopen (not "Undo"), which posts the reopen verb', async () => {
     getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
     caseActionExec
       .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' })
@@ -171,14 +171,61 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     fireEvent.click(submit);
 
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
-    const [message, options] = toastMock.success.mock.calls[0] as [string, { action?: { label: string; onClick: () => void }; duration?: number }];
+    const [message, options] = toastMock.success.mock.calls[0] as [
+      string,
+      { action?: { label: string; onClick: () => void }; duration?: number; description?: string },
+    ];
     expect(message).toBe('Closed as false positive.');
     expect(options?.duration).toBe(8000);
-    expect(options?.action?.label).toBe('Undo');
+    // A reopen keeps the recorded classification (and the resolved-case precedent), so
+    // it is labelled for what it does and says the outcome stays until a new close.
+    expect(options?.action?.label).toBe('Reopen');
+    expect(options?.action?.label).not.toBe('Undo');
+    expect(options?.description).toMatch(/keeps this outcome on record until you close the case again/i);
 
     options!.action!.onClick();
     await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(2));
     expect(caseActionExec.mock.calls[1][1]).toMatchObject({ action: 'reopen' });
+    await waitFor(() =>
+      expect(toastMock.success).toHaveBeenLastCalledWith('Reopened. The recorded outcome stays until you close it again.'),
+    );
+  });
+
+  it('posts NO grade when an analyst settles a Needs-human case without grading it (Agreement stays honest)', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    await within(dialog).findByText(/Settles the AI's hand-off/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    // The close is the analyst's record; an untouched grade on a hand-off is not "agree".
+    expect(caseFeedback).not.toHaveBeenCalled();
+  });
+
+  it('a Needs-human close the analyst DID grade posts the grade without a made-up assessment', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: /rate in detail/i }));
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Accuracy: 4 of 5' }));
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    const [, body] = caseFeedback.mock.calls[0];
+    expect(body).toMatchObject({ accuracy: 0.8 });
+    expect(body).not.toHaveProperty('assessment');
   });
 
   it('POSTs the assessment DERIVED from the FINAL disposition even if the grading section was collapsed first', async () => {

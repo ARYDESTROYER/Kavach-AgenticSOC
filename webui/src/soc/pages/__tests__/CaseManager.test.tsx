@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { BackgroundJob, BackgroundJobKind, Case } from '@/lib/types';
@@ -28,7 +28,23 @@ const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
   toastError: vi.fn(),
+  // The live `cases` topic: the queue's onEvent handler, captured from useEventStream.
+  streamOnEvent: null as null | ((event: { type: string; data: unknown }) => void),
+  // What the mocked detail's "Mock reopen" reports (an Undo/Reopen right after a close).
+  detailNext: null as Case | null,
+  resolveDialogFocus: null as null | ((opener: HTMLElement | null, andNext: boolean) => HTMLElement | null),
 }));
+
+vi.mock('@/lib/useEventStream', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/useEventStream')>('@/lib/useEventStream');
+  return {
+    ...actual,
+    useEventStream: (topics: string[], opts: { onEvent?: (event: { type: string; data: unknown }) => void } = {}) => {
+      if (topics.includes('cases')) mocks.streamOnEvent = opts.onEvent ?? null;
+      return { live: false };
+    },
+  };
+});
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -112,13 +128,31 @@ vi.mock('../CaseDetail', () => ({
     presentation,
     onClose,
     onCaseChange,
+    onAdvance,
+    resolveDialogFocus,
   }: {
     caseId: string;
     presentation: string;
     onClose: () => void;
     onCaseChange?: (c: Case) => void;
-  }) => (
+    onAdvance?: () => void;
+    resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
+  }) => {
+    mocks.resolveDialogFocus = resolveDialogFocus ?? null;
+    return (
     <section data-testid="embedded-case-detail" data-case-id={caseId} data-presentation={presentation}>
+      <h2 data-case-title tabIndex={-1}>Mock title</h2>
+      <button
+        type="button"
+        onClick={() => {
+          if (mocks.detailNext) onCaseChange?.(mocks.detailNext);
+        }}
+      >
+        Mock reopen
+      </button>
+      <button type="button" onClick={() => onAdvance?.()}>
+        Mock advance
+      </button>
       <span>Overview</span><span>Timeline</span><span>Investigation</span>
       <span>Threat context</span><span>Collaboration</span><span>Chat</span>
       <button type="button" onClick={onClose}>Mock back</button>
@@ -129,7 +163,8 @@ vi.mock('../CaseDetail', () => ({
         Mock resolve
       </button>
     </section>
-  ),
+    );
+  },
 }));
 
 const OPEN_CRITICAL: Case = {
@@ -279,11 +314,16 @@ describe('CaseManager', () => {
     mocks.toastSuccess.mockClear();
     mocks.toastWarning.mockClear();
     mocks.toastError.mockClear();
+    mocks.streamOnEvent = null;
+    mocks.detailNext = null;
+    mocks.resolveDialogFocus = null;
   });
 
-  it('centers the shared loading state while the initial case queue is unavailable', () => {
+  it('centers the shared loading state while the initial case queue is unavailable', async () => {
     mocks.listCases.mockReturnValue(new Promise(() => {}));
     render(<CaseManager />);
+    // Let the mount-time owner list settle inside act (strict console gate).
+    await act(async () => {});
 
     const loading = screen.getByRole('status', { name: 'Loading cases' });
     expect(loading).toHaveAttribute('data-loading-layout', 'panel');
@@ -432,6 +472,8 @@ describe('CaseManager', () => {
     );
 
     fireEvent.click(screen.getByRole('radio', { name: 'All' }));
+    // The All view is a new server query; wait for it so no update lands after the test.
+    expect(await screen.findByText('1 of 2 cases · 2 loaded')).toBeInTheDocument();
     const resolved = screen
       .getAllByTestId('case-queue-row')
       .find((candidate) => within(candidate).queryByText('Benign health check')) as HTMLElement;
@@ -938,7 +980,7 @@ describe('CaseManager', () => {
         screen.getAllByTestId('case-queue-row').find((row) => within(row).queryByText(title)) as HTMLElement,
       ).getAllByRole('button')[0];
 
-    rowButton('Suspicious S3 bucket exfiltration').focus();
+    act(() => rowButton('Suspicious S3 bucket exfiltration').focus());
     fireEvent.keyDown(list, { key: 'j' });
     await waitFor(() =>
       expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
@@ -953,6 +995,8 @@ describe('CaseManager', () => {
     await waitFor(() =>
       expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id),
     );
+
+    await waitFor(() => expect(rowButton('Suspicious S3 bucket exfiltration')).toHaveFocus());
 
     fireEvent.keyDown(document.body, { key: '?' });
     expect(await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
@@ -1026,6 +1070,231 @@ describe('CaseManager', () => {
     expect(screen.getByRole('button', { name: /^close…$/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /more bulk actions for/i })).toBeDisabled();
     expect(mocks.submitJob).not.toHaveBeenCalled();
+  });
+
+  // ---- live queue honesty (Round 12 review: F1/F2/F5) ------------------------------ //
+
+  /** 68 active cases, newest-updated first; the queue loads the newest 50. */
+  function activeDataset(count = 68): Case[] {
+    return Array.from({ length: count }, (_, i) => ({
+      case_id: `case-${String(i).padStart(4, '0')}`,
+      case_number: `CASE-${String(5000 + i)}`,
+      title: `Active case ${i}`,
+      status: 'open',
+      severity_band: 'medium',
+      risk_score: 30,
+      updated_at: new Date(Date.UTC(2026, 9, 1, 0, 0, 0) + i * 60_000).toISOString(),
+    }));
+  }
+
+  function liveChanged(caseId: string, created = false) {
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: caseId, status: 'open', created } });
+    });
+  }
+
+  it('shows a case that a live change moves INTO the loaded window (unloaded id, not created)', async () => {
+    const dataset = activeDataset();
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 68 active · 50 loaded')).toBeInTheDocument();
+    expect(screen.queryByText('Active case 5')).not.toBeInTheDocument();
+
+    // Another analyst puts an old, unloaded case on hold: it now lists first under Latest.
+    dataset[5] = { ...dataset[5], status: 'on_hold', updated_at: '2026-10-02T00:00:00Z' };
+    liveChanged(dataset[5].case_id);
+
+    expect(await screen.findByText('Active case 5', undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('68 active');
+
+    // …and Load more still reaches every case (no offset drift, no stuck "67 of 68").
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    expect(await screen.findByText('All 68 loaded')).toBeInTheDocument();
+    expect(screen.getAllByTestId('case-queue-row')).toHaveLength(68);
+  });
+
+  it('re-reads the window when Load more pages over a live-shifted order instead of skipping a case', async () => {
+    const dataset = activeDataset();
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 68 active · 50 loaded')).toBeInTheDocument();
+
+    // A case beyond the window moves to the top with NO live event (the stream is down).
+    dataset[3] = { ...dataset[3], updated_at: '2026-10-02T00:00:00Z' };
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    // The offset page repeats a loaded row; the queue re-reads instead of appending a gap.
+    expect(await screen.findByText('All 68 loaded')).toBeInTheDocument();
+    expect(screen.getByText('Active case 3')).toBeInTheDocument();
+    const ids = screen.getAllByTestId('case-queue-row').map((row) => row.getAttribute('data-case-id'));
+    expect(new Set(ids).size).toBe(68);
+  });
+
+  it('brings a case reopened right after a close back into the Active queue and its total', async () => {
+    const dataset = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
+    mocks.listCases.mockImplementation(serve(dataset));
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+
+    // Close: the row leaves the Active window and its total.
+    dataset[2] = { ...OPEN_CRITICAL, status: 'resolved' };
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('1 active · 1 loaded'));
+    await waitFor(() => expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument());
+
+    // Reopen (the close toast's action): the server lists it again, so must the queue.
+    const reopened = { ...OPEN_CRITICAL, status: 'open', updated_at: '2026-07-20T11:00:00Z' };
+    dataset[2] = reopened;
+    mocks.detailNext = reopened;
+    fireEvent.click(screen.getByRole('button', { name: 'Mock reopen' }));
+
+    expect(await screen.findByText('Suspicious S3 bucket exfiltration')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('2 active · 2 loaded'));
+  });
+
+  it('drops a row that no longer matches the status filter after a live change, and counts only matching new cases', async () => {
+    const dataset = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+
+    // Status filter: "Open · awaiting analyst" (needs_human).
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status filter' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Open · awaiting analyst' }));
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'needs_human' })),
+    );
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('1 active · 1 loaded'));
+
+    // Acknowledged elsewhere: no longer needs_human, so it leaves this filtered view.
+    dataset[0] = { ...OPEN_HIGH, status: 'investigating' };
+    liveChanged(OPEN_HIGH.case_id);
+    await waitFor(() => expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument(), { timeout: 3000 });
+    expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('0 active · 0 loaded');
+
+    // A new case outside the filter is not "new" here; a matching one is.
+    const outside: Case = { ...OPEN_CRITICAL, case_id: 'case-new-1', title: 'New investigating case', status: 'investigating' };
+    const inside: Case = { ...OPEN_HIGH, case_id: 'case-new-2', title: 'New awaiting case', status: 'needs_human' };
+    dataset.push(outside);
+    liveChanged(outside.case_id, true);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    });
+    expect(screen.queryByRole('button', { name: /new case/i })).not.toBeInTheDocument();
+    dataset.push(inside);
+    liveChanged(inside.case_id, true);
+    expect(await screen.findByRole('button', { name: '1 new case · Show' }, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  it('re-reads the queue when the live stream overflowed (frames were dropped)', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const before = mocks.listCases.mock.calls.length;
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'overflow', data: {} });
+    });
+    await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  // ---- focus and keyboard (Round 12 review: F8/F15/F16/F17/F18) ------------------- //
+
+  it('Close & next focus: lands on the next case row, never <body> (SYNTHESIS-ux §3.4/§3.7)', async () => {
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+    const rowButton = (id: string) =>
+      within(document.querySelector(`[data-queue-row][data-case-id="${id}"]`) as HTMLElement).getAllByRole('button')[0];
+    const opener = rowButton(OPEN_CRITICAL.case_id);
+    act(() => opener.focus());
+
+    // The dialog's submit: the case leaves Active, then the queue advances.
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock advance' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    // The dialog asks where focus goes after "Close & next": the next case's row.
+    const target = mocks.resolveDialogFocus?.(opener, true) ?? null;
+    expect(target).toBe(rowButton(OPEN_HIGH.case_id));
+    await waitFor(() => expect(rowButton(OPEN_HIGH.case_id)).toHaveFocus());
+  });
+
+  it('a plain Close from a queue row lands on the row that took its place', async () => {
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+    const opener = within(
+      document.querySelector(`[data-queue-row][data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement,
+    ).getAllByRole('button')[0];
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    await waitFor(() => expect(screen.getByTestId('case-queue-scope')).toHaveTextContent('1 active'));
+    const target = mocks.resolveDialogFocus?.(opener, false);
+    expect(target?.closest('[data-queue-row]')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id);
+    // An opener that stays (a detail control) keeps the dialog's own default.
+    expect(mocks.resolveDialogFocus?.(screen.getByRole('button', { name: 'Mock back' }), false)).toBeNull();
+  });
+
+  it('X on a focused checkbox toggles THAT row, and Space is left to the checkbox itself', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const list = screen.getByRole('list', { name: 'Cases' });
+    const lowCheckbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' });
+    const topCheckbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' });
+
+    act(() => lowCheckbox.focus());
+    fireEvent.keyDown(lowCheckbox, { key: ' ' });
+    // Space is the checkbox's native toggle: the queue handler does not toggle the roving row.
+    expect(topCheckbox).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.keyDown(lowCheckbox, { key: 'x' });
+    expect(lowCheckbox).toHaveAttribute('aria-checked', 'true');
+    expect(topCheckbox).toHaveAttribute('aria-checked', 'false');
+    expect(list).toBeInTheDocument();
+  });
+
+  it('keeps one live region: the scope line is not aria-live and opening announces only the position', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    expect(screen.getByTestId('case-queue-scope')).not.toHaveAttribute('aria-live');
+  });
+
+  it('labels the density toggle once and carries its state in aria-pressed', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const toggle = screen.getByRole('button', { name: 'Compact rows' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: 'Compact rows' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('returns focus from the shortcuts dialog to the control that opened it', async () => {
+    const user = userEvent.setup();
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const button = screen.getByRole('button', { name: 'Keyboard shortcuts' });
+    await user.click(button);
+    await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument());
+    expect(button).toHaveFocus();
+  });
+
+  it('"Back to case queue" lands on the case row, not <body>', async () => {
+    render(<CaseManager initialCaseId={OPEN_HIGH.case_id} />);
+    await screen.findByText('2 of 2 active · 2 loaded');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to case queue' }));
+    await waitFor(() =>
+      expect(document.activeElement?.closest('[data-queue-row]')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+  });
+
+  it('a letter typed on a queue filter never fires a page shortcut', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const severity = screen.getByRole('combobox', { name: 'Severity filter' });
+    severity.focus();
+    fireEvent.keyDown(severity, { key: '?' });
+    expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument();
   });
 
   it('has no detectable accessibility violations in the split workspace', async () => {

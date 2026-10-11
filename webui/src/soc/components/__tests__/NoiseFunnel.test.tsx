@@ -9,7 +9,7 @@
  * context in Simple.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
@@ -1106,6 +1106,63 @@ describe('NoiseFunnel Simple-mode stage shares', () => {
         name: /^Closed by analyst policy: 6 cases, 15% of cases opened/i,
       }),
     ).toHaveLength(2);
+  });
+});
+
+describe('NoiseFunnel stage numerals on a refresh (Round 12 review)', () => {
+  /** A copy of the fixture whose ingested stage counts `total` alerts. */
+  function withIngested(total: number): NoiseReduction {
+    const data = fixture();
+    data.stages = data.stages.map((stage) => (stage.key === 'ingested' ? { ...stage, total } : stage));
+    return data;
+  }
+
+  /**
+   * Every text `node` shows from now until it settles on `final`: a MutationObserver sees
+   * each frame a count-up commits, so a tween shows up as values between the two totals.
+   */
+  async function textsUntil(node: HTMLElement, final: string, change: () => void): Promise<string[]> {
+    const seen = [node.textContent ?? ''];
+    const observer = new MutationObserver(() => {
+      const text = node.textContent ?? '';
+      if (seen[seen.length - 1] !== text) seen.push(text);
+    });
+    observer.observe(node, { childList: true, characterData: true, subtree: true });
+    change();
+    await waitFor(() => expect(node).toHaveTextContent(final), { timeout: 3000 });
+    // Let any frame still in flight land before the record is read.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    observer.disconnect();
+    return seen;
+  }
+
+  /** The ingested total on the stage rail (its first count). */
+  function ingestedCount(): HTMLElement {
+    return within(screen.getByTestId('noise-stage-rail')).getAllByTestId('count-up')[0];
+  }
+
+  it('counts the stage totals up by default (first load, window change)', async () => {
+    setReducedMotion(false);
+    const view = render(<NoiseFunnel data={withIngested(1000)} variant="flat" />);
+    const node = ingestedCount();
+    expect(node).toHaveTextContent('1000');
+    const seen = await textsUntil(node, '1400', () =>
+      view.rerender(<NoiseFunnel data={withIngested(1400)} variant="flat" />),
+    );
+    // The positive control: the observer DOES see a tween's intermediate frames.
+    expect(seen.some((text) => text !== '1000' && text !== '1400')).toBe(true);
+  });
+
+  it('shows a refreshed stage total without counting up when rollNumerals is off', async () => {
+    setReducedMotion(false);
+    const view = render(<NoiseFunnel data={withIngested(1000)} variant="flat" rollNumerals={false} />);
+    const node = ingestedCount();
+    const seen = await textsUntil(node, '1400', () =>
+      view.rerender(<NoiseFunnel data={withIngested(1400)} variant="flat" rollNumerals={false} />),
+    );
+    expect(seen).toEqual(['1000', '1400']);
   });
 });
 

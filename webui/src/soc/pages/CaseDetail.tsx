@@ -166,11 +166,13 @@ import { ChatTab } from './casedetail/CaseChatPanel';
 import { ConfirmActionDialog } from './casedetail/ConfirmActionDialog';
 import { CaseHeaderMeta } from './casedetail/CaseHeaderMeta';
 import { FactsRail } from './casedetail/FactsRail';
-import { CaseChatActivityGlyph } from '@/soc/chat-activity/case-glyph';
+import { shortcutBlocked } from './casedetail/keyboard';
+import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
 import {
   deriveAgreement,
   emptyGradingDraft,
   gradingToFeedbackInput,
+  isGradingDirty,
   type GradingDraft,
 } from './casedetail/grading';
 
@@ -310,6 +312,12 @@ export interface CaseDetailProps {
    * advances to the next case. Omitted → the close dialog offers plain Close only.
    */
   onAdvance?: () => void;
+  /**
+   * Case Manager: where focus lands after a lifecycle dialog closes on a submit, when the
+   * dialog's opener may have left (a queue row the action took out of the view). Returns
+   * null to keep the dialog's default (its opener).
+   */
+  resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
 }
 
 export const CaseDetail: React.FC<CaseDetailProps> = ({
@@ -320,6 +328,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   onCaseChange,
   previewCase = null,
   onAdvance,
+  resolveDialogFocus,
 }) => {
   const open = Boolean(caseId && caseId.trim());
   const id = caseId || '';
@@ -353,6 +362,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [tab, setTab] = React.useState<
     'overview' | 'timeline' | 'investigation' | 'threat' | 'collab' | 'chat'
   >('overview');
+  // Round 12 (SPEC D13): "Open" on a case-chat toast lands on this case's Chat tab.
+  useCaseChatRequest(open ? id : null, () => setTab('chat'));
   const panelScrollRef = React.useRef<HTMLDivElement>(null);
 
   // All six panels share one scroll lane. Reset it when the selected tab/case changes
@@ -462,6 +473,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [ownerOpen, setOwnerOpen] = React.useState(false);
   const [tagsOpen, setTagsOpen] = React.useState(false);
   const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const detailsTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const detailsTitleRef = React.useRef<HTMLHeadingElement | null>(null);
   // The control that opened a lifecycle / editor dialog, so focus returns to it (CM-3).
   const actionOpenerRef = React.useRef<HTMLElement | null>(null);
   const takeActionTriggerRef = React.useRef<HTMLButtonElement | null>(null);
@@ -1086,8 +1099,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setPending(null);
       resetActionFields();
       // Completion feedback names the outcome that was recorded (Apple §16). A close or
-      // resolve offers Undo for 8 s: it posts the existing `reopen` analyst verb (#3) —
-      // the recorded classification stays in the case history, as every reopen keeps it.
+      // resolve offers REOPEN for 8 s — the existing `reopen` analyst verb (#3). It is
+      // deliberately not called Undo: a reopen keeps the classification the analyst just
+      // recorded (it stays the case's analyst outcome, and the resolved-case precedent
+      // written at close stays too) until the case is closed again with a new one. The
+      // toast says so, so a misclick is fixed by reopening AND re-closing correctly.
       if (pending.fields.includes('disposition') && actionDisposition) {
         const verb = (pending.wireAction ?? pending.key) === 'resolve' ? 'Resolved' : 'Closed';
         if (pending.key === 'set_disposition') {
@@ -1099,19 +1115,21 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
             duration: 8000,
             ...(canReopen
               ? {
+                  description:
+                    'Reopening keeps this outcome on record until you close the case again with a new one.',
                   action: {
-                    label: 'Undo',
+                    label: 'Reopen',
                     onClick: () => {
                       void api
                         .caseActionExec(closedId, {
                           action: 'reopen',
-                          note: 'Reopened with Undo right after it was closed.',
+                          note: 'Reopened from the close confirmation right after it was closed.',
                         })
                         .then((reopened) => {
                           // Sync the queue always; the detail only if it still shows this case.
                           if (activeIdRef.current === closedId) commitCase(reopened);
                           else onCaseChange?.(reopened);
-                          toast.success('Reopened.');
+                          toast.success('Reopened. The recorded outcome stays until you close it again.');
                         })
                         .catch((err: unknown) => {
                           toast.error(errorMessage(err, 'The case could not be reopened.'));
@@ -1160,12 +1178,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         const committedDisposition =
           pending.key === 'confirm_fp' ? 'false_positive' : actionDisposition;
         const derived = deriveAgreement(gradedVerdictRaw, committedDisposition);
-        const freshAssessment = derived.kind === 'none' ? undefined : derived.assessment;
-        const feedbackBody = gradingToFeedbackInput(
-          { ...grading, assessment: freshAssessment },
-          currentUser || undefined,
-        );
-        void api
+        // Only a match or an override is an agreement signal. A Needs-human hand-off the
+        // analyst settled (`resolved`) or an outcome with no comparison (`none`) states no
+        // agreement, so nothing is posted unless the analyst entered a grade themselves —
+        // otherwise every settled hand-off would count as "agree" in the Agreement metric.
+        const freshAssessment =
+          derived.kind === 'match' || derived.kind === 'override' ? derived.assessment : undefined;
+        const gradedDraft: GradingDraft = { ...grading, assessment: freshAssessment };
+        const feedbackBody = gradingToFeedbackInput(gradedDraft, currentUser || undefined);
+        if (freshAssessment || isGradingDirty(gradedDraft)) {
+          void api
           .caseFeedback(id, feedbackBody)
           .then((updated) => {
             // Reflect the just-recorded grading in the prior-gradings history, but only
@@ -1187,6 +1209,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
               toast.warning(`Case updated, but the grading was not recorded: ${detail}`);
             }
           });
+        }
       }
     } catch (e) {
       // A failed lifecycle action is a MUTATION failure, not a case-load failure — use a
@@ -1340,16 +1363,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     const TAB_KEYS: Array<typeof tab> = ['overview', 'timeline', 'investigation', 'threat', 'collab', 'chat'];
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
+      // Text entry, a Select (typeahead), a menu or a radio group consumes letters itself;
+      // an open picker owns the keyboard. One key must never do two things.
+      if (shortcutBlocked(event)) return;
       // A different modal surface (a palette, another dialog) owns the keyboard.
       if (presentation === 'embedded' && document.querySelector('[role="dialog"][data-state="open"]')) return;
       const state = shortcutStateRef.current;
@@ -1490,12 +1506,17 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                 label="Loading case"
                 className="absolute inset-x-0 top-0 rounded-none"
               />
-              {/* Line 1: the title and the actions share ONE row; below a 56rem pane the
-                  title is a single line (full title on hover and in its accessible name)
-                  and the secondary buttons fold into the Take action menu, so the evidence
-                  keeps its height (casemanager.md §4.1). Line 2: the meta row, full width. */}
-              <header className="flex items-start gap-x-3">
-                <div className="min-w-0 flex-1">
+              {/* Line 1: the title and the actions share ONE row when the whole title fits
+                  beside them; when it does not (a long title in the default 1280 pane, a
+                  phone) the actions WRAP to their own row and the title takes the full
+                  width — it is never squeezed to a few characters or to nothing. The title
+                  cell's flex basis is its natural width (`flex-auto`), which is what the
+                  wrap decision is made on. Below a 56rem pane the title is a single line
+                  (full title on hover and in its accessible name) and the secondary Close
+                  folds into the Take action menu (casemanager.md §4.1). Line 2: the meta
+                  row, full width. */}
+              <header className="flex flex-wrap items-start gap-x-3 gap-y-2" data-testid="case-title-row">
+                <div className="min-w-0 max-w-full flex-auto" data-testid="case-title-cell">
                   {/* UNTRUSTED title — plain text node. The full title is in the accessible
                       name and the hover title when it clamps. The SAME heading element is
                       rendered while the case loads (visually hidden, "Loading case"), so the
@@ -1517,7 +1538,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                   </h2>
                 </div>
 
-                <div className="flex shrink-0 items-center justify-end gap-2">
+                <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 @[48rem]/case:gap-2">
                   {c && actionPlan.close && canCloseSecondary ? (
                     <Button
                       variant="outline"
@@ -1723,6 +1744,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
                   {/* The facts rail folds into a side sheet in a narrow pane. */}
                   <Button
+                    ref={detailsTriggerRef}
                     variant="ghost"
                     size="sm"
                     className="h-8 px-2 @[60rem]/case:hidden"
@@ -2003,8 +2025,33 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
       {/* Narrow panes: the same facts in a NON-blocking side sheet (no scrim). */}
       <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} modal={false}>
-        <SheetContent side="right" size="default" className="overflow-y-auto p-5 pt-12" aria-describedby={undefined}>
-          <SheetTitle className="sr-only">Case facts</SheetTitle>
+        <SheetContent
+          side="right"
+          size="default"
+          className="overflow-y-auto p-5"
+          aria-describedby={undefined}
+          // Open on the sheet's heading, never its first help tip (whose explainer would
+          // then pop open by itself); close back to the Details button, not <body> — the
+          // sheet is opened from state and non-modal, so Radix has no trigger to return to.
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            detailsTitleRef.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            const trigger = detailsTriggerRef.current;
+            if (trigger && trigger.isConnected) {
+              event.preventDefault();
+              trigger.focus();
+            }
+          }}
+        >
+          <SheetTitle
+            ref={detailsTitleRef}
+            tabIndex={-1}
+            className="mb-4 pr-10 text-base font-semibold leading-8 text-foreground outline-none"
+          >
+            Case facts
+          </SheetTitle>
           {rail}
         </SheetContent>
       </Sheet>
@@ -2130,6 +2177,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         onSubmit={() => void runAction(false)}
         onSubmitAndNext={onAdvance ? () => void runAction(true) : undefined}
         returnFocusTo={actionOpenerRef}
+        focusAfterSubmit={resolveDialogFocus}
         note={note}
         onNoteChange={setNote}
         resolution={resolution}

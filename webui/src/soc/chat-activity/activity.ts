@@ -39,6 +39,18 @@ export interface ChatActivitySettled {
   outcome: ChatActivityOutcome;
   /** The analyst had this chat on screen (no toast, no unread mark). */
   viewed: boolean;
+  /**
+   * Nothing can show this chat again (a new thread whose first answer was never saved):
+   * it leaves no mark, and the toast offers to ask the question again instead of Open.
+   */
+  unreachable?: boolean;
+  /** The exact question, for "Ask again" (this tab's own turns only; never stored). */
+  prompt?: string | null;
+}
+
+export interface ChatActivitySettleOptions {
+  unreachable?: boolean;
+  prompt?: string | null;
 }
 
 type Listener = () => void;
@@ -46,6 +58,8 @@ type Listener = () => void;
 const settledListeners = new Set<(event: ChatActivitySettled) => void>();
 const clearListeners = new Set<Listener>();
 const viewing = new Map<string, number>();
+/** A case-chat toast's Open, waiting for its case page (see `requestCaseChat`). */
+let caseChatRequest: { caseId: string; at: number } | null = null;
 let sink: ((message: ChatActivityMessage) => void) | null = null;
 
 const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
@@ -58,22 +72,46 @@ const PHRASES: Array<[ChatActivityStatus, string, string]> = [
   ['failed', 'answer failed', 'answers failed'],
   ['unread', 'new answer', 'new answers'],
 ];
+/** A question the analyst has already looked at: it stays until it is answered. */
+const SEEN_QUESTION: [string, string] = ['question waiting for your answer', 'questions waiting for your answer'];
+
+/** Display titles stay short: a case id plus a prompt is clipped here. */
+const TITLE_CHARS = 120;
+
+/**
+ * An entry's display title. A case chat names its case ("Case <id>: Summarize case"),
+ * so two cases summarising at once can be told apart. Plain text only (#9).
+ */
+export function chatActivityTitle(entry: Pick<ChatActivity, 'kind' | 'caseId' | 'title'>): string {
+  const text = entry.kind === 'case' && entry.caseId ? `Case ${entry.caseId}${entry.title ? `: ${entry.title}` : ''}` : entry.title;
+  const chars = Array.from(text);
+  return chars.length > TITLE_CHARS ? `${chars.slice(0, TITLE_CHARS - 1).join('').trimEnd()}…` : text;
+}
 
 /**
  * The glyph state and its text for a set of entries ("Chat: 1 answer in progress:
- * <title>"). A question the analyst has already looked at keeps its dot but is not
- * repeated in the text.
+ * <title>"). Whenever there is a glyph there is text: a question the analyst has
+ * already looked at reads "1 question waiting for your answer".
  */
 export function describeChatActivity(entries: readonly ChatActivity[], label = 'Chat'): ChatActivitySummary {
   const parts: string[] = [];
   let status: ChatActivityStatus | null = null;
+  const phrase = (group: readonly ChatActivity[], one: string, several: string) => {
+    if (group.length === 1) {
+      const title = chatActivityTitle(group[0]);
+      parts.push(`1 ${one}${title ? `: ${title}` : ''}`);
+    } else if (group.length) parts.push(`${group.length} ${several}`);
+  };
   for (const [kind, one, several] of PHRASES) {
     const group = entries.filter((entry) => entry.status === kind);
     if (!group.length) continue;
     status ??= kind;
-    const fresh = group.filter((entry) => !entry.seen);
-    if (fresh.length === 1) parts.push(`1 ${one}${fresh[0].title ? `: ${fresh[0].title}` : ''}`);
-    else if (fresh.length) parts.push(`${fresh.length} ${several}`);
+    phrase(
+      group.filter((entry) => !entry.seen),
+      one,
+      several,
+    );
+    if (kind === 'needs_input') phrase(group.filter((entry) => entry.seen), ...SEEN_QUESTION);
   }
   return { status, text: parts.length ? `${label}: ${parts.join('; ')}` : '' };
 }
@@ -117,6 +155,7 @@ export function setChatActivitySink(next: ((message: ChatActivityMessage) => voi
 /** Sign-out or another user: forget everything and stop this tab's turns (the runner listens). */
 export function clearChatActivity(local = true): void {
   if (getChatActivity().entries.length) commit([]);
+  caseChatRequest = null;
   for (const listener of Array.from(clearListeners)) listener();
   send({ t: 'clear' }, local);
 }
@@ -183,16 +222,35 @@ export function isChatActivityViewed(scope: string): boolean {
   return (viewing.get(scope) ?? 0) > 0 && visible();
 }
 
-/** A turn finished: on screen it simply ends; elsewhere it leaves its mark. */
-export function settleChatActivity(scope: string, outcome: ChatActivityOutcome, local = true): void {
+/**
+ * A turn finished: on screen it simply ends; elsewhere it leaves its mark, unless
+ * nothing could ever show it (`unreachable`: a new thread that saved nothing).
+ */
+export function settleChatActivity(
+  scope: string,
+  outcome: ChatActivityOutcome,
+  local = true,
+  options: ChatActivitySettleOptions = {},
+): void {
   const current = find(scope);
   if (!current) return;
   const viewed = isChatActivityViewed(scope);
-  const status: ChatActivityStatus | null =
-    outcome === 'needs_input' ? 'needs_input' : viewed || outcome === 'stopped' ? null : outcome === 'done' ? 'unread' : 'failed';
-  if (status) putChatActivity({ ...current, status, seen: viewed, label: null }, local);
+  const status: ChatActivityStatus | null = options.unreachable
+    ? null
+    : outcome === 'needs_input'
+      ? 'needs_input'
+      : viewed || outcome === 'stopped'
+        ? null
+        : outcome === 'done'
+          ? 'unread'
+          : 'failed';
+  if (status) putChatActivity({ ...current, status, seen: viewed, label: null, parked: false }, local);
   else dropChatActivity(scope, local);
-  const event = { activity: current, outcome, viewed };
+  const event: ChatActivitySettled = { activity: current, outcome, viewed };
+  if (options.unreachable) {
+    event.unreachable = true;
+    event.prompt = options.prompt ?? null;
+  }
   for (const listener of Array.from(settledListeners)) listener(event);
 }
 
@@ -213,6 +271,7 @@ export function markViewedChatActivitySeen(): void {
 /** Register a chat that is on screen; returns the release. */
 export function viewChatActivity(scope: string): () => void {
   viewing.set(scope, (viewing.get(scope) ?? 0) + 1);
+  viewedChanged();
   if (visible()) markChatActivitySeen(scope);
   let released = false;
   return () => {
@@ -221,7 +280,51 @@ export function viewChatActivity(scope: string): () => void {
     const count = (viewing.get(scope) ?? 1) - 1;
     if (count > 0) viewing.set(scope, count);
     else viewing.delete(scope);
+    viewedChanged();
   };
+}
+
+/* The scopes on screen, for hosts that render them differently (the history rail does
+   not list, as another row, the new thread whose first answer is on screen). */
+let viewedScopes: ReadonlySet<string> = new Set();
+const viewedListeners = new Set<Listener>();
+
+function viewedChanged(): void {
+  viewedScopes = new Set(viewing.keys());
+  for (const listener of Array.from(viewedListeners)) listener();
+}
+
+/** The scopes mounted views show (identity changes only when the set does). */
+export function getViewedChatScopes(): ReadonlySet<string> {
+  return viewedScopes;
+}
+
+export function subscribeViewedChatScopes(listener: Listener): () => void {
+  viewedListeners.add(listener);
+  return () => viewedListeners.delete(listener);
+}
+
+/* "Open" on a case-chat toast: the case opens on its Chat tab. The request waits for
+   that case's page to take it (it may still be loading), for a short while only. */
+const CASE_CHAT_REQUEST_MS = 30_000;
+const caseChatListeners = new Set<Listener>();
+
+export function requestCaseChat(caseId: string): void {
+  caseChatRequest = { caseId, at: Date.now() };
+  for (const listener of Array.from(caseChatListeners)) listener();
+}
+
+/** True once, for the case that was asked for (and drops the request). */
+export function takeCaseChatRequest(caseId: string): boolean {
+  const request = caseChatRequest;
+  if (!request || request.caseId !== caseId) return false;
+  caseChatRequest = null;
+  return Date.now() - request.at <= CASE_CHAT_REQUEST_MS;
+}
+
+export function subscribeCaseChatRequest(listener: Listener): () => void {
+  caseChatListeners.add(listener);
+  return () => caseChatListeners.delete(listener);
 }
 
 /** Apply another tab's change (never sent back out). */

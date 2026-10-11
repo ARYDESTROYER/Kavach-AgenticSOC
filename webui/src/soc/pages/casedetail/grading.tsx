@@ -13,7 +13,10 @@
  *   NEEDS_HUMAN    ↔ { suspicious, undetermined }
  *   NEEDS_HUMAN    → { true_positive, false_positive, benign } = RESOLVED (Round 12, D15):
  *                    the model handed the call to a person, so a concrete outcome settles
- *                    that hand-off — it is never counted as the analyst overriding the AI
+ *                    that hand-off. It is NOT an agreement signal either way: it is never
+ *                    counted as the analyst overriding the AI, and never as agreeing with
+ *                    it (the model made no call to agree with), so it carries no
+ *                    assessment and the close posts no grade unless the analyst gave one
  *   duplicate      → no comparison (administrative outcome, not an agree/override signal)
  * A match reads "Matches AI verdict"; a mismatch reads "Overrides AI verdict (X → Y)"
  * and only THEN reveals an optional "What did the AI miss?" line. The 3 detailed quality
@@ -130,9 +133,9 @@ export interface GradingDraft {
 export type GradingAgreement =
   | { kind: 'match'; assessment: 'agree' }
   | { kind: 'override'; assessment: 'disagree'; fromLabel: string; toLabel: string }
-  // NEEDS_HUMAN settled with a concrete outcome: the AI correctly deferred to a person,
-  // so the posted assessment is `agree` and the case never reads as a disagreement.
-  | { kind: 'resolved'; assessment: 'agree'; toLabel: string }
+  // NEEDS_HUMAN settled with a concrete outcome: the AI deferred to a person. No
+  // assessment — neither a disagreement nor an "agree" the analyst never stated.
+  | { kind: 'resolved'; toLabel: string }
   | { kind: 'none' };
 
 /* -------------------------------------------------------------- pure logic --- */
@@ -210,7 +213,7 @@ export function deriveAgreement(
   if (!allowed) return { kind: 'none' };
   if (allowed.includes(d)) return { kind: 'match', assessment: 'agree' };
   if (v === 'NEEDS_HUMAN' && NEEDS_HUMAN_RESOLUTIONS.includes(d)) {
-    return { kind: 'resolved', assessment: 'agree', toLabel: humanizeToken(d) };
+    return { kind: 'resolved', toLabel: humanizeToken(d) };
   }
   return {
     kind: 'override',
@@ -231,11 +234,14 @@ export function agreementText(a: GradingAgreement): string | null {
 /**
  * Convert a {@link GradingDraft} into the EXISTING backend `CaseFeedbackInput` shape.
  * Stars → 0..1 via {@link starsToScore}; only present/non-empty fields are included;
- * `assessment` defaults to `'agree'` (the field is required by the contract); the
- * optional `analyst` is passed through when provided.
+ * the optional `analyst` is passed through when provided. `assessment` is sent ONLY when
+ * the draft carries one (a derived match/override): it is never defaulted to `agree`,
+ * so a grade on a settled Needs-human hand-off cannot inflate the Agreement metric. The
+ * backend's own default (an empty assessment) applies when it is absent.
  */
 export function gradingToFeedbackInput(g: GradingDraft, analyst?: string): CaseFeedbackInput {
-  const body: CaseFeedbackInput = { assessment: g.assessment ?? 'agree' };
+  const body: CaseFeedbackInput = {};
+  if (g.assessment) body.assessment = g.assessment;
   const a = starsToScore(g.accuracy);
   const r = starsToScore(g.reasoning_quality);
   const ap = starsToScore(g.action_appropriateness);
@@ -363,7 +369,8 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
   // Keep the parent draft's derived `assessment` in sync with the current
   // verdict↔disposition diff so the close-time submit carries the right value. Guarded
   // to only fire on an actual change (terminates — never loops).
-  const derivedAssessment = agreement.kind === 'none' ? undefined : agreement.assessment;
+  const derivedAssessment =
+    agreement.kind === 'match' || agreement.kind === 'override' ? agreement.assessment : undefined;
   React.useEffect(() => {
     if (draft.assessment !== derivedAssessment) {
       onChange({ ...draft, assessment: derivedAssessment });

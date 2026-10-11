@@ -615,8 +615,14 @@ const SummaryTile: React.FC<{
   onClick?: () => void;
   /** Hover title clarifying the count's basis (e.g. "Among N loaded cases"). */
   title?: string;
+  /**
+   * A visible basis line under the count, shown only when the list is truncated, so a
+   * tile never reads as a total it is not ("of 200 loaded"), or says how many of a
+   * server total the filtered list can show ("1 loaded").
+   */
+  note?: string;
   testId?: string;
-}> = ({ label, count, icon: Icon, tone, active = false, onClick, title, testId }) => (
+}> = ({ label, count, icon: Icon, tone, active = false, onClick, title, note, testId }) => (
   <button
     type="button"
     onClick={onClick}
@@ -644,8 +650,20 @@ const SummaryTile: React.FC<{
       <span className="block truncate text-2xs font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
-      <span className="block text-lg font-semibold leading-tight tabular-nums text-foreground">
-        {count.toLocaleString()}
+      {/* The basis note sits beside the count and wraps under it when the tile is
+          narrow — never truncated, since it is what makes the number honest. */}
+      <span className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="text-lg font-semibold leading-tight tabular-nums text-foreground">
+          {count.toLocaleString()}
+        </span>
+        {note ? (
+          <span
+            data-testid={testId ? `${testId}-note` : undefined}
+            className="whitespace-nowrap text-xs leading-4 tabular-nums text-muted-foreground"
+          >
+            {note}
+          </span>
+        ) : null}
       </span>
     </span>
   </button>
@@ -804,8 +822,25 @@ export default function Cases({
   // ConfirmDialog. The close still posts through the SAME analyst action endpoint
   // (server-side decide()), never a client-side status write (#3).
   const [closeTarget, setCloseTarget] = React.useState<Case | null>(null);
+  // The controls that opened the (state-driven) close dialogs: focus returns there, not
+  // to <body>, when the dialog closes.
+  const closeOpenerRef = React.useRef<HTMLElement | null>(null);
+  const bulkTerminalOpenerRef = React.useRef<HTMLElement | null>(null);
+  const captureBulkOpener = () => {
+    const active = document.activeElement;
+    bulkTerminalOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  };
   // Round 12 (SPEC D15): every bulk Close / Resolve captures the analyst's disposition.
   const [bulkTerminal, setBulkTerminal] = React.useState<BulkTerminalAction | null>(null);
+
+  // Exact server totals for the lifecycle tiles when only the newest LIST_LIMIT cases are
+  // loaded (Round 12): the loaded slice is the NEWEST cases, which in a busy deployment are
+  // mostly closed, so counting it read "Active 1 · Needs human 0" while hundreds waited.
+  const [serverCounts, setServerCounts] = React.useState<{
+    active: number | null;
+    terminal: number | null;
+    needsHuman: number | null;
+  } | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -814,6 +849,20 @@ export default function Cases({
       const res = await api.listCases({ limit: LIST_LIMIT });
       setCases(res.cases);
       setTotal(res.total);
+      if (res.total > res.cases.length) {
+        // Best effort, never blocking the list: a failed count falls back to the
+        // loaded-slice count, labelled as such. Needs human = active cases whose status
+        // or AI verdict is needs_human — the server's queue search matches both fields.
+        const count = (query: Record<string, string | number>) =>
+          api.listCases({ ...query, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
+        void Promise.all([
+          count({ status_group: 'active' }),
+          count({ status_group: 'terminal' }),
+          count({ status_group: 'active', q: 'needs_human' }),
+        ]).then(([active, terminal, needsHuman]) => setServerCounts({ active, terminal, needsHuman }));
+      } else {
+        setServerCounts(null);
+      }
     } catch (e) {
       setError(e);
     } finally {
@@ -940,6 +989,20 @@ export default function Cases({
   const loadedScopeTitle = truncated
     ? `Among the ${cases.length.toLocaleString()} loaded cases (of ${total.toLocaleString()})`
     : `Among ${cases.length.toLocaleString()} case${cases.length === 1 ? '' : 's'}`;
+  // A truncated list: the lifecycle tiles show the exact server total (with how many of
+  // them the loaded list can show); the severity tiles count the loaded slice and say so.
+  const loadedNote = truncated ? `of ${cases.length.toLocaleString()} loaded` : undefined;
+  const lifecycleTile = (loadedCount: number, server: number | null | undefined, noun: string) =>
+    truncated && typeof server === 'number'
+      ? {
+          count: server,
+          note: `${loadedCount.toLocaleString()} loaded`,
+          title: `${server.toLocaleString()} ${noun} in total; ${loadedCount.toLocaleString()} of them are among the ${cases.length.toLocaleString()} loaded cases this list filters`,
+        }
+      : { count: loadedCount, note: loadedNote, title: loadedScopeTitle };
+  const activeTile = lifecycleTile(counts.active, serverCounts?.active, 'active cases');
+  const terminalTile = lifecycleTile(counts.terminal, serverCounts?.terminal, 'resolved or closed cases');
+  const needsHumanTile = lifecycleTile(counts.needsHuman, serverCounts?.needsHuman, 'active cases awaiting an analyst');
 
   // Drop any selection no longer visible so the bulk bar can't act on hidden rows.
   React.useEffect(() => {
@@ -1340,6 +1403,7 @@ export default function Cases({
                 aria-label={`Close case ${c.case_id}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  closeOpenerRef.current = e.currentTarget;
                   setCloseTarget(c);
                 }}
               >
@@ -1466,39 +1530,43 @@ export default function Cases({
       >
         <SummaryTile
           label="Active"
-          count={counts.active}
+          count={activeTile.count}
+          note={activeTile.note}
           icon={Briefcase}
           tone="info"
           active={filters.status === ACTIVE}
           onClick={() => setFilter('status', filters.status === ACTIVE ? ANY : ACTIVE)}
-          title={loadedScopeTitle}
+          title={activeTile.title}
           testId="cases-summary-open"
         />
         <SummaryTile
           label="Terminal"
-          count={counts.terminal}
+          count={terminalTile.count}
+          note={terminalTile.note}
           icon={CheckCircle2}
           tone="success"
           active={filters.status === TERMINAL}
           onClick={() => setFilter('status', filters.status === TERMINAL ? ANY : TERMINAL)}
-          title={loadedScopeTitle}
+          title={terminalTile.title}
           testId="cases-summary-terminal"
         />
         <SummaryTile
           label="Needs human"
-          count={counts.needsHuman}
+          count={needsHumanTile.count}
+          note={needsHumanTile.note}
           icon={HelpCircle}
           tone="primary"
           active={filters.status === NEEDS_HUMAN}
           onClick={() =>
             setFilter('status', filters.status === NEEDS_HUMAN ? ANY : NEEDS_HUMAN)
           }
-          title={loadedScopeTitle}
+          title={needsHumanTile.title}
           testId="cases-summary-needs-human"
         />
         <SummaryTile
           label="Critical"
           count={counts.bySeverity.critical}
+          note={loadedNote}
           icon={AlertOctagon}
           tone="critical"
           active={filters.severity === 'critical'}
@@ -1511,6 +1579,7 @@ export default function Cases({
         <SummaryTile
           label="High"
           count={counts.bySeverity.high}
+          note={loadedNote}
           icon={AlertTriangle}
           tone="high"
           active={filters.severity === 'high'}
@@ -1521,6 +1590,7 @@ export default function Cases({
         <SummaryTile
           label="Medium"
           count={counts.bySeverity.medium}
+          note={loadedNote}
           icon={Square}
           tone="medium"
           active={filters.severity === 'medium'}
@@ -1533,6 +1603,7 @@ export default function Cases({
         <SummaryTile
           label="Low"
           count={counts.bySeverity.low}
+          note={loadedNote}
           icon={Circle}
           tone="low"
           active={filters.severity === 'low'}
@@ -1833,8 +1904,14 @@ export default function Cases({
         count={selectedCases.length}
         busy={bulkBusy}
         onAcknowledge={() => void runBulk({ action: 'acknowledge' }, 'are being acknowledged')}
-        onClose={() => setBulkTerminal('close')}
-        onResolve={() => setBulkTerminal('resolve')}
+        onClose={() => {
+          captureBulkOpener();
+          setBulkTerminal('close');
+        }}
+        onResolve={() => {
+          captureBulkOpener();
+          setBulkTerminal('resolve');
+        }}
         onAssign={(assignee) =>
           void submitCaseJob('case_assign', { assignee }, `are being assigned to ${assignee}`)
         }
@@ -1866,6 +1943,7 @@ export default function Cases({
         onSubmit={(input) => {
           void confirmClose(input);
         }}
+        returnFocusTo={closeOpenerRef}
       />
 
       {/* Bulk Close / Resolve — the disposition is required on every terminal path. */}
@@ -1873,6 +1951,7 @@ export default function Cases({
         action={bulkTerminal}
         count={selectedCases.length}
         busy={bulkBusy}
+        returnFocusTo={bulkTerminalOpenerRef}
         onCancel={() => setBulkTerminal(null)}
         onSubmit={(input) => {
           setBulkTerminal(null);
