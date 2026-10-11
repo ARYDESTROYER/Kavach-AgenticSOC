@@ -9,12 +9,12 @@ import { chartSvg, esc, viewNotes, wrapText, type Paint } from '../charts/export
 import { chartFileName, chartSvgDocument, parseComputedColor, paintResolver } from '../charts/export-image';
 import { isoWeek, localParts, rebinChart, rebinChoices, zoneSupported } from '../charts/rebin';
 import { sliceChart } from '../charts/CartesianChart';
-import { changeParts, roundHalfEven, shortCalendarLabel, xAxisHeader, xPositionLabel, xTickLabel } from '../format';
+import { changeParts, roundHalfEven, shortCalendarLabel, xAxisHeader, xPositionLabel, xRangeLabel, xTickLabel } from '../format';
 import { comparisonFacts } from '../renderers/ComparisonView';
-import { headingRepeatsLeaf, highlightColumns, infographicParts, spanPlan } from '../renderers/InfographicView';
+import { headingRepeatsLeaf, highlightColumns, infographicParts, leafVisibleTitle, spanPlan } from '../renderers/InfographicView';
 import { TEMPLATE_NAME, reportLayout } from '../renderers/ReportView';
 import { TEMPLATE_LABEL } from '../../report/model';
-import { allowedRebin, parseBlock } from '../schema';
+import { FALLBACK_TEXT, allowedRebin, parseBlock } from '../schema';
 import type { ChartBlock, KpiGroupBlock, ReportBlock } from '../schema';
 import { ROUND12_RAW, dailyCount, istDays, round12Block } from '../__fixtures__/round12';
 
@@ -288,6 +288,31 @@ describe('zoom slice', () => {
     expect(sliceChart(c, [60, 69]).last_in_progress).toBe(true);
     expect(sliceChart(c, [0, 69])).toBe(c);
   });
+
+  it('names a zoomed range short enough for a phone: a shared year once, everything else in full', () => {
+    const axis = (labels: string[], kind: 'time' | 'category' = 'time') => ({
+      kind,
+      values: kind === 'time' ? labels.map((_, i) => `2026-0${i + 1}-01T00:00:00Z`) : labels,
+      bucket: '1d' as const,
+      labels: kind === 'time' ? labels : undefined,
+    });
+    expect(xRangeLabel(axis(['23 Sep 2026', '7 Oct 2026']), 0, 1)).toBe('23 Sep – 7 Oct 2026');
+    expect(xRangeLabel(axis(['Jul 2026', 'Oct 2026']), 0, 1)).toBe('Jul – Oct 2026');
+    expect(xRangeLabel(axis(['W14 2026', 'W17 2026']), 0, 1)).toBe('W14 – W17 2026');
+    expect(xRangeLabel(axis(['Dec 2025', 'Feb 2026']), 0, 1)).toBe('Dec 2025 – Feb 2026');
+    // A cut-edge note, a clock or a label that is itself a range keeps every part.
+    expect(xRangeLabel(axis(['Jul 2026 (from 14 Jul)', 'Oct 2026']), 0, 1)).toBe('Jul 2026 (from 14 Jul) – Oct 2026');
+    expect(xRangeLabel(axis(['10 Oct 2026 14:00', '10 Oct 2026 18:00']), 0, 1)).toBe('10 Oct 2026 14:00 – 10 Oct 2026 18:00');
+    expect(xRangeLabel(axis(['16 Sep 2026 – 22 Sep 2026', '7 Oct 2026 – 13 Oct 2026']), 0, 1)).toBe(
+      '16 Sep 2026 – 22 Sep 2026 – 7 Oct 2026 – 13 Oct 2026',
+    );
+    // On a category axis a trailing number is a name, never a year.
+    expect(xRangeLabel(axis(['Host 1001', 'Gateway 1001'], 'category'), 0, 1)).toBe('Host 1001 – Gateway 1001');
+    expect(xRangeLabel(axis(['Oct 2026', 'Oct 2026']), 0, 1)).toBe('Oct 2026');
+    // The live daily chart: calendar days in the operator zone.
+    const c = chart('daily-cases');
+    expect(xRangeLabel(c.x, 0, 9)).toBe('1 Aug – 10 Aug 2026');
+  });
 });
 
 describe('infographic layout plan', () => {
@@ -310,12 +335,44 @@ describe('infographic layout plan', () => {
     expect(infographicParts(parseBlock(raw) as ReportBlock).hero?.block.title).toBe('Plain figures');
   });
 
-  it('hides a section heading only when its one leaf carries the same title', () => {
+  it('hides a section heading only when the card right under it carries the same title', () => {
     const r = round12Block('posture-infographic') as ReportBlock;
     const [, volume, rules] = r.sections;
     expect(headingRepeatsLeaf('  rules THAT opened the most   cases ', rules.blocks)).toBe(true);
     expect(headingRepeatsLeaf('Top rules', rules.blocks)).toBe(false);
-    expect(headingRepeatsLeaf('Cases opened per month', volume.blocks)).toBe(false);
+    // The first of two cards repeats it; the second one does not sit under the heading.
+    expect(headingRepeatsLeaf('Cases opened per month', volume.blocks)).toBe(true);
+    expect(headingRepeatsLeaf('Cases by severity', volume.blocks)).toBe(false);
+    // A summary between the heading and the card keeps the heading.
+    expect(headingRepeatsLeaf('Cases opened per month', volume.blocks, 'Volume rose in September.')).toBe(false);
+    expect(headingRepeatsLeaf('Anything', [])).toBe(false);
+  });
+
+  it('never hides a section heading over a leaf that carries the title without drawing it', () => {
+    const leaf = (raw: Record<string, unknown>) => {
+      const b = parseBlock({ id: 'l', provenance: 'ai', ...raw });
+      if (b.type === 'report') throw new Error('not a leaf');
+      return b;
+    };
+    // Prose renders its text only: its title would be the section's only visible heading.
+    const prose = leaf({ type: 'markdown', title: 'Next steps', text: '1. Tune the rule.\n2. Review open cases.' });
+    expect(prose.type === 'markdown' && prose.title).toBe('Next steps');
+    expect(leafVisibleTitle(prose)).toBeNull();
+    expect(headingRepeatsLeaf('Next steps', [prose])).toBe(false);
+    // A note draws its own title; a fallback notice draws none; a retention stub always draws one.
+    const note = leaf({ type: 'callout', tone: 'info', title: 'Next steps', text: 'Tune the rule.' });
+    expect(leafVisibleTitle(note)).toBe('Next steps');
+    expect(headingRepeatsLeaf('next  STEPS', [note])).toBe(true);
+    const fallback = leaf({ type: 'callout', tone: 'info', title: 'Next steps', text: FALLBACK_TEXT });
+    expect(leafVisibleTitle(fallback)).toBeNull();
+    expect(headingRepeatsLeaf('Next steps', [fallback])).toBe(false);
+    const stub = leaf({ type: 'callout', tone: 'info', expired: { type: 'chart', artifact_kind: 'series' }, text: 'x' });
+    expect(leafVisibleTitle(stub)).toBe('Earlier result');
+    expect(headingRepeatsLeaf('Earlier result', [stub])).toBe(true);
+    // An untitled card's generic heading ("Key figures") never stands in for a section heading.
+    const kpis = leaf({ type: 'kpi_group', items: [{ key: 'k', label: 'Cases', value: 3, unit: 'count' }] });
+    expect(leafVisibleTitle(kpis)).toBeNull();
+    expect(headingRepeatsLeaf('Key figures', [kpis])).toBe(false);
   });
 
   it('lays highlights out by their count, never two plus an orphan', () => {

@@ -57,11 +57,23 @@ const TONE: Record<ToneKey, { variant: 'info' | 'success' | 'warning' | 'destruc
   critical: { variant: 'destructive', icon: <AlertOctagon aria-hidden /> },
 };
 
+/**
+ * The title a callout draws on screen, or null: a retention stub always draws one
+ * ("Earlier result" when it has none); a G9 fallback notice and an untitled note draw
+ * none. Shared with the infographic Brief, which hides a section heading only when the
+ * leaf under it visibly says the same thing.
+ */
+export function calloutTitle(block: CalloutBlock): string | null {
+  if (block.expired) return block.title ?? 'Earlier result';
+  return block.title && block.text !== FALLBACK_TEXT ? block.title : null;
+}
+
 export function CalloutView({ block }: { block: CalloutBlock }) {
+  const title = calloutTitle(block);
   if (block.expired) {
     return (
       <Alert variant="default" role="note" icon={<Clock aria-hidden />} data-testid="block-expired" className="text-muted-foreground">
-        <AlertTitle className="text-sm">{block.title ?? 'Earlier result'}</AlertTitle>
+        <AlertTitle className="text-sm">{title}</AlertTitle>
         <AlertDescription className="text-xs">{EXPIRED_TEXT}</AlertDescription>
       </Alert>
     );
@@ -77,7 +89,7 @@ export function CalloutView({ block }: { block: CalloutBlock }) {
       data-tone={block.tone}
       className={cn('py-2.5', fallback && 'text-muted-foreground')}
     >
-      {block.title && !fallback ? <AlertTitle className="text-sm">{block.title}</AlertTitle> : null}
+      {title ? <AlertTitle className="text-sm">{title}</AlertTitle> : null}
       <AlertDescription className="whitespace-pre-line break-words text-sm">{block.text}</AlertDescription>
       {fallback && block.fallback_text ? (
         <AlertDescription className="mt-1 whitespace-pre-line break-words text-sm text-foreground">{block.fallback_text}</AlertDescription>

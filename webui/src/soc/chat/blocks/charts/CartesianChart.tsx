@@ -53,6 +53,7 @@ import {
   unitLabel,
   xAxisHeader,
   xPositionLabel,
+  xRangeLabel,
   xTickLabel,
 } from '../format';
 import type { ChartBlock } from '../schema';
@@ -246,10 +247,18 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   );
   /** The navigator, once it exists (the zoom handlers below run after it is created). */
   const navRef = React.useRef<ReturnType<typeof useChartNavigator> | null>(null);
+  /**
+   * The point a plain click picked (Shift+click another to zoom between them), with the
+   * view it was picked on: its index numbers THAT view's slots, so a zoom, a reset or a
+   * new grouping in between makes it meaningless and a lone Shift+click must not use it.
+   */
+  const clickAnchor = React.useRef<{ view: string; i: number } | null>(null);
+  const viewId = range ? `${key}@${range[0]}-${range[1]}` : key;
   const applyZoom = (sel: [number, number]) => {
     const a = Math.min(sel[0], sel[1]);
     const b = Math.max(sel[0], sel[1]);
     if (!zoomable || b - a < 1 || (a === 0 && b === n - 1)) return;
+    clickAnchor.current = null;
     setZoom({ key, range: [offset + a, offset + b] });
     // Keep the cursor on the same period, now numbered from the zoom's first point (a
     // cursor outside the range moves to its nearest edge), and read it after the zoom.
@@ -284,8 +293,6 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const [drag, setDrag] = React.useState<{ from: number; to: number } | null>(null);
   /** A click right after a brush release is the release itself, not a click. */
   const brushed = React.useRef(false);
-  /** The point a plain click picked: Shift+click another to zoom between them. */
-  const clickAnchor = React.useRef<number | null>(null);
   const nearestSlot = (x: number) => Math.max(0, Math.min(n - 1, Math.floor((x - x0) / slot)));
   const brush = zoomable
     ? {
@@ -313,12 +320,14 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
       return;
     }
     if (!active) return;
-    if (zoomable && e.shiftKey && clickAnchor.current !== null && clickAnchor.current !== active.i) {
-      applyZoom([clickAnchor.current, active.i]);
+    // An anchor picked on another view (before a zoom, a reset or a regroup) is stale.
+    const anchor = clickAnchor.current && clickAnchor.current.view === viewId ? clickAnchor.current.i : null;
+    if (zoomable && e.shiftKey && anchor !== null && anchor !== active.i) {
+      applyZoom([anchor, active.i]);
       clickAnchor.current = null;
       return;
     }
-    clickAnchor.current = active.i;
+    clickAnchor.current = { view: viewId, i: active.i };
     const ref = drillAt(active.i);
     if (ref) navigate(ref);
   };
@@ -584,6 +593,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const activeLeft = active ? Math.round(x0 + active.i * slot) : 0;
   const plotRef = nav.plotRef;
   const resetZoom = () => {
+    clickAnchor.current = null;
     setZoom(null);
     // Back to the whole series' numbering, on the same period.
     if (active) nav.moveTo({ i: active.i + offset, j: active.j });
@@ -591,6 +601,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     plotRef.current?.focus({ preventScroll: true });
   };
   const zoomText = range ? `Zoomed to ${fullX(0)} – ${fullX(n - 1)} (${n} of ${full.x.values.length} points)` : '';
+  const zoomRange = range ? xRangeLabel(block.x, 0, n - 1) : '';
 
   return (
     <div ref={boxRef} className="min-w-0">
@@ -598,11 +609,25 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
         // ONE row that always exists on a zoomable chart, at a fixed height: a quiet hint
         // until a zoom, then the zoomed range and Reset. A row that appeared on release
         // would push the plot down under the pointer that just made the selection.
-        <div className="mb-1 flex h-6 min-w-0 items-center justify-end gap-x-2 text-2xs text-muted-foreground" data-print-hide data-testid="chart-zoom-row">
+        // The row is its own size container: on a phone-width card "Zoomed to" and
+        // "points" are left to assistive tech, and only the range may truncate; the
+        // count ("15 of 30") always shows, since it is what says the chart is a slice.
+        <div
+          className="@container mb-1 flex h-6 min-w-0 items-center justify-end gap-x-2 text-2xs text-muted-foreground"
+          data-print-hide
+          data-testid="chart-zoom-row"
+        >
           {range ? (
             <>
-              <span className="min-w-0 truncate tabular-nums" title={zoomText} data-testid="chart-zoom-bar">
-                {zoomText}
+              <span className="flex min-w-0 items-baseline gap-x-1 tabular-nums" title={zoomText} data-testid="chart-zoom-bar">
+                <span className="min-w-0 truncate" data-testid="chart-zoom-range">
+                  <span className="sr-only @[28rem]:not-sr-only @[28rem]:whitespace-nowrap">Zoomed to </span>
+                  {zoomRange}
+                </span>{' '}
+                <span className="shrink-0 whitespace-nowrap" data-testid="chart-zoom-count">
+                  ({n} of {full.x.values.length}
+                  <span className="sr-only @[28rem]:not-sr-only"> points</span>)
+                </span>
               </span>
               <button
                 type="button"

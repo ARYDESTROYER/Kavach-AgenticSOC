@@ -242,7 +242,10 @@ describe('brush zoom (line and area)', () => {
     expect(screen.getByTestId('chart-zoom-selection')).toBeInTheDocument();
     expect(announce).toHaveBeenLastCalledWith('Selected Jul 2026 to Oct 2026, 4 points. Press Enter to zoom, Escape to clear.');
     fireEvent.keyDown(plot, { key: 'Enter' });
-    expect(screen.getByTestId('chart-zoom-bar')).toHaveTextContent('Zoomed to Jul 2026 – Oct 2026 (4 of 12 points)');
+    // A year both ends share is said once on screen; the tooltip keeps the full labels.
+    const bar = screen.getByTestId('chart-zoom-bar');
+    expect(bar).toHaveTextContent('Zoomed to Jul – Oct 2026 (4 of 12 points)');
+    expect(bar).toHaveAttribute('title', 'Zoomed to Jul 2026 – Oct 2026 (4 of 12 points)');
     expect(within(screen.getByTestId('chart-data-table')).getAllByRole('rowheader')).toHaveLength(4);
     fireEvent.click(screen.getByTestId('chart-zoom-reset'));
     expect(screen.queryByTestId('chart-zoom-bar')).toBeNull();
@@ -262,8 +265,34 @@ describe('brush zoom (line and area)', () => {
     fireEvent.keyDown(plot, { key: 'Enter' });
     // The same row (not a new one above the plot) now holds the range and Reset.
     expect(screen.getByTestId('chart-zoom-row')).toBe(row);
-    expect(within(row).getByTestId('chart-zoom-bar')).toHaveTextContent('Zoomed to Sep 2026 – Oct 2026 (2 of 12 points)');
+    expect(within(row).getByTestId('chart-zoom-bar')).toHaveTextContent('Zoomed to Sep – Oct 2026 (2 of 12 points)');
     expect(within(row).queryByTestId('chart-zoom-hint')).toBeNull();
+  });
+
+  it('never truncates the point count: only the range may be cut on a narrow card', () => {
+    show([round12Block('monthly-alerts')]);
+    const plot = screen.getByTestId('chart-line-plot');
+    act(() => plot.focus());
+    fireEvent.keyDown(plot, { key: 'Home' });
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(plot, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'Enter' });
+    const row = screen.getByTestId('chart-zoom-row');
+    // The row is the size container the phone-width rules below query.
+    expect(row).toHaveClass('@container', 'h-6');
+    const bar = within(row).getByTestId('chart-zoom-bar');
+    expect(bar).toHaveTextContent('Zoomed to Nov 2025 – Feb 2026 (4 of 12 points)');
+    expect(bar).not.toHaveClass('truncate');
+    const range = within(bar).getByTestId('chart-zoom-range');
+    const count = within(bar).getByTestId('chart-zoom-count');
+    expect(range).toHaveClass('truncate');
+    expect(range).not.toContainElement(count);
+    expect(count.closest('.truncate')).toBeNull();
+    expect(count).toHaveClass('shrink-0', 'whitespace-nowrap');
+    expect(count).toHaveTextContent('(4 of 12 points)');
+    // On a narrow card "Zoomed to" and "points" are read by assistive tech only.
+    expect(within(range).getByText('Zoomed to')).toHaveClass('sr-only', '@[28rem]:not-sr-only');
+    expect(within(count).getByText('points')).toHaveClass('sr-only', '@[28rem]:not-sr-only');
+    expect(screen.getByTestId('chart-zoom-reset')).toHaveClass('shrink-0');
   });
 
   it('keeps the keyboard cursor on the same period through a zoom and its reset', () => {
@@ -349,6 +378,36 @@ describe('brush zoom (line and area)', () => {
     expect(screen.queryByTestId('chart-zoom-bar')).toBeNull();
     clickAt(260, true);
     expect(screen.getByTestId('chart-zoom-bar')).toBeInTheDocument();
+
+    // An anchor belongs to the view it was picked on. A plain click, then a zoom (a drag
+    // here): a lone Shift+click in the zoomed view picks a new anchor, it does not zoom
+    // from the old index read in the new numbering.
+    fireEvent.click(screen.getByTestId('chart-zoom-reset'));
+    clickAt(140);
+    fireEvent.pointerDown(plot, { button: 0, clientX: 100, pointerId: 1 });
+    fireEvent.pointerMove(plot, { clientX: 380, pointerId: 1 });
+    fireEvent.pointerUp(plot, { clientX: 380, pointerId: 1 });
+    fireEvent.click(plot, { clientX: 380 });
+    const zoomed = screen.getByTestId('chart-zoom-bar').textContent;
+    announce.mockClear();
+    clickAt(430, true);
+    expect(screen.getByTestId('chart-zoom-bar').textContent).toBe(zoomed);
+    expect(announce).not.toHaveBeenCalledWith(expect.stringMatching(/^Zoomed to/));
+    // The same after Reset zoom: an anchor picked in the zoomed view is not reused on the whole series.
+    clickAt(200);
+    fireEvent.click(screen.getByTestId('chart-zoom-reset'));
+    clickAt(430, true);
+    expect(screen.queryByTestId('chart-zoom-bar')).toBeNull();
+    // A keyboard zoom drops it too.
+    clickAt(140);
+    act(() => plot.focus());
+    fireEvent.keyDown(plot, { key: 'End' });
+    fireEvent.keyDown(plot, { key: 'ArrowLeft', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'ArrowLeft', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'Enter' });
+    const keyed = screen.getByTestId('chart-zoom-bar').textContent;
+    clickAt(60, true);
+    expect(screen.getByTestId('chart-zoom-bar').textContent).toBe(keyed);
   });
 
   it('is not offered on columns or on paper', () => {
@@ -579,6 +638,24 @@ describe('infographic Brief and the new templates', () => {
     expect(screen.getByRole('heading', { level: 6, name: 'Rules that opened the most cases' })).not.toHaveClass('sr-only');
     // A heading over two charts stays visible.
     expect(screen.getByRole('heading', { level: 5, name: 'Volume' })).not.toHaveClass('sr-only');
+  });
+
+  it('keeps a section heading visible over prose that carries the same title (prose draws no title)', () => {
+    const base = JSON.parse(JSON.stringify(ROUND12_RAW[4])) as { sections: Array<Record<string, unknown>> };
+    base.sections.push({
+      id: 'next',
+      heading: 'Next steps',
+      blocks: [{ id: 'ns-md', type: 'markdown', provenance: 'ai', title: 'Next steps', text: '1. Tune the SSH brute force rule.\n2. Review open cases.' }],
+    });
+    show([parseBlock(base)]);
+    const section = screen.getByRole('group', { name: 'Next steps' });
+    const heading = within(section).getByRole('heading', { level: 5, name: 'Next steps' });
+    expect(heading).not.toHaveClass('sr-only');
+    expect(heading).not.toHaveAttribute('data-repeats-leaf');
+    // The words are on screen exactly once: the heading (the prose shows only its text).
+    const visible = section.cloneNode(true) as HTMLElement;
+    visible.querySelectorAll('.sr-only').forEach((n) => n.remove());
+    expect(visible.textContent?.match(/Next steps/g)).toHaveLength(1);
   });
 
   it('opens an executive or monthly Brief with its first summary as the lead', () => {

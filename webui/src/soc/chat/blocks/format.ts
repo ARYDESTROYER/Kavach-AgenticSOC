@@ -366,6 +366,29 @@ export function xPositionLabel(x: AxisLike, i: number): string {
   return xLabelFull(x.values[i] ?? '', x.kind, x.bucket);
 }
 
+const YEAR_SPLIT = /^(.*\S)\s(\d{4})$/;
+
+/**
+ * The span from x position `a` to `b` in words, short enough for a narrow row: on a
+ * time axis a year both ends share is said once ("23 Sep – 7 Oct 2026", "Jul – Oct
+ * 2026", "W14 – W17 2026"); different years, clock times, cut-edge notes and labels
+ * that are ranges themselves read in full ("Dec 2025 – Feb 2026"). Categories always
+ * read in full: a trailing number there is a name, not a year.
+ */
+export function xRangeLabel(x: AxisLike, a: number, b: number): string {
+  const first = xPositionLabel(x, a);
+  const last = xPositionLabel(x, b);
+  if (a === b || first === last) return first;
+  if (x.kind === 'time') {
+    const p = YEAR_SPLIT.exec(first);
+    const q = YEAR_SPLIT.exec(last);
+    // "16 Sep 2026 – 22 Sep 2026" is itself a range: its inner year stays where it is.
+    const plain = (stem: string) => !stem.includes('–') && !/\d{4}/.test(stem);
+    if (p && q && p[2] === q[2] && plain(p[1]) && plain(q[1])) return `${p[1]} – ${q[1]} ${p[2]}`;
+  }
+  return `${first} – ${last}`;
+}
+
 const CLOCK_TAIL = /(\d{2}:\d{2})$/;
 const YEAR_TAIL = /\s\d{4}$/;
 const NOTE_TAIL = /\s*\([^()]*\)$/;
