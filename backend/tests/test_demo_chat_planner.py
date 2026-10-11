@@ -761,7 +761,8 @@ def test_report_requests_wrap_any_intent_in_the_template_sections() -> None:
                                   artifacts=LOG_STATS_ARTS)])
     header, body = final_of(plan_turn(msgs))
     (envelope,) = header["blocks"]
-    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report"
+    # Round 12 review: a named-template title names its subject (the case id typed).
+    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report: case-0042"
     sections = {s["heading"]: s["items"] for s in envelope["sections"]}
     assert list(sections) == ["Summary", "Evidence", "Timeline", "Decision", "Next steps"]
     assert sections["Summary"][0]["type"] == "markdown"
@@ -864,7 +865,7 @@ def test_a_case_report_without_any_windowed_lookup_keeps_its_envelope() -> None:
     header, body = final_of(plan_turn(msgs))
     (envelope,) = header["blocks"]
     assert envelope["type"] == "report" and "subtitle" not in envelope       # blank subtitle left out
-    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report"
+    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report: case-0042"
     requests, dropped = parse_final_block_requests(header["blocks"])
     assert not dropped and requests[0].type == "report" and requests[0].invalid_items == 0
     # The Summary leaf is rebuilt from numbers and enums: no log or case value in the header.

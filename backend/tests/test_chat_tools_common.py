@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pydantic import Field
 
 from app.agents.chat_tools.common import (
+    OUTSIDE_SELECTED_RANGE,
     ToolInput,
     citation_id,
     opt_text,
@@ -42,8 +43,10 @@ def test_window_is_clamped_into_the_request_and_bounded() -> None:
     assert wide.clamped and wide.start == datetime(2026, 10, 8, tzinfo=timezone.utc)
     assert wide.end == datetime(2026, 10, 8, 6, tzinfo=timezone.utc)
     assert wide.label == "2026-10-08 00:00 → 2026-10-08 06:00 UTC"
+    # A window wholly outside the selected range is refused, never answered with the
+    # whole selected range as if it were the period asked for.
     disjoint = resolve_window(make_ctx(time_range=chip), time_from="now-1h", now=NOW)
-    assert disjoint.clamped and disjoint.start == wide.start and disjoint.end == wide.end
+    assert disjoint == OUTSIDE_SELECTED_RANGE
     # Round 12 (SPEC D7): no 90-day / 720-hour clamp any more.
     huge = resolve_window(make_ctx(), time_from="now-400d", now=NOW)
     assert not huge.clamped and huge.end - huge.start == timedelta(days=400)

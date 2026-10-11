@@ -238,6 +238,10 @@ WINDOW_HELP = (
 )
 INVALID_WINDOW = f"Invalid time window: {WINDOW_HELP}"
 EMPTY_WINDOW = "Invalid time window: the start must be before the end"
+#: A tool window wholly outside the request's selected range: refused, never answered
+#: with the whole selected range as if it were the period asked for (§4.8.4).
+OUTSIDE_SELECTED_RANGE = ("Invalid time window: the period asked for lies wholly outside the selected time range; "
+                          "widen the selected range or ask about a period inside it")
 WINDOW_INPUT_DESCRIPTION = "window?=all|now-90d|now-6M|last_month|this_quarter|ytd|{from,to}"
 
 
@@ -687,8 +691,9 @@ def resolve_window(
         if end > chip_end:
             end, to_expr, clamped = chip_end, chip.to, True
         if start >= end:
-            start, end = chip_start, chip_end
-            from_expr, to_expr, clamped, all_time = chip.from_, chip.to, True, False
+            # No overlap at all: refused (the whole selected range would answer a
+            # different question than the one asked).
+            return OUTSIDE_SELECTED_RANGE
         if clamped:
             label = None
     elif source == "tool" and chip is not None:
@@ -1113,6 +1118,7 @@ def column(
 __all__ = [
     "AMBIGUOUS_MINUTES",
     "EMPTY_WINDOW",
+    "OUTSIDE_SELECTED_RANGE",
     "MAX_CITATIONS_PER_CALL",
     "MAX_WINDOW_DAYS",
     "MAX_WINDOW_HOURS",

@@ -120,6 +120,9 @@ _DIRECTION = r"re:^(?:\*\*(?:Better|Worse|No change)\*\*: |There is no direction
 _INSIDE_CHIP = _NOW - timedelta(days=45)
 _STRADDLES_CHIP = _NOW - timedelta(days=90)
 _CHIP_90D = {"time_range": {"from": "now-90d", "to": "now"}}
+#: A count compared with the period before: the compared rows, or (both periods
+#: empty, as at the very start of a week) the one sentence that says so.
+_COMPARED = r"re:Compared with the previous period:|, and none in .+ either\."
 
 SCREENSHOT = [
     # Verbatim from the operator's screenshots (Round 12 asks 3 and 5).
@@ -168,13 +171,22 @@ REPORTS = [
     G("Make me a report on this month", tools=("case_stats", "soc_metrics"), report=True, sections=6,
       title=rf"^SOC performance report, {_NOW:%B %Y}$", params=(P("case_stats", window="this_month"),),
       figures=(Fig("**{n} cases**", "this_month"),)),
-    G("Build a posture report", tools=("soc_metrics",), report=True, title=r"^Posture report$",
+    G("Build a posture report", tools=("soc_metrics",), report=True, title=r"^Posture report, last 24 hours$",
       params=(P("soc_metrics", kind="posture"),)),
+    G("Build a posture report for last month", tools=("soc_metrics",), report=True,
+      title=r"^Posture report, [A-Z][a-z]+ \d{4}$", params=(P("soc_metrics", kind="posture", window="last_month"),)),
     G("Give me a shift handover report", tools=("shift_report", "soc_metrics"), report=True, title=r"^Shift brief"),
     G("Create an IOC report on 203.0.113.42", tools=("lookup_indicator", "search_logs", "search_cases"),
-      report=True, title=r"^IOC report", params=(P("lookup_indicator", indicator="203.0.113.42", kind="ip"),)),
+      report=True, title=r"^IOC report: 203\.0\.113\.42$",
+      params=(P("lookup_indicator", indicator="203.0.113.42", kind="ip"),)),
+    G("Create an IOC report on 192.0.2.118", tools=("lookup_indicator", "search_logs", "search_cases"),
+      report=True, title=r"^IOC report: 192\.0\.2\.118$"),
     G("Build a hunt report on lateral movement", tools=("search_cases", "get_case"), report=True,
-      may_fail=("lookup_indicator",), notices=("denied", "policy"), title=r"^Hunt report"),
+      may_fail=("lookup_indicator",), notices=("denied", "policy"), title=r"^Hunt report: demo-"),
+    G("Build a hunt report on phishing", tools=("search_cases",), report=True,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"), title=r"^Hunt report: phishing$"),
+    G("Create an investigation report for case demo-00000539-0004", tools=("get_case", "explain_decision"),
+      report=True, title=r"^Investigation report: demo-00000539-0004$"),
     G("Write an executive summary of our SOC for leadership", tools=("case_stats", "soc_metrics"), report=True,
       title=r"^Executive summary", params=(P("case_stats", window="now-30d"),)),
     G("Can you put together a monthly report for August 2026?", tools=("case_stats", "soc_metrics"), report=True,
@@ -283,8 +295,10 @@ METRICS = [
     G("How is our security posture right now?", tools=("soc_metrics",), params=(P("soc_metrics", kind="posture"),)),
     G("What is our false positive rate over all time?", tools=("soc_metrics",),
       params=(P("soc_metrics", kind="posture", window="all"),), contains=(r"re:\AFalse-positive rate \*\*",)),
+    # The named figure leads, measured or not (a quiet start of a month has none to give).
     G("What's our automation rate this month?", tools=("soc_metrics",),
-      params=(P("soc_metrics", kind="posture", window="this_month"),), contains=(r"re:\AAutomation rate \*\*",)),
+      params=(P("soc_metrics", kind="posture", window="this_month"),),
+      contains=(r"re:\AAutomation rate(?: \*\*|: not measured)",)),
     G("Show the noise reduction funnel for the last 7 days", tools=("soc_metrics",),
       params=(P("soc_metrics", kind="noise_funnel", window="now-7d"),)),
     G("What is our MTTR?", tools=("soc_metrics",), params=(P("soc_metrics", kind="timing"),)),
@@ -294,7 +308,7 @@ METRICS = [
     G("Show our ATT&CK coverage", tools=("soc_metrics",), params=(P("soc_metrics", kind="mitre_coverage"),)),
     G("Show me the auto-close health", tools=("soc_metrics",), params=(P("soc_metrics", kind="auto_close_health"),)),
     G("What is our SLA attainment this month?", tools=("soc_metrics",),
-      params=(P("soc_metrics", kind="posture", window="this_month"),), contains=(r"re:\ASLA attainment ",)),
+      params=(P("soc_metrics", kind="posture", window="this_month"),), contains=(r"re:\ASLA attainment[ :]",)),
 ]
 
 COST = [
@@ -577,10 +591,10 @@ REGRESSIONS = [
     # A true/false-positive count keeps its comparison.
     G("How many false positives did we have this month compared to last month?", tools=("case_stats",),
       params=(P("case_stats", verdict="FALSE_POSITIVE", window="this_month", compare="previous_period"),),
-      contains=("Compared with the previous period:",)),
+      contains=(_COMPARED,)),
     G("How many true positives this week vs last week?", tools=("case_stats",),
       params=(P("case_stats", verdict="TRUE_POSITIVE", window="this_week", compare="previous_period"),),
-      contains=("Compared with the previous period:",)),
+      contains=(_COMPARED,)),
     # Everyday period questions are data answers.
     G("How did we do this week?", tools=("soc_metrics",),
       params=(P("soc_metrics", kind="posture", window="this_week"),)),
@@ -600,8 +614,90 @@ REGRESSIONS = [
       forbid=(P("case_stats", bucket="hour"),), params=(P("case_stats", bucket="week"),)),
 ]
 
+#: Regressions from the second WP-DEMO review (R2-n is the finding number).
+_AI_CLOSED = {"status_group": "terminal", "decided_by": "agent"}
+_TP_RATE = r"re:\ATrue-positive rate(?: \*\*\d|: not measured)"
+REGRESSIONS_R2 = [
+    # R2-2: day-level and rolling-span comparisons.
+    G("Compare today with yesterday", tools=("case_stats", "soc_metrics"),
+      params=(P("case_stats", window="today", compare="previous_period"),), absent=("I could not map",)),
+    G("How does today compare to yesterday?", tools=("case_stats",),
+      params=(P("case_stats", window="today", compare="previous_period"),)),
+    G("How many cases today vs yesterday?", tools=("case_stats",),
+      params=(P("case_stats", window="today", compare="previous_period"),)),
+    G("How many medium cases today compared to yesterday?", tools=("case_stats",),
+      params=(P("case_stats", window="today", compare="previous_period", severity="medium"),)),
+    G("Compare the last 30 days with the 30 days before", tools=("case_stats", "soc_metrics"),
+      params=(P("case_stats", window="now-30d", compare="previous_period"),)),
+    G("Compare yesterday and today", tools=("case_stats",),
+      params=(P("case_stats", window="today", compare="previous_period"),)),
+    # R2-3: a filtered comparison names its filter and leaves out the all-case posture.
+    G("Compare critical cases this month vs last month", tools=("case_stats",),
+      params=(P("case_stats", window="this_month", compare="previous_period", severity="critical"),
+              P("case_stats", group_by="verdict", severity="critical")), forbid=(P("soc_metrics"),),
+      contains=(r"re:\A\*\*Critical cases, .+ compared with .+\*\* \(changes computed exactly\):",
+                r"re:^- Critical cases: \*\*\d"), absent=("over every case", "Automation rate")),
+    G("How many cases for user pnair this week vs last week?", tools=("case_stats",),
+      params=(P("case_stats", window="this_week", compare="previous_period", entity="pnair"),),
+      forbid=(P("soc_metrics"),), contains=(r"re:\A\*\*Cases involving `pnair`, ",),
+      absent=("over every case", "Automation rate")),
+    G("How many escalated cases this week compared to last week?", tools=("case_stats",),
+      params=(P("case_stats", window="this_week", compare="previous_period", status="escalated"),),
+      contains=(r"re:\A\*\*Escalated cases, ",), absent=("over every case",)),
+    # R2-12: two past periods never call the later one "now".
+    G("Compare August 2026 and September 2026 automation", tools=("case_stats", "soc_metrics"),
+      params=(P("soc_metrics", kind="posture", window="2026-09", compare="2026-08"),),
+      contains=(r"re:Automation rate: .+ in Sep 2026\)\.",), absent=("now)",)),
+    # R2-5: the true-positive rate leads its answer.
+    G("What is our TP rate?", tools=("case_stats",), params=(P("case_stats", metrics="re:tp_rate"),),
+      contains=(_TP_RATE,)),
+    G("What's the TP rate over all time?", tools=("case_stats",),
+      params=(P("case_stats", metrics="re:tp_rate", window="all"),), contains=(_TP_RATE,)),
+    G("TP rate this quarter", tools=("case_stats",),
+      params=(P("case_stats", metrics="re:tp_rate", window="this_quarter"),), contains=(_TP_RATE,)),
+    G("What is our true positive rate this month?", tools=("case_stats",),
+      params=(P("case_stats", metrics="re:tp_rate", window="this_month"),), contains=(_TP_RATE,),
+      figures=(Fig("over {n} cases", "this_month", zero="where no case was opened"),)),
+    G("True positive rate last month", tools=("case_stats",),
+      params=(P("case_stats", metrics="re:tp_rate", window="last_month"),), contains=(_TP_RATE,)),
+    # R2-6: period summaries, the AI's closes and cases by entity.
+    G("Summarize the last 24 hours", tools=("case_stats", "soc_metrics", "search_cases"),
+      params=(P("case_stats", window="now-24h"), P("soc_metrics", kind="posture", window="now-24h"))),
+    G("Give me a summary of last month", tools=("case_stats", "soc_metrics", "search_cases"),
+      params=(P("case_stats", window="last_month"),), figures=(Fig("**{n} cases**", "last_month"),)),
+    G("How many cases did the AI close this month?", tools=("case_stats",),
+      params=(P("case_stats", status_group="terminal", window="this_month", metrics="re:auto_closed"),),
+      figures=(Fig("**{n} cases** opened in", "this_month", _AI_CLOSED),
+               Fig("of {n} closed cases", "this_month", _TERMINAL))),
+    G("How many cases were auto-closed last week?", tools=("case_stats",),
+      params=(P("case_stats", status_group="terminal", window="last_week", metrics="re:auto_closed"),),
+      figures=(Fig("**{n} cases** opened last week were closed automatically", "last_week", _AI_CLOSED,
+                   zero="No closed case matched last week"),)),
+    G("Which users had the most cases this quarter?", tools=("search_cases", "case_stats"),
+      params=(P("search_cases", window="this_quarter"), P("case_stats", window="this_quarter", entity="re:.")),
+      forbid=(P("log_stats"),), contains=("(exact)",)),
+    # R2-9: the automation-rate trend is its own measure.
+    G("What's the automation rate trend by month?", tools=("case_stats",),
+      params=(P("case_stats", bucket="month", metrics="re:auto_closed"),),
+      contains=(r"re:\A\*\*Automation rate ",), absent=("False-positive rate per", "True-positive rate per")),
+    # R2-10: a second grouping and a top N.
+    G("Open cases by severity and assignee", tools=("case_stats",),
+      params=(P("case_stats", group_by="severity,assignee", status_group="active"),),
+      contains=("By severity, then assignee:",)),
+    G("Top 5 rules this month", tools=("log_stats",), params=(P("log_stats", group_by="rule", top_n=5),)),
+    G("Cases by month and severity", tools=("case_stats",),
+      params=(P("case_stats", bucket="month", group_by="severity"),), contains=("By severity over the whole window:",)),
+    # R2-8: an unrelated campaign is never part of an entity's investigation.
+    G("Investigate everything about host dc01 over the last quarter", tools=("log_stats", "search_logs"),
+      min_lookups=10, may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      absent=("sharing user",)),
+    # R2-13: a named period wholly outside the chip is refused and said, never answered with the chip.
+    G("How many cases were opened in March 2026?", tools=(), may_fail=("case_stats",), fields=_CHIP_90D,
+      contains=("March 2026 is outside the last 90 days you selected",), absent=("**",)),
+]
+
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
-                   *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS]
+                   *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2]
 
 
 def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> None:
@@ -738,7 +834,8 @@ def _check(g: G, response: dict[str, Any], client: TestClient | None = None) -> 
         assert kind in expected, (kind, context)
     if kind in ("data", "mixed"):
         assert data_steps, context
-        assert response.get("blocks") or re.search(r"\d", answer), context
+        # Figures or blocks; a zero result says what was searched ("No … matched").
+        assert response.get("blocks") or re.search(r"\d", answer) or answer.startswith("No "), context
     # Exact aggregates: no figure presented as a sample bound, no window capped to 30 days.
     for step in data_steps:
         summary = (step.get("summary") or "").lower()
@@ -836,6 +933,14 @@ def _store_count(client: TestClient, window: Any, filters: dict[str, str]) -> in
             continue
         if "severity" in filters and band_of_case(case, prefs) != filters["severity"]:
             continue
+        if "decided_by" in filters:
+            # Closed by the AI agent: its decider, never an analyst-policy close.
+            from app.engine.precedent import is_policy_closed
+
+            if str(getattr(case.decision_by, "value", case.decision_by)) != filters["decided_by"]:
+                continue
+            if is_policy_closed(case):
+                continue
         count += 1
     return count
 
@@ -917,6 +1022,47 @@ def test_each_zero_result_suggestion_reruns_the_lookup(client: TestClient, follo
     assert step["tool"] == "case_stats" and step["status"] == "ok" and _has(step["params"], subset), step
     assert second["answer"].startswith(f"Re-ran the earlier lookups {said}:"), second["answer"]
     assert "last 1 day" not in second["answer"]
+
+
+@pytest.mark.parametrize("question", ["Can I get the stats for March 2026?", "What happened in March 2026?"])
+def test_a_period_summary_chip_reruns_as_the_same_summary(client: TestClient, question: str) -> None:
+    """R2-1: the zero-result chip under a period summary re-runs the summary over all
+    time and keeps its shape: the posture figures stay, the riskiest true positives are
+    listed as true positives (never as "the oldest still open"), sorted and limited as
+    the summary asked."""
+    first = _stream(client, question, persist_conversation=True, idempotency_key=_key("r2-1", question, "1"))
+    assert first["answer"].startswith("No case was opened in March 2026."), first["answer"]
+    assert "Show the same for all time" in first["follow_ups"]
+    second = _stream(client, "Show the same for all time", origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("r2-1", question, "2"))
+    answer = second["answer"]
+    steps = _tool_steps(second)
+    assert answer.startswith("Re-ran the earlier lookups for all time:"), answer
+    assert "oldest still open" not in answer and "next oldest" not in answer, answer
+    assert re.search(r"^False-positive rate \*\*", answer, re.MULTILINE), answer
+    assert re.search(r"^\*\*\d+ true positives\*\*", answer, re.MULTILINE), answer
+    assert _matched_step(steps, "search_cases", {"verdict": "TRUE_POSITIVE", "window": "all",
+                                                 "sort_field": "risk_score", "limit": "5"}) is not None, steps
+    titles = [b.get("title") for b in second["blocks"]]
+    assert "Oldest open cases" not in titles and "Riskiest true positives" in titles, titles
+    assert "Compare all time with the period before" not in second["follow_ups"]
+    truth = _store_count(client, "all", {})
+    assert f"**{truth:,} cases** over all time" in answer
+
+
+def test_an_oldest_open_chip_rerun_keeps_the_oldest_first_list(client: TestClient) -> None:
+    """R2-1: a breakdown of OPEN cases by month re-run over all time still lists the
+    oldest open cases first (the digest does not carry the sort order)."""
+    first = _stream(client, "How many cases opened in 2024 are still open, by month?", persist_conversation=True,
+                    idempotency_key=_key("r2-1b", "1"))
+    assert first["answer"].startswith("No open case matched in 2024."), first["answer"]
+    second = _stream(client, "Show the same for all time", origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("r2-1b", "2"))
+    steps = _tool_steps(second)
+    assert _matched_step(steps, "case_stats", {"status_group": "active", "window": "all", "bucket": "month"}), steps
+    listed = _matched_step(steps, "search_cases", {"status_group": "active", "sort_field": "created_at", "limit": "5"})
+    assert listed is not None and "listing the 5 oldest" in listed["summary"], steps
+    assert "The oldest still open is" in second["answer"], second["answer"]
 
 
 #: Each clarify option (SPEC D10) and the lookup its pick must run.

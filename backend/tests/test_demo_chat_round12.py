@@ -784,3 +784,300 @@ def test_a_zero_case_search_before_an_investigation_says_so_once() -> None:
                     "it, look over all time.")
     _rounds, _header, body = drive("Hunt the source IP behind the newest SQL injection case", obs)
     assert body == "No SQL injection case was found in the last 7 days to pivot from. To widen it, look over all time."
+
+
+# --------------------------------------------------------------------------- #
+# Regressions from the second WP-DEMO review (R2-n is the finding number).
+# --------------------------------------------------------------------------- #
+def test_a_breakdown_names_only_its_own_oldest_open_list_as_the_oldest_open() -> None:
+    """R2-1: a case list that is not open-and-oldest-first (a period summary's true
+    positives re-run) is never called "the oldest still open"."""
+    view = demo_chat.PromptView()
+    newest_tps = demo_chat.Result(ordinal=1, tool="search_cases", status="ok", summary="",
+                                  observation={"filters": {"verdict": "TRUE_POSITIVE"}, "count": 2, "cases": []},
+                                  input={"verdict": "TRUE_POSITIVE", "window": "all"})
+    oldest_open = demo_chat.Result(ordinal=2, tool="search_cases", status="ok", summary="",
+                                   observation={"filters": {"status_group": "active"}, "count": 2, "cases": []},
+                                   input={"status_group": "active", "sort_field": "created_at", "sort_order": "asc"})
+    assert view is not None
+    assert not demo_chat._is_oldest_open(newest_tps)
+    assert demo_chat._is_oldest_open(oldest_open)
+
+
+@pytest.mark.parametrize("question, spec, compare", [
+    ("Compare today with yesterday", "today", "previous_period"),
+    ("How does today compare to yesterday?", "today", "previous_period"),
+    ("How many cases today vs yesterday?", "today", "previous_period"),
+    ("How many medium cases today compared to yesterday?", "today", "previous_period"),
+    ("Compare the last 30 days with the 30 days before", "now-30d", "previous_period"),
+    ("Compare the last 7 days with the previous 7 days", "now-7d", "previous_period"),
+    ("Compare yesterday and today", "today", "previous_period"),
+    ("Compare last week and this week", "this_week", "previous_period"),
+])
+def test_day_and_rolling_span_comparisons_are_comparisons(question: str, spec: str, compare: str) -> None:
+    """R2-2: "today vs yesterday" and "the N days before" compare the period with the
+    one before it; never the fallback, product help or a single period."""
+    ask = classify(question)
+    assert ask.intent == "compare" and ask.win is not None and ask.win.spec == spec, ask
+    rounds, _header, body = drive(question)
+    stats = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
+    assert stats and all(inp.get("compare") == compare and inp.get("window") == spec for inp in stats), stats
+    assert "I could not map that" not in body
+
+
+def test_yesterday_alone_is_not_a_comparison() -> None:
+    assert classify("What happened with yesterday's alerts?").compare is None
+    assert classify("How many alerts did we get yesterday?").compare is None
+
+
+_FILTERED_COMPARISON = {"subject": "Oct 2026 to date", "baseline": "Sep 2026 to date",
+                        "periods": ["Sep 2026 to date", "Oct 2026 to date"], "in_progress": [False, True],
+                        "rows": [{"label": "Cases", "unit": "count", "values": [3, 5], "change": 2, "change_pct": 66.7},
+                                 {"label": "False-positive rate", "unit": "percent", "values": [0, 0], "change": 0}]}
+
+
+def _compare_obs(filters: dict[str, Any]) -> Obs:
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        if tool == "case_stats":
+            out.update(filters=dict(filters), comparison=dict(_FILTERED_COMPARISON))
+        if tool == "soc_metrics":
+            out["comparison"] = {"subject": "Oct 2026 to date", "baseline": "Sep 2026 to date",
+                                 "periods": ["Sep 2026 to date", "Oct 2026 to date"], "in_progress": [False, True],
+                                 "rows": [{"label": "Automation rate", "unit": "percent", "values": [44.4, 86.8],
+                                           "change": 42.4}]}
+        return out
+    return obs
+
+
+@pytest.mark.parametrize("question, filters, noun, group", [
+    ("Compare critical cases this month vs last month", {"severity": "critical"}, "Critical cases", "verdict"),
+    ("How many escalated cases this week compared to last week?", {"status": "escalated"}, "Escalated cases",
+     "severity"),
+    ("How many cases for user pnair this week vs last week?", {"entity": "pnair"}, "Cases involving `pnair`",
+     "severity"),
+])
+def test_a_filtered_comparison_names_its_filter_and_drops_the_all_case_posture(
+        question: str, filters: dict[str, Any], noun: str, group: str) -> None:
+    """R2-3: the headline and the count row name every filter; the all-case posture
+    comparison (automation rate, posture tiles) is not mixed in; the split is never by
+    the filtered field."""
+    rounds, header, body = drive(question, _compare_obs(filters))
+    calls = ran(rounds)
+    assert not any(tool == "soc_metrics" for tool, _inp in calls), calls
+    grouped = [inp for tool, inp in calls if tool == "case_stats" and inp.get("group_by")]
+    assert grouped and grouped[0]["group_by"] == [group] and all(
+        inp.get(k) == v for inp in grouped for k, v in filters.items()), grouped
+    assert body.startswith(f"**{noun}, Oct 2026 to date compared with Sep 2026 to date** (changes computed exactly):")
+    assert f"- {noun}: **5** in Oct 2026 to date vs 3 in Sep 2026 to date" in body
+    assert "over every case" not in body and "Automation rate" not in body
+    assert not any(b.get("title") == "Security posture with changes" for b in header["blocks"])
+
+
+def test_an_unfiltered_comparison_keeps_the_posture_and_says_now_only_for_the_current_period() -> None:
+    """R2-3 / R2-12: the unfiltered comparison keeps the automation rate; "now" only when
+    the subject period is the current, in-progress one."""
+    _rounds, _header, body = drive("Compare this month with last month", _compare_obs({}))
+    assert body.startswith("**Oct 2026 to date compared with Sep 2026 to date** (changes computed exactly over "
+                           "every case):")
+    assert "Automation rate: +42.4 points (86.8% now)." in body
+    past = {"subject": "Sep 2026", "baseline": "Aug 2026", "periods": ["Aug 2026", "Sep 2026"],
+            "in_progress": [False, False]}
+    assert demo_chat._subject_when(past) == "in Sep 2026"
+    assert demo_chat._subject_when({**past, "subject": "Oct 2026 to date", "periods": ["Sep 2026 to date",
+                                    "Oct 2026 to date"], "in_progress": [False, True]}) == "now"
+
+
+def test_a_zero_current_period_states_the_fall_from_its_baseline() -> None:
+    """R2-7: zero now against a non-zero baseline is a fall to zero, not just "no match"."""
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if tool != "case_stats":
+            return _generic_obs(tool, inp)
+        return {"total": 0, "exact": True, "window": "October 2026",
+                "filters": {"severity": "critical", "verdict": "TRUE_POSITIVE"}, "group_by": [],
+                "groups": [{"bucket": None, "key": {}, "metrics": {"count": 0}}],
+                "comparison": {"subject": "Oct 2026 to date", "baseline": "Sep 2026 to date",
+                               "periods": ["Sep 2026 to date", "Oct 2026 to date"],
+                               "rows": [{"label": "Cases", "unit": "count", "values": [4, 0], "change": -4.0,
+                                         "change_pct": -100.0}]},
+                "suggestions": [{"label": "All time"}]}
+
+    _rounds, _header, body = drive("How many critical true positives this month compared to last month?", obs)
+    assert body.startswith("No critical true positive case matched in October 2026: down to 0 from 4 in Sep 2026 "
+                           "to date."), body
+    both_zero = obs("case_stats", {})
+    both_zero["comparison"]["rows"][0].update(values=[0, 0], change=0)
+    assert demo_chat._say_case_stats(demo_chat.Result(ordinal=1, tool="case_stats", status="ok", summary="",
+                                                      observation=both_zero))[0].startswith(
+        "No critical true positive case matched in October 2026, and none in Sep 2026 to date either.")
+
+
+def test_an_in_depth_investigation_names_only_the_campaigns_that_involve_the_entity() -> None:
+    """R2-8: an unrelated campaign is never narrated as part of the entity's story."""
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if tool == "list_campaigns":
+            return {"total": 1, "returned": 1, "campaigns": [
+                {"case_count": 2, "case_ids": ["demo-hitl-1", "demo-hitl-2"], "entities": ["user:pnair"],
+                 "severity": "high", "mitre": ["T1078"]}]}
+        return _generic_obs(tool, inp)
+
+    _rounds, header, body = drive("Investigate everything about host dec-web01", obs)
+    assert "None of the 1 campaign involves host `dec-web01`." in body and "sharing user" not in body
+    assert not any(b.get("title") in ("Campaigns", "All campaigns") for b in header["blocks"])
+    _rounds, _header, body = drive("Deep dive into user pnair this month", obs)
+    assert "Campaigns involving it: **1 campaign**: 2 cases sharing user `pnair`" in body
+
+
+def test_the_automation_rate_trend_is_its_own_measure() -> None:
+    """R2-9: closed by the AI agent ÷ closed, per period; never the FP/TP rates."""
+    assert classify("What's the automation rate trend by month?").subject == "automation"
+
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        out.update(metrics=inp.get("metrics"), totals={"auto_closed": 45, "human_closed": 15, "count": 95},
+                   groups=[{"bucket": "Sep 2026", "metrics": {"count": 31, "auto_closed": 12, "human_closed": 11}},
+                           {"bucket": "Oct 2026", "metrics": {"count": 45, "auto_closed": 33, "human_closed": 4}}])
+        return out
+
+    rounds, _header, body = drive("What's the automation rate trend by month?", obs)
+    (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
+    assert stats["bucket"] == "month" and set(stats["metrics"]) == {"count", "auto_closed", "human_closed"}
+    assert body.startswith("**Automation rate in the last 12 months (since Nov 2025)**, by month")
+    assert ("Automation rate per month: latest Oct 2026 (in progress) 89.2% (33 of 37 closed); lowest Sep 2026 "
+            "52.2% (12 of 23 closed)") in body
+    assert "False-positive rate" not in body and "True-positive rate" not in body
+
+
+@pytest.mark.parametrize("question, group_by, top_n", [
+    ("Open cases by severity and assignee", ["severity", "assignee"], 10),
+    ("Cases by rule and severity this month", ["rule", "severity"], 10),
+    ("Top 5 rules by cases this month", ["rule"], 5),
+    ("Which 5 rules opened the most cases this month?", ["rule"], 5),
+])
+def test_a_second_grouping_and_a_top_n_reach_the_lookup(question: str, group_by: list[str], top_n: int) -> None:
+    """R2-10: up to two named groupings, and "top N" as the ranking length."""
+    rounds, _header, _body = drive(question)
+    (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
+    assert stats["group_by"] == group_by and stats.get("top_n") == top_n, stats
+    rounds, _header, _body = drive("Top 5 rules this month")
+    assert [inp.get("top_n") for tool, inp in ran(rounds) if tool == "log_stats"] == [5]
+    assert demo_chat._top_n("show the top 80 hosts") == 50 and demo_chat._top_n("top hosts") == 10
+
+
+def test_a_true_positive_rate_question_leads_with_the_rate() -> None:
+    """R2-5: the TP rate itself leads (the posture tiles carry none)."""
+    assert classify("What is our TP rate?").intent == "rate"
+    assert classify("What is our true positive rate this month?").intent == "rate"
+
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        out.update(total=45, window="Q4 2026", group_by=["verdict"], units={"tp_rate": "percent", "fp_rate": "percent"},
+                   totals={"count": 45, "tp_rate": 13.33, "fp_rate": 75.56, "auto_closed": 33, "human_closed": 5},
+                   groups=[{"key": {"verdict": "False positive"}, "metrics": {"count": 34}},
+                           {"key": {"verdict": "True positive"}, "metrics": {"count": 6}}])
+        return out
+
+    rounds, _header, body = drive("TP rate this quarter", obs)
+    (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
+    assert {"tp_rate", "fp_rate"} <= set(stats["metrics"]) and stats["window"] == "this_quarter"
+    assert body.startswith("True-positive rate **13.3%** in Q4 2026, over 45 cases.")
+    assert "By AI verdict: False positive 34 and True positive 6." in body
+
+
+def test_ai_closes_lead_with_the_automatic_figure_and_entity_case_counts_are_exact() -> None:
+    """R2-6: "closed by the AI" filters to closed cases and leads with the automatic
+    closes; "which users had the most cases" counts each candidate's cases exactly."""
+    def closes(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        out.update(total=38, window="October 2026", filters={"status_group": "terminal"},
+                   totals={"count": 38, "auto_closed": 33, "human_closed": 5})
+        return out
+
+    rounds, _header, body = drive("How many cases did the AI close this month?", closes)
+    (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
+    assert stats["status_group"] == "terminal" and {"auto_closed", "human_closed"} <= set(stats["metrics"])
+    assert body.startswith("**33 cases** opened in October 2026 were closed automatically by the AI agent (of 38 "
+                           "closed cases).")
+    assert classify("Summarize the last 24 hours").intent == "summary"
+    assert classify("Give me a summary of last month").intent == "summary"
+
+    def entities(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if tool == "search_cases":
+            return {"filters": {}, "window": "Q4 2026", "count": 45, "returned": 45, "exact": True,
+                    "cases": [{"case_id": f"c{i}", "entity": entity} for i, entity in
+                              enumerate(["user:pnair", "ip:203.0.113.9", "user:vpatel", "user:pnair"])]}
+        return {"total": {"pnair": 3, "vpatel": 1}[inp["entity"]], "filters": {"entity": inp["entity"]},
+                "window": "Q4 2026", "exact": True}
+
+    assert classify("Which users had the most cases this quarter?").intent == "entity_cases"
+    rounds, _header, body = drive("Which users had the most cases this quarter?", entities)
+    assert [inp.get("entity") for tool, inp in ran(rounds) if tool == "case_stats"] == ["pnair", "vpatel"]
+    assert body.startswith("Of the users on the 4 highest-risk of 45 cases in Q4 2026, `pnair` has the most cases: "
+                           "**3** (exact).")
+    assert "a user that appears only on lower-risk cases is not ranked here" in body
+
+
+def test_named_template_reports_are_titled_by_their_subject() -> None:
+    """R2-11: the indicator or case id the analyst typed (or a case id a lookup
+    returned), else the period; never a log-derived value."""
+    def title(question: str, *results: demo_chat.Result) -> str:
+        ask = classify(question)
+        if ask.report == "custom":
+            ask = demo_chat.replace(ask, report=demo_chat._INTENT_TEMPLATES.get(ask.intent, "custom"))
+        return demo_chat._report_title(demo_chat.PromptView(rounds=[list(results)]), ask)
+
+    def result(tool: str, obs: dict[str, Any]) -> demo_chat.Result:
+        return demo_chat.Result(ordinal=1, tool=tool, status="ok", summary="", observation=obs)
+
+    assert title("Create an IOC report on 203.0.113.42") == "IOC report: 203.0.113.42"
+    assert title("Create an IOC report on 192.0.2.118") == "IOC report: 192.0.2.118"
+    assert title("Create an investigation report for case demo-00000539-0004") == (
+        "Investigation report: demo-00000539-0004")
+    assert title("Make an investigation report on the newest escalated case",
+                 result("get_case", {"case": {"case_id": "demo-7", "entity": "ip:203.0.113.9"}})) == (
+        "Investigation report: demo-7")
+    assert title("Build a hunt report on phishing") == "Hunt report: phishing"
+    assert title("Build a posture report for last month",
+                 result("soc_metrics", {"kind": "posture", "window": "September 2026"})) == (
+        "Posture report, September 2026")
+    assert title("Build a posture report", result("soc_metrics", {"kind": "posture", "window": "all time (since 1 "
+                                                                   "Aug 2026)"})) == "Lifetime posture report"
+
+
+def test_a_period_wholly_outside_the_chip_is_said_never_answered_with_the_chip() -> None:
+    """R2-13: every lookup over the named period was refused by the tool: the answer
+    names the period and the chip, never the chip's figures as that period's."""
+    from app.agents.chat_tools.common import OUTSIDE_SELECTED_RANGE
+
+    question = "How many cases were opened in March 2026?"
+    first = plan_turn(prompt(question, window="last 90 days"))
+    refused = [call(tool, {}, status="error", summary=OUTSIDE_SELECTED_RANGE, inp=inp) for tool, inp in tools_of(first)]
+    header, body = final_of(plan_turn(prompt(question, refused, window="last 90 days")))
+    assert body.startswith("March 2026 is outside the last 90 days you selected, so there is nothing to show for it.")
+    assert "Lookups that did not complete" not in body
+    assert header["follow_ups"][0] == "Show the same for the last 90 days"
+
+
+@pytest.mark.parametrize("question, lead", [
+    ("What's our automation rate this month?", "Automation rate: not measured in October 2026, where no case has "
+                                               "been closed yet."),
+    ("What is our false positive rate this month?", "False-positive rate: not measured in October 2026, where no "
+                                                    "case has a closing verdict yet."),
+    ("What is our SLA attainment this month?", "SLA attainment: not evaluated in October 2026, where no case has "
+                                               "an SLA outcome yet."),
+])
+def test_the_metric_asked_for_leads_even_when_it_is_not_measured(question: str, lead: str) -> None:
+    """R2-4 (date edges): in a quiet start of a period the named figure still leads,
+    said as not measured, never replaced by another figure."""
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        out = _generic_obs(tool, inp)
+        if tool == "soc_metrics":
+            out.update(case_count=0, window="October 2026", sla={"enabled": True, "evaluated": 0},
+                       quality={"false_positive_rate": None, "automation_rate": None, "escalation_rate": None})
+        return out
+
+    _rounds, _header, body = drive(question, obs)
+    assert body.startswith(lead), body
+    if "rate" in question:
+        # Said once: the general "rates are not measured" line is not repeated.
+        assert "False-positive and automation rates are not measured" not in body
