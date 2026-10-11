@@ -20,7 +20,8 @@
  *  - rename / pin / delete (the host confirms deletion), each broadcasting;
  *  - per-thread unsent drafts (never written to the server);
  *  - honest retention (`limit`, `history_truncated`, totals) for the rail footer and
- *    the per-thread "Showing the latest X of Y messages" note.
+ *    the per-thread note about messages an older version removed (Round 12 removes
+ *    none; a long conversation pages its older messages in, `useEarlierMessages`).
  *
  * Revamp additions: server-side content search (`?q=`, debounced, with snippets),
  * pinning (≤ 10; 409 `chat_pin_limit`), `report_id` on rows, and a REQUESTED selection
@@ -262,7 +263,8 @@ export interface ChatThreadRetention {
   truncated: boolean;
   /**
    * Turns were REMOVED: `total_message_count > message_count` (the backend's
-   * `stores.chat_conversations.turns_removed`; the lifetime count only grows).
+   * `stores.chat_conversations.turns_removed`; the lifetime count only grows). Round 12
+   * removes no message, so this is only ever a conversation an older version shortened.
    */
   removed: boolean;
   retained: number | null;
@@ -271,20 +273,21 @@ export interface ChatThreadRetention {
    * The removed-turns note above the transcript (null when nothing was removed). A
    * thread that was only shortened in place gets no thread-level line: each restored
    * answer whose snapshot was compacted carries its own quiet hint (SPEC A22), and
-   * clipped text ends with its own "[truncated in saved history]" marker.
+   * clipped text ends with its own "[truncated in saved history]" marker. A long
+   * conversation is NOT shortened: its older messages are paged in with "Show earlier
+   * messages" (Round 12).
    */
   note: string | null;
 }
 
-/** The per-conversation message window (`MAX_MESSAGES_PER_CONVERSATION`, SPEC §7.5). */
-export const MAX_THREAD_MESSAGES = 100;
-
 /**
  * The thread retention copy from the stored counts. Turns were removed exactly when the
- * lifetime count exceeds the retained count; below the 100-message window that can only
- * be the storage bound, at the window it is the 100-message limit. `history_truncated`
- * alone (no turn missing) means an answer or prompt was shortened in place, which the
- * transcript shows per answer, not here.
+ * lifetime count exceeds the retained count. Since Round 12 nothing removes messages
+ * (every question and answer is kept in full, and a long conversation pages its older
+ * messages in), so a removal can only come from an older version: the note says how
+ * many of the first messages are gone and that messages are no longer removed.
+ * `history_truncated` alone (no turn missing) means an answer or prompt was shortened
+ * in place, which the transcript shows per answer, not here.
  */
 export function threadRetentionInfo(
   retained: number | null,
@@ -294,10 +297,11 @@ export function threadRetentionInfo(
   const removed = typeof retained === 'number' && typeof total === 'number' && total > retained;
   let note: string | null = null;
   if (removed) {
+    const gone = (total as number) - (retained as number);
     note =
-      (retained as number) >= MAX_THREAD_MESSAGES
-        ? `Showing the latest ${retained} of ${total} messages. Conversations keep their newest ${MAX_THREAD_MESSAGES} messages.`
-        : `Showing the latest ${retained} of ${total} messages. Older messages were removed to stay within the storage limit.`;
+      gone === 1
+        ? 'The first message of this conversation was removed by an older version of Agentic SOC. Messages are no longer removed.'
+        : `The first ${gone.toLocaleString('en-US')} messages of this conversation were removed by an older version of Agentic SOC. Messages are no longer removed.`;
   }
   return { truncated, removed, retained, total, note };
 }

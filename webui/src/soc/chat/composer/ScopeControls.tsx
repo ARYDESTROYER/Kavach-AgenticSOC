@@ -25,6 +25,7 @@ import {
   presetForRange,
   sourceChipLabel,
   sourceDisplayName,
+  timeRangeHint,
   timeRangeLongLabel,
   timeRangeShortLabel,
 } from './format';
@@ -67,6 +68,7 @@ function ScopeEditor({
   const denied = access.filter((a) => !a.allowed && a.missing);
   const sourceLegend = React.useId();
   const timeLegend = React.useId();
+  const timeHint = React.useId();
   const scopeLegend = React.useId();
   const selectedMissing = target.sourceId && !sources.some((s) => s.id === target.sourceId);
 
@@ -110,21 +112,25 @@ function ScopeEditor({
         <h3 id={timeLegend} className="mb-1.5 font-medium text-foreground">
           Time range
         </h3>
+        {/* Eight presets, last hour to all time, in two rows of four (Round 12, SPEC D7):
+            one row would not fit the popover. Arrow keys still move through them in order. */}
         <SegmentedControl
           size="sm"
           fitted
           aria-label="Time range"
+          aria-describedby={timeHint}
           value={preset?.id ?? ''}
           onValueChange={(id) => target.setTimeRange(TIME_PRESETS.find((p) => p.id === id)?.range ?? null)}
-          options={TIME_PRESETS.map((p) => ({ value: p.id, label: p.id }))}
+          options={TIME_PRESETS.map((p) => ({ value: p.id, label: p.short }))}
+          className="grid h-auto grid-cols-4"
         />
-        <p className="mt-1.5 text-muted-foreground">
-          {/* No range: the 24 h default, which a question may change (SPEC §3.1). A chosen
+        <p id={timeHint} className="mt-1.5 text-muted-foreground">
+          {/* No range: no outer limit, and each lookup keeps its own default window (case
+              counts and searches all time; logs, metrics, cost and audit 24 hours). A chosen
               range, an explicit "now-24h" included, is an outer bound a question can only
-              narrow: tool windows are clamped into it (§4.8.4, chat_tools/common.resolve_window). */}
-          {!target.timeRange
-            ? `${TIME_PRESETS[1].label}, unless your question names another window.`
-            : `${preset ? preset.label : timeRangeLongLabel(target.timeRange)}. Questions can narrow this range, not widen it.`}
+              narrow: tool windows are clamped into it (§4.8.4, chat_tools/common.resolve_window).
+              "All time" never clamps. */}
+          {timeRangeHint(target.timeRange)}
         </p>
       </div>
 
@@ -197,7 +203,9 @@ export function ScopeControls({ target, context, sources, sourcesState, merged, 
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button type="button" className={cn(chipButton, 'max-w-[14rem] shrink')} aria-label={accessibleName}>
-            <Database aria-hidden="true" />
+            {/* The narrow "Scope · n" chip names itself; without the icon it fits the row
+                beside the Read-only lock and the meter instead of truncating its count. */}
+            {merged ? null : <Database aria-hidden="true" />}
             <span className="truncate">{chipText}</span>
             <ChevronDown aria-hidden="true" className="opacity-70" />
           </button>

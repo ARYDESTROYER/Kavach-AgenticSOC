@@ -430,25 +430,6 @@ says so, but the summary text itself is not shown anywhere in the console or ret
 an API route. It stays inside the conversation's stored data and is used only as
 untrusted context for later questions.
 
-### The chat scope chip has no All time option
-
-The scope chip offers Last hour, Last 24 hours, and Last 7, 30, and 90 days. The server
-and the API accept an all-time range (`{"from": "all"}`), but the console does not offer
-it yet. The default, Last 24 hours, sets no outer limit, so a question can still ask for
-all time (or any other window) while the chip shows Last 24 hours; the run log shows the
-window each lookup used.
-
-### The chat scope popover names the wrong default window
-
-With the default scope chip, which reads "24h", the chip's popover says "Last 24 hours,
-unless your question names another window." That is not the default for every lookup.
-When a question names no window, case counts and case searches cover all time; only log
-searches and statistics, metrics, cost, and the audit log cover the last 24 hours. A
-question such as "How many cases did we close as false positive?" therefore returns an
-all-time count, not a one-day figure. Name the window in the question when you mean a
-particular period, and check the run log, which shows the window each lookup used. The
-[chat page](../analyst/chat.md#time-windows) lists the defaults.
-
 ### The context note overstates in Case Manager chat
 
 The composer's context card says "Long conversations are summarised automatically near
@@ -457,14 +438,6 @@ Workspace conversation. Case Manager chat, and a Workspace conversation that is 
 saved, keep no running summary: when the conversation outgrows the model's context
 window, only the newest exchanges that fit are sent, and the oldest are left out without
 a notice. The card shows the same note there.
-
-### The chat transcript still shows an old retention notice
-
-Messages are no longer removed from a conversation, and every message stays readable
-through `GET /api/chat/conversations/{id}/messages`. The transcript, however, loads only
-the newest 100 messages, and above them it still says "Conversations keep their newest
-100 messages" (or "Older messages were removed to stay within the storage limit"). The
-older messages are stored, not removed; the transcript does not page them in yet.
 
 ### Baseline learning and anomaly promotion are separate
 

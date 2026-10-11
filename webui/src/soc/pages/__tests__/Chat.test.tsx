@@ -601,7 +601,12 @@ describe('Workspace Chat page', () => {
     details = { 'c-long': detailOf(rows[0]) };
     renderChat();
     await screen.findByText('Long thread answer');
-    expect(screen.getByText('Showing the latest 40 of 64 messages. Older messages were removed to stay within the storage limit.')).toBeInTheDocument();
+    // Only an older version removed messages (Round 12 removes none): the note says so.
+    expect(
+      screen.getByText(
+        'The first 24 messages of this conversation were removed by an older version of Agentic SOC. Messages are no longer removed.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId('answer-trimmed-hint')).toBeNull();
   });
 

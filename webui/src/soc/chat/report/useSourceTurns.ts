@@ -26,7 +26,7 @@ import * as React from 'react';
 import { ApiError } from '@/lib/api';
 import type { ChatConversation, Report } from '@/lib/types';
 
-import { getConversation } from '../chat-api';
+import { getConversation, getConversationCovering } from '../chat-api';
 import { MAX_SOURCE_CONVERSATIONS, sourceTurnsFromConversation, type ConversationReadStatus, type SourceTurnFacts } from './model';
 import { onReportChanged } from './report-sync';
 
@@ -99,11 +99,17 @@ function watchReportChanges(): void {
   });
 }
 
-function load(conversationId: string): Promise<ChatConversation | 'gone' | null> {
+/**
+ * Read one source conversation. `wanted` (given when a read lacked an answer and the
+ * conversation has older messages) names the answers a report needs: a long
+ * conversation opens on its newest messages (Round 12), so its older pages are read
+ * until they hold every one of them, never leaving an older answer "not recorded".
+ */
+function load(conversationId: string, wanted?: ReadonlySet<string>): Promise<ChatConversation | 'gone' | null> {
   watchReportChanges();
   const hit = cache.get(conversationId);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.promise;
-  const promise = getConversation(conversationId)
+  const promise = (wanted?.size ? getConversationCovering(conversationId, wanted) : getConversation(conversationId))
     .then((c) => c as ChatConversation | 'gone' | null)
     .catch((err: unknown) => {
       if (err instanceof ApiError && err.status === 404) return 'gone' as const;
@@ -157,7 +163,9 @@ export async function loadSourceContext(
       const have = new Set(first.messages.map((m) => m.id));
       if (Array.from(need).some((m) => !have.has(m))) {
         clearSourceTurnCache(id);
-        return load(id);
+        // A newer turn since the cached copy, or (a long conversation, Round 12) an
+        // answer older than the newest messages the read returns: read back to it.
+        return load(id, first.earlier_message_count ? need : undefined);
       }
     }
     return first;

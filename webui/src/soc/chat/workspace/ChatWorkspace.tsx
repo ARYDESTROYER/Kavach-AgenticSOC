@@ -35,7 +35,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { LoadingState } from '@/design-system/loading';
 import { useAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
-import { getConversation } from '../chat-api';
+import { getFullConversation } from '../chat-api';
 import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
 import { EmptyState } from '../empty/EmptyState';
@@ -48,6 +48,7 @@ import { CHAT_KEYSHORTCUTS, useChatShortcuts } from '../shortcuts/useChatShortcu
 import type { ChatConversationsController } from '../useChatConversations';
 import type { ChatContextController } from '../useChatContext';
 import { type ChatEngine, type ChatUserItem } from '../useChatEngine';
+import { useEarlierMessages } from '../useEarlierMessages';
 import { HistoryRail, HistoryStrip, type ConversationExportFormat } from './HistoryRail';
 import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
@@ -94,6 +95,14 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
   const geometry = useChatGeometry(panelOpen && !caseScoped);
+  // Older messages of a long saved conversation ("Show earlier messages", Round 12).
+  const earlier = useEarlierMessages({
+    conversation: caseScoped ? null : conv.conversation,
+    engine,
+    onLoaded: (added) => {
+      if (added > 0) announce(`Loaded ${added} earlier ${added === 1 ? 'message' : 'messages'}`);
+    },
+  });
   const laneWidth = useChatLaneWidth();
   const busy = engine.busy;
   const ctx = context.context;
@@ -183,7 +192,9 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const exportThread = React.useCallback(
     async (id: string, format: ConversationExportFormat) => {
       try {
-        const [conversation, module] = await Promise.all([getConversation(id), import('../report/export/conversation')]);
+        // The whole conversation, every older page included: an export is never cut to
+        // the newest messages the transcript opened with.
+        const [conversation, module] = await Promise.all([getFullConversation(id), import('../report/export/conversation')]);
         const outcome = await module.exportConversation(conversation, format, { author });
         announce(outcome.message);
         if (!outcome.ok) toast.error(outcome.message);
@@ -247,7 +258,21 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   // there once the thread has finished restoring.
   const highlight =
     conv.highlight && conv.highlight.conversationId === engine.conversationId ? conv.highlight : null;
-  const highlightReady = !!highlight && !conv.restoring && !conv.threadError;
+  const highlightRestored = !!highlight && !conv.restoring && !conv.threadError;
+  // A requested message older than the messages on screen (a search hit or a link into a
+  // long conversation): page back to it first (Round 12), then highlight it.
+  const highlightShown =
+    !!highlight && engine.items.some((item) => item.key === highlight.messageId || item.messageId === highlight.messageId);
+  const [seekedNonce, setSeekedNonce] = React.useState<number | null>(null);
+  const seekOlder = highlightRestored && !highlightShown && earlier.remaining > 0;
+  const { loadUntil } = earlier;
+  React.useEffect(() => {
+    if (!seekOlder || !highlight || seekedNonce === highlight.nonce) return;
+    setSeekedNonce(highlight.nonce);
+    void loadUntil(highlight.messageId);
+  }, [highlight, loadUntil, seekOlder, seekedNonce]);
+  const highlightReady =
+    highlightRestored && !(!highlightShown && (earlier.loading || (seekOlder && seekedNonce !== highlight?.nonce)));
 
   const title = caseScoped
     ? `Case ${caseId}`
@@ -442,6 +467,17 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           engine={engine}
           label={caseScoped ? `Case ${caseId} messages` : 'Messages'}
           header={hasHeader ? header : null}
+          earlier={
+            caseScoped
+              ? null
+              : {
+                  remaining: earlier.remaining,
+                  loading: earlier.loading,
+                  error: earlier.error,
+                  loadedAny: earlier.loadedAny,
+                  onLoad: earlier.load,
+                }
+          }
           replace={replace}
           empty={empty}
           highlight={highlight}

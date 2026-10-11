@@ -662,7 +662,8 @@ model call goes through the single gateway and cost ledger (#6).
 - **History** is per user on the selected state backend: newest first, searchable by
   content, pinnable (10 pins exempt from the 50-conversation limit), exportable as
   Markdown, HTML, or PDF. Since Round 12 every question and answer is stored in full and
-  no message is removed; a reopened conversation shows its newest 100 messages. A new
+  no message is removed; a reopened conversation opens on its newest 100 messages, and
+  **Show earlier messages** pages the older ones in, 50 at a time. A new
   chat appears as a running row as soon as its first question starts.
 - **Reports** collect blocks or whole answers into owner-scoped documents (60 items)
   with notes, an AI summary (one metered call; dry-run estimate first), and PDF, Word,

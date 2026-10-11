@@ -343,8 +343,17 @@ and, just as importantly, makes each of these conditions a state an operator can
 - **Data questions answered as "Product help" or refused**: questions such as "create a
   report of lifetime performance" or monthly breakdowns now run their lookups; a false
   "last 24 hours" default in the assistant's instructions and "lifetime" read as a short
-  window are gone (the scope chip's own popover still says "Last 24 hours" for the
-  default; see `docs/releases/known-limitations.md`).
+  window are gone. The scope chip adds **6mo**, **12mo** and **All time** (which never
+  limits a question), and its popover now says what the default covers: no outer
+  limit, case counts and searches over all time, and log, metric, cost and audit lookups
+  over the last 24 hours.
+- **Long conversations showed only their newest 100 messages**, under a notice that said
+  conversations keep only their newest 100. Nothing is removed: the transcript now has
+  **Show earlier messages**, which pages older messages in (50 at a time, in full) above
+  the reader without moving their place, ending at **Start of the conversation**; a
+  search result or link to an older message loads back to it; exports and report
+  methodology read the whole conversation; and only a conversation an older version
+  shortened says how many of its first messages are gone.
 - **Counts that were samples**: chat totals and "still open" counts are now exact at any
   store size, and dashboard figures no longer come from the newest 5,000 (or 2,000) cases
   of the whole store: store-wide totals are exact, and window figures analyse up to

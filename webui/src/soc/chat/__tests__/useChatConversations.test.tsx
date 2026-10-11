@@ -401,7 +401,7 @@ describe('useChatConversations — retention and refresh', () => {
     const { result } = await mount();
     expect(result.current.retention).toEqual({ limit: 50, truncated: true, total: 64, showNote: true });
     expect(result.current.threadRetention.note).toBe(
-      'Showing the latest 100 of 148 messages. Conversations keep their newest 100 messages.',
+      'The first 48 messages of this conversation were removed by an older version of Agentic SOC. Messages are no longer removed.',
     );
     expect(result.current.threadRetention.removed).toBe(true);
   });
@@ -418,14 +418,21 @@ describe('useChatConversations — retention and refresh', () => {
     expect(result.current.threadRetention.truncated).toBe(true);
   });
 
-  it('words removed turns by their cause and keeps a shortened-only thread quiet', () => {
+  it('says how many first messages an older version removed, claims no cap, and keeps a shortened-only thread quiet', () => {
     expect(threadRetentionInfo(40, 62, true)).toMatchObject({
       removed: true,
-      note: 'Showing the latest 40 of 62 messages. Older messages were removed to stay within the storage limit.',
+      note: 'The first 22 messages of this conversation were removed by an older version of Agentic SOC. Messages are no longer removed.',
     });
-    expect(threadRetentionInfo(100, 130, false).note).toBe(
-      'Showing the latest 100 of 130 messages. Conversations keep their newest 100 messages.',
+    expect(threadRetentionInfo(100, 101, false).note).toBe(
+      'The first message of this conversation was removed by an older version of Agentic SOC. Messages are no longer removed.',
     );
+    expect(threadRetentionInfo(100, 1300, false).note).toMatch(/^The first 1,200 messages /);
+    // No message cap is claimed anywhere (Round 12: nothing is removed, older messages page in).
+    for (const [retained, total] of [[40, 62], [100, 130], [250, 400]] as const) {
+      expect(threadRetentionInfo(retained, total, true).note).not.toMatch(/newest 100|100 messages|storage limit|Showing the latest/);
+    }
+    // A long conversation whose counts agree is not shortened at all: no note.
+    expect(threadRetentionInfo(260, 260, false)).toMatchObject({ removed: false, note: null });
     expect(threadRetentionInfo(4, 4, true)).toEqual({ truncated: true, removed: false, retained: 4, total: 4, note: null });
     expect(threadRetentionInfo(4, 4, false)).toMatchObject({ removed: false, note: null });
     // Legacy rows without counts never claim a removal.

@@ -590,7 +590,11 @@ scrolls to and highlights the message for 2 s and is cleared from the hash once 
 selection moves; a missing thread reads "This conversation is no longer available".
 History is bounded (50 conversations, 10 of them pinnable beyond the limit) and every
 boundary is disclosed rather than inferred. Since Round 12 no message is removed: the
-transcript opens on the newest 100 messages and older ones stay stored.
+transcript opens on the newest 100 messages, and a quiet **Show earlier messages** control
+above the first turn (with how many remain) pages older ones in, 50 at a time, keeping the
+reader's position: the first message in view is measured before the load and the lane is
+scrolled by exactly how far it moved. The control keeps focus through loading (never
+`disabled`), shows an error with Retry, and gives way to "Start of the conversation".
 
 **Case Manager chat** is the same engine scoped to one case: compact presentation, its
 one-line status and quick actions, the compact composer, no rail, no report panel and no

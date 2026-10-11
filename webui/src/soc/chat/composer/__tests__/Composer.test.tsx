@@ -346,15 +346,19 @@ describe('Composer — @ scopes and the scope chip', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Scope' });
     await user.click(within(dialog).getByRole('radio', { name: /Elastic prod/ }));
     expect(spies.setSourceId).toHaveBeenLastCalledWith('e');
-    expect(within(dialog).getByText('Last 24 hours, unless your question names another window.')).toBeInTheDocument();
+    expect(within(dialog).getByText('No outer limit. Without a window in your question, case counts and searches cover all time, and log, metric, cost and audit lookups the last 24 hours.')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('radio', { name: '7d' }));
     expect(spies.setTimeRange).toHaveBeenLastCalledWith({ from: 'now-7d' });
     // A chosen range is an outer bound: a question can narrow it, never widen it.
-    expect(within(dialog).getByText('Last 7 days. Questions can narrow this range, not widen it.')).toBeInTheDocument();
-    expect(within(dialog).queryByText(/unless your question names another window/)).toBeNull();
+    expect(
+      within(dialog).getByText(
+        'Last 7 days. Lookups without a window in your question use this range. Questions can narrow it, not widen it.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/^No outer limit/)).toBeNull();
     await user.click(within(dialog).getByRole('radio', { name: '24h' }));
     expect(spies.setTimeRange).toHaveBeenLastCalledWith(null);
-    expect(within(dialog).getByText('Last 24 hours, unless your question names another window.')).toBeInTheDocument();
+    expect(within(dialog).getByText('No outer limit. Without a window in your question, case counts and searches cover all time, and log, metric, cost and audit lookups the last 24 hours.')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Metrics' }));
     expect(screen.getByTestId('scopes')).toHaveTextContent('metrics');
     expect(screen.getByRole('button', { name: /^Scope: Elastic prod/ })).toHaveTextContent('Elastic prod · 24h');
@@ -366,11 +370,11 @@ describe('Composer — @ scopes and the scope chip', () => {
     let dialog = await screen.findByRole('dialog', { name: 'Scope' });
     expect(
       within(dialog).getByText(
-        'From 2026-10-01T00:00:00Z to 2026-10-02T00:00:00Z. Questions can narrow this range, not widen it.',
+        'From 2026-10-01T00:00:00Z to 2026-10-02T00:00:00Z. Lookups without a window in your question use this range. Questions can narrow it, not widen it.',
       ),
     ).toBeInTheDocument();
     // No preset matches, so no time segment is selected.
-    for (const id of ['1h', '24h', '7d', '30d', '90d']) {
+    for (const id of ['1h', '24h', '7d', '30d', '90d', '6mo', '12mo', 'All time']) {
       expect(within(dialog).getByRole('radio', { name: id })).not.toBeChecked();
     }
     custom.view.unmount();
@@ -379,8 +383,71 @@ describe('Composer — @ scopes and the scope chip', () => {
     const explicit = setup({ timeRange: { from: 'now-24h' } });
     await explicit.user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
     dialog = await screen.findByRole('dialog', { name: 'Scope' });
-    expect(within(dialog).getByText('Last 24 hours. Questions can narrow this range, not widen it.')).toBeInTheDocument();
-    expect(within(dialog).queryByText(/unless your question names another window/)).toBeNull();
+    expect(
+      within(dialog).getByText(
+        'Last 24 hours. Lookups without a window in your question use this range. Questions can narrow it, not widen it.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/^No outer limit/)).toBeNull();
+  });
+
+  it('offers 6 months, 12 months and All time, and All time sets no outer limit (Round 12, SPEC D7)', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    const group = within(dialog).getByRole('radiogroup', { name: 'Time range' });
+    // Last hour to all time, in order, in two rows of four.
+    expect(within(group).getAllByRole('radio').map((r) => r.textContent)).toEqual([
+      '1h', '24h', '7d', '30d', '90d', '6mo', '12mo', 'All time',
+    ]);
+    expect(group).toHaveClass('grid', 'grid-cols-4');
+    // The hint is the group's description.
+    expect(group).toHaveAccessibleDescription(/^No outer limit\./);
+
+    await user.click(within(group).getByRole('radio', { name: '6mo' }));
+    // Calendar months, never minutes ("now-6m").
+    expect(spies.setTimeRange).toHaveBeenLastCalledWith({ from: 'now-6M' });
+    expect(
+      within(dialog).getByText('Last 6 months. Lookups without a window in your question use this range. Questions can narrow it, not widen it.'),
+    ).toBeInTheDocument();
+
+    await user.click(within(group).getByRole('radio', { name: '12mo' }));
+    expect(spies.setTimeRange).toHaveBeenLastCalledWith({ from: 'now-12M' });
+    expect(within(dialog).getByText(/^Last 12 months\. /)).toBeInTheDocument();
+
+    await user.click(within(group).getByRole('radio', { name: 'All time' }));
+    expect(spies.setTimeRange).toHaveBeenLastCalledWith({ from: 'all' });
+    // All time never clamps: a question can only name a shorter window inside it.
+    expect(
+      within(dialog).getByText(
+        'All time. Lookups without a window in your question cover all time, and a question can still name a shorter window.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Questions can narrow it, not widen it/)).toBeNull();
+    expect(screen.getByRole('button', { name: /^Scope: All sources, All time\./ })).toHaveTextContent('All sources · All time');
+
+    // Back to the default: no outer limit again.
+    await user.click(within(group).getByRole('radio', { name: '24h' }));
+    expect(spies.setTimeRange).toHaveBeenLastCalledWith(null);
+    expect(within(dialog).getByText(/^No outer limit\./)).toBeInTheDocument();
+  });
+
+  it('shows a reopened conversation\'s stored All time and 12-month windows as their presets', async () => {
+    const all = setup({ timeRange: { from: 'all', to: 'now' } });
+    expect(await screen.findByRole('button', { name: /^Scope: All sources, All time\./ })).toHaveTextContent('All sources · All time');
+    await all.user.click(screen.getByRole('button', { name: /^Scope: All sources/ }));
+    let dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    expect(within(dialog).getByRole('radio', { name: 'All time' })).toBeChecked();
+    all.view.unmount();
+
+    // "now-1y" is the same window as twelve calendar months.
+    const year = setup({ timeRange: { from: 'now-1y', to: 'now' } });
+    expect(await screen.findByRole('button', { name: /^Scope: All sources, Last 12 months\./ })).toHaveTextContent(
+      'All sources · 12mo',
+    );
+    await year.user.click(screen.getByRole('button', { name: /^Scope: All sources/ }));
+    dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    expect(within(dialog).getByRole('radio', { name: '12mo' })).toBeChecked();
   });
 
   it('says why a source cannot be chosen without sources:read', async () => {
@@ -396,6 +463,8 @@ describe('Composer — @ scopes and the scope chip', () => {
     setup({ scopes: ['cases', 'logs'] });
     const merged = await screen.findByRole('button', { name: /^Scope: 2 set/ });
     expect(merged).toHaveTextContent('Scope · 2');
+    // Only the chevron: the merged chip names itself, so its count never truncates.
+    expect(merged.querySelectorAll('svg')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Remove scope Cases' })).toBeNull();
     // The lock keeps its accessible name with the icon only.
     expect(screen.getByRole('button', { name: 'Read-only. What can the assistant access?' })).not.toHaveTextContent(

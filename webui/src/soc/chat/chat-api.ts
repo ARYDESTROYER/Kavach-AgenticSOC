@@ -27,6 +27,7 @@ import type {
   ChatFeedbackRating,
   ChatFeedbackReason,
   ChatFeedbackRequest,
+  ChatMessagePage,
   ChatRates,
   ChatPrompt,
   ChatPromptCategory,
@@ -647,7 +648,114 @@ export function normaliseConversation(raw: unknown): ChatConversation | null {
   }
   const { match: _match, ...rest } = summary;
   void _match;
-  return { ...rest, messages };
+  const out: ChatConversation = { ...rest, messages };
+  // Round 12: the read returns the newest window; older messages are paged in.
+  const earlier = optCount(raw.earlier_message_count);
+  if (earlier) out.earlier_message_count = earlier;
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Older messages (Round 12: a long conversation is read a page at a time).    */
+/* -------------------------------------------------------------------------- */
+
+/** Messages the transcript's "Show earlier messages" loads at a time. */
+export const EARLIER_PAGE_SIZE = 50;
+/** The server's page maximum (`MAX_MESSAGE_PAGE`): whole-conversation reads use it. */
+export const MAX_MESSAGE_PAGE = 100;
+
+/** A page of older messages, oldest first, with how many are still older. */
+export function normaliseMessagePage(raw: unknown): ChatMessagePage {
+  const src = isObj(raw) ? raw : {};
+  const messages: ChatConversationMessage[] = [];
+  if (Array.isArray(src.messages)) {
+    for (const item of src.messages) {
+      const message = normaliseConversationMessage(item);
+      if (message && !messages.some((m) => m.id === message.id)) messages.push(message);
+    }
+  }
+  return {
+    conversation_id: safeId(src.conversation_id) ?? '',
+    messages,
+    earlier_message_count: count(src.earlier_message_count, 0),
+  };
+}
+
+/**
+ * `GET /api/chat/conversations/{id}/messages?before=&limit=`: up to `limit` messages
+ * immediately before message `before` (the newest ones without it), oldest first and
+ * restored to their full text. Owner-scoped: another user's conversation is a 404.
+ */
+export async function getConversationMessages(
+  conversationId: string,
+  query: { before?: string | null; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<ChatMessagePage> {
+  const limit = Math.min(MAX_MESSAGE_PAGE, Math.max(1, Math.trunc(query.limit ?? EARLIER_PAGE_SIZE)));
+  const before = isSafeChatId(query.before) ? query.before : undefined;
+  const raw = await request<unknown>('GET', `chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    query: { before, limit },
+    signal,
+  });
+  return normaliseMessagePage(raw);
+}
+
+/**
+ * Prepend older pages to `conversation` until `done(messages)` says stop or the
+ * conversation's first message is reached. A page that brings nothing new (a store
+ * that changed under the read) ends the walk instead of looping.
+ */
+async function readBack(
+  conversation: ChatConversation,
+  done: (messages: readonly ChatConversationMessage[]) => boolean,
+  signal?: AbortSignal,
+): Promise<ChatConversation> {
+  let messages = conversation.messages;
+  let earlier = conversation.earlier_message_count ?? 0;
+  while (earlier > 0 && messages.length && !done(messages)) {
+    const page = await getConversationMessages(
+      conversation.id,
+      { before: messages[0].id, limit: MAX_MESSAGE_PAGE },
+      signal,
+    );
+    const known = new Set(messages.map((m) => m.id));
+    const older = page.messages.filter((m) => !known.has(m.id));
+    if (!older.length) break;
+    messages = [...older, ...messages];
+    const progressed = page.earlier_message_count < earlier;
+    earlier = page.earlier_message_count;
+    if (!progressed) break;
+  }
+  const out: ChatConversation = { ...conversation, messages };
+  if (earlier > 0) out.earlier_message_count = earlier;
+  else delete out.earlier_message_count;
+  return out;
+}
+
+/**
+ * The WHOLE conversation (every message, full text): the newest window, then every
+ * older page. Exports use this, so a long conversation is never cut to its newest
+ * messages.
+ */
+export async function getFullConversation(conversationId: string, signal?: AbortSignal): Promise<ChatConversation> {
+  return readBack(await getConversation(conversationId, signal), () => false, signal);
+}
+
+/**
+ * The conversation read back far enough to hold every message in `wanted` (or all of
+ * it): a report's methodology names answers that may be older than the newest window.
+ */
+export async function getConversationCovering(
+  conversationId: string,
+  wanted: ReadonlySet<string>,
+  signal?: AbortSignal,
+): Promise<ChatConversation> {
+  const first = await getConversation(conversationId, signal);
+  if (!wanted.size) return first;
+  return readBack(first, (messages) => {
+    const have = new Set(messages.map((m) => m.id));
+    return Array.from(wanted).every((id) => have.has(id));
+  }, signal);
 }
 
 export interface ListConversationsQuery {

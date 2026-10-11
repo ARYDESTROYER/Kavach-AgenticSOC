@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api';
 import type { ChatConversation, Report } from '@/lib/types';
 
-const api = vi.hoisted(() => ({ getConversation: vi.fn() }));
+const api = vi.hoisted(() => ({ getConversation: vi.fn(), getConversationCovering: vi.fn() }));
 vi.mock('@/soc/chat/chat-api', () => api);
 
 import { REPORT_CHANGED_EVENT, emitReportChanged, reportErrorMessage } from '../report-sync';
@@ -35,6 +35,7 @@ const reportFrom = (sources: Array<[string, string]>): Report => {
 
 beforeEach(() => {
   api.getConversation.mockReset();
+  api.getConversationCovering.mockReset();
   clearSourceTurnCache();
 });
 
@@ -64,6 +65,19 @@ describe('loadReportSourceContext', () => {
     const state = await loadReportSourceContext(reportFrom([['c-a', 'm-1'], ['c-a', 'm-2']]));
     expect(api.getConversation).toHaveBeenCalledTimes(2);
     expect(state.turns?.has('m-2')).toBe(true);
+  });
+
+  it('reads a long conversation back to an answer older than its newest messages (Round 12)', async () => {
+    // The read returns the newest window; the answer the report names is older.
+    api.getConversation.mockResolvedValueOnce({ ...conversation('c-long', ['m-90', 'm-91']), earlier_message_count: 90 });
+    api.getConversationCovering.mockResolvedValueOnce(conversation('c-long', ['m-3', 'm-90', 'm-91']));
+    const state = await loadReportSourceContext(reportFrom([['c-long', 'm-3'], ['c-long', 'm-91']]));
+    expect(api.getConversationCovering).toHaveBeenCalledTimes(1);
+    expect(api.getConversationCovering.mock.calls[0][0]).toBe('c-long');
+    expect(Array.from(api.getConversationCovering.mock.calls[0][1] as Set<string>).sort()).toEqual(['m-3', 'm-91']);
+    // The older answer's facts are recorded, never "not recorded".
+    expect(state.turns?.has('m-3')).toBe(true);
+    expect(state.status.get('c-long')).toBe('read');
   });
 
   it('serves the cache, and forgets a conversation when its report changes', async () => {

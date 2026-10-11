@@ -139,6 +139,7 @@ export function Harness(props: HarnessProps) {
     askAgain: () => false,
     continueAnswer: () => false,
     reset: () => setDraft(''),
+    prependRestored: () => 0,
   };
 
   return (

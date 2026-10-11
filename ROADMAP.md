@@ -316,21 +316,6 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   `case_tasks`, `inbox`, `notif_prefs`, `user_prefs`, `shift_handoff`, `tuning`,
   `campaigns` and `baseline` can still grow the shared Elasticsearch config-index mapping
   per id; adopt the per-backend opaque storage form chat and case threads use.
-- ☐ **Older-message paging in the chat UI** — the API pages messages beyond the newest
-  100 (`GET /api/chat/conversations/{id}/messages`), but the transcript does not load
-  them yet. In the same change, replace the transcript's outdated retention notice
-  (`threadRetentionInfo` in `useChatConversations.ts` still says "Conversations keep
-  their newest 100 messages" or "Older messages were removed…", although nothing is
-  removed any more).
-- ☐ **"All time" on the chat scope chip** (SPEC D7) — the server and API accept
-  `{"from": "all"}`, but the composer's presets stop at Last 90 days. Open orchestrator
-  decision: add the preset, or record the default chip (which sets no outer limit) as
-  the way to ask about all time.
-- ☐ **Scope popover default hint** (with the item above) — with the default chip
-  ("24h") the popover says "Last 24 hours, unless your question names another window."
-  (`chat/composer/ScopeControls.tsx`), but case counts and case searches default to all
-  time. Reword it, for example "No outer limit: case questions cover all time, other
-  lookups the last 24 hours unless your question names a window."
 - ☐ **Context note only where a summary is stored** — the composer's context card says
   long conversations are summarised automatically with no hard cap (`contextNote` in
   `chat/composer/format.ts`) in Case Manager chat and in an unsaved conversation too,

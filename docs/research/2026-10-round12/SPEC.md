@@ -430,7 +430,7 @@ only new entry code); live Chromium QA with screenshots at 390/1280/1440/1920/25
 
 Recorded by WP-DOC at the end of wave 3 (2026-10-11). Where this section and §2–§4
 disagree, this section describes what shipped; the chat-revamp SPEC carries the
-detailed amendments (A39–A59) and BLOCKS.md amendments 24–30.
+detailed amendments (A39–A60) and BLOCKS.md amendments 24–30.
 
 ### 7.1 What each package delivered
 
@@ -648,9 +648,11 @@ detailed amendments (A39–A59) and BLOCKS.md amendments 24–30.
   runner, chat views and charts stay lazy. WP-GEN-A then moved code that first paint
   never needs out of the entry, keeping every feature: the command palette body
   (`CommandPalette`, cmdk, `ui/command`, about 20 kB) is a fail-soft lazy chunk that
-  AppShell mounts on the first Cmd/Ctrl-K or search click (warmed when the browser is
-  idle or an opener is hovered); the Settings section metadata (`settings-sections-meta`
-  and `settings-dirty`, about 15.5 kB) left with it once the shell's unsaved-changes hook
+  AppShell mounts on the first Cmd/Ctrl-K or search click (its chunks are prefetched into
+  the browser cache when the browser is idle, never imported early, so a failed warm
+  cannot leave search, Chat or Settings unable to load); the Settings section metadata
+  (`settings-sections-meta` and `settings-dirty`, about 15.5 kB) left with it once the
+  shell's unsaved-changes hook
   took `deepEqual` from the dependency-free `lib/deep-equal.ts`; and the shell's two Blob
   downloads (job artifacts, MFA recovery codes) share `lib/download-blob.ts` (+223 B).
   Measured with `npm run build:app`, the entry is **365,547 B**, 34,420 B less than

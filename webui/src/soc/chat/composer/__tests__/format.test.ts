@@ -14,11 +14,14 @@ import {
   formatMoney,
   formatTokenCount,
   formatTurnCost,
+  isAllTimeRange,
   isQueryableSource,
   presetForRange,
   projectedCostRange,
   sourceChipLabel,
   withClientHistory,
+  TIME_PRESETS,
+  timeRangeHint,
   timeRangeLongLabel,
   timeRangeShortLabel,
 } from '../format';
@@ -98,6 +101,54 @@ describe('time range presets', () => {
     expect(timeRangeShortLabel({ from: 'now-90d', to: 'now' })).toBe('90d');
     expect(presetForRange({ from: 'now-7d', to: 'now-1d' })).toBeNull();
     expect(timeRangeShortLabel({ from: '2026-01-01T00:00:00Z', to: 'now-1d' })).toContain('→');
+  });
+  it('goes from the last hour to all time, with calendar months and no span limit (Round 12, SPEC D7)', () => {
+    expect(TIME_PRESETS.map((p) => [p.id, p.range?.from ?? null])).toEqual([
+      ['1h', 'now-1h'],
+      ['24h', null],
+      ['7d', 'now-7d'],
+      ['30d', 'now-30d'],
+      ['90d', 'now-90d'],
+      ['6mo', 'now-6M'],
+      ['12mo', 'now-12M'],
+      ['all', 'all'],
+    ]);
+    expect(timeRangeShortLabel({ from: 'now-6M' })).toBe('6mo');
+    expect(timeRangeLongLabel({ from: 'now-12M', to: 'now' })).toBe('Last 12 months');
+    expect(presetForRange({ from: 'now-1y' })?.id).toBe('12mo');
+    expect(presetForRange({ from: 'NOW-1Y', to: 'NOW' })?.id).toBe('12mo');
+    // A lower-case m is minutes, never months.
+    expect(presetForRange({ from: 'now-6m' })).toBeNull();
+    expect(timeRangeShortLabel({ from: 'all' })).toBe('All time');
+    expect(timeRangeLongLabel({ from: 'all', to: 'now' })).toBe('All time');
+    for (const spelling of ['all', 'ALL', 'all_time', 'all time', 'lifetime']) {
+      expect(isAllTimeRange({ from: spelling })).toBe(true);
+      expect(presetForRange({ from: spelling })?.id).toBe('all');
+    }
+    expect(isAllTimeRange(null)).toBe(false);
+    expect(isAllTimeRange({ from: 'now-90d' })).toBe(false);
+    // All time up to a fixed end is no preset, and says so.
+    expect(presetForRange({ from: 'all', to: '2026-01-01T00:00:00Z' })).toBeNull();
+    expect(timeRangeLongLabel({ from: 'all', to: '2026-01-01T00:00:00Z' })).toBe('All time to 2026-01-01T00:00:00Z');
+  });
+  it('says what the default really covers and that a chosen range is an outer limit, except all time', () => {
+    // The default chip sets no outer limit: each lookup keeps its own default window.
+    expect(timeRangeHint(null)).toBe(
+      'No outer limit. Without a window in your question, case counts and searches cover all time, ' +
+        'and log, metric, cost and audit lookups the last 24 hours.',
+    );
+    expect(timeRangeHint(null)).not.toMatch(/Last 24 hours, unless/);
+    expect(timeRangeHint({ from: 'now-24h' })).toBe(
+      'Last 24 hours. Lookups without a window in your question use this range. Questions can narrow it, not widen it.',
+    );
+    expect(timeRangeHint({ from: 'now-6M' })).toMatch(/^Last 6 months\. .*Questions can narrow it, not widen it\.$/);
+    // All time never clamps.
+    expect(timeRangeHint({ from: 'all' })).toBe(
+      'All time. Lookups without a window in your question cover all time, and a question can still name a shorter window.',
+    );
+    expect(timeRangeHint({ from: 'all', to: '2026-01-01T00:00:00Z' })).toMatch(
+      /^All time to 2026-01-01T00:00:00Z\. .*not widen it\.$/,
+    );
   });
 });
 

@@ -49,6 +49,7 @@ import { api } from '@/lib/api';
 import type {
   ChatContextBounds,
   ChatConversation,
+  ChatConversationMessage,
   ChatOrigin,
   ChatRequest,
   ChatScope,
@@ -188,8 +189,13 @@ const parseTime = (iso: string): number => {
 
 /** Transcript items for a saved conversation (restored turns render collapsed). */
 export function itemsFromConversation(conversation: ChatConversation): ChatTranscriptItem[] {
+  return itemsFromMessages(conversation.messages ?? []);
+}
+
+/** Transcript items for saved messages, oldest first (a conversation or an older page). */
+export function itemsFromMessages(messages: readonly ChatConversationMessage[]): ChatTranscriptItem[] {
   const items: ChatTranscriptItem[] = [];
-  for (const message of conversation.messages ?? []) {
+  for (const message of messages) {
     if (message.role === 'user') {
       items.push({
         kind: 'user',
@@ -463,6 +469,14 @@ export interface ChatEngine {
   continueAnswer: (itemKey: string) => boolean;
   /** Start a fresh local transcript (New chat). Never stops a server turn. */
   reset: () => void;
+  /**
+   * Older saved messages of the open Workspace conversation (Round 12 paging, "Show
+   * earlier messages"): restored like the rest and placed above the transcript, oldest
+   * first; messages already shown are skipped. Returns how many messages were added (0
+   * when `conversationId` is not the open conversation). Model history is unchanged: a
+   * saved conversation's replay is the server's stored transcript.
+   */
+  prependRestored: (conversationId: string, messages: readonly ChatConversationMessage[]) => number;
 }
 
 /** The view's hold on one run. */
@@ -1003,6 +1017,18 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     if (run) stopRun(run, stopOptions.force === true);
   }, []);
 
+  const prependRestored = React.useCallback(
+    (id: string, messages: readonly ChatConversationMessage[]): number => {
+      if (!id || conversationIdRef.current !== id || !messages.length) return 0;
+      const known = new Set(itemsRef.current.map((item) => item.key));
+      const older = itemsFromMessages(messages).filter((item) => !known.has(item.key));
+      if (!older.length) return 0;
+      commitItems((prev) => [...older, ...prev]);
+      return older.length;
+    },
+    [commitItems],
+  );
+
   const running = React.useMemo(
     () => items.find((item): item is ChatAssistantItem => item.kind === 'assistant' && item.status === 'running') ?? null,
     [items],
@@ -1043,5 +1069,6 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     askAgain,
     continueAnswer,
     reset: resetTranscript,
+    prependRestored,
   };
 }

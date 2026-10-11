@@ -62,7 +62,7 @@ The composer has one row of controls under the text box:
 | Control | What it does |
 |---|---|
 | **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads "Turned off on this deployment". |
-| Scope | The log source and time range in one chip, for example "Wazuh · 24h". Without a window in your question, case counts and case searches cover all time; log, metric, cost, and audit lookups cover the last 24 hours (see [Time windows](#time-windows)). The default, Last 24 hours, sets no outer limit, so a question can name any window. A range you choose here (Last hour, 7, 30, or 90 days) is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it, and the run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
+| Scope | The log source and time range in one chip, for example "Wazuh · 24h". The default, **24h**, sets no outer limit: without a window in your question, case counts and case searches cover all time, and log, metric, cost, and audit lookups cover the last 24 hours (see [Time windows](#time-windows)). The other ranges are **1h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
 | `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |
 | `/` commands | Type `/` at the start for the commands below, your saved prompts, and the prompt library. |
 | `≈ 1.2k` and the ring | The token estimate for your next request, and a ring that shows how much of the model's context window that request uses (see [Tokens and cost](#tokens-and-cost)). |
@@ -83,8 +83,8 @@ A question can name any window, of any length, and the lookups use it exactly:
 - a named month, quarter, or year, such as "September 2026" or "Q3", and a date range
   such as "from 1 March to 15 April".
 
-When the question names no window and the scope chip is on Last 24 hours, each lookup
-uses its own default:
+When the question names no window and the scope chip is on its default, **24h**, which
+sets no outer limit, each lookup uses its own default:
 
 | Lookup | Window without one in the question |
 |---|---|
@@ -95,11 +95,12 @@ uses its own default:
 
 So "How many cases have we closed as false positive?" counts every case in the store,
 while "How many failed logins were there?" covers the last 24 hours. Name the window
-when you mean a particular period. With another range chosen on the scope chip, every
-lookup without a window in the question uses that range instead. The chip's popover
-currently says "Last 24 hours, unless your question names another window." for the
-default; the table above is what each lookup actually uses, and the run log shows the
-window of every lookup.
+when you mean a particular period. The chip's popover says the same: "No outer limit.
+Without a window in your question, case counts and searches cover all time, and log,
+metric, cost and audit lookups the last 24 hours." With another range chosen on the
+scope chip, every lookup without a window in the question uses that range instead, and
+with **All time**, every lookup without a window covers all time, logs included. The run log
+shows the window of every lookup.
 
 Calendar periods use your organization's time zone (the time zone of the SLA targets
 under **Settings → General → SLA, priority & suppression**, UTC by default), and labels
@@ -111,7 +112,9 @@ months, the current one marked as in progress, and the caption says so, for exam
 When you choose a range on the scope chip, a window the question asks for is kept
 inside it. A window that lies entirely outside the chip's range is refused instead of
 silently replaced: the answer says the period is outside the selected time range, and you
-can set the chip back to Last 24 hours, which sets no outer limit, and ask again.
+can set the chip to **All time** or back to its default, **24h** (neither limits a question),
+and ask again. A custom date range is not offered on the chip; name the dates in the
+question instead, for example "from 1 March to 15 April".
 
 ### Commands
 
@@ -667,11 +670,17 @@ by month.
   conversation. It is never saved: reloading or leaving the page discards it.
 
 History keeps up to **50 conversations** for each user; up to ten pinned conversations
-are exempt from that limit. Messages are no longer removed from a conversation: every
-question and every answer is kept in full, however long, and a reopened conversation
-shows its newest 100 messages. Older messages are stored, but the transcript does not
-load them yet, and the line above a long conversation still uses older wording ("keep
-their newest 100 messages" or "Older messages were removed"): nothing was removed.
+are exempt from that limit. Messages are never removed from a conversation: every
+question and every answer is kept in full, however long. A reopened conversation opens
+on its newest 100 messages; a long one shows **Show earlier messages** above its first
+message, with how many earlier messages there are. Each click loads the 50 before them,
+in full, above your place in the transcript, so what you are reading stays where it is.
+Once everything is shown, the top of the transcript reads **Start of the conversation**.
+Opening a search result or a link to an older message loads the earlier messages it
+needs and highlights it, and **Export** always saves the whole conversation. A
+conversation that an older version of the app shortened says how many of its first
+messages were removed, for example "The first 24 messages of this conversation were
+removed by an older version of Agentic SOC. Messages are no longer removed."
 Answers saved before this release keep their compacted
 form: each block holds up to 25 table rows, cases, or timeline events and 100 chart
 points, and says so in its card, for example "Showing top 25 of 200" or "Downsampled for

@@ -36,11 +36,20 @@
  *  - Off-screen exchanges use `content-visibility: auto` (the latest two never do);
  *    every exchange repeats the lane tracks instead of subgridding (see `lane.ts`).
  *  - A requested message (deep link or search hit) is scrolled to and highlighted for
- *    2 s. A request whose message is not in the restored thread (retention dropped it,
- *    a stale link) is reported done and the thread opens at its latest turn.
+ *    2 s. A request whose message is not in the restored thread (a stale link) is
+ *    reported done and the thread opens at its latest turn; the host first pages older
+ *    messages in when the conversation has some (`earlier`). A message more than two
+ *    screens away is jumped to (a smooth scroll over turns that have not rendered yet
+ *    lands short) and re-aligned while the turns above it render at their real height.
+ *  - Older messages (Round 12, `earlier`): a long conversation opens on its newest
+ *    messages with a quiet "Show earlier messages" control above the first turn. A page
+ *    loaded there goes ABOVE the reader without moving what they are reading: the first
+ *    message on screen is measured before the load and the lane is scrolled by exactly
+ *    how far it moved once the page is in. A prepend is never mistaken for another
+ *    thread (which would jump to the latest turn).
  */
 import * as React from 'react';
-import { ArrowDown } from 'lucide-react';
+import { ArrowDown, ChevronUp, Loader2, RotateCcw } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
@@ -144,6 +153,94 @@ export interface TranscriptHighlight {
   nonce: number;
 }
 
+/** Older messages of a long saved conversation (Round 12 paging; Workspace only). */
+export interface TranscriptEarlier {
+  /** Older messages not on screen yet (0: the conversation is shown from its start). */
+  remaining: number;
+  loading: boolean;
+  /** Why the last load failed (a Retry follows it). */
+  error: string | null;
+  /** At least one older page was loaded: the start of the conversation is marked. */
+  loadedAny: boolean;
+  /** Load the previous page. */
+  onLoad: () => void;
+}
+
+/** "150 more" for the control (grouped digits). */
+export function earlierCountLabel(remaining: number): string {
+  return `${Math.max(0, Math.round(remaining)).toLocaleString('en-US')} more`;
+}
+
+/**
+ * The quiet control above the first turn: "Show earlier messages", its loading state,
+ * an error with Retry, and once everything is shown, "Start of the conversation". One
+ * button element stays mounted through loading (never `disabled`, which would drop its
+ * focus); when the last page arrives and it goes away, focus moves to the start marker.
+ */
+function EarlierMessagesControl({ earlier, onLoad }: { earlier: TranscriptEarlier; onLoad: () => void }) {
+  const focusedRef = React.useRef(false);
+  const startRef = React.useRef<HTMLParagraphElement>(null);
+  const done = earlier.remaining <= 0;
+  React.useEffect(() => {
+    if (!done || !focusedRef.current) return;
+    focusedRef.current = false;
+    // Never scroll for it: the reader stays where the last page put them.
+    startRef.current?.focus({ preventScroll: true });
+  }, [done]);
+
+  if (done) {
+    return earlier.loadedAny ? (
+      <p
+        ref={startRef}
+        tabIndex={-1}
+        className="py-1 text-center text-xs text-muted-foreground outline-none"
+        data-testid="chat-conversation-start"
+      >
+        Start of the conversation
+      </p>
+    ) : null;
+  }
+  const more = earlierCountLabel(earlier.remaining);
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 py-1 text-xs text-muted-foreground" data-testid="chat-earlier-messages">
+      {earlier.error ? (
+        <span role="alert" className="text-foreground">
+          {earlier.error}
+        </span>
+      ) : null}
+      <Button
+        type="button"
+        size="sm"
+        variant={earlier.error ? 'outline' : 'ghost'}
+        className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+        // "Retry" alone would not say what it retries once the alert has been read.
+        aria-label={earlier.error && !earlier.loading ? 'Retry loading earlier messages' : undefined}
+        aria-disabled={earlier.loading || undefined}
+        aria-busy={earlier.loading || undefined}
+        onFocus={() => {
+          focusedRef.current = true;
+        }}
+        onBlur={() => {
+          focusedRef.current = false;
+        }}
+        onClick={() => {
+          if (!earlier.loading) onLoad();
+        }}
+      >
+        {earlier.loading ? (
+          <Loader2 aria-hidden className="motion-safe:animate-spin" />
+        ) : earlier.error ? (
+          <RotateCcw aria-hidden />
+        ) : (
+          <ChevronUp aria-hidden />
+        )}
+        {earlier.loading ? 'Loading earlier messages…' : earlier.error ? 'Retry' : 'Show earlier messages'}
+        {!earlier.loading && !earlier.error ? <span className="text-muted-foreground/80">· {more}</span> : null}
+      </Button>
+    </div>
+  );
+}
+
 export interface TranscriptProps {
   engine: Pick<ChatEngine, 'items'> & MessageEngine;
   /** Accessible name of the log. */
@@ -153,6 +250,11 @@ export interface TranscriptProps {
   empty?: React.ReactNode;
   /** Rendered above the turns (retention note, unavailable notice, restore state). */
   header?: React.ReactNode;
+  /**
+   * Older messages of a long saved conversation: "Show earlier messages" above the
+   * first turn (Round 12). Loading a page keeps the reader's position.
+   */
+  earlier?: TranscriptEarlier | null;
   /** Replace the turns entirely (restoring / restore error). */
   replace?: React.ReactNode;
   highlight?: TranscriptHighlight | null;
@@ -194,6 +296,7 @@ export function Transcript({
   compact = false,
   empty,
   header,
+  earlier = null,
   replace,
   highlight = null,
   highlightReady = true,
@@ -218,8 +321,16 @@ export function Transcript({
   const [showJump, setShowJump] = React.useState(false);
   const [highlighted, setHighlighted] = React.useState<string | null>(null);
   const threadKeyRef = React.useRef<string | null>(null);
+  /**
+   * The first message in view when older messages were asked for: its id and its top
+   * relative to the lane's top edge. Kept (and re-measured on scroll) until the page
+   * goes in above it, then used to put it back where it was.
+   */
+  const earlierAnchorRef = React.useRef<{ messageId: string; top: number } | null>(null);
   const handledNonceRef = React.useRef<number | null>(null);
   const highlightTimerRef = React.useRef<number | null>(null);
+  /** A requested message's re-alignment pass (see the highlight effect). */
+  const alignTimerRef = React.useRef<number | null>(null);
   const highlightRef = React.useRef(highlight);
   highlightRef.current = highlight;
   const onHighlightDoneRef = React.useRef(onHighlightDone);
@@ -365,9 +476,37 @@ export function Transcript({
     };
   }, []);
 
+  /** Measure the first message in view (see `earlierAnchorRef`). */
+  const captureEarlierAnchor = React.useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const laneTop = el.getBoundingClientRect().top;
+    const nodes = Array.from(el.querySelectorAll<HTMLElement>('[data-message-id]'));
+    const node = nodes.find((candidate) => candidate.getBoundingClientRect().bottom > laneTop) ?? nodes[0];
+    const messageId = node?.dataset.messageId;
+    earlierAnchorRef.current = messageId ? { messageId, top: node.getBoundingClientRect().top - laneTop } : null;
+  }, []);
+
+  /** Older messages went in above: scroll by exactly how far the anchored message moved. */
+  const keepEarlierAnchor = React.useCallback((el: HTMLElement) => {
+    const anchor = earlierAnchorRef.current;
+    earlierAnchorRef.current = null;
+    if (!anchor) return;
+    const node = Array.from(el.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+      (candidate) => candidate.dataset.messageId === anchor.messageId,
+    );
+    if (!node) return;
+    const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) < 1) return;
+    autoScrollRef.current = null;
+    el.scrollTop += delta;
+  }, []);
+
   const onScroll = React.useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // The reader moved while an older page loads: it goes in above what they see now.
+    if (earlierAnchorRef.current) captureEarlierAnchor();
     const auto = autoScrollRef.current;
     if (auto) {
       // Our own smooth scroll is still travelling: not the reader moving away.
@@ -377,7 +516,7 @@ export function Transcript({
     const distance = distanceFromBottom(el);
     followRef.current = distance <= FOLLOW_THRESHOLD_PX;
     setShowJump(distance > JUMP_THRESHOLD_PX);
-  }, []);
+  }, [captureEarlierAnchor]);
 
   // The reader takes over (wheel, touch, a click or focus inside the lane): no more
   // sticking to late content, and a smooth scroll they interrupted is no longer ours.
@@ -388,6 +527,10 @@ export function Transcript({
     const takeOver = () => {
       settleRef.current = false;
       autoScrollRef.current = null;
+      if (alignTimerRef.current !== null) {
+        window.clearTimeout(alignTimerRef.current);
+        alignTimerRef.current = null;
+      }
     };
     const events = ['wheel', 'touchstart', 'pointerdown', 'focusin'] as const;
     events.forEach((type) => el.addEventListener(type, takeOver, { passive: true }));
@@ -402,8 +545,16 @@ export function Transcript({
     const runningKey = running?.key ?? null;
     const started = runningKey !== null && runningKey !== runningKeyRef.current;
     runningKeyRef.current = runningKey;
-    const threadChanged = firstKey !== threadKeyRef.current;
+    const previousFirst = threadKeyRef.current;
+    // Older messages went in above the old first item (Round 12 paging): the same
+    // thread, so keep the reader's place instead of opening at the latest turn.
+    const prepended =
+      firstKey !== previousFirst &&
+      previousFirst !== null &&
+      items.some((item, index) => index > 0 && item.key === previousFirst);
+    const threadChanged = firstKey !== previousFirst && !prepended;
     threadKeyRef.current = firstKey;
+    if (prepended) keepEarlierAnchor(el);
 
     if (started && anchoredKey) {
       // A new turn: put its user message at the lane top with a peek of the previous turn.
@@ -428,7 +579,20 @@ export function Transcript({
     }
     reconcile();
     // `items` changes identity on every live update (steps, usage, text).
-  }, [items, firstKey, running, anchoredKey, exchangeElement, reduceMotion, reconcile, scrollLane]);
+  }, [items, firstKey, running, anchoredKey, exchangeElement, reduceMotion, reconcile, scrollLane, keepEarlierAnchor]);
+
+  // A load that ended without a page (an error) leaves no anchor behind.
+  const earlierLoading = earlier?.loading === true;
+  React.useEffect(() => {
+    if (!earlierLoading) earlierAnchorRef.current = null;
+  }, [earlierLoading]);
+
+  const onLoadEarlier = earlier?.onLoad;
+  const loadEarlier = React.useCallback(() => {
+    if (!onLoadEarlier) return;
+    captureEarlierAnchor();
+    onLoadEarlier();
+  }, [captureEarlierAnchor, onLoadEarlier]);
 
   // A requested message: scroll to it once it is rendered, highlight it for 2 s. The
   // timer lives in a ref so later live updates cannot cancel the un-highlight. Once the
@@ -453,7 +617,27 @@ export function Transcript({
     handledNonceRef.current = highlight.nonce;
     settleRef.current = false;
     const exchange = node.closest<HTMLElement>('[data-exchange]') ?? node;
-    scrollLane(offsetWithin(el, exchange) - ANCHOR_PEEK_PX, !reduceMotion);
+    const wanted = () =>
+      Math.min(Math.max(0, offsetWithin(el, exchange) - ANCHOR_PEEK_PX), Math.max(0, el.scrollHeight - el.clientHeight));
+    // A message far away (an older one just paged in, Round 12) is jumped to: a smooth
+    // scroll over turns that have not rendered yet (content-visibility) lands short.
+    const far = Math.abs(wanted() - el.scrollTop) > el.clientHeight * 2;
+    scrollLane(wanted(), !reduceMotion && !far);
+    // The turns it passes render at their real height as they come into view, which
+    // moves it: re-align until it holds (a few passes at most; the reader taking over
+    // cancels it).
+    if (alignTimerRef.current !== null) window.clearTimeout(alignTimerRef.current);
+    let passes = 0;
+    const realign = () => {
+      alignTimerRef.current = null;
+      if (!exchange.isConnected || passes >= 8) return;
+      const target = wanted();
+      if (Math.abs(target - el.scrollTop) <= 2) return;
+      passes += 1;
+      scrollLane(target, false);
+      alignTimerRef.current = window.setTimeout(realign, 80);
+    };
+    alignTimerRef.current = window.setTimeout(realign, far || reduceMotion ? 60 : AUTO_SCROLL_MS);
     setHighlighted(highlight.messageId);
     if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = window.setTimeout(() => {
@@ -466,6 +650,7 @@ export function Transcript({
   React.useEffect(
     () => () => {
       if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+      if (alignTimerRef.current !== null) window.clearTimeout(alignTimerRef.current);
     },
     [],
   );
@@ -511,6 +696,11 @@ export function Transcript({
             compact embed has no host gutter, so it keeps its 4 px inset. */}
         <div ref={contentRef} className={cn(LANE_GRID, compact ? 'gap-y-4 px-1 py-3' : 'gap-y-6 py-6')}>
           {header ? <div className={cn(CONTENT_COL, 'space-y-2')}>{header}</div> : null}
+          {!replace && hasTurns && earlier && (earlier.remaining > 0 || earlier.loadedAny) ? (
+            <div className={LANE_COL}>
+              <EarlierMessagesControl earlier={earlier} onLoad={loadEarlier} />
+            </div>
+          ) : null}
           {replace ? (
             <div className={CONTENT_COL}>{replace}</div>
           ) : hasTurns ? (
