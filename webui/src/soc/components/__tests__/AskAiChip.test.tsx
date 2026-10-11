@@ -48,6 +48,38 @@ describe('AskAiChip', () => {
     expect(navigate.mock.calls[0][1]).not.toHaveProperty('caseId');
   });
 
+  it.each([
+    ['INC#000042', 'Ask AI about case INC#000042'],
+    ['SOC/2026/000042', 'Ask AI about case SOC/2026/000042'],
+    ['CASE 000042', 'Ask AI about CASE 000042'],
+  ])(
+    'asks about the internal id when a custom case number (%s) has no question',
+    async (caseNumber, name) => {
+      const user = userEvent.setup();
+      const caseId = 'case-72d24cb0d0324e8e9d0dc83de680d8c2';
+      render(<AskAiChip kind="case" value={caseNumber} fallbackValue={caseId} />);
+      // Named after the number the row shows; the reference is the id chat finds it by.
+      const chip = screen.getByRole('button', { name });
+      await user.click(chip);
+      expect(navigate).toHaveBeenCalledWith('chat', { newChat: true, entity: { kind: 'case', value: caseId } });
+    },
+  );
+
+  it('prefers the shown value, and has no chip when neither value has a question', async () => {
+    const user = userEvent.setup();
+    const { container, rerender } = render(
+      <AskAiChip kind="case" value="CASE-0042" fallbackValue="case-72d24cb0d0324e8e9d0dc83de680d8c2" />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Ask AI about CASE-0042' }));
+    expect(navigate).toHaveBeenLastCalledWith('chat', { newChat: true, entity: { kind: 'case', value: 'CASE-0042' } });
+    rerender(<AskAiChip kind="case" value="INC#000042" fallbackValue="case 42" />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<AskAiChip kind="case" value="INC#000042" fallbackValue={null} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<AskAiChip kind="case" value="INC#000042" />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('never says "case" twice for an id that already does', () => {
     const { rerender } = render(<AskAiChip kind="case" value="case-72d24cb0" />);
     expect(screen.getByRole('button', { name: 'Ask AI about case-72d24cb0' })).toBeInTheDocument();

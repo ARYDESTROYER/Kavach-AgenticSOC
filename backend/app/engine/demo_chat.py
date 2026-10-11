@@ -49,7 +49,7 @@ from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..agents.blocks import display_text
-from ..agents.chat_entity import parse_entity_question
+from ..agents.chat_entity import entity_turn_question, parse_entity_question
 from ..agents.chat_events import (
     ANSWER_SEPARATOR,
     APP_DOCS_CLOSE,
@@ -550,6 +550,9 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
     if live < 0:
         return view
     view.question = (extract_user_turn(_content(msgs[live])) or "").strip()
+    # An Ask AI chip's question reaches the prompt in its fenced form (#9): the planner
+    # reads the question it stands for, as a model reads the fenced reference.
+    view.question = entity_turn_question(view.question) or view.question
     _parse_history(view, msgs[:live])
     for message in msgs[:live]:
         # Earlier user turns are replayed as plain user messages (never a tool result,
@@ -557,7 +560,8 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
         content = _content(message)
         if (_role(message) == "user" and content.strip() and not TOOL_CALL_HEADER_RE.match(content.split("\n", 1)[0])
                 and not content.startswith(PRODUCT_REFERENCE_HEADER)):
-            view.prior_questions.append((extract_user_turn(content) or content).strip()[:500])
+            asked = (extract_user_turn(content) or content).strip()
+            view.prior_questions.append((entity_turn_question(asked) or asked)[:500])
 
     echo: list[tuple[str, dict[str, Any]]] | None = None
     echo_pending = False

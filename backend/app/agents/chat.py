@@ -79,6 +79,7 @@ from .blocks import (
     to_blocks,
     validate_blocks,
 )
+from .chat_entity import prompt_question
 from .chat_events import (
     ANSWER_SEPARATOR_RE,
     CONTINUE_INSTRUCTION,
@@ -1681,8 +1682,11 @@ class _AgentTurn:
                     "limit. Reuse its lookups where they still apply."
                 )})
         # The live question, marked so the planner and the model can find it; forged
-        # markers in what the user typed or pasted are neutralised first.
-        messages.append({"role": "user", "content": mark_user_turn(neutralise_markers(self.message))})
+        # markers in what the user typed or pasted are neutralised first. An Ask AI
+        # chip's question (a non-user turn the server worded about one console value)
+        # carries that value in its own UNTRUSTED fence instead (#9, ``chat_entity``).
+        live = prompt_question(self.message, self.origin) or neutralise_markers(self.message)
+        messages.append({"role": "user", "content": mark_user_turn(live)})
         self.messages = messages
 
     # --- the loop ------------------------------------------------------------ #

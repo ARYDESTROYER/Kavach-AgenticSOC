@@ -49,6 +49,7 @@ from .blocks import (
     is_expired_block,
     parse_persisted_blocks,
 )
+from .chat_entity import prompt_question
 from .chat_events import (
     ANSWER_SEPARATOR_RE,
     CONVERSATION_SUMMARY_ACK,
@@ -629,7 +630,8 @@ def render_replay(
     exchanges: Sequence[PriorExchange], *, unbounded: bool = False,
 ) -> ReplayResult:
     """§4.3 replay: user turns verbatim as individual ``role=user`` messages (forged
-    markers neutralised); each assistant answer as ``role=assistant`` inside the
+    markers neutralised; an Ask AI chip's question in its fenced prompt form,
+    ``chat_entity.prompt_question``); each assistant answer as ``role=assistant`` inside the
     UNTRUSTED fence (``source=prior_answer``), followed by a fenced engine digest of
     its lookups and its stored data-block ids (``mK.bJ``). ``K`` numbers the retained
     assistant messages oldest → newest.
@@ -642,7 +644,9 @@ def render_replay(
     for position, exchange in enumerate(exchanges, start=1):
         key = f"m{position}"
         if exchange.user:
-            result.messages.append({"role": "user", "content": neutralise_markers(exchange.user)})
+            # An Ask AI chip's question keeps its value fenced on every replay (#9).
+            user = prompt_question(exchange.user, exchange.origin) or neutralise_markers(exchange.user)
+            result.messages.append({"role": "user", "content": user})
         blocks = parse_persisted_blocks(list(exchange.blocks)) if exchange.blocks else []
         if blocks:
             result.stored[key] = blocks

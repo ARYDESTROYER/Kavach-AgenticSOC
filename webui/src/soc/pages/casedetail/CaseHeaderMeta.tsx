@@ -198,8 +198,9 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
         </span>
         <CopyId value={displayId} />
         {/* Round 12 WP-ASK: a NEW Workspace chat about this case, never this case's
-            own chat thread (#5); an icon the size of the copy button beside it. */}
-        <AskAi kind="case" value={displayId} />
+            own chat thread (#5); an icon the size of the copy button beside it. A case
+            number in a custom format the question cannot name falls back to the id. */}
+        <AskAi kind="case" value={displayId} fallbackValue={c.case_id} />
       </span>
 
       {severity ? (

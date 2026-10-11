@@ -5,7 +5,10 @@ detection rule or case id hands the chat page a typed reference ``{kind, value}`
 (never free text). The page resolves it HERE to the server-worded question and sends
 that question in a new Workspace chat with ``origin: "starter"`` — the topic pattern of
 ``GET /api/chat/topics/{topic_id}`` (SPEC A7). Because the origin is not ``user``, the
-value never counts as analyst-authored for the indicator taint rule (§4.8, #9).
+value never counts as analyst-authored for the indicator taint rule (§4.8, #9), and the
+engine never puts the question text in a prompt: it sends the question about "the
+<kind> in the reference below" with the value in its own UNTRUSTED fence, live and on
+every replay (``agents.chat_entity.render_entity_turn``).
 
 Read-only and stateless: it writes nothing, calls no model and reads no store, so it
 needs no audit row. It requires the chat grant (``cases:read``) like every chat route.

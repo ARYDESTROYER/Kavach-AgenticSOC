@@ -141,6 +141,27 @@ describe('Ask AI in the Cases list', () => {
     });
   });
 
+  it.each(['INC#000042', 'SOC/2026/000042', 'CASE 000042'])(
+    'keeps the Case ID chip for a custom case number (%s), asking about the case id',
+    async (caseNumber) => {
+      const custom = { ...CASES[0], case_id: 'case-003', case_number: caseNumber, title: 'Gamma' };
+      listCasesMock.mockReset().mockResolvedValue({ cases: [custom], total: 1 });
+      const user = userEvent.setup();
+      renderCases();
+      await waitFor(() => expect(screen.getByText('Gamma')).toBeInTheDocument());
+      const row = screen.getByText('Gamma').closest('tr')!;
+      const chip = await within(row).findByRole('button', { name: /^Ask AI about (case )?(INC|SOC|CASE)/ });
+      expect(chip).toHaveAccessibleName(expect.stringContaining(caseNumber));
+      await user.click(chip);
+      const probe = screen.getByTestId('route');
+      expect(probe).toHaveAttribute('data-page', 'chat');
+      expect(JSON.parse(probe.getAttribute('data-opts')!)).toEqual({
+        newChat: true,
+        entity: { kind: 'case', value: 'case-003' },
+      });
+    },
+  );
+
   it('keeps the hidden chips to a 24 px icon that copying a row never picks up', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());

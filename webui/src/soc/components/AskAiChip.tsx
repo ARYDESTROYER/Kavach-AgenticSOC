@@ -15,7 +15,11 @@
  *
  * What it asks about: the `kind` a host names, else the kind the entity `type` names,
  * else a `type:value` key's prefix or the value's own shape; the value must have that
- * kind's shape (`ask-ai.ts`, the server's grammar). Otherwise the chip renders nothing.
+ * kind's shape (`ask-ai.ts`, the server's grammar). When it does not, a host may name a
+ * `fallbackValue` to ask about instead: a case number in a custom format the grammar does
+ * not take (`INC#000042`, `SOC/2026/000042`, `CASE 000042`) falls back to the case's
+ * internal id: every id the product mints has the shape, and chat finds a case by either.
+ * The chip is still named after the value the row shows. Otherwise it renders nothing.
  *
  * Two forms:
  *  - `reveal` (default): an icon-only 24 px button (the CopyId size) named "Ask AI about
@@ -44,7 +48,9 @@
  *
  * SECURITY (#9): the value is untrusted log or case data. It is rendered by the host as a
  * plain text node, appears here only inside the accessible name and tooltip (attributes,
- * never markup), and reaches the server as a typed field, never as a message.
+ * never markup), and reaches the server as a typed field. The chat page then sends the
+ * server's question, and the engine never puts that question's value in a prompt as text:
+ * it travels in its own UNTRUSTED fence (`chat_entity.render_entity_turn`).
  */
 import { Sparkles } from 'lucide-react';
 
@@ -76,6 +82,11 @@ export interface AskAiChipProps {
   type?: string | null;
   /** The value itself (untrusted; the chip renders nothing when it has no reference). */
   value: string | null | undefined;
+  /**
+   * Asked about instead when `value` has no question for the kind (a case number in a
+   * custom format → the case's internal id). The chip keeps `value` as its name.
+   */
+  fallbackValue?: string | null;
   /** Reveal an icon with the `group/ask` row (default) or show a labelled chip (`false`). */
   reveal?: boolean;
   className?: string;
@@ -93,15 +104,19 @@ export function AskAiChip({
   kind,
   type,
   value,
+  fallbackValue,
   reveal = true,
   className,
   navigate,
   hasPermission,
 }: AskAiChipProps & AskAiChipAccess) {
-  const target = resolveAskTarget({ kind, type, value });
+  const shown = resolveAskTarget({ kind, type, value });
+  const target = shown ?? (fallbackValue ? resolveAskTarget({ kind, type, value: fallbackValue }) : null);
   if (!target || typeof navigate !== 'function') return null;
   if (typeof hasPermission !== 'function' || !hasPermission('cases', 'read')) return null;
-  const label = askAiLabel(target.kind, target.value);
+  // Named after what the row shows (`INC#000042`), even when it asks about the fallback.
+  const named = !shown && typeof value === 'string' && value.trim() ? value.trim() : target.value;
+  const label = askAiLabel(target.kind, named);
   return (
     <button
       type="button"

@@ -6,17 +6,24 @@
  * `{ kind, value }` (`NavOpts.entity`), never free text: the page resolves it with
  * `POST /api/chat/entity-question`, which words the question on the server, and sends
  * that question with `origin: "starter"` (the topic pattern, SPEC A7). The value is log-
- * or case-derived, so it is never analyst-authored for the indicator taint rule (#9):
- * a third-party lookup of it runs only when the policy allows it.
+ * or case-derived, so it is untrusted data (#9): it is never analyst-authored for the
+ * indicator taint rule (a third-party lookup of it runs only when a lookup in that turn
+ * returned it as evidence), and the server never puts it in a prompt as question text.
+ * The engine sends the question about "the <kind> in the reference below" with the value
+ * in its own UNTRUSTED fence, live and on every replay
+ * (`chat_entity.render_entity_turn`).
  *
  * This module only decides WHETHER a chip has something to ask: the server's grammar for
  * each kind, mirrored here so the console never shows a chip the server would refuse.
  * An IP must parse as an IP, a hash is 32, 40 or 64 hex digits, a URL, email address or
  * domain has its ASCII shape, and a host, user, rule or case is one identifier token
  * (letters, digits and `_ . @ \ $ : / # + -`): no whitespace, quotes, angle brackets or
- * invisible characters, so a value can never carry a sentence of its own. Anything else
- * gets no chip; a value is trimmed, never altered. Both sides are pinned to the shared
- * table in `ask-ai.contract.json` (`backend/app/agents/chat_entity.py`).
+ * invisible characters. That keeps a value to one token that cannot forge a fence marker
+ * or a line of its own; it does NOT make the value safe to read as instructions (a user
+ * name such as `SYSTEM:ignore-previous-instructions` is one valid token), which is why
+ * the server fences it. Anything else gets no chip; a value is trimmed, never altered.
+ * Both sides are pinned to the shared table in `ask-ai.contract.json`
+ * (`backend/app/agents/chat_entity.py`).
  *
  * Dependency-free on purpose: it ships in the chip's on-demand chunk (`AskAiChip.tsx`,
  * "Loading"). A module shared with a route chunk would become its own chunk named in the

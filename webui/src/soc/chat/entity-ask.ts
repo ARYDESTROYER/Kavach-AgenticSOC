@@ -7,8 +7,9 @@
  * server checks the value's shape for its kind and words the question), and sends that
  * question with `origin: "starter"`, exactly as an "Ask about this" topic question. The
  * value is log- or case-derived, so it is never analyst-authored for the indicator taint
- * rule (#9). Nothing is prefilled, so nothing the analyst did not ask for is sent as their
- * own words.
+ * rule (#9), and the server fences it when it builds the prompt (the question reaches the
+ * model about "the <kind> in the reference below", the value in its own UNTRUSTED fence).
+ * Nothing is prefilled, so nothing the analyst did not ask for is sent as their own words.
  *
  * Kept tiny and separate from the chip's module (`components/ask-ai.ts`): a module both
  * the chip chunk and the chat chunk import would become a shared chunk the entry chunk's

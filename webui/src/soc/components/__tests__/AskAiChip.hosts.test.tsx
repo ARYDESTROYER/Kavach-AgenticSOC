@@ -241,6 +241,36 @@ describe('Ask AI in the Case Manager', () => {
     expect(navigate.mock.lastCall?.[1]).not.toHaveProperty('caseId');
   });
 
+  it.each(['INC#000042', 'SOC/2026/000042', 'CASE 000042'])(
+    'keeps the header chip for a custom case number (%s) and asks about the case id',
+    async (caseNumber) => {
+      const user = userEvent.setup();
+      const custom = { ...CASE, case_number: caseNumber } as Case;
+      render(
+        <TooltipProvider>
+          <CaseHeaderMeta
+            c={custom}
+            outcome={caseOutcome(custom)}
+            users={[]}
+            canAssign={false}
+            canTag={false}
+            onCaseChange={vi.fn()}
+            ownerOpen={false}
+            onOwnerOpenChange={vi.fn()}
+            tagsOpen={false}
+            onTagsOpenChange={vi.fn()}
+          />
+        </TooltipProvider>,
+      );
+      // The number the analyst sees names the chip; the question asks about the id that
+      // always has a question (chat finds the case by either).
+      const chip = await screen.findByRole('button', { name: /^Ask AI about (case )?/ });
+      expect(chip).toHaveAccessibleName(expect.stringContaining(caseNumber));
+      await user.click(chip);
+      expect(navigate).toHaveBeenLastCalledWith('chat', ref('case', 'case-7f2a'));
+    },
+  );
+
   it('shows the Overview primary entity chip always, beside Copy', async () => {
     const user = userEvent.setup();
     render(

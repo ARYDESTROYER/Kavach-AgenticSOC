@@ -701,6 +701,24 @@
       "note": "slash"
     },
     {
+      "kind": "case",
+      "value": "INC#000042",
+      "ok": false,
+      "note": "custom case-number format with '#': the chip falls back to the internal case id"
+    },
+    {
+      "kind": "case",
+      "value": "SOC/2026/000042",
+      "ok": false,
+      "note": "custom case-number format with '/': the chip falls back to the internal case id"
+    },
+    {
+      "kind": "case",
+      "value": "CASE 000042",
+      "ok": false,
+      "note": "custom case-number format with a space: the chip falls back to the internal case id"
+    },
+    {
       "kind": "ip",
       "value": "",
       "ok": false,

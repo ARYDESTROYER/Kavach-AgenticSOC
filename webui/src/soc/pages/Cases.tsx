@@ -1226,8 +1226,9 @@ export default function Cases({
             </button>
           </CaseHoverCard>
           <DemoBadge show={isDemoCase(c)} iconless className="px-1 py-0 text-2xs" />
-          {/* Round 12 WP-ASK: a new Workspace chat that asks the server's question about this case. */}
-          <AskAiChip kind="case" value={c.case_number || c.case_id} />
+          {/* Round 12 WP-ASK: a new Workspace chat that asks the server's question about this case;
+              a case number in a custom format the question cannot name falls back to the id. */}
+          <AskAiChip kind="case" value={c.case_number || c.case_id} fallbackValue={c.case_id} />
         </div>
       ),
     },
