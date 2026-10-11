@@ -284,8 +284,10 @@ STORED_SCALAR_KEYS: frozenset[str] = frozenset({
     "blocks_version",
 })
 # Re-derived on decode (the message itself is the truth), never stored twice.
+# ``user_message_id`` (Round 12 WP-FIX1) is the id of the message before the answer: a
+# restored transcript reads it from that message, so it is never stored either.
 _DERIVED_RESPONSE_KEYS: frozenset[str] = frozenset({
-    "answer", "message_id", "conversation_id", "conversation_title",
+    "answer", "message_id", "conversation_id", "conversation_title", "user_message_id",
 })
 # The decoded legacy ``table`` is rebuilt from this table block when the stored form
 # dropped it (SPEC §7.5: not persisted when a table block carries the same rows).

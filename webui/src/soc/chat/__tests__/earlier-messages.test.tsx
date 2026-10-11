@@ -26,9 +26,10 @@ import {
   getFullConversation,
   normaliseConversation,
 } from '../chat-api';
+import { normaliseChatResponse } from '../stream-events';
 import { resetTurnRunnerForTests } from '../turn-runner';
 import { useChatEngine } from '../useChatEngine';
-import { EARLIER_LOAD_ERROR, useEarlierMessages } from '../useEarlierMessages';
+import { EARLIER_LOAD_ERROR, EARLIER_MISSING_ERROR, type EarlierSeekOutcome, useEarlierMessages } from '../useEarlierMessages';
 
 /* -------------------------------------------------------------------------- */
 /* A scripted server holding one long conversation.                            */
@@ -294,11 +295,11 @@ describe('useEarlierMessages', () => {
     const engine = fakeEngine();
     const conversation = windowOf();
     const { result } = renderHook(() => useEarlierMessages({ conversation, engine }));
-    let found = false;
+    let found: EarlierSeekOutcome | null = null;
     await act(async () => {
       found = await result.current.loadUntil(all[12].id);
     });
-    expect(found).toBe(true);
+    expect(found).toBe('found');
     expect(pageCalls().map((c) => new URLSearchParams(c.url.split('?')[1]).get('limit'))).toEqual(['100', '100']);
     // One prepend with everything read, so the transcript changes once.
     expect(engine.prependRestored).toHaveBeenCalledTimes(1);
@@ -309,12 +310,126 @@ describe('useEarlierMessages', () => {
     const engine2 = fakeEngine();
     const fresh = windowOf();
     const again = renderHook(() => useEarlierMessages({ conversation: fresh, engine: engine2 }));
-    let missing = true;
+    let missing: EarlierSeekOutcome | null = null;
     await act(async () => {
       missing = await again.result.current.loadUntil('m-nope');
     });
-    expect(missing).toBe(false);
+    expect(missing).toBe('not_found');
     expect(again.result.current.remaining).toBe(0);
+    expect(again.result.current.failedSeek).toBeNull();
+  });
+
+  it('waits for a "Show earlier messages" load still running, then reads on from its cursor', async () => {
+    let release!: () => void;
+    pageDelay = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const engine = fakeEngine();
+    const conversation = windowOf();
+    const { result } = renderHook(() => useEarlierMessages({ conversation, engine }));
+    act(() => result.current.load());
+    expect(result.current.loading).toBe(true);
+    // A search hit arrives while the page is in flight: never dropped.
+    let outcome: Promise<EarlierSeekOutcome> | null = null;
+    act(() => {
+      outcome = result.current.loadUntil(all[12].id);
+    });
+    await act(async () => {
+      release();
+      pageDelay = null;
+      await outcome;
+    });
+    expect(await outcome).toBe('found');
+    // The manual page first (50 before #130), then the read-back from #80.
+    expect(pageCalls().map((c) => new URLSearchParams(c.url.split('?')[1]).get('before'))).toEqual([
+      all[130].id,
+      all[80].id,
+    ]);
+    expect(engine.shown.map((page) => page[0].id)).toEqual([all[80].id, all[0].id]);
+    expect(result.current).toMatchObject({ remaining: 0, loading: false, error: null, failedSeek: null });
+  });
+
+  it('a read-back to a message the manual load brought in ends at once, without another read', async () => {
+    const engine = fakeEngine();
+    const conversation = windowOf();
+    const { result } = renderHook(() => useEarlierMessages({ conversation, engine }));
+    act(() => result.current.load());
+    let outcome: EarlierSeekOutcome | null = null;
+    await act(async () => {
+      outcome = await result.current.loadUntil(all[100].id);
+    });
+    expect(outcome).toBe('found');
+    expect(pageCalls()).toHaveLength(1);
+  });
+
+  it('keeps what a failed read-back read, names the message, and resumes the read-back on Retry', async () => {
+    const engine = fakeEngine();
+    const conversation = windowOf();
+    const { result } = renderHook(() => useEarlierMessages({ conversation, engine }));
+    // The first page (100 before #130) works, the second fails.
+    let served = 0;
+    const scripted = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/messages?') && ++served === 2) {
+          calls.push({ url: String(input), method: 'GET' });
+          return json({ detail: { code: 'chat_history_unavailable', message: 'unavailable' } }, 503);
+        }
+        return scripted(input, init);
+      }),
+    );
+    let outcome: EarlierSeekOutcome | null = null;
+    await act(async () => {
+      outcome = await result.current.loadUntil(all[12].id);
+    });
+    expect(outcome).toBe('failed');
+    expect(result.current).toMatchObject({
+      error: EARLIER_LOAD_ERROR,
+      errorKind: 'failed',
+      failedSeek: all[12].id,
+      remaining: 30,
+      loading: false,
+    });
+    expect(engine.shown[0].map((m) => m.id)).toEqual(ids(30, 130));
+
+    // Retry (the control's load) resumes the read-back from where it stopped: one read
+    // of the server maximum before #30, never a 50-message page.
+    act(() => result.current.load());
+    await waitFor(() => expect(result.current.failedSeek).toBeNull());
+    const last = pageCalls().at(-1)!.url;
+    expect(new URLSearchParams(last.split('?')[1]).get('before')).toBe(all[30].id);
+    expect(new URLSearchParams(last.split('?')[1]).get('limit')).toBe(String(MAX_MESSAGE_PAGE));
+    expect(result.current).toMatchObject({ error: null, errorKind: null, remaining: 0 });
+    expect(engine.shown.at(-1)!.some((m) => m.id === all[12].id)).toBe(true);
+  });
+
+  it('marks a 404 as missing (the messages are gone), never as a read to retry', async () => {
+    const engine = fakeEngine();
+    // A window whose oldest message the server no longer knows (deleted elsewhere).
+    const conversation = { ...windowOf(), messages: [{ ...windowOf().messages[0], id: 'm-gone' }, ...windowOf().messages.slice(1)] };
+    const { result } = renderHook(() => useEarlierMessages({ conversation, engine }));
+    act(() => result.current.load());
+    await waitFor(() => expect(result.current.error).toBe(EARLIER_MISSING_ERROR));
+    expect(result.current.errorKind).toBe('missing');
+    expect(result.current.failedSeek).toBeNull();
+    // A fresh read of the conversation (Reopen) starts over without the error.
+    const { result: reopened } = renderHook(() => useEarlierMessages({ conversation: windowOf(), engine }));
+    expect(reopened.current).toMatchObject({ error: null, errorKind: null, remaining: 130 });
+  });
+
+  it("resolves a read-back that hits a 404 as 'missing', with the kind already set", async () => {
+    const engine = fakeEngine();
+    const conversation = { ...windowOf(), messages: [{ ...windowOf().messages[0], id: 'm-gone' }, ...windowOf().messages.slice(1)] };
+    const { result } = renderHook(() => useEarlierMessages({ conversation, engine }));
+    let outcome: EarlierSeekOutcome | null = null;
+    await act(async () => {
+      outcome = await result.current.loadUntil(all[12].id);
+    });
+    // The caller learns the kind from the outcome (its last render still had no error).
+    expect(outcome).toBe('missing');
+    expect(result.current).toMatchObject({ error: EARLIER_MISSING_ERROR, errorKind: 'missing', failedSeek: all[12].id, loading: false });
+    expect(engine.prependRestored).not.toHaveBeenCalled();
   });
 
   it('has nothing to page for a draft, case chat or a short conversation', () => {
@@ -357,5 +472,14 @@ describe('useChatEngine — prependRestored', () => {
     });
     expect(added).toBe(0);
     expect(result.current.items).toHaveLength(WINDOW + 4);
+  });
+});
+
+describe('the saved question id on a live answer (user_message_id)', () => {
+  it('survives normalisation, and anything but an id reads as none', () => {
+    const live = normaliseChatResponse({ answer: 'x', message_id: 'a-1', user_message_id: 'q-1' });
+    expect(live).toMatchObject({ message_id: 'a-1', user_message_id: 'q-1' });
+    expect(normaliseChatResponse({ answer: 'x', user_message_id: 7 })?.user_message_id).toBeNull();
+    expect(normaliseChatResponse({ answer: 'x' })?.user_message_id).toBeNull();
   });
 });

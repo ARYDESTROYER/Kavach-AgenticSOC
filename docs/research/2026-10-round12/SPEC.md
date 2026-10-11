@@ -430,7 +430,7 @@ only new entry code); live Chromium QA with screenshots at 390/1280/1440/1920/25
 
 Recorded by WP-DOC at the end of wave 3 (2026-10-11). Where this section and §2–§4
 disagree, this section describes what shipped; the chat-revamp SPEC carries the
-detailed amendments (A39–A60) and BLOCKS.md amendments 24–30.
+detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
 
 ### 7.1 What each package delivered
 
@@ -525,6 +525,33 @@ detailed amendments (A39–A60) and BLOCKS.md amendments 24–30.
   AGENTS.md, ROADMAP, DEPLOY and upgrade notes. Generated artefacts (console map,
   app-knowledge corpus, `webui/openapi.json`, `api-types.gen.ts`) and the final test
   counts belong to WP-GEN.
+- **WP-FIX1** (doc-audit fixes: the scope chip and long conversations; chat-revamp A61):
+  the scope chip's presets are **Auto** (the default, no range: no outer limit, each
+  lookup keeps its own default window), **1h**, **24h** (an explicit `now-24h`, an outer
+  limit like every other preset, never shown for the default), **7d**, **30d**, **90d**,
+  **6mo** (`now-6M`), **12mo** (`now-12M`; a stored `now-1y` reads as 12mo) and **All
+  time** (`{"from": "all"}`, never clamps), in a three-column grid every arrow key moves
+  through; no custom range, because `TimeRangePicker` has none (the Help Center says to
+  name dates in the question). The popover hint says what each lookup covers and names
+  the exceptions (`timeRangeHint` in `chat/composer/format.ts`; the prompt's window
+  table says the same): with Auto, case counts, case searches and ATT&CK coverage cover
+  all time, log, metric, cost and audit lookups and the shift brief the last 24 hours;
+  with a chosen range, every lookup uses it except the shift brief (at most 7 days) and
+  agent improvement (its fixed periods). The chip keeps the range visible when a long
+  source name truncates. Long conversations page their older messages in: the existing
+  owner-scoped `GET /api/chat/conversations/{id}/messages?before=&limit=` is the cursor
+  (no backend route was added), **Show earlier messages · N more** above the first
+  message loads 50 at a time in full while the reader keeps their place, with a loading
+  state, an error with Retry (a 404 offers **Reopen conversation** instead), and **Start
+  of the conversation** at the end. A search hit or link to an older message pages back
+  to it (a load already running is waited for; a failed read keeps the request, says
+  so in the toast and the control alike, and Retry resumes it; a 404 offers **Reopen
+  conversation** in both, and the fresh read seeks the message again; a toast action
+  never acts on another conversation or a request no longer pending); a question asked in this session carries its saved id from
+  the additive `ChatResponse.user_message_id`, so a hit on it never reads older history.
+  Export and report methodology read the whole conversation. The retention notice no
+  longer claims a 100-message cap: only a conversation an older version shortened says
+  how many of its first messages were removed.
 
 ### 7.2 Decisions taken during implementation
 
@@ -582,6 +609,18 @@ detailed amendments (A39–A60) and BLOCKS.md amendments 24–30.
     by `disposition_declared: true`); the disposition picker starts empty.
 14. **Reopen, not Undo**: the eight-second action after a close is the existing `reopen`
     verb, and the recorded classification stays on file until the case is closed again.
+15. **The scope chip's default reads Auto, not 24h** (amends D7; WP-FIX1). No range is
+    not the last 24 hours: case counts, case searches and ATT&CK coverage cover all time
+    without a window. The default is the **Auto** preset (the chip's accessible name
+    starts with what it shows, "Scope: All sources · Auto (default windows, no outer
+    limit)…", so a speech-input user can say what they see), and **24h** is a separate
+    explicit `now-24h` outer limit, so the two never look the same and Auto can always be
+    chosen again.
+16. **`ChatResponse.user_message_id`** (additive to §3.1; WP-FIX1): a saved answer names
+    the persisted id of its question (the message before it), live, on a completed-key
+    replay and from `/chat`; it is never stored on the answer. The live transcript gives
+    it to the question, so a search hit or link to a question asked in this session is
+    found on screen without paging the conversation's older history.
 
 ### 7.3 Known limitations
 
@@ -594,35 +633,6 @@ detailed amendments (A39–A60) and BLOCKS.md amendments 24–30.
   Demo Mode does not run.
 - **Single replica** for everything else that was already process-local (see
   `docs/releases/known-limitations.md`).
-- **The chat UI shows the newest 100 messages** of a conversation; older messages are
-  stored and readable through `GET /api/chat/conversations/{id}/messages`, but the
-  transcript does not page them yet.
-- **The transcript's retention notice uses the old wording** (deviation from the
-  no-removal storage of A50). `threadRetentionInfo` in `chat/useChatConversations.ts`
-  still says "Conversations keep their newest 100 messages" (or "Older messages were
-  removed to stay within the storage limit") above a conversation longer than 100
-  messages, although nothing is removed. The Help Center chat page and
-  `docs/releases/known-limitations.md` say so; the copy fix belongs with older-message
-  paging (ROADMAP G).
-- **No "All time" option on the chat scope chip** (deviation from D7). The server and API
-  accept `{"from": "all"}` (`TimeRange.is_all_time`, never clamps), but the composer's
-  presets (`TIME_PRESETS` in `chat/composer/format.ts`) are Last hour, Last 24 hours and
-  Last 7, 30 and 90 days. The default chip (Last 24 hours) sets no outer limit, so a
-  question can still ask for all time while the chip reads Last 24 hours. Open
-  orchestrator decision, recorded in ROADMAP G: add the preset, or keep the default chip
-  as the all-time path.
-- **The scope popover's default hint names the wrong default** (deviation from D7 and
-  from the prompt fix that removed the false "last 24 hours" default). With the default
-  chip, which reads "24h", the popover says "Last 24 hours, unless your question names
-  another window." (`chat/composer/ScopeControls.tsx`). Without a window in the
-  question, case counts and case searches (`case_stats`, `search_cases`) cover all time
-  (`resolve_window(..., default="all")`); only log, metric, cost and audit lookups
-  default to the last 24 hours. An analyst can therefore read an all-time count, such
-  as "How many cases did we close as false positive?", as a one-day figure. The Help
-  Center chat page and `docs/releases/known-limitations.md` give the real defaults. The
-  copy fix belongs with the All time chip decision (ROADMAP G): reword the hint, for
-  example "No outer limit: case questions cover all time, other lookups the last 24
-  hours unless your question names a window."
 - **Case Manager chat keeps no running summary.** The D4 summary is made only when the
   route will store it (a saved Workspace conversation in unlimited mode,
   `can_store_summary`); case chat, an unsaved conversation and bounded mode replay only
@@ -665,8 +675,6 @@ detailed amendments (A39–A60) and BLOCKS.md amendments 24–30.
 
 Background deep-investigation Jobs, saving a chart to a dashboard, conversation sharing,
 branching, folders and scheduling, model tier presets, a multi-replica turn registry,
-showing the conversation summary, older-message paging in the chat UI (with the
-retention-notice copy fix), an "All time" chip preset (open decision) with the scope
-popover's default-hint copy fix, the context note shown only where a summary is stored,
+showing the conversation summary, the context note shown only where a summary is stored,
 bulk actions in Demo Mode, and the bounded mapping form for the other id-keyed KV stores
 in the Elasticsearch config index.

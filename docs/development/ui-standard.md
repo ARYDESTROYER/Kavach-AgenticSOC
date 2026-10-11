@@ -531,7 +531,11 @@ budget notice says so.
 **Composer.** A textarea over ONE 32 px control row of 28 px chips, about 86 px at rest and
 never more than 88 px; there is no permanent footer line. Left: the **Read-only** chip (it
 opens the access popover), the Scope chip (source and time range in one popover) and removable
-`@` scope chips; right: the token estimate with the context-window ring (the next request ÷
+`@` scope chips. The Scope chip reads "<source> · <range>": the source truncates, the range
+never does. Its time presets sit in a three-column grid of radios (`SegmentedControl
+orientation="both"`, so every arrow key moves to the next or previous preset); the default,
+**Auto**, chooses no range and names its meaning to screen readers, and **24h** is a separate
+explicit range, so the chip never shows "24h" for a default that is not 24 hours. Right: the token estimate with the context-window ring (the next request ÷
 the model's `context_window`, "<1%" rather than "0%" for a real share; never today's spend),
 Options ⋯ (Model, Type out
 answers, Saved prompts, Keyboard shortcuts) and Send, which becomes Stop while a turn runs.

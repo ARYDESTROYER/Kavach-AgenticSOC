@@ -114,13 +114,13 @@ export function calibratedNextRequest(
 export interface TimePreset {
   /** A stable id (the segment's value). */
   id: string;
-  /** The chip and segment label ("24h", "6mo", "All time"). */
+  /** The chip and segment label ("Auto", "24h", "6mo", "All time"). */
   short: string;
   /** Long label for the popover and accessible names. */
   label: string;
   /**
-   * `null` = the default: no outer limit, and each lookup uses its own default window
-   * (case counts and searches all time; logs, metrics, cost and audit the last 24 hours).
+   * `null` = the default, "Auto": no outer limit, and each lookup uses its own default
+   * window (see {@link timeRangeHint}). Every other preset is an outer limit.
    */
   range: ChatTimeRange | null;
 }
@@ -128,15 +128,22 @@ export interface TimePreset {
 /** The `from` of the "All time" chip (`TimeRange.is_all_time` server-side). */
 export const ALL_TIME_FROM = 'all';
 
+/** The id of the default preset: no range chosen. */
+export const DEFAULT_TIME_PRESET_ID = 'auto';
+
 /**
  * The chip presets (Round 12, SPEC D7/D7a): chat scope windows have no span limit, so
- * the list goes from the last hour to all time. A chosen preset is an outer limit a
- * question can only narrow; "All time" never clamps (only its end, now, applies).
- * Months are calendar months (`now-6M`), never minutes.
+ * the list goes from the last hour to all time. The default, **Auto**, chooses no range:
+ * no outer limit, and each lookup keeps its own default window. It has its own label
+ * because it is not "the last 24 hours" (case counts cover all time without a window);
+ * **24h** is an explicit `now-24h`, an outer limit like every other preset. A chosen
+ * preset is an outer limit a question can only narrow; "All time" never clamps (only
+ * its end, now, applies). Months are calendar months (`now-6M`), never minutes.
  */
 export const TIME_PRESETS: readonly TimePreset[] = [
+  { id: DEFAULT_TIME_PRESET_ID, short: 'Auto', label: 'Default windows, no outer limit', range: null },
   { id: '1h', short: '1h', label: 'Last hour', range: { from: 'now-1h' } },
-  { id: '24h', short: '24h', label: 'Last 24 hours', range: null },
+  { id: '24h', short: '24h', label: 'Last 24 hours', range: { from: 'now-24h' } },
   { id: '7d', short: '7d', label: 'Last 7 days', range: { from: 'now-7d' } },
   { id: '30d', short: '30d', label: 'Last 30 days', range: { from: 'now-30d' } },
   { id: '90d', short: '90d', label: 'Last 90 days', range: { from: 'now-90d' } },
@@ -145,8 +152,15 @@ export const TIME_PRESETS: readonly TimePreset[] = [
   { id: 'all', short: 'All time', label: 'All time', range: { from: ALL_TIME_FROM } },
 ];
 
-/** The default preset (no range chosen). */
-export const DEFAULT_TIME_PRESET = TIME_PRESETS[1];
+/** The default preset, Auto (no range chosen). */
+export const DEFAULT_TIME_PRESET: TimePreset = TIME_PRESETS[0];
+
+/** Presets whose range is at most 7 days (the shift brief's bound covers them whole). */
+const WEEK_OR_LESS = new Set(['1h', '24h', '7d']);
+
+function presetById(id: string): TimePreset | null {
+  return TIME_PRESETS.find((p) => p.id === id) ?? null;
+}
 
 /** True for the "All time" chip (`from: "all"`, any spelling the server accepts). */
 export function isAllTimeRange(range: ChatTimeRange | null | undefined): boolean {
@@ -164,17 +178,17 @@ function normalisedFrom(from: string): string {
 }
 
 /**
- * The preset a range corresponds to (an explicit `now-24h` reads as the 24h segment;
- * `now-1y` is the same window as `now-12M`). A range that ends before now is never a
- * preset.
+ * The preset a range corresponds to: no range is Auto; an explicit `now-24h` (or
+ * `now-1d`) is the 24h preset, an outer limit, never Auto; `now-1y` is the same window
+ * as `now-12M`. A range that ends before now is never a preset.
  */
 export function presetForRange(range: ChatTimeRange | null | undefined): TimePreset | null {
   if (!range) return DEFAULT_TIME_PRESET;
   if (range.to && range.to.trim().toLowerCase() !== 'now') return null;
-  if (isAllTimeRange(range)) return TIME_PRESETS[TIME_PRESETS.length - 1];
+  if (isAllTimeRange(range)) return presetById('all');
   const from = normalisedFrom(range.from);
-  if (from === 'now-24h' || from === 'now-1d') return DEFAULT_TIME_PRESET;
-  if (from === 'now-1y') return TIME_PRESETS.find((p) => p.id === '12mo') ?? null;
+  if (from === 'now-1d') return presetById('24h');
+  if (from === 'now-1y') return presetById('12mo');
   return TIME_PRESETS.find((p) => p.range?.from === from) ?? null;
 }
 
@@ -195,25 +209,57 @@ export function timeRangeLongLabel(range: ChatTimeRange | null | undefined): str
   return `From ${displayText(range?.from, 40)} to ${displayText(range?.to ?? 'now', 40)}`;
 }
 
+/** A label as it reads after other words, in brackets ("Last 7 days" → "last 7 days"). */
+export function inlineLabel(label: string): string {
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
 /**
- * What the scope popover says under the time range (Round 12, SPEC D7). The default
- * sets NO outer limit: without a window in the question each lookup uses its own
- * default (case counts and searches all time; log, metric, cost and audit lookups the
- * last 24 hours; see `prompts.py` and the Help Center). A chosen range, an explicit
- * `now-24h` included, is an outer limit tool windows are clamped into
- * (`chat_tools/common.resolve_window`); "All time" never clamps.
+ * The scope chip's accessible name. It starts with the chip's visible text,
+ * "<source> · <range>" (WCAG 2.5.3, label in name: a speech-input user says what they
+ * see), then says what a short range means when the short label does not ("Auto
+ * (default windows, no outer limit)", "7d (last 7 days)"; "All time" stays as it is).
+ */
+export function scopeChipName(sourceLabel: string, range: ChatTimeRange | null | undefined): string {
+  const short = timeRangeShortLabel(range);
+  const long = timeRangeLongLabel(range);
+  const meaning = long.toLowerCase() === short.toLowerCase() ? '' : ` (${inlineLabel(long)})`;
+  return `Scope: ${sourceLabel} · ${short}${meaning}. Change source and time range`;
+}
+
+/**
+ * What the scope popover says under the time range (Round 12, SPEC D7), naming every
+ * lookup that does not follow the general rule:
+ *
+ *  - Auto (no range) sets NO outer limit. Without a window in the question, case
+ *    counts and case searches (`case_stats`, `search_cases`) and ATT&CK coverage
+ *    (`soc_metrics kind=mitre_coverage`) cover all time; log, metric, cost and audit
+ *    lookups and the shift brief the last 24 hours (`prompts.py`, the Help Center).
+ *  - A chosen range, an explicit `now-24h` included, is the window of every lookup
+ *    without one in the question and an outer limit tool windows are clamped into
+ *    (`chat_tools/common.resolve_window`); "All time" never clamps. Except: the shift
+ *    brief covers at most 7 days (`shift_report`), named only when the range can be
+ *    longer than that.
+ *  - Agent improvement always compares its own fixed periods
+ *    (`soc_metrics kind=agent_improvement`): the selected range does not apply.
  */
 export function timeRangeHint(range: ChatTimeRange | null | undefined): string {
   if (!range) {
     return (
-      'No outer limit. Without a window in your question, case counts and searches cover all time, ' +
-      'and log, metric, cost and audit lookups the last 24 hours.'
+      'No outer limit. Without a window in your question, case counts, case searches and ATT&CK coverage ' +
+      'cover all time; log, metric, cost and audit lookups and the shift brief cover the last 24 hours. ' +
+      'Agent improvement always compares fixed periods.'
     );
   }
-  if (isAllTimeRange(range) && presetForRange(range)) {
-    return 'All time. Lookups without a window in your question cover all time, and a question can still name a shorter window.';
+  const preset = presetForRange(range);
+  const longShift = !preset || !WEEK_OR_LESS.has(preset.id);
+  const except = longShift
+    ? 'except that the shift brief covers at most 7 days and agent improvement compares fixed periods'
+    : 'except agent improvement, which compares fixed periods';
+  if (isAllTimeRange(range) && preset) {
+    return `All time. Lookups without a window in your question cover all time, ${except}. A question can still name a shorter window.`;
   }
-  return `${timeRangeLongLabel(range)}. Lookups without a window in your question use this range. Questions can narrow it, not widen it.`;
+  return `${timeRangeLongLabel(range)}. Lookups without a window in your question use this range, ${except}. Questions can narrow it, not widen it.`;
 }
 
 /* -------------------------------------------------------------------------- */

@@ -8407,6 +8407,9 @@ def _window_note(view: PromptView, ask: Ask) -> str:
     if not windowed:
         return ""
     chip = display_text(view.analyst_window, 60)
+    if chip.strip().lower() == "all time":
+        # "the all time you selected" is not English: name the All time chip a range.
+        chip = "all-time range"
 
     def clamped(r: Result) -> bool:
         flag = r.obs.get("window_clamped_to_request")
@@ -8424,6 +8427,10 @@ def _window_note(view: PromptView, ask: Ask) -> str:
         which, held = ("1 lookup", "it was") if len(limited) == 1 else (f"{len(limited)} lookups", "they were")
         return (f"Window: {which} asked for a window reaching outside the {chip} you selected, so {held} "
                 f"limited to the {chip}; a selected range is never widened.")
+    if ask.win is not None and ask.win.spec is not None and _same_as_chip(ask.win, view.analyst_window):
+        # The question names the very window the chip selected ("in total" with All
+        # time, "the last 6 months" with 6mo): nothing replaced anything.
+        return f"Window: the {chip} you selected applies to the windowed lookups above."
     if ask.win is not None and ask.win.spec is not None:
         if _minutes_note(view, ask):
             # The minutes note right after says which lookups rounded it to whole hours.
@@ -8431,6 +8438,42 @@ def _window_note(view: PromptView, ask: Ask) -> str:
         return (f"Window: your question named {ask.win.phrase}, so the lookups used that window "
                 f"instead of the {chip} you selected.")
     return f"Window: the {chip} you selected applies to the windowed lookups above."
+
+
+def _canonical_window(spec: Any) -> str | None:
+    """A comparable form of a window spec: ``all``, or a trailing span in one unit per
+    kind (years as months, weeks and days as hours), so ``now-1y`` equals ``now-12M``
+    and ``now-1d`` equals ``now-24h``. ``None`` for anything else."""
+    if not isinstance(spec, str):
+        return None
+    token = spec.strip()
+    if token.lower() == "all":
+        return "all"
+    match = re.fullmatch(r"now-(\d+)([mhdwMy])", token)
+    if not match:
+        return None
+    amount, unit = int(match.group(1)), match.group(2)
+    if unit == "y":
+        amount, unit = amount * 12, "M"
+    elif unit == "w":
+        amount, unit = amount * 7, "d"
+    if unit == "d":
+        amount, unit = amount * 24, "h"
+    return f"now-{amount}{unit}"
+
+
+def _same_as_chip(win: Win, chip: str | None) -> bool:
+    """Whether the window the question names is the one the analyst's time chip
+    selected (the chip's label read back with the planner's own window grammar)."""
+    if not chip:
+        return False
+    selected = _window_from(chip.strip().lower())
+    if selected is None:
+        return False
+    if win.all_time or selected.all_time:
+        return bool(win.all_time and selected.all_time)
+    mine, theirs = _canonical_window(win.spec), _canonical_window(selected.spec)
+    return mine is not None and mine == theirs
 
 
 def _minutes_note(view: PromptView, ask: Ask) -> str:

@@ -1,5 +1,5 @@
 /**
- * Scope controls (SPEC §10.4): the "<source> · 24h" chip with its popover (source,
+ * Scope controls (SPEC §10.4): the "<source> · Auto" chip with its popover (source,
  * time range and the @-scopes in one place), the removable @-scope chips, and the
  * narrow merge into one "Scope · n" chip below 560 px.
  *
@@ -20,13 +20,15 @@ import { chipButton, chipRemove, chipStatic } from './chip';
 import { scopeAccess } from './commands';
 import type { CatalogState } from './useComposerCatalog';
 import {
+  DEFAULT_TIME_PRESET_ID,
   SCOPE_LABELS,
   TIME_PRESETS,
+  inlineLabel,
   presetForRange,
+  scopeChipName,
   sourceChipLabel,
   sourceDisplayName,
   timeRangeHint,
-  timeRangeLongLabel,
   timeRangeShortLabel,
 } from './format';
 
@@ -112,24 +114,39 @@ function ScopeEditor({
         <h3 id={timeLegend} className="mb-1.5 font-medium text-foreground">
           Time range
         </h3>
-        {/* Eight presets, last hour to all time, in two rows of four (Round 12, SPEC D7):
-            one row would not fit the popover. Arrow keys still move through them in order. */}
+        {/* Nine presets, Auto (no range) then last hour to all time, in three rows of
+            three (Round 12, SPEC D7): one row would not fit the popover. Every arrow key
+            moves to the next or previous preset (Down from the end of a row continues on
+            the next), the radio-group pattern for options wrapped into rows. */}
         <SegmentedControl
           size="sm"
           fitted
+          orientation="both"
           aria-label="Time range"
           aria-describedby={timeHint}
           value={preset?.id ?? ''}
           onValueChange={(id) => target.setTimeRange(TIME_PRESETS.find((p) => p.id === id)?.range ?? null)}
-          options={TIME_PRESETS.map((p) => ({ value: p.id, label: p.short }))}
-          className="grid h-auto grid-cols-4"
+          options={TIME_PRESETS.map((p) => ({
+            value: p.id,
+            // "Auto" alone does not say what it does: its radio is named with the meaning.
+            label:
+              p.id === DEFAULT_TIME_PRESET_ID ? (
+                <>
+                  {p.short}
+                  <span className="sr-only"> ({inlineLabel(p.label)})</span>
+                </>
+              ) : (
+                p.short
+              ),
+          }))}
+          className="grid h-auto grid-cols-3"
         />
         <p id={timeHint} className="mt-1.5 text-muted-foreground">
-          {/* No range: no outer limit, and each lookup keeps its own default window (case
-              counts and searches all time; logs, metrics, cost and audit 24 hours). A chosen
-              range, an explicit "now-24h" included, is an outer bound a question can only
-              narrow: tool windows are clamped into it (§4.8.4, chat_tools/common.resolve_window).
-              "All time" never clamps. */}
+          {/* Auto (no range): no outer limit, and each lookup keeps its own default window.
+              A chosen range, the explicit 24h included, is an outer bound a question can
+              only narrow: tool windows are clamped into it (§4.8.4,
+              chat_tools/common.resolve_window). "All time" never clamps. The exceptions
+              are named in `timeRangeHint`. */}
           {timeRangeHint(target.timeRange)}
         </p>
       </div>
@@ -191,12 +208,13 @@ export function ScopeControls({ target, context, sources, sourcesState, merged, 
   const [open, setOpen] = React.useState(false);
   const sourceLabel = sourceChipLabel(target.sourceId, sources);
   const timeLabel = timeRangeShortLabel(target.timeRange);
+  const timePreset = presetForRange(target.timeRange);
   const count = activeScopeCount(target);
 
   const chipText = merged ? (count ? `Scope · ${count}` : 'Scope') : `${sourceLabel} · ${timeLabel}`;
   const accessibleName = merged
     ? `Scope${count ? `: ${count} set` : ''}. Change source, time range and limits`
-    : `Scope: ${sourceLabel}, ${timeRangeLongLabel(target.timeRange)}. Change source and time range`;
+    : scopeChipName(sourceLabel, target.timeRange);
 
   return (
     <>
@@ -206,7 +224,16 @@ export function ScopeControls({ target, context, sources, sourcesState, merged, 
             {/* The narrow "Scope · n" chip names itself; without the icon it fits the row
                 beside the Read-only lock and the meter instead of truncating its count. */}
             {merged ? null : <Database aria-hidden="true" />}
-            <span className="truncate">{chipText}</span>
+            {merged ? (
+              <span className="truncate">{chipText}</span>
+            ) : (
+              // The source truncates; the time range always stays visible (a long source
+              // name must never hide that All time or 12mo is in effect).
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="min-w-0 truncate">{sourceLabel}</span>{' '}
+                <span className={timePreset ? 'shrink-0 whitespace-nowrap' : 'min-w-0 truncate'}>· {timeLabel}</span>
+              </span>
+            )}
             <ChevronDown aria-hidden="true" className="opacity-70" />
           </button>
         </PopoverTrigger>

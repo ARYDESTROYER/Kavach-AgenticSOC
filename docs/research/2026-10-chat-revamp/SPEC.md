@@ -2121,3 +2121,52 @@ guessed when that is ambiguous. In bounded mode the 600-character digest bound i
 without the `step N` prefixes, so the numbers never cost a lookup its place; unlimited mode
 does not bound the digest. The values stay untrusted: a summary that imitates a numbered
 lookup makes the step ambiguous rather than choosing it.
+
+**A61 — The scope chip's presets and hint, and older messages in the transcript (§3.1,
+§7.5, §10.4, A22, A36; Round 12 WP-FIX1).** Supersedes the two copy strings A36 records and
+the 100-message window note of §7.5 and A22.
+- **Presets.** The time presets are **Auto**, **1h**, **24h**, **7d**, **30d**, **90d**,
+  **6mo** (`now-6M`), **12mo** (`now-12M`) and **All time** (`{"from": "all"}`), in a
+  three-column grid that every arrow key moves through. **Auto** is the default (no
+  range); its radio is named "Auto (default windows, no outer limit)". The chip's
+  accessible name starts with its visible text (WCAG 2.5.3, label in name), then says
+  what a short range means: "Scope: All sources · Auto (default windows, no outer
+  limit). Change source and time range", "… · 7d (last 7 days). …", "… · All time. …"
+  (`scopeChipName` in `chat/composer/format.ts`). **24h** is an explicit
+  `now-24h` outer limit, never shown for the default; a stored `now-24h` or `now-1d`
+  reopens as 24h and `now-1y` as 12mo. The chip reads "<source> · <range>": the source
+  truncates and the range never does. There is no custom range on the chip.
+- **Hint.** The default's hint is no longer "Last 24 hours, unless your question names
+  another window." It reads "No outer limit. Without a window in your question, case
+  counts, case searches and ATT&CK coverage cover all time; log, metric, cost and audit
+  lookups and the shift brief cover the last 24 hours. Agent improvement always compares
+  fixed periods." A chosen range reads "<range>. Lookups without a window in your
+  question use this range, except …. Questions can narrow it, not widen it." (All time:
+  "… cover all time, except …. A question can still name a shorter window."), where the
+  exceptions are the shift brief (at most 7 days; named only when the range can be longer)
+  and agent improvement (fixed periods). The prompt's window table names the same
+  exceptions.
+- **Older messages.** Nothing is removed from a conversation, so the transcript no longer
+  shows "Conversations keep their newest 100 messages", and "Older messages were removed
+  to stay within the storage limit" is replaced by a line shown only above a conversation
+  an older version actually shortened: "The first N messages of this conversation were
+  removed by an older version of Agentic SOC. Messages are no longer removed." A reopened
+  conversation opens on its newest 100 messages with **Show earlier messages · N more**
+  above the first message; each press reads the 50 before them through
+  `GET /api/chat/conversations/{id}/messages?before=<first shown id>&limit=50` (full text;
+  a page never splits a question from its answer) and places them above the reader
+  without moving what they are reading. The control keeps focus through loading, shows an
+  error with **Retry** (a 404 shows **Reopen conversation**, which re-reads the
+  conversation, instead of a Retry that would repeat the same read), and gives way to
+  **Start of the conversation**. A search hit or link to an older message reads back in
+  pages of 100 until it is on screen, waiting for a load already running; when a page
+  fails, the request is kept (never treated as "not in this conversation"), a toast and
+  the control say so in the same words with the same action, and Retry resumes the
+  read-back. A 404 there resolves the read-back as `missing`, so the toast too says
+  "Earlier messages could not be found." and offers **Reopen conversation**; a fresh read
+  of the conversation seeks a request still pending again in the new copy. A toast action
+  acts only on the conversation read it was raised for and only while its request is
+  still pending (a late click after switching or after the read-back resumed does
+  nothing). A question asked in this session
+  takes its saved id from `ChatResponse.user_message_id`, so a hit on it never reads older
+  history. Export and report methodology read the whole conversation.

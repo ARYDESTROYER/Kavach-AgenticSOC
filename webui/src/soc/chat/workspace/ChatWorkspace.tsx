@@ -29,7 +29,7 @@ import * as React from 'react';
 import { toast } from 'sonner';
 import { RotateCcw } from 'lucide-react';
 
-import type { ChatConversationSummary, ChatStarter } from '@/lib/types';
+import type { ChatConversation, ChatConversationSummary, ChatStarter } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { LoadingState } from '@/design-system/loading';
@@ -48,7 +48,7 @@ import { CHAT_KEYSHORTCUTS, useChatShortcuts } from '../shortcuts/useChatShortcu
 import type { ChatConversationsController } from '../useChatConversations';
 import type { ChatContextController } from '../useChatContext';
 import { type ChatEngine, type ChatUserItem } from '../useChatEngine';
-import { useEarlierMessages } from '../useEarlierMessages';
+import { EARLIER_LOAD_ERROR, EARLIER_MISSING_ERROR, useEarlierMessages } from '../useEarlierMessages';
 import { HistoryRail, HistoryStrip, type ConversationExportFormat } from './HistoryRail';
 import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
@@ -263,16 +263,70 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   // long conversation): page back to it first (Round 12), then highlight it.
   const highlightShown =
     !!highlight && engine.items.some((item) => item.key === highlight.messageId || item.messageId === highlight.messageId);
-  const [seekedNonce, setSeekedNonce] = React.useState<number | null>(null);
-  const seekOlder = highlightRestored && !highlightShown && earlier.remaining > 0;
-  const { loadUntil } = earlier;
+  // (A question asked in this session carries its saved id, `user_message_id`, so a hit
+  // on it is shown and never reads the conversation's older history.)
+  //
+  // A seek belongs to one request (its nonce) and one read of the conversation: a fresh
+  // read (Reopen conversation after a 404, or opening the conversation again) seeks a
+  // request that is still pending in the new copy. A request stays pending only until
+  // the transcript shows or drops it (it then clears it), so this never reads back for
+  // a message already handled.
+  const [seeked, setSeeked] = React.useState<{ nonce: number; conversation: ChatConversation | null } | null>(null);
+  const seekStarted = !!highlight && seeked?.nonce === highlight.nonce && seeked.conversation === conv.conversation;
+  // Only against a read of the highlight's own conversation: while another one is
+  // being handed to the engine, `earlier` still describes the previous read for a
+  // render, and a seek then would read the wrong conversation.
+  const seekOwnRead = !!highlight && conv.conversation?.id === highlight.conversationId;
+  const seekOlder = highlightRestored && seekOwnRead && !highlightShown && earlier.remaining > 0;
+  const { loadUntil, load: loadEarlier, loading: earlierLoading } = earlier;
+  const retryThread = conv.retryThread;
+  // What the page shows now, for a toast action raised earlier (see below).
+  const shownConversationRef = React.useRef(conv.conversation);
+  shownConversationRef.current = conv.conversation;
+  const failedSeekRef = React.useRef(earlier.failedSeek);
+  failedSeekRef.current = earlier.failedSeek;
   React.useEffect(() => {
-    if (!seekOlder || !highlight || seekedNonce === highlight.nonce) return;
-    setSeekedNonce(highlight.nonce);
-    void loadUntil(highlight.messageId);
-  }, [highlight, loadUntil, seekOlder, seekedNonce]);
+    // A "Show earlier messages" load still running is waited for: the seek starts
+    // once it lands (from the cursor it leaves), and is never used up meanwhile.
+    if (!seekOlder || !highlight || seekStarted || earlierLoading) return;
+    const raisedFor = conv.conversation;
+    const { messageId, nonce } = highlight;
+    setSeeked({ nonce, conversation: raisedFor });
+    void loadUntil(messageId).then((outcome) => {
+      if (outcome !== 'failed' && outcome !== 'missing') return;
+      // The request stays pending (see highlightReady) and the transcript shows the
+      // error at its top; the toast says so wherever the reader is, in the same words
+      // and with the same action as the transcript's control. The kind comes from the
+      // outcome itself: `earlier.errorKind` is not rendered yet when this runs.
+      const gone = outcome === 'missing';
+      // An action acts only on the request it was raised for: never on another
+      // conversation (or a fresh read of this one, which seeks again by itself), and
+      // never once that read-back was resumed elsewhere.
+      const stillPending = () => shownConversationRef.current === raisedFor && failedSeekRef.current === messageId;
+      toast.error('Could not open that message', {
+        description: gone ? EARLIER_MISSING_ERROR : EARLIER_LOAD_ERROR,
+        action: gone
+          ? {
+              label: 'Reopen conversation',
+              onClick: () => {
+                if (stillPending()) retryThread();
+              },
+            }
+          : {
+              label: 'Retry',
+              onClick: () => {
+                if (stillPending()) loadEarlier();
+              },
+            },
+      });
+    });
+  }, [conv.conversation, highlight, loadUntil, loadEarlier, retryThread, seekOlder, seekStarted, earlierLoading]);
+  // Held back while the read-back runs, or after it failed (Retry or Reopen resumes
+  // it): the transcript must not take a failed read for "not in this conversation" and
+  // jump to the latest turn.
+  const seekFailed = !!highlight && earlier.failedSeek === highlight.messageId;
   const highlightReady =
-    highlightRestored && !(!highlightShown && (earlier.loading || (seekOlder && seekedNonce !== highlight?.nonce)));
+    highlightRestored && !(!highlightShown && (earlierLoading || seekFailed || (seekOlder && !seekStarted)));
 
   const title = caseScoped
     ? `Case ${caseId}`
@@ -474,6 +528,9 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
                   remaining: earlier.remaining,
                   loading: earlier.loading,
                   error: earlier.error,
+                  errorKind: earlier.errorKind,
+                  // Gone (404): re-read the conversation instead of repeating the read.
+                  onReopen: conv.retryThread,
                   loadedAny: earlier.loadedAny,
                   onLoad: earlier.load,
                 }

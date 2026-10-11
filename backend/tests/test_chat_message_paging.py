@@ -181,3 +181,41 @@ def test_the_route_is_owner_scoped_with_auth_on() -> None:
         _login(client, "other", "other-pass-12345")
         assert client.get(f"/api/chat/conversations/{cid}/messages").status_code == 404
         assert client.get(f"/api/chat/conversations/{cid}").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# The question's id on a live answer (Round 12 WP-FIX1).
+# --------------------------------------------------------------------------- #
+def test_a_saved_answer_names_the_id_of_its_question_live_and_on_replay() -> None:
+    """``ChatResponse.user_message_id`` is the persisted id of the question the answer
+    replies to, so a question asked in this session can be found on screen (a search
+    hit or link to it) without reading the conversation's older history. It is never
+    stored on the answer; a completed-key replay derives it again."""
+    from app.llm.providers import MockProvider
+    from tests.test_chat_routes_stream import _client, _events
+
+    with _client(MockProvider()) as client:
+        body = {"message": "summarise today", "persist_conversation": True,
+                "idempotency_key": "fix1-question-id-0001"}
+        first = _events(client.post("/api/chat/stream", json=body).text)[-1].response
+        assert first.user_message_id and first.user_message_id.startswith("chatmsg-")
+        assert first.user_message_id != first.message_id
+        detail = client.get(f"/api/chat/conversations/{first.conversation_id}").json()
+        assert [m["id"] for m in detail["messages"]] == [first.user_message_id, first.message_id]
+        # Never stored on the answer: the message order is the truth.
+        assert "user_message_id" not in (detail["messages"][1]["response"] or {})
+        # A second question in the same conversation names its own question.
+        second = _events(client.post("/api/chat/stream", json={
+            "message": "and yesterday?", "persist_conversation": True,
+            "conversation_id": first.conversation_id, "idempotency_key": "fix1-question-id-0002",
+        }).text)[-1].response
+        detail = client.get(f"/api/chat/conversations/{first.conversation_id}").json()
+        assert [m["id"] for m in detail["messages"]][2:] == [second.user_message_id, second.message_id]
+        # A completed-key replay (no model call) names the same question.
+        replay = _events(client.post("/api/chat/stream", json=body).text)[-1].response
+        assert replay.message_id == first.message_id and replay.user_message_id == first.user_message_id
+        blocking = client.post("/api/chat", json={**body, "stream_mode": "text"}).json()
+        assert blocking["user_message_id"] == first.user_message_id
+        # A stateless answer is never saved and names no question.
+        stateless = client.post("/api/chat", json={"message": "hello"}).json()
+        assert stateless.get("user_message_id") is None and stateless.get("message_id") is None

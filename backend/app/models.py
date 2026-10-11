@@ -3100,6 +3100,10 @@ class ChatResponse(BaseModel):
     turn_id: str | None = None
     # The assistant message id when persisted (reports reference it).
     message_id: str | None = None
+    # Round 12 (WP-FIX1): the persisted id of the QUESTION this answers, when saved, so a
+    # live transcript can name its own question like a restored one does (a search hit
+    # or a link to it then finds it on screen). Never stored: the message is the truth.
+    user_message_id: str | None = None
     # A model-proposed memory change awaiting human confirmation (§4.8).
     memory_proposal: MemoryProposal | None = None
     # Case-scoped turns (§4.6): whether the answer reached the case thread, apart from

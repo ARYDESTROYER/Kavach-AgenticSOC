@@ -487,7 +487,9 @@ and `topic` (a retrieval hint naming the console-map topic an
 text counts as the analyst's own words for indicator lookups; `clarify` and
 `retry_step` are treated like `follow_up`. Additive response fields include `blocks`,
 `steps`, `usage`, `citations`, `console_links`, `follow_ups`, `answer_kind`, `notice`,
-`turn_id`, `message_id`, `memory_proposal`, `case_saved`, `case_save_notice`, `clarify`
+`turn_id`, `message_id`, `user_message_id` (the saved id of the question the answer
+replies to, so a client can find that question on screen; never stored on the answer),
+`memory_proposal`, `case_saved`, `case_save_notice`, `clarify`
 (`{question, options (≤ 4), allow_custom}` when the assistant asks instead of answering),
 `saved_report` (`{id, title, items, skipped?}` when the answer asked for a report and the
 server saved it) or `saved_report_error` (`report_limit`, `report_unavailable`, or

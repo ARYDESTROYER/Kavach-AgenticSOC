@@ -712,6 +712,8 @@ export function normaliseChatResponse(raw: unknown): ChatResponse | null {
   out.stream_mode = enumOr(raw.stream_mode, CHAT_STREAM_MODES, null);
   out.turn_id = optId(raw.turn_id);
   out.message_id = optId(raw.message_id);
+  // Round 12 (WP-FIX1): the saved question's id, so a live question is findable on screen.
+  out.user_message_id = optId(raw.user_message_id);
   out.memory_proposal = normaliseMemoryProposal(raw.memory_proposal);
   // Case turns: the thread-save outcome travels apart from the top notice (SPEC A25),
   // so a partial or denied case answer can still say it was not saved.

@@ -497,11 +497,30 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
   return doc;
 }
 
-/** "last 24h" for `now-24h → now`, else "<from> → <to>". */
+/** Every spelling of the "All time" chip's `from` the server accepts (`TimeRange`). */
+const ALL_TIME_FROM = new Set(['all', 'all_time', 'all time', 'lifetime']);
+
+/**
+ * A conversation's scope window in words: "last 24h" for `now-24h → now`; "all time"
+ * for the All time chip (`from: "all"`); calendar months and years the way the server's
+ * `TimeRange.label()` says them ("last 6 months", "last 12 months", "past year"), never
+ * a raw `now-6M`; else "<from> → <to>".
+ */
 export function timeRangeLabel(from: string, to?: string | null): string {
-  const rel = /^now-(\d{1,5})([mhdw])$/.exec(from);
-  if (rel && (!to || to === 'now')) return `last ${rel[1]}${rel[2]}`;
-  return `${from} → ${to || 'now'}`;
+  const end = to || 'now';
+  if (ALL_TIME_FROM.has(from.trim().toLowerCase())) return end === 'now' ? 'all time' : `all time → ${end}`;
+  if (end === 'now') {
+    const rel = /^now-(\d{1,5})([mhdw])$/.exec(from);
+    if (rel) return `last ${rel[1]}${rel[2]}`;
+    // `M` is months (a lower-case `m` above is minutes); `y` (or `Y`) is years.
+    const cal = /^now-(\d{1,4})([MyY])$/.exec(from);
+    if (cal) {
+      const amount = Number(cal[1]);
+      const unit = cal[2] === 'M' ? 'month' : 'year';
+      return amount === 1 ? `past ${unit}` : `last ${amount.toLocaleString('en-US')} ${unit}s`;
+    }
+  }
+  return `${from} → ${end}`;
 }
 
 /* -------------------------------------------------------------------------- */

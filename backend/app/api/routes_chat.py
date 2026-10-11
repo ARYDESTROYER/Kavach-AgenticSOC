@@ -874,6 +874,18 @@ class ChatTurnStart:
     handle: ChatTurnHandle | None = None
 
 
+def _question_id(conversation: Any, assistant: Any) -> str | None:
+    """The persisted id of the question ``assistant`` answers: the user message just
+    before it in ``conversation`` (Round 12 WP-FIX1, ``ChatResponse.user_message_id``),
+    or ``None`` when it is not there."""
+    messages = list(getattr(conversation, "messages", None) or [])
+    for index, message in enumerate(messages):
+        if message.id == getattr(assistant, "id", None):
+            prior = messages[index - 1] if index > 0 else None
+            return prior.id if prior is not None and prior.role == "user" else None
+    return None
+
+
 def _replay_response(reservation: ChatExchangeReservation) -> ChatResponse:
     """A completed receipt as the response the original request returned, with its
     assistant ``message_id`` (SPEC §7.5)."""
@@ -893,6 +905,7 @@ def _replay_response(reservation: ChatExchangeReservation) -> ChatResponse:
         "effective_source_name": assistant.source_name or (conversation.source_name if conversation else None),
         "truncated": bool(payload.get("truncated")),
         "message_id": assistant.id,
+        "user_message_id": _question_id(conversation, assistant),
     })
     try:
         return ChatResponse.model_validate(payload)
@@ -1627,7 +1640,8 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
         final = response.model_copy(update={
             "conversation_id": plan.existing.id if plan.existing else None,
             "conversation_title": plan.existing.title if plan.existing else None,
-            "idempotency_key": plan.request_key, "message_id": None, **provenance,
+            "idempotency_key": plan.request_key, "message_id": None, "user_message_id": None,
+            **provenance,
         })
         if first_call_failed:
             _fail_first_call(handle, final)
@@ -1690,6 +1704,7 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
         "conversation_title": conversation.title,
         "truncated": bool((assistant.response or {}).get("truncated")),
         "message_id": assistant.id,
+        "user_message_id": _question_id(conversation, assistant),
     })
     saved_report, report_error = await _save_report_from_turn(
         state, plan, outcome, conversation.id, assistant.id,

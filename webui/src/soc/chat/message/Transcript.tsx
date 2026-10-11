@@ -38,7 +38,9 @@
  *  - A requested message (deep link or search hit) is scrolled to and highlighted for
  *    2 s. A request whose message is not in the restored thread (a stale link) is
  *    reported done and the thread opens at its latest turn; the host first pages older
- *    messages in when the conversation has some (`earlier`). A message more than two
+ *    messages in when the conversation has some (`earlier`). If that read fails, the
+ *    host holds the request (not ready) and the lane shows the error and its Retry at
+ *    the top instead of the latest turn; Retry resumes the read. A message more than two
  *    screens away is jumped to (a smooth scroll over turns that have not rendered yet
  *    lands short) and re-aligned while the turns above it render at their real height.
  *  - Older messages (Round 12, `earlier`): a long conversation opens on its newest
@@ -158,8 +160,15 @@ export interface TranscriptEarlier {
   /** Older messages not on screen yet (0: the conversation is shown from its start). */
   remaining: number;
   loading: boolean;
-  /** Why the last load failed (a Retry follows it). */
+  /** Why the last load failed (a Retry follows it, unless `errorKind` is `missing`). */
   error: string | null;
+  /**
+   * `missing` (404: the messages are gone, usually a conversation deleted elsewhere):
+   * a Retry would repeat the same read, so the control offers `onReopen` instead.
+   */
+  errorKind?: 'failed' | 'missing' | null;
+  /** Re-read the conversation from the server (fresh cursor, or its "not found" state). */
+  onReopen?: () => void;
   /** At least one older page was loaded: the start of the conversation is marked. */
   loadedAny: boolean;
   /** Load the previous page. */
@@ -173,7 +182,8 @@ export function earlierCountLabel(remaining: number): string {
 
 /**
  * The quiet control above the first turn: "Show earlier messages", its loading state,
- * an error with Retry, and once everything is shown, "Start of the conversation". One
+ * an error with Retry (or, when the messages are gone, "Reopen conversation"), and once
+ * everything is shown, "Start of the conversation". One
  * button element stays mounted through loading (never `disabled`, which would drop its
  * focus); when the last page arrives and it goes away, focus moves to the start marker.
  */
@@ -201,6 +211,19 @@ function EarlierMessagesControl({ earlier, onLoad }: { earlier: TranscriptEarlie
     ) : null;
   }
   const more = earlierCountLabel(earlier.remaining);
+  // Gone (404): the same read would fail again. The one button offers to re-read the
+  // conversation instead (a fresh cursor, or its "could not restore" state when it was
+  // deleted elsewhere), never a Retry. It stays the same element, so focus stays on it.
+  const missing = earlier.errorKind === 'missing' && !earlier.loading;
+  if (missing && !earlier.onReopen) {
+    return (
+      <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 py-1 text-xs text-muted-foreground" data-testid="chat-earlier-messages">
+        <span role="alert" className="text-foreground">
+          {earlier.error}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 py-1 text-xs text-muted-foreground" data-testid="chat-earlier-messages">
       {earlier.error ? (
@@ -214,7 +237,7 @@ function EarlierMessagesControl({ earlier, onLoad }: { earlier: TranscriptEarlie
         variant={earlier.error ? 'outline' : 'ghost'}
         className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground hover:text-foreground"
         // "Retry" alone would not say what it retries once the alert has been read.
-        aria-label={earlier.error && !earlier.loading ? 'Retry loading earlier messages' : undefined}
+        aria-label={earlier.error && !earlier.loading && !missing ? 'Retry loading earlier messages' : undefined}
         aria-disabled={earlier.loading || undefined}
         aria-busy={earlier.loading || undefined}
         onFocus={() => {
@@ -224,7 +247,9 @@ function EarlierMessagesControl({ earlier, onLoad }: { earlier: TranscriptEarlie
           focusedRef.current = false;
         }}
         onClick={() => {
-          if (!earlier.loading) onLoad();
+          if (earlier.loading) return;
+          if (missing) earlier.onReopen?.();
+          else onLoad();
         }}
       >
         {earlier.loading ? (
@@ -234,8 +259,16 @@ function EarlierMessagesControl({ earlier, onLoad }: { earlier: TranscriptEarlie
         ) : (
           <ChevronUp aria-hidden />
         )}
-        {earlier.loading ? 'Loading earlier messages…' : earlier.error ? 'Retry' : 'Show earlier messages'}
-        {!earlier.loading && !earlier.error ? <span className="text-muted-foreground/80">· {more}</span> : null}
+        {earlier.loading
+          ? 'Loading earlier messages…'
+          : missing
+            ? 'Reopen conversation'
+            : earlier.error
+              ? 'Retry'
+              : 'Show earlier messages'}
+        {/* Full muted foreground: the count is 12 px text and must meet AA (4.5:1) in
+            both themes, so it is never dimmed further. */}
+        {!earlier.loading && !earlier.error ? <span className="text-muted-foreground">· {more}</span> : null}
       </Button>
     </div>
   );
@@ -646,6 +679,20 @@ export function Transcript({
       onHighlightDoneRef.current?.();
     }, HIGHLIGHT_MS);
   }, [highlight, highlightReady, items, reduceMotion, replace, scrollLane]);
+
+  // A requested older message whose read-back failed: the host holds the request back
+  // (never "not found, go to the latest turn"), so bring the error and its Retry into
+  // view at the top of the lane, where the read resumes from.
+  const earlierError = earlier?.error ?? null;
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    const pending = highlightRef.current;
+    if (!earlierError || !el || !pending || highlightReady || handledNonceRef.current === pending.nonce) return;
+    settleRef.current = false;
+    followRef.current = false;
+    autoScrollRef.current = null;
+    scrollLane(0, false);
+  }, [earlierError, highlightReady, scrollLane]);
 
   React.useEffect(
     () => () => {

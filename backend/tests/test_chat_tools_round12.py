@@ -609,6 +609,10 @@ def test_prompt_routes_counts_windows_and_reports() -> None:
     # No false "everything defaults to the last 24 hours".
     assert "lookups default to the last 24 hours" not in system
     assert "case_stats and search_cases cover all time" in system
+    # The exceptions the console's scope hint also names (Round 12 WP-FIX1): ATT&CK
+    # coverage is all time without a window, agent improvement never follows one.
+    assert "so does soc_metrics mitre_coverage; other soc_metrics kinds" in system
+    assert "soc_metrics agent_improvement always compares its own fixed periods" in system
     assert '"lifetime", "all time", "ever", "in total", "so far" and "since we started" mean window "all"' in system
     assert "No time window was selected" in system
     # The report recipe: one parallel batch, the same window, a report block.

@@ -62,7 +62,7 @@ The composer has one row of controls under the text box:
 | Control | What it does |
 |---|---|
 | **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads "Turned off on this deployment". |
-| Scope | The log source and time range in one chip, for example "Wazuh · 24h". The default, **24h**, sets no outer limit: without a window in your question, case counts and case searches cover all time, and log, metric, cost, and audit lookups cover the last 24 hours (see [Time windows](#time-windows)). The other ranges are **1h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
+| Scope | The log source and time range in one chip, for example "Wazuh · Auto" or "Wazuh · 30d". The default, **Auto**, chooses no range and sets no outer limit: each lookup uses its own default window (see [Time windows](#time-windows)). The ranges are **1h**, **24h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The shift brief covers at most 7 days, and agent improvement always compares its own fixed periods. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
 | `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |
 | `/` commands | Type `/` at the start for the commands below, your saved prompts, and the prompt library. |
 | `≈ 1.2k` and the ring | The token estimate for your next request, and a ring that shows how much of the model's context window that request uses (see [Tokens and cost](#tokens-and-cost)). |
@@ -83,24 +83,31 @@ A question can name any window, of any length, and the lookups use it exactly:
 - a named month, quarter, or year, such as "September 2026" or "Q3", and a date range
   such as "from 1 March to 15 April".
 
-When the question names no window and the scope chip is on its default, **24h**, which
+When the question names no window and the scope chip is on its default, **Auto**, which
 sets no outer limit, each lookup uses its own default:
 
 | Lookup | Window without one in the question |
 |---|---|
 | Case counts and breakdowns, case searches | All time |
+| ATT&CK coverage | All time |
 | Log searches and log statistics | The last 24 hours |
-| Metrics, cost, and the audit log | The last 24 hours |
+| Other metrics, cost, and the audit log | The last 24 hours |
 | The shift brief | The last 24 hours (at most 7 days when asked) |
+| Agent improvement | Always its own fixed periods: the last 7 complete UTC days against the 28 before them |
 
 So "How many cases have we closed as false positive?" counts every case in the store,
 while "How many failed logins were there?" covers the last 24 hours. Name the window
 when you mean a particular period. The chip's popover says the same: "No outer limit.
-Without a window in your question, case counts and searches cover all time, and log,
-metric, cost and audit lookups the last 24 hours." With another range chosen on the
-scope chip, every lookup without a window in the question uses that range instead, and
-with **All time**, every lookup without a window covers all time, logs included. The run log
-shows the window of every lookup.
+Without a window in your question, case counts, case searches and ATT&CK coverage cover
+all time; log, metric, cost and audit lookups and the shift brief cover the last 24 hours.
+Agent improvement always compares fixed periods."
+
+With a range chosen on the scope chip (**24h** included, which is an outer limit, unlike
+**Auto**), every lookup without a window in the question uses that range instead, with
+two exceptions: the shift brief covers at most 7 days of it, and agent improvement keeps
+its fixed periods. With **All time**, every other lookup without a window covers all
+time, logs included. The popover names the exceptions that apply to the range you chose,
+and the run log shows the window of every lookup.
 
 Calendar periods use your organization's time zone (the time zone of the SLA targets
 under **Settings → General → SLA, priority & suppression**, UTC by default), and labels
@@ -112,7 +119,7 @@ months, the current one marked as in progress, and the caption says so, for exam
 When you choose a range on the scope chip, a window the question asks for is kept
 inside it. A window that lies entirely outside the chip's range is refused instead of
 silently replaced: the answer says the period is outside the selected time range, and you
-can set the chip to **All time** or back to its default, **24h** (neither limits a question),
+can set the chip to **All time** or back to its default, **Auto** (neither limits a question),
 and ask again. A custom date range is not offered on the chip; name the dates in the
 question instead, for example "from 1 March to 15 April".
 

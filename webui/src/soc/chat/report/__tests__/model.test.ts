@@ -10,6 +10,7 @@ import type { ReportItem } from '@/lib/types';
 import {
   AI_SUMMARY_NOTICE,
   READ_ONLY_NOTICE,
+  buildConversationDoc,
   buildReportDoc,
   collectQueries,
   itemBlocks,
@@ -232,5 +233,31 @@ describe('helpers', () => {
     expect(tokens(12_400)).toBe('12k');
     expect(timeRangeLabel('now-7d')).toBe('last 7d');
     expect(timeRangeLabel('2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z')).toBe('2026-10-01T00:00:00Z → 2026-10-02T00:00:00Z');
+  });
+
+  it('names the All time, 6mo and 12mo scope windows in words, never as raw tokens', () => {
+    // The scope chip's presets (Round 12), worded like the server's TimeRange.label().
+    expect(timeRangeLabel('all', 'now')).toBe('all time');
+    expect(timeRangeLabel('all')).toBe('all time');
+    expect(timeRangeLabel('lifetime', 'now')).toBe('all time');
+    expect(timeRangeLabel('all', '2026-10-01T00:00:00Z')).toBe('all time → 2026-10-01T00:00:00Z');
+    expect(timeRangeLabel('now-6M', 'now')).toBe('last 6 months');
+    expect(timeRangeLabel('now-12M', 'now')).toBe('last 12 months');
+    expect(timeRangeLabel('now-1y', 'now')).toBe('past year');
+    expect(timeRangeLabel('now-1M')).toBe('past month');
+    expect(timeRangeLabel('now-2y')).toBe('last 2 years');
+    // A lower-case m stays minutes.
+    expect(timeRangeLabel('now-30m')).toBe('last 30m');
+    expect(timeRangeLabel('now-6M', '2026-10-01T00:00:00Z')).toBe('now-6M → 2026-10-01T00:00:00Z');
+  });
+
+  it('exports a conversation scoped to All time or 6mo with the window in words', () => {
+    const allTime = buildConversationDoc({ ...sampleConversation(), time_range: { from: 'all', to: 'now' } }, { generatedAt: NOW.toISOString() });
+    expect(allTime.windows).toEqual(['all time']);
+    expect(allTime.methodology).toContain('Time windows: all time.');
+    const sixMonths = buildConversationDoc({ ...sampleConversation(), time_range: { from: 'now-6M', to: 'now' } }, { generatedAt: NOW.toISOString() });
+    expect(sixMonths.windows).toEqual(['last 6 months']);
+    expect(sixMonths.methodology).toContain('Time windows: last 6 months.');
+    expect(sixMonths.methodology.join('\n')).not.toMatch(/now-6M|→ now/);
   });
 });

@@ -268,23 +268,43 @@ _SCOPE_HINT_HEADING = "### The chat scope popover names the wrong default window
 
 
 def test_scope_popover_default_hint_is_recorded_while_it_ships():
-    """Both ways: a fixed hint must also retire its known-limitation entry."""
-    ships = _SCOPE_HINT in _read(SCOPE_CONTROLS)
+    """Both ways: a fixed hint must also retire its known-limitation, ROADMAP G and SPEC
+    §7.3/§7.4 records. The hint's copy lives in ``timeRangeHint`` (composer/format.ts)
+    since WP-FIX1, so both files are read: the wrong copy coming back in either fails."""
+    ships = any(_SCOPE_HINT in _read(path) for path in (SCOPE_CONTROLS, COMPOSER_FORMAT))
     recorded = _SCOPE_HINT_HEADING in _read(KNOWN_LIMITATIONS)
-    in_spec = "The scope popover's default hint names the wrong default" in _read(ROUND12_SPEC)
+    spec = _read(ROUND12_SPEC)
+    in_spec = "The scope popover's default hint names the wrong default" in spec
     if ships:
         assert recorded and in_spec, (
-            "ScopeControls.tsx still says 'Last 24 hours, unless your question names another "
+            "The scope popover still says 'Last 24 hours, unless your question names another "
             "window' for the default chip, but case counts and searches default to all time; "
             "keep it recorded in known-limitations.md and SPEC §7.3"
         )
     else:
+        # The fixed hint ships: the default's own copy names no outer limit.
+        assert "No outer limit." in _read(COMPOSER_FORMAT)
         assert not recorded, (
             "The scope popover hint was fixed: remove its entry from known-limitations.md "
             "(and the ROADMAP G item)"
         )
         roadmap = " ".join(_read(REPO_ROOT / "ROADMAP.md").split())
         assert "**Scope popover default hint**" not in roadmap, "retire the ROADMAP G item too"
+        # The binding SPEC no longer records what WP-FIX1 resolved (§7.3, §7.4) …
+        known = " ".join(_section(spec, "### 7.3 Known limitations").split())
+        deferred = " ".join(_section(spec, "### 7.4 Deferred").split())
+        for stale in ("The scope popover's default hint names the wrong default",
+                      'No "All time" option on the chat scope chip',
+                      "The chat UI shows the newest 100 messages",
+                      "The transcript's retention notice uses the old wording"):
+            assert stale not in known, f"SPEC §7.3 still records a fixed limitation: {stale!r}"
+        for stale in ("older-message paging", '"All time" chip preset', "default-hint copy fix"):
+            assert stale not in deferred, f"SPEC §7.4 still defers a shipped item: {stale!r}"
+        # … records what shipped, and the chat-revamp SPEC supersedes A36's copy.
+        assert "- **WP-FIX1**" in _section(spec, "### 7.1 What each package delivered")
+        a61 = _amendment(_read(REVAMP_SPEC), "A61")
+        assert "Supersedes the two copy strings A36 records" in a61
+        assert "No outer limit." in a61 and "Show earlier messages" in a61
 
 
 def test_context_note_overstatement_is_recorded_while_it_ships():

@@ -344,9 +344,14 @@ and, just as importantly, makes each of these conditions a state an operator can
   report of lifetime performance" or monthly breakdowns now run their lookups; a false
   "last 24 hours" default in the assistant's instructions and "lifetime" read as a short
   window are gone. The scope chip adds **6mo**, **12mo** and **All time** (which never
-  limits a question), and its popover now says what the default covers: no outer
-  limit, case counts and searches over all time, and log, metric, cost and audit lookups
-  over the last 24 hours.
+  limits a question). Its default, which sets no outer limit, now reads **Auto** instead
+  of "24h" (**24h** is a separate range that limits questions), and its popover says
+  what each lookup covers: with Auto, case counts, case searches and ATT&CK coverage
+  over all time, and log, metric, cost and audit lookups and the shift brief over the
+  last 24 hours; with a chosen range, which lookups do not follow it (the shift brief
+  covers at most 7 days, and agent improvement compares fixed periods). The presets
+  sit in a grid that every arrow key moves through, and the chip keeps the range
+  visible when a long source name is cut short.
 - **Long conversations showed only their newest 100 messages**, under a notice that said
   conversations keep only their newest 100. Nothing is removed: the transcript now has
   **Show earlier messages**, which pages older messages in (50 at a time, in full) above

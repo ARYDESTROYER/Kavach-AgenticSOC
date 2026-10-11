@@ -134,6 +134,60 @@ describe('Transcript — earlier messages', () => {
     expect(more.onLoad).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the count at the full muted foreground (AA for 12 px text), never dimmed further', () => {
+    render(view(exchanges(10, 12), earlier({ remaining: 82 })));
+    const count = screen.getByText('· 82 more');
+    expect(count).toHaveClass('text-muted-foreground');
+    expect(count.className).not.toMatch(/text-muted-foreground\/\d+/);
+  });
+
+  it('offers to reopen the conversation when the messages are gone (404), never a Retry that repeats the read', () => {
+    const onReopen = vi.fn();
+    const more = earlier({ error: 'Earlier messages could not be found.', errorKind: 'missing', onReopen });
+    const { rerender } = render(view(exchanges(10, 12), more));
+    expect(screen.getByRole('alert')).toHaveTextContent('Earlier messages could not be found.');
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull();
+    const reopen = screen.getByRole('button', { name: 'Reopen conversation' });
+    fireEvent.click(reopen);
+    expect(onReopen).toHaveBeenCalledTimes(1);
+    expect(more.onLoad).not.toHaveBeenCalled();
+    // A host without a reopen path shows the reason only (no dead-end button).
+    rerender(view(exchanges(10, 12), earlier({ error: 'Earlier messages could not be found.', errorKind: 'missing' })));
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Retry|Reopen|Show earlier/ })).toBeNull();
+    // A read that may work again keeps Retry.
+    rerender(view(exchanges(10, 12), earlier({ error: 'Earlier messages could not be loaded.', errorKind: 'failed', onReopen })));
+    expect(screen.getByRole('button', { name: 'Retry loading earlier messages' })).toBeInTheDocument();
+  });
+
+  it('shows the error and Retry at the top, never the latest turn, when the read-back to a requested message failed', () => {
+    const items = exchanges(10, 15);
+    const onHighlightDone = vi.fn();
+    const at = (more: TranscriptEarlier, ready: boolean) => (
+      <TooltipProvider>
+        <Transcript
+          engine={{ ...stubEngine(), items }}
+          earlier={more}
+          highlight={{ messageId: 'mu-2', nonce: 7 }}
+          highlightReady={ready}
+          onHighlightDone={onHighlightDone}
+        />
+      </TooltipProvider>
+    );
+    const { container, rerender } = render(at(earlier({ loading: true }), false));
+    const { lane, m } = layout(container);
+    // The reader was further down the conversation when the hit was opened.
+    m.top = 2000;
+    fireEvent.scroll(lane);
+    // The read-back failed: the host holds the request back (not ready).
+    rerender(at(earlier({ error: 'Earlier messages could not be loaded.', errorKind: 'failed' }), false));
+    expect(m.top).toBe(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('Earlier messages could not be loaded.');
+    expect(screen.getByRole('button', { name: 'Retry loading earlier messages' })).toBeInTheDocument();
+    // Never reported done (which would open the latest turn as if it were the answer).
+    expect(onHighlightDone).not.toHaveBeenCalled();
+  });
+
   it('marks the start of the conversation once everything is shown, and moves focus there', () => {
     const more = earlier({ remaining: 2 });
     const { rerender } = render(view(exchanges(1, 3), more));

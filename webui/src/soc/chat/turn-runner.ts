@@ -942,11 +942,16 @@ function finish(run: RunInternals, state: Exclude<TurnRunState, 'running'>, fiel
   emit(run);
 }
 
-/** The user item as it should read once its run settled. */
+/**
+ * The user item as it should read once its run settled. A saved answer names its
+ * question's persisted id (`user_message_id`, Round 12 WP-FIX1): the live question
+ * takes it, like a restored one, so a search hit or link to it is found on screen.
+ */
 export function settledUserItem(run: TurnRun): ChatUserItem | null {
   if (!run.userItem) return null;
   const failed = run.state === 'done' ? !!run.response && isUnsavedTurn(run.response) : true;
-  return { ...run.userItem, failed };
+  const saved = run.state === 'done' && !failed ? run.response?.user_message_id ?? null : null;
+  return { ...run.userItem, failed, messageId: run.userItem.messageId ?? saved };
 }
 
 /** The assistant item for a run (live while running; its truth once settled). */

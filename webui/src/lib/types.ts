@@ -3099,6 +3099,12 @@ export interface ChatResponse {
   turn_id?: string | null;
   /** The persisted assistant message id (reports reference it). */
   message_id?: string | null;
+  /**
+   * The persisted id of the question this answer replies to, when saved (Round 12
+   * WP-FIX1): a live question carries it like a restored one, so a search hit or link
+   * to it is found on screen. Never stored on the answer.
+   */
+  user_message_id?: string | null;
   /** A model-proposed memory change awaiting human confirmation (`memory:manage`). */
   memory_proposal?: MemoryProposal | null;
   /** Case turns only: whether the answer reached the case thread (null = not a case turn). */
@@ -3228,7 +3234,10 @@ export type ReportItemKind = 'block' | 'section';
 
 /**
  * The composer time window (backend `TimeRange`). Each bound is `now`,
- * `now-<n>[m|h|d|w]` or ISO-8601; `from < to`; at most 90 days (else HTTP 422).
+ * `now-<n>[m|h|d|w|M|y]` (lower-case `m` is minutes, `M` months) or ISO-8601, and
+ * `from` may also be `"all"` (the "All time" chip, which never clamps); `from < to`
+ * (else HTTP 422). Round 12 (SPEC D7a): chat scope windows have no span limit. No range
+ * at all is the composer's **Auto** default: no outer limit, each lookup's own default.
  * Named `ChatTimeRange` to stay distinct from `TimeRangePicker`'s own `TimeRange`.
  */
 export interface ChatTimeRange {

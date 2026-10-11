@@ -853,9 +853,10 @@ _CHAT_AGENT_BODY = (
     "the last in progress: the result's window label says so (\"last 6 months (since May 2026)\"); "
     "quote that label.\n"
     '- "lifetime", "all time", "ever", "in total", "so far" and "since we started" mean window "all".\n'
-    "- Without a window (and no window selected): case_stats and search_cases cover all time; "
-    "soc_metrics, cost_usage, search_logs, log_stats and audit_search cover the last 24 hours; "
-    "shift_report covers the last 24 hours (at most 7 days).\n"
+    "- Without a window (and no window selected): case_stats and search_cases cover all time, and so "
+    "does soc_metrics mitre_coverage; other soc_metrics kinds, cost_usage, search_logs, log_stats and "
+    "audit_search cover the last 24 hours; shift_report covers the last 24 hours (at most 7 days); "
+    "soc_metrics agent_improvement always compares its own fixed periods.\n"
     "- compare (case_stats, log_stats, cost_usage, and soc_metrics posture/trends/case_mix/timing): "
     'previous_period, same_period_last_year, {"from", "to"} or up to 4 windows. The changes come '
     'computed (a zero baseline is "new"): quote them, never compute your own.\n'

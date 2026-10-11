@@ -653,7 +653,10 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       const user = settledUserItem(run);
       commitItems((prev) =>
         prev.map((item) => {
-          if (item.kind === 'user' && user && item.requestKey === run.requestKey) return { ...item, failed: user.failed };
+          // The saved question's id (Round 12 WP-FIX1): a hit or link to it finds it here.
+          if (item.kind === 'user' && user && item.requestKey === run.requestKey) {
+            return { ...item, failed: user.failed, messageId: item.messageId ?? user.messageId };
+          }
           return item.key === run.assistantKey ? { ...settled, at: item.at } : item;
         }),
       );
