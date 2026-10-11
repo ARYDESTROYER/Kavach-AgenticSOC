@@ -17,13 +17,17 @@ changing any case or detection policy.
    is hidden. Choose Off, 5 seconds, 30 seconds, 1 minute, or 5 minutes when a
    different operating cadence is more appropriate.
 2. **Read the six operational KPIs** — Total Cases, Total Critical, Open Cases,
-   False Positive Rate, Resolved / Closed, and Auto Closed. The Open total includes
+   AI-verdict FP rate, Resolved / Closed, and Auto Closed. The Open total includes
    every non-terminal lifecycle (`new`, `open`, `needs_human`, `investigating`,
    `escalated`, and `on_hold`) and is a **stock** read at the rollup's own timestamp,
    so it is deliberately not filtered by the selected window. Total Critical counts
    the top band the severity ladder declares, over the whole window, from the server
-   rollup. False Positive Rate shows the rate for the selected window only; it no
-   longer carries a period-over-period percentage chip.
+   rollup. **AI-verdict FP rate** (called False Positive Rate before this release) is
+   the share of the window's verdicted cases that the AI verdicted false positive; it
+   measures the AI's call, not an analyst's, and carries no period-over-period chip. Its
+   drill-down also shows how many of the same cases an analyst confirmed as false
+   positive. Numerals never truncate: on a narrow screen a tile's caption moves under
+   its number instead.
 
    **Auto Closed is a SUBSET of Resolved / Closed, not a sixth independent total.**
    The row does not sum: `auto closed + human closed + system closed` equals
@@ -47,11 +51,14 @@ changing any case or detection policy.
    a quiet "No trend data yet" line instead of inventing a trend when the series has
    no measured buckets. Total Critical deliberately has no trendline, because no
    per-severity bucket series exists for it.
-3. **Use the instrument rows** — Human vs AI attributes the window's closes to the
-   agent, an analyst, or system routing; the stacked Open and Resolved composition
-   rings show severity mix; MTTD / response pairs detection with the first human
-   action; and Latest Cases shows exactly five recent records and reveals bounded
-   detail on hover or keyboard focus.
+3. **Read the two bands** — below the strip, the page has two titled bands separated
+   by space rather than cards. **Alert flow** holds the Noise Reduction flow and Human
+   vs AI, which attributes the window's closes to the agent, an analyst, or system
+   routing. **Cases and response** holds the case state (the Open cases and Cases
+   resolved composition rings, which show severity mix), **Response time** (MTTD paired
+   with Respond, the first human action), and Latest cases, which shows exactly five
+   recent records and reveals bounded detail on hover or keyboard focus. On very wide
+   screens the two bands sit side by side with a narrower rail.
 4. **Inspect Noise Reduction** — follow the horizontal ribbon from alerts ingested
    through clustering and cases opened. Opened cases then split into
    AI auto-cleared and escalated work; human closure is an overlapping analyst-owned
@@ -68,11 +75,15 @@ changing any case or detection policy.
    or terminal outcome. Coverage, store-page, and sample notices identify every bound
    instead of presenting partial data as complete.
 5. **Check response timing** — look for changes in MTTD, MTTA, MTTR, or dwell, then
-   open **Deeper analytics** for autonomy, connector coverage, workload, outcomes, top
-   signatures, and top entities. For opened-versus-resolved backlog growth, open
-   **Analytics → Metrics → Posture** and read **Closure vs arrival**.
+   open **Deeper analytics**. It is one disclosure: **Efficiency and cost** (MTTA, MTTR,
+   Dwell, and LLM spend for the window) and **What's driving volume** (ingest coverage,
+   case volume, workload state, case outcomes, top signatures, and top entities). While
+   it is closed, its header summarizes what it holds, for example the timing figures,
+   spend, silent sources, and the top signature. Whether it is open is remembered for
+   your account, on every device. For opened-versus-resolved backlog growth, open
+   **Analytics → Metrics** and read **Closure vs arrival** on the Posture tab.
 
-False Positive Rate, Resolved / Closed and Auto Closed come from the server posture
+AI-verdict FP rate, Resolved / Closed and Auto Closed come from the server posture
 rollup rather than the bounded case list. They are keyed to the selected window and
 comparison mode. When the range changes, the Console keeps the last successful posture
 snapshot visible instead of blanking the tiles. It no longer captions those numerals
@@ -127,7 +138,13 @@ authorization to close a case.
 
 Selected-window cards are windowed rollups. Active Risk is deliberately a current
 open-queue measure rather than a historical-window total, and its help text states
-that scope. Timing cards expose their sample availability, and source coverage is
+that scope.
+
+Counts on the dashboard are exact store-wide counts and agree with what Workspace Chat
+reports for the same question. The heavier rollups analyse every case in their window
+up to 20,000 cases; a larger window, typically **All time** on a large store, is
+analysed over its newest 20,000 cases and says so. See
+[the KPI glossary](kpi-glossary.md#how-to-read-a-kpi). Timing cards expose their sample availability, and source coverage is
 reported independently of case volume: a quiet source and an unread source are not
 the same condition.
 

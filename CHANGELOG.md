@@ -12,6 +12,29 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**Round 12: chat without limits, a working indicator, Remember me, reliable report
+downloads, an exact Overview, and a Case Manager that records what a case was.** Workspace
+Chat no longer stops a question at a step, token or time limit, never cuts an answer
+short, and has no "Continue where this stopped": a question runs until the assistant
+has answered or the analyst presses Stop, with loop guards instead of caps, automatic
+continuation when the model reaches its output length, and a running conversation
+summary that keeps long conversations inside the model's context window. Chat counts
+every case exactly over any window (all time, calendar periods in the operator time
+zone, months, quarters, years and ISO ranges), compares periods, asks a clarifying
+question instead of guessing, offers one-click ways to widen an empty search, saves
+reports it is asked to create, and adds a step inspector, answer ratings, **Add to
+case**, a prompt library with promptbooks, `/compact`, **Ask AI** chips on entity values,
+and a conversation width preference. A turning ring on the Chat item (and, optionally,
+the logo) shows that an answer is being written while you work elsewhere, and returning
+or reloading rejoins it live. Chat is no longer paused by the daily AI budget; an
+optional daily chat spending limit replaces it. Sign-in gains **Remember me**, with a
+warning, browser-managed passwords and server-bounded remembered sessions. Report
+exports are reliable and add Word and Excel. Dashboards read exact counts instead of a
+fixed newest page, and the Case Manager's queue, header and close dialog are rebuilt
+around one rule: once an analyst classifies a case, that classification is its headline.
+The Help Center chat, reports, sign-in, Overview, Case Manager, Cases, settings, KPI
+glossary, configuration and API pages are updated to match.
+
 **Workspace Chat, rebuilt as a read-only analyst assistant with reports.** One question can
 now run several read-only lookups (log search and statistics, cases and case decisions,
 metrics, the shift report, campaigns, indicator reputation, ATT&CK, the knowledge corpus,
@@ -306,6 +329,31 @@ that reads identically whether the number is 2000 or 0. This release fixes the c
 and, just as importantly, makes each of these conditions a state an operator can see.
 
 ### Fixed
+
+- **A case closed as false positive still read "Undetermined" / "Needs human review —
+  closed".** Resolving could not capture a disposition, and the case headline led with
+  the AI verdict even after an analyst classified the case; both are fixed, and the
+  outcome is computed by one rule shared by every case surface that mirrors the backend
+  ground-truth check.
+- **Chat did not use the full width** when the side menus were collapsed; the lane now
+  grows with the space, the frame can no longer be scrolled by hidden headings, geometry
+  survives React StrictMode, Jump to latest never covers content, and KPI groups never
+  truncate or leave empty tracks.
+- **Data questions answered as "Product help" or refused**: questions such as "create a
+  report of lifetime performance" or monthly breakdowns now run their lookups; a false
+  "last 24 hours" default and "lifetime" read as a short window are gone.
+- **Counts that were samples**: chat totals, "still open" counts and dashboard figures no
+  longer come from the newest 5,000 (or 2,000) cases.
+- **Report downloads**: exports no longer fail or print blank pages, revoke their download
+  links too early, or start twice; a failed export says why and offers Retry.
+- **`/api/auth/me` now honours the session registry**: a revoked or expired session is
+  reported with its reason and its cookie is cleared, so the sign-in page can say why
+  the user was signed out.
+- **The Case Manager queue missed older open cases** (it filtered the newest 200 in the
+  browser), the case pane blanked while switching cases, and the close dialog's buttons
+  could scroll out of view.
+- **The case-chat transcript was lost** when switching case tabs, and leaving the chat
+  page aborted a running answer.
 
 - **The investigator now receives the alert fields that decide the case.** A field
   report from a live deployment traced a detection rule that had never auto-closed
@@ -784,6 +832,104 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **Chat without per-question limits** (`ChatAgentConfig.limits_mode`, default
+  `unlimited`). A question ends when the model writes its answer or the analyst presses
+  Stop. Guards end pathological loops without cutting a working answer: an identical
+  lookup is reused instead of re-run, three steps without progress force a final answer
+  ("Stopped repeating the same lookup"), a model call silent for `model_step_timeout_s`
+  (default 300 s) is retried once, and a hidden fuse of 200 model calls or 60 minutes
+  makes the assistant answer from what it gathered ("Wrapped up after a very long
+  investigation"). `bounded` keeps the previous per-question limits for operators who
+  want them.
+- **Automatic continuation.** Every model step asks for the model's maximum output on a
+  streaming provider (4,000 tokens per step on a blocking provider); an answer that
+  reaches it continues in another step through the same gateway, keeps streaming, and is
+  never shown cut (`text.continued` stream event, `ChatResponse.continued`).
+- **Context-window management instead of caps.** Replayed history past about 35% of the
+  model's context window is folded into a running conversation summary (one metered
+  call, stored on the conversation, replayed inside a new `CONVERSATION_SUMMARY`
+  untrusted fence); inside a long investigation, older lookup results shrink to their
+  result lines and the new read-only `recall_observation` lookup reads them back. Type
+  `/compact` to summarise on demand.
+- **Exact case aggregation for chat and dashboards** (`engine/case_aggregate.py`,
+  `engine/time_windows.py`): Elasticsearch composite and calendar `date_histogram` and
+  SQL `GROUP BY` push-downs, else a bounded streaming fold that keeps only counters. The
+  new `case_stats` lookup counts and breaks down every case (by month, week, severity,
+  status, verdict, rule, assignee, source, ATT&CK and more, with up to four compared
+  periods); `search_cases` totals are exact; `cost_usage` reads the usage aggregate;
+  `log_stats` buckets by week, month, quarter and year. A store failure mid-scan is
+  reported as partial with the counted share, never as a smaller exact number.
+- **Any time window in chat**: all time, `now-N[d|w|M|y]`, calendar periods (today …
+  last year, year to date) in the operator time zone (`SlaPolicy.timezone`), named
+  months, quarters and years, and ISO ranges; "previous period" and "same period last
+  year" comparisons drawn as comparison tiles and grouped columns ("new" for a zero
+  baseline, a small-sample badge under 20 cases).
+- **Clarifying questions** (`ChatResponse.clarify`, origin `clarify`): up to four options
+  plus "Something else…"; the history row shows Needs input. **Zero-result suggestions**:
+  one-click chips that widen an empty search.
+- **Reports from chat** (`ChatResponse.saved_report`): an answer that asks for a report is
+  saved to the Reports library by the server from the persisted answer, with **Open** and
+  **Export** under it (`POST /api/reports/from-answer` retries a failed save); **Save
+  conversation as report** (`POST /api/reports/from-conversation`); new `executive`,
+  `monthly`, `infographic` and `investigation_brief` templates and an infographic Brief
+  layout; reports hold 60 items, and a long whole answer continues in "(continued)"
+  sections.
+- **Step inspector** (`GET /api/chat/conversations/{id}/messages/{message_id}/steps/{index}`):
+  what each lookup sent and exactly what the model saw, with Retry step and Explain this
+  step; invisible and look-alike characters are shown as escapes.
+- **Answer ratings** (`POST /api/chat/feedback`, `GET /api/chat/feedback`,
+  `GET /api/chat/feedback/summary`): thumbs up or down with a reason and a comment,
+  owner-scoped, audited, never used for training; chat's metrics lookup reports your
+  own counts.
+- **Add to case**: post a Workspace answer to a case thread as your own comment, after
+  previewing it (`cases:comment`); the case's status, verdict and disposition never
+  change.
+- **Prompt library and promptbooks**: categories, favorites, search and read-only
+  starter prompts; `{name}` placeholders filled before sending; promptbooks run 2–10
+  prompts as consecutive questions with a step counter and Stop, stored in the existing
+  saved prompts.
+- **Ask AI** chips beside IPs, hosts, users, hashes, domains, URLs, e-mail addresses,
+  rules and case IDs in Cases, Logs and Case Manager (`POST /api/chat/entity-question`):
+  a new chat asks a server-worded question about the value, which stays fenced as
+  untrusted and never counts as the analyst's own words for indicator lookups.
+- **Agent-working indicator and rejoin.** A turning ring on the Chat item in every
+  navigation form (accent dot for a new answer, amber for a question waiting for input,
+  red for a failure), an optional ring around the logo (**Animate the logo while chat
+  works**), history-row statuses, a tab-title prefix and one "Answer ready" notice when
+  chat is off screen. Leaving the chat detaches instead of aborting; returning or
+  reloading rejoins the answer live (`GET /api/chat/turns/active`,
+  `GET /api/chat/turns/{turn_id}/events?after=`, owner-only `chat.turn` events on the
+  `chat` topic). Case chat keeps its transcript across tab switches.
+- **Conversation width**: Comfortable, Wide (default) or Full width in the thread menu,
+  saved per user; prose keeps a readable measure while blocks use the whole lane. Charts
+  gain Group by, zoom, legend toggles, PNG and SVG download and per-block Full width;
+  long answers get a contents list and Jump to end; Ctrl/⌘+Shift+C copies the last
+  answer.
+- **Optional daily chat spending limit** (`chat_agent.chat_daily_cap_usd`, off by
+  default).
+- **Remember me** on sign-in: a warning dialog, a remembered username, passwords saved
+  only by the browser's password manager, and a persistent server-bounded session
+  (6, 12 or 24 hours, default and maximum 24, never past the absolute lifetime; the
+  standard idle limit still applies unless a separate one is set). MFA and step-up are
+  never skipped. Administrators turn it off, shorten it, add an inactivity limit or
+  exclude roles under the session policy (`session_policy.remember_me`); it needs HTTPS
+  with secure cookies. Account and Admin sessions show a Remembered badge and an Expires
+  column.
+- **Word and Excel report exports**, generated in the browser with an in-repo ZIP
+  writer (no new dependency), and a one-click **Download PDF**.
+- **Reduce transparency** (Settings → Account → Appearance & customization) for the
+  console's frosted top bar and toolbars, alongside the device's reduced-transparency,
+  reduced-motion and increased-contrast settings.
+- **Analyst-confirmed false positives** beside the AI-verdict FP rate
+  (`analyst_confirmed_fp`), counted only from graded feedback or an explicit
+  classification.
+- **Case Manager**: a server-backed queue (Active, Mine, All; exact totals; search,
+  filters and sort over the whole store; Load more; live updates over a new `cases`
+  realtime topic), a keyboard model (J/K, X, Shift-select, A/C/E/H/R/M/T, Alt+1…6, `?`),
+  a facts rail beside every tab, **Close & next**, and **Reopen** for eight seconds after
+  a close. `GET /api/cases` gains `q`, `assignee`, `severity` and an exact `verdict`
+  filter.
+
 - **A replay harness, because the A/B question could not be answered by waiting.**
   A new durable job kind, `replay_experiment`, replays FROZEN investigation fixtures
   through one or two named arm *configurations*, now, against one pinned corpus
@@ -1133,6 +1279,60 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
+- **Chat is no longer paused by the daily AI budget.** Chat calls (`role=chat` on the
+  `chat` surface) are never blocked by the budget gate and their spend is excluded from
+  what it measures, so chat can neither be paused by investigations' spend nor push
+  investigations to Needs human. Every chat call is still metered through the one
+  gateway and written to the ledger; `GET /api/budget/status` reports chat's share as
+  `excluded_today`. Report summaries still count toward the budget. The composer's
+  budget alert now describes what happens to automatic investigations.
+- **Chat limits migrate once** (`chat_limits_version`): stored configurations become
+  `unlimited` unless an operator had changed a per-question limit, which keeps `bounded`
+  with those values. Concurrency defaults rise to 4 questions per user and 16 per
+  backend (a capacity bound; over it the client waits with "Waiting for another answer
+  to finish"), and `model_step_timeout_s` to 300 s. In Bounded mode `max_parallel` is
+  limited to `max_tool_calls` at run time only, so switching modes is lossless.
+- **Sign-in without Remember me now uses a browser-session cookie** instead of a
+  persistent 12-hour cookie; `AUTH_TOKEN_HOURS` now sets the token lifetime of those
+  sign-ins only. Bearer-token clients are unaffected.
+- **Stop** abandons an in-flight model call at once in Unlimited mode (ledgered as
+  abandoned) and keeps what was written; Bounded mode still lets the call finish.
+- **Chat answers and conversations are stored in full**: each answer also gets its own
+  exchange document, so answers of any length replay byte for byte and messages are no
+  longer removed from a conversation; the conversation detail returns the newest 100
+  messages with `earlier_message_count`, and older ones are paged
+  (`GET /api/chat/conversations/{id}/messages`). Conversations carry `status`
+  and `unread`. A running turn's lease (10 minutes) is renewed every minute.
+- **Honest routing.** `unsupported` is honoured only when no data lookup ran; otherwise
+  the answer carries the new `limited` notice ("Answered with what chat can read").
+  "Product help" is shown only when no data lookup ran. Unknown lookup inputs are
+  refused visibly. A tool window wholly outside the selected time chip is refused
+  (`OUTSIDE_SELECTED_RANGE`) instead of silently replaced, and chat time windows have no
+  90-day ceiling.
+- **Dashboards are exact.** Headline counts are exact store-wide counts that agree with
+  chat; heavier rollups analyse up to 20,000 cases per scope and mark a larger scope as
+  truncated, instead of reading a fixed newest page. SLA attainment is `null` with a
+  reason, not 0%, when nothing was scored, and SLA scores use the priority shown on the
+  case.
+- **Overview**: two titled bands (Alert flow; Cases and response) instead of stacked
+  cards, KPI numerals that never truncate, **AI-verdict FP rate** (was False Positive
+  Rate), a **Response time** card, and one **Deeper analytics** section whose open state
+  follows the user across devices and which summarises its contents while closed. The
+  Metrics page's store-wide total is labelled **Total cases (all time)** (was "Total
+  cases (7d)").
+- **Case outcome headline.** Once an analyst classifies a case, the classification is
+  the headline everywhere ("Closed as false positive") with the AI verdict as a labelled
+  second line; the Cases list gains an **Outcome** column and its **Needs human** tile
+  counts open cases only. Every close and resolve path, single and bulk, captures a
+  disposition, which starts empty; bulk close requests accept `disposition` and
+  `disposition_declared`. Agreement statistics count only real comparisons.
+- **Report exports**: one flat export menu (PDF, Word, Excel, Markdown, HTML, CSV,
+  JSON); defanging covers PDF, Word, Markdown, HTML and the Excel Report sheet, never the
+  Excel table sheets, CSV or JSON; log text is escaped in Markdown.
+- **Apple design foundations**: size-specific tracking, concentric radii, one material
+  for floating chrome, one spring vocabulary, overlays that scale from their trigger, and
+  KPI tiles whose context wraps under the number.
+
 - **`web_application_abuse` is now a RESERVED bundled playbook id.** The bundled
   web-application procedure was renamed off one deployer's LMS product name as part of
   the vendor-agnostic pass. A deployment that had already authored an operator playbook
@@ -1261,6 +1461,22 @@ and, just as importantly, makes each of these conditions a state an operator can
   finalization=pending`, so a row never claims a confirmed effect before it has run.
 
 ### Upgrade notes
+
+- **Chat limits migration.** Review **Settings → General → Chat assistant** after
+  upgrading: a stored configuration becomes Unlimited unless an operator had changed a
+  per-question limit. Set the daily chat spending limit if chat spend needs a bound,
+  since chat is no longer covered by the daily AI budget.
+- **Sign-in cookie change.** Users who relied on staying signed in across browser
+  restarts should use Remember me. Remember me needs `AUTH_COOKIE_SECURE=true` behind
+  TLS; a reverse proxy on the backend's own host must send `X-Forwarded-For`.
+- **Chat storage and rollback.** New answers are stored in full in exchange documents in
+  the existing chat namespace (plus summary, step-result, archive and live-state
+  documents) and ratings in a new `chat_feedback` namespace; no migration, index or table
+  is added. An image-only rollback shows each message's compact copy (answers over 24,000
+  characters end there; archived messages of very long conversations are not shown) and
+  ignores the chat limits mode and spending limit. See DEPLOY.md and the upgrades page.
+- **Single replica.** Running chat turns and the rejoin buffer are process-local; a
+  backend restart ends running answers.
 
 - **No version bump, SQL migration, or historical backfill is required for record
   provenance or retrieval history.** The change is additive under the existing `0.1.13`

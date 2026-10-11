@@ -17,6 +17,21 @@ internal case ID, title, entity, rule, source, or tag. Narrow the table by statu
 disposition, severity, assignee, time, or cross-source relationship. Saved views and
 column choices are personal preferences; they do not change the underlying case.
 
+The summary tiles above the table count the whole store, not only the loaded rows:
+**Active**, **Terminal**, **Needs human**, and the severity bands. **Needs human**
+counts open cases that need a person: an active case whose status is needs human or
+whose AI verdict is Needs human. A closed case is never counted there, whatever the AI
+said. When a count cannot be read, the tile falls back to the loaded rows and says so.
+
+The **Outcome** column shows each case's outcome of record: the analyst's
+classification once a person has classified the case (for example **False positive**,
+marked as the analyst's), **Declared benign** for an operator rule-policy close,
+**Auto-closed** for an automatic close, and otherwise the AI verdict, attributed to the
+AI (for example "AI: Needs human"). The column follows the same rule as the case header
+in Case Manager; see [The outcome of a case](case-manager.md#the-outcome-of-a-case).
+Entity values in the table offer **Ask AI**, which opens a Workspace chat about that
+value.
+
 Case Manager is the intended successor. The Cases table itself remains available for
 its mature table/saved-view workflow, but opening a row or case deep link shows a
 short announced handoff and opens that exact record in Case Manager. The selected
@@ -25,7 +40,10 @@ want queue, detail, and bulk operations in one continuous workspace. See the
 dedicated [Case Manager guide](case-manager.md) for exact selection, resize,
 permission, and failure semantics.
 
-Selecting rows opens bulk actions. Long-running Case Manager operations snapshot the
+Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with
+a row's one-click close, opens a dialog that requires a disposition, so every closed
+case records what it was. Bulk changes are unavailable in Demo Mode. Long-running Case
+Manager operations snapshot the
 selected case IDs and submit one server-owned background job. The dialog closes after
 `202 Accepted`; work continues across navigation or reload and reports progress in
 **Analytics → Jobs** and **Inbox**. A partial terminal result keeps successful changes
@@ -52,7 +70,9 @@ match the same filter. Use job counts, case history, and Audit for exact account
 
 **Disposition** is the investigative outcome: true positive, false positive, benign,
 suspicious, duplicate, or undetermined. Closing with a disposition records the
-analyst's conclusion; it does not rewrite the earlier agent verdict.
+analyst's conclusion; it does not rewrite the earlier agent verdict. Once an analyst
+has classified a case, that classification is its headline ("Closed as false
+positive"), and the AI verdict stays visible as a labelled second line.
 
 ## Work a case
 
@@ -75,7 +95,7 @@ sheet with another copy of the same controls.
 - **Collab** — discussion, reactions, activity, and tasks.
 - **Chat** — case-scoped questions using the shared chat engine.
 
-In Case Manager, the top-right **Take Action** menu contains state-changing, investigative, and export
+In Case Manager, the header's **Take action** menu contains state-changing, investigative, and export
 commands: the appropriate lifecycle action, disposition, re-investigation, playbook,
 refresh, case chat, open in a new tab, JSON/Markdown export, and notification as
 permissions allow. Timeline and Investigation are visible tabs and are intentionally
@@ -116,6 +136,7 @@ audit log.
 ## Close the feedback loop
 
 When closing or resolving, select a disposition deliberately and grade the AI result.
+The disposition picker starts empty, so the recorded outcome is always your own choice.
 Confirmed false positives can produce a pending suppression proposal and can be
 indexed as prior-case context. Neither process silently changes decision policy.
 

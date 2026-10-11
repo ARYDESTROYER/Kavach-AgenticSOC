@@ -79,6 +79,21 @@ An MFA-enabled account receives a short-lived `pending_token` after password
 verification and completes sign-in through `/api/auth/mfa/verify`. Session refresh,
 revocation, and step-up reauthentication have dedicated endpoints in the auth group.
 
+**Remember me.** `POST /api/auth/login` accepts an optional `remember: true`
+(`GET /api/auth/sso/authorize` takes `remember=true` as a query parameter). The server
+decides: the response carries `remembered` and, when the request was refused,
+`remember_reason` (`role_excluded`, `insecure_transport`, or `disabled`). A remembered
+sign-in gets a persistent cookie for the policy's remembered duration; any other sign-in
+gets a browser-session cookie (no `Max-Age`) whose token lasts `AUTH_TOKEN_HOURS`. The
+MFA pending token carries the remember choice as a signed claim, so it survives the
+second step but can never be added there. `GET /api/setup/status` reports
+`remember_me {enabled, duration_seconds, insecure_blocked}` for the sign-in page.
+`GET /api/auth/me` checks the session registry on every call: when the session has
+ended it clears the cookie and answers `authenticated: false` with a `reason` of
+`revoked`, `idle_expired`, `absolute_expired`, or `tv_mismatch` (and, for a time limit,
+`lifetime_seconds`), so the sign-in page can say why. Bearer-token API clients are
+unaffected by the cookie change.
+
 Authentication is applied centrally to the `/api` routers. A small bootstrap and
 health allowlist remains public; `POST /api/ingest/{source_id}` performs receiver-level
 bearer or HMAC authentication instead. State-changing routes also enforce resource and
@@ -99,11 +114,11 @@ the exact request model and every operation under a prefix.
 | Users and roles | `/api/users*`, `/api/roles*` | User lifecycle, built-in/custom roles, permission preview, and simulation |
 | Connector catalog | `GET /api/connectors`, `GET /api/connectors/{source_type}`, `POST /api/connectors/test` | Discover connector manifests and test source access |
 | Sources and ingest | `/api/sources*`, `POST /api/ingest/{source_id}`, `POST /api/poll`, `GET /api/logs` | Configure feeds, accept pushed records, poll pull sources, inspect health, and browse logs |
-| Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/bulk` | List, filter, retrieve, export, and act on cases |
+| Cases | `GET /api/cases`, `GET /api/cases/{case_id}`, `POST /api/cases/bulk` | List, filter (including `q`, `assignee`, `severity`, `status_group`, and an exact AI `verdict`), retrieve, export, and act on cases |
 | Case investigation | `/api/cases/{case_id}/triage`, `/timeline`, `/trace`, `/stages`, `/rationale`, `/threat-context`, `/forwarding`; `POST /investigate`, `/reinvestigate`, `/feedback` | Explain evidence, agent work, deterministic routing, and analyst feedback |
 | Case collaboration | `/api/cases/{case_id}/thread*`, `/tasks*`, `/activity`, `/comment`, `/assign`, `/tags`, `/notify` | Discussion, reactions, tasks, ownership, activity, and manual notification |
-| Workspace | `POST /api/chat`, `POST /api/chat/stream`, `GET /api/chat/context`, `POST /api/chat/turns/{turn_id}/cancel`, `GET /api/chat/topics/{topic_id}`, `/api/chat/conversations*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat (blocking and streamed) with per-user history, entity investigation, cross-surface search, scan queues, and personas |
-| Chat reports | `GET/POST /api/reports`, `GET/PATCH/DELETE /api/reports/{report_id}`, `POST /api/reports/add`, `POST /api/reports/{report_id}/summary` | Owner-scoped reports built from saved chat answers, with an optional AI summary |
+| Workspace | `POST /api/chat`, `POST /api/chat/stream`, `GET /api/chat/context`, `POST /api/chat/turns/{turn_id}/cancel`, `GET /api/chat/turns/active`, `GET /api/chat/turns/{turn_id}/events`, `GET /api/chat/topics/{topic_id}`, `POST /api/chat/entity-question`, `/api/chat/conversations*`, `/api/chat/feedback*`, `POST /api/investigate`, `POST /api/overview`, `GET /api/search`, `/scans`, `/personas` | Console chat (blocking and streamed) with per-user history, rejoining running answers, the step inspector, answer ratings, entity investigation, cross-surface search, scan queues, and personas |
+| Chat reports | `GET/POST /api/reports`, `GET/PATCH/DELETE /api/reports/{report_id}`, `POST /api/reports/add`, `POST /api/reports/from-answer`, `POST /api/reports/from-conversation`, `POST /api/reports/{report_id}/summary` | Owner-scoped reports built from saved chat answers, with an optional AI summary |
 | Detection and automation | `/api/rules*` (including `/api/rules/analyst-policies*`), `/api/tuning*`, `/api/baseline*`, `/api/campaigns*`, `/api/batch*`, `/api/proposals*` | Rule lifecycle, safe preview/version rollback, analyst-grounded recommendations, baselines, reconciled campaigns, batch jobs, and approvals |
 | Playbooks | `GET/POST /api/playbooks`, `GET/PUT /api/playbooks/{playbook_id}`, `POST /api/playbooks/reload`, `/dry-run`, `GET /coverage`, `/selection/{case_id}`, `POST /api/cases/{case_id}/run-playbook` | Durable catalog/open/edit, deterministic diagnostics and coverage, selection provenance, and case execution |
 | Knowledge and memory | `/api/rag/*` (including `/api/rag/precedent/composition` and `/api/rag/precedent/exclusions*`), `/api/memory*`, `/api/runbooks*`, `POST /api/threat-context/import` | Import/search/delete knowledge, inspect precedent composition, evict individual precedent records durably, manage operator memory, and manage protected/owned runbooks |
@@ -422,7 +437,15 @@ case ids, and up to 10 bounded proofs.
 ## Common query behavior
 
 Case listing uses `limit` and `offset`, with optional `status`, `surface`, `entity`,
-`from`, and `to` filters. Other list endpoints define their own query parameters;
+`from`, and `to` filters. The Case Manager queue adds `status_group` (`active` or
+`terminal`; not together with `status`), `q` (case-insensitive search; every word must
+match the case ID or number, title, summary, status, verdict, entity, source, or
+assignee), `assignee`, `severity` (the displayed severity band), an exact AI `verdict`
+(`TRUE_POSITIVE`, `FALSE_POSITIVE`, or `NEEDS_HUMAN`), and `sort_field`/`sort_order`;
+`total` is the exact number of matching cases. Bulk `close` and `resolve` requests accept
+a `disposition` and `disposition_declared: true`, which records the disposition as the
+analyst's classification on every case, as a single close does; the field stays optional
+on the wire for older clients, and the console always sends it. Other list endpoints define their own query parameters;
 do not assume that all collections share one pagination envelope. Follow the OpenAPI
 operation for the endpoint being called.
 
@@ -436,7 +459,10 @@ it in another system.
 `application/x-ndjson`: one `ChatStreamEventModel` per line. The order is `turn.start`
 first, then `step.start`/`step.end` for each lookup, `usage` after each model call,
 `text.delta`/`text.reset` only when the turn types out its answer, and `ping` every 10
-seconds; the last line is always `turn.done` (the saved `ChatResponse`) or `turn.error`
+seconds; `step.progress {index, done, total?, unit}` while a long lookup counts, and
+`text.continued {part}` when the answer continues in another model call (the text keeps
+streaming, with no `text.reset`); the last line is always `turn.done` (the saved
+`ChatResponse`) or `turn.error`
 (`provider_unavailable`, `budget_blocked`, `breaker_open`, `history_unavailable`, or
 `internal`, with `retryable`). Every check that can fail before work starts (auth,
 permissions, concurrency, validation, conversation lookup, idempotency, source) fails as
@@ -445,14 +471,26 @@ as `turn.start {replayed: true}` followed by `turn.done`, with no model call.
 
 Additive request fields, all optional: `stream_mode` (`steps` or `text`; presentation
 only), `scopes` (`logs`, `cases`, `metrics`, `intel`, `docs`, `platform`), `time_range`
-(`{from, to}`, at most 90 days), `origin` (`user`, `follow_up`, `starter`, `command`,
-`continue`), `continue_of`, and `topic` (a retrieval hint naming the console-map topic an
+(`{from, to}` of any length; `{"from": "all"}` is all time), `origin` (`user`,
+`follow_up`, `starter`, `command`, `continue`, `clarify`, `retry_step`), `continue_of`,
+and `topic` (a retrieval hint naming the console-map topic an
 "Ask about this" turn started from: at most 121 characters of `a-z`, `0-9`, `_`, `:`, `.` and
 `-`; a malformed value is 422 and an unknown one is ignored). Only `origin: "user"`
-text counts as the analyst's own words for indicator lookups. Additive response fields
-include `blocks`, `steps`, `usage`, `citations`, `console_links`, `follow_ups`,
-`answer_kind`, `notice`, `turn_id`, `message_id`, `memory_proposal`, `case_saved`, and
-`case_save_notice`. On a case-scoped answer, `case_saved` says whether the question and
+text counts as the analyst's own words for indicator lookups; `clarify` and
+`retry_step` are treated like `follow_up`. Additive response fields include `blocks`,
+`steps`, `usage`, `citations`, `console_links`, `follow_ups`, `answer_kind`, `notice`,
+`turn_id`, `message_id`, `memory_proposal`, `case_saved`, `case_save_notice`, `clarify`
+(`{question, options (≤ 4), allow_custom}` when the assistant asks instead of answering),
+`saved_report` (`{id, title, items, skipped?}` when the answer asked for a report and the
+server saved it) or `saved_report_error` (`report_limit`, `report_unavailable`, or
+`report_empty`), `continued` (continuation steps the final answer used), and `compacted`
+(earlier messages were folded into the conversation summary). Each step may carry
+`observation_ref` (for the step inspector) and `progress`. Notice kinds add `limited`
+(data lookups ran, part of the question is beyond them), `stopped_repeating`, and
+`compacted`; `unsupported` is used only when no data lookup ran. A tool window that lies
+entirely outside the request's `time_range` is refused inside the turn
+(`OUTSIDE_SELECTED_RANGE` in the step's result) rather than silently replaced by the
+range. On a case-scoped answer, `case_saved` says whether the question and
 answer were posted to the case's discussion thread (`null` when no case thread applied),
 and `case_save_notice` is the `not_saved` notice whenever `case_saved` is `false`, even
 when another notice such as `denied` or `partial` holds `notice`. Its `retryable` is true
@@ -462,12 +500,19 @@ add the answer; a missing `cases:comment` grant or a missing case is not retryab
 
 | Operation | Contract |
 |---|---|
-| `POST /api/chat/turns/{turn_id}/cancel` | Stop a running turn you own. The in-flight model call finishes and is recorded, no new step starts, and the stream ends with `turn.done` carrying a `cancelled` notice. 404 when the turn is unknown, finished, or another user's |
-| `GET /api/chat/context` | The caller's effective model, context window, prompt estimates, tool catalogue with `allowed` (the caller's grants) and `available` (false when this deployment switched the tool off; absent means true) per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows |
+| `POST /api/chat/turns/{turn_id}/cancel` | Stop a running turn you own. No new step starts and the stream ends with `turn.done` carrying a `cancelled` notice. With `limits_mode: unlimited` the in-flight model call is abandoned at once and ledgered as `abandoned`; with `bounded` it finishes and is recorded. 404 when the turn is unknown, finished, or another user's |
+| `GET /api/chat/turns/active` | The caller's running turns: `[{turn_id, conversation_id, case_id, started_at, label, lookups, tokens, status}]`, `status` being `running` or `needs_input`. Owner-scoped and process-local |
+| `GET /api/chat/turns/{turn_id}/events?after=<seq>` | Rejoin a turn: NDJSON replay of the turn's bounded event ring after line `seq` (text deltas coalesced; at most 2,000 entries), then the live tail to the terminal event. A finished turn stays readable for 5 minutes. 404 for another user's or an unknown turn |
+| `GET /api/chat/context` | The caller's effective model, context window, `max_output_tokens`, `limits_mode`, the operator `timezone`, prompt estimates, tool catalogue with `allowed` (the caller's grants) and `available` (false when this deployment switched the tool off; absent means true) per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows |
 | `GET /api/chat/topics/{topic_id}` | The fixed question for an "Ask about this" topic. `topic_id` is a console-map id, `<family>:<anchor>` such as `kpi:mtta` or `settings:models`; 404 for an unknown topic |
+| `POST /api/chat/entity-question` | `{kind, value}` for an "Ask AI" chip (`ip`, `host`, `user`, `hash`, `domain`, `url`, `email`, `rule`, or `case`) → `{kind, value, question}`, the server-worded question to send with `origin: "starter"`. 422 when the value does not have its kind's shape. Writes nothing and calls no model |
 
-Concurrency is bounded per user and per process: a turn over either bound is
-`429 chat_busy` with `Retry-After` before any work. A non-default model without
+Concurrency is bounded per user and per process (`max_concurrent_turns_per_user`,
+default 4, and `max_concurrent_turns_global`, default 16): a turn over either bound is
+`429 chat_busy` before any work, with `Retry-After` and a body of `{code, message,
+retry_after, scope, limit}`, where `scope` is `user` or `global`. It is a capacity
+bound, not a token limit; the console waits and sends again. When the caller's account
+record cannot be read, the turn is `503 chat_account_unavailable` with `retry_after`. A non-default model without
 `models:read` is `403 chat_model_forbidden`; a model that is not an enabled chat model is
 `422 chat_model_unavailable`.
 
@@ -484,8 +529,12 @@ characters** using letters, digits, `.`, `_`, `:`, or `-`. When omitted, the ser
 returns a generated key for the completed persisted turn. Keep that value stable when
 retrying an ambiguous turn. Reusing a key for the same completed request replays the
 committed response without another transcript append or model charge. A still-running
-key returns `409 chat_request_in_progress`; a key reused for a different request returns
-`409 chat_idempotency_conflict`. Each principal may hold at most 256 simultaneous live
+key returns `409 chat_request_in_progress` with `retry_after` and the running `turn_id`
+and `conversation_id`, so the client can rejoin it; a key whose billed turn ended without
+a saved answer returns `409 chat_request_failed` (send the question again with a new
+key; the old one stays held for its lease so it is never billed twice); a key reused for
+a different request returns `409 chat_idempotency_conflict`. A running turn holds its
+key for 10 minutes and renews it every minute, so a turn of any length keeps it. Each principal may hold at most 256 simultaneous live
 request leases; while all are occupied, a new key returns retryable
 `409 chat_request_capacity_busy` without invoking or billing the model.
 
@@ -508,16 +557,21 @@ History endpoints are newest-first and per authenticated user:
 
 | Operation | Contract |
 |---|---|
-| `GET /api/chat/conversations` | Retained summaries, pinned first, plus `total`, `history_truncated`, `total_conversation_count`, and `oldest_retained_at`; `limit` up to 60, and `q` (≤ 200 characters) searches titles, questions, answers, and block titles and adds a `match {message_id, snippet}` to each hit |
-| `GET /api/chat/conversations/{conversation_id}` | Authoritative retained transcript and per-turn provenance |
+| `GET /api/chat/conversations` | Retained summaries, pinned first, plus `total`, `history_truncated`, `total_conversation_count`, and `oldest_retained_at`; `limit` up to 60, and `q` (≤ 200 characters) searches titles, questions, answers, and block titles and adds a `match {message_id, snippet}` to each hit (`search_incomplete` says when a very long history was not searched to the end). Each summary carries `status` (`idle`, `running`, `needs_input`, or `failed`) and `unread`; a brand-new thread is listed as a temporary `running` row while its first answer is written |
+| `GET /api/chat/conversations/{conversation_id}` | The newest 100 messages, each restored to its full text, with `earlier_message_count` and `summary_covers_through`, plus per-turn provenance |
+| `GET /api/chat/conversations/{conversation_id}/messages?before=<message_id>&limit=` | Older messages, oldest first, up to 100 a page, with `earlier_message_count` |
+| `GET /api/chat/conversations/{conversation_id}/messages/{message_id}` | One message, restored to its full text |
+| `GET /api/chat/conversations/{conversation_id}/messages/{message_id}/steps/{index}` | The step inspector: the stored observation the model saw for one lookup (aggregates only, never raw log rows; `untrusted: true`), its parameters, and `truncated`. 404 `step_not_found`, `step_observation_unavailable`, or `step_observation_expired` (observations are kept for the owner's 100 most recent answers, up to 24,000 characters per step) |
+| `POST /api/chat/conversations/{conversation_id}/read` | Clear the conversation's `unread` mark (204) |
 | `PATCH /api/chat/conversations/{conversation_id}` | Rename (`title`, 1–80 characters) or pin (`pinned`) an owned conversation; an 11th pin is `409 chat_pin_limit` |
 | `DELETE /api/chat/conversations/{conversation_id}` | Delete an owned conversation; audit remains append-only |
 
 `total` and a conversation's `message_count` describe retained rows. The additive
 `total_conversation_count` and `total_message_count` describe the corresponding total
 before retention, while `history_truncated` and `oldest_retained_at` disclose an
-incomplete retained window. The current bounds are **50 conversations per user** and
-**100 messages per conversation**. Conversation summary/detail objects also include
+incomplete retained window. The bound is **50 conversations per user** (plus up to 10
+pinned). Messages are no longer removed from a conversation: every question and answer
+is stored in full in its own exchange document, and reads restore it. Conversation summary/detail objects also include
 `source_name`, `history_truncated`, `total_message_count`, and `oldest_retained_at`.
 
 History lives in one hashed StateStore partition per normalized user. On first access,
@@ -528,13 +582,27 @@ false saved result. Existing `404 conversation not found` behavior remains uncha
 
 Summaries also carry `pinned`, `report_id`, `time_range`, and cumulative `total_tokens`,
 `total_cost`, and `usage_turns` (null on conversations saved before they were recorded).
-Each stored assistant answer keeps its blocks, steps, citations, and usage as one opaque
-JSON string of at most 16 kB; when a conversation grows past its storage bound, the
-oldest answers' blocks become "Expired from saved history" stubs before any text is
+Each stored assistant answer keeps a compact inline copy (its blocks, steps, citations,
+and usage as one opaque JSON string of at most 16 kB) in the conversation row, and the
+full exchange in its own document; when the row grows past its storage bound, the oldest
+answers' inline copies shrink to previews and are restored from their exchange documents
+on read. Answers saved before this release have no exchange document and keep the older
+behaviour: their blocks become "Expired from saved history" stubs before any text is
 removed. A history save that fails after the model call was billed ends the turn with
 `history_unavailable` and `retryable: false`: the same key would only return `409
 chat_request_in_progress` until its lease expires, so send the question again with a new
 key.
+
+### Answer ratings
+
+| Operation | Contract |
+|---|---|
+| `POST /api/chat/feedback` | `{conversation_id, message_id, rating: "up" or "down", reason?, comment?}` rates one of the caller's own Workspace answers (204). `reason` is `wrong`, `incomplete`, `slow`, or `other`; `comment` is at most 1,000 characters. Rating again replaces the earlier rating. Audited without the comment; never used to train a model or to decide a case |
+| `GET /api/chat/feedback?conversation_id=` | The caller's own ratings, newest first |
+| `GET /api/chat/feedback/summary?since=` | The caller's own ratings as counts only: up, down, thumbs-down reasons, and how many carried a comment |
+
+Chat's `soc_metrics` lookup reports the same counts for the asking user's own ratings.
+Ratings are stored per user in the `chat_feedback` namespace (at most 500 per user).
 
 ## Chat reports
 
@@ -548,16 +616,31 @@ Reports are owner-scoped and need `cases:read`. All error details are
 | `GET /api/reports/{report_id}` | The report, its items, and its summary |
 | `PATCH /api/reports/{report_id}` | Title, template, item order, notes, or removed items, with `expected_version`; `409 report_version_conflict` carries `current_version`; `409 report_full` (`reason: size`) when the change would outgrow the document |
 | `DELETE /api/reports/{report_id}` | Delete with `expected_version` (body or query) |
-| `POST /api/reports/add` | `{conversation_id, message_id, block_id?, report_id?}`. The server reads the block, or the whole answer when `block_id` is absent, from the caller's saved conversation and snapshots it; client block JSON is never accepted, so case-chat content cannot be added. The conversation's draft is created on first add. `409 block_unavailable` for expired or unreadable content; `409 report_full` (`reason: items` at 40 items, or `size`) |
+| `POST /api/reports/add` | `{conversation_id, message_id, block_id?, report_id?}`. The server reads the block, or the whole answer when `block_id` is absent, from the caller's saved conversation and snapshots it; client block JSON is never accepted, so case-chat content cannot be added. A whole answer keeps all of its text: when it does not fit one section it continues in further sections titled "(continued)", whose source block id is `#<n>`. The conversation's draft is created on first add. `409 block_unavailable` for expired or unreadable content; `409 report_full` (`reason: items` at 60 items, or `size`) |
+| `POST /api/reports/from-answer` | `{conversation_id, message_id}`: save one answer as the report its header asked for, after the automatic save returned a retryable `saved_report_error`. Idempotent per answer (a repeat returns the same report); returns `{id, title, items}` |
+| `POST /api/reports/from-conversation` | `{conversation_id, title?, template?, idempotency_key?}`: save a whole Workspace conversation as a new report, one section per answer up to the item limit. Returns `{report, items, skipped, created}`; `409 report_empty` when the conversation has no answers |
 | `POST /api/reports/{report_id}/summary` | One metered model call over a bounded, fenced digest of the report (never raw logs); returns the report with its summary. `?dry_run=1` returns the token and cost estimate instead. Idempotent per key; `409 report_summary_in_progress` while another runs; `429 report_summary_rate_limited` (10 an hour per user, Demo exempt); `409 report_too_large_to_summarise` before any spend; `503`/`504` with summary-specific messages |
 
-Every report change writes an audit row with action `report`; a summary also writes one
-usage row like any other model call.
+Templates are `investigation`, `hunt`, `ioc`, `shift`, `posture`, `custom`,
+`executive`, `monthly`, `infographic`, and `investigation_brief`. A Workspace answer
+whose final header asks for a report is saved by the server from the persisted answer
+(never from client content); a stopped or failed answer and a case-scoped turn never
+create one. Every report change writes an audit row with action `report`; a summary also
+writes one usage row like any other model call, on the `report` surface, which counts
+against the daily AI budget.
 
 ## Base metrics and retrieval-history evidence
 
-`GET /api/metrics` reads at most 2,000 cases and returns its existing deterministic
-dashboard aggregates plus an additive `retrieval_history` object. Retrieval eligibility
+`GET /api/metrics` returns its deterministic dashboard aggregates plus an additive
+`retrieval_history` object. Its headline counts (`total_cases`, `open_cases`,
+`needs_human_cases`, `closed_cases`, `by_status`, `by_verdict`, `by_disposition`) are
+exact store-wide counts; `counts_exact` is false, with the reason in `counts_note`, when
+part of them could only be tallied over the analysed cases. Every other figure is
+computed over all cases when the store holds no more than 20,000, else over its newest
+20,000, and `truncated`, `store_total` (the exact case count), and `fetched` (the cases
+analysed) say which. The posture and other rollups follow the same rule per scope:
+exact up to 20,000 cases in their window, and marked truncated beyond it. SLA
+`attainment_pct` is `null`, with `attainment_reason`, when no case could be scored. Retrieval eligibility
 is limited to investigated cases with a verdict. The Case wire contract keeps
 `knowledge_used` as an array. `retrieval_history_status` is authoritative for lifetime
 completeness, while `retrieval_observation_status` (`measured`, `not_measured`, or
@@ -791,7 +874,13 @@ endpoint returns HTTP 204. Browser `EventSource` clients cannot set an Authoriza
 header, so authenticated Console subscriptions use the session cookie.
 
 Application jobs use topic `jobs` and event type `job`; the payload is the actor-scoped
-public job projection. Ordinary progress is sampled, while submission/start/terminal
+public job projection. Chat turns use topic `chat` and event type `chat.turn`
+(`{turn_id, conversation_id, case_id, phase, label, lookups, tokens}`, `phase` being
+`started`, `progress`, `finished`, `failed`, or `needs_input`), sent to the turn's owner
+only and never to an anonymous subscriber; with authentication disabled the console
+polls `GET /api/chat/turns/active` instead. Case writes publish `case.changed` on topic
+`cases` with identifiers, status, and timestamps only, so the Case Manager queue can
+refresh. Ordinary progress is sampled, while submission/start/terminal
 transitions force publication. SSE is a nudge, not the durable registry or Inbox.
 
 ## Upstream release observations

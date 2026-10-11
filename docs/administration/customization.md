@@ -43,6 +43,25 @@ preferences layer user choices over organization defaults. Saved views may be cr
 updated, deleted, and cloned; they are not a security boundary and never grant access
 to data the user otherwise cannot read.
 
+**Reduce transparency**, under **Settings → Account → Appearance & customization**,
+shows the top bar and sticky toolbars as solid surfaces instead of frosted glass.
+**System** follows the device's Reduce transparency setting where the browser reports
+it; Safari and Firefox do not pass that setting on, so choose **On** to apply it there.
+The choice is saved to the user's account. The console also honours the device's
+reduced-motion and increased-contrast settings.
+
+A few other presentation choices follow the user across devices: the Workspace Chat
+width (Comfortable, Wide, or Full width) and whether the Overview's **Deeper
+analytics** section is open.
+
+## The logo while chat works
+
+While Workspace Chat writes an answer, a thin ring can turn around the logo tile in the
+navigation, in addition to the indicator on the Chat item. Administrators turn it off
+with **Animate the logo while chat works** under **Settings → General → Chat
+assistant**. A custom logo is never animated itself: only the ring around it moves, and
+with reduced motion the ring stands still.
+
 ## Dashboards
 
 Custom dashboards are stored per user. A user can clone a default and arrange existing

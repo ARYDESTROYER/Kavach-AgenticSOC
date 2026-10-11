@@ -294,6 +294,37 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   durable realtime replay, immutable campaign split/merge lineage, OpenTelemetry spans,
   and a typed expansion path for evidence-backed telemetry-gap producers.
 
+**G. Round-12 deferred items (chat, dashboards, Case Manager; see
+`docs/research/2026-10-round12/SPEC.md` D17 and "As built"):**
+
+- ☐ **Background deep-investigation Jobs** (SYNTHESIS-chat P1-2) — hand a long chat
+  investigation to a durable `jobs` worker with Inbox delivery, instead of a turn that
+  lives in the backend process.
+- ☐ **Save a chart to a dashboard** (P2-1) — pin a chat block as a custom-dashboard
+  widget backed by the same lookup.
+- ☐ **Conversation sharing, branching, folders and scheduled questions** (P2) — shared
+  read-only links, fork from an answer, folders, and scheduled promptbooks.
+- ☐ **Model tier presets for chat** — named fast/thorough presets over the chat model
+  and limits mode, instead of a raw model choice.
+- ☐ **Multi-replica chat turn registry** — move the turn registry, the per-turn rejoin
+  event ring, Stop and the questions-at-once bounds to a shared store with leases so
+  more than one backend replica can serve chat (today process-local; single replica).
+- ☐ **Show the conversation summary** — a disclosure under the "Summarised earlier
+  messages" run-log row that shows the stored summary text (today no route returns it).
+- ☐ **Bounded mapping for the other id-keyed KV stores** — `case_activity`,
+  `case_tasks`, `inbox`, `notif_prefs`, `user_prefs`, `shift_handoff`, `tuning`,
+  `campaigns` and `baseline` can still grow the shared Elasticsearch config-index mapping
+  per id; adopt the per-backend opaque storage form chat and case threads use.
+- ☐ **Older-message paging in the chat UI** — the API pages messages beyond the newest
+  100 (`GET /api/chat/conversations/{id}/messages`), but the transcript does not load
+  them yet.
+- ☐ **Bulk case actions in Demo Mode** — bulk changes run as background jobs, which Demo
+  Mode does not run; a demo-scoped job runner would let the demo show them.
+- **Deliberately not built** (product decisions, not backlog): response actions from
+  chat, chat verdicts feeding case decisions (#3), free-form natural-language-to-raw-query
+  execution, raw log rows to the model (#7), training on answer ratings, and an MCP
+  server.
+
 Each item ends with: `pytest -q` green (keep the count current), full docs+app
 `npm run build` + `npm run test:strict` clean, **#3 `decide()` byte-identical**, additive + zero new runtime deps
 where possible, and docs + Journal updated. Commit or publish only after intentional,
@@ -305,6 +336,17 @@ explicit authorization.
 - ☑ AGENTS.md (with CLAUDE.md forwarder), Journal.md, docs/ENVIRONMENT.md, this ROADMAP.
 
 ## Progress (this cycle, newest first)
+- ◐ **Round 12 — chat without limits, working indicator, Remember me, reports, Overview,
+  Case Manager** (branch `claude/round12`, PR to `Testing`). Chat questions run without
+  per-question caps (loop guards, continuation, conversation summary), outside the daily
+  AI budget with an optional chat cap; exact aggregates over any window (`case_stats`,
+  comparisons) for chat and dashboards (exact up to 20,000 cases per rollup scope);
+  clarify, reports from chat, step inspector, ratings, Add to case, prompt library and
+  promptbooks, `/compact`, Ask AI chips, width preference; the left-nav working
+  indicator with live rejoin; Remember me; Word/Excel exports and reliable downloads;
+  Overview bands and Deeper analytics; Case Manager queue/header/close dialog and the
+  analyst-classification headline (the "closed as FP still Undetermined" fix).
+  Deferred items are listed in section G above.
 - ☑ **Pre-Stable Intelligence evidence hardening** — review-first analyst-grounded
   tuning + Approvals RBAC; pending/approved memory trust; confirmed-only resolved-case
   reuse; RAG toggle/embedding reconciliation; durable CAS playbooks with dry-run and

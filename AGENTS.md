@@ -236,6 +236,14 @@ backend/app/
                      (protected bundled + CAS-backed operator catalog; RAG projection
                      only, never executable/decision authority) · chunking · case_id (customizable
                      case-XXXX nomenclature; KV sequence + template) ·
+                     time_windows (Round 12: the ONE window grammar — all time,
+                     now-N[d|w|M|y], calendar tokens, ISO ranges — resolved in
+                     `SlaPolicy.timezone`; zero-filled calendar buckets, ISO weeks) ·
+                     case_aggregate (Round 12: EXACT case/usage aggregation for chat and
+                     dashboards — ES composite + calendar date_histogram and SQL GROUP BY
+                     push-downs via the optional `CaseRepository.aggregate`, else a
+                     bounded streaming fold that keeps only counters; partial results are
+                     marked, never presented as exact) ·
                      metrics (verdict/status mix + Round-3 posture: MTTA/MTTR/dwell
                      p50/p90 from status_history, SLA/aging, period-over-period +
                      evidence-qualified case-level knowledge-reference coverage;
@@ -338,7 +346,9 @@ backend/app/
   auth/              passwords (PBKDF2) · tokens (stdlib HS256 JWT) · service
                      (multi-user + 6-role RBAC + permission matrix + require_permission) ·
                      mfa (stdlib RFC-6238 TOTP + recovery codes) · oidc (Google/
-                     Microsoft/generic SSO via code-exchange + userinfo)
+                     Microsoft/generic SSO via code-exchange + userinfo) · session_limits
+                     (Round 12: the ONE builder of standard vs Remember-me session limits;
+                     a remembered session is never looser than ordinary sign-ins)
   notifications/     channel (NotificationChannel SPI) · email (stdlib SMTP, now incl.
                      an SES preset + IAM-key→SMTP-password HMAC ladder) · webhook
                      (Slack/Teams/generic/PagerDuty/Telegram) · resend (Resend HTTPS
@@ -354,8 +364,14 @@ backend/app/
                      events + protocol constants) · blocks (answer-block schema,
                      validation, artifact → block materialisation, honest views) ·
                      chat_tools/ (read-only tool registry: logs · cases · metrics ·
-                     intel · ops · app_help/app_status; per-tool RBAC, whitelisted
-                     aggregate observations #7, indicator taint ledger #9) · standup ·
+                     intel · ops · app_help/app_status · Round 12: stats [`case_stats`,
+                     exact counts/breakdowns/comparisons over every case] · periods
+                     [`compare` periods + the comparison artifact] · recall
+                     [`recall_observation`, reads a shortened observation back, never raw
+                     rows]; per-tool RBAC, whitelisted aggregate observations #7,
+                     indicator taint ledger #9) · chat_entity (Round 12: "Ask AI" entity
+                     questions — strict per-kind value grammar, server-worded question,
+                     value fenced as untrusted, origin `starter`) · standup ·
                      graph (LangGraph) · pipeline · common · personas (multi-agent roster)
   stores/            base (abstract repositories — backend-agnostic StateStore) ·
                      cases · usage · ledger_claims (ES keyed Audit/Usage first-writer
@@ -368,10 +384,17 @@ backend/app/
                      (MemoryStore over the KVStore — durable operator facts with
                      approved/pending review state; only approved entries are trusted;
                      EsKVStore/SqlKVStore adapters, no new index) · chat_conversations
-                     (bounded per-user Workspace transcripts; server history is
-                     authoritative on resume; no new index/table; on Elasticsearch
-                     it and case_thread write one-way opaque rows, keyed on SQL —
-                     see the DEPLOY.md rollback note) · reports (owner-
+                     (per-user Workspace transcripts; server history is authoritative on
+                     resume; no new index/table; on Elasticsearch it and case_thread write
+                     one-way opaque rows, keyed on SQL — see the DEPLOY.md rollback note;
+                     Round 12: full-text per-exchange `x-` documents so nothing is
+                     truncated or removed, `a-` archive pages, the running conversation
+                     summary `s-`, step observations `o-` for the step inspector, and a
+                     per-owner live-state `v-` doc for leases/status/unread — every one a
+                     fixed set of `chat_`-prefixed fields holding one opaque string) ·
+                     chat_feedback (Round 12: per-user answer ratings, one opaque KV doc
+                     per user in the `chat_feedback` namespace; never used for training) ·
+                     reports (owner-
                      scoped chat reports: one strict-CAS KV doc per report + a per-user
                      index, opaque report_-prefixed fields; no new index/table) ·
                      proposals ·
@@ -407,7 +430,7 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **33 `routes_*.py` feature routers**, ALL
+                     + /sources/health) + **35 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity), ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
@@ -471,9 +494,18 @@ backend/app/
                      while legacy/unselected rows remain list-only] ·
                      routes_chat [`POST /api/chat/stream` NDJSON, `GET /api/chat/context`,
                      `POST /api/chat/turns/{id}/cancel`, `GET /api/chat/topics/{id}`; the
-                     turn registry + per-user/global concurrency; `/api/chat` delegates
-                     here] · routes_reports [`/api/reports*` owner-scoped reports,
-                     server-resolved add, one-call AI summary with dry-run estimate] ·
+                     PROCESS-LOCAL turn registry + per-user/global concurrency (4/16,
+                     429 `chat_busy`); Round 12: `GET /api/chat/turns/active`, the bounded
+                     per-turn event ring + `GET /api/chat/turns/{id}/events?after=`
+                     rejoin, owner-only `chat.turn` SSE frames, lease heartbeat,
+                     server-side report save from the answer header; `/api/chat`
+                     delegates here] · routes_chat_library [Round 12: answer feedback,
+                     step inspector, message paging, mark-read] · routes_chat_entity
+                     [Round 12: `POST /api/chat/entity-question` for Ask AI chips] ·
+                     routes_reports [`/api/reports*` owner-scoped reports,
+                     server-resolved add, one-call AI summary with dry-run estimate;
+                     Round 12: `from-answer`, `from-conversation`, 60 items,
+                     "(continued)" sections] ·
                      mounted in main.py · deps (require_auth + require_permission +
                      require_fresh_auth + custom-role union enforcement + session check) ·
                      state.py (DI hub; exposes enrichment_registry + event_bus) · main.py
@@ -509,7 +541,13 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      (searchable 264px desktop history rail/mobile Sheet, newest-first
                      durable per-user transcripts, one docked composer; Case Manager
                      chat stays separate and case-scoped) + Reports.tsx (the Reports
-                     library route) + chat/** (the lazy chat package: chat-api/ndjson/
+                     library route) + chat-activity/** (Round 12: the tiny ENTRY-SAFE
+                     activity store [useSyncExternalStore] behind the chat-nav glyph,
+                     the optional brand ring, the tab-title prefix and the "Answer ready"
+                     notice; ActivityEffects is lazy) + chat/** (the lazy chat package:
+                     turn-runner [Round 12: module-level runs that DETACH instead of
+                     aborting on navigation and re-attach via the event ring],
+                     chat-api/ndjson/
                      stream-events, useChatEngine/useChatConversations/useChatContext,
                      composer/, message/, workspace/, empty/, shortcuts/, blocks/ [answer
                      renderers + chart kit], report/ [panel, library, exports]) +
@@ -577,7 +615,10 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
     auto-write claim. This posture never touches #3: `decide()` stays the sole
     close/escalate authority, and the
     Round-10 risk gate is **routing-only** (reads `compute_risk()`, never changes
-    scoring or `decide()`).
+    scoring or `decide()`). Round 12 adds two chat defaults under the same rule: chat
+    questions run without per-question caps (`chat_agent.limits_mode="unlimited"`,
+    correctness guards only), and chat sits outside the daily AI budget (metered, with an
+    optional chat-only daily cap); neither touches `decide()`.
 11. Spine first & tested (Gate 1); breadth degrades gracefully (Gate 2).
 12. Read-only consumer; upstream untouched; cold-deployable.
 
@@ -714,7 +755,9 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
     (`button`, `card`, `dialog`, `select`, `tabs`, `table`, `tooltip`, `sheet`,
     `skeleton`, `popover`, `hover-card`, `badge`, … — wrap Radix, do not fork them).
   - **Cross-cutting design-system exports** live under
-    `webui/src/design-system/*`: the one centered `LoadingState`/`LoadingGlyph`
+    `webui/src/design-system/*`: the one Console material (`MaterialBar`,
+    `materialBar`/`materialThick`, `useScrollEdge`, the per-user Reduce transparency
+    override in `transparency.ts`; Round 12), the one centered `LoadingState`/`LoadingGlyph`
     feedback grammar, original theme-adaptive `SourceMark` asset catalog, and the
     JSON-serializable `DESIGN_SYSTEM_CATALOG`. Import from `@/design-system`; do not
     invent a page-local blocking loader or source mark. The catalog is an input for
@@ -1003,7 +1046,13 @@ a retelling — do not re-derive round detail from here.
   (`caps.max_auto_investigations_per_tick=25`) is shared across concurrent pull sources
   in the manager fan-out; each direct push batch enforces the same configured cap
   locally. Cap-deferred candidates drain on later ticks and investigations remain
-  sequential within each handler; the daily budget is the GLOBAL spend bound. **Autopilot smart
+  sequential within each handler; the daily budget is the GLOBAL spend bound for the
+  pipeline (investigations, standup, scans, report summaries). **Since Round 12, Workspace
+  and Case Manager chat are deliberately outside it** (`llm/gateway.py`
+  `BUDGET_EXEMPT_SURFACES`: a `role=chat` call on `surface="chat"` is never blocked and its
+  spend is excluded from what the gate measures); chat's only spending bound is the
+  optional `chat_agent.chat_daily_cap_usd` (off by default), and every chat call is still
+  ledgered through the one gateway (#6). **Autopilot smart
   defaults** (default-ON, $0/#3-safe) — threshold tuning (shadow-eval forced on),
   campaigns, cross-source correlation, SLA policy, priority matrix, realtime SSE, the
   threshold-automation engine (empty rule set), baseline (producer + a new
@@ -1056,6 +1105,30 @@ a retelling — do not re-derive round detail from here.
   TOTP QR encoder made ISO/IEC 18004-conformant (version-info blocks for v≥7,
   format-copy order, Reed-Solomon off-by-one — QR scanning works now). See the
   2026-08-22 `Journal.md` entries.
+- **Chat revamp** (2026-10-07→09, PR #129 into `Testing`) — Workspace Chat rebuilt as a
+  read-only multi-lookup analyst assistant with blocks, citations, reports and a live
+  token meter; see `docs/research/2026-10-chat-revamp/SPEC.md` (A1–A38) and `BLOCKS.md`.
+- **Round 12** (2026-10-10→, branch `claude/round12`, PR to `Testing`) — 11 operator asks,
+  17 decisions, 15 work packages, each implement → two adversarial reviews → fix:
+  **chat without limits** (`chat_agent.limits_mode="unlimited"` by default with a one-time
+  `chat_limits_version` migration; loop guards instead of caps; automatic continuation;
+  a running conversation summary in a `CONVERSATION_SUMMARY` untrusted fence and
+  `recall_observation`; Stop abandons the in-flight call; chat OUTSIDE the daily AI
+  budget with an optional chat-only daily cap); **exact aggregates** for chat and
+  dashboards (`engine/case_aggregate.py`, `engine/time_windows.py`, `case_stats`, any
+  window incl. all time and calendar periods, comparisons; dashboards exact up to 20,000
+  cases per rollup scope); chat features (clarify, zero-result suggestions, reports saved
+  from the answer header, step inspector, answer ratings, Add to case, prompt library +
+  promptbooks, `/compact`, Ask AI entity chips, conversation width, chart Group by/zoom/
+  image download); the **agent-working indicator** + live rejoin (process-local turn
+  registry, per-turn event ring, owner-only `chat.turn` SSE); **Remember me**
+  (server-bounded 6/12/24 h sessions, browser-managed passwords, browser-session cookie
+  otherwise, registry-aware `/auth/me`); reliable report downloads + Word/Excel; Overview
+  and Case Manager redesigns with the **analyst-classification headline** (`caseOutcome`,
+  the "closed as FP still Undetermined" fix, disposition on every terminal path); Apple
+  design foundations. `decide()` untouched (#3); every new call still one gateway call
+  and one UsageDoc (#6). Records: `docs/research/2026-10-round12/SPEC.md` (decisions +
+  "As built"), chat-revamp SPEC amendments A39+, and the Round 12 `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the

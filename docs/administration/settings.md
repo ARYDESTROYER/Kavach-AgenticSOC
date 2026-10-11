@@ -81,13 +81,32 @@ point-in-time rollback in version 0.1.
 
 ## Chat assistant
 
-**Settings → General → Chat assistant** bounds Workspace and Case Manager chat:
+**Settings → General → Chat assistant** controls Workspace and Case Manager chat:
 
-- **Answers:** the default live mode for viewers who have not chosen one (Live steps or
-  Type out answers) and whether answers may be typed out at all.
-- **Per-question limits:** model calls, lookups, lookups at once, the token ceiling, and
-  the time limit; timeouts, the answer reserve and length, results per step, and how
-  many questions may run at once sit under **More limits**.
+- **Question limits.** **Limits per question** comes first. **Unlimited** (the default)
+  lets a question run until the assistant has answered or someone presses Stop, and
+  never cuts an answer short; loop guards still stop a question that is going nowhere
+  (the same lookup never runs twice, a question that stops making progress is asked to
+  answer, a model call that goes silent is retried once, and a very long investigation
+  wraps up with what it found). **Bounded** applies the per-question limits shown under
+  it: model calls, lookups, the token ceiling, and the time limit, with the answer
+  reserve, answer length, and results per step under **More limits**. Switching modes
+  keeps the values you set, so switching back is lossless.
+- **Spending.** **Daily chat spending limit** is off by default: the daily AI budget
+  covers automatic investigations and never pauses chat. With a limit, chat stops
+  starting model calls once its spending since 00:00 UTC reaches the amount, and the
+  answer says so; 0 turns the limit off. Every chat call is still recorded in the cost
+  ledger.
+- **Answers.** The default live mode for viewers who have not chosen one (Live steps or
+  Type out answers), whether answers may be typed out at all, and **Animate the logo
+  while chat works**: a thin ring turns around the logo while an answer is being
+  written. A custom logo itself never moves, and the Chat item in the navigation keeps
+  its own indicator either way.
+- **Timeouts and capacity** (in both modes): how many lookups run side by side in one
+  step (in Bounded mode never more than the per-question lookup limit), how long one
+  lookup may take, how long a model call may go silent before it is retried (300
+  seconds by default), and how many questions may run at once per user (4) and in
+  total on this backend (16). Over those bounds a question waits and starts by itself.
 - **Indicator lookups:** how many indicators chat may send to enrichment providers per
   question and per conversation (0 turns the lookup off, and chat's access list then
   says it is turned off on this deployment), internal domain suffixes that are never
@@ -97,6 +116,13 @@ The editor accepts only values inside each knob's range, and the server clamps a
 else, so a bad value can never reset other preferences. No setting here can let chat
 change anything: the assistant is read-only by construction. The keys are listed in the
 [configuration reference](../reference/configuration.md#chat-assistant-bounds).
+
+**Upgrading from an earlier build.** The first time a stored configuration is read, it
+moves to **Unlimited** unless an administrator had changed a per-question limit from
+its shipped value; then it stays **Bounded** with those values. The old defaults for
+the model call timeout (30 seconds, Unlimited only) and the questions-at-once bounds (2
+per user, 8 in total) move to the new ones; values an administrator had chosen are
+kept. This happens once and is never repeated.
 
 ## Updates and release channels
 
