@@ -92,6 +92,7 @@ from ..agents.chat_events import (
     STREAM_HEADERS,
     ChatStreamEventModel,
     PingEvent,
+    StepStartEvent,
     TextDeltaEvent,
     TurnDoneEvent,
     TurnErrorEvent,
@@ -134,7 +135,14 @@ from ..stores.chat_conversations import (
 )
 from ..realtime import publish_chat_turn
 from ..utils import iso_now, new_id
-from .deps import current_username, get_state, require_permission
+from .deps import (
+    _bearer,
+    access_view_for,
+    current_username,
+    get_state,
+    live_session_limits,
+    require_permission,
+)
 
 logger = logging.getLogger("tlsoc.api.chat")
 
@@ -195,6 +203,27 @@ _BILLED_INTERNAL_MESSAGE = "The answer could not be completed. Ask again to star
 _CONFLICT_MESSAGE = "The conversation changed while the response was being saved."
 
 _END = object()  # queue sentinel: the turn task finished
+
+# A running turn acts for its owner only while the authority it was admitted with
+# lasts (Round 12 final review, L1). Why it was stopped:
+# * ``session_ended`` — the session that started it was revoked (sign-out, an admin
+#   revoke, sign out everywhere, refresh-token reuse) or expired, or the account was
+#   disabled, deleted or replaced by a new account of the same name;
+# * ``access_changed`` — the owner no longer holds every grant the turn was admitted
+#   with (a role or custom-role change, or an RBAC matrix edit).
+STOP_SESSION_ENDED = "session_ended"
+STOP_ACCESS_CHANGED = "access_changed"
+_SESSION_ENDED_MESSAGE = (
+    "Your session ended, so this answer was stopped before it finished. Sign in again to ask."
+)
+_ACCESS_CHANGED_MESSAGE = (
+    "Your access changed, so this answer was stopped before it finished. "
+    "Ask again to use your current access."
+)
+# The pull check (``_drive``) runs before every model step and lookup batch: on the
+# first ``step.start`` of each run of them (one batch announces all its lookups at
+# once, so it costs one check). Explicit revocations do not wait for it: they stop the
+# turn at once (``stop_chat_turns_for``).
 
 
 # --------------------------------------------------------------------------- #
@@ -406,6 +435,18 @@ class ChatTurnHandle:
     # ``publish(handle, phase, retain)`` — set by ``run_chat_turn`` to the active bus.
     publisher: Any = None
     _last_progress: float = 0.0
+    # --- The authority the turn was admitted with (Round 12 final review, L1). ---
+    # The principal as signed in (``owner`` is its normalised form), the session id
+    # and token version its access token carried (``None`` for a token without them),
+    # and the grants the turn's tools were resolved with. ``stop_reason`` is set when
+    # that authority ended (``STOP_SESSION_ENDED`` / ``STOP_ACCESS_CHANGED``);
+    # ``forget`` keeps the stopped turn's event ring out of the re-attach cache.
+    author: str = ""
+    sid: str | None = None
+    token_version: int | None = None
+    grants: frozenset = frozenset()
+    stop_reason: str | None = None
+    forget: bool = False
 
     def emit(self, event: BaseModel) -> None:
         if isinstance(event, TurnStartEvent):
@@ -569,8 +610,10 @@ class ChatTurnRegistry:
             self._remember(handle)
 
     def _remember(self, handle: ChatTurnHandle) -> None:
-        if handle.reset_cancelled:
-            return  # a reset's turns are never replayed (see ``cancel_all``)
+        if handle.reset_cancelled or handle.forget:
+            # A reset's turns are never replayed (see ``cancel_all``), nor a turn
+            # stopped because its owner's account ended (see ``stop_owner``).
+            return
         self._recent[handle.turn_id] = handle
         self._recent.move_to_end(handle.turn_id)
         self._prune_recent()
@@ -640,6 +683,61 @@ class ChatTurnRegistry:
     def track_cleanup(self, task: asyncio.Task) -> None:
         self._cleanups.add(task)
         task.add_done_callback(self._cleanups.discard)
+
+    # --- authority ended (Round 12 final review, L1) ------------------------ #
+    def owner_turns(self, owner: str) -> list[ChatTurnHandle]:
+        """Every turn of ``owner`` still running, in ANY account generation (a
+        deleted account's turns are stopped with it)."""
+        return [h for h in self._turns.values() if h.owner == owner and not h.finished.is_set()]
+
+    async def stop_owner(
+        self, owner: str, *, generation: str | None = None, sid: str | None = None,
+        except_sid: str | None = None, reason: str = STOP_SESSION_ENDED,
+        timeout: float = 10.0,
+    ) -> int:
+        """Stop the running turns of ``owner`` whose authority ended, and wait
+        (bounded) for each to unwind. ``sid`` limits it to the turns that session
+        started (a single-session sign-out or revoke); ``except_sid`` to every OTHER
+        session's turns ("sign out other devices"); ``generation`` to one account.
+
+        Each turn is stopped like a reset stops it (``cancel_all``): a RUNNING turn is
+        hard-cancelled at its current await (an in-flight model call or lookup is
+        abandoned), one not yet started is flagged and stops on its first step. It
+        saves nothing, makes no further model call or lookup, and its stream ends with
+        a non-retryable ``turn.error`` saying why. When the whole account is affected
+        (no ``sid``/``except_sid``), the owner's finished turns' event rings are
+        forgotten too, so nothing they wrote can be replayed."""
+        handles = [
+            h for h in self.owner_turns(owner)
+            if (generation is None or h.generation == generation)
+            and (sid is None or h.sid == sid)
+            and (except_sid is None or (h.sid is not None and h.sid != except_sid))
+        ]
+        account_wide = sid is None and except_sid is None
+        if account_wide:
+            for turn_id in [
+                k for k, h in self._recent.items()
+                if h.owner == owner and (generation is None or h.generation == generation)
+            ]:
+                self._recent.pop(turn_id, None)
+        return await self.stop(handles, reason=reason, forget=account_wide, timeout=timeout)
+
+    async def stop(
+        self, handles: list[ChatTurnHandle], *, reason: str, forget: bool = False,
+        timeout: float = 10.0,
+    ) -> int:
+        """Stop ``handles`` because their authority ended (see :meth:`stop_owner`)."""
+        handles = [h for h in handles if not h.finished.is_set()]
+        for handle in handles:
+            handle.stop_reason = handle.stop_reason or reason
+            handle.forget = handle.forget or forget
+            handle.cancel_event.set()
+            if handle.running and handle.task is not None and not handle.task.done():
+                handle.task.cancel()
+        tasks = [h.task for h in handles if h.task is not None and not h.task.done()]
+        if tasks:
+            await asyncio.wait(tasks, timeout=max(0.1, timeout))
+        return len(handles)
 
     async def cancel_all(self, *, timeout: float = 10.0) -> int:
         """Stop every registered turn (factory reset, shutdown) and wait, bounded, for
@@ -1090,6 +1188,199 @@ async def _generation_or_503(state: AppState, author: str | None) -> str:
         raise _account_http() from exc
 
 
+# --------------------------------------------------------------------------- #
+# The turn's authority (Round 12 final review, L1).
+#
+# A turn's grants are resolved once, when it is admitted; in unlimited mode it may
+# then run for up to the hidden fuse (60 minutes, 200 model calls). It keeps acting
+# for its owner only while the authority it was admitted with lasts:
+#
+# * PUSH — every path that ends a session or an account, or changes a role, stops
+#   the owner's running turns at once (:func:`stop_chat_turns_for`,
+#   :func:`recheck_chat_turns_for`): sign-out, a session revoke (self or admin),
+#   sign out other devices, sign out everywhere, refresh-token reuse, disabling or
+#   deleting the account, and a role or custom-role change.
+# * PULL — defence in depth, for what no push covers (a session expiring, an RBAC
+#   matrix edit, another path added later): ``_drive`` re-checks
+#   (:func:`turn_authority_lost`) before every model step and lookup batch, which the
+#   engine announces with ``step.start`` before doing any work, and ends the turn
+#   without running that step.
+# --------------------------------------------------------------------------- #
+class _AuthorityLost(Exception):
+    """The turn's authority ended (``reason`` is a ``STOP_*`` value)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _session_ended_http() -> HTTPException:
+    return HTTPException(status_code=401, detail={
+        "code": "session_invalid", "reason": STOP_SESSION_ENDED, "message": _SESSION_ENDED_MESSAGE,
+    })
+
+
+def _access_changed_http() -> HTTPException:
+    return HTTPException(status_code=403, detail={
+        "code": "chat_access_changed", "message": _ACCESS_CHANGED_MESSAGE,
+    })
+
+
+def _fail_authority(handle: "ChatTurnHandle", reason: str) -> None:
+    """The terminal, non-retryable ``turn.error`` of a turn whose authority ended."""
+    if reason == STOP_ACCESS_CHANGED:
+        handle.fail("internal", _ACCESS_CHANGED_MESSAGE, retryable=False, http=_access_changed_http())
+    else:
+        handle.fail("internal", _SESSION_ENDED_MESSAGE, retryable=False, http=_session_ended_http())
+
+
+def _session_identity(request: Request, state: AppState) -> tuple[str | None, int | None]:
+    """The session id and token version the caller's access token carries
+    (``(None, None)`` with auth off or for a token without them)."""
+    auth = getattr(state, "auth", None)
+    if auth is None or not getattr(auth, "is_enabled", False):
+        return None, None
+    token = request.cookies.get("tlsoc_token") or _bearer(request)
+    claims = auth.claims_of(token) if token else None
+    if not isinstance(claims, dict):
+        return None, None
+    sid = claims.get("sid")
+    try:
+        tv = int(claims.get("tv", 0) or 0)
+    except (TypeError, ValueError):
+        tv = 0
+    return (sid if isinstance(sid, str) and sid else None), tv
+
+
+async def turn_authority_lost(state: AppState, handle: "ChatTurnHandle") -> str | None:
+    """Why ``handle`` may no longer act for its owner (a ``STOP_*`` value), or
+    ``None`` while its authority lasts. The same rules a new request meets
+    (``deps.require_auth``/``evaluate_session`` and the route's grants), plus the
+    account generation a turn is bound to:
+
+    * the account is gone or disabled (the synced user view every request reads);
+    * the session that started the turn was revoked, its token version is behind
+      the owner's (sign out everywhere), or it is past its idle or absolute limit;
+    * the account was replaced by a new account of the same name;
+    * the owner no longer holds every grant the turn was admitted with.
+
+    Like the request path, it denies only on an explicit negative signal: a session
+    registry or account registry that cannot be read is not a reason to stop.
+    Never raises. With auth off it is always ``None`` (no I/O)."""
+    auth = getattr(state, "auth", None)
+    if auth is None or not getattr(auth, "is_enabled", False):
+        return None
+    try:
+        principal = auth.principal(handle.author)
+        if principal is None:
+            return STOP_SESSION_ENDED
+        sessions = getattr(state, "sessions", None)
+        if handle.sid and sessions is not None:
+            current_tv = await sessions.token_version_for(handle.author)
+            if handle.token_version is not None and handle.token_version < int(current_tv or 0):
+                return STOP_SESSION_ENDED
+            row = await sessions.get(handle.sid)
+            if row is not None and sessions.is_active(
+                row, **live_session_limits(state, principal).kwargs(),
+            ) is not None:
+                return STOP_SESSION_ENDED
+        try:
+            generation = await account_generation_for(state, handle.author)
+        except AccountRegistryUnavailable:
+            generation = handle.generation  # unknown is not a change
+        if generation != handle.generation:
+            return STOP_SESSION_ENDED
+        if handle.grants:
+            view = await access_view_for(state, principal)
+            if not all(view.allows(resource, action) for resource, action in handle.grants):
+                return STOP_ACCESS_CHANGED
+    except Exception as exc:  # noqa: BLE001 -- a failed check is not a revocation
+        logger.warning("chat turn authority check failed (%s)", type(exc).__name__)
+        return None
+    return None
+
+
+class _AuthorityGuard:
+    """The pull check ``_drive`` runs before every model step and lookup batch. The
+    engine announces each model step with one ``step.start`` and each lookup batch
+    with a run of consecutive ``step.start`` events (one per lookup) before doing any
+    of its work, so the check runs on the FIRST ``step.start`` of each run. A stop
+    already decided is final."""
+
+    def __init__(self, state: AppState, handle: "ChatTurnHandle") -> None:
+        self._state = state
+        self._handle = handle
+        self._in_run = False
+        self.checks = 0
+
+    async def before(self, event: BaseModel) -> str | None:
+        """``event`` is about to be relayed: the reason the turn must stop first, or
+        ``None``. Only a ``step.start`` that opens a run is checked."""
+        if self._handle.stop_reason:
+            return self._handle.stop_reason
+        opens = isinstance(event, StepStartEvent) and not self._in_run
+        self._in_run = isinstance(event, StepStartEvent)
+        if not opens:
+            return None
+        self.checks += 1
+        return await turn_authority_lost(self._state, self._handle)
+
+
+async def stop_chat_turns_for(
+    state: AppState, username: str | None, *, sid: str | None = None,
+    except_sid: str | None = None, reason: str = STOP_SESSION_ENDED,
+) -> int:
+    """Stop ``username``'s running chat turns because their authority ended (see
+    :meth:`ChatTurnRegistry.stop_owner`): all of them, only those ``sid`` started,
+    or all but ``except_sid``'s. Called by the session and account routes. Waits
+    (bounded) for the turns to unwind; never raises (a revoke never fails on it)."""
+    name = str(username or "").strip()
+    if not name:
+        return 0
+    try:
+        return await state.chat_turns.stop_owner(
+            normalize_user_id(name), sid=sid, except_sid=except_sid, reason=reason,
+            timeout=_STOP_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chat turns not stopped (%s)", type(exc).__name__)
+        return 0
+
+
+async def recheck_chat_turns_for(state: AppState, username: str | None) -> int:
+    """Re-check every running chat turn of ``username`` now (after its account was
+    disabled, or its role or custom roles changed) and stop those whose authority
+    ended. A change that only adds grants stops nothing. Never raises."""
+    name = str(username or "").strip()
+    auth = getattr(state, "auth", None)
+    if not name or auth is None or not getattr(auth, "is_enabled", False):
+        return 0
+    try:
+        if auth.principal(name) is None:
+            # Disabled (or gone): the whole account's turns stop, rings forgotten.
+            return await stop_chat_turns_for(state, name)
+        registry = state.chat_turns
+        stopped: dict[str, list[ChatTurnHandle]] = {}
+        for handle in registry.owner_turns(normalize_user_id(name)):
+            reason = await turn_authority_lost(state, handle)
+            if reason is not None:
+                stopped.setdefault(reason, []).append(handle)
+        count = 0
+        for reason, handles in stopped.items():
+            count += await registry.stop(
+                handles, reason=reason, forget=reason == STOP_SESSION_ENDED,
+                timeout=_STOP_TIMEOUT_S,
+            )
+        return count
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chat turns not re-checked (%s)", type(exc).__name__)
+        return 0
+
+
+# How long a session or account route waits for the stopped turns to unwind.
+_STOP_TIMEOUT_S = 10.0
+
+
 def _in_progress_http(handle: ChatTurnHandle | None, message: str) -> HTTPException:
     """409 ``chat_request_in_progress``. When the turn holding the key runs here, the
     detail names it (``turn_id``, ``conversation_id``; the caller's own turn — the
@@ -1282,6 +1573,10 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
             conversation_id=plan.reservation.conversation_id if plan.reservation is not None else None,
             model=plan.prefs.chat_model.model, stream_mode=body.stream_mode or "steps",
         )
+        # The authority the turn was admitted with (re-checked while it runs).
+        handle.author = author or ""
+        handle.sid, handle.token_version = _session_identity(request, state)
+        handle.grants = frozenset(grants)
         handle.publisher = functools.partial(_publish_turn, state)
         registry.register(handle)
         handle.publish("started")
@@ -1361,6 +1656,9 @@ async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, s
             # ``cancel_all`` reached this turn before its first step (a reset or
             # shutdown racing the start): abort exactly like a closed gate would.
             raise MutationAdmissionClosed("chat turn stopped before it started")
+        if handle.stop_reason:
+            # ``stop_owner`` reached this turn before its first step.
+            raise _AuthorityLost(handle.stop_reason)
         async with state.mutation_gate.admit():
             if plan.persist_workspace and plan.reservation is not None:
                 # Round 12: the reservation lease is renewed while the turn runs.
@@ -1371,11 +1669,22 @@ async def _turn_main(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan, s
     except MutationAdmissionClosed:
         await _abort(plan)
         handle.fail("internal", _RESET_MESSAGE, retryable=True, http=_reset_http())
-    except asyncio.CancelledError:
-        # Reset or shutdown: nothing is persisted and the reservation is released so
-        # a retry with the same key runs fresh.
+    except _AuthorityLost as exc:
+        # The pull check found the owner's authority ended before the next step: that
+        # step never ran, nothing is saved, and the reservation is released (a later
+        # request runs fresh under the owner's current authority).
+        handle.stop_reason = handle.stop_reason or exc.reason
         await _abort(plan)
-        handle.fail("internal", _RESET_MESSAGE, retryable=True, http=_reset_http())
+        _fail_authority(handle, handle.stop_reason)
+    except asyncio.CancelledError:
+        # Reset or shutdown, or ``stop_owner`` (the owner's authority ended): nothing
+        # is persisted and the reservation is released so a retry with the same key
+        # runs fresh.
+        await _abort(plan)
+        if handle.stop_reason and not handle.reset_cancelled:
+            _fail_authority(handle, handle.stop_reason)
+        else:
+            handle.fail("internal", _RESET_MESSAGE, retryable=True, http=_reset_http())
         raise
     except _TurnFailure as exc:
         # Saving failed after the turn ran. A billed turn keeps its reservation (it is
@@ -1424,6 +1733,8 @@ def _settle(
     if handle.response is None and handle.error is None:
         if reset or handle.reset_cancelled:
             handle.fail("internal", _RESET_MESSAGE, retryable=True, http=_reset_http())
+        elif handle.stop_reason:
+            _fail_authority(handle, handle.stop_reason)
         else:
             handle.fail("internal", _INTERNAL_MESSAGE, retryable=True, http=_internal_http())
     handle.finish()
@@ -1607,12 +1918,20 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
         continue_of=body.continue_of,
         **(_summary_kwargs(plan.engine, plan.summary) if plan.persist_workspace else {}),
     )
+    guard = _AuthorityGuard(state, handle)
     try:
         async for event in agen:
             if isinstance(event, TurnDoneEvent):
                 continue  # re-emitted below as the persisted response
             if isinstance(event, TurnStartEvent):
                 estimate = event.estimate.prompt_tokens
+            # The engine announces every model step and lookup batch before doing any
+            # of its work, and waits here until the announcement is taken: the
+            # owner's authority is re-checked first, and when it ended the step never
+            # runs (closing the engine ends the turn at this point).
+            reason = await guard.before(event)
+            if reason is not None:
+                raise _AuthorityLost(reason)
             handle.emit(event)
     finally:
         await agen.aclose()

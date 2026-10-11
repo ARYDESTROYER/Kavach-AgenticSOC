@@ -79,6 +79,11 @@ describe('MfaSetupCard — pendingToken (login-phase mandated enrollment)', () =
     expect(screen.getByText(/otpauth:\/\/totp\/Acme%20SOC:bob/)).toBeInTheDocument();
     expect(screen.getByText('aaaa-1111')).toBeInTheDocument();
     expect(screen.getByText('bbbb-2222')).toBeInTheDocument();
+    // The QR code is a lazy chunk: wait for it, so its first load settles inside this
+    // test (never after it, outside act, under a loaded runner).
+    expect(
+      await screen.findByRole('img', { name: 'QR code for authenticator enrollment' }),
+    ).toBeInTheDocument();
 
     // The confirm button reads as a login completion, and there is NO mid-flow
     // Cancel (there is no session to fall back into — the parent owns the exits).

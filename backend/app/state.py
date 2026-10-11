@@ -429,6 +429,20 @@ class AppState:
         return self._real_inbox
 
     @property
+    def real_chat_conversations(self):
+        """The REAL Workspace history store, whatever Demo Mode shows (a deleted
+        account's history is purged from it, Round 12 final review L1)."""
+        return self._real_chat_conversations
+
+    @property
+    def real_reports(self):
+        """The REAL report store (None while the reports package is unavailable)."""
+        store = getattr(self, "_real_reports", None)
+        if store is None:
+            store = self._real_reports = self._build_reports(self._kv)
+        return store
+
+    @property
     def jobs(self):
         return self._jobs
 

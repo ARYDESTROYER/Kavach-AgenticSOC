@@ -15,6 +15,7 @@
  * A turn that finishes on screen simply ends; elsewhere it becomes `unread` (an answer)
  * or `failed`, and a clarifying question stays as `needs_input` until it is answered.
  */
+import type { ChatOrigin } from '@/lib/types';
 import {
   BRAND_KEY,
   getChatActivity,
@@ -46,11 +47,24 @@ export interface ChatActivitySettled {
   unreachable?: boolean;
   /** The exact question, for "Ask again" (this tab's own turns only; never stored). */
   prompt?: string | null;
+  /**
+   * Who authored that question (#9): only `user` is the analyst's own words, which
+   * "Ask again" may put back in a composer. Any other origin (an Ask AI or "Ask about
+   * this" question, a starter, a follow-up) is asked again with the SAME origin and
+   * topic, never prefilled; with no origin nothing is prefilled either. This tab only;
+   * never stored or sent to another tab.
+   */
+  origin?: ChatOrigin;
+  /** The "Ask about this" topic the question was asked with, if any. */
+  topic?: string | null;
 }
 
 export interface ChatActivitySettleOptions {
   unreachable?: boolean;
   prompt?: string | null;
+  /** See {@link ChatActivitySettled.origin}. */
+  origin?: ChatOrigin;
+  topic?: string | null;
   /**
    * A view is attached to the turn (the runner knows): it counts as on screen while the
    * tab is visible, even before that view has registered the turn's scope.
@@ -273,6 +287,9 @@ export function settleChatActivity(
   if (options.unreachable) {
     event.unreachable = true;
     event.prompt = options.prompt ?? null;
+    // No origin is no licence to prefill: only an explicit `user` is the analyst's words.
+    if (options.origin) event.origin = options.origin;
+    event.topic = options.topic ?? null;
   }
   for (const listener of Array.from(settledListeners)) listener(event);
 }

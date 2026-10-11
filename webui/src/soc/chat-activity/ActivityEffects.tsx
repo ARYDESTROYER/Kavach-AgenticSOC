@@ -33,6 +33,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { useOptionalAuth } from '@/soc/auth';
 import { displayText } from '@/soc/chat/stream-events';
+import type { NavOpts } from '@/lib/types';
 import type { Navigate } from '@/soc/router';
 import { setDocumentTitlePrefix } from './title-prefix';
 import {
@@ -141,6 +142,21 @@ export function settledCopy(event: ChatActivitySettled): { heading: string; titl
   if (event.outcome === 'done') return { heading: 'Answer ready', title, action: 'Open' };
   if (event.outcome === 'needs_input') return { heading: 'A question needs your input', title, action: 'Open' };
   return { heading: 'The answer could not be completed', title, action: 'Open' };
+}
+
+/**
+ * Where "Ask again" goes for a new chat that saved nothing (exported for tests). Only the
+ * analyst's own words (`origin: user`) are put back in a composer for them to send. A
+ * question they did not type (an Ask AI or "Ask about this" question, a starter, a
+ * follow-up) is sent again with its own origin and topic and never prefilled, so its
+ * log- or console-derived text never becomes theirs (#9; the page re-validates it).
+ */
+export function askAgainOpts(event: Pick<ChatActivitySettled, 'prompt' | 'origin' | 'topic'>): NavOpts {
+  const prompt = event.prompt;
+  if (!prompt) return { newChat: true };
+  if (event.origin === 'user') return { newChat: true, ask: prompt };
+  if (!event.origin) return { newChat: true };
+  return { newChat: true, resend: { message: prompt, origin: event.origin, topic: event.topic ?? null } };
 }
 
 export interface ActivityEffectsProps {
@@ -410,11 +426,10 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
         const key = activity.turnId ?? activity.requestKey ?? `${activity.scope}@${activity.startedAt}`;
         if (toastedRef.current.includes(key)) return;
         toastedRef.current = [...toastedRef.current.slice(-TOAST_SEEN_LIMIT), key];
-        const prompt = event.prompt;
         const open = () => {
           if (event.unreachable) {
-            // Nothing to open: a new chat with the question ready to send again.
-            navigateRef.current('chat', prompt ? { newChat: true, ask: prompt } : { newChat: true });
+            // Nothing to open: a new chat that asks the question again.
+            navigateRef.current('chat', askAgainOpts(event));
           } else if (activity.kind === 'case' && activity.caseId) {
             requestCaseChat(activity.caseId);
             navigateRef.current('case_manager', { caseId: activity.caseId, tab: 'chat' });

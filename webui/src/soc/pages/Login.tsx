@@ -240,13 +240,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [statusResolved, setStatusResolved] = React.useState(false);
   const [mode, setMode] = React.useState<Mode>('signin');
   // Remember me: a username remembered on THIS device opens the password step with
-  // the box pre-checked ("Use a different account" forgets it).
+  // the box pre-checked ("Use a different account" forgets it). The box is checked for
+  // ONE account (lower-cased): the one this device remembers, or the name the warning
+  // was accepted (or skipped) for. Any other name reads unchecked, also after Back, so
+  // its owner sees the warning too (a shared device).
   const [rememberedUser, setRememberedUser] = React.useState(rememberedUsernameOnDevice);
   const [signinStep, setSigninStep] = React.useState<SigninStep>(() =>
     rememberedUser ? 'password' : 'identity',
   );
   const [username, setUsername] = React.useState(() => rememberedUser ?? '');
-  const [remember, setRemember] = React.useState(() => Boolean(rememberedUser));
+  const [rememberFor, setRememberFor] = React.useState(() => rememberedUser?.toLowerCase());
   // The sign-out notice is showing: the focused field is described by it.
   const [noticeShown, setNoticeShown] = React.useState(false);
   // Whether THIS attempt asked to be remembered / the minted session was remembered.
@@ -421,9 +424,13 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // Remember me availability (public /setup/status): shown only when advertised;
   // the control itself explains why it is unavailable.
   const rememberStatus = status?.auth_enabled === false ? undefined : status?.remember_me;
+  const userKey = username.trim().toLowerCase();
   const rememberChecked = Boolean(
-    rememberStatus?.enabled && !rememberStatus.insecure_blocked && remember,
+    rememberStatus?.enabled && !rememberStatus.insecure_blocked && rememberFor === userKey,
   );
+  // The account this device remembers is the one being signed in (not a name typed
+  // after going back), so its chip offers to forget the device.
+  const rememberedChip = rememberedUser?.toLowerCase() === userKey;
   const RememberMeControl = rememberUi?.RememberMeControl;
   const SessionEndNotice = rememberUi?.SessionEndNotice;
   // The focused sign-in field is described by the sign-out notice while it shows.
@@ -433,7 +440,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
       <RememberMeControl
         status={rememberStatus}
         checked={rememberChecked}
-        onCheckedChange={setRemember}
+        onCheckedChange={(on) => setRememberFor(on ? userKey : undefined)}
         busy={busy}
         username={username}
         wordmark={wordmark}
@@ -456,7 +463,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const forgetThisDevice = () => {
     void loadRememberDevice().then((m) => m.forgetDevice(), () => undefined);
     setRememberedUser(null);
-    setRemember(false);
+    setRememberFor(undefined);
     setUsername('');
     setPassword('');
     setError(null);
@@ -1001,7 +1008,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     />
                     <div
                       className="flex min-h-8 items-center justify-between gap-3 text-sm"
-                      data-login-identity-chip={rememberedUser ? 'remembered' : 'typed'}
+                      data-login-identity-chip={rememberedChip ? 'remembered' : 'typed'}
                     >
                       <span className="min-w-0 truncate text-foreground">{username.trim()}</span>
                       <Button
@@ -1010,7 +1017,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         size="sm"
                         className="h-8 shrink-0 px-2 text-xs text-muted-foreground"
                         onClick={() => {
-                          if (rememberedUser) {
+                          if (rememberedChip) {
                             forgetThisDevice();
                             return;
                           }
@@ -1022,8 +1029,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         }}
                         disabled={busy}
                       >
-                        {rememberedUser ? null : <ArrowLeft className="h-3.5 w-3.5" aria-hidden />}
-                        {rememberedUser ? 'Use a different account' : 'Back'}
+                        {rememberedChip ? null : <ArrowLeft className="h-3.5 w-3.5" aria-hidden />}
+                        {rememberedChip ? 'Use a different account' : 'Back'}
                       </Button>
                     </div>
                     <div className="space-y-2">

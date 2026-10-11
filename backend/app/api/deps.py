@@ -511,7 +511,15 @@ async def resolve_access(request: Request) -> AccessView:
     lifecycle, not an authorization decision. A 401 for an unauthenticated caller
     propagates when auth is on."""
     user = await require_auth(request)
-    state = get_state(request)
+    return await access_view_for(get_state(request), user)
+
+
+async def access_view_for(state: AppState, user: Any) -> AccessView:
+    """The RBAC view for an already-authenticated ``user`` (the core of
+    :func:`resolve_access`, without the request's auth gate). Used where no request
+    is present but the principal's LIVE grants must be re-resolved: a running chat
+    turn re-checks that it still holds the grants it was admitted with
+    (``routes_chat.turn_authority_lost``). Writes nothing."""
     auth = getattr(state, "auth", None)
     if auth is None or not auth.is_enabled:
         return AccessView(user=user, role="", unrestricted=True)  # auth off → allow all

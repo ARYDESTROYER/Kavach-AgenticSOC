@@ -923,13 +923,23 @@ function finish(run: RunInternals, state: Exclude<TurnRunState, 'running'>, fiel
             : 'done'
         : 'error';
     // A NEW thread that saved nothing has no conversation to reopen (its temporary row
-    // is gone): no mark is left, and the toast offers to ask the question again.
+    // is gone): no mark is left, and the toast offers to ask the question again. It
+    // carries who wrote the question (#9): an Ask AI or "Ask about this" question is
+    // asked again as one, never put in a composer as the analyst's own words.
     const unreachable = run.kind === 'workspace' && !!run.request && !run.request.conversation_id && !saved;
     settleChatActivity(run.scope, outcome, true, {
       // A view attached to this run has it on screen, even before that view has
       // registered the run's new `conv:` scope (a fast answer on a new thread).
       attached: run.attached > 0,
-      ...(unreachable ? { unreachable, prompt: run.request?.message ?? null } : {}),
+      ...(unreachable
+        ? {
+            unreachable,
+            prompt: run.request?.message ?? null,
+            // The body's origin is what the server saw; it is set for every non-user turn.
+            origin: run.request?.origin ?? run.userItem?.origin ?? 'user',
+            topic: run.request?.topic ?? null,
+          }
+        : {}),
     });
     if (unreachable && !run.attached) consumeRun(run);
   }

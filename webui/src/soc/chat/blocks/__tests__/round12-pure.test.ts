@@ -497,6 +497,37 @@ describe('export SVG', () => {
     expect(wrapText('one two three four five', 9, 2)).toEqual(['one two', 'three fo…']);
     expect(esc(`<a href="x">'&'</a>`)).toBe('&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;');
   });
+
+  it('drops code points XML 1.0 forbids, so a log-derived label never breaks the file', () => {
+    // U+FFFE and U+FFFF survive the display sanitiser (they are not invisible); a lone
+    // surrogate and a C0 control are dropped too. Tab, line feed and an emoji stay.
+    expect(esc('a￾b￿c\uD800d\u0001e\tf😀')).toBe('abcde\tf😀');
+    const block = parseBlock({
+      id: 'top-users',
+      type: 'chart',
+      kind: 'hbar',
+      title: 'Top users ￿ by sign-ins',
+      provenance: 'source',
+      artifact_kind: 'categories',
+      allowed_views: ['hbar', 'bar', 'table'],
+      untrusted: true,
+      unit: 'count',
+      x: { kind: 'category', values: ['admin￿x', 'svc￾-backup', 'alice'], label: 'User' },
+      series: [{ key: 'n', label: 'Sign-ins ￾', values: [12, 7, 3] }],
+    });
+    if (block.type !== 'chart') throw new Error('not a chart');
+    // The parsed labels still carry the characters: only the XML writer drops them.
+    expect(block.x.values[0]).toContain('￿');
+    for (const bar of ['hbar', 'bar'] as const) {
+      const doc = chartSvgDocument({ block: { ...block, kind: bar }, title: 'Top users ￿ by sign-ins', subtitle: 'Last 7 days ￾', host: null });
+      expect(doc).not.toMatch(/[￾￿]/);
+      expect(doc).toContain('adminx');
+      expect(doc).toContain('svc-backup');
+      const parsed = new DOMParser().parseFromString(doc, 'image/svg+xml');
+      expect(parsed.getElementsByTagName('parsererror')).toHaveLength(0);
+      expect(parsed.documentElement.nodeName).toBe('svg');
+    }
+  });
 });
 
 describe('export colours', () => {

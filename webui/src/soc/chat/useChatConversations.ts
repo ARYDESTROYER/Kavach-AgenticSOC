@@ -26,7 +26,8 @@
  * Revamp additions: server-side content search (`?q=`, debounced, with snippets),
  * pinning (≤ 10; 409 `chat_pin_limit`), `report_id` on rows, and a REQUESTED selection
  * from the route (`NavOpts` `conversationId` / `messageId` / `newChat` / `topic` / the
- * palette's `ask` / an "Ask AI" chip's typed `entity` reference).
+ * palette's `ask` / an "Ask AI" chip's typed `entity` reference / the toast's `resend`
+ * of a question the analyst did not type).
  *
  * The list is one page of 60: the server keeps the newest 50 unpinned conversations plus
  * up to 10 pin-exempt ones, so every kept thread fits (SPEC A9). A thread can still be
@@ -51,7 +52,7 @@
 import * as React from 'react';
 
 import { ApiError } from '@/lib/api';
-import type { ChatConversation, ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
+import type { ChatConversation, ChatConversationSearchHit, ChatConversationSummary, ChatOrigin } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
 import {
   dropChatActivity,
@@ -74,7 +75,7 @@ import {
 import { clampAsk } from './ask';
 import { chatEntityRef, type ChatEntityRef } from './entity-ask';
 import { displayText } from './stream-events';
-import { consoleTopic } from './topic';
+import { REQUEST_TOPIC_RE, consoleTopic } from './topic';
 import { HISTORY_CHANNEL, consumeRun, findRun, markConversationRead } from './turn-runner';
 
 /** The cross-tab history signal (unchanged from the pre-revamp page; the runner posts it too). */
@@ -197,14 +198,49 @@ export interface ChatNavRequest {
    * server's question and sends that (origin `starter`), like a topic.
    */
   entity: ChatEntityRef | null;
+  /**
+   * "Ask again" from the toast of a new chat that saved nothing, for a question the
+   * analyst did not type: the page sends it again with its own origin and topic.
+   */
+  resend: ChatResend | null;
+}
+
+/** A question to send again exactly as it was asked (`NavOpts.resend`). */
+export interface ChatResend {
+  message: string;
+  origin: Exclude<ChatOrigin, 'user' | 'continue'>;
+  topic: string | null;
+}
+
+/**
+ * The origins a resend may carry. Never `user` (the analyst's own words are only ever
+ * prefilled, `NavOpts.ask`) and never `continue` (it continues an answer of its own
+ * conversation, which a new chat does not have).
+ */
+const RESEND_ORIGINS: ReadonlySet<string> = new Set<ChatResend['origin']>(['follow_up', 'starter', 'command', 'clarify', 'retry_step']);
+
+/**
+ * The resend a navigation carries, or `null`: a non-blank question (never cut: a cut
+ * question would be a different one), a non-user origin and an optional request topic.
+ */
+export function chatResend(raw: unknown): ChatResend | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const { message, origin, topic } = raw as { message?: unknown; origin?: unknown; topic?: unknown };
+  if (typeof message !== 'string' || !message.trim()) return null;
+  if (typeof origin !== 'string' || !RESEND_ORIGINS.has(origin)) return null;
+  return {
+    message,
+    origin: origin as ChatResend['origin'],
+    topic: typeof topic === 'string' && REQUEST_TOPIC_RE.test(topic) ? topic : null,
+  };
 }
 
 /**
  * Read the chat keys of `NavOpts`, validated (an invalid id is dropped, a message id
  * without its conversation is dropped). `null` when nothing chat-related was asked.
- * A `topic`, an `entity` or an `ask` implies a fresh chat; a `conversationId` wins over
- * `newChat`, and a `topic` or an `entity` (server-worded questions the page sends) wins
- * over a free-text `ask`.
+ * A `topic`, an `entity`, a `resend` or an `ask` implies a fresh chat; a
+ * `conversationId` wins over `newChat`, and a `topic`, an `entity` or a `resend`
+ * (questions the page sends, never as the analyst's words) wins over a free-text `ask`.
  */
 export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRequest | null {
   if (!opts) return null;
@@ -212,8 +248,10 @@ export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRe
   const messageId = conversationId && isSafeChatId(opts.messageId) ? opts.messageId : null;
   const topic = consoleTopic(opts.topic);
   const entity = topic ? null : chatEntityRef(opts.entity);
-  const ask = topic || entity ? null : clampAsk(opts.ask);
-  const newChat = !conversationId && (opts.newChat === true || topic !== null || entity !== null || ask !== null);
+  const resend = topic || entity ? null : chatResend(opts.resend);
+  const ask = topic || entity || resend ? null : clampAsk(opts.ask);
+  const newChat =
+    !conversationId && (opts.newChat === true || topic !== null || entity !== null || resend !== null || ask !== null);
   if (!conversationId && !newChat) return null;
   return {
     conversationId,
@@ -222,6 +260,7 @@ export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRe
     topic: conversationId ? null : topic,
     ask: conversationId ? null : ask,
     entity: conversationId ? null : entity,
+    resend: conversationId ? null : resend,
   };
 }
 
@@ -341,6 +380,9 @@ export interface ChatConversationsController {
   /** The typed reference of the last "Ask AI" chip request (the page asks its question). */
   entity: ChatEntityRef | null;
   clearEntity: () => void;
+  /** The question the last `resend` request asks again (the page sends it, never prefills). */
+  resend: ChatResend | null;
+  clearResend: () => void;
   /**
    * Increments whenever the controller deliberately enters a fresh New-chat draft
    * (New chat, deleting the last thread, a `newChat` / `topic` request). Pass it to
@@ -421,6 +463,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [topic, setTopic] = React.useState<string | null>(null);
   const [ask, setAsk] = React.useState<string | null>(null);
   const [entity, setEntity] = React.useState<ChatEntityRef | null>(null);
+  const [resend, setResend] = React.useState<ChatResend | null>(null);
   const [newDraftEpoch, setNewDraftEpoch] = React.useState(0);
   const [transcriptEpoch, setTranscriptEpoch] = React.useState(0);
   const [searchQuery, setSearchQueryState] = React.useState('');
@@ -526,6 +569,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       // prefills a draft it was not meant for.
       setAsk(request.newChat ? request.ask : null);
       setEntity(request.newChat ? request.entity : null);
+      setResend(request.newChat ? request.resend : null);
       if (request.newChat) {
         if (request.topic) setTopic(request.topic);
         applyTarget(null);
@@ -1119,6 +1163,8 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     clearAsk: React.useCallback(() => setAsk(null), []),
     entity,
     clearEntity: React.useCallback(() => setEntity(null), []),
+    resend,
+    clearResend: React.useCallback(() => setResend(null), []),
     newDraftEpoch,
     transcriptEpoch,
     busy,

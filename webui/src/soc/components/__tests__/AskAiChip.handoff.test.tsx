@@ -59,6 +59,7 @@ describe('Ask AI hand-off', () => {
       topic: null,
       ask: null,
       entity: { kind: 'hash', value: HASH },
+      resend: null,
     });
   });
 
@@ -74,6 +75,7 @@ describe('Ask AI hand-off', () => {
       topic: null,
       ask: null,
       entity: { kind: 'ip', value: '10.0.0.5' },
+      resend: null,
     });
     expect(parseChatNavRequest({ topic: 'kpi:mttd', entity: { kind: 'ip', value: '10.0.0.5' } })?.entity).toBeNull();
     // An open conversation wins over every fresh-chat request.

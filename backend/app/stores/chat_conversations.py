@@ -3892,6 +3892,36 @@ class ChatConversationStore:
         await self._blank(live_state_key(key))
         return cleared
 
+    async def purge_owner(self, user_id: str | None) -> int:
+        """Remove EVERYTHING the owner's partition holds, for a deleted account
+        (Round 12 final review, L1): every conversation with its exchange documents,
+        archive pages and summary, the receipts of past requests (completed answers
+        replay from them), the owner's ratings of those answers, the whole step-
+        observation ring and the live state. A new account later created under the
+        same name — the partition is keyed by the name — then starts with an empty
+        history. Unlike :meth:`clear` it runs even when no conversation is listed (a
+        receipt, observation or live-state document can outlive the last one).
+        Returns how many conversations were removed; raises
+        :class:`ChatHistoryUnavailable` when the partition cannot be read or written
+        (the auxiliary blanks are best effort, like :meth:`clear`)."""
+        await self.wait_for_cleanup()
+        key, doc = await self._partition_doc(user_id)
+        cleared = 0
+        if doc is not None:
+            removed = _Removed()
+
+            def _change(current: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
+                removed.reset()
+                data = _decode_partition(current)
+                removed.take(data, data["conversations"].values())
+                return self._encode(_empty_partition()), len(removed.conversations)
+
+            cleared = await self._strict_mutate(key, _change)
+            await self._blank_removed(key, removed)
+        await self._clear_observations(key)
+        await self._blank(live_state_key(key))
+        return cleared
+
     async def clear_all(self) -> int:
         """Factory-reset every registered hashed partition plus the legacy index,
         blanking every conversation's auxiliary documents and each owner's live

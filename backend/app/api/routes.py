@@ -3636,6 +3636,8 @@ async def auth_logout(
                     await _audit_session(state, "session_revoke", username, sid, "logout")
             except Exception:  # noqa: BLE001
                 pass
+            # A chat answer this session started stops with it (never raises).
+            await _stop_chat_turns(state, username, sid=sid)
     # Mirror the set_cookie attributes so the cookie is reliably cleared.
     _clear_session_cookie(response, state)
     return {"ok": True}
@@ -3750,6 +3752,7 @@ async def revoke_my_session(
     )
     if ok:
         await _audit_session(state, "session_revoke", principal.username, sid, "self revoke")
+    await _stop_chat_turns(state, principal.username, sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
 
@@ -3765,6 +3768,8 @@ async def revoke_other_sessions(
     count = await state.sessions.revoke_others(
         principal.username, keep, by=principal.username,
     )
+    if keep:
+        await _stop_chat_turns(state, principal.username, except_sid=keep)
     await _audit_session(
         state, "session_revoke_others", principal.username, keep,
         f"revoked {count} other session(s)",
@@ -3799,6 +3804,7 @@ async def auth_refresh(
         username = str((row or {}).get("username") or "")
         await state.sessions.revoke_all(username, by="system", reason="refresh_reuse_detected")
         await state.refresh_sessions()
+        await _stop_chat_turns(state, username)
         await _audit_session(
             state, "refresh_reuse", username, str((row or {}).get("sid") or ""),
             "refresh-token reuse detected — all sessions revoked",
@@ -3923,6 +3929,7 @@ async def admin_revoke_session(
     if ok:
         await _audit_session(state, "session_admin_revoke", by, sid,
                              f"admin revoked session of {row.get('username', '')}")
+    await _stop_chat_turns(state, str(row.get("username") or ""), sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
 
@@ -3937,6 +3944,7 @@ async def admin_revoke_all(
     by = current_username(request)
     count = await state.sessions.revoke_all(username, by=by, reason="admin_revoke_all")
     await state.refresh_sessions()
+    await _stop_chat_turns(state, username)
     await _audit_session(state, "session_admin_revoke_all", by, "",
                          f"admin revoked all {count} session(s) for {username}")
     return {"ok": True, "revoked": count}
@@ -3944,6 +3952,25 @@ async def admin_revoke_all(
 
 def _norm_user(username: str) -> str:
     return (username or "").strip().lower()
+
+
+async def _stop_chat_turns(
+    state: AppState, username: str, *, sid: str | None = None, except_sid: str | None = None,
+) -> int:
+    """Stop the running chat answers whose session or account just ended (Round 12
+    final review, L1): ``routes_chat.stop_chat_turns_for``, imported lazily
+    (``routes_chat`` imports this module). Never raises."""
+    from .routes_chat import stop_chat_turns_for
+
+    return await stop_chat_turns_for(state, username, sid=sid, except_sid=except_sid)
+
+
+async def _recheck_chat_turns(state: AppState, username: str) -> int:
+    """Re-check the user's running chat answers after an account change (disabled,
+    role or custom roles changed) and stop those that lost their authority."""
+    from .routes_chat import recheck_chat_turns_for
+
+    return await recheck_chat_turns_for(state, username)
 
 
 def _short(sid: str) -> str:
@@ -5131,6 +5158,10 @@ async def update_user(
         )
     updated = await state.users.update(username, **patch)
     await state.refresh_users()
+    if "role" in patch or "active" in patch:
+        # A disabled account's running chat answers stop now; a role change stops
+        # only those that relied on a grant the account no longer holds.
+        await _recheck_chat_turns(state, username)
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
         result_summary=f"updated user '{username}'",
@@ -5156,14 +5187,24 @@ async def delete_user(
     artifacts, _removed_jobs = await state.jobs.retire_actor(username, generation)
     await state.job_runner.delete_artifacts(artifacts)
     await state.users.delete(username)
+    # The account is gone from the synced view first (its token now fails every
+    # request, so no new chat turn can start), then its running chat answers stop and
+    # unwind before its chat material is purged, so none of them writes it back.
+    await state.refresh_users()
+    await _stop_chat_turns(state, username)
+    from ..stores.chat_feedback import feedback_store_for
+
+    real_chat = state.real_chat_conversations
     await state.auth.purge_user_side_state(
         username,
         inbox=state.real_inbox,
         notif_prefs=state.notif_prefs,
         user_prefs=state.user_prefs,
         custom_roles=state.custom_roles,
+        chat_conversations=real_chat,
+        chat_feedback=feedback_store_for(getattr(real_chat, "_kv", None) or state.kv),
+        reports=state.real_reports,
     )
-    await state.refresh_users()
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
         result_summary=f"deleted user '{username}'",

@@ -269,6 +269,9 @@ class AuthService:
         notif_prefs: object | None = None,
         user_prefs: object | None = None,
         custom_roles: object | None = None,
+        chat_conversations: object | None = None,
+        chat_feedback: object | None = None,
+        reports: object | None = None,
     ) -> None:
         """Best-effort cleanup of a deleted user's per-user side-state.
 
@@ -287,6 +290,13 @@ class AuthService:
         the delete itself (the account record is already gone). The cleared stores
         are the per-user KV buckets ONLY — the authoritative audit / case feed is
         untouched (it intentionally retains the actor's historical rows, #2).
+
+        Round 12 final review (L1): the user's chat material is keyed by the username
+        too, so it goes with the account — ``chat_conversations.purge_owner`` (every
+        Workspace conversation, its exchange/archive/summary documents, request
+        receipts, step observations and live state), ``chat_feedback.clear`` (the
+        answer ratings and their comments) and ``reports.clear`` (the user's reports).
+        The caller stops the user's running chat turns first, so none writes back.
         """
         uname = (username or "").strip()
         if not uname:
@@ -301,6 +311,9 @@ class AuthService:
             # so there is nothing username-keyed to drop; the parameter is accepted
             # for forward-compat / symmetry and only used if a delete(user) exists.
             ("custom_roles", custom_roles, "delete_assignment", (uname,)),
+            ("chat_conversations", chat_conversations, "purge_owner", (uname,)),
+            ("chat_feedback", chat_feedback, "clear", (uname,)),
+            ("reports", reports, "clear", (uname,)),
         ]
         for label, store, method, args in targets:
             if store is None:

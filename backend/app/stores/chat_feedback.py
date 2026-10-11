@@ -262,6 +262,20 @@ class ChatFeedbackStore:
 
         return await self._mutate(partition_key, _change)
 
+    async def clear(self, owner: str | None) -> int:
+        """Drop ALL of the owner's ratings (a deleted account, Round 12 final review
+        L1): the document is keyed by the username, so a new account of the same
+        name must not inherit them. Returns how many were removed."""
+        key = partition_key_for_user(owner)
+        current = await self._strict_get(key)
+        if current is None or (not _entries(current) and not current.get(FEEDBACK_FIELD)):
+            return 0
+
+        def _change(doc: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
+            return _encode([]), len(_entries(doc))
+
+        return await self._mutate(key, _change)
+
 
 __all__ = [
     "CHAT_FEEDBACK_NS",

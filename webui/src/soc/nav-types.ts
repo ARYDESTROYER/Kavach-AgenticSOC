@@ -68,6 +68,15 @@ export type NavOpts = {
    * In memory only: the router never writes it to the hash.
    */
   entity?: { kind: string; value: string };
+  /**
+   * Chat (Round 12): "Ask again" from the toast of a NEW chat whose answer could not be
+   * completed or saved, for a question the analyst did NOT type (an Ask AI or "Ask about
+   * this" question, a starter, a follow-up). The page sends the exact question again in
+   * a new chat with the SAME origin and topic, like Ask again in a transcript; it is
+   * never prefilled, so it never becomes the analyst's own words (#9). Only this tab's
+   * own turn runner hands it over; in memory only, the router never writes it to the hash.
+   */
+  resend?: { message: string; origin: string; topic?: string | null };
   /** Reports library: the report to open (`#/reports?reportId=…`). */
   reportId?: string;
   /** Logs: an exact query to pre-fill (untrusted text, bounded, control/bidi-free). */

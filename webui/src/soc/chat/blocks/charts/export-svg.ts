@@ -21,6 +21,7 @@
  * stack, that each stack totals the shown series only). Every string is XML-escaped; no
  * block string ever becomes an attribute other than escaped text content (G2).
  */
+import { xmlSafe } from '@/lib/xml-safe';
 import { token } from '@/soc/components/palette';
 
 import {
@@ -95,9 +96,14 @@ const PAD = 24;
 const CHAR12 = 7.2;
 const IN_PROGRESS_OPACITY = 0.6;
 
-/** XML-escape text content and attribute values. */
+/**
+ * XML-escape text content and attribute values. Code points XML 1.0 forbids (U+FFFE,
+ * U+FFFF, C0 controls, lone surrogates) are dropped first: the display sanitiser keeps
+ * U+FFFE and U+FFFF, and one of them in a log-derived label would make the saved SVG
+ * malformed and the PNG fail to draw.
+ */
 export function esc(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+  return xmlSafe(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;

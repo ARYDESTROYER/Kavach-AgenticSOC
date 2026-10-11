@@ -10,13 +10,10 @@
  * text is ever spliced into markup unescaped.
  */
 
-/** Characters XML 1.0 allows (§2.2 `Char`); everything else is dropped. */
-const INVALID_XML = /[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu;
+import { xmlSafe } from '@/lib/xml-safe';
 
-/** Drop the code points XML 1.0 cannot carry. */
-export function xmlSafe(text: string): string {
-  return text.replace(INVALID_XML, '');
-}
+/** Drop the code points XML 1.0 cannot carry (shared with the chart image writer). */
+export { xmlSafe };
 
 /** Escape text for element content. */
 export function xmlText(text: string): string {

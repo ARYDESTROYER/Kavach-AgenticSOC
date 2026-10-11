@@ -913,6 +913,34 @@ class ReportStore:
             await self._index_remove_locked(owner, report_id)
             return ReportDeleted(report_id, deleted.conversation_id, deleted)
 
+    async def clear(self, owner: str | None) -> int:
+        """Delete EVERY report of ``owner`` (tombstones, then an empty index) — a
+        deleted account (Round 12 final review, L1): reports are keyed by the
+        username, so a new account of the same name must not inherit them. Returns
+        how many live reports were removed; raises :class:`ReportStoreUnavailable`
+        when storage cannot confirm a write."""
+        uid = normalize_user_id(owner)
+        removed = 0
+        async with self._lock_for(owner):
+            for row in _index_rows(await self._strict_get(index_key(owner))):
+                report_id = row["id"]
+
+                def _change(doc: dict[str, Any] | None, rid: str = report_id) -> tuple[dict[str, Any] | None, bool]:
+                    if not _is_live(doc):
+                        return None, False
+                    return self._tombstone(rid, uid), True
+
+                if await self._strict_mutate(report_key(owner, report_id), _change):
+                    removed += 1
+
+            def _empty(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, None]:
+                if current is None or not _index_rows(current):
+                    return None, None
+                return _encode_index([]), None
+
+            await self._strict_mutate(index_key(owner), _empty)
+        return removed
+
 
 __all__ = [
     "SUMMARY_RESERVE_BYTES",
