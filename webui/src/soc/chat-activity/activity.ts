@@ -8,7 +8,7 @@
  * Writers:
  *  - the turn runner (`soc/chat/turn-runner.ts`) for this tab's own turns;
  *  - `ActivityEffects` for other tabs (BroadcastChannel) and for turns the server
- *    reports (`GET /api/chat/turns/active`, `chat.turn` frames, the conversation list's
+ *    reports (`GET /api/chat/turns/active`, the conversation list's
  *    `unread` / `needs_input`);
  *  - the chat views, which register what is on screen (`viewChatActivity`).
  *
@@ -51,13 +51,27 @@ export interface ChatActivitySettled {
 export interface ChatActivitySettleOptions {
   unreachable?: boolean;
   prompt?: string | null;
+  /**
+   * A view is attached to the turn (the runner knows): it counts as on screen while the
+   * tab is visible, even before that view has registered the turn's scope.
+   */
+  attached?: boolean;
 }
 
 type Listener = () => void;
 
 const settledListeners = new Set<(event: ChatActivitySettled) => void>();
 const clearListeners = new Set<Listener>();
-const viewing = new Map<string, number>();
+/**
+ * Mounted views, one token each. A token follows its turn when a new thread's
+ * `draft:` scope becomes `conv:<id>` (`rekeyChatActivity`), synchronously: the view
+ * re-registers the new scope only in a later effect, and an answer can land first.
+ */
+const viewing = new Set<{ scope: string }>();
+const isViewing = (scope: string) => {
+  for (const token of viewing) if (token.scope === scope) return true;
+  return false;
+};
 /** A case-chat toast's Open, waiting for its case page (see `requestCaseChat`). */
 let caseChatRequest: { caseId: string; at: number } | null = null;
 let sink: ((message: ChatActivityMessage) => void) | null = null;
@@ -206,8 +220,17 @@ export function patchChatActivity(scope: string, patch: Partial<ChatActivity>): 
 
 /** A new thread's turn learnt its conversation id (`draft:` → `conv:`). */
 export function rekeyChatActivity(from: string, to: string, patch: Partial<ChatActivity> = {}): void {
+  if (from === to) return;
+  // The view on screen moves with its turn at once (see `viewing`).
+  let moved = false;
+  for (const token of viewing) {
+    if (token.scope !== from) continue;
+    token.scope = to;
+    moved = true;
+  }
+  if (moved) viewedChanged();
   const current = find(from);
-  if (!current || from === to) return;
+  if (!current) return;
   dropChatActivity(from);
   putChatActivity({ ...current, ...patch, scope: to });
 }
@@ -219,7 +242,7 @@ export function dropChatActivity(scope: string, local = true): void {
 }
 
 export function isChatActivityViewed(scope: string): boolean {
-  return (viewing.get(scope) ?? 0) > 0 && visible();
+  return isViewing(scope) && visible();
 }
 
 /**
@@ -234,7 +257,7 @@ export function settleChatActivity(
 ): void {
   const current = find(scope);
   if (!current) return;
-  const viewed = isChatActivityViewed(scope);
+  const viewed = isChatActivityViewed(scope) || (options.attached === true && visible());
   const status: ChatActivityStatus | null = options.unreachable
     ? null
     : outcome === 'needs_input'
@@ -265,21 +288,20 @@ export function markChatActivitySeen(scope: string, local = true): void {
 
 /** Mark every on-screen chat seen (the tab became visible again). */
 export function markViewedChatActivitySeen(): void {
-  for (const [scope, count] of viewing) if (count > 0) markChatActivitySeen(scope);
+  for (const scope of new Set(Array.from(viewing, (token) => token.scope))) markChatActivitySeen(scope);
 }
 
 /** Register a chat that is on screen; returns the release. */
 export function viewChatActivity(scope: string): () => void {
-  viewing.set(scope, (viewing.get(scope) ?? 0) + 1);
+  const token = { scope };
+  viewing.add(token);
   viewedChanged();
   if (visible()) markChatActivitySeen(scope);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const count = (viewing.get(scope) ?? 1) - 1;
-    if (count > 0) viewing.set(scope, count);
-    else viewing.delete(scope);
+    viewing.delete(token);
     viewedChanged();
   };
 }
@@ -290,7 +312,7 @@ let viewedScopes: ReadonlySet<string> = new Set();
 const viewedListeners = new Set<Listener>();
 
 function viewedChanged(): void {
-  viewedScopes = new Set(viewing.keys());
+  viewedScopes = new Set(Array.from(viewing, (token) => token.scope));
   for (const listener of Array.from(viewedListeners)) listener();
 }
 

@@ -3,9 +3,11 @@
  * by AppShell beside `JobMonitor` through a lazy import, so none of it rides the
  * first-paint bundle (the eager side is only the store and the glyph).
  *
- *  - Lifetime: sign-out (the shell unmounts) and a change of user forget every turn and
- *    stop reading them (the server still finishes and saves them), in this tab and in
- *    the user's other tabs.
+ *  - Lifetime: a sign-out (or a session that ended) and a change of user forget every
+ *    turn and stop reading them (the server still finishes and saves them), in this tab
+ *    and in the user's other tabs. The shell also goes away while the user stays signed
+ *    in (the setup wizard, a boot error): then nothing is forgotten, so the shell asks
+ *    the server who is signed in before it clears anything.
  *  - Other tabs: one BroadcastChannel carries this tab's own changes and applies the
  *    others' (scoped to the signed-in user), so two tabs agree; a closing tab hands its
  *    running turns over to this one.
@@ -13,21 +15,24 @@
  *    does not know to the turn runner, which follows it WITHOUT holding a connection
  *    (a parked run: one cheap poll) and reads its real outcome when it ends. The
  *    conversation list adds titles, unread answers and waiting questions, and drops
- *    marks for threads that no longer exist. Owner-only `chat.turn` frames (auth on,
- *    realtime on, this tab visible, a parked turn running) only make that sooner.
+ *    marks for threads that no longer exist. No live connection of its own: the
+ *    runner's poll hears that a followed turn ended (a browser allows only six
+ *    connections to the console, and the shell's streams already hold some).
  *  - Settled turns the analyst was not looking at: one deduplicated toast with Open
  *    (sonner's polite live region announces it; nothing else speaks it again).
  *  - The tab title: "●" while an answer is being written, "✓" for an unread one.
  *
- * Every title is prompt- or model-derived display text: it goes into toasts and the
- * title as plain text only (#9). Server labels are engine templates.
+ * Every title is prompt- or model-derived display text: it is cleaned with the chat's
+ * shared sanitizer (`displayText`: invisible, bidi, TAG and control characters go) and
+ * goes into toasts and the title as plain text only (#9). Server labels are engine
+ * templates, cleaned the same way.
  */
 import * as React from 'react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { useEventStream, type StreamEvent } from '@/lib/useEventStream';
 import { useOptionalAuth } from '@/soc/auth';
+import { displayText } from '@/soc/chat/stream-events';
 import type { Navigate } from '@/soc/router';
 import { setDocumentTitlePrefix } from './title-prefix';
 import {
@@ -60,6 +65,8 @@ const TOAST_SEEN_LIMIT = 100;
 let mounted = 0;
 /** The user the newest channel belongs to (a closing one compares against it). */
 let channelUser: string | null = null;
+/** The user whose turns the store holds: a shell for another user starts clean. */
+let storeUser: string | null = null;
 
 type Envelope =
   | { u: string; m: ChatActivityMessage }
@@ -97,15 +104,8 @@ function loadRunner(): Promise<Runner | null> {
 
 const SAFE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const safeId = (value: unknown): string | null => (typeof value === 'string' && SAFE_ID.test(value) ? value : null);
-// Invisible, bidi and control characters never reach a toast or the title.
-// eslint-disable-next-line no-control-regex
-const UNSAFE = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g;
-function plain(value: unknown, limit: number): string {
-  if (typeof value !== 'string') return '';
-  const text = value.replace(UNSAFE, '').replace(/\s+/g, ' ').trim();
-  const chars = Array.from(text);
-  return chars.length > limit ? `${chars.slice(0, limit - 1).join('').trimEnd()}…` : text;
-}
+/** Server text (a listed title, a step label) as one clean line: the rail's own sanitizer. */
+const plain = (value: unknown, limit: number): string => (typeof value === 'string' ? displayText(value, limit) : '');
 const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 const find = (scope: string) => getChatActivity().entries.find((entry) => entry.scope === scope);
 
@@ -149,7 +149,45 @@ export interface ActivityEffectsProps {
   onNavigate: Navigate;
 }
 
-const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
+/** Tell `user`'s other tabs to forget (a sign-out, or another user in this browser). */
+function broadcastClear(user: string): void {
+  if (typeof window === 'undefined' || typeof window.BroadcastChannel !== 'function') return;
+  try {
+    const channel = new window.BroadcastChannel(ACTIVITY_CHANNEL);
+    channel.postMessage({ u: user, m: { t: 'clear' } } satisfies Envelope);
+    channel.close();
+  } catch {
+    /* best effort: the other tabs' own requests fail and send them to sign in */
+  }
+}
+
+/**
+ * The shell went away (it is not shown any more). That alone is no sign-out: the setup
+ * wizard and a boot error after a passing `/auth/me` failure replace the shell while the
+ * user stays signed in, and their turns must go on (also in their other tabs). So ask the
+ * server: only a confirmed sign-out, an ended session or another user forgets every turn,
+ * here (unless a shell came back meanwhile) and in this user's other tabs. With auth off
+ * nobody signs out; when the server cannot be asked, nothing is forgotten (a shell for
+ * another user still starts clean, see `storeUser`).
+ */
+async function forgetIfSignedOut(closing: string): Promise<void> {
+  let me: unknown;
+  try {
+    me = await api.get<unknown>('auth/me');
+  } catch {
+    return;
+  }
+  if (!me || typeof me !== 'object') return;
+  const state = me as { auth_enabled?: unknown; authenticated?: unknown; user?: { username?: unknown } | null };
+  if (state.auth_enabled !== true) return;
+  const signedIn = state.authenticated === true && typeof state.user?.username === 'string' ? state.user.username : null;
+  if (signedIn !== null && signedIn === closing) return;
+  if (mounted === 0) {
+    clearChatActivity(false);
+    storeUser = null;
+  }
+  broadcastClear(closing);
+}
 
 export default function ActivityEffects({ username: user, onNavigate }: ActivityEffectsProps) {
   const username = user ?? '';
@@ -158,31 +196,30 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   const canRead = auth ? auth.hasPermission('cases', 'read') : true;
   // Selected slices only: the shell observer never re-renders on every step.
   const prefix = useChatActivity((snapshot) => titlePrefix(snapshot.entries));
-  const parkedRunning = useChatActivity((snapshot) =>
-    snapshot.entries.some((entry) => entry.source === 'local' && entry.parked === true && entry.status === 'running'),
-  );
-  const [visible, setVisible] = React.useState(isVisible);
   const navigateRef = React.useRef(onNavigate);
   navigateRef.current = onNavigate;
+  const signInRef = React.useRef({ username, authEnabled });
+  signInRef.current = { username, authEnabled };
 
   /* ------------------------------------------------------------ lifetime -- */
 
-  // Another user in the same shell: nothing of the previous one may show.
-  const userRef = React.useRef(username);
+  // Another user (in this shell, or in a shell that came back): nothing of the previous
+  // one may show. Local only: the previous user's other tabs are told by the closing
+  // channel (below) or by `forgetIfSignedOut`.
   React.useEffect(() => {
-    if (userRef.current === username) return;
-    userRef.current = username;
-    clearChatActivity();
+    if (storeUser !== null && storeUser !== username) clearChatActivity(false);
+    storeUser = username;
   }, [username]);
 
-  // The shell goes away on sign-out (or a session that ended): forget every turn and
-  // stop reading them. Deferred one tick so a development double mount does not clear.
+  // The shell goes away. Deferred one tick so a development double mount does nothing;
+  // then only a sign-out the server confirms forgets (see `forgetIfSignedOut`).
   React.useEffect(() => {
     mounted += 1;
     return () => {
       mounted -= 1;
+      const { username: closing, authEnabled: withAuth } = signInRef.current;
       setTimeout(() => {
-        if (mounted === 0) clearChatActivity();
+        if (mounted === 0 && withAuth) void forgetIfSignedOut(closing);
       }, 0);
     };
   }, []);
@@ -258,13 +295,15 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     return () => {
       window.removeEventListener('pagehide', onHide);
       setChatActivitySink(null);
+      channel.onmessage = null;
+      channel.close();
       const closing = username;
-      // Deferred like the clear above: a development double mount neither clears nor
-      // tells the other tabs to. Sign-out (no shell left) or another user: this user's
-      // other tabs forget too.
+      // Deferred like the lifetime check above: a development double mount tells the
+      // other tabs nothing. Another user in this shell: this user's other tabs forget
+      // too. A shell that simply went away tells them nothing here (a sign-out is
+      // confirmed with the server first, see `forgetIfSignedOut`).
       setTimeout(() => {
-        if (mounted === 0 || channelUser !== closing) post({ u: closing, m: { t: 'clear' } });
-        channel.close();
+        if (mounted > 0 && channelUser !== closing) broadcastClear(closing);
       }, 0);
     };
   }, [follow, username]);
@@ -357,27 +396,6 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     void pollActive().then(reconcileList);
   }, [canRead, pollActive, reconcileList, username]);
 
-  const onFrame = React.useCallback(
-    (event: StreamEvent) => {
-      if (event.type !== 'chat.turn' || !event.data || typeof event.data !== 'object') return;
-      const frame = event.data as ActiveTurn & { phase?: unknown };
-      const turnId = safeId(frame.turn_id);
-      if (!turnId) return;
-      const entry = getChatActivity().entries.find((item) => item.turnId === turnId);
-      if (frame.phase === 'progress') {
-        if (entry?.source === 'local' && entry.parked) {
-          patchChatActivity(entry.scope, { label: plain(frame.label, 120) || null, lookups: count(frame.lookups) });
-        }
-        return;
-      }
-      // Ended: the runner reads how (sooner than its poll). Started elsewhere: follow it.
-      if (entry) void loadRunner().then((module) => module?.pollParkedRuns());
-      else if (frame.phase === 'started') void pollActive();
-    },
-    [pollActive],
-  );
-  useEventStream(['chat'], { enabled: canRead && authEnabled && parkedRunning && visible, onEvent: onFrame });
-
   /* ------------------------------------------------------------- toast -- */
 
   const toastedRef = React.useRef<string[]>([]);
@@ -422,7 +440,6 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   React.useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     const onVisible = () => {
-      setVisible(isVisible());
       if (document.visibilityState === 'visible') markViewedChatActivitySeen();
     };
     document.addEventListener('visibilitychange', onVisible);

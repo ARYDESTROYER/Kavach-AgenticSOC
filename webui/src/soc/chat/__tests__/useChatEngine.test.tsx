@@ -11,7 +11,7 @@ import { act, renderHook } from '@testing-library/react';
 
 import type { ChatConversation, ChatRequest } from '@/lib/types';
 import * as React from 'react';
-import { clearChatActivity, getChatActivity, putChatActivity } from '../../chat-activity/activity';
+import { clearChatActivity, getChatActivity, onChatActivity, putChatActivity, type ChatActivitySettled } from '../../chat-activity/activity';
 import { resetTurnRunnerForTests } from '../turn-runner';
 import {
   CHAT_HISTORY_EXCHANGES,
@@ -1749,6 +1749,29 @@ describe('useChatEngine — turns outlive their view (Round 12, SPEC D13)', () =
     expect(result.current.busy).toBe(true);
     await push(streams[0], done({ answer: 'First answer', message_id: 'm-n', conversation_id: 'conv-new' }));
     expect(assistant(result.current).response?.answer).toBe('First answer');
+  });
+
+  it('a new thread whose turn.start and turn.done arrive in one chunk, on screen, simply ends (no toast, no unread mark)', async () => {
+    const settledEvents: ChatActivitySettled[] = [];
+    const off = onChatActivity('settled', (event) => settledEvents.push(event));
+    const persisted = vi.fn();
+    const { result } = await mountEngine({ conversation: null, onConversationPersisted: persisted });
+    act(() => {
+      result.current.send('How many cases are open?');
+    });
+    await settle();
+    // One read delivers both lines: the view has not re-registered `conv:conv-fast` yet.
+    await act(async () => {
+      streams[0].push(start('turn-fast', { conversation_id: 'conv-fast' }));
+      streams[0].push(done({ answer: '12 open cases.', message_id: 'm-fast', conversation_id: 'conv-fast', conversation_title: 'How many cases are open?' }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(settledEvents).toMatchObject([{ outcome: 'done', viewed: true }]);
+    expect(activityOf('conv:conv-fast')).toBeNull();
+    expect(getChatActivity().entries).toEqual([]);
+    expect(assistant(result.current).response?.answer).toBe('12 open cases.');
+    expect(persisted).toHaveBeenCalledWith('conv-fast', 'How many cases are open?');
+    off();
   });
 
   it('a development double mount follows one stream', async () => {

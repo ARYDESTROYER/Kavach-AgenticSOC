@@ -47,4 +47,13 @@ describe('chat activity entry boundary', () => {
     expect(shell).toContain("import('./chat-activity/ActivityEffects')");
     expect(runtimeImports(shell)).not.toContain('./chat-activity/ActivityEffects');
   });
+
+  it('holds no literal invisible or bidi control characters in its sources (Trojan Source)', () => {
+    const dir = path.join(SRC, 'soc/chat-activity');
+    // Escapes (\u200b) are fine: only the raw characters are refused.
+    const hidden = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufe00-\ufe0f]|[\u{E0000}-\u{E0FFF}]/u;
+    for (const name of fs.readdirSync(dir).filter((file) => /\.(ts|tsx|css)$/.test(file))) {
+      expect(hidden.test(fs.readFileSync(path.join(dir, name), 'utf8')), name).toBe(false);
+    }
+  });
 });

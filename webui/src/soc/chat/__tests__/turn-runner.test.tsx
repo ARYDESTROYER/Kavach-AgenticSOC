@@ -5,7 +5,7 @@
  * parking (a run nobody views holds no connection; one poll follows it and it reads the
  * rest after its last event), turns followed for the server (`trackRun`) settling with
  * their real outcome, and the settle rules (D1 is no "answer", a new thread that saved
- * nothing leaves no mark).
+ * nothing leaves no mark, a Stop is never "Answer ready").
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -23,6 +23,7 @@ import {
   readCaseSession,
   resetTurnRunnerForTests,
   startRun,
+  stopRun,
   trackRun,
   writeCaseSession,
   type ChatTranscriptItem,
@@ -197,6 +198,7 @@ async function waitForWire(test: (wire: Wire) => boolean): Promise<Wire> {
   throw new Error('no such read was opened');
 }
 const entryOf = (scope: string) => getChatActivity().entries.find((item) => item.scope === scope) ?? null;
+const internalsOf = (run: TurnRun) => run as TurnRun & { parkRequested: boolean };
 const openReads = () => wires.filter((wire) => !wire.signal?.aborted);
 const startEvent = (turnId: string, conversationId: string | null = null) => ({
   type: 'turn.start',
@@ -296,6 +298,31 @@ describe('parking: a run nobody views holds no connection', () => {
     expect(openReads()[0]).toBe(wires[4]);
     detach();
   });
+
+  it('a view that leaves during a re-attach backoff still parks the next read', async () => {
+    const run = ask('Long hunt', { conversation_id: 'c-back' });
+    const detach = attachRun(run);
+    await wait(5);
+    active = [{ turn_id: 'turn-back', conversation_id: 'c-back', status: 'running' }];
+    wires[0].push(startEvent('turn-back', 'c-back'));
+    wires[0].push(step(1, 'Searching logs'));
+    await wait(5);
+    wires[0].close(); // drop 1: re-attach at once
+    const first = await waitForWire((wire) => wire.url.includes('/events?'));
+    first.close(); // drop 2: the runner backs off (1.5 s) before reading again
+    await wait(20);
+    detach(); // the analyst leaves during the backoff: nothing to close yet
+    await wait(TURN_RUNNER_TIMING.parkDelayMs + 20);
+    expect(internalsOf(run).parkRequested).toBe(false);
+    // The backoff (1.5 s) ends, a read opens, and it is parked like any other.
+    await wait(1_400);
+    await until(() => calls.filter((call) => call.includes('/events?')).length === 2, 'the next read');
+    await until(() => entryOf('conv:c-back')?.parked === true, 'the park');
+    const reads = wires.filter((wire) => wire.url.includes('/events?'));
+    expect(reads).toHaveLength(2);
+    expect(reads[1].signal?.aborted).toBe(true);
+    expect(run.state).toBe('running');
+  }, 10_000);
 
   it('follows a turn the server reports without opening a read, and settles it with its real outcome', async () => {
     active = [{ turn_id: 'turn-c', case_id: 'case-7', status: 'running' }];
@@ -403,6 +430,56 @@ describe('settle rules', () => {
     await wait(10);
     expect(entryOf('conv:conv-new')).toMatchObject({ status: 'unread', conversationId: 'conv-new' });
     expect(settled[0].unreachable).toBeUndefined();
+  });
+
+  it('a Stop the server confirms is a stop, not an "Answer ready", also when the analyst left', async () => {
+    TURN_RUNNER_TIMING.parkDelayMs = 20;
+    TURN_RUNNER_TIMING.parkPollMs = 30;
+    const run = ask('Investigate everything about dc01', { conversation_id: 'c-stop' });
+    const detach = attachRun(run);
+    await wait(5);
+    wires[0].push(startEvent('turn-stop', 'c-stop'));
+    wires[0].push(step(1, 'Searching logs'));
+    await wait(5);
+    stopRun(run); // server-side cancel: the in-flight step finishes first
+    await until(() => calls.some((call) => call.endsWith('/turns/turn-stop/cancel')), 'the cancel');
+    detach(); // the analyst leaves
+    active = [{ turn_id: 'turn-stop', conversation_id: 'c-stop', status: 'running' }];
+    await until(() => entryOf('conv:c-stop')?.parked === true, 'the park');
+    active = [];
+    const tail = await waitForWire((wire) => wire.url.includes('/events?'));
+    tail.push(done({ answer: 'Partial', message_id: 'm-stop', conversation_id: 'c-stop', notice: { kind: 'cancelled', message: 'Stopped before the answer finished.', retryable: false } }), 3);
+    await until(() => settled.length > 0, 'the end');
+    // The transcript keeps the server's record; the activity is quiet like a forced Stop.
+    expect(run.state).toBe('done');
+    expect(settled).toMatchObject([{ outcome: 'stopped', viewed: false }]);
+    expect(entryOf('conv:c-stop')).toBeNull();
+  });
+
+  it('a stopped NEW thread that saved nothing is quiet too (no "could not be saved")', async () => {
+    const run = ask('Investigate host Y');
+    await wait(5);
+    wires[0].push(startEvent('turn-sn', 'conv-sn'));
+    await wait(5);
+    stopRun(run);
+    await until(() => calls.some((call) => call.endsWith('/turns/turn-sn/cancel')), 'the cancel');
+    wires[0].push(done({ answer: '', notice: { kind: 'cancelled', message: 'Stopped before the answer finished.', retryable: false } }));
+    await until(() => settled.length > 0, 'the end');
+    expect(settled[0].outcome).toBe('stopped');
+    expect(getChatActivity().entries).toEqual([]);
+  });
+
+  it('a view attached to the run counts as on screen, even before it registered the new scope', async () => {
+    const run = ask('Fast one');
+    const detach = attachRun(run);
+    await wait(5);
+    // turn.start and turn.done in one chunk: no view has registered `conv:conv-f` yet.
+    wires[0].push({ ...startEvent('turn-f', 'conv-f') });
+    wires[0].push(done({ answer: 'Twelve.', message_id: 'm-f', conversation_id: 'conv-f' }));
+    await until(() => settled.length > 0, 'the end');
+    expect(settled).toMatchObject([{ outcome: 'done', viewed: true }]);
+    expect(getChatActivity().entries).toEqual([]);
+    detach();
   });
 
   it('a new thread on screen simply ends', async () => {

@@ -798,7 +798,8 @@ const lookupCount = (value: unknown): number =>
  * Follow every parked run with one `GET /chat/turns/active`: a listed turn updates its
  * step label; a turn no longer listed has ended, so its run reads the rest of its
  * events (finished turns stay readable for five minutes) and settles with the real
- * outcome. Called on its own cadence and, sooner, by `chat.turn` frames.
+ * outcome. Runs on its own cadence ({@link TURN_RUNNER_TIMING}`.parkPollMs`): no extra
+ * live connection is opened just to hear about turn ends sooner.
  */
 export async function pollParkedRuns(): Promise<void> {
   if (parkPolling) return;
@@ -907,20 +908,29 @@ function finish(run: RunInternals, state: Exclude<TurnRunState, 'running'>, fiel
     if (saved && run.kind === 'workspace' && run.persisted && response?.conversation_id && run.scope.startsWith('draft:')) {
       rekeyRun(run, response.conversation_id);
     }
+    // A Stop the server confirmed (`turn.done` with a `cancelled` notice), or any end
+    // after the analyst asked to stop, is a stop: no "Answer ready", no unread mark, and
+    // no "could not be saved" for a new thread (the forced Stop is just as quiet).
     // D1: a first call that failed (budget, provider) answered nothing: not "ready".
-    const outcome: ChatActivityOutcome = response
-      ? isUnsavedTurn(response)
-        ? 'error'
-        : response.clarify
-          ? 'needs_input'
-          : 'done'
-      : state === 'stopped'
-        ? 'stopped'
+    const stopped = state === 'stopped' || run.stopRequested || response?.notice?.kind === 'cancelled';
+    const outcome: ChatActivityOutcome = stopped
+      ? 'stopped'
+      : response
+        ? isUnsavedTurn(response)
+          ? 'error'
+          : response.clarify
+            ? 'needs_input'
+            : 'done'
         : 'error';
     // A NEW thread that saved nothing has no conversation to reopen (its temporary row
     // is gone): no mark is left, and the toast offers to ask the question again.
     const unreachable = run.kind === 'workspace' && !!run.request && !run.request.conversation_id && !saved;
-    settleChatActivity(run.scope, outcome, true, unreachable ? { unreachable, prompt: run.request?.message ?? null } : {});
+    settleChatActivity(run.scope, outcome, true, {
+      // A view attached to this run has it on screen, even before that view has
+      // registered the run's new `conv:` scope (a fast answer on a new thread).
+      attached: run.attached > 0,
+      ...(unreachable ? { unreachable, prompt: run.request?.message ?? null } : {}),
+    });
     if (unreachable && !run.attached) consumeRun(run);
   }
   if (run.kind === 'workspace') broadcastHistory();
@@ -1246,12 +1256,20 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
     cancelFrame(run);
     setLive(run, (live) => ({ ...live, connection: 'recovering', text: '' }));
   };
+  /**
+   * Between reads (a backoff, a wait, a park) no read is open: a park asked for now
+   * finds nothing to close and leaves no flag behind; the next read parks normally.
+   */
+  const between = () => {
+    run.read = null;
+  };
   const reattach = async () => {
     // From a POST stream the ring is read from its start (the projection is rebuilt
     // by its `turn.start`); a re-attach that dropped resumes after the last seq.
     if (mode !== 'events') after = 0;
     mode = 'events';
     drops += 1;
+    between();
     setLive(run, (live) => (live.connection === 'recovering' ? live : { ...live, connection: 'recovering' }));
     if (drops > 1) await sleep(recoveryDelayMs(drops - 2, null), signal);
   };
@@ -1264,6 +1282,7 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
   const park = async (malformed: number | null) => {
     if (mode === 'post') after = malformed === 0 ? postEvents : 0;
     mode = 'events';
+    between();
     await parkedWait(run);
   };
 
@@ -1275,10 +1294,12 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
       return;
     }
     if (run.state !== 'running') return;
-    // One controller per read: parking closes the read, not the run.
+    // One controller per read: parking closes the read, not the run. A park asked for
+    // the previous read is spent: this read starts unparked and parks on its own.
     const read = new AbortController();
     const closeRead = () => read.abort();
     signal.addEventListener('abort', closeRead, { once: true });
+    run.parkRequested = false;
     run.read = read;
     if (!run.attached) scheduleParkCheck(run);
     try {
@@ -1357,6 +1378,7 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
             return;
           }
           if (!run.live.waiting) setLive(run, (live) => ({ ...live, waiting: true }));
+          between();
           await sleep(recoveryDelayMs(busyWaits, apiRetryAfterSeconds(error)), signal);
           busyWaits += 1;
           continue;
@@ -1375,6 +1397,7 @@ async function drive(run: RunInternals, body: ChatRequest | null, blocking: bool
             continue;
           }
           if (resent) {
+            between();
             await sleep(recoveryDelayMs(waits, apiRetryAfterSeconds(error)), signal);
             waits += 1;
             continue;

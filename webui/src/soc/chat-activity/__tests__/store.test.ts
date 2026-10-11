@@ -10,6 +10,7 @@ import {
   clearChatActivity,
   dropChatActivity,
   getChatActivity,
+  getViewedChatScopes,
   isChatActivityViewed,
   markChatActivitySeen,
   markViewedChatActivitySeen,
@@ -130,6 +131,39 @@ describe('chat activity store', () => {
     expect(find('conv:a')).toBeNull();
     expect(find('conv:q')).toMatchObject({ status: 'needs_input', seen: true });
     expect(settled.every((event) => event.viewed)).toBe(true);
+  });
+
+  it('moves the view with a new thread’s turn at once when its draft becomes `conv:<id>`', () => {
+    // The view registers the new scope only in a later effect; an answer can land first.
+    putChatActivity(entry({ scope: 'draft:key-9' }));
+    const releaseDraft = view('draft:key-9');
+    rekeyChatActivity('draft:key-9', 'conv:fast', { conversationId: 'fast' });
+    expect(isChatActivityViewed('conv:fast')).toBe(true);
+    expect(isChatActivityViewed('draft:key-9')).toBe(false);
+    expect(getViewedChatScopes().has('conv:fast')).toBe(true);
+    settleChatActivity('conv:fast', 'done');
+    expect(find('conv:fast')).toBeNull();
+    expect(settled).toMatchObject([{ outcome: 'done', viewed: true }]);
+    // The view then re-registers the new scope and lets go of the old one: no view leaks.
+    const releaseConv = view('conv:fast');
+    releaseDraft();
+    expect(isChatActivityViewed('conv:fast')).toBe(true);
+    releaseConv();
+    expect(isChatActivityViewed('conv:fast')).toBe(false);
+    expect(getViewedChatScopes().size).toBe(0);
+  });
+
+  it('counts a turn with a view attached as on screen (the runner knows before the view registers)', () => {
+    putChatActivity(entry({ scope: 'conv:att' }));
+    settleChatActivity('conv:att', 'done', true, { attached: true });
+    expect(find('conv:att')).toBeNull();
+    expect(settled).toMatchObject([{ viewed: true }]);
+    // Not while the tab is hidden.
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    putChatActivity(entry({ scope: 'conv:att2' }));
+    settleChatActivity('conv:att2', 'done', true, { attached: true });
+    expect(find('conv:att2')?.status).toBe('unread');
+    visibility.mockRestore();
   });
 
   it('counts a hidden tab as not looking, and reads the answer once the tab is visible', () => {

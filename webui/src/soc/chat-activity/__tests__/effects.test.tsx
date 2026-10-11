@@ -5,19 +5,21 @@
  * outcome); the list adds titles, unread answers and waiting questions and drops marks
  * for threads that are gone; a turn that finished off screen toasts once (the toaster's
  * own live region announces it, nothing else repeats it); the tab title carries ● / ✓;
- * owner-only `chat.turn` frames only nudge the runner; sign-out or another user forgets
- * everything, here and in the user's other tabs.
+ * no live connection of its own (the runner's poll hears turn ends); titles are cleaned
+ * with the chat's shared sanitizer; a sign-out the server confirms, or another user,
+ * forgets everything, here and in the user's other tabs, while a shell that only went
+ * away (the setup wizard, a boot error) forgets nothing.
  */
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, waitFor } from '@testing-library/react';
 
-const { getMock, toastMock, streamState, authState, runnerMock } = vi.hoisted(() => {
+const { getMock, toastMock, streamSpy, authState, runnerMock } = vi.hoisted(() => {
   const toast = Object.assign(vi.fn(), { success: vi.fn(), warning: vi.fn(), error: vi.fn() });
   return {
     getMock: vi.fn(),
     toastMock: toast,
-    streamState: { enabled: false, onEvent: null as null | ((event: { type: string; data: unknown; lastEventId: string }) => void) },
+    streamSpy: vi.fn(() => ({ live: false })),
     authState: { authEnabled: true, can: true },
     runnerMock: { trackRun: vi.fn(), pollParkedRuns: vi.fn() },
   };
@@ -28,22 +30,19 @@ vi.mock('sonner', () => ({ toast: toastMock }));
 vi.mock('@/soc/auth', () => ({
   useOptionalAuth: () => ({ authEnabled: authState.authEnabled, hasPermission: () => authState.can }),
 }));
-vi.mock('@/lib/useEventStream', () => ({
-  useEventStream: (_topics: string[], options: { enabled?: boolean; onEvent?: typeof streamState.onEvent }) => {
-    streamState.enabled = !!options.enabled;
-    streamState.onEvent = options.onEvent ?? null;
-    return { live: false };
-  },
-}));
+// The shell's own streams live elsewhere: this observer must never open one.
+vi.mock('@/lib/useEventStream', () => ({ useEventStream: streamSpy }));
 // The turn runner is the lazy chat code: here it is a double that records what it is
 // asked to follow (its own suite covers parking, polling and outcomes).
 vi.mock('@/soc/chat/turn-runner', () => runnerMock);
 
 import { AnnouncerProvider } from '@/soc/components/announcer';
+import { displayText } from '@/soc/chat/stream-events';
 import ActivityEffects, { ACTIVITY_CHANNEL, settledCopy, titlePrefix } from '../ActivityEffects';
 import {
   clearChatActivity,
   getChatActivity,
+  onChatActivity,
   putChatActivity,
   settleChatActivity,
   takeCaseChatRequest,
@@ -95,6 +94,10 @@ const find = (scope: string) => getChatActivity().entries.find((item) => item.sc
 
 let active: unknown[] = [];
 let rows: unknown[] | (() => Promise<unknown[]>) = [];
+/** `GET /auth/me` after the shell went away (`null`: the server cannot be reached). */
+let me: unknown = null;
+const SIGNED_OUT = { auth_enabled: true, authenticated: false, user: null };
+const signedIn = (username: string) => ({ auth_enabled: true, authenticated: true, user: { username } });
 
 beforeEach(() => {
   clearChatActivity();
@@ -102,12 +105,18 @@ beforeEach(() => {
   vi.stubGlobal('BroadcastChannel', FakeChannel);
   active = [];
   rows = [];
+  me = null;
   authState.authEnabled = true;
   authState.can = true;
+  streamSpy.mockClear();
   getMock.mockReset();
   getMock.mockImplementation(async (path: string) => {
     if (path === 'chat/turns/active') return active;
     if (path === 'chat/conversations') return { conversations: typeof rows === 'function' ? await rows() : rows };
+    if (path === 'auth/me') {
+      if (me === null) throw new Error('offline');
+      return me;
+    }
     throw new Error(`unexpected ${path}`);
   });
   // Like the runner: a followed turn is this tab's own, parked run.
@@ -166,6 +175,8 @@ describe('pure helpers', () => {
     const activity = entry({ scope: 'conv:c', title: 'Investigate host X' });
     expect(settledCopy({ activity, outcome: 'done', viewed: true })).toBeNull();
     expect(settledCopy({ activity, outcome: 'stopped', viewed: false })).toBeNull();
+    // A stopped new thread that saved nothing: no "could not be saved" either.
+    expect(settledCopy({ activity, outcome: 'stopped', viewed: false, unreachable: true, prompt: 'Investigate host X' })).toBeNull();
     expect(settledCopy({ activity, outcome: 'done', viewed: false })).toEqual({
       heading: 'Answer ready',
       title: 'Investigate host X',
@@ -197,60 +208,56 @@ describe('ActivityEffects', () => {
       expect.objectContaining({ scope: 'conv:c1', kind: 'workspace', turnId: 'turn-1', conversationId: 'c1', label: 'Searching logs', lookups: 2 }),
     );
     expect(document.title).toBe('● Agentic SOC');
-    // Owner-only frames only while a parked turn runs (auth on, tab visible): progress
-    // updates the label; an end asks the runner to look now (it reads the outcome).
-    expect(streamState.enabled).toBe(true);
-    act(() => streamState.onEvent?.({ type: 'chat.turn', data: { turn_id: 'turn-1', conversation_id: 'c1', phase: 'progress', label: 'Writing the answer', lookups: 3 }, lastEventId: '' }));
-    expect(find('conv:c1')).toMatchObject({ label: 'Writing the answer', lookups: 3 });
-    await act(async () => {
-      streamState.onEvent?.({ type: 'chat.turn', data: { turn_id: 'turn-1', conversation_id: 'c1', phase: 'failed' }, lastEventId: '' });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-    expect(runnerMock.pollParkedRuns).toHaveBeenCalledTimes(1);
-    // It never settles a turn itself (it cannot know the outcome): no toast, no mark.
+    // It never settles a turn itself (the runner reads the outcome): no toast, no mark.
     expect(find('conv:c1')?.status).toBe('running');
     expect(toastMock.success).not.toHaveBeenCalled();
-    // A turn this tab already follows is never handed over twice.
-    await act(async () => {
-      streamState.onEvent?.({ type: 'chat.turn', data: { turn_id: 'turn-9', conversation_id: 'c9', phase: 'started' }, lastEventId: '' });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-    expect(runnerMock.trackRun).toHaveBeenCalledTimes(1);
   });
 
-  it('follows a case turn the same way, and a failed frame never reads as an answer', async () => {
+  it('follows a case turn the same way', async () => {
     active = [{ turn_id: 'turn-c', conversation_id: null, case_id: 'case-7', started_at: '2026-10-11T10:00:00Z', label: 'Thinking', lookups: 0, status: 'running' }];
     await mountEffects();
     await waitFor(() => expect(find('case:case-7')).toMatchObject({ kind: 'case', caseId: 'case-7', parked: true }));
-    active = [];
-    await act(async () => {
-      streamState.onEvent?.({ type: 'chat.turn', data: { turn_id: 'turn-c', case_id: 'case-7', phase: 'failed' }, lastEventId: '' });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-    expect(runnerMock.pollParkedRuns).toHaveBeenCalled();
+    expect(runnerMock.trackRun).toHaveBeenCalledWith(expect.objectContaining({ scope: 'case:case-7', kind: 'case', caseId: 'case-7', turnId: 'turn-c' }));
     expect(toastMock.success).not.toHaveBeenCalled();
-    expect(find('case:case-7')?.status).not.toBe('unread');
   });
 
-  it('opens no frame stream without auth, and none while the tab is hidden', async () => {
-    authState.authEnabled = false;
-    active = [{ turn_id: 'turn-2', conversation_id: 'c2', started_at: '2026-10-10T10:00:00Z', label: 'Thinking', lookups: 0, status: 'running' }];
-    const first = await mountEffects();
-    await waitFor(() => expect(find('conv:c2')?.parked).toBe(true));
-    expect(streamState.enabled).toBe(false);
-    first.unmount();
-    await settle(5);
-    authState.authEnabled = true;
-    const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  it('opens no live connection of its own while answers run in the background (the runner polls)', async () => {
+    const sources: string[] = [];
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        constructor(url: string) {
+          sources.push(url);
+        }
+        close() {}
+        addEventListener() {}
+      },
+    );
+    active = [
+      { turn_id: 'turn-2', conversation_id: 'c2', started_at: '2026-10-10T10:00:00Z', label: 'Thinking', lookups: 0, status: 'running' },
+      { turn_id: 'turn-3', case_id: 'case-3', started_at: '2026-10-10T10:00:00Z', label: 'Thinking', lookups: 0, status: 'running' },
+    ];
     await mountEffects();
     await waitFor(() => expect(find('conv:c2')?.parked).toBe(true));
-    expect(streamState.enabled).toBe(false);
-    hidden.mockReturnValue('visible');
-    act(() => {
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-    expect(streamState.enabled).toBe(true);
-    hidden.mockRestore();
+    expect(find('case:case-3')?.parked).toBe(true);
+    await settle();
+    expect(streamSpy).not.toHaveBeenCalled();
+    expect(sources).toEqual([]);
+  });
+
+  it('cleans listed titles and labels with the chat’s shared sanitizer (bidi, TAG and soft-hyphen characters go)', async () => {
+    // Prompt-derived titles can hold pasted log text (#9): an Arabic letter mark, TAG
+    // "ASCII smuggling" characters, a soft hyphen and a variation selector.
+    const title = 'Isolate dc01\u061c now\u{E0049}\u{E0047}\u{E004E}\u00adplease\ufe0f';
+    active = [{ turn_id: 'turn-t', conversation_id: 'c-run', started_at: '2026-10-10T10:00:00Z', label: 'Search\u202eing\u{E0041} logs', lookups: 0, status: 'running' }];
+    rows = [{ id: 'c-unread', title, unread: true, status: 'idle', updated_at: '2026-10-11T10:00:00Z' }];
+    await mountEffects();
+    await waitFor(() => expect(find('conv:c-unread')).not.toBeNull());
+    const stored = find('conv:c-unread')?.title ?? '';
+    expect(stored).toBe(displayText(title, 80));
+    expect(stored).toBe('Isolate dc01 nowplease');
+    expect(runnerMock.trackRun).toHaveBeenCalledWith(expect.objectContaining({ scope: 'conv:c-run', label: 'Searching logs' }));
+    expect(getChatActivity().workspace.text).not.toMatch(/[\u00ad\u061c\ufe0f\u202e]|[\u{E0000}-\u{E0FFF}]/u);
   });
 
   it('shows unread answers and waiting questions from the list on load, never failed ones', async () => {
@@ -405,25 +412,31 @@ describe('ActivityEffects', () => {
 });
 
 describe('ActivityEffects lifetime', () => {
-  it('forgets every turn on sign-out and on another user', async () => {
+  it('forgets every turn on a sign-out the server confirms, and on another user', async () => {
+    const cleared = vi.fn();
+    const stop = onChatActivity('clear', cleared);
     const view = render(<ActivityEffects username="alice" onNavigate={vi.fn()} />);
     act(() => putChatActivity(entry({ scope: 'conv:a' })));
     view.rerender(<ActivityEffects username="bob" onNavigate={vi.fn()} />);
     expect(getChatActivity().entries).toEqual([]);
+    expect(cleared).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(getMock).toHaveBeenCalledWith('chat/turns/active'));
     act(() => putChatActivity(entry({ scope: 'conv:b' })));
-    view.unmount();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    });
+    me = SIGNED_OUT;
+    view.unmount(); // sign-out: the shell goes away and the server says nobody is signed in
+    await settle();
+    expect(getMock).toHaveBeenCalledWith('auth/me');
     expect(getChatActivity().entries).toEqual([]);
+    expect(cleared).toHaveBeenCalledTimes(2);
+    stop();
   });
 
-  it('tells the user’s other tabs to forget on sign-out, and on another user', async () => {
+  it('tells the user’s other tabs to forget on a confirmed sign-out, and on another user', async () => {
     const view = render(<ActivityEffects username="alice" onNavigate={vi.fn()} />);
     await settle();
     const otherTab = new FakeChannel(ACTIVITY_CHANNEL);
     act(() => putChatActivity(entry({ scope: 'conv:a', title: 'Secret question' })));
+    me = SIGNED_OUT;
     view.unmount(); // sign-out: the shell goes away
     await settle();
     expect(otherTab.received).toContainEqual({ u: 'alice', m: { t: 'clear' } });
@@ -442,7 +455,56 @@ describe('ActivityEffects lifetime', () => {
     await settle();
   });
 
+  it('keeps every turn when the shell goes away but the user is still signed in (setup wizard, boot error)', async () => {
+    const cleared = vi.fn();
+    const stop = onChatActivity('clear', cleared);
+    for (const answer of [signedIn('alice'), null /* the server cannot be reached */]) {
+      me = answer;
+      const view = render(<ActivityEffects username="alice" onNavigate={vi.fn()} />);
+      await settle();
+      const otherTab = new FakeChannel(ACTIVITY_CHANNEL);
+      act(() => putChatActivity(entry({ scope: 'conv:long', conversationId: 'long', turnId: 't-long', title: 'Long hunt' })));
+      view.unmount(); // "Re-run setup wizard", or a boot error
+      await settle();
+      expect(getMock).toHaveBeenCalledWith('auth/me');
+      expect(find('conv:long')).toMatchObject({ status: 'running', title: 'Long hunt' });
+      expect(cleared).not.toHaveBeenCalled();
+      expect(otherTab.received).not.toContainEqual(expect.objectContaining({ m: { t: 'clear' } }));
+      otherTab.close();
+      getMock.mockClear();
+    }
+    // The shell comes back for the same user: the turn is still shown.
+    await mountEffects();
+    expect(find('conv:long')?.status).toBe('running');
+    expect(cleared).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('a shell for another user starts clean even when a sign-out could not be confirmed', async () => {
+    const view = render(<ActivityEffects username="alice" onNavigate={vi.fn()} />);
+    await settle();
+    act(() => putChatActivity(entry({ scope: 'conv:a', title: 'Alice’s question' })));
+    me = null; // offline: nothing is forgotten yet
+    view.unmount();
+    await settle();
+    expect(find('conv:a')).not.toBeNull();
+    await mountEffects(vi.fn(), 'bob');
+    expect(find('conv:a')).toBeNull();
+  });
+
+  it('with auth off nobody signs out: the shell going away forgets nothing and asks nothing', async () => {
+    authState.authEnabled = false;
+    const view = render(<ActivityEffects username="" onNavigate={vi.fn()} />);
+    await settle();
+    act(() => putChatActivity(entry({ scope: 'conv:a' })));
+    view.unmount();
+    await settle();
+    expect(getMock).not.toHaveBeenCalledWith('auth/me');
+    expect(find('conv:a')).not.toBeNull();
+  });
+
   it('survives a development double mount without clearing', async () => {
+    me = SIGNED_OUT;
     const view = render(
       <React.StrictMode>
         <ActivityEffects username="alice" onNavigate={vi.fn()} />
@@ -453,8 +515,10 @@ describe('ActivityEffects lifetime', () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     });
     expect(find('conv:a')).not.toBeNull();
-    // Nor does it tell the other tabs to forget.
+    // Nor does it tell the other tabs to forget, or ask the server.
     expect(FakeChannel.all.flatMap((channel) => channel.posted)).not.toContainEqual(expect.objectContaining({ m: { t: 'clear' } }));
+    expect(getMock).not.toHaveBeenCalledWith('auth/me');
     view.unmount();
+    await settle();
   });
 });
