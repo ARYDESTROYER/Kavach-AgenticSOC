@@ -50,8 +50,28 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * the baseline is 05a40d1 re-measured with only that change applied (its own vite
  * config): 391,893 B, which is 4,644 B less. The revamp stays capped at +1,024 B. Re-measure
  * the same way if another pre-revamp module leaves or joins the entry.
+ *
+ * Rebased for Round 12 (SPEC §6, WP-GEN-A). The round's features grew the entry from
+ * 392,879 B (6769207, the round's branch point) to 399,967 B: +7,088 B, 8,074 B over the
+ * 391,893 B baseline and 33 B under the 400,000 B ceiling. The growth: Remember me in
+ * Login / auth / the api client (~2.8 kB), per-viewer preference writes (`patchMisc`,
+ * reduced transparency) and the nav activity glyph in prefs.tsx / NavSidebar.tsx
+ * (~2.6 kB), the chat activity store, glyph and title (~0.8 kB, SPEC D13: the only new
+ * entry code the round planned) and the design foundations (ui-recipes, transparency,
+ * overlay origins: ~0.9 kB net). WP-GEN-A then moved code first
+ * paint never needs out of the entry, keeping every feature:
+ *   - the command palette body (CommandPalette, cmdk, ui/command: ~20 kB) is a fail-soft
+ *     lazy chunk AppShell mounts on the first Cmd/Ctrl-K or search click (warmed when the
+ *     browser is idle or an opener is hovered);
+ *   - the Settings section metadata (settings-sections-meta + settings-dirty: ~15.5 kB)
+ *     left with it, once the shell's unsaved-changes hook took `deepEqual` from the
+ *     dependency-free lib/deep-equal.ts instead of settings-dirty.ts;
+ *   - the shell's two Blob downloads (job artifacts, MFA recovery codes) now share
+ *     lib/download-blob.ts, whose deferred revoke cannot cancel a download (+223 B).
+ * Measured with `npm run build:app`: 365,547 B, 34,420 B less than before the pass. The
+ * baseline is that measurement; later work keeps the +1,024 B budget over it.
  */
-const PRE_REVAMP_ENTRY_BYTES = 391_893;
+const PRE_REVAMP_ENTRY_BYTES = 365_547;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -112,10 +132,9 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
     if (!m) throw new Error('could not find the entry chunk in dist/index.html');
     const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
-    // Hard ceiling below the 537 777-byte regression. Today the entry chunk is
-    // ~390 kB, so the remaining headroom is ~10 kB, NOT the ~136 kB an older
-    // "~264 kB" note in this comment implied — the next eager import of any
-    // moderate module will trip this. Keep the figure current when it moves.
+    // Hard ceiling below the 537 777-byte regression. After Round 12 (WP-GEN-A) the
+    // entry chunk is ~366 kB, so the headroom is ~34 kB; the recorded-baseline test
+    // below still caps any growth at 1 kB. Keep the figure current when it moves.
     expect(bytes).toBeLessThan(400_000);
   });
 
@@ -127,6 +146,17 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     // Chat, reports and the palette's chat entries reach the entry only as nav metadata
     // and `React.lazy` thunks; everything else lives in lazy chunks.
     expect(bytes - PRE_REVAMP_ENTRY_BYTES, `entry is ${bytes} B`).toBeLessThanOrEqual(REVAMP_ENTRY_BUDGET_BYTES);
+  });
+
+  it('the command palette body (cmdk) and the Settings section metadata stay off first paint', () => {
+    // Round 12 WP-GEN-A: AppShell mounts the palette lazily; cmdk writes its `cmdk-*`
+    // attribute names as string literals, so their absence proves cmdk is not in the entry.
+    const entry = readEntry();
+    expect(entry).not.toContain('cmdk-input');
+    expect(entry).not.toContain('cmdk-item');
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    expect(assets.some((f) => /^CommandPalette-[^/]+\.js$/.test(f))).toBe(true);
+    expect(readHtml()).not.toMatch(/modulepreload[^>]*CommandPalette/);
   });
 
   it("the entry's preload lists never repeat a chunk the entry already imports statically", () => {
@@ -177,6 +207,23 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
       ...settingsChunks.map((f) => fs.statSync(path.join(DIST, 'assets', f)).size),
     );
     expect(biggest).toBeGreaterThan(50_000);
+  });
+});
+
+describe('first-paint shell keeps the palette and Settings metadata lazy (source guard)', () => {
+  const read = (...seg: string[]) => fs.readFileSync(path.join(WEBUI_ROOT, 'src', ...seg), 'utf8');
+
+  it('AppShell reaches the command palette only through import()', () => {
+    const text = read('soc', 'AppShell.tsx');
+    // A type-only import is erased; a value import would put cmdk back on first paint.
+    expect(text).not.toMatch(/^import\s+(?!type\b)[^;]*['"]\.\/components\/CommandPalette['"]/m);
+    expect(text).toMatch(/import\(\s*['"]\.\/components\/CommandPalette['"]\s*\)/);
+  });
+
+  it('the eager draft hook takes deepEqual from the dependency-free lib module', () => {
+    const text = read('soc', 'hooks', 'useDirtyDraft.ts');
+    expect(text).toMatch(/from\s+['"]@\/lib\/deep-equal['"]/);
+    expect(text).not.toMatch(/from\s+['"][^'"]*settings-dirty['"]/);
   });
 });
 

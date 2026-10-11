@@ -1152,6 +1152,81 @@ def test_a_view_change_reuses_the_stored_numbers(client: TestClient) -> None:
     assert [b.get("kind") or b.get("type") for b in second["blocks"]] == ["table"]
 
 
+@pytest.mark.parametrize("question", ["Which hosts generated the most alerts?",
+                                      "How many cases do we have by severity?"])
+def test_the_step_inspector_follow_ups_explain_and_rerun_that_step(client: TestClient, question: str) -> None:
+    """WP-GEN-A: the step inspector's two follow-ups, worded exactly as the console words
+    them (``StepInspector.tsx``): "Explain step N" explains that step from the
+    conversation (no lookup, never product help); "Run step N again" re-runs exactly
+    that lookup with its own inputs, though the question names no window."""
+    first = _stream(client, question, persist_conversation=True, idempotency_key=_key("step", question, "1"))
+    step = next(s for s in _tool_steps(first) if s["status"] == "ok")
+    cid = first["conversation_id"]
+    of = f" of your answer to \u201c{question}\u201d"
+    explain = _stream(client, f"Explain step {step['index']} ({step['label']}){of}: what it looked up, what it "
+                              "found and how it shaped the answer.", origin="follow_up", persist_conversation=True,
+                      conversation_id=cid, idempotency_key=_key("step", question, "2"))
+    assert not _tool_steps(explain), explain["steps"]
+    assert explain["answer_kind"] == "conversation"
+    assert explain["answer"].startswith(f"Step {step['index']} ({step['label']}) of my answer to \u201c{question}"
+                                        "\u201d read "), explain["answer"]
+    assert f"(`{step['tool']}`)" in explain["answer"] and "**What it found:**" in explain["answer"]
+    rerun = _stream(client, f"Run step {step['index']} ({step['label']}){of} again with the same inputs and update "
+                            "the answer.", origin="retry_step", persist_conversation=True, conversation_id=cid,
+                    idempotency_key=_key("step", question, "3"))
+    (again,) = _tool_steps(rerun)
+    assert again["tool"] == step["tool"] and again["status"] == "ok", again
+    assert again["params"] == step["params"], (again["params"], step["params"])
+    assert rerun["answer"].startswith(f"Re-ran step {step['index']} ({step['label']}) of my answer to "), rerun["answer"]
+
+
+def _chip(value: Any) -> str:
+    """A step parameter as the lookup digest writes it (``chat_protocol._digest_value``)."""
+    return ("true" if value else "false") if isinstance(value, bool) else str(value)
+
+
+@pytest.mark.parametrize("question", ["Deep dive into user pnair this month",
+                                      "Create a report of lifetime performance"])
+def test_step_follow_ups_name_the_exact_step_of_a_multi_round_answer(client: TestClient, question: str) -> None:
+    """WP-GEN-A review: an answer with several planning rounds numbers a model step
+    before every round, and runs the same tool more than once ("Planned lookups" between
+    rounds of ``log_stats`` or ``soc_metrics``). "Explain step N" must explain step N's
+    own lookup and "Run step N again" must re-run exactly that lookup with all of its
+    inputs, for EVERY lookup of the answer, never a sibling with the same label."""
+    first = _stream(client, question, persist_conversation=True, idempotency_key=_key("rounds", question, "0"))
+    steps = [s for s in _tool_steps(first) if s["status"] == "ok"]
+    models = [s for s in first.get("steps") or [] if s.get("kind") != "tool"]
+    assert len(models) >= 3, [s.get("label") for s in first.get("steps") or []]  # more than one planning round
+    tools = [s["tool"] for s in steps]
+    assert len(tools) > len(set(tools)), tools  # some tool ran more than once
+    cid = first["conversation_id"]
+    of = f" of your answer to \u201c{question}\u201d"
+    for n, step in enumerate(steps):
+        index, label = step["index"], step["label"]
+        explain = _stream(client, f"Explain step {index} ({label}){of}: what it looked up, what it found and how "
+                                  "it shaped the answer.", origin="follow_up", persist_conversation=True,
+                          conversation_id=cid, idempotency_key=_key("rounds", question, "explain", str(n)))
+        body = explain["answer"]
+        assert not _tool_steps(explain), (index, explain["steps"])
+        assert body.startswith(f"Step {index} ({label}) of my answer to \u201c{question}\u201d read "), (index, body)
+        assert f"(`{step['tool']}`)" in body, (index, step["tool"], body)
+        looked_up = next(line for line in body.splitlines() if line.startswith("- **What it looked up:**"))
+        for name, value in list(step["params"].items())[:8]:
+            if value in (None, "") or len(_chip(value)) > 60:
+                continue
+            assert f"`{name}={_chip(value)}`" in looked_up, (index, name, value, looked_up)
+        if step["tool"] in ("lookup_indicator", "recall_observation"):
+            continue
+        rerun = _stream(client, f"Run step {index} ({label}){of} again with the same inputs and update the answer.",
+                        origin="retry_step", persist_conversation=True, conversation_id=cid,
+                        idempotency_key=_key("rounds", question, "rerun", str(n)))
+        (again,) = _tool_steps(rerun)
+        assert again["tool"] == step["tool"] and again["status"] == "ok", (index, again)
+        assert again["params"] == step["params"], (index, again["params"], step["params"])
+        assert rerun["answer"].startswith(f"Re-ran step {index} ({label}) of my answer to \u201c{question}\u201d "
+                                          "with the same inputs:"), (index, rerun["answer"][:300])
+
+
 # --------------------------------------------------------------------------- #
 # A scripted model: the inputs a real model sends for the screenshot questions.
 # --------------------------------------------------------------------------- #

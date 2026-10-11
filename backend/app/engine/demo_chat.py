@@ -166,7 +166,8 @@ _LEGACY_PREFIX = "Results of the es_query are summarised below"
 _LEGACY_NOTE_PREFIX = "Note: the requested time window was limited"
 # The replay digest (chat_protocol.lookup_digest / block_listing).
 _DIGEST_LINE_RE = re.compile(r"^Lookups (m[1-9][0-9]{0,2}): (.*)$")
-_DIGEST_CALL_RE = re.compile(r"([a-z][a-z0-9_]{0,63})\(([^()]*)\) → ")
+# ``step N`` (when stored) is the run-log number the console shows for that lookup.
+_DIGEST_CALL_RE = re.compile(r"(?:step ([1-9][0-9]{0,3}) )?([a-z][a-z0-9_]{0,63})\(([^()]*)\) → ")
 _DIGEST_ARG_RE = re.compile(r"^([A-Za-z0-9_.:-]{1,40})=(.*)$")
 _BLOCK_LINE_RE = re.compile(
     r'^(m[1-9][0-9]{0,2})\.b([1-9][0-9]{0,2}) ([a-z_]+) "([^"\n]*)" views=\[([a-z_,]*)\]$')
@@ -268,6 +269,12 @@ class PriorCall:
     key: str
     tool: str
     args: tuple[tuple[str, str], ...]
+    #: What the digest says the lookup returned ("12 cases …", "error: Not found");
+    #: untrusted display text, written into an answer only as plain text.
+    outcome: str = ""
+    #: The run-log step number the console shows for this lookup (``step N`` in the
+    #: digest), or None for a digest written without it.
+    step: int | None = None
 
     def arg(self, name: str) -> str | None:
         return next((v for k, v in self.args if k == name), None)
@@ -290,6 +297,10 @@ class PromptView:
     #: The analyst's earlier questions in this conversation (their own words, oldest
     #: first): a bare clarify option ("Cases") is read against the one before it.
     prior_questions: list[str] = field(default_factory=list)
+    #: Each retained earlier answer as ``(key, question)``: its ``mK`` replay key and
+    #: the analyst's question it replied to ("" when none). The step inspector's
+    #: follow-ups ("Explain step 2 … of your answer to “…”") name an answer this way.
+    prior_answers: list[tuple[str, str]] = field(default_factory=list)
     rounds: list[list[Result]] = field(default_factory=list)
     reference: Reference = field(default_factory=Reference)
     final_only: bool = False
@@ -512,14 +523,20 @@ def _parse_history(view: PromptView, messages: Sequence[Mapping[str, Any]]) -> N
                 digest = _DIGEST_LINE_RE.match(line)
                 if not digest:
                     continue
-                for call in _DIGEST_CALL_RE.finditer(digest.group(2)):
+                text = digest.group(2)
+                found = list(_DIGEST_CALL_RE.finditer(text))
+                for position, call in enumerate(found):
                     args: list[tuple[str, str]] = []
-                    for part in call.group(2).split(", "):
+                    for part in call.group(3).split(", "):
                         arg = _DIGEST_ARG_RE.match(part.strip())
                         if arg:
                             args.append((arg.group(1), arg.group(2)))
-                    view.prior_calls.append(PriorCall(key=digest.group(1), tool=call.group(1),
-                                                      args=tuple(args)))
+                    # The outcome runs to the next call (the digest joins calls with "; ").
+                    end = found[position + 1].start() if position + 1 < len(found) else len(text)
+                    outcome = text[call.end():end].strip().removesuffix(";").strip()
+                    view.prior_calls.append(PriorCall(
+                        key=digest.group(1), tool=call.group(2), args=tuple(args), outcome=outcome,
+                        step=int(call.group(1)) if call.group(1) else None))
 
 
 def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
@@ -554,6 +571,7 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
     # reads the question it stands for, as a model reads the fenced reference.
     view.question = entity_turn_question(view.question) or view.question
     _parse_history(view, msgs[:live])
+    asked_last: str | None = None
     for message in msgs[:live]:
         # Earlier user turns are replayed as plain user messages (never a tool result,
         # which opens with an engine header, nor the product reference).
@@ -561,7 +579,12 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
         if (_role(message) == "user" and content.strip() and not TOOL_CALL_HEADER_RE.match(content.split("\n", 1)[0])
                 and not content.startswith(PRODUCT_REFERENCE_HEADER)):
             asked = (extract_user_turn(content) or content).strip()
-            view.prior_questions.append((entity_turn_question(asked) or asked)[:500])
+            asked_last = (entity_turn_question(asked) or asked)[:500]
+            view.prior_questions.append(asked_last)
+        elif _role(message) == "assistant" and _fence_body(content, "prior_answer"):
+            # A replayed answer: the engine numbers them m1, m2 … oldest first.
+            view.prior_answers.append((f"m{len(view.prior_answers) + 1}", asked_last or ""))
+            asked_last = None
 
     echo: list[tuple[str, dict[str, Any]]] | None = None
     echo_pending = False
@@ -863,6 +886,20 @@ def _first_view(result: Result | None, kind: str, preferred: Sequence[str], nth:
 # Intent classification (SPEC §5.5 table, plus a few product rules from §5.6).
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class StepRef:
+    """A step inspector follow-up (``StepInspector.tsx``): "Explain step 2 (Counted
+    cases) of your answer to “…”: …" or "Run step 2 (…) of your answer to “…” again …".
+    ``recency`` names which of several answers to the same question (1 = latest, 0 =
+    unique or unnamed); ``quote`` is that question as the console quoted it."""
+
+    verb: str            # "explain" | "rerun"
+    index: int
+    label: str
+    quote: str | None = None
+    recency: int = 0
+
+
+@dataclass(frozen=True)
 class Ask:
     intent: str
     question: str
@@ -908,6 +945,8 @@ class Ask:
     # the indicator taint rule (§4.8), the plan never sends that value to a third-party
     # lookup (the engine would refuse it anyway).
     no_lookup: bool = False
+    # Round 12 WP-GEN-A: a step inspector follow-up about one step of an earlier answer.
+    step: StepRef | None = None
 
 
 _IPV4_RE =re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
@@ -994,6 +1033,36 @@ _CHANGE_RE = re.compile(
     r"assign|reassign|escalate|approve|reject|create|add|update|change|modify|set|turn (?:on|off)|"
     r"restart|reset|block|isolate|contain|quarantine|suppress|mute|acknowledge|ack|edit|rename|"
     r"tune|purge|wipe)\b")
+#: The step inspector's follow-ups (``StepInspector.tsx`` ``explainStepQuestion`` and
+#: ``retryStepQuestion``): engine words around the step's template label and, when
+#: known, a quote of the question its answer replied to.
+_STEP_ASK_RE = re.compile(
+    r"^(?P<verb>explain|run) step (?P<index>\d{1,4}) \((?P<label>[^\n]{1,120}?)\)"
+    r"(?: of your (?:(?P<which>latest|second|third|fourth|fifth|\d{1,4}(?:st|nd|rd|th))(?: most recent)? )?"
+    r"answer to [\u201c\"](?P<quote>[^\n]{1,200})[\u201d\"])?"
+    r"(?P<rest>(?::|\s+again\b)[^\n]*)$",
+    re.IGNORECASE)
+_RECENCY_WORDS = {"latest": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+
+
+def _step_ask(question: str) -> StepRef | None:
+    """The step a step inspector follow-up names, or None for any other question."""
+    match = _STEP_ASK_RE.match(question.strip())
+    if not match:
+        return None
+    verb = match.group("verb").lower()
+    rest = match.group("rest").lower()
+    if verb == "explain" and not rest.startswith(":"):
+        return None
+    if verb == "run" and not rest.lstrip().startswith("again"):
+        return None
+    which = (match.group("which") or "").lower()
+    recency = _RECENCY_WORDS.get(which) or (int(re.sub(r"\D", "", which)) if which else 0)
+    return StepRef(verb="explain" if verb == "explain" else "rerun", index=int(match.group("index")),
+                   label=match.group("label").strip(), quote=(match.group("quote") or "").strip() or None,
+                   recency=recency)
+
+
 _REMEMBER_RE = re.compile(r"^\s*(?:please\s+)?(?:remember|note)\s+(?:that\s+)?(.{3,500})$", re.IGNORECASE)
 _UNSUPPORTED_RE = re.compile(
     r"\b(user accounts?|console users|users and roles|roles|active sessions|sessions|background jobs|"
@@ -2557,6 +2626,12 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
 
     if not q:
         return ask("empty")
+    step = _step_ask(q)
+    if step is not None:
+        # A step inspector follow-up is about one step of an earlier answer: the quoted
+        # question inside it never sets a window, a report or a comparison of its own.
+        return ask(f"{step.verb}_step", step=step, win=None, hours=None, compare=None, compare_win=None,
+                   report=None, headings=(), bucket=None, group=None, save=False, unread=None)
     # Round 12 WP-ASK: an "Ask AI" chip's server-worded question about ONE value
     # (``agents.chat_entity``) is planned for its kind, never sending the value out.
     console = None if view.case_scoped else parse_entity_question(q)
@@ -3123,7 +3198,7 @@ _RERUN_KEYS: dict[str, tuple[str, ...]] = {
     "shift_report": (),
     "audit_search": ("actor", "action_type", "surface"),
 }
-_LIST_ARGS = frozenset({"group_by", "metrics"})
+_LIST_ARGS = frozenset({"group_by", "metrics", "ids", "include"})
 _INT_ARGS = frozenset({"top_n", "window_hours", "limit"})
 _WITHOUT_FILTER_RE = re.compile(r"\bwithout the ([a-z][a-z ]{1,30}?) filter\b")
 
@@ -3137,36 +3212,282 @@ def _plan_rerun(view: PromptView, ask: Ask, done: int) -> list[Call]:
     if done or (ask.win is None and drop_key is None):
         return []
     latest = view.prior_calls[-1].key if view.prior_calls else None
-    calls: list[Call] = []
-    for prior in view.prior_calls:
-        if prior.key != latest or prior.tool not in _RERUN_KEYS:
+    return [Call(prior.tool, _rerun_input(prior, ask, view, drop_key)) for prior in view.prior_calls
+            if prior.key == latest and prior.tool in _RERUN_KEYS]
+
+
+def _rerun_input(prior: PriorCall, ask: Ask, view: PromptView, drop_key: str | None = None) -> dict[str, Any]:
+    """An earlier lookup's input rebuilt from its digest: the same filters, then the
+    window the question names (``ask.win``), else the lookup's own window."""
+    inp: dict[str, Any] = {}
+    for key in _RERUN_KEYS.get(prior.tool, ()):
+        value = prior.arg(key)
+        if not value or key == drop_key:
             continue
-        inp: dict[str, Any] = {}
-        for key in _RERUN_KEYS[prior.tool]:
-            value = prior.arg(key)
-            if not value or key == drop_key:
-                continue
-            if key in _LIST_ARGS:
-                inp[key] = [v for v in value.split(",") if v]
-            elif key in _INT_ARGS:
-                number = _safe_float(value)
-                if number is not None:
-                    inp[key] = int(number)
-            else:
-                inp[key] = value
-        if prior.tool == "search_cases" and inp.get("status_group") == "active" and inp.get("sort_field") == "created_at":
-            # This planner lists open cases by creation time only oldest first (age and
-            # backlog questions); the lookup digest does not carry the sort order.
-            inp["sort_order"] = "asc"
-        if ask.win is not None:
-            inp.update(_win_args(prior.tool, ask, view))
+        if key in _LIST_ARGS:
+            inp[key] = [v for v in value.split(",") if v]
+        elif key in _INT_ARGS:
+            number = _safe_float(value)
+            if number is not None:
+                inp[key] = int(number)
         else:
-            for key in ("window", "time_from", "time_to", "window_hours"):
-                value = prior.arg(key)
-                if value and not value.startswith(("{", "[")):
-                    inp[key] = int(value) if key == "window_hours" and value.isdigit() else value
-        calls.append(Call(prior.tool, inp))
-    return calls
+            inp[key] = value
+    if prior.tool == "search_cases" and inp.get("status_group") == "active" and inp.get("sort_field") == "created_at":
+        # This planner lists open cases by creation time only oldest first (age and
+        # backlog questions); the lookup digest does not carry the sort order.
+        inp["sort_order"] = "asc"
+    if ask.win is not None:
+        inp.update(_win_args(prior.tool, ask, view))
+    else:
+        for key in ("window", "time_from", "time_to", "window_hours"):
+            value = prior.arg(key)
+            if value and not value.startswith(("{", "[")):
+                inp[key] = int(value) if key == "window_hours" and value.isdigit() else value
+    return inp
+
+
+# --------------------------------------------------------------------------- #
+# Step inspector follow-ups (WP-GEN-A): "Explain step N (…) of your answer to “…”"
+# and "Run step N (…) of your answer to “…” again …" name ONE step of an earlier
+# answer. The planner finds that answer by its quoted question and the step among its
+# lookups by the step's template label, then explains it from the conversation (no
+# lookup) or re-runs exactly that lookup with its own inputs.
+# --------------------------------------------------------------------------- #
+#: Model steps of the run log (``agents/chat.py`` labels): they read no data.
+_MODEL_STEP_PURPOSES: dict[str, str] = {
+    "thinking": "the model reading the question and deciding what to look up",
+    "planned lookups": "the model choosing which lookups to run next",
+    "writing the answer": "the model writing the answer from the lookups that had run",
+    "wrote the answer": "the model writing the answer from the lookups that had run",
+    "reply format corrected": "the engine asking the model to resend a reply it could not read",
+    "model call failed": "a model call that failed",
+    "stopped": "where the answer was stopped",
+    "summarised earlier messages": "the model summarising earlier messages so the conversation fits its context",
+}
+_CONTINUED_STEP_RE = re.compile(r"^continued the answer \(part \d{1,3}\)$")
+#: Each chat tool's input model (module under ``agents/chat_tools``, class name): a
+#: step rerun reads the step's inputs back from the digest's display text into the
+#: types that model accepts ("10" → 10, "host" → ["host"], a window object).
+_TOOL_INPUT_MODELS: dict[str, tuple[str, str]] = {
+    "search_cases": ("cases", "SearchCasesInput"), "get_case": ("cases", "GetCaseInput"),
+    "shift_report": ("cases", "ShiftReportInput"), "list_campaigns": ("cases", "ListCampaignsInput"),
+    "explain_decision": ("cases", "ExplainDecisionInput"), "mitre_lookup": ("intel", "MitreLookupInput"),
+    "search_knowledge": ("intel", "SearchKnowledgeInput"), "search_logs": ("logs", "SearchLogsInput"),
+    "log_stats": ("logs", "LogStatsInput"), "soc_metrics": ("metrics", "SocMetricsInput"),
+    "cost_usage": ("metrics", "CostUsageInput"), "source_health": ("ops", "SourceHealthInput"),
+    "automation_status": ("ops", "AutomationStatusInput"), "audit_search": ("ops", "AuditSearchInput"),
+    "case_stats": ("stats", "CaseStatsInput"), "app_help": ("app_help", "AppHelpInput"),
+    "app_status": ("app_status", "AppStatusInput"),
+}
+#: Lookups a step rerun never repeats, and why (the answer says so in plain words).
+_NO_STEP_RERUN: dict[str, str] = {
+    "lookup_indicator": ("an indicator lookup sends a value to an outside reputation service, so it runs only "
+                         "when you name the value yourself"),
+    "recall_observation": ("it re-read another lookup's result inside that answer, so there is nothing to repeat "
+                           "on its own"),
+}
+_FAILED_OUTCOME_RE = re.compile(r"^(?:error|denied|timeout|skipped|cancelled)\b")
+#: A digest value the display bound cut ("…") or that carries a visible escape of a
+#: hidden character: it no longer reads back as the value the lookup was sent.
+_UNREADABLE_ARG_RE = re.compile(r"\u2026$|\\u[0-9a-fA-F]{4}")
+
+
+def _model_step_purpose(label: str) -> str | None:
+    low = label.strip().lower()
+    if _CONTINUED_STEP_RE.match(low):
+        return "the model continuing an answer that had reached its output length"
+    return _MODEL_STEP_PURPOSES.get(low)
+
+
+def _tools_for_label(label: str) -> tuple[str, ...]:
+    """The chat tools whose run-log label is ``label`` (the registry's own labels)."""
+    try:
+        from ..agents.chat_tools import recall as recall_tool
+        from ..agents.chat_tools.registry import catalogue
+    except Exception:  # noqa: BLE001 -- advisory: an unknown label explains generically
+        return ()
+    low = label.strip().lower()
+    names = [t.name for t in catalogue() if str(getattr(t, "label", "")).strip().lower() == low]
+    if recall_tool.LABEL.lower() == low:
+        names.append(recall_tool.NAME)
+    return tuple(names)
+
+
+def _quote_key(text: str) -> str:
+    """A question as the console quotes it (display-normalised, one line, 120 chars)."""
+    return re.sub(r"\s+", " ", display_text(text or "", 120)).strip().casefold()
+
+
+def _step_answer(view: PromptView, step: StepRef) -> tuple[str, str] | None:
+    """``(key, question)`` of the earlier answer the step belongs to, or None."""
+    answers = view.prior_answers
+    if not answers:
+        return None
+    if not step.quote:
+        return answers[-1]
+    want = _quote_key(step.quote)
+    matches = [a for a in answers if a[1] and _quote_key(a[1]) == want]
+    if not matches and want.endswith(("\u2026", "...")):
+        # The console cut a long question: its quote is a prefix.
+        prefix = want.rstrip(".\u2026").rstrip()
+        matches = [a for a in answers if a[1] and _quote_key(a[1]).startswith(prefix)]
+    rank = step.recency or 1
+    return matches[-rank] if 0 < rank <= len(matches) else None
+
+
+@dataclass(frozen=True)
+class StepMatch:
+    """The lookup a step follow-up names (``call``), all lookups of its answer, and
+    whether several lookups could be that step (``ambiguous``: never guessed)."""
+
+    call: PriorCall | None
+    calls: tuple[PriorCall, ...] = ()
+    ambiguous: bool = False
+
+
+def _step_call(view: PromptView, step: StepRef, key: str) -> StepMatch:
+    """The lookup step ``step.index`` of answer ``key`` was. The digest numbers each
+    lookup with its run-log step (``step 8 log_stats(…)``), so the number names it
+    exactly, also when the answer ran several rounds of the same tool; the label must
+    agree. A digest without numbers (an older record) is matched by label and position
+    (a step's lookup sits at position ``index - 1`` or earlier): when more than one
+    lookup with that label fits, the step is ambiguous and nothing is guessed."""
+    calls = tuple(c for c in view.prior_calls if c.key == key)
+    tools = _tools_for_label(step.label)
+    if any(c.step is not None for c in calls):
+        exact = [c for c in calls if c.step == step.index]
+        if len(exact) > 1:
+            # Two lookups claim one step number (a value that imitates the digest):
+            # the step cannot be told apart, so it is not guessed.
+            return StepMatch(None, calls, ambiguous=True)
+        if exact and (not tools or exact[0].tool in tools):
+            return StepMatch(exact[0], calls)
+        return StepMatch(None, calls)
+    fits = [c for position, c in enumerate(calls, start=1) if c.tool in tools and position <= step.index - 1]
+    if len(fits) == 1:
+        return StepMatch(fits[0], calls)
+    return StepMatch(None, calls, ambiguous=len(fits) > 1)
+
+
+def _tool_input_model(tool: str) -> Any:
+    """The pydantic input model of chat tool ``tool``, or None (lazy import)."""
+    spec = _TOOL_INPUT_MODELS.get(tool)
+    if spec is None:
+        return None
+    try:
+        import importlib
+
+        module = importlib.import_module(f"..agents.chat_tools.{spec[0]}", __package__)
+    except Exception:  # noqa: BLE001 -- advisory: the generic conversions follow
+        return None
+    model = getattr(module, spec[1], None)
+    return model if hasattr(model, "model_validate") and hasattr(model, "model_fields") else None
+
+
+def _digest_arg_candidates(name: str, raw: str) -> list[Any]:
+    """The values a digest's display text can stand for, typed first (a flag, a
+    number, the planner's list inputs as lists), then the text itself, then a list:
+    the input model keeps the first one it accepts. An object or list written as text
+    is parsed, and is unreadable when that fails."""
+    text = raw.strip()
+    if text.startswith(("{", "[")):
+        for parse in (json.loads, _literal):
+            try:
+                value = parse(text)
+            except Exception:  # noqa: BLE001 -- not that notation
+                continue
+            if isinstance(value, (dict, list)):
+                return [value]
+        return []
+    parts = [v.strip() for v in text.split(",") if v.strip()]
+    out: list[Any] = []
+    if text.lower() in ("true", "false"):
+        out.append(text.lower() == "true")
+    number = _safe_float(text)
+    if number is not None:
+        out.append(int(number) if number.is_integer() else number)
+    if name in _LIST_ARGS:
+        out.append(parts)
+    out.append(text)
+    if name not in _LIST_ARGS:
+        out.append(parts)
+    return out
+
+
+def _literal(text: str) -> Any:
+    import ast
+
+    return ast.literal_eval(text)
+
+
+def _step_rerun_input(prior: PriorCall) -> tuple[dict[str, Any], list[str]]:
+    """A step's own inputs read back from the digest (every one, not a filter subset)
+    in the types its tool accepts, plus the names of inputs that could not be read
+    back (cut by the display bound, an unparseable object, an input the tool does not
+    take): the rerun says it ran without them rather than "with the same inputs"."""
+    model = _tool_input_model(prior.tool)
+    fields = getattr(model, "model_fields", None) or {}
+    options: dict[str, list[Any]] = {}
+    dropped: list[str] = []
+    for name, raw in prior.args:
+        if not raw or name in options:
+            continue
+        candidates = [] if _UNREADABLE_ARG_RE.search(raw) else _digest_arg_candidates(name, raw)
+        if model is not None and name not in fields:
+            candidates = []
+        if model is None and candidates:
+            # No model to check against: the planner's own typed arguments.
+            if name in _INT_ARGS:
+                candidates = [c for c in candidates if isinstance(c, int) and not isinstance(c, bool)][:1]
+            elif name not in _LIST_ARGS:
+                candidates = [c for c in candidates if isinstance(c, str)][:1] or candidates[:1]
+            else:
+                candidates = candidates[:1]
+        if candidates:
+            options[name] = candidates
+        else:
+            dropped.append(name)
+    chosen = {name: 0 for name in options}
+    if model is not None:
+        from pydantic import ValidationError
+
+        for _attempt in range(sum(len(c) for c in options.values()) + 1):
+            try:
+                model.model_validate({n: options[n][i] for n, i in chosen.items()})
+                break
+            except ValidationError as exc:
+                failing = {err["loc"][0] for err in exc.errors() if err.get("loc") and err["loc"][0] in chosen}
+            except Exception:  # noqa: BLE001 -- an input model that cannot judge: send as read
+                break
+            if not failing:
+                break  # a cross-field rule: the tool refuses it visibly when it runs
+            for name in failing:
+                chosen[name] += 1
+                if chosen[name] >= len(options[name]):
+                    del chosen[name]
+                    dropped.append(name)
+    inp = {n: options[n][i] for n, i in chosen.items()}
+    if (prior.tool == "search_cases" and inp.get("status_group") == "active" and inp.get("sort_field") == "created_at"
+            and "sort_order" not in inp):
+        # This planner lists open cases by creation time only oldest first (age and
+        # backlog questions); the lookup digest does not carry the sort order.
+        inp["sort_order"] = "asc"
+    return inp, list(dict.fromkeys(dropped))
+
+
+def _plan_rerun_step(view: PromptView, ask: Ask, done: int) -> list[Call]:
+    step = ask.step
+    if done or step is None:
+        return []
+    answer = _step_answer(view, step)
+    prior = _step_call(view, step, answer[0]).call if answer is not None else None
+    if prior is None or prior.tool in _NO_STEP_RERUN:
+        return []
+    inp, _dropped = _step_rerun_input(prior)
+    if not view.can(prior.tool, inp.get("kind")):
+        # Not granted any more: the answer says so (never the degraded fallback).
+        return []
+    return [Call(prior.tool, inp)]
 
 
 def _plan_simple(build: Callable[[PromptView, Ask], list[Call]]) -> Callable[[PromptView, Ask, int], list[Call]]:
@@ -3671,6 +3992,7 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "change": lambda v, a: [Call("app_help", {"query": _change_query(a)})],
     "unsupported": lambda v, a: [Call("app_help", {"query": _help_hint(a) or a.question[:300]})],
     "clarify": lambda v, a: [],
+    "explain_step": lambda v, a: [],
     "fallback": lambda v, a: [
         # Orientation: what chat can answer, not a keyword search for an unmapped ask.
         Call("app_help", {"query": "Workspace Chat ask a question"}),
@@ -3685,6 +4007,7 @@ _PLANS: dict[str, Callable[[PromptView, Ask, int], list[Call]]] = {
         "reshape": _plan_reshape,
         "regroup": _plan_regroup,
         "rerun": _plan_rerun,
+        "rerun_step": _plan_rerun_step,
         "breakdown": _plan_breakdown,
         "trend": _plan_trend,
         "compare": _plan_compare,
@@ -6334,22 +6657,26 @@ def _rerun_origin(view: PromptView, ask: Ask) -> Ask | None:
     return None
 
 
-def _final_rerun(view: PromptView, ask: Ask) -> Final | None:
+def _final_rerun(view: PromptView, ask: Ask, *, head: str | None = None,
+                 origin: Ask | None = None) -> Final | None:
     """The earlier lookups re-run (a zero-result suggestion, "the same for all time"):
     the window or the dropped filter that actually ran leads, then the answer in the
-    earlier answer's own words (a breakdown reads as a breakdown)."""
+    earlier answer's own words (a breakdown reads as a breakdown). A step rerun passes
+    its own ``head`` and the ``origin`` question whose answer the step belongs to."""
     results = [r for r in view.results() if r.ok and r.observation is not None]
     if not results:
         return None
     drop = _WITHOUT_FILTER_RE.search(ask.lowered)
-    if ask.win is not None and ask.win.spec is not None:
+    if head is not None:
+        pass
+    elif ask.win is not None and ask.win.spec is not None:
         head = f"Re-ran the earlier lookups for {ask.win.phrase}:"
     elif drop:
         head = f"Re-ran the earlier lookups without the {drop.group(1).strip()} filter:"
     else:
         head = "Re-ran the earlier lookups:"
     final = None
-    origin = _rerun_origin(view, ask)
+    origin = origin if origin is not None else _rerun_origin(view, ask)
     if origin is not None and origin.intent in _RERUN_FINALS:
         # The earlier question's own answer shape (a period summary stays a summary,
         # its true positives stay true positives), over the window that re-ran.
@@ -6381,6 +6708,154 @@ def _final_rerun(view: PromptView, ask: Ask) -> Final | None:
     for r in results:
         body.extend(_say_result(r)[:3])
     return Final(body=body, blocks=_default_blocks(results), follow_ups=_follow_ups(view, "rerun", charts=True))
+
+
+def _step_head(step: StepRef, answer: tuple[str, str] | None) -> str:
+    """"Step 2 (Counted cases) of my answer to “…”" (engine words, the analyst's quote)."""
+    question = _plain(answer[1] if answer is not None and answer[1] else (step.quote or ""), 120)
+    of = f" of my answer to \u201c{question}\u201d" if question else ""
+    return f"Step {step.index} ({_plain(step.label, 80)}){of}"
+
+
+def _step_args(prior: PriorCall) -> str:
+    """A lookup's inputs from the digest as code spans ("`window=last_week`")."""
+    shown = [_code(f"{name}={value}", 100) for name, value in prior.args if value][:8]
+    return _join(shown) if shown else "its default inputs"
+
+
+def _step_distinct_args(prior: PriorCall, same: Sequence[PriorCall]) -> str:
+    """What sets this lookup apart from its siblings of the same tool, as code spans
+    ("`kind=posture`"), or "these inputs" when nothing in the digest does."""
+    others = [c for c in same if c is not prior]
+    shown = [_code(f"{name}={value}", 100) for name, value in prior.args
+             if value and others and any(c.arg(name) != value for c in others)][:3]
+    return _join(shown) if shown else "these inputs"
+
+
+def _step_shaped(prior: PriorCall, calls: Sequence[PriorCall]) -> str:
+    """How one lookup fed its answer, honest about sibling lookups of the same tool:
+    a figure is credited to this result only when no other lookup of that tool ran."""
+    source = _TOOL_NAMES.get(prior.tool, prior.tool.replace("_", " "))
+    if _FAILED_OUTCOME_RE.match(prior.outcome.lower()):
+        return ("it did not complete, so the answer could not use it; the answer says what it could not read "
+                "and works from the lookups that did complete.")
+    if len(calls) == 1:
+        return "it was the only lookup that answer ran, so every figure in the answer came from this result."
+    same = [c for c in calls if c.tool == prior.tool]
+    others = list(dict.fromkeys(_TOOL_NAMES.get(c.tool, c.tool.replace("_", " "))
+                                for c in calls if c.tool != prior.tool))
+    if len(same) == 1:
+        return (f"it was one of {_count(len(calls))} lookups the answer combined; the figures about "
+                f"{source} came from this result and the rest from {_join(others)}.")
+    mine = _step_distinct_args(prior, same)
+    siblings = len(same) - 1
+    from_siblings = f"the other {_count(siblings)}" if siblings > 1 else "the other one"
+    if not others:
+        return (f"it was one of {_count(len(same))} lookups of {source} the answer combined, each over its own "
+                f"inputs; the figures for {mine} came from this result and the rest from {from_siblings}.")
+    return (f"it was one of {_count(len(same))} lookups of {source} ({_count(len(calls))} lookups in all); the "
+            f"{source} figures for {mine} came from this result, the other {source} figures from {from_siblings}, "
+            f"and the rest from {_join(others)}.")
+
+
+_AMBIGUOUS_STEP = ("this conversation no longer tells that answer's lookups of that kind apart by step number, so "
+                   "I would be guessing which one it was")
+
+
+def _final_explain_step(view: PromptView, ask: Ask) -> Final | None:
+    """A step of an earlier answer explained from the conversation: what it looked up
+    (its inputs), what it found (the stored outcome) and how it shaped that answer.
+    Never product help, never a lookup: the run log's own record is the source."""
+    step = ask.step
+    if step is None:
+        return None
+    answer = _step_answer(view, step)
+    head = _step_head(step, answer)
+    purpose = _model_step_purpose(step.label)
+    if purpose is not None:
+        body = [(f"{head} was {purpose}. It is a model step, not a lookup: it read no data itself, so there is "
+                 "nothing it found on its own. The lookups it led to are the steps after it in the run log.")]
+        return Final(body=body, answer_kind="conversation")
+    if answer is None:
+        return Final(body=[(
+            f"I can no longer see the answer step {step.index} belongs to in this conversation, so I cannot "
+            f"explain {_plain(step.label, 80) or 'that step'} from here. Open the step in that answer's run log to "
+            "see what it looked up and what it returned.")], answer_kind="conversation")
+    match = _step_call(view, step, answer[0])
+    prior, calls = match.call, match.calls
+    if prior is None:
+        why = (_AMBIGUOUS_STEP if match.ambiguous
+               else "it is not among the lookups this conversation still holds for that answer")
+        return Final(body=[(
+            f"I cannot explain {head[:1].lower() + head[1:]} from here: {why}. Open the step in that answer's run "
+            "log to see exactly what it looked up and what it returned.")], answer_kind="conversation")
+    source = _TOOL_NAMES.get(prior.tool, prior.tool.replace("_", " "))
+    found = _plain(prior.outcome, 240) or "no summary was kept"
+    body = [
+        f"{head} read {source} ({_code(prior.tool)}).",
+        f"- **What it looked up:** {_step_args(prior)}.",
+        f"- **What it found:** {found.rstrip('.')}.",
+        f"- **How it shaped the answer:** {_step_shaped(prior, calls)}",
+        ("Open the step in the run log to see exactly what it returned, or ask me to run it again for fresh "
+         "figures."),
+    ]
+    return Final(body=body, answer_kind="conversation")
+
+
+def _final_rerun_step(view: PromptView, ask: Ask) -> Final | None:
+    """One step of an earlier answer re-run with its own inputs: a head naming the step
+    (and any input that could not be read back), then the result in that answer's own
+    shape (its question classified again)."""
+    step = ask.step
+    if step is None:
+        return None
+    answer = _step_answer(view, step)
+    head = _step_head(step, answer)
+    lowered = head[:1].lower() + head[1:]
+    match = _step_call(view, step, answer[0]) if answer is not None else StepMatch(None)
+    prior = match.call
+    inp, dropped = _step_rerun_input(prior) if prior is not None else ({}, [])
+    reason = None
+    if _model_step_purpose(step.label) is not None:
+        reason = "it is a model step, not a lookup, so there is nothing to re-run"
+    elif answer is None:
+        reason = "I can no longer see the answer it belongs to in this conversation"
+    elif prior is None:
+        reason = (_AMBIGUOUS_STEP if match.ambiguous
+                  else "it is not among the lookups this conversation still holds for that answer")
+    elif prior.tool in _NO_STEP_RERUN:
+        reason = _NO_STEP_RERUN[prior.tool]
+    elif not view.can(prior.tool, inp.get("kind")):
+        reason = f"you no longer have access to {_TOOL_NAMES.get(prior.tool, prior.tool.replace('_', ' '))}"
+    elif not view.results():
+        reason = "that lookup did not run this time"
+    if reason is not None:
+        return Final(body=[(f"I could not run {lowered} again: {reason}. Ask the original question again to "
+                            "refresh its figures.")], answer_kind="conversation")
+    origin: Ask | None = None
+    if answer is not None and answer[1]:
+        probe = PromptView(granted=view.granted, kinds=view.kinds, case_scoped=view.case_scoped,
+                           prior_calls=view.prior_calls)
+        try:
+            classified = classify(answer[1], probe)
+        except Exception:  # noqa: BLE001 -- advisory: the tool-based answer follows
+            classified = None
+        if classified is not None and classified.intent in _RERUN_FINALS:
+            win = classified.win if classified.win is not None and classified.win.spec is not None else None
+            origin = replace(classified, win=win, hours=win.hours if win is not None else None, undated=None,
+                             unread=None, anchored=False, compare=None, compare_win=None, report=None, save=False)
+    if dropped:
+        names = _join([_code(name, 40) for name in dropped])
+        inputs = "that input" if len(dropped) == 1 else "those inputs"
+        rerun_head = (f"Re-ran {lowered} without {names}: the conversation no longer holds "
+                      f"{'its' if len(dropped) == 1 else 'their'} full value, so this run used the lookup's "
+                      f"default for {inputs}. Its other inputs are the same:")
+    else:
+        rerun_head = f"Re-ran {lowered} with the same inputs:"
+    final = _final_rerun(view, ask, head=rerun_head, origin=origin)
+    if final is not None:
+        final.answer_kind = "data"
+    return final
 
 
 def _default_blocks(results: Sequence[Result], limit: int = 8) -> list[dict[str, Any]]:
@@ -7817,6 +8292,7 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "campaigns": _final_campaigns, "cases": _final_cases, "help": _final_help,
     "explain_metric": _final_explain_metric, "change": _final_change, "unsupported": _final_unsupported,
     "remember": _final_remember, "reshape": _final_reshape, "rerun": _final_rerun,
+    "explain_step": _final_explain_step, "rerun_step": _final_rerun_step,
     "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
     "breakdown": _final_breakdown, "trend": _final_trend, "compare": _final_compare,
     "perf_report": _final_perf_report, "brief": _final_brief, "deep": _final_deep, "clarify": _final_clarify,
@@ -7986,7 +8462,7 @@ def _final_outside_range(view: PromptView, ask: Ask) -> Final | None:
 def _compose_final(view: PromptView, ask: Ask) -> Final:
     if view.legacy is not None:
         return _final_legacy(view, ask)
-    if not view.granted and ask.intent not in ("remember", "empty", "reshape"):
+    if not view.granted and ask.intent not in ("remember", "empty", "reshape", "explain_step"):
         return _final_no_tools(view, ask)
     builder = _FINALS.get(ask.intent)
     final = _final_outside_range(view, ask)

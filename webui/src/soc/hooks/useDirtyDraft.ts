@@ -4,8 +4,8 @@
  *
  * Round-5 W0-B B5: lifts the buffer-a-draft-against-the-last-saved-snapshot pattern that
  * the Settings page implements ad-hoc (see `pages/settings-dirty.ts` for the pure diff
- * helpers this reuses) into a general hook any editor (rule editor, dashboard builder,
- * profile form, …) can adopt.
+ * helpers; the shared `deepEqual` lives in `lib/deep-equal.ts`) into a general hook any
+ * editor (rule editor, dashboard builder, profile form, …) can adopt.
  *
  * Model (identical to Settings):
  *   - `saved`  is the last-persisted value (the source of truth the server holds).
@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
-import { deepEqual } from '@/soc/pages/settings-dirty';
+import { deepEqual } from '@/lib/deep-equal';
 
 /** Structural clone via JSON round-trip (drafts here are always JSON-able prefs data). */
 function clone<T>(value: T): T {

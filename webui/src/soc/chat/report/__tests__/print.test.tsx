@@ -139,8 +139,14 @@ beforeEach(() => {
   print = vi.fn();
   Object.defineProperty(window, 'print', { configurable: true, writable: true, value: print });
 });
-afterEach(() => {
-  act(() => clearPrintRoot());
+afterEach(async () => {
+  // `clearPrintRoot` unmounts the print root one task later (never mid-render). Run that
+  // task inside act, so the unmount never lands between tests outside it.
+  await act(async () => {
+    clearPrintRoot();
+    if (vi.isFakeTimers()) vi.runOnlyPendingTimers();
+    else await new Promise((resolve) => setTimeout(resolve, 0));
+  });
   document.body.removeAttribute('data-scroll-locked');
   vi.useRealTimers();
 });

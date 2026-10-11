@@ -1,10 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { REVOKE_DELAY_MS } from '@/lib/download-blob';
 import {
   artifactFilename,
   jobDestination,
   jobDestinationFromUrl,
   retainJobSubmissionIntent,
+  saveBlob,
 } from '../jobs';
 
 describe('durable Jobs client invariants', () => {
@@ -119,5 +121,43 @@ describe('durable Jobs client invariants', () => {
       artifactFilename("attachment; filename*=UTF-8''..%2Fportable%20export.zip", 'fallback.zip'),
     ).toBe('portable-export.zip');
     expect(artifactFilename('attachment; filename="../../"', 'fallback.zip')).toBe('fallback.zip');
+  });
+});
+
+describe('saving a job artifact', () => {
+  const original = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    Object.assign(URL, original);
+  });
+
+  it('keeps the object URL alive after the click and revokes it only after the shared delay', () => {
+    vi.useFakeTimers();
+    const revoke = vi.fn();
+    Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:artifact'), revokeObjectURL: revoke });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const name = saveBlob(
+      { blob: new Blob(['zip']), contentDisposition: 'attachment; filename="export.zip"', contentType: null },
+      'fallback.zip',
+    );
+    expect(name).toBe('export.zip');
+    expect(click).toHaveBeenCalledTimes(1);
+    // Revoking at once (or after 0 ms) can cancel the download in Safari and older Firefox.
+    vi.advanceTimersByTime(100);
+    expect(revoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(REVOKE_DELAY_MS);
+    expect(revoke).toHaveBeenCalledWith('blob:artifact');
+    expect(document.querySelector('a[download]')).toBeNull();
+  });
+
+  it('refuses an empty artifact and says when the browser cannot download', () => {
+    expect(() => saveBlob({ blob: new Blob([]), contentDisposition: null, contentType: null }, 'x.zip')).toThrow(
+      'The server returned an empty artifact. No file was saved.',
+    );
+    Object.assign(URL, { createObjectURL: undefined });
+    expect(() => saveBlob({ blob: new Blob(['zip']), contentDisposition: null, contentType: null }, 'x.zip')).toThrow(
+      'This browser could not start the download. No file was saved.',
+    );
   });
 });

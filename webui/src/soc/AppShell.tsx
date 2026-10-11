@@ -45,6 +45,7 @@ import {
   ExternalLink,
   SlidersHorizontal,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/ui/button';
 import { badgeVariants } from '@/ui/badge';
 import { Separator } from '@/ui/separator';
@@ -97,7 +98,9 @@ import { AnnouncerProvider, useAnnouncer } from './components/announcer';
 // See components/HealthWatch.tsx + bundle-first-paint.test.ts.
 import type { HealthWatchProps } from './components/HealthWatch';
 import type { HealthDegradation } from './components/health-diagnostics-state';
-import { CommandPalette } from './components/CommandPalette';
+// TYPE-ONLY import: the palette body (cmdk, the Settings search metadata) is a lazy chunk
+// mounted on first open — see `LazyCommandPalette` below.
+import type { CommandPaletteProps } from './components/CommandPalette';
 import { GlassSurface } from './components/GlassSurface';
 import { NavSidebar, useNavPrefs } from './components/NavSidebar';
 import { NotificationBell } from './components/NotificationBell';
@@ -124,6 +127,55 @@ import type { Navigate } from './router';
 // the eager App/AppShell first-paint graph, so RouteMotion is reached purely through the
 // DYNAMIC `import()` below. See soc/components/motion/* + bundle-first-paint.test.ts.
 import type { RouteMotionProps } from './components/motion/RouteMotion';
+
+/**
+ * The command palette is not needed for first paint: nothing renders it until an operator
+ * presses Cmd/Ctrl-K or a search opener. Its body (cmdk, the Settings search metadata and
+ * the palette itself, ~35 kB) is therefore a lazy chunk that mounts on first open and stays
+ * mounted afterwards. The chunk is warmed when the browser is idle and when an opener is
+ * hovered or focused, so opening it normally shows no wait.
+ *
+ * The import fails soft: the shell renders outside the page error boundary, so a rejected
+ * chunk (a stale hashed file after an update, a proxy, going offline) resolves to a
+ * placeholder that closes the palette and says how to recover. A failure is never
+ * remembered (`retryingLoader`): a background warm that failed during a network blip does
+ * not disable search, and the next open tries again.
+ */
+const loadCommandPalette = retryingLoader(() => import('./components/CommandPalette'));
+
+/** Warm the palette chunk without rendering it (no state change, so nothing re-renders). */
+function warmCommandPalette(): void {
+  // Offline a warm can only fail; the analyst's own open loads the chunk when it can.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  loadCommandPalette().catch(() => undefined);
+}
+
+/**
+ * A lazy palette for one load attempt. `onUnavailable` runs when the analyst opened it and
+ * the chunk could not load, so the shell can start a fresh attempt on the next open.
+ */
+function lazyCommandPalette(onUnavailable: () => void) {
+  return React.lazy(
+    (): Promise<{ default: React.ComponentType<CommandPaletteProps> }> =>
+      loadCommandPalette().catch(() => ({ default: unavailablePalette(onUnavailable) })),
+  );
+}
+
+function unavailablePalette(onUnavailable: () => void): React.ComponentType<CommandPaletteProps> {
+  return function PaletteUnavailable({ open, onOpenChange }: CommandPaletteProps) {
+    React.useEffect(() => {
+      if (!open) return;
+      // One toast however often the analyst retries (a fixed id replaces it in place).
+      toast.error('Search could not load. Try again, or reload the page.', {
+        id: 'command-palette-load',
+        action: { label: 'Reload', onClick: () => window.location.reload() },
+      });
+      onOpenChange(false);
+      onUnavailable();
+    }, [open, onOpenChange]);
+    return null;
+  };
+}
 
 /**
  * The single content inset (gutter + vertical rhythm) applied to every routed page.
@@ -915,6 +967,17 @@ export const AppShell: React.FC<AppShellProps> = ({
   const { active: demoActive, refresh: refreshDemo } = useDemo();
   const profile = useAccountProfile(Boolean(username));
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  // The lazy palette mounts on its first open and stays mounted (see lazyCommandPalette).
+  // When its chunk could not load, it unmounts and the next open starts a new attempt.
+  const [paletteMounted, setPaletteMounted] = React.useState(false);
+  if (paletteOpen && !paletteMounted) setPaletteMounted(true);
+  const [LazyCommandPalette, setLazyCommandPalette] = React.useState(() =>
+    lazyCommandPalette(() => {}),
+  );
+  const retryCommandPalette = React.useCallback(() => {
+    setPaletteMounted(false);
+    setLazyCommandPalette(() => lazyCommandPalette(() => {}));
+  }, []);
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [compactControlsOpen, setCompactControlsOpen] = React.useState(false);
   const paletteReturnFocusRef = React.useRef<HTMLElement | null>(null);
@@ -1208,6 +1271,18 @@ export const AppShell: React.FC<AppShellProps> = ({
     };
   }, []);
 
+  // Warm the lazy palette chunk once the browser is idle so Cmd/Ctrl-K opens without a
+  // wait. Browsers without `requestIdleCallback` warm it on opener hover/focus instead.
+  React.useEffect(() => {
+    const idle = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof idle.requestIdleCallback !== 'function') return undefined;
+    const handle = idle.requestIdleCallback(warmCommandPalette, { timeout: 15_000 });
+    return () => idle.cancelIdleCallback?.(handle);
+  }, []);
+
   // Cmd/Ctrl-K opens the palette; Cmd/Ctrl-B toggles the sidebar width. The palette
   // has no Radix DialogTrigger of its own, so retain the actual external opener and
   // explicitly restore it when Escape, selection, or the close button dismisses it.
@@ -1430,6 +1505,8 @@ export const AppShell: React.FC<AppShellProps> = ({
           <button
             type="button"
             onClick={(event) => openPalette(event.currentTarget)}
+            onPointerEnter={warmCommandPalette}
+            onFocus={warmCommandPalette}
             aria-label="Search cases, sources, and actions"
             aria-keyshortcuts="Control+K Meta+K"
             className={cn(
@@ -1462,6 +1539,8 @@ export const AppShell: React.FC<AppShellProps> = ({
               size="icon"
               className="h-8 w-8 md:hidden"
               onClick={(event) => openPalette(event.currentTarget)}
+              onPointerEnter={warmCommandPalette}
+              onFocus={warmCommandPalette}
               aria-label="Open search"
               aria-keyshortcuts="Control+K Meta+K"
             >
@@ -1837,11 +1916,15 @@ export const AppShell: React.FC<AppShellProps> = ({
         </main>
       </div>
 
-      <CommandPalette
-        open={paletteOpen}
-        onOpenChange={handlePaletteOpenChange}
-        onNavigate={onNavigate}
-      />
+      {paletteMounted ? (
+        <React.Suspense fallback={null}>
+          <LazyCommandPalette
+            open={paletteOpen}
+            onOpenChange={handlePaletteOpenChange}
+            onNavigate={onNavigate}
+          />
+        </React.Suspense>
+      ) : null}
       </div>
     </AnnouncerProvider>
   );

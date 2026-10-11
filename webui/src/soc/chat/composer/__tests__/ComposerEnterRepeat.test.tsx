@@ -17,9 +17,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Let the composer's own source and model reads land inside act(). */
+/**
+ * Let the composer's own source and model reads land inside act(): every stubbed request
+ * it made has answered (however slowly, under load), then React has a task to apply them.
+ */
 const settle = () =>
   act(async () => {
+    const requests = vi.mocked(globalThis.fetch).mock.results.map((result) => result.value as unknown);
+    await Promise.allSettled(requests);
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 

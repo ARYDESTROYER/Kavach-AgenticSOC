@@ -16,38 +16,14 @@
  * with the KpiDrilldownPanel slug rule (lower-case ASCII words joined by `-`).
  */
 
-/** How long a download's object URL stays alive after the click (ms). */
-export const REVOKE_DELAY_MS = 40_000;
+import { downloadBlob } from './download-blob';
+
+// The Blob download itself (and its revoke delay) lives in `download-blob.ts`, which the
+// first-paint shell imports on its own; every other export helper stays out of the entry.
+export { REVOKE_DELAY_MS, downloadBlob } from './download-blob';
 
 /** The UTF-8 byte order mark: Excel needs it to read a CSV file as UTF-8 (R15). */
 export const UTF8_BOM = '﻿';
-
-/** Save a Blob as a file. Returns false (and does nothing) where downloads are unavailable. */
-export function downloadBlob(filename: string, blob: Blob): boolean {
-  if (typeof document === 'undefined' || !document.body) return false;
-  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.rel = 'noopener';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  try {
-    a.click();
-  } finally {
-    a.remove();
-    // Late revoke: the browser may still be reading the object URL after the click.
-    setTimeout(() => {
-      try {
-        URL.revokeObjectURL?.(url);
-      } catch {
-        /* an environment without a revocable store: nothing to release */
-      }
-    }, REVOKE_DELAY_MS);
-  }
-  return true;
-}
 
 /** Save `text` as a file. Returns false (and does nothing) where downloads are unavailable. */
 export function downloadText(filename: string, mime: string, text: string): boolean {

@@ -257,6 +257,11 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
   );
   const showRecents = term.length === 0 && recents.length > 0;
   const isDiscoveryState = term.length === 0;
+  const matchNewChat = localMatch('new chat workspace investigate assistant');
+  const matchTheme = localMatch('toggle theme dark light appearance');
+  const matchSettings = localMatch('go to settings preferences configuration');
+  const matchDemo = canManageSettings && !demoActive && localMatch('enable demo mode synthetic sandbox');
+  const showActions = matchNewChat || matchTheme || matchSettings || matchDemo;
   const res = results;
 
   return (
@@ -346,53 +351,54 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
               <CommandSeparator />
             ) : null}
 
-            {/* Quick actions (filtered by the local substring match). */}
-            <CommandGroup heading="Actions">
-              {localMatch('new chat workspace investigate assistant') ? (
-                <CommandItem value="action-new-chat" onSelect={() => go('chat', 'Workspace', { newChat: true })}>
-                  <MessageSquarePlus aria-hidden />
-                  <span>New chat</span>
-                </CommandItem>
-              ) : null}
-              {localMatch('toggle theme dark light appearance') ? (
-                <CommandItem
-                  value="action-toggle-theme"
-                  onSelect={() => {
-                    setThemeMode(isDark ? 'light' : 'dark');
-                    onOpenChange(false);
-                  }}
-                >
-                  {isDark ? <Sun aria-hidden /> : <Moon aria-hidden />}
-                  <span>{isDark ? 'Switch to light mode' : 'Switch to dark mode'}</span>
-                </CommandItem>
-              ) : null}
-              {localMatch('go to settings preferences configuration') ? (
-                <CommandItem
-                  value="action-go-settings"
-                  onSelect={() => go('settings', 'Settings')}
-                >
-                  <SettingsIcon aria-hidden />
-                  <span>Go to Settings</span>
-                </CommandItem>
-              ) : null}
-              {canManageSettings &&
-              !demoActive &&
-              localMatch('enable demo mode synthetic sandbox') ? (
-                <CommandItem
-                  value="action-enable-demo"
-                  onSelect={() => {
-                    void api.demo
-                      .enable()
-                      .then(() => refreshDemo())
-                      .catch(() => undefined);
-                    onOpenChange(false);
-                  }}
-                >
-                  <FlaskConical aria-hidden />
-                  <span>Enable demo mode</span>
-                </CommandItem>
-              ) : null}
-            </CommandGroup>
+            {/* Quick actions (filtered by the local substring match). The group renders
+                only when one of them matches, so a query never leaves an empty heading. */}
+            {showActions ? (
+              <CommandGroup heading="Actions">
+                {matchNewChat ? (
+                  <CommandItem value="action-new-chat" onSelect={() => go('chat', 'Workspace', { newChat: true })}>
+                    <MessageSquarePlus aria-hidden />
+                    <span>New chat</span>
+                  </CommandItem>
+                ) : null}
+                {matchTheme ? (
+                  <CommandItem
+                    value="action-toggle-theme"
+                    onSelect={() => {
+                      setThemeMode(isDark ? 'light' : 'dark');
+                      onOpenChange(false);
+                    }}
+                  >
+                    {isDark ? <Sun aria-hidden /> : <Moon aria-hidden />}
+                    <span>{isDark ? 'Switch to light mode' : 'Switch to dark mode'}</span>
+                  </CommandItem>
+                ) : null}
+                {matchSettings ? (
+                  <CommandItem
+                    value="action-go-settings"
+                    onSelect={() => go('settings', 'Settings')}
+                  >
+                    <SettingsIcon aria-hidden />
+                    <span>Go to Settings</span>
+                  </CommandItem>
+                ) : null}
+                {matchDemo ? (
+                  <CommandItem
+                    value="action-enable-demo"
+                    onSelect={() => {
+                      void api.demo
+                        .enable()
+                        .then(() => refreshDemo())
+                        .catch(() => undefined);
+                      onOpenChange(false);
+                    }}
+                  >
+                    <FlaskConical aria-hidden />
+                    <span>Enable demo mode</span>
+                  </CommandItem>
+                ) : null}
+              </CommandGroup>
+            ) : null}
 
             {/* Settings sections + setting-level cards (RBAC-filtered, from the lifted
                 settings-sections registry and intentionally search-only). Jumps write the FULL hash

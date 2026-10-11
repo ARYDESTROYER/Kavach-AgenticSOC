@@ -565,14 +565,20 @@ def _digest_value(value: Any) -> str:
 
 
 def lookup_digest(key: str, steps: Iterable[Any], *, limit: int = HISTORY_DIGEST_MAX_CHARS) -> str:
-    """``m3: log_stats(source=wazuh-prod, from=now-24h, group_by=source.ip) → 1,284
-    events; …`` built from STORED tool steps (engine template + display chips). The
-    values are untrusted (the caller fences the digest). Bounded to ``limit``."""
+    """``m3: step 2 log_stats(source=wazuh-prod, from=now-24h, group_by=source.ip) →
+    1,284 events; …`` built from STORED tool steps (engine template + display chips).
+    ``step N`` is the stored run-log number the console shows (model steps and lookups
+    are numbered together), so "Explain step 8" names exactly one lookup even when an
+    answer ran several rounds of the same tool; a stored step without a number (older
+    or hand-built records) is listed without it. The values are untrusted (the caller
+    fences the digest). Bounded to ``limit``."""
     parts: list[str] = []
     for raw in steps:
         step = _step_dict(raw)
         if step.get("kind", "tool") != "tool" or not isinstance(step.get("tool"), str):
             continue
+        index = step.get("index")
+        number = f"step {index} " if isinstance(index, int) and not isinstance(index, bool) and index >= 1 else ""
         params = {}
         for source in (step.get("params"), step.get("untrusted_params")):
             if isinstance(source, Mapping):
@@ -581,7 +587,7 @@ def lookup_digest(key: str, steps: Iterable[Any], *, limit: int = HISTORY_DIGEST
         status = step.get("status") if isinstance(step.get("status"), str) else "ok"
         summary = display_text(step.get("summary"), 160)
         outcome = summary if status == "ok" else f"{status}" + (f": {summary}" if summary else "")
-        parts.append(f"{step['tool']}({args}) → {outcome}".strip())
+        parts.append(f"{number}{step['tool']}({args}) → {outcome}".strip())
     if not parts:
         return ""
     text = f"Lookups {key}: " + "; ".join(parts)

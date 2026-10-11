@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { DASH, formatTimestamp } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { logRowKeys, pruneExpandedKeys } from '@/lib/log-row-keys';
 import {
   fetchUnifiedLogs,
   type UnifiedLogRow,
@@ -318,6 +319,7 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
   onSourcesRef.current = onSources;
 
   const [rows, setRows] = React.useState<UnifiedLogRow[]>([]);
+  const keys = React.useMemo(() => logRowKeys(rows), [rows]);
   const [sources, setSources] = React.useState<UnifiedLogSourceStatus[]>([]);
   const [partial, setPartial] = React.useState(false);
   const [count, setCount] = React.useState(0);
@@ -358,14 +360,9 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
         setTruncated(Boolean(res.truncated));
-        // Prune expanded ids that scrolled out of the window (ids are per-source
-        // unique; a source_id prefix keeps two sources' identical ids distinct).
-        setExpanded((prev) => {
-          const ids = new Set(logs.map((r) => rowKey(r)));
-          const next = new Set<string>();
-          for (const k of prev) if (ids.has(k)) next.add(k);
-          return next;
-        });
+        // Prune expanded rows that scrolled out of the window (keys are source, id
+        // and event time, so a refresh keeps the analyst's open row open).
+        setExpanded((prev) => pruneExpandedKeys(prev, logs));
       } catch (e) {
         if (seq !== seqRef.current) return;
         setError(e);
@@ -570,8 +567,8 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((r) => {
-                    const key = rowKey(r);
+                  {rows.map((r, index) => {
+                    const key = keys[index];
                     const isOpen = expanded.has(key);
                     return (
                       <React.Fragment key={key}>
@@ -718,14 +715,6 @@ const RowEntities: React.FC<{ row: UnifiedLogRow }> = ({ row }) => {
     </dl>
   );
 };
-
-/**
- * A stable per-row key. Row `id` can collide across sources (two connectors may emit
- * the same event id), so we namespace by `source_id` to keep expansion state correct.
- */
-function rowKey(r: UnifiedLogRow): string {
-  return `${r.source_id}::${r.id}`;
-}
 
 /* -------------------------------------------------------------------------- */
 /* Standalone page (intended nav placement: top-level "Logs" under Triage)    */
