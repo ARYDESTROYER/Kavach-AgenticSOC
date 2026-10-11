@@ -132,8 +132,9 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
   });
 
   it('forwards the embedded Case Manager presentation to all six shared panels', () => {
-    const presentationProp =
-      "presentation={presentation === 'embedded' ? 'case-manager' : 'default'}";
+    // Round 12: the Cases sheet converged on the same design, so every surface (sheet and
+    // embedded) forwards the ONE Case Manager panel presentation.
+    const presentationProp = 'presentation="case-manager"';
     for (const value of TAB_VALUES) {
       const content = slice(src, `<TabsContent value="${value}"`, '</TabsContent>');
       expect(
@@ -144,21 +145,16 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
   });
 
   it('gives only the embedded Chat tab the full-height, internally-scrolling lane', () => {
-    const scrollLane = slice(src, '<div\n                    ref={panelScrollRef}', '<TabsContent value="overview"');
-    expect(scrollLane).toContain("presentation === 'embedded' && tab === 'chat'");
-    expect(scrollLane).toContain("? 'overflow-hidden'");
-    expect(scrollLane).toContain(": 'overflow-y-auto'");
+    const scrollLane = slice(src, 'ref={panelScrollRef}', '<TabsContent value="overview"');
+    expect(scrollLane).toContain("tab === 'chat' ? 'overflow-hidden' : 'overflow-y-auto'");
 
     const chat = slice(src, '<TabsContent value="chat"', '</TabsContent>');
-    expect(chat).toContain("presentation === 'embedded' && 'h-full min-h-0'");
-    expect(chat).toContain(
-      "className={cn(presentation === 'embedded' && 'h-full min-h-0')}",
-    );
+    expect(chat).toContain('h-full min-h-0');
 
     // No other tab receives this height/overflow override.
     for (const value of TAB_VALUES.filter((value) => value !== 'chat')) {
       const content = slice(src, `<TabsContent value="${value}"`, '</TabsContent>');
-      expect(content).not.toContain("'h-full min-h-0'");
+      expect(content).not.toContain('h-full min-h-0');
     }
   });
 
@@ -187,25 +183,35 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
   });
 
   it('the header carries a self-hiding AutoClosedBadge (Round-7 #11)', () => {
-    expect(src).toContain(
-      '<AutoClosedBadge status={c.status} decisionBy={c.decision_by} />',
+    // Round 12 (D15): the header meta row carries the ONE outcome badge, which says
+    // "Auto-closed" for an AI auto-close and nothing while the case is pending; the
+    // facts rail keeps the auto-close objection deadline ("Reopen before …").
+    const header = readFileSync(
+      path.resolve(__dirname, '..', 'casedetail', 'CaseHeaderMeta.tsx'),
+      'utf8',
     );
-    expect(src).toMatch(
-      /import \{[^}]*AutoClosedBadge[^}]*\} from '@\/soc\/components\/badges'/,
-    );
+    expect(header).toContain('<OutcomeBadge outcome={outcome} />');
+    const rail = readFileSync(path.resolve(__dirname, '..', 'casedetail', 'FactsRail.tsx'), 'utf8');
+    expect(rail).toContain("isAutoClosedByAI(c.status, c.decision_by) ? 'Reopen before '");
+    expect(src).toContain('<CaseHeaderMeta');
   });
 
   it('the header quick-jumps target the Timeline + Investigation tabs', () => {
-    const timelineBtn = slice(src, 'aria-label="Timeline"', 'Button>');
-    expect(timelineBtn).toContain("setTab('timeline')");
-    const investBtn = slice(src, 'aria-label="Investigation"', 'Button>');
-    expect(investBtn).toContain("setTab('investigation')");
+    // Round 12: the tab triggers themselves carry the counts the quick-jumps used to
+    // advertise (steps, MITRE techniques, messages + open tasks); Timeline's trace CTA
+    // still jumps to Investigation.
+    const tabsList = slice(src, '<TabsList', '</TabsList>');
+    expect(tabsList).toContain('<TabCount label="steps">');
+    expect(tabsList).toContain('<TabCount label="MITRE techniques">');
+    expect(tabsList).toContain('<TabCount label="messages">');
+    const timeline = slice(src, '<TabsContent value="timeline"', '</TabsContent>');
+    expect(timeline).toContain("onOpenInvestigation={() => setTab('investigation')}");
   });
 
   it('adds an accessible "Open in new tab" header control + widens the sheet (task 7a/7b)', () => {
-    // The header carries an aria-labelled "Open in new tab" control wired to openInNewTab.
-    const openBtn = slice(src, 'aria-label="Open in new tab"', 'Button>');
-    expect(openBtn).toContain('onClick={openInNewTab}');
+    // Round 12: "Open in new tab" lives in the header's Share menu, wired to openInNewTab.
+    const openItem = slice(src, 'openInNewTab();', 'Open in new tab');
+    expect(openItem).toBeTruthy();
     // The default sheet still targets Cases; embedded mode preserves Case Manager.
     expect(src).toContain("presentation === 'embedded' ? 'case_manager' : 'cases'");
     expect(src).toContain('#/${routeId}?caseId=${encodeURIComponent(id)}');
@@ -217,7 +223,9 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
     expect(src).toContain("type CaseDetailPresentation = 'sheet' | 'embedded'");
     expect(src).toContain("presentation = 'sheet'");
     expect(src).toContain("if (presentation === 'embedded')");
-    expect(src).toContain('<CaseDetailSurface presentation={presentation} open={open} onClose={onClose}>');
+    expect(src).toMatch(
+      /<CaseDetailSurface\s+presentation=\{presentation\}\s+open=\{open\}\s+onClose=\{onClose\}/,
+    );
     expect(src).toContain('onCaseChange?.(next)');
     expect(src).toContain('commitCase(next)');
   });

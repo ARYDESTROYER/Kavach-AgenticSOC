@@ -89,3 +89,29 @@ describe('CaseHoverCard provenance + auto-closed (#12)', () => {
     expect(screen.queryByText('Auto-closed by AI')).toBeNull();
   });
 });
+
+describe('CaseHoverCard outcome (Round 12, D15)', () => {
+  it('a NEEDS_HUMAN case closed as false positive previews the analyst outcome, AI verdict secondary', () => {
+    render(
+      <CaseHoverCard
+        case={mk({
+          status: 'closed',
+          verdict: 'NEEDS_HUMAN',
+          confidence: 0.75,
+          decision_by: 'analyst',
+          disposition: 'false_positive',
+          history: [
+            { event: 'analyst_action', action: 'close', analyst: 'aryan', classified_disposition: 'false_positive' },
+          ],
+        } as unknown as Partial<Case>)}
+      >
+        <span>trigger</span>
+      </CaseHoverCard>,
+    );
+    expect(screen.getByTestId('case-hover-outcome')).toHaveTextContent('Closed as false positive');
+    expect(screen.getByTestId('case-outcome')).toHaveAttribute('data-outcome-source', 'analyst');
+    expect(document.querySelector('[data-provenance="analyst"]')).not.toBeNull();
+    expect(screen.getByTestId('case-ai-verdict')).toHaveTextContent(/needs human review/i);
+    expect(screen.queryByText(/^Undetermined$/)).toBeNull();
+  });
+});

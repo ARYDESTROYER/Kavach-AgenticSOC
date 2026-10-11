@@ -126,6 +126,38 @@ export function formatDelta(value: number | null | undefined, unit: ValueUnit): 
   }
 }
 
+/** The minus sign (U+2212) the console's deltas use. */
+export const MINUS = '−';
+
+export interface ChangeParts {
+  /** `current − baseline`, or null when either is not measured. */
+  delta: number | null;
+  /** The signed change in the unit's own terms ("+96", "−2.1 pp"), "0" for none, "—" unmeasured. */
+  abs: string;
+  /** The change in percent of the baseline ("+8.3%", "0%"), "new" for a zero baseline, "—" unmeasured. */
+  pct: string;
+  /** The baseline was zero and the current value is not (never ∞ or NaN, SPEC §3.4). */
+  isNew: boolean;
+}
+
+/**
+ * The change from `baseline` to `current` (the backend `compare_values` rule): a rate
+ * changes by percentage POINTS, the relative change is one decimal of the baseline, and
+ * a zero baseline with a non-zero current value is "new" — never infinity or NaN.
+ */
+export function changeParts(current: number | null | undefined, baseline: number | null | undefined, unit: ValueUnit): ChangeParts {
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (!ok(current) || !ok(baseline)) return { delta: null, abs: DASH, pct: DASH, isNew: false };
+  const delta = Math.round((current - baseline) * 1e6) / 1e6;
+  const sign = delta > 0 ? '+' : delta < 0 ? MINUS : '';
+  const abs = delta === 0 ? '0' : `${sign}${formatDelta(Math.abs(delta), unit)}`;
+  if (baseline === 0) {
+    return current === 0 ? { delta, abs, pct: '0%', isNew: false } : { delta, abs, pct: 'new', isNew: true };
+  }
+  const pct = Math.round((Math.abs(delta) / Math.abs(baseline)) * 1000) / 10;
+  return { delta, abs, pct: pct === 0 ? '0%' : `${sign}${pct.toFixed(1)}%`, isNew: false };
+}
+
 /** Compact axis-tick text (no unit noise on counts; "1.2k" past four digits). */
 export function formatTick(value: number, unit: ValueUnit): string {
   if (unit === 'count' || unit === 'tokens') {
@@ -276,6 +308,80 @@ export function bucketRangeLabel(value: string, bucket: TimeBucket | undefined):
 export function xLabelFull(value: string, kind: 'category' | 'time', bucket: TimeBucket | undefined): string {
   return kind === 'time' ? bucketRangeLabel(value, bucket) : value;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Calendar axes (Round 12 P0-5): server labels in the operator time zone.     */
+/* -------------------------------------------------------------------------- */
+/** The x axis fields the label helpers read (a `ChartBlock['x']`). */
+export interface AxisLike {
+  kind: 'category' | 'time';
+  values: readonly string[];
+  bucket?: TimeBucket;
+  labels?: readonly string[];
+  tz?: string;
+}
+
+/** The time zone a time axis is read in: its calendar zone, else UTC. */
+export function axisZone(x: Pick<AxisLike, 'kind' | 'tz'>): string {
+  return x.kind === 'time' && x.tz ? x.tz : 'UTC';
+}
+
+/** Does this axis carry calendar labels (a time axis cut in calendar periods)? */
+export function hasCalendarLabels(x: AxisLike): boolean {
+  return x.kind === 'time' && Array.isArray(x.labels) && x.labels.some(Boolean);
+}
+
+/**
+ * The full label of x position `i`: the server's calendar label ("Mar 2026", "W14
+ * 2026", "Jul 2026 (from 12 Jul)") when it sent one, else the UTC bucket range on a
+ * time axis, else the category. Never the in-progress marker (callers add it).
+ */
+export function xPositionLabel(x: AxisLike, i: number): string {
+  const label = x.kind === 'time' ? x.labels?.[i] : undefined;
+  if (label) return label;
+  return xLabelFull(x.values[i] ?? '', x.kind, x.bucket);
+}
+
+const CLOCK_TAIL = /(\d{2}:\d{2})$/;
+const YEAR_TAIL = /\s\d{4}$/;
+const NOTE_TAIL = /\s*\([^()]*\)$/;
+
+/**
+ * A calendar label short enough for an axis tick: a cut-edge note ("(from 12 Jul)") is
+ * left to the tooltip and the table, a day drops its year ("10 Oct"), an hour keeps its
+ * clock ("14:00"); months, weeks, quarters and years read as sent.
+ */
+export function shortCalendarLabel(label: string, bucket: TimeBucket | undefined): string {
+  const bare = label.replace(NOTE_TAIL, '');
+  if (bucket === '1m' || bucket === '5m' || bucket === '15m' || bucket === '1h' || bucket === '6h') {
+    const clock = CLOCK_TAIL.exec(bare);
+    return clock ? clock[1] : bare;
+  }
+  if (bucket === '1d') return bare.replace(YEAR_TAIL, '');
+  return bare;
+}
+
+/** The short tick text of x position `i` (calendar label, else the UTC time, else the category). */
+export function xTickLabel(x: AxisLike, i: number, maxChars = 12): string {
+  const value = x.values[i] ?? '';
+  if (x.kind !== 'time') return clipText(value, maxChars);
+  const label = x.labels?.[i];
+  if (label) return shortCalendarLabel(label, x.bucket);
+  return shortTimeLabel(value, x.bucket);
+}
+
+/**
+ * The row-header label of an x axis in a data table: the block's own axis title, else
+ * "Period (<zone>)" for a calendar axis, "Time (UTC)" for a plain time axis, "Category".
+ */
+export function xAxisHeader(x: AxisLike & { label?: string }): string {
+  if (x.label) return x.label;
+  if (x.kind !== 'time') return 'Category';
+  return hasCalendarLabels(x) ? `Period (${axisZone(x)})` : 'Time (UTC)';
+}
+
+/** The in-progress marker a current, still-filling period carries in text. */
+export const IN_PROGRESS_SUFFIX = ' (in progress)';
 
 /**
  * Clip display text to `max` characters with an ellipsis, counting code points so a

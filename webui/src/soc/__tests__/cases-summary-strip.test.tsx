@@ -232,4 +232,27 @@ describe('Cases — summary strip', () => {
     expect(screen.queryByText('LowCase')).toBeNull();
     expect(screen.queryByText('ResolvedCase')).toBeNull();
   });
+
+  it('Needs human counts only OPEN cases — a closed NEEDS_HUMAN case is settled (D15)', async () => {
+    listCasesMock.mockResolvedValue({
+      cases: [
+        ...CASES,
+        // The analyst's bug: a NEEDS_HUMAN case closed as false positive still counted.
+        {
+          case_id: 'c-settled', case_number: 'T-6', title: 'SettledCase', status: 'closed',
+          verdict: 'NEEDS_HUMAN', decision_by: 'analyst', disposition: 'false_positive',
+          risk_score: 20, updated_at: '2026-06-29T05:00:00Z', tags: [], comments: [],
+          history: [{ event: 'analyst_action', action: 'close', analyst: 'a', classified_disposition: 'false_positive' }],
+        },
+      ],
+      total: CASES.length + 1,
+    });
+    renderCases();
+    await waitFor(() => expect(screen.getByText('SettledCase')).toBeInTheDocument());
+    expect(within(tile('cases-summary-needs-human')).getByText('1')).toBeInTheDocument();
+
+    fireEvent.click(tile('cases-summary-needs-human'));
+    await waitFor(() => expect(screen.queryByText('SettledCase')).toBeNull());
+    expect(screen.getByText('MedCase')).toBeInTheDocument();
+  });
 });

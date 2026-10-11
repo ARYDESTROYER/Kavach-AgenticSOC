@@ -13,54 +13,22 @@ import '@/styles/activity.css';
 import { cn } from '@/lib/cn';
 import { useChatActivity, type ChatActivity, type ChatActivityStatus } from './store';
 
-const DOT: Record<Exclude<ChatActivityStatus, 'running'>, string> = {
-  unread: 'bg-primary',
-  needs_input: 'bg-warning',
-  failed: 'bg-critical',
-};
-
-export function ActivityGlyph({
-  status,
-  motion = true,
-  className,
-}: {
-  status: ChatActivityStatus | null;
-  /** `false` keeps the ring still (reduced motion is also honoured in CSS). */
-  motion?: boolean;
-  className?: string;
-}) {
-  if (!status) return null;
-  if (status === 'running') {
-    return (
-      <svg
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        data-activity="running"
-        data-motion={motion ? 'on' : 'off'}
-        className={cn('chat-activity-ring size-3.5 shrink-0', className)}
-      >
-        <circle cx="8" cy="8" r="6" strokeWidth="2" className="stroke-border" data-track="" />
-        <circle cx="8" cy="8" r="6" strokeWidth="2" pathLength="100" strokeDasharray="32 68" strokeLinecap="round" className="stroke-primary" />
-      </svg>
-    );
-  }
-  return (
-    <span
-      aria-hidden="true"
-      data-activity={status}
-      className={cn('chat-activity-dot inline-block size-2 shrink-0 rounded-full', DOT[status], className)}
-    />
-  );
+/**
+ * One small mark (`.chat-activity` in `styles/activity.css`): a turning quarter arc
+ * while an answer is being written (still under reduced motion), an accent dot for an
+ * unread answer, amber when a question waits on the analyst, red when one failed.
+ */
+export function ActivityGlyph({ status, className }: { status: ChatActivityStatus | null; className?: string }) {
+  return status ? <span aria-hidden="true" data-activity={status} className={cn('chat-activity', className)} /> : null;
 }
 
-const ORDER: ChatActivityStatus[] = ['running', 'needs_input', 'failed', 'unread'];
-const PHRASE: Record<ChatActivityStatus, [string, string]> = {
-  running: ['answer in progress', 'answers in progress'],
-  needs_input: ['question needs your input', 'questions need your input'],
-  failed: ['answer failed', 'answers failed'],
-  unread: ['new answer', 'new answers'],
-};
+/** Most important first: [state, one, several]. */
+const PHRASES: Array<[ChatActivityStatus, string, string]> = [
+  ['running', 'answer in progress', 'answers in progress'],
+  ['needs_input', 'question needs your input', 'questions need your input'],
+  ['failed', 'answer failed', 'answers failed'],
+  ['unread', 'new answer', 'new answers'],
+];
 
 export interface ChatActivitySummary {
   /** The most important state, for the glyph. */
@@ -76,38 +44,27 @@ export interface ChatActivitySummary {
 export function describeChatActivity(entries: readonly ChatActivity[], label = 'Chat'): ChatActivitySummary {
   const parts: string[] = [];
   let status: ChatActivityStatus | null = null;
-  for (const kind of ORDER) {
+  for (const [kind, one, several] of PHRASES) {
     const group = entries.filter((entry) => entry.status === kind);
     if (!group.length) continue;
     status ??= kind;
     const fresh = group.filter((entry) => !entry.seen);
-    if (!fresh.length) continue;
-    const one = fresh.length === 1;
-    parts.push(`${fresh.length} ${PHRASE[kind][one ? 0 : 1]}${one && fresh[0].title ? `: ${fresh[0].title}` : ''}`);
+    if (fresh.length === 1) parts.push(`1 ${one}${fresh[0].title ? `: ${fresh[0].title}` : ''}`);
+    else if (fresh.length) parts.push(`${fresh.length} ${several}`);
   }
   return { status, text: parts.length ? `${label}: ${parts.join('; ')}` : '' };
 }
 
-/** The navigation summary for Workspace chat (`workspace`) or case chat (`case`). */
-export function useChatActivitySummary(kind: ChatActivity['kind']): ChatActivitySummary {
+/** The navigation summary for Workspace chat, case chat, or both (`all`). */
+export function useChatActivitySummary(kind: ChatActivity['kind'] | 'all'): ChatActivitySummary {
   const { entries } = useChatActivity();
   return React.useMemo(
-    () => describeChatActivity(entries.filter((entry) => entry.kind === kind), kind === 'case' ? 'Case chat' : 'Chat'),
+    () =>
+      describeChatActivity(
+        kind === 'all' ? entries : entries.filter((entry) => entry.kind === kind),
+        kind === 'case' ? 'Case chat' : 'Chat',
+      ),
     [entries, kind],
-  );
-}
-
-/** The case's own glyph (Case Manager queue rows, the case Chat tab). */
-export function CaseChatActivityGlyph({ caseId, className }: { caseId: string; className?: string }) {
-  const { entries } = useChatActivity();
-  const entry = entries.find((item) => item.scope === `case:${caseId}`);
-  const summary = entry ? describeChatActivity([entry], 'Case chat') : null;
-  if (!entry || !summary?.text) return entry ? <ActivityGlyph status={entry.status} className={className} /> : null;
-  return (
-    <>
-      <ActivityGlyph status={entry.status} className={className} />
-      <span className="sr-only">{summary.text}</span>
-    </>
   );
 }
 
@@ -118,17 +75,7 @@ export function CaseChatActivityGlyph({ caseId, className }: { caseId: string; c
  */
 export function BrandActivityRing() {
   const { entries, animatedBrand } = useChatActivity();
-  if (!animatedBrand || !entries.some((entry) => entry.status === 'running')) return null;
-  return (
-    <svg
-      viewBox="0 0 48 48"
-      fill="none"
-      aria-hidden="true"
-      data-motion="on"
-      data-testid="brand-activity-ring"
-      className="chat-brand-ring pointer-events-none absolute -inset-1.5 size-12"
-    >
-      <circle cx="24" cy="24" r="22.5" strokeWidth="1.5" pathLength="100" strokeDasharray="28 72" strokeLinecap="round" className="stroke-primary" />
-    </svg>
-  );
+  return animatedBrand && entries.some((entry) => entry.status === 'running') ? (
+    <span aria-hidden="true" className="chat-brand-ring" />
+  ) : null;
 }

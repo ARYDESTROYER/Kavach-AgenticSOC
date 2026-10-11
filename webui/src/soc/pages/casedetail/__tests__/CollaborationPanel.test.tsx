@@ -7,7 +7,7 @@
  * username so the trigger matches a real SelectItem.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 const { useEventStreamMock } = vi.hoisted(() => ({ useEventStreamMock: vi.fn() }));
@@ -174,7 +174,9 @@ describe('CollaborationThreadTab — Case Manager presentation', () => {
     expect(
       screen.getByText('I correlated the source IP with a known Tor exit node.'),
     ).toBeInTheDocument();
-    expect(screen.getByText('AI')).toBeInTheDocument();
+    // The AI author badge lives in the discussion (the Activity feed's Human / AI / System
+    // filter, added in Round 12, also says "AI").
+    expect(within(discussion as HTMLElement).getByText('AI')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Ownership' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Assignee' })).toHaveTextContent('alice');
     expect(

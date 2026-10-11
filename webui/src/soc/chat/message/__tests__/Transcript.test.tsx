@@ -6,6 +6,13 @@
  * opens, the requested-message highlight for 2 s (and dropping a request whose message
  * is gone), content-visibility on older exchanges without subgrid, focus handed to the
  * composer after a transcript action, and the turn announcer.
+ *
+ * Round 12 (SPEC D12, diagnosis/layout.md): one lane with two edges (three tracks, the
+ * gutters are tracks, no side padding), the user turn spanning the lane so its bubble
+ * sits on the right edge, the scroll lane as the containing block of every absolutely
+ * positioned descendant (sr-only headings can never scroll the frame), and Jump to
+ * latest whenever ANY content is hidden below the fold, outside the content (a pill over
+ * a masked band).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
@@ -13,7 +20,18 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { AnnouncerProvider } from '@/soc/components/announcer';
 import { TooltipProvider } from '@/ui/tooltip';
 import type { ChatEngine, ChatTranscriptItem } from '../../useChatEngine';
-import { ANCHOR_PEEK_PX, HIGHLIGHT_MS, Transcript, groupExchanges, type TranscriptProps } from '../Transcript';
+import { CONTENT_COL, LANE_COL, LANE_GRID } from '../lane';
+import {
+  ANCHOR_PEEK_PX,
+  FOLLOW_THRESHOLD_PX,
+  HIGHLIGHT_MS,
+  JUMP_MASK,
+  JUMP_SCROLL_PADDING,
+  JUMP_THRESHOLD_PX,
+  Transcript,
+  groupExchanges,
+  type TranscriptProps,
+} from '../Transcript';
 import { useTurnAnnouncer } from '../useTurnAnnouncer';
 import { assistantItem, response, runningItem, stubEngine, userItem } from './fixtures';
 
@@ -119,10 +137,65 @@ describe('Transcript', () => {
     expect(exchanges[3].className).not.toContain('[content-visibility:auto]');
     // Layout containment turns a subgrid into a plain grid (CSS Grid 2), so every
     // exchange repeats the lane tracks instead of subgridding them.
+    const tracks = 'grid-cols-[minmax(var(--chat-gutter,0px),1fr)_minmax(0,var(--chat-lane-max,100%))_minmax(var(--chat-gutter,0px),1fr)]';
     for (const exchange of exchanges) {
       expect(exchange.className).not.toContain('grid-cols-subgrid');
-      expect(exchange.className).toContain('grid-cols-[minmax(0,1fr)_minmax(0,8rem)_min(48rem,100%)_minmax(0,8rem)_minmax(0,1fr)]');
+      expect(exchange.className).toContain(tracks);
     }
+  });
+
+  it('lays every turn on one lane with two edges (Round 12, SPEC D12)', () => {
+    const { container } = renderTranscript({
+      engine: engineWith([userItem('Show failed logins'), assistantItem({ response: response({ follow_ups: ['Which hosts?'] }) })]),
+    });
+    const lane = container.querySelector('[data-chat-scroll-lane]') as HTMLElement;
+    const grid = lane.firstElementChild as HTMLElement;
+    // The gutters are the grid's side tracks: no side padding on the content grid.
+    expect(grid.className).toBe(`${LANE_GRID} gap-y-6 py-6`);
+    expect(grid.className).not.toMatch(/\bpx-/);
+    // The user turn spans the lane, so its right-aligned bubble ends on the lane's right edge.
+    const userTurn = screen.getByText('Show failed logins').parentElement as HTMLElement;
+    expect(userTurn.className).toContain(LANE_COL);
+    expect(userTurn).toHaveClass('justify-end');
+    // Prose keeps its measure on the lane's LEFT edge; follow-ups span the lane.
+    expect(CONTENT_COL).toContain('max-w-[48rem]');
+    expect(CONTENT_COL).toContain('justify-self-start');
+    const followUps = screen.getByRole('group', { name: 'Suggested follow-ups' });
+    expect(followUps.className).toContain(LANE_COL);
+    expect(followUps.className).not.toContain('max-w-[48rem]');
+  });
+
+  it('makes the scroll lane the containing block of its sr-only headings (diagnosis (d))', () => {
+    const { container } = renderTranscript({ engine: engineWith([userItem('q'), assistantItem()]) });
+    const lane = container.querySelector('[data-chat-scroll-lane]') as HTMLElement;
+    expect(lane).toHaveClass('relative', 'overflow-y-auto');
+    // Every turn heading is inside the positioned lane, so it is clipped and scrolled by it.
+    for (const heading of screen.getAllByRole('heading', { level: 3 })) {
+      expect(heading).toHaveClass('sr-only');
+      expect(lane.contains(heading)).toBe(true);
+    }
+  });
+
+  it('centres the compact embed\'s Jump to latest on its one 48rem column', () => {
+    const { container } = renderTranscript({ engine: engineWith([userItem('q'), assistantItem({ restored: true })]), compact: true });
+    const { lane, m } = laneMetrics(container, { top: 500, height: 1000, client: 500 });
+    fireEvent.wheel(lane);
+    m.top = 100;
+    fireEvent.scroll(lane);
+    const bar = screen.getByTestId('jump-to-latest-bar');
+    expect(bar).toHaveClass('px-1', '[scrollbar-gutter:stable_both-edges]');
+    const column = screen.getByRole('button', { name: 'Jump to latest' }).parentElement as HTMLElement;
+    expect(column.className).toContain(CONTENT_COL);
+    expect(column).toHaveClass('justify-center');
+  });
+
+  it('keeps the compact embed on its own 4 px inset and in one 48rem column (no host gutter)', () => {
+    const { container } = renderTranscript({ engine: engineWith([userItem('Case question'), assistantItem()]), compact: true });
+    const grid = (container.querySelector('[data-chat-scroll-lane]') as HTMLElement).firstElementChild as HTMLElement;
+    expect(grid).toHaveClass('px-1', 'py-3');
+    // Its composer is a 48rem column too, so the bubble ends where the composer ends.
+    const userTurn = screen.getByText('Case question').parentElement as HTMLElement;
+    expect(userTurn.className).toContain(CONTENT_COL);
   });
 
   it('anchors a new turn at the lane top with a 48 px peek of the previous one', () => {
@@ -165,6 +238,52 @@ describe('Transcript', () => {
     const jump = screen.getByRole('button', { name: 'Jump to latest' });
     fireEvent.click(jump);
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+  });
+
+  it('shows Jump to latest whenever content is hidden below the fold, not only past the follow threshold', () => {
+    const deliverResize = captureResizeObservers();
+    const { container } = renderTranscript({ engine: engineWith([userItem('q'), assistantItem({ restored: true })]) });
+    const { lane, m } = laneMetrics(container, { top: 500, height: 1000, client: 500 });
+    expect(JUMP_THRESHOLD_PX).toBeLessThan(FOLLOW_THRESHOLD_PX);
+    // The reader takes over 40 px above the bottom: still "following" (≤ 72 px), but a
+    // follow-up row is hidden, so the pill shows.
+    fireEvent.wheel(lane);
+    m.top = 460;
+    fireEvent.scroll(lane);
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
+    // Within 8 px of the bottom nothing meaningful is hidden: no pill.
+    m.top = 495;
+    fireEvent.scroll(lane);
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+    // Growth below a reader who took over brings it back.
+    m.height = 1100;
+    deliverResize();
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
+  });
+
+  it('puts Jump to latest outside the content: a centred pill over a masked band', () => {
+    const { container } = renderTranscript({ engine: engineWith([userItem('q'), assistantItem({ restored: true })]) });
+    const { lane, m } = laneMetrics(container, { top: 500, height: 1000, client: 500 });
+    expect(lane.className).not.toContain('mask-image');
+    fireEvent.wheel(lane);
+    m.top = 100;
+    fireEvent.scroll(lane);
+    const bar = screen.getByTestId('jump-to-latest-bar');
+    // Centred on the lane's bottom edge, only the button takes pointer events, and no
+    // page-coloured gradient is painted over the text any more.
+    expect(bar).toHaveClass('pointer-events-none', 'absolute', 'inset-x-0', 'flex', 'justify-center');
+    expect(bar.querySelector('[class*="bg-gradient"]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toHaveClass('pointer-events-auto', 'rounded-full');
+    // The lane fades its bottom band out while the pill shows, so the pill never sits
+    // on a line of text.
+    expect(lane).toHaveAttribute('data-jump-mask', 'true');
+    for (const cls of JUMP_MASK.split(' ')) expect(lane).toHaveClass(cls);
+    expect(JUMP_MASK).toContain('transparent_2.5rem');
+    // A keyboard focus that scrolls into view lands clear of the faded band.
+    expect(lane).toHaveClass(JUMP_SCROLL_PADDING);
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to latest' }));
+    expect(lane).not.toHaveAttribute('data-jump-mask');
+    expect(lane).not.toHaveClass(JUMP_SCROLL_PADDING);
   });
 
   it('brings Jump to latest back after a jump when new content lands below the reader', () => {

@@ -15,6 +15,11 @@
  * `staticMode` (print / static export, Round 12 WP-REP R6): the contents list is plain
  * text — no toggle and no jump buttons, which a printed page cannot use (and which the
  * old print stylesheet hid, leaving an empty "1. 2. 3." list).
+ *
+ * Templates and layouts (Round 12 SPEC §3.4, D11): the Brief names its template beside the
+ * provenance chips ("Monthly SOC report"); an executive summary or a monthly report opens
+ * with its first section's summary as the lead; the `infographic` layout (or template)
+ * draws the hero KPI row, the highlights and the 2-up chart grid (`InfographicView`).
  */
 import * as React from 'react';
 import { ChevronDown } from 'lucide-react';
@@ -25,7 +30,30 @@ import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 
 import { sectionAnchorId, useBlocks } from '../context';
 import { formatUtc } from '../format';
-import type { LeafBlock, ReportBlock } from '../schema';
+import type { LeafBlock, ReportBlock, ReportLayout, ReportTemplate } from '../schema';
+import { InfographicView } from './InfographicView';
+
+/** A template's name on the Brief (the Reports library's `TEMPLATE_LABEL` words). */
+export const TEMPLATE_NAME: Readonly<Record<ReportTemplate, string>> = {
+  investigation: 'Investigation',
+  hunt: 'Threat hunt',
+  ioc: 'Indicator report',
+  shift: 'Shift handoff',
+  posture: 'Posture review',
+  custom: 'Custom',
+  executive: 'Executive summary',
+  monthly: 'Monthly SOC report',
+  infographic: 'Infographic',
+  investigation_brief: 'Investigation brief',
+};
+
+/** Templates whose first section summary is the lead (an executive reads it first). */
+const LEAD_TEMPLATES: ReadonlyArray<ReportTemplate> = ['executive', 'monthly', 'investigation_brief'];
+
+/** The layout a Brief is drawn in: its own, else the infographic template's, else a document. */
+export function reportLayout(block: ReportBlock): ReportLayout {
+  return block.layout ?? (block.template === 'infographic' ? 'infographic' : 'document');
+}
 
 /** Leaf counts by provenance: measured = code or source; AI-stated = ai. */
 export function provenanceSummary(block: ReportBlock): { measured: number; ai: number } {
@@ -59,7 +87,9 @@ export interface ReportViewProps {
 
 export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }: ReportViewProps) {
   const { domId } = useBlocks();
+  const layout = reportLayout(block);
   const [tocOpen, setTocOpen] = React.useState(block.sections.length > 3);
+  const lead = block.template !== undefined && LEAD_TEMPLATES.includes(block.template);
   const rawId = React.useId();
   const tocId = `toc-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const prov = provenanceSummary(block);
@@ -72,9 +102,17 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-3" data-testid="block-report">
+    <div className="flex min-w-0 flex-col gap-3" data-testid="block-report" data-layout={layout} data-template={block.template}>
       {block.subtitle ? <p className="text-sm text-muted-foreground">{block.subtitle}</p> : null}
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="report-provenance">
+        {block.template && block.template !== 'custom' ? (
+          <>
+            <span className="rounded-sm border border-border/70 px-1.5 py-0.5 font-medium text-foreground" data-testid="report-template">
+              {TEMPLATE_NAME[block.template]}
+            </span>
+            <span aria-hidden>·</span>
+          </>
+        ) : null}
         <span className="inline-flex items-center gap-1">
           <ProvenanceTag kind="code" variant="icon" />
           {prov.measured} measured
@@ -86,7 +124,11 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }
         </span>
       </div>
 
-      {block.sections.length > 1 && staticMode ? (
+      {layout === 'infographic' ? (
+        <InfographicView block={block} blockIndex={blockIndex} renderLeaf={renderLeaf} staticMode={staticMode} />
+      ) : null}
+
+      {layout === 'infographic' ? null : block.sections.length > 1 && staticMode ? (
         <div className="rounded-md border border-border/70 px-3 py-1.5 text-xs" data-testid="report-toc-static">
           <p className="font-medium text-foreground">Contents ({block.sections.length} sections)</p>
           <ol className="mt-0.5 list-decimal space-y-0.5 pl-5 text-foreground">
@@ -119,14 +161,24 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }
         </div>
       ) : null}
 
-      {block.sections.map((s, si) => {
+      {layout === 'infographic' ? null : block.sections.map((s, si) => {
         const headingId = sectionAnchorId(domId, blockIndex, si);
         return (
           <div key={s.id} role="group" aria-labelledby={headingId} className="flex min-w-0 flex-col gap-2">
             <h5 id={headingId} tabIndex={staticMode ? undefined : -1} className="scroll-mt-16 text-sm font-semibold text-foreground outline-none">
               {s.heading}
             </h5>
-            {s.summary ? <p className="whitespace-pre-line break-words text-sm text-muted-foreground">{s.summary}</p> : null}
+            {s.summary ? (
+              <p
+                className={cn(
+                  'whitespace-pre-line break-words',
+                  lead && si === 0 ? 'text-md text-foreground' : 'text-sm text-muted-foreground',
+                )}
+                data-testid={lead && si === 0 ? 'report-lead' : undefined}
+              >
+                {s.summary}
+              </p>
+            ) : null}
             {s.blocks.map((leaf, li) => (
               <React.Fragment key={`${leaf.id}-${li}`}>{renderLeaf(leaf, `${si}-${li}`)}</React.Fragment>
             ))}

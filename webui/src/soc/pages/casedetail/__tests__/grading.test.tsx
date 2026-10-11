@@ -31,7 +31,7 @@ import {
 /* --------------------------------------------------------- 1. derive map --- */
 
 // Explicit oracle (NOT computed from the same map the SUT uses).
-const EXPECT: Record<string, Record<string, 'match' | 'override' | 'none'>> = {
+const EXPECT: Record<string, Record<string, 'match' | 'override' | 'resolved' | 'none'>> = {
   TRUE_POSITIVE: {
     true_positive: 'match',
     false_positive: 'override',
@@ -48,10 +48,12 @@ const EXPECT: Record<string, Record<string, 'match' | 'override' | 'none'>> = {
     duplicate: 'none',
     undetermined: 'override',
   },
+  // Round 12 (D15): a concrete outcome RESOLVES the NEEDS_HUMAN hand-off; it is never
+  // an override (agent-effectiveness must not count it as a disagreement).
   NEEDS_HUMAN: {
-    true_positive: 'override',
-    false_positive: 'override',
-    benign: 'override',
+    true_positive: 'resolved',
+    false_positive: 'resolved',
+    benign: 'resolved',
     suspicious: 'match',
     duplicate: 'none',
     undetermined: 'match',
@@ -77,6 +79,12 @@ describe('deriveAgreement — the full 3×6 map', () => {
       kind: 'override',
       assessment: 'disagree',
     });
+  });
+
+  it('settles a NEEDS_HUMAN hand-off as agree, never disagree', () => {
+    const a = deriveAgreement('NEEDS_HUMAN', 'false_positive');
+    expect(a).toMatchObject({ kind: 'resolved', assessment: 'agree' });
+    expect(agreementText(a)).toBe("Settles the AI's hand-off (Needs human → False positive)");
   });
 
   it('is none when verdict OR disposition is missing (hide badge)', () => {

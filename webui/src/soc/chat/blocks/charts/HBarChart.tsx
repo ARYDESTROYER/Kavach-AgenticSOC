@@ -17,9 +17,10 @@ import { token } from '@/soc/components/palette';
 import { navLabel } from '@/soc/nav';
 
 import { useBlocks } from '../context';
-import { clipText, formatTick, formatValue, unitLabel, xLabelFull } from '../format';
+import { clipText, formatTick, formatValue, unitLabel, xAxisHeader, xPositionLabel } from '../format';
 import type { ChartBlock, SemanticKey } from '../schema';
 import { HatchPattern, MARK_FORCED, ChartShell, useSvgId } from './ChartShell';
+import { usePublishChartView } from './export-context';
 import type { AnchorRect } from './ChartTooltipPortal';
 import { TooltipBody, type TooltipRow } from './ChartTooltipPortal';
 import { DataTableFallback, srValue } from './DataTableFallback';
@@ -124,6 +125,8 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
   const styles = React.useMemo(() => seriesStyles(block), [block]);
   const catStyles = React.useMemo(() => categoryStyles(block, false), [block]);
   const [hidden, toggle] = useSeriesVisibility(block.series.length);
+  // The card's image download draws the series this legend shows.
+  usePublishChartView(block, hidden);
   const visibleIdx = block.series.map((_, k) => k).filter((k) => !hidden[k]);
   const n = block.x.values.length;
   const unit = block.unit;
@@ -144,7 +147,7 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
   const xOf = (v: number) => x0 + ((v - scale.min) / (scale.max - scale.min)) * plotW;
   const zeroX = xOf(0);
   const labelChars = Math.max(4, Math.floor(labelW / CHAR_W));
-  const fullX = (i: number) => xLabelFull(block.x.values[i] ?? '', block.x.kind, block.x.bucket);
+  const fullX = (i: number) => xPositionLabel(block.x, i);
   const drillAt = (i: number) => block.drill?.[i] ?? null;
 
   const summarize = React.useCallback(
@@ -284,7 +287,7 @@ function HBarSvg({ block, title, staticMode }: { block: ChartBlock; title: strin
         testId="chart-hbar"
         fallback={{
           caption: `${title} (${unitLabel(unit)})`,
-          rowHeader: block.x.label ?? 'Category',
+          rowHeader: block.x.kind === 'time' ? xAxisHeader(block.x) : block.x.label ?? 'Category',
           columns: block.series.map((s) => s.label),
           rows: block.x.values.map((_, i) => ({
             key: String(i),

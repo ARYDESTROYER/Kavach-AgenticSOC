@@ -85,7 +85,7 @@ export function useConversationReport({
   knownRef.current = knownReportId;
   // The report each conversation was linked to HERE (an add created or used it; a
   // delete unlinked it). The rail row learns the link only on its next refresh, so
-  // switching away and back must not fall back to its stale `null` ("Report · 0").
+  // switching away and back must not fall back to its stale `null` (an empty Report).
   const learnedRef = React.useRef(new Map<string, string | null>());
   const learn = React.useCallback((thread: string | null, id: string | null) => {
     if (thread) learnedRef.current.set(thread, id);

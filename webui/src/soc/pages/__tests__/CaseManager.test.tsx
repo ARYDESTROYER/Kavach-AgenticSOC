@@ -12,6 +12,8 @@ expect.extend(toHaveNoViolations);
 
 const mocks = vi.hoisted(() => ({
   listCases: vi.fn(),
+  getCase: vi.fn(),
+  jobGet: vi.fn(),
   bulk: vi.fn(),
   caseAssign: vi.fn(),
   caseTags: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock('@/lib/api', async () => {
     api: {
       ...actual.api,
       listCases: mocks.listCases,
+      getCase: mocks.getCase,
       caseAssign: mocks.caseAssign,
       caseTags: mocks.caseTags,
       reinvestigateCase: mocks.reinvestigateCase,
@@ -44,6 +47,7 @@ vi.mock('@/lib/api', async () => {
       jobs: {
         ...actual.api.jobs,
         submit: mocks.submitJob,
+        get: mocks.jobGet,
       },
     },
   };
@@ -82,6 +86,11 @@ vi.mock('@/soc/components/Can', () => ({
     children: React.ReactNode;
   }) => (mocks.permissions.has(`${resource}:${action}`) ? <>{children}</> : null),
 }));
+
+vi.mock('../CaseDetail.api', async () => {
+  const actual = await vi.importActual<typeof import('../CaseDetail.api')>('../CaseDetail.api');
+  return { ...actual, listPickableUsers: vi.fn(async () => []) };
+});
 
 vi.mock('../CaseDetail', () => ({
   CaseDetail: ({
@@ -145,9 +154,44 @@ const RESOLVED_LOW: Case = {
 
 const CASES = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
 
+const TERMINAL = new Set(['closed', 'resolved']);
+
+/**
+ * A faithful stand-in for `GET /api/cases` (Round 12): the queue is SERVER-backed, so the
+ * mock applies the same status-group / status / assignee / severity / q / sort / paging the
+ * backend does. A view the UI forgets to ask the server for therefore stays empty here.
+ */
+function serve(dataset: Case[]) {
+  return async (query: Record<string, unknown> = {}) => {
+    let rows = [...dataset];
+    if (query.status_group === 'active') rows = rows.filter((c) => !TERMINAL.has(String(c.status)));
+    if (query.status) rows = rows.filter((c) => c.status === query.status);
+    if (query.assignee) {
+      rows = rows.filter((c) => String(c.assignee || '').toLowerCase() === String(query.assignee).toLowerCase());
+    }
+    if (query.severity) rows = rows.filter((c) => c.severity_band === query.severity);
+    if (typeof query.q === 'string' && query.q.trim()) {
+      const terms = query.q.toLowerCase().split(/\s+/).filter(Boolean);
+      rows = rows.filter((c) => {
+        const hay = [c.case_id, c.case_number, c.title, c.status, c.entity?.value, c.source_name]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return terms.every((t) => hay.includes(t));
+      });
+    }
+    const field = String(query.sort_field || 'updated_at') as keyof Case;
+    const dir = query.sort_order === 'asc' ? 1 : -1;
+    rows.sort((a, b) => (String(a[field] ?? '') < String(b[field] ?? '') ? -dir : dir));
+    const offset = Number(query.offset || 0);
+    const limit = Number(query.limit || 50);
+    return { cases: rows.slice(offset, offset + limit), total: rows.length };
+  };
+}
+
 async function chooseBulkAction(name: string | RegExp) {
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: /bulk actions for/i }));
+  await user.click(screen.getByRole('button', { name: /more bulk actions for/i }));
   const menu = await screen.findByRole('menu');
   await user.click(within(menu).getByRole('menuitem', { name }));
 }
@@ -184,7 +228,17 @@ describe('CaseManager', () => {
       'cases:close',
       'cases:reinvestigate',
     ]);
-    mocks.listCases.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
+    mocks.listCases.mockReset().mockImplementation(serve(CASES));
+    mocks.getCase.mockReset().mockImplementation(async (id: string) => {
+      const item = CASES.find((candidate) => candidate.case_id === id);
+      if (!item) throw new Error('Case not found');
+      return item;
+    });
+    mocks.jobGet.mockReset().mockImplementation(async (id: string) => ({
+      ...acceptedJob('case_lifecycle', { case_ids: [] }),
+      job_id: id,
+      status: 'running',
+    }));
     mocks.bulk.mockReset().mockImplementation(async (ids: string[]) => ({
       results: ids.map((id) => ({ id, ok: true })),
     }));
@@ -219,7 +273,7 @@ describe('CaseManager', () => {
     const loading = screen.getByRole('status', { name: 'Loading cases' });
     expect(loading).toHaveAttribute('data-loading-layout', 'panel');
     expect(loading).toHaveClass('items-center', 'justify-center');
-    expect(within(loading).getByText('Preparing the active case queue.')).toBeInTheDocument();
+    expect(within(loading).getByText('Preparing the case queue.')).toBeInTheDocument();
     expect(within(loading).getByTestId('console-loading-glyph')).toBeInTheDocument();
   });
 
@@ -227,7 +281,11 @@ describe('CaseManager', () => {
     render(<CaseManager />);
 
     expect(await screen.findByRole('heading', { name: 'Active cases' })).toBeInTheDocument();
-    expect(screen.getByText('2 shown · 2 active / 3 loaded')).toBeInTheDocument();
+    // Server-backed (CM-1): the whole active lifecycle group is asked for, one page at a time.
+    expect(mocks.listCases).toHaveBeenCalledWith(
+      expect.objectContaining({ status_group: 'active', offset: 0, limit: 50, sort_field: 'updated_at' }),
+    );
+    expect(await screen.findByText('1 of 2 active · 2 loaded')).toBeInTheDocument();
     expect(screen.queryByText('Benign health check')).not.toBeInTheDocument();
 
     const manager = screen.getByTestId('case-manager');
@@ -272,8 +330,14 @@ describe('CaseManager', () => {
 
     await user.click(screen.getByRole('combobox', { name: 'Severity filter' }));
     await user.click(await screen.findByRole('option', { name: 'High' }));
+    // The filter is applied by the SERVER across every case, not to a loaded page.
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ severity: 'high' })),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument(),
+    );
     expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
-    expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
   });
 
   it('titles the queue in sentence case without a generated eyebrow', async () => {
@@ -287,6 +351,8 @@ describe('CaseManager', () => {
   });
 
   it('renders each case as a divided two-line row that shows severity, risk, id and status', async () => {
+    // Round 12: a third line (id · primary fact) and the outcome word were added; the
+    // two-line title/meta reading order is unchanged.
     render(<CaseManager />);
     await screen.findByText('Suspicious S3 bucket exfiltration');
 
@@ -413,16 +479,13 @@ describe('CaseManager', () => {
       expect(button).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-inset', 'focus-visible:ring-ring');
     }
 
-    // Checkboxes are revealed on hover/focus (and always on touch) until something is selected.
+    // Round 12 (CM-4): checkboxes are ALWAYS visible (no hover-only reveal) and stay out
+    // of the tab order — the queue is one roving tab stop; X / Space toggles selection.
     const otherCheckbox = within(otherRow).getByRole('checkbox', { name: 'Select CASE-2026-0091' });
-    expect(otherCheckbox).toHaveClass(
-      'opacity-0',
-      'group-hover/row:opacity-100',
-      'focus-visible:opacity-100',
-      '[@media(hover:none)]:opacity-100',
-    );
-    otherCheckbox.focus();
-    expect(otherCheckbox).toHaveFocus();
+    expect(otherCheckbox).not.toHaveClass('opacity-0');
+    expect(otherCheckbox).toHaveAttribute('tabindex', '-1');
+    expect(openButton).toHaveAttribute('tabindex', '0');
+    expect(otherButton).toHaveAttribute('tabindex', '-1');
 
     // SELECTED: checked box + a lighter tint than the open row, never the open treatment.
     fireEvent.click(otherCheckbox);
@@ -497,13 +560,19 @@ describe('CaseManager', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: 'All' }));
     expect(screen.getByRole('heading', { name: 'All cases' })).toBeInTheDocument();
-    expect(screen.getByText('3 shown · 3 loaded')).toBeInTheDocument();
+    expect(await screen.findByText('1 of 3 cases · 3 loaded')).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Search case queue' }), {
       target: { value: 'health check' },
     });
+    // Instant pre-filter of the loaded rows while the server query is debounced (a
+    // filtered-out row leaves through a short exit animation)…
     expect(screen.getByText('Benign health check')).toBeInTheDocument();
-    expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument());
+    // …then the search runs on the server over every case.
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'health check' })),
+    );
 
     fireEvent.click(screen.getByText('Benign health check'));
     expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute(
@@ -521,9 +590,10 @@ describe('CaseManager', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
 
+    // The resolved case leaves the Active window AND its total, so loaded vs total stays exact.
     await waitFor(() => {
       expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
-      expect(screen.getByText('1 shown · 1 active / 3 loaded')).toBeInTheDocument();
+      expect(screen.getByText('1 active · 1 loaded')).toBeInTheDocument();
     });
   });
 
@@ -553,7 +623,9 @@ describe('CaseManager', () => {
       target: { value: 'failed logins' },
     });
     expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
-    expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument(),
+    );
     expect(screen.getByText('2 selected')).toBeInTheDocument();
     expect(selectVisible).toHaveAttribute('aria-checked', 'true');
 
@@ -584,8 +656,14 @@ describe('CaseManager', () => {
       },
     });
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
-    expect(await screen.findByText(/track progress in inbox/i)).toBeInTheDocument();
-    expect(screen.getByText('2 visible')).toBeInTheDocument();
+    // The job is tracked in place (CM-7): progress shows here; the rows stay selected
+    // until it finishes (successes then leave the selection, failures stay with a reason).
+    expect(await screen.findByText('Acknowledgement: 0 of 2 done')).toBeInTheDocument();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/acknowledgement queued for 2 cases/i),
+      expect.anything(),
+    );
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
   });
 
   it('keeps assignment and tagging status-neutral with their dedicated job kinds', async () => {
@@ -608,7 +686,7 @@ describe('CaseManager', () => {
     });
     expect(mocks.caseAssign).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    // The selection is kept while the first job is tracked, so the next action reuses it.
     await chooseBulkAction('Add tag');
     dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Tag to add' }), {
@@ -640,8 +718,6 @@ describe('CaseManager', () => {
       params: { case_ids: [OPEN_HIGH.case_id], action: 'set_status', status: 'on_hold' },
     });
 
-    const checkbox = await screen.findByRole('checkbox', { name: 'Select CASE-2026-0091' });
-    fireEvent.click(checkbox);
     await chooseBulkAction('Set disposition');
     dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('combobox', { name: 'Disposition' }));
@@ -654,6 +730,8 @@ describe('CaseManager', () => {
         case_ids: [OPEN_HIGH.case_id],
         action: 'set_disposition',
         disposition: 'false_positive',
+        // A person picked it in the bulk form, so it counts as their classification (D15).
+        disposition_declared: true,
       },
     });
   });
@@ -667,27 +745,37 @@ describe('CaseManager', () => {
 
     const rowCheckbox = screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' });
     fireEvent.click(rowCheckbox);
-    await user.click(screen.getByRole('button', { name: /bulk actions for/i }));
+    await user.click(screen.getByRole('button', { name: /more bulk actions for/i }));
     const menu = await screen.findByRole('menu');
     expect(within(menu).queryByRole('menuitem', { name: 'Assign' })).not.toBeInTheDocument();
-    expect(within(menu).queryByRole('menuitem', { name: 'Resolve' })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: /^Resolve/ })).not.toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: /^Close/ })).not.toBeInTheDocument();
     expect(within(menu).getByRole('menuitem', { name: 'Acknowledge' })).toBeInTheDocument();
+    // The toolbar's direct Assign / Close buttons follow the same grants.
+    expect(screen.queryByRole('button', { name: 'Assign' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Close…' })).not.toBeInTheDocument();
 
     await user.keyboard('{Escape}');
     mocks.permissions.add('cases:close');
     fireEvent.click(rowCheckbox);
     fireEvent.click(rowCheckbox);
-    await chooseBulkAction('Resolve');
-    const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText('Resolve 1 case?')).toBeInTheDocument();
+    await chooseBulkAction(/^Resolve/);
+    // Resolve is gated by the outcome dialog: a disposition is REQUIRED (D15).
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Resolve 1 case' })).toBeInTheDocument();
+    const submit = within(dialog).getByRole('button', { name: 'Resolve 1 case' });
+    expect(submit).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('radio', { name: /true positive/i }));
     expect(mocks.submitJob).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Resolve cases' }));
+    fireEvent.click(submit);
     await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
     expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
       kind: 'case_lifecycle',
       params: {
         case_ids: [OPEN_HIGH.case_id],
         action: 'resolve',
+        disposition: 'true_positive',
+        disposition_declared: true,
         reason: 'Bulk-resolved by analyst',
       },
     });
@@ -715,7 +803,13 @@ describe('CaseManager', () => {
       params: { case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id] },
     });
     expect(mocks.reinvestigateCase).not.toHaveBeenCalled();
-    expect(await screen.findByText(/reinvestigation queued for 2 cases/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        expect.stringMatching(/reinvestigation queued for 2 cases/i),
+        expect.anything(),
+      ),
+    );
+    expect(await screen.findByText('Reinvestigation: 0 of 2 done')).toBeInTheDocument();
   });
 
   it('reuses one idempotency key across an ambiguous retry and rotates after acceptance', async () => {
@@ -737,7 +831,7 @@ describe('CaseManager', () => {
     const firstKey = mocks.submitJob.mock.calls[0][0].idempotency_key;
     expect(mocks.submitJob.mock.calls[1][0].idempotency_key).toBe(firstKey);
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
+    // Still selected (the accepted job is tracked in place): submit the same ids again.
     await chooseBulkAction('Reinvestigate');
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reinvestigate' }));
     await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(3));
@@ -767,12 +861,146 @@ describe('CaseManager', () => {
     );
   });
 
+  it('reaches an active case beyond the old newest-200 window by paging the server', async () => {
+    // 260 active cases: before Round 12 the queue loaded the newest 200 and filtered in
+    // the browser, so the oldest 60 were silently missing from "Active".
+    const many: Case[] = Array.from({ length: 260 }, (_, i) => ({
+      case_id: `case-${String(i).padStart(3, '0')}`,
+      case_number: `CASE-${String(1000 + i)}`,
+      title: `Active case ${i}`,
+      status: 'open',
+      severity_band: 'medium',
+      risk_score: 30,
+      updated_at: new Date(Date.UTC(2026, 9, 1, 0, 0, 0) + i * 60_000).toISOString(),
+    }));
+    mocks.listCases.mockImplementation(serve(many));
+    render(<CaseManager />);
+    expect(await screen.findByText('1 of 260 active · 50 loaded')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50, limit: 50 })),
+    );
+    expect(await screen.findByText('1 of 260 active · 100 loaded')).toBeInTheDocument();
+
+    // The oldest case is found by a server-side search, not a loaded-page filter.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search case queue' }), {
+      target: { value: 'CASE-1000' },
+    });
+    expect(await screen.findByText('Active case 0')).toBeInTheDocument();
+  });
+
+  it('Mine asks the server for the signed-in analyst’s active cases', async () => {
+    mocks.listCases.mockImplementation(
+      serve([{ ...OPEN_HIGH, assignee: 'analyst.one' }, OPEN_CRITICAL, RESOLVED_LOW]),
+    );
+    render(<CaseManager />);
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    fireEvent.click(screen.getByRole('radio', { name: 'Mine' }));
+    expect(screen.getByRole('heading', { name: 'My cases' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenLastCalledWith(
+        expect.objectContaining({ assignee: 'analyst.one', status_group: 'active' }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText('Suspicious S3 bucket exfiltration')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
+  });
+
+  it('moves through the queue with J/K and arrows, toggles selection with X, and opens shortcuts with ?', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const list = screen.getByRole('list', { name: 'Cases' });
+    const rowButton = (title: string) =>
+      within(
+        screen.getAllByTestId('case-queue-row').find((row) => within(row).queryByText(title)) as HTMLElement,
+      ).getAllByRole('button')[0];
+
+    rowButton('Suspicious S3 bucket exfiltration').focus();
+    fireEvent.keyDown(list, { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    expect(rowButton('Multiple failed logins')).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(list, { key: 'x' });
+    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+
+    fireEvent.keyDown(list, { key: 'ArrowUp' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id),
+    );
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
+  });
+
+  it('focuses the queue search with /', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    fireEvent.keyDown(document.body, { key: '/' });
+    expect(screen.getByRole('textbox', { name: 'Search case queue' })).toHaveFocus();
+  });
+
+  it('bulk Close requires a disposition and submits it as declared', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close…' }));
+
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    const submit = within(dialog).getByRole('button', { name: 'Close 2 cases' });
+    expect(submit).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('radio', { name: /false positive/i }));
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0]).toMatchObject({
+      kind: 'case_lifecycle',
+      params: {
+        action: 'close',
+        case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id],
+        disposition: 'false_positive',
+        disposition_declared: true,
+        resolution: 'Bulk-closed by analyst',
+      },
+    });
+  });
+
+  it('keeps failed rows selected with their reason when a tracked bulk job finishes', async () => {
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    await chooseBulkAction('Acknowledge');
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Acknowledge cases' }));
+    await screen.findByText('Acknowledgement: 0 of 2 done');
+
+    // No live stream in jsdom: the tracked job is polled until it is terminal.
+    mocks.jobGet.mockImplementation(async (id: string) => ({
+      ...acceptedJob('case_lifecycle', { case_ids: [OPEN_CRITICAL.case_id, OPEN_HIGH.case_id] }),
+      job_id: id,
+      status: 'partial',
+      progress: { done: 2, total: 2, unit: 'cases' },
+      failures: [{ item_ref: OPEN_HIGH.case_id, reason: 'Case is closed' }],
+      failure_count: 1,
+    }));
+    expect(
+      await screen.findByText(/1 of 2 done\. 1 failed and stays selected/i, undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('checkbox', { name: 'Select CASE-2026-0092' })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText('Case is closed')).toBeInTheDocument();
+  });
+
   it('has no detectable accessibility violations in the split workspace', async () => {
     const user = userEvent.setup();
     const view = render(<CaseManager />);
     await screen.findByTestId('embedded-case-detail');
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select CASE-2026-0091' }));
-    await user.click(screen.getByRole('button', { name: /bulk actions for/i }));
+    await user.click(screen.getByRole('button', { name: /more bulk actions for/i }));
     const menu = await screen.findByRole('menu');
 
     expect(await axe(view.container)).toHaveNoViolations();

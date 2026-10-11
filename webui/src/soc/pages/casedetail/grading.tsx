@@ -11,6 +11,9 @@
  *   TRUE_POSITIVE  ↔ true_positive
  *   FALSE_POSITIVE ↔ { false_positive, benign }
  *   NEEDS_HUMAN    ↔ { suspicious, undetermined }
+ *   NEEDS_HUMAN    → { true_positive, false_positive, benign } = RESOLVED (Round 12, D15):
+ *                    the model handed the call to a person, so a concrete outcome settles
+ *                    that hand-off — it is never counted as the analyst overriding the AI
  *   duplicate      → no comparison (administrative outcome, not an agree/override signal)
  * A match reads "Matches AI verdict"; a mismatch reads "Overrides AI verdict (X → Y)"
  * and only THEN reveals an optional "What did the AI miss?" line. The 3 detailed quality
@@ -127,6 +130,9 @@ export interface GradingDraft {
 export type GradingAgreement =
   | { kind: 'match'; assessment: 'agree' }
   | { kind: 'override'; assessment: 'disagree'; fromLabel: string; toLabel: string }
+  // NEEDS_HUMAN settled with a concrete outcome: the AI correctly deferred to a person,
+  // so the posted assessment is `agree` and the case never reads as a disagreement.
+  | { kind: 'resolved'; assessment: 'agree'; toLabel: string }
   | { kind: 'none' };
 
 /* -------------------------------------------------------------- pure logic --- */
@@ -169,6 +175,9 @@ const VERDICT_MATCH_DISPOSITIONS: Record<string, readonly string[]> = {
   NEEDS_HUMAN: ['suspicious', 'undetermined'],
 };
 
+/** Concrete outcomes that RESOLVE a NEEDS_HUMAN hand-off rather than override it. */
+const NEEDS_HUMAN_RESOLUTIONS: readonly string[] = ['true_positive', 'false_positive', 'benign'];
+
 function normVerdict(v?: string | null): string {
   return String(v ?? '')
     .trim()
@@ -200,6 +209,9 @@ export function deriveAgreement(
   const allowed = VERDICT_MATCH_DISPOSITIONS[v];
   if (!allowed) return { kind: 'none' };
   if (allowed.includes(d)) return { kind: 'match', assessment: 'agree' };
+  if (v === 'NEEDS_HUMAN' && NEEDS_HUMAN_RESOLUTIONS.includes(d)) {
+    return { kind: 'resolved', assessment: 'agree', toLabel: humanizeToken(d) };
+  }
   return {
     kind: 'override',
     assessment: 'disagree',
@@ -212,6 +224,7 @@ export function deriveAgreement(
 export function agreementText(a: GradingAgreement): string | null {
   if (a.kind === 'match') return 'Matches AI verdict';
   if (a.kind === 'override') return `Overrides AI verdict (${a.fromLabel} → ${a.toLabel})`;
+  if (a.kind === 'resolved') return `Settles the AI's hand-off (Needs human → ${a.toLabel})`;
   return null;
 }
 
@@ -365,7 +378,10 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
   return (
     <div className={cn('space-y-3', className)}>
       {badgeText ? (
-        <Badge variant={isOverride ? 'warning' : 'success'} className="gap-1.5">
+        <Badge
+          variant={isOverride ? 'warning' : agreement.kind === 'resolved' ? 'info' : 'success'}
+          className="gap-1.5"
+        >
           {isOverride ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
           {badgeText}
         </Badge>
@@ -412,7 +428,7 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="mt-3 space-y-2 rounded-md border border-border bg-muted/30 p-4">
-            <div className="mb-1 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">
               Quality (optional)
             </div>
             <StarRow
@@ -508,9 +524,7 @@ export const GradingHistory: React.FC<GradingHistoryProps> = ({ feedback, classN
 
   return (
     <div className={className}>
-      <div className="mb-3 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-        Previous gradings
-      </div>
+      <h4 className="mb-3 text-sm font-semibold text-foreground">Previous gradings</h4>
       <div className="space-y-2">
         {prior.map((f, i) => (
           <div key={i} className="rounded-md border border-border bg-muted/30 p-3">

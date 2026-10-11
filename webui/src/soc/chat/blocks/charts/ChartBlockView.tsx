@@ -40,6 +40,7 @@ export function ChartBlockView({ block: raw, title, compact = false, expanded = 
   }
   switch (block.kind) {
     case 'bar':
+    case 'grouped_bar':
     case 'stacked_bar':
     case 'line':
     case 'area':

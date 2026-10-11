@@ -114,6 +114,8 @@ import { useHasUnsavedChanges } from './hooks/useDirtyDraft';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion';
 import { JobMonitor } from './jobs/JobMonitor';
+import { ChatActivityMonitor } from './chat-activity/monitor';
+import { ActivityGlyph, useChatActivitySummary } from './chat-activity/glyph';
 import { navItem, navLabel, navParentOf, type PageId } from './nav';
 import type { Navigate } from './router';
 // TYPE-ONLY import (elided at build → zero runtime import): motion.dev must NEVER ride
@@ -917,6 +919,8 @@ export const AppShell: React.FC<AppShellProps> = ({
   const mobileNavRef = React.useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
   const reducedMotion = usePrefersReducedMotion();
+  // The mobile menu button carries the chat activity glyph (the nav is off-canvas there).
+  const menuActivity = useChatActivitySummary('all');
   const releasePresentation = resolveReleasePresentation(CONSOLE_RELEASE_IDENTITY, buildInfo);
   const sourceNotice = releasePresentation.mismatch
     ? null
@@ -1250,6 +1254,8 @@ export const AppShell: React.FC<AppShellProps> = ({
       ) : null}
       <HealthAnnouncer degradations={agentDegradations} />
       <JobMonitor actor={username} onNavigate={onNavigate} />
+      {/* Chat turns that outlive their page (SPEC D13): toasts, title, other tabs. */}
+      <ChatActivityMonitor username={username} onNavigate={onNavigate} />
       {/* `overflow-x-clip`, never `-hidden`: both keep a wide child from widening the
           Console, but `hidden` silently makes the element a vertical scroll container
           (a lone hidden axis forces the other to `auto`), so every `sticky` descendant,
@@ -1363,13 +1369,20 @@ export const AppShell: React.FC<AppShellProps> = ({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 shrink-0"
+              className="relative h-8 w-8 shrink-0"
               onClick={() => setMobileNavOpen(true)}
               aria-label="Open navigation"
               aria-expanded={mobileNavOpen}
+              aria-describedby={menuActivity.text ? 'mobile-nav-activity' : undefined}
             >
               <Menu className="h-4 w-4" aria-hidden />
+              <ActivityGlyph status={menuActivity.status} className="chat-activity-badge" />
             </Button>
+          ) : null}
+          {isMobile && menuActivity.text ? (
+            <span id="mobile-nav-activity" className="sr-only">
+              {menuActivity.text}
+            </span>
           ) : null}
 
           {/* Breadcrumb: OUR product name / current page (plain text — untrusted). */}

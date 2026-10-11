@@ -20,7 +20,7 @@
  * decides or mutates a case.
  */
 import * as React from 'react';
-import { Bot, ChevronDown, Gauge, Lightbulb, ListTree, ShieldCheck } from 'lucide-react';
+import { ArrowDown, Bot, ChevronDown, Gauge, Lightbulb, ListTree, ShieldCheck, UserCheck } from 'lucide-react';
 
 import type { Case, CaseRationale } from '@/lib/types';
 import type { TimelineResponse } from '@/soc/pages/CaseDetail.api';
@@ -28,6 +28,7 @@ import { cn } from '@/lib/cn';
 import { DASH, fmtPercent, humanizeToken } from '@/lib/format';
 
 import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { Skeleton } from '@/ui/skeleton';
 
@@ -36,6 +37,11 @@ import { InvestigationInputs } from './InvestigationInputs';
 import { DecisionCard } from './DecisionCard';
 import { GradingHistory } from './grading';
 import { TraceTimeline } from '@/soc/components/TraceTimeline';
+import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
+import { SegmentedControl } from '@/soc/components/SegmentedControl';
+import { scoreBand, type ScoreBand } from '@/soc/components/palette';
+import { caseOutcome, isHumanClosed, isHumanSettled } from '@/soc/components/outcome';
+import { riskValue, statusWords } from './caseFacts';
 import { CASE_MANAGER_PANEL_PADDING, type CasePanelPresentation } from './shared';
 
 /* --------------------------------------------------------------- zone header -- */
@@ -82,6 +88,365 @@ const ZoneHeader: React.FC<{
   </div>
 );
 
+/* ------------------------------------------------- Case Manager presentation -- */
+
+type TraceActor = 'all' | 'agent' | 'tool' | 'code';
+
+const TRACE_ACTOR_KINDS: Record<Exclude<TraceActor, 'all'>, ReadonlySet<string>> = {
+  agent: new Set(['invoke_agent', 'chat']),
+  tool: new Set(['execute_tool']),
+  code: new Set(['decision']),
+};
+
+const RISK_TEXT: Record<ScoreBand, string> = {
+  low: 'text-low-text',
+  medium: 'text-medium-text',
+  high: 'text-high-text',
+  critical: 'text-critical-text',
+};
+
+const DisclosureTrigger: React.FC<{
+  open: boolean;
+  icon: React.ComponentType<{ className?: string }>;
+  showLabel: string;
+  hideLabel: string;
+}> = ({ open, icon: Icon, showLabel, hideLabel }) => (
+  <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <Icon className="h-3.5 w-3.5" aria-hidden />
+    {open ? hideLabel : showLabel}
+    <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+  </CollapsibleTrigger>
+);
+
+/**
+ * The Case Manager Investigation tab, DECISION FIRST (CM-6): what settled the case →
+ * the AI assessment (neutral; red only for a critical RISK band) → its evidence → the
+ * policy inputs → the inputs consulted → the trace, collapsed with step/tool counts, an
+ * actor filter and "Jump to decision". Every datum of the earlier layout is kept: the
+ * summary, confidence, recommended action, risk score, inputs, every trace step, the
+ * decision summary + status, the full assessment evidence, the policy inputs and the
+ * grading history.
+ */
+const CaseManagerInvestigation: React.FC<Omit<InvestigationPanelProps, 'presentation'>> = ({
+  c,
+  rationale,
+  rationaleLoading,
+  rationaleError,
+  onRetryRationale,
+  timeline,
+  timelineLoading,
+  timelineError,
+  onRetryTimeline,
+}) => {
+  const [traceOpen, setTraceOpen] = React.useState(false);
+  const [evidenceOpen, setEvidenceOpen] = React.useState(false);
+  const [decisionOpen, setDecisionOpen] = React.useState(false);
+  const [actor, setActor] = React.useState<TraceActor>('all');
+  const traceRef = React.useRef<HTMLDivElement | null>(null);
+
+  const outcome = caseOutcome(c);
+  const humanClosed = isHumanClosed(c);
+  const humanSettled = isHumanSettled(outcome);
+  const confidence = typeof rationale?.confidence === 'number' ? rationale.confidence : c.confidence;
+  const summary =
+    rationale?.reasoning?.trim() || rationale?.decision_rationale?.trim() || c.summary?.trim() || '';
+  const recommendation = c.recommended_action?.trim() || '';
+  const decisionSummary = rationale?.decision_rationale?.trim() || '';
+  const risk = riskValue(c.risk_score);
+  const band = risk === null ? null : scoreBand(risk);
+  const criticalRisk = band === 'critical';
+
+  const spans = timeline?.spans ?? [];
+  const toolCount = spans.filter((span) => span.kind === 'execute_tool').length;
+  const hasDecisionStep = spans.some((span) => span.kind === 'decision');
+  const filteredTimeline = React.useMemo<TimelineResponse | null>(() => {
+    if (!timeline || actor === 'all') return timeline;
+    const kinds = TRACE_ACTOR_KINDS[actor];
+    return { ...timeline, spans: timeline.spans.filter((span) => kinds.has(span.kind)) };
+  }, [timeline, actor]);
+
+  const handleTraceToggle = React.useCallback(
+    (open: boolean) => {
+      setTraceOpen(open);
+      if (open && timeline === null && !timelineLoading && !timelineError) onRetryTimeline();
+    },
+    [timeline, timelineLoading, timelineError, onRetryTimeline],
+  );
+
+  const jumpToDecision = React.useCallback(() => {
+    setActor('all');
+    setTraceOpen(true);
+    // After the (possibly just opened, possibly re-filtered) trace renders.
+    window.setTimeout(() => {
+      const step = traceRef.current?.querySelector<HTMLElement>('[data-trace-kind="decision"]');
+      if (!step) return;
+      step.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      step.focus({ preventScroll: true });
+    }, 60);
+  }, []);
+
+  // An operator's declared-benign policy is neither a person's case work nor the
+  // model's: it gets its own title (checked first — it is also "human closed").
+  const policyClosed = outcome.source === 'analyst_policy';
+  const decisionTitle = policyClosed ? 'Analyst policy' : humanClosed ? 'Analyst resolved' : 'Decision';
+  const decisionLine =
+    humanClosed || policyClosed
+      ? `${outcome.headline}${outcome.by ? ` by ${outcome.by}` : ''}.`
+      : decisionSummary || 'The server-side case policy recorded the outcome shown for this case.';
+
+  return (
+    <div
+      className={cn('space-y-6', CASE_MANAGER_PANEL_PADDING)}
+      data-case-panel="investigation"
+      data-presentation="case-manager"
+    >
+      {/* 1. DECISION — what settled the case, first (#3: code or a person, never the model). */}
+      <section
+        aria-labelledby="case-manager-decision-title"
+        data-testid="investigation-decision"
+        data-decided-by={policyClosed ? 'analyst_policy' : humanClosed ? 'analyst' : 'code'}
+        className="space-y-3 border-b border-border pb-5"
+      >
+        <div className="flex flex-wrap items-start gap-3">
+          <span
+            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-foreground"
+            aria-hidden
+          >
+            {humanClosed && !policyClosed ? <UserCheck className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2
+                id="case-manager-decision-title"
+                className="text-base font-semibold tracking-tight text-foreground"
+              >
+                {decisionTitle}
+              </h2>
+              <ProvenanceTag kind={humanClosed && !policyClosed ? 'analyst' : 'code'} />
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-foreground/90">{decisionLine}</p>
+            {humanClosed && !policyClosed && decisionSummary ? (
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Before the analyst: {decisionSummary}
+              </p>
+            ) : null}
+            {humanSettled && outcome.aiLine ? (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="investigation-ai-line">
+                {outcome.aiLine}
+              </p>
+            ) : null}
+          </div>
+          <Badge variant="outline" className="self-start">
+            {c.status ? statusWords(c.status) : 'Pending'}
+          </Badge>
+        </div>
+        <Collapsible open={decisionOpen} onOpenChange={setDecisionOpen}>
+          <DisclosureTrigger
+            open={decisionOpen}
+            icon={ShieldCheck}
+            showLabel="Show policy inputs"
+            hideLabel="Hide policy inputs"
+          />
+          <CollapsibleContent className="mt-3">
+            <DecisionCard c={c} rationale={rationale} timeline={timeline} />
+          </CollapsibleContent>
+        </Collapsible>
+      </section>
+
+      {/* 2. AI ASSESSMENT — advisory. Neutral frame; only a critical RISK band is red. */}
+      <section
+        aria-labelledby="case-manager-assessment-title"
+        data-testid="investigation-assessment"
+        data-risk-band={band ?? undefined}
+        className={cn(
+          'relative overflow-hidden rounded-lg border bg-card p-4',
+          criticalRisk ? 'border-critical/40' : 'border-border',
+        )}
+      >
+        {criticalRisk ? <span aria-hidden className="absolute inset-y-0 left-0 w-1 bg-critical" /> : null}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <span
+              className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
+              aria-hidden
+            >
+              <Bot className="h-4 w-4" />
+            </span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2
+                  id="case-manager-assessment-title"
+                  className="text-base font-semibold tracking-tight text-foreground"
+                >
+                  AI assessment
+                </h2>
+                <ProvenanceTag kind="ai" />
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                The model&apos;s reading of the evidence. Advisory only.
+              </p>
+            </div>
+          </div>
+          {typeof confidence === 'number' ? (
+            <div className="text-right">
+              <div className="text-xs text-muted-foreground">
+                {humanSettled ? 'AI confidence at assessment' : 'Confidence'}
+              </div>
+              <div className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">
+                {fmtPercent(confidence)}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-3">
+          {rationaleLoading && !summary ? (
+            <div className="space-y-2" aria-label="Loading AI assessment">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-4/5" />
+            </div>
+          ) : summary ? (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{summary}</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No assessment summary was recorded for this investigation.
+            </p>
+          )}
+        </div>
+
+        <dl className="mt-4 grid gap-x-6 gap-y-3 border-t border-border pt-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
+          <div className="min-w-0">
+            <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Lightbulb className="h-3.5 w-3.5" aria-hidden />
+              {humanClosed ? 'AI recommendation at triage' : 'Recommended action'}
+            </dt>
+            <dd
+              className={cn(
+                'mt-1 text-sm',
+                humanClosed ? 'text-muted-foreground' : 'text-foreground/90',
+              )}
+            >
+              {recommendation || 'No recommended action was recorded.'}
+            </dd>
+          </div>
+          <div>
+            <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Gauge className="h-3.5 w-3.5" aria-hidden />
+              Risk score
+            </dt>
+            <dd className="mt-1 flex items-baseline gap-1.5">
+              <span
+                className={cn('text-xl font-semibold tabular-nums', band ? RISK_TEXT[band] : 'text-foreground')}
+                data-testid="investigation-risk"
+              >
+                {risk !== null ? `${risk}/100` : DASH}
+              </span>
+              {band ? <span className="text-xs text-muted-foreground">{humanizeToken(band)}</span> : null}
+            </dd>
+          </div>
+        </dl>
+
+        <Collapsible className="mt-3" open={evidenceOpen} onOpenChange={setEvidenceOpen}>
+          <DisclosureTrigger
+            open={evidenceOpen}
+            icon={Bot}
+            showLabel="Show full assessment evidence"
+            hideLabel="Hide full assessment evidence"
+          />
+          <CollapsibleContent className="mt-3 overflow-hidden rounded-md border border-border">
+            <WhyPanel
+              c={c}
+              rationale={rationale}
+              loading={rationaleLoading}
+              error={rationaleError}
+              onRetry={onRetryRationale}
+              hideDecision
+              hideMitre
+            />
+          </CollapsibleContent>
+        </Collapsible>
+      </section>
+
+      {/* 3. The inputs the latest run selected and actually consulted. */}
+      <InvestigationInputs
+        rationale={rationale}
+        loading={rationaleLoading}
+        error={rationaleError}
+        onRetry={onRetryRationale}
+        onReview={() => setEvidenceOpen(true)}
+        showSelectionStatus
+      />
+
+      {/* 4. TRACE — collapsed by default; every step is one click away. */}
+      <section aria-labelledby="case-manager-trace-title" className="space-y-3" data-testid="investigation-trace">
+        <Collapsible open={traceOpen} onOpenChange={handleTraceToggle}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <ListTree className="h-4 w-4 text-muted-foreground" aria-hidden />
+            <h2 id="case-manager-trace-title" className="text-sm font-semibold text-foreground">
+              Investigation trace
+            </h2>
+            <span className="text-xs tabular-nums text-muted-foreground" data-testid="investigation-trace-counts">
+              {timeline
+                ? `${spans.length} step${spans.length === 1 ? '' : 's'} · ${toolCount} tool${toolCount === 1 ? '' : 's'}`
+                : timelineLoading
+                  ? 'Loading…'
+                  : 'Loads when opened'}
+            </span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {hasDecisionStep ? (
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={jumpToDecision}>
+                  <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+                  Jump to decision
+                </Button>
+              ) : null}
+              <CollapsibleTrigger asChild>
+                <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs">
+                  {traceOpen ? 'Hide trace' : 'Show trace'}
+                  <ChevronDown
+                    className={cn('h-3.5 w-3.5 transition-transform', traceOpen && 'rotate-180')}
+                    aria-hidden
+                  />
+                </Button>
+              </CollapsibleTrigger>
+            </div>
+          </div>
+          <CollapsibleContent className="mt-3 space-y-3">
+            {timeline && spans.length ? (
+              <SegmentedControl<TraceActor>
+                size="sm"
+                aria-label="Show trace steps by"
+                value={actor}
+                onValueChange={setActor}
+                options={[
+                  { value: 'all', label: 'All' },
+                  { value: 'agent', label: 'Agent' },
+                  { value: 'tool', label: 'Tool' },
+                  { value: 'code', label: 'Code' },
+                ]}
+              />
+            ) : null}
+            <div ref={traceRef}>
+              {filteredTimeline && actor !== 'all' && filteredTimeline.spans.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No steps of this kind in the trace.</p>
+              ) : (
+                <TraceTimeline
+                  data={filteredTimeline}
+                  loading={timelineLoading}
+                  error={timelineError}
+                  onRetry={onRetryTimeline}
+                  presentation="case-manager"
+                />
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </section>
+
+      <GradingHistory feedback={c.feedback} />
+    </div>
+  );
+};
+
 /* --------------------------------------------------------------- component -- */
 
 export interface InvestigationPanelProps {
@@ -114,8 +479,6 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   presentation = 'default',
 }) => {
   const [traceOpen, setTraceOpen] = React.useState(false);
-  const [evidenceOpen, setEvidenceOpen] = React.useState(false);
-  const [decisionOpen, setDecisionOpen] = React.useState(false);
 
   // Lazy-load the raw trace the first time the disclosure opens, if the parent hasn't
   // already fetched it (the DecisionCard reads its policy_clause from the same data).
@@ -130,205 +493,18 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
   );
 
   if (presentation === 'case-manager') {
-    const confidence =
-      typeof rationale?.confidence === 'number' ? rationale.confidence : c.confidence;
-    const summary =
-      rationale?.reasoning?.trim() ||
-      rationale?.decision_rationale?.trim() ||
-      c.summary?.trim() ||
-      '';
-    const recommendation = c.recommended_action?.trim() || '';
-    const decisionSummary = rationale?.decision_rationale?.trim() || '';
-    const critical =
-      (c.severity_band || '').toLowerCase() === 'critical' ||
-      (c.verdict || '').toLowerCase() === 'true_positive';
-
     return (
-      <div
-        className={cn('space-y-5', CASE_MANAGER_PANEL_PADDING)}
-        data-case-panel="investigation"
-        data-presentation="case-manager"
-      >
-        {/* The reference's critical assessment banner, populated only with live case
-            and rationale values. Model-derived copy remains a plain text node (#9). */}
-        <section
-          aria-labelledby="case-manager-assessment-title"
-          className={cn(
-            'relative overflow-hidden rounded-[8px] border bg-card p-5',
-            critical ? 'border-critical/30' : 'border-primary/30',
-          )}
-        >
-          <span
-            aria-hidden
-            className={cn('absolute inset-y-0 left-0 w-1', critical ? 'bg-critical' : 'bg-primary')}
-          />
-          <div className="flex flex-wrap items-start justify-between gap-3 pl-1">
-            <div className="flex items-start gap-3">
-              <span
-                className={cn(
-                  'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[4px] border',
-                  critical
-                    ? 'border-critical/30 bg-critical/10 text-critical-text'
-                    : 'border-primary/30 bg-primary/10 text-primary',
-                )}
-                aria-hidden
-              >
-                <Bot className="h-4 w-4" />
-              </span>
-              <div>
-                <h2
-                  id="case-manager-assessment-title"
-                  className="text-base font-semibold tracking-tight text-foreground"
-                >
-                  AI Assessment Summary
-                </h2>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Agent analysis · advisory evidence
-                </p>
-              </div>
-            </div>
-            {typeof confidence === 'number' ? (
-              <div className="text-right">
-                <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  Confidence
-                </div>
-                <div className="mt-0.5 font-mono text-sm font-semibold text-primary">
-                  {fmtPercent(confidence)}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-4 pl-1">
-            {rationaleLoading && !summary ? (
-              <div className="space-y-2" aria-label="Loading AI assessment">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-4/5" />
-              </div>
-            ) : summary ? (
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                {summary}
-              </p>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No assessment summary was recorded for this investigation.
-              </p>
-            )}
-          </div>
-
-          <div className="mt-5 grid gap-3 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_11rem]">
-            <div className="border border-border bg-surface-sunken p-3">
-              <div className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <Lightbulb className="h-3.5 w-3.5 text-primary" aria-hidden />
-                Recommended action
-              </div>
-              <p className="text-sm text-foreground/90">
-                {recommendation || 'No recommended action was recorded.'}
-              </p>
-            </div>
-            <div className="border border-border bg-surface-sunken p-3">
-              <div className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <Gauge className="h-3.5 w-3.5 text-critical-text" aria-hidden />
-                Risk score
-              </div>
-              <div className="font-mono text-xl font-semibold text-critical-text">
-                {typeof c.risk_score === 'number' ? `${Math.round(c.risk_score)}/100` : DASH}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <InvestigationInputs
-          rationale={rationale}
-          loading={rationaleLoading}
-          error={rationaleError}
-          onRetry={onRetryRationale}
-          onReview={() => setEvidenceOpen(true)}
-          showSelectionStatus
-        />
-
-        <section aria-labelledby="case-manager-trace-title" className="space-y-3">
-          <div className="flex items-center gap-2">
-            <ListTree className="h-4 w-4 text-primary" aria-hidden />
-            <h2
-              id="case-manager-trace-title"
-              className="text-xs font-semibold uppercase tracking-widest text-foreground"
-            >
-              Investigation Trace
-            </h2>
-          </div>
-          <TraceTimeline
-            data={timeline}
-            loading={timelineLoading}
-            error={timelineError}
-            onRetry={onRetryTimeline}
-            presentation="case-manager"
-          />
-        </section>
-
-        <section
-          aria-label="Deterministic decision summary"
-          className="flex flex-col gap-3 rounded-[4px] border border-primary/25 bg-primary/5 p-4 sm:flex-row sm:items-center"
-        >
-          <span
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[4px] border border-primary/30 bg-primary/10 text-primary"
-            aria-hidden
-          >
-            <ShieldCheck className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-foreground">Deterministic decision</h3>
-            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-              {decisionSummary ||
-                'The server-side case policy recorded the outcome shown for this case.'}
-            </p>
-          </div>
-          <Badge variant="outline" className="self-start font-mono sm:self-center">
-            {humanizeToken(c.status) || 'Pending'}
-          </Badge>
-        </section>
-
-        {/* The prototype is visually lean, but the production assessment evidence and
-            exact policy inputs remain one disclosure away—nothing from Cases is lost. */}
-        <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-4">
-          <Collapsible className="w-full" open={evidenceOpen} onOpenChange={setEvidenceOpen}>
-            <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <Bot className="h-3.5 w-3.5" aria-hidden />
-              {evidenceOpen ? 'Hide' : 'Show'} full assessment evidence
-              <ChevronDown
-                className={cn('h-3.5 w-3.5 transition-transform', evidenceOpen && 'rotate-180')}
-                aria-hidden
-              />
-            </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3 w-full overflow-hidden rounded-[4px] border border-info/30 bg-info/5">
-              <WhyPanel
-                c={c}
-                rationale={rationale}
-                loading={rationaleLoading}
-                error={rationaleError}
-                onRetry={onRetryRationale}
-                hideDecision
-                hideMitre
-              />
-            </CollapsibleContent>
-          </Collapsible>
-
-          <Collapsible className="w-full" open={decisionOpen} onOpenChange={setDecisionOpen}>
-            <CollapsibleTrigger className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-              {decisionOpen ? 'Hide' : 'Show'} policy inputs
-              <ChevronDown
-                className={cn('h-3.5 w-3.5 transition-transform', decisionOpen && 'rotate-180')}
-                aria-hidden
-              />
-            </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3 w-full">
-              <DecisionCard c={c} rationale={rationale} timeline={timeline} />
-            </CollapsibleContent>
-          </Collapsible>
-        </div>
-        <GradingHistory feedback={c.feedback} />
-      </div>
+      <CaseManagerInvestigation
+        c={c}
+        rationale={rationale}
+        rationaleLoading={rationaleLoading}
+        rationaleError={rationaleError}
+        onRetryRationale={onRetryRationale}
+        timeline={timeline}
+        timelineLoading={timelineLoading}
+        timelineError={timelineError}
+        onRetryTimeline={onRetryTimeline}
+      />
     );
   }
 

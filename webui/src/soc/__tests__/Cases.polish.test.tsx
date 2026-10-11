@@ -95,8 +95,10 @@ function rowFor(title: string): HTMLElement {
 }
 
 // The curated default-hidden secondary columns + the dominant kept columns.
-const HIDDEN_HEADERS = ['Disposition', 'Alerts', 'Playbooks', 'Enrichments', 'Category', 'Urgency'];
-const KEPT_HEADERS = ['Status', 'Severity', 'Confidence', 'Verdict', 'Risk'];
+// Round 12 (D15): the analyst's outcome is visible by default — the old hidden
+// "Disposition" column is now the shown "Outcome" column.
+const HIDDEN_HEADERS = ['Alerts', 'Playbooks', 'Enrichments', 'Category', 'Urgency'];
+const KEPT_HEADERS = ['Status', 'Severity', 'Confidence', 'Verdict', 'Risk', 'Outcome'];
 
 describe('Cases — CASES_DEFAULT_HIDDEN (#8)', () => {
   beforeEach(() => {

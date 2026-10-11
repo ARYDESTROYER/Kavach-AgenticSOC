@@ -12,8 +12,17 @@
  *  - On send, the new user turn is scrolled to the lane top with a 48 px peek of the
  *    previous turn. While the answer grows the lane follows the latest content only if
  *    the reader is within 72 px of the bottom, and only until the turn's top reaches
- *    the lane top; otherwise a "Jump to latest" button appears. A fresh exchange gets a
- *    min-height of the lane so the anchor works even before the answer is long.
+ *    the lane top. A fresh exchange gets a min-height of the lane so the anchor works
+ *    even before the answer is long.
+ *  - "Jump to latest" shows whenever any content is hidden below the fold (more than
+ *    8 px, Round 12), never only past the 72 px follow threshold. It sits OUTSIDE the
+ *    content: a round pill centred on the lane's bottom edge over a band the lane fades
+ *    out (a scroll-edge mask, applied only while the pill shows), so it never covers a
+ *    line of text, a chip or a row.
+ *  - The scroll lane is the containing block of everything inside it (`relative`), so an
+ *    absolutely positioned descendant (each turn's sr-only heading, a chart overlay) is
+ *    clipped and scrolled by the lane and can never give the chat frame a scroll height
+ *    (diagnosis/layout.md (d)).
  *  - Without an anchor (a thread just opened, or after Jump to latest) the lane sticks
  *    to the bottom while a turn runs or late content lands (the lazy answer blocks
  *    replacing their placeholders), until the reader scrolls, points or focuses inside
@@ -34,16 +43,48 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
 import type { ChatAssistantItem, ChatEngine, ChatTranscriptItem, ChatUserItem } from '../useChatEngine';
-import { CONTENT_COL, LANE_EXCHANGE, LANE_GRID, LANE_SUBGRID } from './lane';
+import { CONTENT_COL, LANE_COL, LANE_EXCHANGE, LANE_GRID, LANE_SUBGRID } from './lane';
 import { Message, type MessageEngine, type MessageReportBinding } from './Message';
 import { UserTurn } from './UserTurn';
 
 /** Distance from the bottom that still counts as "following the latest" (SPEC §10.3). */
 export const FOLLOW_THRESHOLD_PX = 72;
+/**
+ * Content hidden below the fold beyond this shows "Jump to latest" (Round 12: a whole
+ * follow-up row used to hide under the 72 px follow threshold with no affordance).
+ */
+export const JUMP_THRESHOLD_PX = 8;
 /** How much of the previous turn stays visible above an anchored user turn. */
 export const ANCHOR_PEEK_PX = 48;
 /** How long a requested message stays highlighted. */
 export const HIGHLIGHT_MS = 2000;
+
+/**
+ * The lane's scroll-edge mask while "Jump to latest" shows: the bottom 2.5rem (the pill
+ * and its margin) is faded out completely and the content fades back in over the next
+ * 1.5rem, so the pill sits on empty canvas, never on a line of text (Apple scroll-edge
+ * effect). Literal strings so Tailwind's compiler sees them.
+ */
+export const JUMP_MASK =
+  '[-webkit-mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem)] [mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem)]';
+/** Focus scrolled into view clears the masked band (4rem: the band and its fade). */
+export const JUMP_SCROLL_PADDING = 'scroll-pb-16';
+
+/** The round "Jump to latest" pill (a solid control; only it takes pointer events). */
+function jumpButton(onClick: () => void) {
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="pointer-events-auto h-7 origin-bottom gap-1.5 rounded-full bg-background px-3 text-xs shadow-sm motion-safe:animate-scale-in"
+      onClick={onClick}
+    >
+      <ArrowDown aria-hidden />
+      Jump to latest
+    </Button>
+  );
+}
 
 interface Exchange {
   key: string;
@@ -224,7 +265,7 @@ export function Transcript({
   /**
    * Bring the lane in line with its content after anything grew or shrank: follow the
    * anchored turn (or the bottom, when sticking), else offer Jump to latest whenever
-   * content sits more than 72 px below the reader.
+   * any content sits below the fold.
    */
   const reconcile = React.useCallback(() => {
     const el = scrollRef.current;
@@ -236,9 +277,9 @@ export function Transcript({
         // Follow only until the anchored turn's top reaches the lane top.
         const target = Math.min(bottom, offsetWithin(el, anchor));
         if (target > el.scrollTop + 1) scrollLane(target, false);
-        setShowJump(bottom - Math.max(target, el.scrollTop) > FOLLOW_THRESHOLD_PX);
+        setShowJump(bottom - Math.max(target, el.scrollTop) > JUMP_THRESHOLD_PX);
       } else {
-        setShowJump(distanceFromBottom(el) > FOLLOW_THRESHOLD_PX);
+        setShowJump(distanceFromBottom(el) > JUMP_THRESHOLD_PX);
       }
       return;
     }
@@ -247,7 +288,7 @@ export function Transcript({
       if (bottom - el.scrollTop > 1) scrollLane(bottom, false);
       setShowJump(false);
     } else {
-      setShowJump(distanceFromBottom(el) > FOLLOW_THRESHOLD_PX);
+      setShowJump(distanceFromBottom(el) > JUMP_THRESHOLD_PX);
     }
   }, [exchangeElement, scrollLane]);
   const reconcileRef = React.useRef(reconcile);
@@ -284,8 +325,9 @@ export function Transcript({
       if (Math.abs(el.scrollTop - auto.top) > 2 && Date.now() < auto.until) return;
       autoScrollRef.current = null;
     }
-    followRef.current = distanceFromBottom(el) <= FOLLOW_THRESHOLD_PX;
-    if (followRef.current) setShowJump(false);
+    const distance = distanceFromBottom(el);
+    followRef.current = distance <= FOLLOW_THRESHOLD_PX;
+    setShowJump(distance > JUMP_THRESHOLD_PX);
   }, []);
 
   // The reader takes over (wheel, touch, a click or focus inside the lane): no more
@@ -402,10 +444,20 @@ export function Transcript({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable_both-edges]"
+        className={cn(
+          // `relative`: the lane is the containing block of every absolutely positioned
+          // descendant, so none can escape its clip and scroll the frame.
+          'relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable_both-edges]',
+          // While the pill shows, keyboard focus is scrolled clear of the faded band
+          // (scroll-padding is honoured when focus scrolls into view: WCAG 2.4.11, C43).
+          showJump && cn(JUMP_MASK, JUMP_SCROLL_PADDING),
+        )}
         data-chat-scroll-lane="true"
+        data-jump-mask={showJump || undefined}
       >
-        <div ref={contentRef} className={cn(LANE_GRID, compact ? 'gap-y-4 px-1 py-3' : 'gap-y-6 px-4 py-6 sm:px-6')}>
+        {/* No side padding: the gutters are the lane grid's own side tracks (lane.ts). The
+            compact embed has no host gutter, so it keeps its 4 px inset. */}
+        <div ref={contentRef} className={cn(LANE_GRID, compact ? 'gap-y-4 px-1 py-3' : 'gap-y-6 py-6')}>
           {header ? <div className={cn(CONTENT_COL, 'space-y-2')}>{header}</div> : null}
           {replace ? (
             <div className={CONTENT_COL}>{replace}</div>
@@ -415,6 +467,9 @@ export function Transcript({
               aria-label={label}
               // Explicitly off: the log role's implicit "polite" would read every delta.
               aria-live="off"
+              // While an answer is being written (SPEC D13); the shell announcer speaks
+              // "Answer ready" once it settles.
+              aria-busy={engine.busy || undefined}
               className={cn(LANE_SUBGRID, compact ? 'gap-y-4' : 'gap-y-8')}
             >
               {exchanges.map((exchange, index) => {
@@ -432,8 +487,10 @@ export function Transcript({
                     style={anchored && minAnchorHeight ? { minHeight: minAnchorHeight } : undefined}
                   >
                     {exchange.user ? (
+                      // The whole lane: the bubble sits on the lane's RIGHT edge. The compact
+                      // embed keeps everything (its composer too) in one 48rem column.
                       <UserTurn
-                        className={CONTENT_COL}
+                        className={compact ? CONTENT_COL : LANE_COL}
                         item={exchange.user}
                         headingId={`${baseId}-u${index}`}
                         compact={compact}
@@ -459,41 +516,31 @@ export function Transcript({
               })}
             </div>
           ) : (
-            <div className={CONTENT_COL}>{empty}</div>
+            <div className={LANE_COL}>{empty}</div>
           )}
         </div>
       </div>
       {showJump ? (
-        // At the lane's bottom edge, right-aligned to the prose column (browser-QA D9):
-        // it never sits mid-line over an answer. The overlay reserves the lane's
-        // scrollbar gutters (an overflow box with no overflow), so the grid tracks line
-        // up with the transcript and the composer, and the fade stops at the scrollbar.
-        // In the workspace a short fade from the page background keeps text from being
-        // cut by the control; it is static (nothing animates, so reduced motion holds).
+        // Outside the content: a round pill centred on the lane's bottom edge, over the
+        // band the lane's scroll-edge mask has faded out (JUMP_MASK), so it never covers
+        // text. A solid control (not a material: it floats over a faded band, and menus,
+        // popovers and controls are opaque). Only the button takes pointer events.
+        // The compact embed centres it on its one 48rem column (the same grid, inset and
+        // scrollbar gutter as the content), the workspace on its centred lane.
         <div
           className={cn(
-            'pointer-events-none absolute inset-x-0 bottom-0 overflow-hidden [scrollbar-gutter:stable_both-edges]',
-            compact ? 'px-1' : 'px-4 sm:px-6',
+            'pointer-events-none absolute inset-x-0',
+            compact ? 'bottom-1.5 overflow-hidden px-1 [scrollbar-gutter:stable_both-edges]' : 'bottom-2 flex justify-center',
           )}
           data-testid="jump-to-latest-bar"
         >
-          {compact ? null : (
-            <div aria-hidden className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-background via-background/80 to-transparent" />
-          )}
-          <div className={LANE_GRID}>
-            <div className={cn(CONTENT_COL, 'relative flex justify-end', compact ? 'pb-2' : 'pb-3')}>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="pointer-events-auto h-7 gap-1.5 rounded-full bg-background px-3 text-xs shadow-sm"
-                onClick={jumpToLatest}
-              >
-                <ArrowDown aria-hidden />
-                Jump to latest
-              </Button>
+          {compact ? (
+            <div className={LANE_GRID}>
+              <div className={cn(CONTENT_COL, 'flex justify-center')}>{jumpButton(jumpToLatest)}</div>
             </div>
-          </div>
+          ) : (
+            jumpButton(jumpToLatest)
+          )}
         </div>
       ) : null}
     </div>

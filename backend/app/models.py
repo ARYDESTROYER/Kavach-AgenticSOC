@@ -3201,6 +3201,9 @@ class ChatContextBounds(BaseModel):
     max_indicator_lookups: int
     default_stream_mode: ChatStreamMode = "steps"
     allow_text_streaming: bool = True
+    # Round 12 (SPEC D13): the org's "animate the console logo while chat works"
+    # switch (``ChatAgentConfig.animated_brand``), so every viewer's brand ring honours it.
+    animated_brand: bool = True
 
     model_config = ConfigDict(protected_namespaces=())
 

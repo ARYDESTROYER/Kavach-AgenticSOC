@@ -4,15 +4,23 @@
  * Left to right: [History] (only when the rail is a Sheet) · the thread title as the
  * page's `<h2>` (inline rename, full text in a tooltip) · the conversation total
  * "12.4k tokens · $0.03" (only when the toolbar is ≥ 560 px; otherwise inside ⋯) ·
- * [Report · n] (Workspace only) · [New chat] (only when the rail is a Sheet, so exactly
- * one New chat is ever visible) · ⋯ (Rename, Pin conversation, Export conversation ▸,
- * Delete; only once the thread is saved — a draft has nothing to act on).
+ * [Report n] (Workspace only) · [New chat] (only when the rail is a Sheet, so exactly
+ * one New chat is ever visible) · ⋯ (Rename, Pin conversation, Export conversation ▸ —
+ * once the thread is saved —, Width ▸, then Delete once saved).
+ *
+ * Report (Round 12, diagnosis/layout.md (f1)): the count of items the analyst ADDED from
+ * this chat shows only when there are any, as a badge, never "Report · 0"; the tooltip
+ * and the accessible name say what it counts, so it does not read as the number of
+ * reports an answer wrote.
+ *
+ * Width (Round 12 SPEC D12): the viewer's conversation width, Comfortable / Wide /
+ * Full width, offered on drafts too (it is a viewer preference, not a thread action).
  *
  * Inline rename returns focus to the title when it ends from the keyboard (Enter /
  * Escape); a blur commit leaves focus wherever the reader moved it.
  */
 import * as React from 'react';
-import { Download, FileText, History, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
+import { Download, FileText, History, MoreHorizontal, MoveHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import type { ChatConversationSummary } from '@/lib/types';
@@ -24,6 +32,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -32,6 +42,7 @@ import {
 } from '@/ui/dropdown-menu';
 import { shortcutLabel } from '../shortcuts/shortcut-list';
 import { compactTokens, formatCost } from '../message/format';
+import { LANE_WIDTHS, LANE_WIDTH_HINT, LANE_WIDTH_LABEL, isLaneWidth, type ChatLaneWidth } from '../message/lane';
 import { EXPORT_FORMATS, HintedIconButton, SHORTCUT_HINT_KEYS, type ConversationExportFormat } from './HistoryRail';
 
 /** "12.4k tokens · $0.03", or "Usage —" for a legacy thread without totals. */
@@ -40,6 +51,19 @@ export function conversationTotal(summary: ChatConversationSummary | null): stri
   if (typeof summary.total_tokens !== 'number') return 'Usage —';
   const cost = typeof summary.total_cost === 'number' ? ` · ${formatCost(summary.total_cost)}` : '';
   return `${compactTokens(summary.total_tokens)} tokens${cost}`;
+}
+
+/** "Report" plus the added-item count only when there is one (never "· 0"). */
+export function reportButtonLabel(count: number): string {
+  const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  return n > 0 ? `Report, ${n} ${n === 1 ? 'item' : 'items'} added` : 'Report';
+}
+
+/** The Report control's tooltip: what the count means, and what the panel is for. */
+export function reportButtonHint(count: number): string {
+  const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  if (n === 0) return 'Collect answers and blocks from this chat into a report';
+  return `${n} ${n === 1 ? 'item' : 'items'} you added from this chat`;
 }
 
 /** How an inline rename ended: from the keyboard (refocus the title) or by blur. */
@@ -114,6 +138,8 @@ export interface ThreadToolbarProps {
   onExport: (format: ConversationExportFormat) => void;
   onDelete: () => void;
   shortcuts?: { newChat?: string; history?: string };
+  /** The viewer's conversation width (the ⋯ menu's Width submenu). */
+  laneWidth?: { value: ChatLaneWidth; onChange: (width: ChatLaneWidth) => void } | null;
   className?: string;
 }
 
@@ -133,6 +159,7 @@ export function ThreadToolbar({
   onExport,
   onDelete,
   shortcuts,
+  laneWidth = null,
   className,
 }: ThreadToolbarProps) {
   const [editing, setEditing] = React.useState(false);
@@ -145,6 +172,8 @@ export function ThreadToolbar({
   const hintId = `${React.useId().replace(/[^A-Za-z0-9_-]/g, '')}-rename-hint`;
   const total = conversationTotal(summary);
   const saved = !!summary;
+  const threadActions = !caseScoped && saved;
+  const showMenu = threadActions || !!laneWidth;
 
   React.useEffect(() => {
     if (!refocusTitle || editing) return;
@@ -227,19 +256,33 @@ export function ThreadToolbar({
       </div>
 
       {report && !caseScoped ? (
-        <Button
-          type="button"
-          variant={report.open ? 'secondary' : 'ghost'}
-          size="sm"
-          className="h-8 shrink-0 gap-1.5 px-2"
-          aria-pressed={report.open}
-          aria-label={narrow ? `Report · ${report.count}` : undefined}
-          onClick={report.onToggle}
-        >
-          <FileText aria-hidden />
-          {narrow ? null : 'Report'}
-          <span className="tabular-nums text-muted-foreground">{narrow ? report.count : `· ${report.count}`}</span>
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant={report.open ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-8 shrink-0 gap-1.5 px-2"
+              aria-pressed={report.open}
+              aria-label={reportButtonLabel(report.count)}
+              onClick={report.onToggle}
+              data-testid="chat-report-toggle"
+            >
+              <FileText aria-hidden />
+              {narrow ? null : 'Report'}
+              {report.count > 0 ? (
+                <span
+                  aria-hidden
+                  className="min-w-[1.25rem] rounded-full bg-muted px-1.5 text-center text-2xs font-medium tabular-nums text-foreground"
+                  data-testid="chat-report-count"
+                >
+                  {report.count}
+                </span>
+              ) : null}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{reportButtonHint(report.count)}</TooltipContent>
+        </Tooltip>
       ) : null}
 
       {railInSheet && !caseScoped ? (
@@ -248,19 +291,18 @@ export function ThreadToolbar({
           hint={SHORTCUT_HINT_KEYS.newChat}
           tooltipSide="bottom"
           onClick={onNewChat}
-          disabled={busy}
           aria-keyshortcuts={shortcuts?.newChat}
         >
           <Plus aria-hidden />
         </HintedIconButton>
       ) : null}
 
-      {!caseScoped && saved ? (
+      {showMenu ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              aria-label="Conversation actions"
+              aria-label={threadActions ? 'Conversation actions' : 'Conversation options'}
               className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <MoreHorizontal className="size-4" aria-hidden />
@@ -285,41 +327,81 @@ export function ThreadToolbar({
                 <DropdownMenuSeparator />
               </>
             ) : null}
-            <DropdownMenuItem
-              onSelect={() => {
-                renamingRef.current = true;
-              }}
-            >
-              <Pencil aria-hidden />
-              Rename
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onTogglePin}>
-              {summary?.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-              {summary?.pinned ? 'Unpin conversation' : 'Pin conversation'}
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                {/* A sub-trigger does not size its icon like a menu item does (16 px, muted). */}
-                <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                Export conversation
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {EXPORT_FORMATS.map(({ format, label }) => (
-                  <DropdownMenuItem key={format} onSelect={() => onExport(format)}>
-                    {label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              disabled={busy}
-              className="text-critical-text focus:text-critical-text"
-              onSelect={onDelete}
-            >
-              <Trash2 aria-hidden />
-              Delete
-            </DropdownMenuItem>
+            {threadActions ? (
+              <>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    renamingRef.current = true;
+                  }}
+                >
+                  <Pencil aria-hidden />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onTogglePin}>
+                  {summary?.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+                  {summary?.pinned ? 'Unpin conversation' : 'Pin conversation'}
+                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    {/* A sub-trigger does not size its icon like a menu item does (16 px, muted). */}
+                    <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                    Export conversation
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    {EXPORT_FORMATS.map(({ format, label }) => (
+                      <DropdownMenuItem key={format} onSelect={() => onExport(format)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </>
+            ) : null}
+            {laneWidth ? (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger aria-label={`Width, currently ${LANE_WIDTH_LABEL[laneWidth.value]}`}>
+                  <MoveHorizontal className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  {/* flex-1 takes the free space, so the trigger's own chevron stays at the end. */}
+                  <span className="flex-1">Width</span>
+                  <span className="text-xs text-muted-foreground">{LANE_WIDTH_LABEL[laneWidth.value]}</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-60">
+                  <DropdownMenuLabel>Conversation width</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={laneWidth.value}
+                    onValueChange={(value) => {
+                      if (isLaneWidth(value)) laneWidth.onChange(value);
+                    }}
+                  >
+                    {LANE_WIDTHS.map((width) => (
+                      <DropdownMenuRadioItem
+                        key={width}
+                        value={width}
+                        textValue={LANE_WIDTH_LABEL[width]}
+                        className="flex-col items-start gap-0"
+                      >
+                        <span>{LANE_WIDTH_LABEL[width]}</span>
+                        <span className="sr-only">, </span>
+                        <span className="text-xs text-muted-foreground">{LANE_WIDTH_HINT[width]}</span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ) : null}
+            {threadActions ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={busy}
+                  className="text-critical-text focus:text-critical-text"
+                  onSelect={onDelete}
+                >
+                  <Trash2 aria-hidden />
+                  Delete
+                </DropdownMenuItem>
+              </>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}

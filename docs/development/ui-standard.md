@@ -326,26 +326,45 @@ The conversation always keeps at least 640 px:
 - Exactly one **New chat** is visible at every width: in the docked rail header, in the
   icon strip, or in the toolbar when the rail is a Sheet.
 
-**Chrome.** The Chat route owns its frame: it bleeds the shell's vertical inset with a
-`-my-6` that matches `CONTENT_INSET`'s `py-6` and is exactly `h-[calc(100dvh-3.5rem)]`
-tall, so the document never scrolls at 1280×560, 1440×900, 1920×1080 or 390×844. It
+**Chrome.** The Chat route owns its frame: it bleeds the shell's whole inset with
+`-mx-4 -my-6 sm:-mx-6` and `w-auto` (the matched pair of `CONTENT_INSET`'s
+`px-4 py-6 sm:px-6`), so the rail, strip and report panel sit flush with the nav rail and
+the window edge with no canvas strips beside them, and it is exactly
+`h-[calc(100dvh-3.5rem)]` tall, so the document never scrolls at 1280×560, 1440×900,
+1920×1080 or 390×844. The frame is `overflow-clip`, never `overflow-hidden`: a clipped box
+cannot be scrolled by a `focus()`, a contents jump or find-in-page, so the toolbar never
+slides under the header and no blank band opens below the composer. It
 does not sit inside a `PageContainer` or `PageHeader`. Headings: one `sr-only`
 `<h1>Chat</h1>`; the thread title is the 44 px toolbar's `<h2>` (click to rename, full
 text in a tooltip); every turn has a hidden `<h3>`. The toolbar holds, left to right,
 History (Sheet mode only), the title, the conversation total ("12.4k tokens · $0.03",
-inline from 560 px, otherwise in the ⋯ menu), **Report · n**, New chat (Sheet mode
-only) and ⋯ (Rename, Pin conversation, Export conversation, Delete), which appears only
-once the thread is saved. Tooltips of History, Collapse/Show history and New chat name
+inline from 560 px, otherwise in the ⋯ menu), **Report** (with a count badge only when
+the analyst has added items; its tooltip and accessible name say "items you added from
+this chat", never "Report · 0"), New chat (Sheet mode only) and ⋯: Rename, Pin
+conversation, Export conversation and Delete once the thread is saved, and **Width**
+(Comfortable, Wide, Full width) on drafts too. Tooltips of History, Collapse/Show history and New chat name
 their shortcut (Ctrl/⌘+Shift+S, Ctrl/⌘+Shift+O); `aria-keyshortcuts` carries the
 machine form. An inline rename (title or rail row) returns focus to what it replaced,
 and a rename started from a menu begins only after the menu has closed, so the menu's
 focus trap cannot pull focus out of the field.
 
-**Lane.** One five-track grid gives prose, the user bubble, the meta row and the
-composer a 48rem measure and lets answer blocks widen to 64rem. Every exchange repeats
-the same track list (an off-screen exchange uses `content-visibility: auto`, whose
+**Lane.** One lane, two edges (`message/lane.ts`). The conversation zone is an
+`@container`; the lane is `min(conversation − 2·gutter, cap)` with the gutter
+`clamp(1rem, 2.5cqi, 2.5rem)` and the cap the viewer's **Width** preference: Comfortable
+64rem, Wide 88rem (default), Full width (no cap), kept in localStorage and
+`UserPrefs.misc.chat_lane_width`. Prose, notices and the run log keep a ≤ 48rem measure on
+the lane's LEFT edge (never centred); answer blocks span the whole lane from that edge,
+and a framed card hangs into the gutter by its border and padding so its title and table
+text start on the prose edge; the user bubble sits on the lane's RIGHT edge; the composer,
+follow-ups and a meta row under blocks span the lane. The gutters are grid tracks, never
+padding, so the transcript and the composer resolve the same edges. Every exchange repeats
+the same three-track list (an off-screen exchange uses `content-visibility: auto`, whose
 layout containment turns a subgrid into a plain grid) and each message subgrids its
-exchange, so every turn and the composer share the same edges. The
+exchange, so every turn and the composer share the same edges. The scroll lane is
+`relative`, the containing block of every absolutely positioned descendant (the sr-only
+turn headings), so none can escape its clip. A `kpi_group` uses `KpiTileGrid` with as many
+columns as figures (never an empty track) and no frame of its own inside the block card.
+The
 transcript is the only scrolling region and the composer stays docked below it in the
 empty, restoring, error and populated states. The empty state is top-aligned in the
 lane, never a centred marketing panel.
@@ -410,7 +429,9 @@ Help Center answer and every other question gets the budget notice.
 **Composer.** A textarea over ONE 32 px control row of 28 px chips, about 86 px at rest and
 never more than 88 px; there is no permanent footer line. Left: the **Read-only** chip (it
 opens the access popover), the Scope chip (source and time range in one popover) and removable
-`@` scope chips; right: the token estimate with the budget ring, Options ⋯ (Model, Type out
+`@` scope chips; right: the token estimate with the context-window ring (the next request ÷
+the model's `context_window`, "<1%" rather than "0%" for a real share; never today's spend),
+Options ⋯ (Model, Type out
 answers, Saved prompts, Keyboard shortcuts) and Send, which becomes Stop while a turn runs.
 Below 560 px of composer width the Scope and `@` chips merge into "Scope · n", the placeholder
 shortens to "Ask… / for commands, @ to scope" so it stays on one line, the **Read-only** chip
@@ -423,13 +444,18 @@ than sending, so the value goes out as the analyst's own text. A blocked Enter a
 reason and adds it to the field's description. Esc closes the topmost layer first and stops a
 running turn only from inside the composer with no layer open. The meter card is a Popover
 (mouse hover, click or tap; it never takes focus), because a HoverCard trigger cancels taps on
-touch screens. When the tool catalogue cannot load, one line, "Couldn't load what the assistant
+touch screens. It leads with the context window ("12% used · ≈ 24k of 200k tokens" and, in
+unlimited mode, "summarised automatically near the limit … no hard cap"), then the next
+request, and ends with the daily AI budget: a bar, the spend, and the note that automatic
+investigations count against it while chat is recorded but never paused by it. When the tool catalogue cannot load, one line, "Couldn't load what the assistant
 can access.", with **Retry** replaces the access list and the empty-state starters.
 
 **Scrolling and announcements.** On send, the user turn moves to the lane top with a
 48 px peek of the previous turn; the lane follows new content only while the reader is
-within 72 px of the bottom and only until that turn's top reaches the lane top, and
-otherwise shows **Jump to latest**. After a jump, or when a thread opens, the lane sticks
+within 72 px of the bottom and only until that turn's top reaches the lane top.
+**Jump to latest** shows whenever any content is hidden below the fold (more than 8 px),
+as a round pill centred on the lane's bottom edge over a band the lane fades out with a
+scroll-edge mask while the pill shows, so it never covers a line of text, a chip or a row. After a jump, or when a thread opens, the lane sticks
 to the bottom while a turn runs or late content lands (lazy answer blocks), until the
 reader scrolls, points or focuses inside it; content growth is observed, so **Jump to
 latest** returns whenever new content lands below a reader who scrolled away. A requested
@@ -568,12 +594,15 @@ cards. The strip owns its outer hairlines; each metric supplies only the respons
 internal divider needed for the current column count. At every column count a strip
 uses — they differ per surface, and the primary dashboard runs one, two, three and six
 — no cell may acquire both a left and top divider or lose the line that separates it
-from the preceding row. Use the compact `KpiTile` density whenever the
-strip is one band among several rather than the surface's only content — including the
-primary dashboard, where the strip heads a page that must also seat a flow diagram, a
-case queue and a timing pair. Reserve the default density for a strip that stands alone.
-Density changes padding and numeral scale only; it must never alter the cell count or the
-per-breakpoint divider rules above, which are tuned to an exact number of cells.
+from the preceding row. A strip that HEADS a dashboard page uses the `comfortable`
+density (between compact and default: `px-4 py-3` at `xl`, `px-5 py-4` at `2xl`, about
+120px tall, 13px label and context lines) with the fluid hero numeral (`size="fluid"`,
+24 → 44px, growing with its own tile). Use the compact density when the strip is a band
+embedded in a denser surface (a panel, a tab, a chat answer), and the default density for a
+strip that stands alone. Density changes padding and numeral scale only; it must never alter
+the cell count or the per-breakpoint divider rules above, which are tuned to an exact number
+of cells. Numerals roll (count up) on the first load and on a window change, never on a LIVE
+or manual refresh (`roll={false}`): data on an automatic refresh does not animate.
 
 A hero strip (`numeral="hero"`, the primary dashboard) reads top to bottom as a quiet
 sentence-case label, the numeral, and exactly one muted **context line** that answers
@@ -584,17 +613,45 @@ row's rhythm never changes with state. Never put context beside the numeral: at 
 columns flex shrinks the numeral first. Hero numerals are neutral ink; only a non-zero
 critical count is red. Hero tiles carry no icon, and their help and drill-down marks
 appear on hover or focus beside the numeral (always shown on devices without hover).
-When a strip heads a band of instruments, the strip's bottom rule is that band's top
-edge: no vertical gap and no second hairline between them.
+A strip is followed by the next band after the normal band gap; its own bottom rule
+closes the strip, and the band below draws no second rule against it.
 
-Dashboard section titles are sentence case, `text-sm font-semibold`, with an optional
-`text-xs` muted caption. Tracked uppercase is for compact data labels inside a
-visualization, not for section titles. Period-over-period chips on small counts state the
-absolute difference ("+8"), not a percentage of a tiny base; percentages are for bases of
-20 or more and moves under 100%, and the chip's title names both counts. Hover trends draw
-one column per bucket in its real time slot (unmeasured buckets as a muted floor tick,
-never as zero) with a readout of the pointed bucket; never a smoothed line over measured
-points only.
+**Dashboard bands.** The primary dashboard is a sequence of flat, TITLED bands on the
+canvas, separated by whitespace rather than boxes: 32px between bands (40px from 1920px),
+24px gutters between instruments inside a band (32px from 1920px). Instruments are
+transparent — no card per instrument, no lattice hairlines between cells, no cell padding;
+the gutters do the separating. A band draws at most one rule. Instruments in one band row
+share one height (`items-stretch`, instruments `h-full flex flex-col`), and a list fills its
+share of that height (a queue shows as many rows as fit, within a floor and a cap) instead of
+driving the row taller. Above 1920px a dashboard widens by COLUMN COUNT, not by stretching:
+`wide` width, rising to 2400px at `4xl` (≥2200px), where bands share one track template
+with a 460px rail. A secondary fold is ONE disclosure — flat inside, with no nested cards or
+collapsibles — whose open/closed choice is remembered and whose collapsed header states in
+one line what it holds.
+
+Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); band titles 15px semibold
+with a 13px muted caption; instrument titles 14px; KPI numerals fluid (24 → 44px);
+instrument numerals 24–28px; lists, legends and stage labels 13–14px; metadata 12px (mono
+only for identifiers); 11px only for chart ticks, badges and timestamps. Section titles are
+sentence case; tracked uppercase is not used for titles or for labels on the dashboard.
+Band headers may carry a quiet right-hand freshness stamp ("Updated 2m ago") — slices load
+independently, so each band states its own. A figure that repeats on the page (a cohort
+count beside a stock, a tile beside the instrument that partitions it) gets a distinct label
+and a quiet cross-reference line, never a second identical label.
+
+Period-over-period chips on small counts state the absolute difference ("+8"), not a
+percentage of a tiny base; percentages are for bases of 20 or more and moves under 100%,
+and the chip's title names both counts. On a dashboard the chip is borderless tinted text.
+Hover trends — and any dashboard chart of counts per period — draw one column per bucket in
+its real time slot (unmeasured buckets as a muted floor tick, never as zero) with a readout
+of the pointed bucket; never a smoothed line over measured points only.
+
+**Metric drill-down dialogs** grow out of the tile that opened them. Their chrome text is
+12–13px; the trend and the page-scoped scalars share one row (chart about 60%, a 2 × 2 or
+1 × 4 set of unboxed stats about 40%) so the table keeps most of the height (about ten rows
+at 1440 × 900). What the rows ARE stays on screen — the rows-read sentence with its "lower
+bound", the completeness badge, any range narrowing — while the long explanation of how
+they were read sits behind one "About these rows" disclosure.
 
 Observed-outcome metrics embedded in another operational page use the integrated
 `ComparisonMetric` variant. Keep the shared reporting window, evidence state, and

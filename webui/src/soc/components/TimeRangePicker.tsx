@@ -356,7 +356,8 @@ export function TimeRangePicker({
         .replace(/ weeks?$/i, 'w')
     : value.label;
   const commandChrome = command
-    ? 'rounded-[3px] border-border/70 bg-transparent font-mono text-muted-foreground shadow-none hover:border-border-strong hover:bg-hover hover:text-foreground'
+    ? // 8px, concentric with every other button/select (Round 12; was a squared 3px).
+      'rounded-md border-border/70 bg-transparent font-mono text-muted-foreground shadow-none hover:border-border-strong hover:bg-hover hover:text-foreground'
     : undefined;
 
   return (
@@ -389,7 +390,8 @@ export function TimeRangePicker({
                   aria-current={active || undefined}
                   onClick={() => pick(p.label)}
                   className={cn(
-                    'flex items-center justify-between rounded-[3px] px-2.5 py-1.5 text-left text-sm transition-colors',
+                    // 6px items inside the 10px popover (concentric radii, Round 12).
+                    'flex items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-sm transition-colors',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
                     active
                       ? 'bg-accent font-medium text-accent-foreground'

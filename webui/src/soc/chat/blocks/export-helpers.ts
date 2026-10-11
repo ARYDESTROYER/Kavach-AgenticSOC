@@ -17,7 +17,7 @@
  */
 import { csvField, tsvField } from '@/lib/csv';
 import { defang } from '@/lib/defang';
-import { formatUtc, formatValue } from './format';
+import { IN_PROGRESS_SUFFIX, formatUtc, formatValue, hasCalendarLabels, xAxisHeader, xPositionLabel } from './format';
 import type { AnswerBlock, Cell, ChartBlock, ColumnType, KpiGroupBlock, TableBlock, ValueUnit } from './schema';
 import { leafBlocks } from './schema';
 
@@ -43,10 +43,16 @@ const TEXT = (label: string): TabularColumn => ({ label, numeric: false });
 const NUM = (label: string): TabularColumn => ({ label, numeric: true });
 
 function seriesTable(block: ChartBlock): Tabular {
-  const head = block.x.label ?? (block.x.kind === 'time' ? 'Time (UTC)' : 'Category');
+  // A calendar axis (Round 12) reads as its period labels in the operator zone ("Mar
+  // 2026"), the current period marked; a plain time axis keeps its UTC instants.
+  const calendar = hasCalendarLabels(block.x);
+  const head = calendar ? xAxisHeader(block.x) : block.x.label ?? (block.x.kind === 'time' ? 'Time (UTC)' : 'Category');
+  const last = block.x.values.length - 1;
+  const xCell = (x: string, i: number): string =>
+    calendar ? `${xPositionLabel(block.x, i)}${block.last_in_progress && i === last ? IN_PROGRESS_SUFFIX : ''}` : x;
   return {
     columns: [TEXT(head), ...block.series.map((s) => NUM(s.label))],
-    rows: block.x.values.map((x, i) => [x, ...block.series.map((s) => s.values[i] ?? null)]),
+    rows: block.x.values.map((x, i) => [xCell(x, i), ...block.series.map((s) => s.values[i] ?? null)]),
   };
 }
 

@@ -266,11 +266,12 @@ describe('print content is never hidden (R6, R7, R13)', () => {
     const labels = new Set(hidden.map((b) => b.getAttribute('aria-label')));
     expect(labels).toEqual(new Set(['Copy to clipboard', 'Copy defanged link', 'Copy value']));
     const shown = buttons.filter((b) => !hidden.includes(b));
-    expect(shown.length).toBeGreaterThan(0);
-    for (const b of shown) {
-      expect(b.getAttribute('data-testid') ?? '', b.outerHTML.slice(0, 120)).toMatch(/^kpi-/);
-      expect((b.textContent ?? '').trim()).not.toBe('');
-    }
+    // Round 12 (WP-CHATUI): a KPI tile with a link is plain content on paper, never a
+    // button, so no visible control is left at all; the tile itself still prints.
+    expect(shown).toEqual([]);
+    const tiles = Array.from(root.querySelectorAll('[data-testid^="kpi-"]'));
+    expect(tiles.length).toBeGreaterThan(0);
+    for (const tile of tiles) expect(tile.tagName).not.toBe('BUTTON');
   });
 
   it('lays static data tables out fixed and wrapping, never a row label forced onto one line', () => {

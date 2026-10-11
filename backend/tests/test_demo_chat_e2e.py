@@ -29,6 +29,12 @@ from app.engine.demo_chat import DEMO_STARTERS
 from app.models import ChatRequest, ChatResponse
 from tests.test_chat_tools_support import build_demo_state, demo_context
 
+
+#: Round 12 (SPEC D11): "build/give/create … a report" asks the server to SAVE the report to
+#: Reports, so such an answer closes with this sentence instead of "The report below is ready
+#: to add to your Reports." (still used when no report was asked to be made).
+SAVED = "The full report is below, and it is being saved to your Reports."
+
 STARTERS = {s.id: s for s in DEMO_STARTERS}
 EXPECTED_KIND = {"investigate": "data", "hunt": "data", "posture": "data", "shift_brief": "data",
                  "explain_metric": "mixed", "learn_app": "product_help"}
@@ -304,7 +310,7 @@ async def test_report_answers_are_a_short_lead_with_the_detail_in_the_report(dem
         assert any(b.get("type") == "report" for b in response.blocks), question
         paragraphs = [p for p in response.answer.split("\n\n") if p.strip()]
         assert 2 <= len(paragraphs) <= 3, (question, paragraphs)
-        assert paragraphs[-1] in ("The report below is ready to add to your Reports.",
+        assert paragraphs[-1] in (SAVED,
                                   "The brief below is ready to add to a report."), question
         assert not any(p.lstrip().startswith("- ") for p in paragraphs), question
 
@@ -334,7 +340,7 @@ async def test_a_report_under_a_restricted_role_keeps_its_disclosures(demo_state
     paragraphs = response.answer.split("\n\n")
     assert paragraphs[0].startswith("Not available to you in chat: SOC metrics (needs metrics:view)")
     assert "Ask an administrator for access, or open the matching console page." in paragraphs
-    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    assert paragraphs[-1] == SAVED
     summary = next(b for s in report["sections"] for b in s["blocks"] if b.get("type") == "markdown")
     assert "needs metrics:view" in summary["text"]
 
@@ -345,7 +351,7 @@ async def test_the_ready_sentence_ends_a_report_after_the_window_note(demo_state
     assert _block(response, type="report")
     paragraphs = response.answer.split("\n\n")
     assert paragraphs[-2] == "Window: the last hour you selected applies to the windowed lookups above."
-    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    assert paragraphs[-1] == SAVED
 
 
 async def test_every_intent_answers_over_demo_data_without_the_safe_fallback(demo_state) -> None:
@@ -452,7 +458,7 @@ async def test_a_report_on_a_case_materialises_and_case_manager_reports_do_not(d
     report = _block(workspace, type="report")
     assert report["template"] == "investigation" and report["sections"]
     assert not any(b.get("type") == "callout" for b in workspace.blocks)
-    assert workspace.answer.endswith("The report below is ready to add to your Reports.")
+    assert workspace.answer.endswith(SAVED)
 
     case_chat = await _turn(demo_state, "Write a report for this case", origin="user", case_id=case_id)
     assert case_chat.blocks and not any(b.get("type") == "report" for b in case_chat.blocks)

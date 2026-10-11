@@ -9,6 +9,7 @@ import { ArrowRight, Bell, GitMerge, Link2, ShieldCheck } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
+import { middleEllipsis } from './caseFacts';
 import { humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/ui/hover-card';
@@ -98,7 +99,7 @@ function NodeCard({
               <Icon className="h-4 w-4" aria-hidden="true" />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+              <span className="block text-xs font-medium text-muted-foreground">
                 {eyebrow}
               </span>
               <span className="mt-1 block truncate text-base font-semibold text-foreground">
@@ -130,7 +131,10 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
   const sources = Object.entries(data.source_breakdown || {}).filter(([, count]) => count > 0);
   const related = (data.related_cases || []).filter((row) => row.case_id);
   const clusterLabel = data.cluster_id ? `cluster-${data.cluster_id.slice(0, 12)}` : 'Cluster details unavailable';
-  const caseLabel = data.opened_case?.display_id || data.opened_case?.case_id || 'Opened case';
+  const caseFullLabel = data.opened_case?.display_id || data.opened_case?.case_id || '';
+  // Middle-ellipsis keeps the distinguishing tail of a long id visible (CM-8); the full
+  // id stays in the hover detail.
+  const caseLabel = caseFullLabel ? middleEllipsis(caseFullLabel, 12, 6) : 'Opened case';
   const correlationSummary = correlation.reason || [
     correlation.group_by ? `Grouped by ${humanizeToken(correlation.group_by)}` : '',
     correlation.window_seconds ? secondsLabel(correlation.window_seconds) : '',
@@ -236,8 +240,11 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
             <>
               <p className="text-sm font-semibold text-foreground">Case created from this cluster</p>
               <dl className="space-y-1.5 border-t border-border pt-2 text-xs">
+                {caseFullLabel ? (
+                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Case</dt><dd className="break-all text-right font-mono text-foreground">{caseFullLabel}</dd></div>
+                ) : null}
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Status</dt><dd className="text-foreground">{humanizeToken(data.opened_case?.status || 'Unavailable')}</dd></div>
-                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Verdict</dt><dd className="text-foreground">{humanizeToken(data.opened_case?.verdict || 'Pending')}</dd></div>
+                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">AI verdict</dt><dd className="text-foreground">{humanizeToken(data.opened_case?.verdict || 'Pending')}</dd></div>
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Related cases</dt><dd className="font-mono text-foreground">{related.length}</dd></div>
               </dl>
             </>
@@ -246,15 +253,38 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
       </div>
 
       {related.length ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-          <span className="inline-flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+        <div className="mt-4 border-t border-border pt-3">
+          <h3 className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Link2 className="h-3.5 w-3.5" aria-hidden /> Related cases
-          </span>
-          {related.map((row) => (
-            <span key={`${row.relationship}-${row.case_id}`} title={row.reason || undefined}>
-              <Badge variant="outline" className="font-mono">{row.case_id}</Badge>
-            </span>
-          ))}
+            <span className="tabular-nums">{related.length}</span>
+          </h3>
+          {/* Readable rows instead of raw 32-hex chips: the id is middle-ellipsised (the
+              full id stays in the tooltip and the accessible name), with the relationship,
+              the AI verdict and the reason beside it. Plain text only (#9). */}
+          <ul className="mt-2 divide-y divide-border/70" data-testid="cluster-related-cases">
+            {related.map((row) => {
+              const id = String(row.case_id);
+              return (
+                <li
+                  key={`${row.relationship}-${id}`}
+                  className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-xs"
+                >
+                  <span className="font-mono text-foreground" title={id} aria-label={`Case ${id}`}>
+                    {middleEllipsis(id, 10, 6)}
+                  </span>
+                  {row.relationship ? (
+                    <span className="text-muted-foreground">{humanizeToken(row.relationship)}</span>
+                  ) : null}
+                  {row.verdict ? (
+                    <span className="text-muted-foreground">AI verdict: {humanizeToken(row.verdict)}</span>
+                  ) : null}
+                  {row.reason ? (
+                    <span className="min-w-0 basis-full text-muted-foreground">{row.reason}</span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ) : null}
 

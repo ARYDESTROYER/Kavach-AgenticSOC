@@ -152,7 +152,7 @@ describe('kpi group', () => {
     expect(screen.getByTestId('block-kpis')).not.toHaveTextContent('0 ms');
   });
 
-  it('closes the frame around a partial last row and says "no change" for a zero delta (no rising arrow)', () => {
+  it('draws only inner hairlines inside the block card and says "no change" for a zero delta (no rising arrow)', () => {
     show(
       parseBlock({
         id: 'flat',
@@ -165,11 +165,14 @@ describe('kpi group', () => {
         ],
       }),
     );
-    // The frame is the wrapper's own four-sided border; cells only draw inner hairlines.
-    const frame = screen.getByTestId('block-kpis-frame');
-    expect(frame).toHaveClass('border', 'rounded-md', 'overflow-hidden');
-    expect(within(frame).getByRole('list')).toHaveClass('-mr-px', '-mb-px');
+    // Round 12: the block card's border is the frame (no double frame); the grid keeps
+    // its inner hairlines, overhanging its clip so the outermost rules disappear.
     const kpis = screen.getByTestId('block-kpis');
+    const frame = kpis.querySelector('[data-kpi-grid-frame]') as HTMLElement;
+    expect(frame).toHaveAttribute('data-kpi-grid-frame', 'bare');
+    expect(frame).toHaveClass('overflow-hidden');
+    expect(frame).not.toHaveClass('border');
+    expect(within(frame).getByRole('list')).toHaveClass('-mr-px', '-mb-px');
     expect(kpis).toHaveTextContent('no change vs previous window');
     expect(within(kpis).getByRole('img', { name: 'no change vs previous window' }).querySelector('svg')).toBeNull();
     expect(within(kpis).getByRole('img', { name: /^changed up by \+2 vs previous window, worse$/ })).toBeInTheDocument();

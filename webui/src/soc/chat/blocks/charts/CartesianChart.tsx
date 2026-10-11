@@ -1,8 +1,12 @@
 /**
- * Columns, stacked columns, lines and areas over one x axis (BLOCKS.md chart table).
+ * Columns, grouped columns, stacked columns, lines and areas over one x axis (BLOCKS.md
+ * chart table).
  *
  * - `bar`: ⅔-slot columns capped at 22 px, square at the baseline with a 2 px top radius;
  *   grouped when ≥ 2 series. The whole x slot is the hit target.
+ * - `grouped_bar` (Round 12, P0-6): the same grouped columns, one series per compared
+ *   period side by side per category; the tooltip adds the change from the previous
+ *   period to the latest ("new" for a zero baseline, never ∞).
  * - `stacked_bar`: the CloseAttributionChart stack — 1 px inset gap, 2 px minimum
  *   segment, top-segment radius — and a HATCHED slot when any visible part is `null`
  *   (a partial stack would read as a smaller total). Each segment carries its share of
@@ -14,16 +18,40 @@
  *   2–4 series, and a crosshair snapping to the nearest x.
  *
  * One unit, one y axis (G6). Ticks are clean steps from zero. The newest bucket is drawn
- * lighter (0.6, the house value that still clears 3:1) or dashed while `last_in_progress`.
+ * lighter (0.6, the house value that still clears 3:1) or dashed while `last_in_progress`,
+ * and says "(in progress)" under its slot.
+ *
+ * Calendar axes (Round 12, P0-5): ticks, tooltips and the data table read the server's
+ * period labels ("Mar 2026", "W14 2026") and name the axis's time zone; a plain time axis
+ * keeps its UTC labels. Brush zoom (P0-8, line/area): drag across the plot, click a point
+ * then Shift+click another, or Shift+←/→ then Enter, to zoom; "Reset zoom" restores the
+ * whole series. Zoom is a client-side view of the same numbers (never a re-query).
  */
 import * as React from 'react';
 
+import { cn } from '@/lib/cn';
+import { focusRing } from '@/lib/ui-recipes';
 import { navLabel } from '@/soc/nav';
 import { token } from '@/soc/components/palette';
+import { useAnnouncer } from '@/soc/components/announcer';
 
 import { useBlocks } from '../context';
-import { clipText, formatTick, formatValue, instantOf, shortTimeLabel, unitLabel, xLabelFull } from '../format';
+import {
+  IN_PROGRESS_SUFFIX,
+  axisZone,
+  changeParts,
+  clipText,
+  formatTick,
+  formatValue,
+  hasCalendarLabels,
+  instantOf,
+  unitLabel,
+  xAxisHeader,
+  xPositionLabel,
+  xTickLabel,
+} from '../format';
 import type { ChartBlock } from '../schema';
+import { usePublishChartView } from './export-context';
 import { HatchPattern, MARK_FORCED, ChartShell, useSvgId } from './ChartShell';
 import type { AnchorRect } from './ChartTooltipPortal';
 import { TooltipBody, type TooltipRow } from './ChartTooltipPortal';
@@ -55,27 +83,67 @@ const Y_GAP = 8;
 const IN_PROGRESS_OPACITY = 0.6;
 const GROUP_GAP = 2;
 const END_LABEL_CHARS = 14;
+/** Extra room for tick glyphs wider than a digit (see `x0`). */
+const TICK_SLACK = 4;
+/** Extra x-axis room for the "(in progress)" line under the newest slot. */
+const IN_PROGRESS_LINE_H = 12;
+/** A line/area chart with fewer points has nothing to zoom into. */
+export const MIN_ZOOM_POINTS = 4;
+
+export type CartesianKind = 'bar' | 'stacked_bar' | 'line' | 'area' | 'grouped_bar';
 
 export interface CartesianChartProps {
-  block: ChartBlock & { kind: 'bar' | 'stacked_bar' | 'line' | 'area' };
+  block: ChartBlock & { kind: CartesianKind };
   title: string;
   height: number;
   staticMode?: boolean;
 }
 
-const KIND_WORD: Record<CartesianChartProps['block']['kind'], string> = {
+const KIND_WORD: Record<CartesianKind, string> = {
   bar: 'Column chart',
+  grouped_bar: 'Grouped column chart',
   stacked_bar: 'Stacked column chart',
   line: 'Line chart',
   area: 'Area chart',
 };
 
+/** Identifies a chart's DATA (not the object), so a re-render keeps its zoom and a new series drops it. */
+function dataKey(block: ChartBlock): string {
+  const n = block.x.values.length;
+  return [block.id, block.kind, block.x.bucket ?? '', n, block.x.values[0] ?? '', block.x.values[n - 1] ?? ''].join('|');
+}
+
+/** The block cut to x positions `[from, to]` (inclusive): the zoomed view of the same numbers. */
+export function sliceChart(block: ChartBlock, [from, to]: [number, number]): ChartBlock {
+  const n = block.x.values.length;
+  const a = Math.max(0, Math.min(from, to));
+  const b = Math.min(n - 1, Math.max(from, to));
+  if (a === 0 && b === n - 1) return block;
+  const cut = <T,>(list: readonly T[]) => list.slice(a, b + 1);
+  const out: ChartBlock = {
+    ...block,
+    x: { ...block.x, values: cut(block.x.values), ...(block.x.labels ? { labels: cut(block.x.labels) } : {}) },
+    series: block.series.map((s) => ({ ...s, values: cut(s.values) })),
+    // Only the newest bucket is in progress; a zoom that ends earlier ends on whole buckets.
+    last_in_progress: block.last_in_progress && b === n - 1,
+  };
+  if (block.drill) out.drill = cut(block.drill);
+  if (block.reference?.axis === 'x' && !out.x.values.includes(block.reference.value)) delete out.reference;
+  return out;
+}
+
 function isNum(v: number | null | undefined): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-export function CartesianChart({ block, title, height, staticMode = false }: CartesianChartProps) {
+export function CartesianChart({ block: full, title, height, staticMode = false }: CartesianChartProps) {
   const { navigate } = useBlocks();
+  const announce = useAnnouncer();
+  const zoomable = !staticMode && (full.kind === 'line' || full.kind === 'area') && full.x.values.length >= MIN_ZOOM_POINTS;
+  const key = dataKey(full);
+  const [zoom, setZoom] = React.useState<{ key: string; range: [number, number] } | null>(null);
+  const range = zoomable && zoom && zoom.key === key ? zoom.range : null;
+  const block = React.useMemo(() => (range ? (sliceChart(full, range) as typeof full) : full), [full, range]);
   const boxRef = React.useRef<HTMLDivElement>(null);
   const width = useChartSize(boxRef, { staticMode });
   const hatchId = useSvgId('hatch');
@@ -85,6 +153,8 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
   const styles = React.useMemo(() => seriesStyles(block), [block]);
   const catStyles = React.useMemo(() => (kind === 'bar' ? categoryStyles(block, false) : null), [block, kind]);
   const [hidden, toggle] = useSeriesVisibility(block.series.length);
+  // The card's image download draws what is shown: this zoom, these series.
+  usePublishChartView(block, hidden);
   const visibleIdx = block.series.map((_, k) => k).filter((k) => !hidden[k]);
   const visibleSeries = visibleIdx.map((k) => block.series[k].values);
   const n = block.x.values.length;
@@ -104,13 +174,16 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
     visibleSeries.every((vs) => vs.every((v) => v === null || Number.isInteger(v)));
   const scale = niceScale(Math.min(lo, refY ?? lo), Math.max(hi, refY ?? hi), 4, integer);
   const tickTexts = scale.ticks.map((t) => formatTick(t, unit));
-  const x0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP;
+  // CHAR_W is a digit's advance; "%", "$", "k" and "h" run wider, so the tick column
+  // keeps a few pixels of slack: a card without side padding (a Brief leaf) clips any
+  // tick that starts left of the plot.
+  const x0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP + TICK_SLACK;
   const endLabels = isLine && visibleIdx.length >= 2 && visibleIdx.length <= 4;
   const padRight = endLabels
     ? Math.ceil(Math.min(END_LABEL_CHARS, Math.max(...visibleIdx.map((k) => block.series[k].label.length))) * CHAR_W) + 14
     : 8;
   const plotTop = PAD_TOP;
-  const baseline = Math.max(plotTop + 24, height - X_AXIS_H);
+  const baseline = Math.max(plotTop + 24, height - X_AXIS_H - (block.last_in_progress ? IN_PROGRESS_LINE_H : 0));
   const plotW = Math.max(1, width - x0 - padRight);
   const slot = plotW / Math.max(1, n);
   const yOf = (v: number) => baseline - ((v - scale.min) / (scale.max - scale.min)) * (baseline - plotTop);
@@ -121,13 +194,24 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
 
   /* ---- x labels ---- */
   const isTime = block.x.kind === 'time';
-  const shortX = block.x.values.map((v) => (isTime ? shortTimeLabel(v, block.x.bucket) : clipText(v, 12)));
-  const instants = isTime ? block.x.values.map((v) => instantOf(v)) : undefined;
+  const calendar = hasCalendarLabels(block.x);
+  const zoneNote = calendar && axisZone(block.x) !== 'UTC' ? `Times in ${axisZone(block.x)}` : null;
+  const shortX = block.x.values.map((_, i) => xTickLabel(block.x, i));
+  // Calendar periods (months, local days) are not regular UTC steps: they step evenly.
+  const instants = isTime && !calendar ? block.x.values.map((v) => instantOf(v)) : undefined;
   const xLabels = placeXLabels(pickXLabels(shortX, plotW, instants), shortX, xOf, width);
 
   /* ---- interaction ---- */
   const secondary = visibleIdx.length > 1 ? visibleIdx.length : 0;
-  const fullX = (i: number) => xLabelFull(block.x.values[i] ?? '', block.x.kind, block.x.bucket);
+  const fullX = (i: number) => xPositionLabel(block.x, i);
+  const offset = range ? range[0] : 0;
+  const applyZoom = (sel: [number, number]) => {
+    const a = Math.min(sel[0], sel[1]);
+    const b = Math.max(sel[0], sel[1]);
+    if (!zoomable || b - a < 1 || (a === 0 && b === n - 1)) return;
+    setZoom({ key, range: [offset + a, offset + b] });
+    announce(`Zoomed to ${fullX(a)} – ${fullX(b)}, ${b - a + 1} of ${full.x.values.length} points.`);
+  };
   const valueAt = (k: number, i: number) => block.series[k].values[i] ?? null;
   const summarize = React.useCallback(
     (c: ChartCursor) => {
@@ -151,8 +235,54 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
       if (ref) navigate(ref);
     },
     disabled: staticMode,
+    onRange: zoomable ? applyZoom : undefined,
+    summarizeRange: ([a, b]) => `Selected ${fullX(a)} to ${fullX(b)}, ${b - a + 1} points. Press Enter to zoom, Escape to clear.`,
   });
   const active = nav.cursor;
+
+  /* ---- brush zoom (pointer) ---- */
+  const [drag, setDrag] = React.useState<{ from: number; to: number } | null>(null);
+  /** A click right after a brush release is the release itself, not a click. */
+  const brushed = React.useRef(false);
+  /** The point a plain click picked: Shift+click another to zoom between them. */
+  const clickAnchor = React.useRef<number | null>(null);
+  const nearestSlot = (x: number) => Math.max(0, Math.min(n - 1, Math.floor((x - x0) / slot)));
+  const brush = zoomable
+    ? {
+        start: (x: number) => {
+          brushed.current = false;
+          setDrag({ from: nearestSlot(x), to: nearestSlot(x) });
+        },
+        move: (x: number) => setDrag((d) => (d ? { ...d, to: nearestSlot(x) } : d)),
+        end: (x: number) => {
+          const d = drag;
+          setDrag(null);
+          if (!d) return;
+          const to = nearestSlot(x);
+          if (to !== d.from) {
+            brushed.current = true;
+            applyZoom([d.from, to]);
+          }
+        },
+        cancel: () => setDrag(null),
+      }
+    : undefined;
+  const onPlotClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (brushed.current) {
+      brushed.current = false;
+      return;
+    }
+    if (!active) return;
+    if (zoomable && e.shiftKey && clickAnchor.current !== null && clickAnchor.current !== active.i) {
+      applyZoom([clickAnchor.current, active.i]);
+      clickAnchor.current = null;
+      return;
+    }
+    clickAnchor.current = active.i;
+    const ref = drillAt(active.i);
+    if (ref) navigate(ref);
+  };
+  const selection: [number, number] | null = drag ? [Math.min(drag.from, drag.to), Math.max(drag.from, drag.to)] : nav.range;
 
   const slotAt = (x: number): number | null => {
     if (x < x0 || x > x0 + plotW) return null;
@@ -368,24 +498,37 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
       rows.unshift({ key: '__total', value: formatValue(totals[i], unit), label: isNum(totals[i]) ? totalWord : `${totalWord}, not measured` });
     }
     const notes: React.ReactNode[] = [];
-    if (block.last_in_progress && i === lastIdx) notes.push('In progress: this bucket is still filling.');
+    if (kind === 'grouped_bar' && block.series.length >= 2) {
+      // The comparison's change, latest period against the one before it (P0-6).
+      const cur = block.series[block.series.length - 1];
+      const base = block.series[block.series.length - 2];
+      const c = changeParts(cur.values[i], base.values[i], unit);
+      if (c.delta !== null) notes.push(`Change vs ${base.label}: ${c.abs} (${c.pct})`);
+    }
+    if (block.last_in_progress && i === lastIdx) notes.push('In progress: this period is still filling.');
     const ref = drillAt(i);
     if (ref) notes.push(`Open in ${navLabel(ref.page)} ›`);
     tooltip = (
       <TooltipBody
-        heading={<span className={block.untrusted && !isTime ? 'font-mono' : undefined}>{fullX(i)}</span>}
+        heading={
+          <>
+            <span className={block.untrusted && !isTime ? 'font-mono' : undefined}>{fullX(i)}</span>
+            {zoneNote ? <span className="font-normal text-muted-foreground"> · {axisZone(block.x)}</span> : null}
+          </>
+        }
         rows={rows}
         notes={notes}
       />
     );
   }
 
-  const ariaLabel = `${title}. ${KIND_WORD[kind]}, ${unitLabel(unit)}${block.x.kind === 'time' ? ', UTC' : ''}.`;
+  const ariaLabel = `${title}. ${KIND_WORD[kind]}, ${unitLabel(unit)}${isTime ? `, ${axisZone(block.x)}` : ''}${range ? `, zoomed to ${n} of ${full.x.values.length} points` : ''}.`;
   const instructions =
     'Use the left and right arrow keys to read each position' +
     (secondary ? ', up and down to pick a series' : '') +
     '; Home and End jump to the first and last. ' +
     (block.drill ? 'Enter opens the linked page. ' : '') +
+    (zoomable ? 'To zoom, hold Shift with the left or right arrow key to select a range, then press Enter. ' : '') +
     'A data table follows the chart.';
 
   const legend =
@@ -401,14 +544,47 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
     ) : null;
 
   const activeLeft = active ? Math.round(x0 + active.i * slot) : 0;
+  const plotRef = nav.plotRef;
+  const resetZoom = () => {
+    setZoom(null);
+    announce(`Zoom reset: showing all ${full.x.values.length} points.`);
+    plotRef.current?.focus({ preventScroll: true });
+  };
 
   return (
     <div ref={boxRef} className="min-w-0">
-      {block.y_label ? (
-        // The y axis title (BLOCKS.md `y_label`), above the plot where it never rotates.
-        <p className="mb-1 truncate text-2xs text-muted-foreground" data-testid="chart-y-label">
-          {block.y_label}
-        </p>
+      {range ? (
+        <div className="mb-1 flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5 text-2xs text-muted-foreground" data-print-hide data-testid="chart-zoom-bar">
+          <span className="tabular-nums">
+            Zoomed to {fullX(0)} – {fullX(n - 1)} ({n} of {full.x.values.length} points)
+          </span>
+          <button
+            type="button"
+            onClick={resetZoom}
+            className={cn('inline-flex min-h-6 items-center rounded-sm px-1.5 font-medium text-primary hover:bg-muted', focusRing)}
+            data-testid="chart-zoom-reset"
+          >
+            Reset zoom
+          </button>
+        </div>
+      ) : null}
+      {block.y_label || zoneNote ? (
+        <div className="mb-1 flex items-baseline justify-between gap-3 text-2xs text-muted-foreground">
+          {/* The y axis title (BLOCKS.md `y_label`), above the plot where it never rotates. */}
+          {block.y_label ? (
+            <p className="min-w-0 truncate" data-testid="chart-y-label">
+              {block.y_label}
+            </p>
+          ) : (
+            <span aria-hidden />
+          )}
+          {/* A calendar axis cut in another zone than UTC says which (the table header too). */}
+          {zoneNote ? (
+            <p className="shrink-0" data-testid="chart-zone">
+              {zoneNote}
+            </p>
+          ) : null}
+        </div>
       ) : null}
       <ChartShell
         nav={nav}
@@ -416,10 +592,9 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
         instructions={instructions}
         height={height}
         onPointerAt={onPointerAt}
-        onClick={() => {
-          if (active && drillAt(active.i)) navigate(drillAt(active.i)!);
-        }}
+        onClick={onPlotClick}
         clickable={Boolean(block.drill)}
+        brush={brush}
         tooltip={tooltip}
         anchorFor={anchorFor}
         anchorKey={active ? `${active.i}:${active.j}` : ''}
@@ -427,15 +602,15 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
         staticMode={staticMode}
         testId={`chart-${kind}`}
         fallback={{
-          caption: `${title} (${unitLabel(unit)})`,
-          rowHeader: block.x.label ?? (isTime ? 'Time (UTC)' : 'Category'),
+          caption: `${title} (${unitLabel(unit)})${range ? `, zoomed to ${n} of ${full.x.values.length} points` : ''}`,
+          rowHeader: xAxisHeader(block.x),
           columns: [...(stacked ? ['Total'] : []), ...block.series.map((s) => s.label)],
           rows: block.x.values.map((_, i) => {
             const t = allTotals ? allTotals[i] : null;
             const shares = allTotals && isNum(t) ? reconcilingShares(block.series.map((s) => s.values[i] ?? null), t) : null;
             return {
               key: String(i),
-              header: `${fullX(i)}${block.last_in_progress && i === lastIdx ? ' (in progress)' : ''}`,
+              header: `${fullX(i)}${block.last_in_progress && i === lastIdx ? IN_PROGRESS_SUFFIX : ''}`,
               cells: [
                 ...(stacked ? [srValue(formatValue(t, unit), t)] : []),
                 ...block.series.map((s, k) => {
@@ -456,6 +631,18 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
             .map((t) => (
               <rect key={`g${t}`} x={x0} y={Math.round(yOf(t))} width={plotW} height={1} fill={token('border')} data-testid="chart-gridline" />
             ))}
+          {selection ? (
+            <rect
+              x={Math.round(x0 + selection[0] * slot)}
+              y={plotTop - 4}
+              width={Math.max(1, Math.round((selection[1] - selection[0] + 1) * slot))}
+              height={zeroY - plotTop + 4}
+              fill={token('primary', 0.12)}
+              stroke={token('primary', 0.5)}
+              strokeWidth={1}
+              data-testid="chart-zoom-selection"
+            />
+          ) : null}
           {nav.open && active && !isLine ? (
             <rect x={activeLeft} y={plotTop - 4} width={Math.max(1, Math.round(slot))} height={zeroY - plotTop + 4} fill={token('muted-foreground', 0.1)} />
           ) : null}
@@ -496,6 +683,20 @@ export function CartesianChart({ block, title, height, staticMode = false }: Car
               {l.text}
             </text>
           ))}
+          {block.last_in_progress && n > 0 ? (
+            // The newest period is still filling: say so in words under its slot, not
+            // only by the lighter / dashed mark (WCAG 1.4.1).
+            <text
+              x={Math.min(xOf(lastIdx), width - (IN_PROGRESS_SUFFIX.length * CHAR_W) / 2)}
+              y={baseline + 15 + IN_PROGRESS_LINE_H}
+              textAnchor="middle"
+              className="text-2xs"
+              style={{ fill: token('muted-foreground') }}
+              data-testid="chart-in-progress"
+            >
+              {IN_PROGRESS_SUFFIX.trim()}
+            </text>
+          ) : null}
           {labels.map((l) => (
             <text
               key={`el${l.k}`}

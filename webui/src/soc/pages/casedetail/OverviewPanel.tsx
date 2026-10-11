@@ -42,7 +42,6 @@ import {
   Database,
   GitBranch,
   Globe,
-  Gauge,
   History,
   Info,
   Link2,
@@ -65,7 +64,7 @@ import { Badge } from '@/ui/badge';
 import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
 import { Skeleton } from '@/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 
 import { scoreBand, type ScoreBand } from '@/soc/components/palette';
 import { EmptyState } from '@/soc/components/EmptyState';
@@ -75,13 +74,22 @@ import {
   StatusBadge,
   DispositionBadge,
   ConfidenceBadge,
-  AutoClosedBadge,
   isAutoClosedByAI,
   SeverityBadge,
   severityBand,
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance, type Provenance } from '@/soc/components/ProvenanceTag';
 import { DecisionCard } from './DecisionCard';
+import {
+  aiHeadline,
+  caseOutcome,
+  isHumanClosed,
+  type CaseOutcome,
+} from '@/soc/components/outcome';
+import { riskFactorBarColor } from './SignalProfile';
+
+// Re-exported for existing importers: the factor bars now live in the facts rail.
+export { riskFactorBarColor };
 import { InvestigationInputs } from './InvestigationInputs';
 import { BaselineSignatureCard } from '@/soc/components/BaselineGauge';
 import type { TriageChips } from '@/soc/pages/CaseDetail.api';
@@ -128,30 +136,9 @@ function firstSentence(text?: string): string {
   return (m ? m[0] : trimmed).trim();
 }
 
-/** A calm human decision headline from the verdict + lifecycle status. */
-function decisionHeadline(verdict?: string, status?: string): string {
-  const v = (verdict || '').trim().toLowerCase();
-  const s = (status || '').trim().toLowerCase();
-  let lead: string;
-  if (!v || v === 'none') lead = 'Not yet verdicted';
-  else if (v === 'true_positive') lead = 'Likely a true positive';
-  else if (v === 'false_positive') lead = 'Likely a false positive';
-  else if (v === 'benign') lead = 'Assessed benign';
-  else if (v === 'needs_human') lead = 'Needs human review';
-  else if (v === 'suspicious') lead = 'Suspicious activity';
-  else lead = humanizeToken(verdict);
-  let tail = '';
-  if (s === 'needs_human') tail = 'needs human review';
-  else if (s === 'escalated') tail = 'escalated';
-  else if (s === 'on_hold') tail = 'on hold';
-  else if (s === 'resolved') tail = 'resolved';
-  else if (s === 'closed') tail = 'closed';
-
-  // Verdict and lifecycle are separate axes, but they can carry the same meaning
-  // (for example needs_human + needs_human). Do not repeat that label in prose.
-  const canonical = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, ' ').trim();
-  if (!tail || v === s || canonical(lead) === canonical(tail)) return lead;
-  return `${lead} — ${tail}`;
+/** Compare two prose sentences ignoring case, spacing and trailing punctuation. */
+function normalizeSentence(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!?]+$/, '');
 }
 
 /** True when an IP sits in a private / link-local / loopback range (best-effort). */
@@ -170,6 +157,9 @@ function autoCloseSummary(
   c: Case,
 ): { line: string; tag: string } | null {
   if (!policy || typeof policy.min_confidence !== 'number') return null;
+  // Round 12 (D15): a case a PERSON closed is not "held for a human" or "eligible for
+  // auto-close" — the policy sentence would contradict the analyst's own action.
+  if (isHumanClosed(c)) return null;
   const v = (c.verdict || '').toLowerCase();
   const isFp = v.includes('false') || v === 'fp' || v.includes('benign');
   if (!policy.enabled) {
@@ -272,60 +262,6 @@ const BriefChip: React.FC<{ label: string; value: string }> = ({ label, value })
     <span className="text-sm font-semibold text-foreground">{value}</span>
   </div>
 );
-
-/** Clamp an arbitrary score-like value into the visible 0..100 range. */
-function boundedScore(value: number): number {
-  return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
-}
-
-const METER_FILL: Record<ScoreBand | 'primary', string> = {
-  critical: 'bg-critical',
-  high: 'bg-high',
-  medium: 'bg-medium',
-  low: 'bg-low',
-  primary: 'bg-primary',
-};
-
-/**
- * A compact score visual with a complete textual equivalent. The visible value and
- * the labelled progressbar expose the same fact; colour is never the only signal.
- */
-const SignalMeter: React.FC<{
-  label: string;
-  value: number;
-  display: string;
-  tone: ScoreBand | 'primary';
-  description: string;
-}> = ({ label, value, display, tone, description }) => {
-  const bounded = boundedScore(value);
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <div className="text-sm font-medium text-foreground">{label}</div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-        </div>
-        <span className="shrink-0 text-lg font-semibold tabular-nums text-foreground">
-          {display}
-        </span>
-      </div>
-      <div
-        role="progressbar"
-        aria-label={`${label}: ${display}`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(bounded)}
-        className="h-1.5 overflow-hidden rounded-full bg-muted"
-      >
-        <div
-          aria-hidden="true"
-          className={cn('h-full rounded-full', METER_FILL[tone])}
-          style={{ width: `${bounded}%` }}
-        />
-      </div>
-    </div>
-  );
-};
 
 /** A dependency-free "copy this value" chip (#9-safe — copies a plain string). */
 const CopyChip: React.FC<{ value: string; label: string }> = ({ value, label }) => {
@@ -704,180 +640,6 @@ const AutomationApplied: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = fa
   );
 };
 
-/**
- * The severity-token bar color for a 0-100 risk FACTOR. Uses the ONE palette ladder
- * (`scoreBand` — 74/48/22) so a factor bar shares cut-points with every other
- * risk-coloured element. Literal class strings so the Tailwind JIT emits them.
- */
-const FACTOR_BAR_COLOR: Record<ScoreBand, string> = {
-  critical: 'bg-critical',
-  high: 'bg-high',
-  medium: 'bg-medium',
-  low: 'bg-low',
-};
-
-export function riskFactorBarColor(value: number): string {
-  return FACTOR_BAR_COLOR[scoreBand(value)];
-}
-
-const RISK_FACTOR_META = [
-  {
-    key: 'volume',
-    label: 'Volume',
-    definition:
-      'Cluster event count, log-normalized against a 50-event reference so very large clusters level off.',
-  },
-  {
-    key: 'velocity',
-    label: 'Velocity',
-    definition:
-      'Events per minute across the observed cluster span; it saturates near 10 per minute and contributes zero below 3 events.',
-  },
-  {
-    key: 'reputation',
-    label: 'Reputation',
-    definition:
-      'The clamped 0–100 enrichment reputation signal supplied to deterministic scoring.',
-  },
-  {
-    key: 'diversity',
-    label: 'Diversity',
-    definition: 'Distinct rule types normalized against a five-rule-type reference.',
-  },
-  {
-    key: 'asset_criticality',
-    label: 'Asset criticality',
-    definition:
-      'The configured exact-entity or network-policy value for the affected asset.',
-  },
-] as const;
-
-type RiskFactorKey = (typeof RISK_FACTOR_META)[number]['key'];
-type RiskFactor = {
-  key: RiskFactorKey;
-  label: string;
-  value: number;
-  definition: string;
-  caseReason: string;
-};
-
-type RiskFactorContext = {
-  eventCount: number | null;
-  ruleTypeCount: number | null;
-  reputationInput: number | null;
-  entityType: string | null;
-  entityValue: string;
-};
-
-/** Case-specific half of a factor tooltip; never reverse-engineers missing inputs. */
-function riskFactorCaseReason(
-  key: RiskFactorKey,
-  value: number,
-  context: RiskFactorContext,
-): string {
-  const score = Math.round(boundedScore(value));
-  if (key === 'volume') {
-    return context.eventCount !== null
-      ? `The case records ${context.eventCount} correlated event${context.eventCount === 1 ? '' : 's'}; its stored Volume factor is ${score}/100.`
-      : `The deterministic breakdown stores Volume at ${score}/100; the underlying event count is not retained in this view.`;
-  }
-  if (key === 'velocity') {
-    if (context.eventCount !== null && context.eventCount < 3 && score === 0) {
-      return `The case records ${context.eventCount} event${context.eventCount === 1 ? '' : 's'}; Velocity is 0/100 because this factor does not contribute below 3 events.`;
-    }
-    return `The deterministic breakdown stores Velocity at ${score}/100. This view does not retain the exact observed span, so it does not infer an event rate.`;
-  }
-  if (key === 'reputation') {
-    if (context.reputationInput !== null) {
-      return `The case enrichment record reports ${Math.round(boundedScore(context.reputationInput))}/100; the stored Reputation factor is ${score}/100.`;
-    }
-    return `The deterministic breakdown stores Reputation at ${score}/100; no provider-level reputation input is retained in this view${score === 0 ? ', which does not by itself prove the indicator safe' : ''}.`;
-  }
-  if (key === 'diversity') {
-    return context.ruleTypeCount !== null
-      ? `The case records ${context.ruleTypeCount} distinct rule type${context.ruleTypeCount === 1 ? '' : 's'}; its stored Diversity factor is ${score}/100.`
-      : `The deterministic breakdown stores Diversity at ${score}/100; the contributing rule-type list is not retained in this view.`;
-  }
-  const entity = context.entityValue
-    ? `${context.entityType ? `${humanizeToken(context.entityType)} ` : ''}${context.entityValue}`
-    : 'the affected entity';
-  return `For ${entity}, the deterministic breakdown stores Asset criticality at ${score}/100; the configured policy entry itself is not exposed here.`;
-}
-
-/**
- * Five recorded deterministic risk inputs. Each label is a real focusable Tooltip
- * trigger: hover and keyboard focus explain both the engine meaning and the exact
- * case fact we possess. The rows never infer a missing event span/provider/policy.
- */
-const RiskFactorProfile: React.FC<{ factors: RiskFactor[] }> = ({ factors }) => {
-  if (!factors.length) return null;
-  return (
-    <TooltipProvider delayDuration={0}>
-      <div
-        className="pt-1"
-        role="group"
-        aria-label="Recorded risk factors"
-      >
-        <div className="mb-2">
-          <span className={FIELD_LABEL}>Recorded risk factors</span>
-        </div>
-        <div
-          data-testid="risk-factor-grid"
-          className="grid min-w-0 grid-cols-[max-content_minmax(2.5rem,1fr)_2rem] items-center gap-x-2 gap-y-2"
-        >
-          {factors.map((factor) => {
-            const value = boundedScore(factor.value);
-            const rounded = Math.round(value);
-            return (
-              <React.Fragment key={factor.key}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label={`Explain ${factor.label} risk factor, recorded ${rounded} out of 100`}
-                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-sm text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {factor.label}
-                      <Info className="h-3 w-3 shrink-0" aria-hidden />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="left" className="max-w-xs space-y-2 p-3">
-                    <p className="font-semibold text-popover-foreground">
-                      What {factor.label.toLowerCase()} measures
-                    </p>
-                    <p>{factor.definition}</p>
-                    <p className="border-t border-border pt-2">
-                      <span className="font-semibold text-popover-foreground">This case: </span>
-                      {factor.caseReason}
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-                <div
-                  role="progressbar"
-                  aria-label={`${factor.label} risk factor: ${rounded} out of 100`}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={rounded}
-                  className="h-1.5 min-w-0 overflow-hidden rounded-full bg-muted"
-                >
-                  <div
-                    aria-hidden="true"
-                    className={cn('h-full rounded-full', riskFactorBarColor(value))}
-                    style={{ width: `${value}%` }}
-                  />
-                </div>
-                <span className="text-right text-xs tabular-nums text-foreground">
-                  {rounded}
-                </span>
-              </React.Fragment>
-            );
-          })}
-        </div>
-      </div>
-    </TooltipProvider>
-  );
-};
-
 /* ----------------------------------------------- anomaly baseline (advisory) */
 
 /**
@@ -925,6 +687,9 @@ const BaselineAdvisory: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = fal
 
 /* --------------------------------------------------------------- component -- */
 
+/** The case tabs the Overview can link into. */
+export type OverviewTab = 'timeline' | 'investigation' | 'threat' | 'collab' | 'chat';
+
 export const OverviewPanel: React.FC<{
   c: Case;
   fpPolicy: FpPolicy;
@@ -935,6 +700,8 @@ export const OverviewPanel: React.FC<{
   rationaleError?: unknown;
   onRetryRationale?: () => void;
   onOpenInvestigation?: () => void;
+  /** Case Manager: open another tab (the attack story links into its detail). */
+  onOpenTab?: (tab: OverviewTab) => void;
   onNavigate?: Navigate;
   presentation?: CasePanelPresentation;
 }> = ({
@@ -947,6 +714,7 @@ export const OverviewPanel: React.FC<{
   rationaleError,
   onRetryRationale,
   onOpenInvestigation,
+  onOpenTab,
   onNavigate,
   presentation = 'default',
 }) => {
@@ -1000,54 +768,6 @@ export const OverviewPanel: React.FC<{
     typeof triage?.risk?.value === 'number' ? triage.risk.value : c.risk_score;
   const ourRiskBand: ScoreBand | null = typeof riskVal === 'number' ? scoreBand(riskVal) : null;
   const riskLabel = ourRiskBand ? titleBand(ourRiskBand) : '';
-  const confidencePercent =
-    typeof c.confidence === 'number'
-      ? boundedScore(c.confidence <= 1 ? c.confidence * 100 : c.confidence)
-      : null;
-
-  const caseRiskBreakdown =
-    c.risk_breakdown && typeof c.risk_breakdown === 'object'
-      ? (c.risk_breakdown as Record<string, unknown>)
-      : null;
-  const recordedRiskBreakdown = triage?.risk?.breakdown ?? caseRiskBreakdown;
-  const memberEventCount = c.member_event_keys?.length || c.member_event_ids?.length || 0;
-  const observedCount =
-    typeof trigger?.observed_count === 'number' && Number.isFinite(trigger.observed_count)
-      ? Math.max(0, Math.round(trigger.observed_count))
-      : null;
-  const eventCount = memberEventCount > 0 ? memberEventCount : observedCount;
-  const triggerRuleValues = Array.isArray(trigger?.rule_values)
-    ? trigger.rule_values.filter((value): value is string => typeof value === 'string' && !!value)
-    : [];
-  const distinctRuleCount = new Set(triggerRuleValues.length ? triggerRuleValues : ruleIds).size;
-  const reputationInput =
-    typeof caseEnrichment?.reputation_score === 'number' &&
-    Number.isFinite(caseEnrichment.reputation_score)
-      ? caseEnrichment.reputation_score
-      : null;
-  const factorContext: RiskFactorContext = {
-    eventCount,
-    ruleTypeCount: distinctRuleCount > 0 ? distinctRuleCount : null,
-    reputationInput,
-    entityType,
-    entityValue: entityValue || trigger?.entity || '',
-  };
-  const riskFactors: RiskFactor[] = recordedRiskBreakdown
-    ? RISK_FACTOR_META.flatMap(({ key, label, definition }) => {
-        const raw = recordedRiskBreakdown[key];
-        return typeof raw === 'number' && Number.isFinite(raw)
-          ? [
-              {
-                key,
-                label,
-                value: raw,
-                definition,
-                caseReason: riskFactorCaseReason(key, raw, factorContext),
-              },
-            ]
-          : [];
-      })
-    : [];
 
   // The delta cue — the source asserted a severity AND it disagrees with our risk band.
   // `info` only exists on the 5-band severity ladder, never on the 4-band risk ladder, so
@@ -1063,10 +783,19 @@ export const OverviewPanel: React.FC<{
     (isSourceAsserted && sevBandRaw) || ruleIds.length || c.source_name || triggerSentence,
   );
 
-  // Verdict/status headline for the brief.
+  // Round 12 (SPEC D15): the outcome of record. Once a person classified the case the
+  // headline is THEIR classification ("Closed as false positive"); the AI verdict stays
+  // visible as a labelled secondary line. Until then the AI assessment leads, attributed.
+  const outcome: CaseOutcome = caseOutcome(c);
+  const humanClosed = isHumanClosed(c);
   const vHead = verdictHeadline(c.verdict);
-  const headline = decisionHeadline(c.verdict, c.status);
+  const headline = outcome.source === 'pending' ? aiHeadline(c.verdict, c.status) : outcome.headline;
   const summarySentence = firstSentence(c.summary);
+  const recommended = (c.recommended_action || '').trim();
+  const recommendationIsSummary =
+    Boolean(recommended) &&
+    normalizeSentence(recommended) === normalizeSentence(summarySentence || c.summary || '');
+  const terminal = outcome.terminal;
 
   // The brief chip row values (triage-preferred, case-fallback).
   const impactLevel = triage?.impact?.band ?? c.impact_band;
@@ -1109,12 +838,22 @@ export const OverviewPanel: React.FC<{
   }
 
   // Mini attack story — derived from case fields (no stages fetch on the Overview).
-  const storySteps: Array<{ label: string; detail: string; done: boolean; icon: React.ComponentType<{ className?: string }> }> = [
+  const storySteps: Array<{
+    label: string;
+    detail: string;
+    done: boolean;
+    icon: React.ComponentType<{ className?: string }>;
+    /** Case Manager: the tab that holds this step's full detail (no repeated facts). */
+    tab: OverviewTab;
+    link: string;
+  }> = [
     {
       icon: Database,
       label: 'Detection rule fired',
       detail: ruleIds[0] || c.source_name || 'Alert received from the source',
       done: Boolean(ruleIds.length || triggerSentence || c.source_name),
+      tab: 'timeline',
+      link: 'See what happened on Timeline',
     },
     {
       icon: Target,
@@ -1123,6 +862,8 @@ export const OverviewPanel: React.FC<{
         ? `${allEvidence.length} finding${allEvidence.length === 1 ? '' : 's'} gathered`
         : 'No log evidence recorded',
       done: allEvidence.length > 0,
+      tab: 'investigation',
+      link: 'See the searches on Investigation',
     },
     {
       icon: Globe,
@@ -1133,12 +874,16 @@ export const OverviewPanel: React.FC<{
           ? 'Indicators checked & cleared'
           : 'No intel matches recorded',
       done: mitre.length > 0 || ruledOut.length > 0,
+      tab: 'threat',
+      link: 'See the intel on Threat context',
     },
     {
       icon: ShieldCheck,
-      label: 'Case-manager routed',
+      label: humanClosed ? 'Analyst resolved' : 'Case-manager routed',
       detail: `${c.status ? humanizeToken(c.status) : 'Routed'}${c.decision_by ? ` · ${humanizeToken(c.decision_by)}` : ''}`,
       done: Boolean(c.status || c.decision_by),
+      tab: 'investigation',
+      link: 'See the decision on Investigation',
     },
   ];
 
@@ -1207,106 +952,113 @@ export const OverviewPanel: React.FC<{
         )}
       >
         {isCaseManager ? (
-          <div className="grid gap-6 @[44rem]/overview:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)]">
-            <div className="min-w-0">
-              {/* Verdict headline — our own controlled copy. `text-lg`, below the case
-                  title's `text-xl` in the header: the title names WHICH case this is and
-                  must lead; at `text-3xl` the verdict outranked it and read as the page
-                  title. */}
+          <div className="min-w-0 max-w-4xl" data-outcome-source={outcome.source}>
+            {/* The outcome band (Round 12, D15). The headline is the outcome of record:
+                the analyst's classification once a person classified the case, else the
+                AI assessment, attributed with its AI tag. `text-lg`, below the case
+                title's `text-xl`: the title names WHICH case this is and must lead. */}
+            <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-semibold leading-tight tracking-tight text-foreground">
                 {headline}
               </h2>
-              {summarySentence ? (
-                /* UNTRUSTED summary — plain text. */
-                <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                  {summarySentence}
-                </p>
+              {outcome.source === 'pending' ? <ProvenanceTag kind="ai" /> : null}
+              {outcome.source === 'analyst' || outcome.source === 'analyst_policy' ? (
+                <ProvenanceTag kind="analyst" />
               ) : null}
-
-              {/* The route, disposition, and escalation each appear exactly once. */}
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <StatusBadge status={c.status} />
-                <DispositionBadge disposition={c.disposition ?? null} />
-                {typeof c.escalation_level === 'number' &&
-                c.escalation_level > 0 &&
-                String(c.status || '').toLowerCase() !== 'escalated' ? (
-                  <Badge variant="critical" className="gap-1">
-                    <Bell className="h-3 w-3" />
-                    Escalated
-                  </Badge>
+            </div>
+            {outcome.source !== 'pending' && outcome.aiLine ? (
+              <p
+                data-testid="overview-ai-line"
+                className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
+              >
+                <Bot className="size-3.5 text-primary" aria-hidden />
+                <span>{outcome.aiLine}</span>
+                {outcome.source === 'analyst' && (outcome.by || outcome.at) ? (
+                  <span>
+                    · Classified{outcome.by ? ` by ${outcome.by}` : ''}
+                    {outcome.at ? ` ${humanizeAge(outcome.at)}` : ''}
+                  </span>
                 ) : null}
-                <AutoClosedBadge
-                  status={c.status}
-                  decisionBy={c.decision_by}
-                  objectionWindowExpiresAt={c.objection_window_expires_at}
-                  showObjection
-                />
-              </div>
+              </p>
+            ) : null}
 
-              {/* Advisory ordering fields remain visible without repeating route/risk. */}
-              <div className="mt-6 grid max-w-sm grid-cols-2 gap-6">
-                <BriefChip label="Impact" value={chipLabel(impactLevel)} />
-                <BriefChip label="Priority" value={chipLabel(priorityLevel)} />
-              </div>
-
-              {/* The action is prominent without introducing another bordered card. */}
-              <div className="mt-6 border-l-2 border-border py-1 pl-4">
-                <div className="mb-2 flex items-center gap-2">
-                  <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
-                  <h3 className="text-sm font-semibold tracking-tight text-foreground">
-                    Recommended action
-                  </h3>
-                </div>
-                {/* UNTRUSTED — plain text. */}
+            {recommendationIsSummary && !terminal ? (
+              /* The summary and the recommendation say the same thing: one paragraph,
+                 labelled as both, so the datum is kept and the duplicate dropped. */
+              <div className="mt-4 space-y-1" data-testid="overview-summary-and-action">
+                <h3 className={FIELD_LABEL}>Summary and recommended action</h3>
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                  {c.recommended_action || DASH}
+                  {recommended}
                 </p>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Use the case action controls to close or escalate — the deterministic close /
-                  escalate decision is always made by code, never by this panel.
-                </p>
-                {autoClose ? (
-                  <div className="mt-3 flex items-start gap-2 text-xs text-muted-foreground">
-                    <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-                    <span>{autoClose.line}</span>
+              </div>
+            ) : (
+              <>
+                {summarySentence ? (
+                  /* UNTRUSTED summary — plain text. */
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                    {summarySentence}
+                  </p>
+                ) : null}
+                {!terminal ? (
+                  <div className="mt-4 border-l-2 border-border py-1 pl-4">
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
+                      <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                        Recommended action
+                      </h3>
+                      <ProvenanceTag kind="ai" />
+                    </div>
+                    {/* UNTRUSTED — plain text. */}
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                      {recommended || DASH}
+                    </p>
                   </div>
                 ) : null}
-              </div>
-            </div>
+              </>
+            )}
 
-            <aside
-              aria-label="Case signal profile"
-              className="space-y-4 border-t border-border/60 pt-5 @[44rem]/overview:border-l @[44rem]/overview:border-t-0 @[44rem]/overview:pl-6 @[44rem]/overview:pt-0"
-            >
-              <div className="flex items-center gap-2">
-                <Gauge className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <h3 className="text-sm font-semibold tracking-tight text-foreground">
-                  Signal profile
-                </h3>
+            {typeof c.escalation_level === 'number' &&
+            c.escalation_level > 0 &&
+            String(c.status || '').toLowerCase() !== 'escalated' ? (
+              <div className="mt-3">
+                <Badge variant="critical" className="gap-1">
+                  <Bell className="h-3 w-3" />
+                  Escalated
+                </Badge>
               </div>
-              {typeof riskVal === 'number' && ourRiskBand ? (
-                <SignalMeter
-                  label="Risk score"
-                  value={riskVal}
-                  display={`${Math.round(boundedScore(riskVal))}/100`}
-                  tone={ourRiskBand}
-                  description="Deterministic case input"
-                />
-              ) : null}
-              {confidencePercent !== null ? (
-                <SignalMeter
-                  label="Confidence"
-                  value={confidencePercent}
-                  display={`${Math.round(confidencePercent)}%`}
-                  tone="primary"
-                  description="Agent assessment"
-                />
-              ) : null}
-              <RiskFactorProfile factors={riskFactors} />
-              {typeof riskVal !== 'number' && confidencePercent === null && !riskFactors.length ? (
-                <p className="text-sm text-muted-foreground">No scored signals recorded.</p>
-              ) : null}
-            </aside>
+            ) : null}
+
+            {/* The authority sentence, ONCE. */}
+            <p data-testid="overview-authority" className="mt-3 text-xs text-muted-foreground">
+              {outcome.source === 'analyst_policy'
+                ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
+                : humanClosed
+                  ? 'Closed by an analyst (a human lifecycle action). The deterministic policy did not close this case.'
+                  : 'The close or escalate decision is made by deterministic code against the operator policy, never by this panel or by the model.'}
+            </p>
+            {autoClose ? (
+              <div className="mt-2 flex items-start gap-2 text-xs text-muted-foreground">
+                <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                <span>{autoClose.line}</span>
+              </div>
+            ) : null}
+
+            {/* On a terminal case the AI's triage-time recommendation is demoted: kept,
+                retitled, and never presented as the next step. */}
+            {terminal && recommended ? (
+              <details className="group mt-4 text-sm" data-testid="overview-triage-recommendation">
+                <summary className="cursor-pointer list-none text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <span className="inline-flex items-center gap-1.5">
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden />
+                    AI recommendation at triage
+                  </span>
+                </summary>
+                {/* UNTRUSTED — plain text. */}
+                <p className="mt-2 whitespace-pre-wrap pl-5 text-sm leading-relaxed text-muted-foreground">
+                  {recommended}
+                </p>
+              </details>
+            ) : null}
           </div>
         ) : (
           <>
@@ -1616,50 +1368,76 @@ export const OverviewPanel: React.FC<{
             </ul>
           </ProvenanceColumn>
 
-          {/* CODE DECIDED */}
+          {/* CODE DECIDED — or, once a PERSON closed the case, ANALYST RESOLVED (D15):
+              claiming deterministic code closed a case an analyst closed contradicted the
+              Authority row beneath it. */}
           <ProvenanceColumn
-            title="Code decided"
-            kind="code"
+            title={
+              isCaseManager && humanClosed
+                ? outcome.source === 'analyst_policy'
+                  ? 'Analyst policy'
+                  : 'Analyst resolved'
+                : 'Code decided'
+            }
+            kind={isCaseManager && humanClosed && outcome.source !== 'analyst_policy' ? 'analyst' : 'code'}
             icon={ShieldCheck}
             compact={isCaseManager}
           >
             {isCaseManager ? (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-muted/25 px-3 py-2">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
-                    <Lock className="h-3.5 w-3.5 text-success" aria-hidden />
-                    Deterministic decision authority
-                  </span>
-                  <Badge variant="success" className="font-mono">
-                    case_manager
-                  </Badge>
-                </div>
-                <dl className="space-y-2.5 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <dt className={FIELD_LABEL}>Authority</dt>
-                    <dd className="text-right text-foreground">
-                      {/* UNTRUSTED decider token — plain text. */}
-                      {c.decision_by ? humanizeToken(c.decision_by) : 'Deterministic code'}
-                    </dd>
-                  </div>
-                  {autoClose ? (
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className={FIELD_LABEL}>Auto-close</dt>
-                      <dd className="text-right text-xs text-foreground/90">{autoClose.tag}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  The close / escalate call is made by deterministic code against the
-                  operator-configured policy — never by raw model output.
-                </p>
-                {c.objection_window_expires_at &&
-                !isAutoClosedByAI(c.status, c.decision_by) ? (
-                  <p className="text-xs text-muted-foreground">
-                    Objection window open until {formatTimestamp(c.objection_window_expires_at)}.
+              humanClosed ? (
+                <>
+                  <p className="text-sm leading-relaxed text-foreground/90">
+                    {outcome.source === 'analyst_policy'
+                      ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
+                      : 'Closed by an analyst (a human lifecycle action). The deterministic policy did not close this case.'}
                   </p>
-                ) : null}
-              </>
+                  <dl className="space-y-2.5 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className={FIELD_LABEL}>Authority</dt>
+                      <dd className="text-right text-foreground">
+                        {c.decision_by ? humanizeToken(c.decision_by) : 'Analyst'}
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className={FIELD_LABEL}>Outcome</dt>
+                      <dd className="text-right text-foreground">{outcome.shortLabel}</dd>
+                    </div>
+                  </dl>
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-muted/25 px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
+                      <Lock className="h-3.5 w-3.5 text-success" aria-hidden />
+                      Deterministic decision authority
+                    </span>
+                    <Badge variant="success" className="font-mono">
+                      case_manager
+                    </Badge>
+                  </div>
+                  <dl className="space-y-2.5 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className={FIELD_LABEL}>Authority</dt>
+                      <dd className="text-right text-foreground">
+                        {/* UNTRUSTED decider token — plain text. */}
+                        {c.decision_by ? humanizeToken(c.decision_by) : 'Deterministic code'}
+                      </dd>
+                    </div>
+                    {autoClose ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className={FIELD_LABEL}>Auto-close</dt>
+                        <dd className="text-right text-xs text-foreground/90">{autoClose.tag}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                  {c.objection_window_expires_at &&
+                  !isAutoClosedByAI(c.status, c.decision_by) ? (
+                    <p className="text-xs text-muted-foreground">
+                      Objection window open until {formatTimestamp(c.objection_window_expires_at)}.
+                    </p>
+                  ) : null}
+                </>
+              )
             ) : (
               <>
                 <dl className="space-y-2.5 text-sm">
@@ -1786,15 +1564,29 @@ export const OverviewPanel: React.FC<{
                       <StepIcon className="h-3 w-3" />
                     </span>
                     <p className="text-sm font-medium text-foreground">{step.label}</p>
-                    {/* UNTRUSTED detail (rule id / source / status) — plain text. */}
-                    <p className="text-xs text-muted-foreground">{step.detail}</p>
+                    {isCaseManager && onOpenTab ? (
+                      /* Case Manager: link to the step's full detail instead of repeating
+                         the rule, source and status shown elsewhere on this page. */
+                      <button
+                        type="button"
+                        onClick={() => onOpenTab(step.tab)}
+                        className="rounded-sm text-left text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {step.link}
+                      </button>
+                    ) : (
+                      /* UNTRUSTED detail (rule id / source / status) — plain text. */
+                      <p className="text-xs text-muted-foreground">{step.detail}</p>
+                    )}
                   </li>
                 );
               })}
             </ol>
           </PanelCard>
 
-          {/* ENTITY RELATIONSHIP */}
+          {/* ENTITY RELATIONSHIP — the default sheet only. In the Case Manager its facts
+              (entity → rule → surface) live once, in the facts rail's Primary entity. */}
+          {!isCaseManager ? (
           <PanelCard
             data-overview-surface={isCaseManager ? 'flat-column' : undefined}
             className={cn(isCaseManager && EMBEDDED_FLAT_COLUMN)}
@@ -1831,6 +1623,7 @@ export const OverviewPanel: React.FC<{
               ))}
             </div>
           </PanelCard>
+          ) : null}
         </div>
       </div>
 
@@ -1971,7 +1764,9 @@ export const OverviewPanel: React.FC<{
           statusReason={c.status_reason}
           flat={isCaseManager}
         />
-        {/* run/cost meta — OUR processing metadata. */}
+        {/* run/cost meta — OUR processing metadata. The Case Manager shows each of these
+            once, in the facts rail (Times and SLA, Record). */}
+        {!isCaseManager ? (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
           {c.created_at ? <span>Created {formatTimestamp(c.created_at)}</span> : null}
           {c.updated_at ? <span>Processed {formatTimestamp(c.updated_at)}</span> : null}
@@ -1994,6 +1789,7 @@ export const OverviewPanel: React.FC<{
           <span>Investigation cost {fmtMoney(c.token_cost)}</span>
           {c.decision_by ? <span>Decided by {humanizeToken(c.decision_by)}</span> : null}
         </div>
+        ) : null}
       </CollapsibleSection>
 
       {c.error ? (

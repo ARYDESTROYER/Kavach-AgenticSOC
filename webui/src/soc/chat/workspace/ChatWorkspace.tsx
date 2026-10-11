@@ -6,12 +6,21 @@
  *   │                                     │ budget alert · composer        │ (split │
  *   └─────────────────────────────────────┴────────────────────────────────┴ /sheet)┘
  *
- * Chrome contract: the frame bleeds the shell's vertical inset (`-my-6`, the matched
- * pair of `CONTENT_INSET`'s `py-6`) and is exactly `100dvh − 3.5rem` tall, so nothing
- * overflows the document at any reference size; one sr-only `<h1>Chat</h1>`, the thread
- * title is the toolbar `<h2>` and every turn has a hidden `<h3>`. Zones follow the
- * MEASURED frame width (`useChatGeometry`), and exactly one New chat is visible at
+ * Chrome contract: the frame bleeds the shell's whole inset (`-mx-4 -my-6 sm:-mx-6`
+ * with `w-auto`, the matched pair of `CONTENT_INSET`'s `px-4 py-6 sm:px-6`), so the rail,
+ * strip and report panel sit flush with the nav rail and the window edge and there are
+ * no canvas strips beside the chat (Round 12, diagnosis/layout.md (h)). It is exactly
+ * `100dvh − 3.5rem` tall, so nothing overflows the document at any reference size, and
+ * `overflow-clip` (not `hidden`): a clipped box cannot be scrolled programmatically, so a
+ * `focus()`, a contents jump or find-in-page can never slide the toolbar under the header
+ * or leave a blank band below the composer (diagnosis (d)). One sr-only `<h1>Chat</h1>`,
+ * the thread title is the toolbar `<h2>` and every turn has a hidden `<h3>`. Zones follow
+ * the MEASURED frame width (`useChatGeometry`), and exactly one New chat is visible at
  * every width (rail header, icon strip, or toolbar when the rail is a Sheet).
+ *
+ * The conversation zone is an `@container` that sets the lane's gutter and cap
+ * (`laneVars`, from the viewer's width preference in the thread ⋯ menu), so the
+ * transcript and the composer share one lane (lane.ts).
  *
  * The hooks (`useChatConversations`, `useChatEngine`, `useChatContext`) live in the
  * page; this component renders them and owns presentation state only.
@@ -31,7 +40,7 @@ import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
 import { estimateNextRequest } from '../display';
 import { EmptyState } from '../empty/EmptyState';
-import { CONTENT_COL, LANE_GRID } from '../message/lane';
+import { LANE_COL, LANE_GRID, laneVars } from '../message/lane';
 import { NoticeCallout } from '../message/NoticeCallout';
 import { Transcript } from '../message/Transcript';
 import { useTurnAnnouncer } from '../message/useTurnAnnouncer';
@@ -43,6 +52,7 @@ import { CONTINUE_PROMPT, type ChatEngine, type ChatUserItem } from '../useChatE
 import { HistoryRail, HistoryStrip, type ConversationExportFormat } from './HistoryRail';
 import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
+import { useChatLaneWidth } from './useChatLaneWidth';
 import { useConversationReport } from './useConversationReport';
 import { useOpenerFocus } from './useOpenerFocus';
 import {
@@ -85,6 +95,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
   const geometry = useChatGeometry(panelOpen && !caseScoped);
+  const laneWidth = useChatLaneWidth();
   const busy = engine.busy;
   const ctx = context.context;
 
@@ -152,13 +163,14 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     [engine, focusComposer],
   );
 
+  // Never refused while an answer is being written: the turn keeps running in the
+  // turn runner and the history row shows it (SPEC D13).
   const newChat = React.useCallback(() => {
-    if (busy) return;
     conv.startNew();
     setHistoryOpen(false);
     // After the draft paints (the composer stays mounted).
     window.setTimeout(() => composerRef.current?.focus(), 0);
-  }, [busy, conv]);
+  }, [conv]);
 
   const select = React.useCallback(
     (item: ChatConversationSummary) => {
@@ -336,8 +348,8 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     onOpenReport: (item: ChatConversationSummary) => {
       setHistoryOpen(false);
       if (item.id === activeId) setPanelOpen(true);
-      else if (!busy) {
-        // Selection is refused while a turn runs; only then remember to open it.
+      else {
+        // Select it, then open the panel once it is active.
         setPendingReportFor(item.id);
         conv.select(item);
       }
@@ -363,10 +375,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   return (
     <div
       ref={geometry.frameRef}
-      className="-my-6 flex h-[calc(100dvh-3.5rem)] min-h-0 min-w-0 overflow-hidden bg-background"
+      className="-mx-4 -my-6 flex h-[calc(100dvh-3.5rem)] w-auto min-h-0 min-w-0 overflow-clip bg-background sm:-mx-6"
       data-testid="workspace-chat-page"
       data-rail={rail ?? 'none'}
       data-panel={showPanel ? panelMode : 'closed'}
+      data-lane-width={laneWidth.width}
     >
       <h1 className="sr-only">Chat</h1>
 
@@ -413,7 +426,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
         </Sheet>
       ) : null}
 
-      <section className="flex min-w-0 flex-1 flex-col" aria-label="Conversation">
+      <section
+        className="@container flex min-w-0 flex-1 flex-col"
+        aria-label="Conversation"
+        style={laneVars(laneWidth.width) as React.CSSProperties}
+      >
         <ThreadToolbar
           title={title}
           summary={caseScoped ? null : summary}
@@ -430,6 +447,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onExport={(format) => activeId && void exportThread(activeId, format)}
           onDelete={() => summary && void conv.remove(summary)}
           shortcuts={{ newChat: CHAT_KEYSHORTCUTS.newChat, history: CHAT_KEYSHORTCUTS.toggleHistory }}
+          laneWidth={{ value: laneWidth.width, onChange: laneWidth.setWidth }}
         />
 
         <Transcript
@@ -448,12 +466,13 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
         />
 
         {/* The transcript reserves a scrollbar gutter on both edges; the composer area
-            reserves the same one (an overflow box with no overflow), so the composer's
-            edges line up with the bubbles and prose above at every width. Its menus and
-            popovers are portalled, so nothing here is clipped. */}
-        <div className="shrink-0 overflow-hidden px-4 pb-4 pt-1 [scrollbar-gutter:stable_both-edges] sm:px-6">
+            reserves the same one (an overflow box with no overflow), and both take their
+            side gutters from the lane grid's tracks, so the composer spans exactly the
+            lane above (the prose's left edge to the bubble's right edge) at every width.
+            Its menus and popovers are portalled, so nothing here is clipped. */}
+        <div className="shrink-0 overflow-hidden pb-4 pt-1 [scrollbar-gutter:stable_both-edges]">
           <div className={LANE_GRID}>
-            <div className={`${CONTENT_COL} space-y-2`}>
+            <div className={`${LANE_COL} space-y-2`}>
               <BudgetAlert context={ctx} />
               <Composer
                 ref={composerRef}

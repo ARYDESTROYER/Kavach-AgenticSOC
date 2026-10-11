@@ -242,11 +242,101 @@ export function budgetMeterValue(context: ChatContextInfo | null | undefined): B
   return { percent, spent, limit: budget.daily_limit, level, simulated: context?.simulated === true };
 }
 
-/** `aria-valuetext` for the ring: "42% of today's AI budget used, $4.20 of $10.00". */
+/** `aria-valuetext` for the budget bar: "42% of today's AI budget used, $4.20 of $10.00". */
 export function budgetValueText(value: BudgetMeterValue): string {
   const pct = Math.round(value.percent);
   const sim = value.simulated ? ' (simulated)' : '';
   return `${pct}% of today's AI budget used, ${formatMoney(value.spent)} of ${formatMoney(value.limit)}${sim}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Context window (Round 12: the composer ring).                               */
+/* -------------------------------------------------------------------------- */
+
+/** From this share of the window the ring turns amber (the next request is nearly full). */
+export const CONTEXT_HIGH_SHARE = 0.9;
+
+export interface ContextMeterValue {
+  /** ≈ tokens the next request sends (system and tools + history + draft, calibrated). */
+  used: number;
+  /** The model's context window in tokens. */
+  window: number;
+  /** `used ÷ window` as a percentage (may exceed 100 in bounded mode). */
+  percent: number;
+  level: 'ok' | 'high';
+  /** Chat runs without limits: long conversations are summarised automatically. */
+  summarises: boolean;
+}
+
+/** True when chat runs without per-question limits (SPEC D1); an older backend is bounded. */
+export function chatUnlimited(context: Pick<ChatContextInfo, 'limits_mode'> | null | undefined): boolean {
+  return context?.limits_mode === 'unlimited';
+}
+
+/**
+ * The ring's value, or `null` when the window is unknown (no ring then). `used` is the
+ * composer's own next-request estimate, so the ring and "≈ N" never disagree.
+ */
+export function contextMeterValue(
+  context: Pick<ChatContextInfo, 'context_window' | 'limits_mode'> | null | undefined,
+  used: number,
+): ContextMeterValue | null {
+  const window = context?.context_window;
+  if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) return null;
+  const tokens = Number.isFinite(used) && used > 0 ? used : 0;
+  const share = tokens / window;
+  return {
+    used: tokens,
+    window,
+    percent: share * 100,
+    level: share >= CONTEXT_HIGH_SHARE ? 'high' : 'ok',
+    summarises: chatUnlimited(context),
+  };
+}
+
+/** "0%", "<1%", "12%": a non-zero share never rounds down to an empty-looking 0%. */
+export function formatContextPercent(percent: number): string {
+  if (!Number.isFinite(percent) || percent <= 0) return '0%';
+  if (percent < 1) return '<1%';
+  return `${Math.round(percent)}%`;
+}
+
+/**
+ * `aria-valuetext` for the context ring: "12% of the context window used, about 24k of
+ * 200k tokens. Older messages are summarised automatically near the limit."
+ */
+export function contextValueText(value: ContextMeterValue): string {
+  const head = `${formatContextPercent(value.percent)} of the context window used, about ${formatTokenCount(value.used)} of ${formatTokenCount(value.window)} tokens.`;
+  const high = value.level === 'high' ? ' Nearly full.' : '';
+  const tail = value.summarises ? ' Older messages are summarised automatically near the limit.' : '';
+  return `${head}${high}${tail}`;
+}
+
+/**
+ * The popover's line under the context figure. Unlimited mode (SPEC D1/D4): a long
+ * conversation is summarised automatically near the limit, and there is no hard cap.
+ * Bounded mode keeps the per-question ceiling and the replay window.
+ */
+export function contextNote(context: Pick<ChatContextInfo, 'limits_mode'> | null | undefined): string {
+  return chatUnlimited(context)
+    ? 'Long conversations are summarised automatically near the limit, so the chat keeps going. There is no hard cap.'
+    : 'Older exchanges are not sent.';
+}
+
+/**
+ * The popover's line under the daily budget (SPEC D5): what counts against it, and that
+ * chat is metered but never paused by it. A viewer who cannot see the budget itself
+ * (no `models:read`) gets the state in words, still without implying chat stops.
+ */
+export function budgetNote(context: ChatContextInfo | null | undefined): string | null {
+  if (!context) return null;
+  const visible = context.budget?.enabled === true;
+  const state = context.budget_state;
+  if (!visible && (!state || state === 'ok')) return null;
+  const counts = 'Automatic investigations count against this budget. Chat is recorded in the cost ledger but is not paused by it.';
+  if (visible) return counts;
+  if (state === 'reached') return `Automatic investigations have reached today's AI budget. Chat is not affected.`;
+  return `Automatic investigations are near today's AI budget. Chat is not affected.`;
 }
 
 /**

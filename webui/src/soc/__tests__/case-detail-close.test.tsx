@@ -132,11 +132,13 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole('button', { name: 'Share' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Take Action' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Take action' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back to case queue' })).toBeInTheDocument();
     expect(screen.getByText('High severity')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /More actions/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Close case/i })).not.toBeInTheDocument();
+    // Round 12 (CM-3): one primary action, one "Close case" secondary, then Take action.
+    expect(screen.getAllByRole('button', { name: /^Close case/i })).toHaveLength(1);
+    expect(screen.getByTestId('case-primary-action')).toBeInTheDocument();
     expect(onCaseChange).toHaveBeenCalledWith(expect.objectContaining({ case_id: 'case-001' }));
   });
 
@@ -147,7 +149,7 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     );
 
     await screen.findByText('Suspicious login burst');
-    await user.click(screen.getByRole('button', { name: 'Take Action' }));
+    await user.click(screen.getByRole('button', { name: 'Take action' }));
 
     const menu = await screen.findByRole('menu');
     for (const label of [
@@ -186,10 +188,12 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     expect(title).toHaveClass('text-xl', 'font-semibold', 'text-foreground');
     expect(title).not.toHaveClass('text-muted-foreground');
 
-    // The machine id is a secondary mono line AFTER the title: muted, small, untruncated.
+    // The machine id is a secondary mono line AFTER the title: quiet, small, untruncated
+    // (Round 12: it leads the sticky meta row, which sets the small muted type).
     const id = screen.getByTestId('case-detail-id');
     expect(id).toHaveTextContent(/^TLSOC-001$/);
-    expect(id).toHaveClass('font-mono', 'text-xs', 'text-muted-foreground', 'break-all');
+    expect(id).toHaveClass('font-mono', 'break-all');
+    expect(screen.getByTestId('case-detail-meta')).toHaveClass('text-xs', 'text-muted-foreground');
     expect(id).not.toHaveClass('truncate');
     expect(id).not.toHaveClass('uppercase');
     expect(title.compareDocumentPosition(id) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

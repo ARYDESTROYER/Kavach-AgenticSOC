@@ -13,7 +13,8 @@
  *    (no refetch flash) while that thread stays active; switching away clears it;
  *  - refresh on window focus, on `visibilitychange` → visible, and on a cross-tab
  *    `BroadcastChannel('agentic-soc-workspace-chat-history')` `{type:'history-changed'}`
- *    signal — all DEFERRED while a turn is in flight and flushed when it settles;
+ *    signal — all DEFERRED while this thread's turn is in flight and flushed when it
+ *    settles;
  *  - optimistic promotion of a first persisted turn into the rail, then a background
  *    refresh and a broadcast;
  *  - rename / pin / delete (the host confirms deletion), each broadcasting;
@@ -32,6 +33,16 @@
  * just evicted), so it is CHECKED (`GET …/{id}`) before it is called unavailable or the
  * selection falls back: only a 404 means it is gone.
  *
+ * Round 12 (SPEC D13): a turn no longer pins the analyst to its thread. Answers keep
+ * streaming in the turn runner while another thread, New chat or another page is open,
+ * so selection, New chat, search hits and navigations are never refused (deleting the
+ * thread a turn is running in still is). Rows carry live statuses (`running`,
+ * `needs_input`, `failed`, `unread`) from the server, overlaid with what this tab and
+ * the others know right now (the activity store); a new thread being answered shows as
+ * a row before its first answer is saved. The first load prefers a thread that is
+ * running, waits on the analyst or has an unread answer over simply the newest, and an
+ * answer on screen is marked read (`POST …/read`).
+ *
  * Case-scoped chat passes `enabled: false`: no list, no detail, no persistence.
  */
 import * as React from 'react';
@@ -39,6 +50,7 @@ import * as React from 'react';
 import { ApiError } from '@/lib/api';
 import type { ChatConversation, ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
+import { getChatActivity, markChatActivitySeen, useChatActivity, type ChatActivity } from '../chat-activity/activity';
 import {
   UNTITLED_CONVERSATION,
   apiErrorCode,
@@ -51,9 +63,10 @@ import {
 import { clampAsk } from './ask';
 import { displayText } from './stream-events';
 import { consoleTopic } from './topic';
+import { HISTORY_CHANNEL, markConversationRead } from './turn-runner';
 
-/** The cross-tab history signal (unchanged from the pre-revamp page). */
-export const HISTORY_CHANNEL = 'agentic-soc-workspace-chat-history';
+/** The cross-tab history signal (unchanged from the pre-revamp page; the runner posts it too). */
+export { HISTORY_CHANNEL };
 /** Draft key of the New-chat draft. */
 export const NEW_DRAFT_KEY = '__new_workspace_chat__';
 /** Unpinned conversations the server keeps (the retention footer's figure). */
@@ -99,6 +112,57 @@ export function newestConversationFirst(a: ChatConversationSummary, b: ChatConve
   const left = Date.parse(a.updated_at);
   const right = Date.parse(b.updated_at);
   return (Number.isFinite(right) ? right : -Infinity) - (Number.isFinite(left) ? left : -Infinity) || 0;
+}
+
+/**
+ * Rows as the analyst should see them right now: the server's statuses overlaid with
+ * what this tab and the others know (the activity store), plus a row for a NEW thread
+ * whose first answer is being written (it is not listed until its first save).
+ */
+export function overlayActivity(
+  rows: readonly ChatConversationSummary[],
+  entries: readonly ChatActivity[],
+): ChatConversationSummary[] {
+  const live = new Map<string, ChatActivity>();
+  for (const entry of entries) {
+    if (entry.kind === 'workspace' && entry.conversationId) live.set(entry.conversationId, entry);
+  }
+  if (!live.size) return rows as ChatConversationSummary[];
+  const out = rows.map((row) => {
+    const entry = live.get(row.id);
+    if (!entry) return row;
+    const unread = entry.status === 'unread' || row.unread === true;
+    // A stale list may still say `running` for an answer this tab saw finish.
+    const status = entry.status === 'unread' ? (row.status === 'running' ? 'idle' : row.status) : entry.status;
+    return status === row.status && unread === (row.unread === true) ? row : { ...row, status, unread };
+  });
+  for (const entry of live.values()) {
+    if (entry.status !== 'running' || rows.some((row) => row.id === entry.conversationId)) continue;
+    const at = new Date(entry.startedAt).toISOString();
+    out.unshift({
+      id: entry.conversationId as string,
+      title: entry.title || UNTITLED_CONVERSATION,
+      preview: '',
+      created_at: at,
+      updated_at: at,
+      message_count: 0,
+      status: 'running',
+    });
+  }
+  return out;
+}
+
+/**
+ * The thread a fresh visit opens: one being answered, then one waiting on the analyst
+ * or holding an unread answer, then the newest (rows are newest first).
+ */
+export function preferredThread(rows: readonly ChatConversationSummary[]): string | null {
+  return (
+    rows.find((row) => row.status === 'running')?.id ??
+    rows.find((row) => row.status === 'needs_input' || row.unread === true)?.id ??
+    rows[0]?.id ??
+    null
+  );
 }
 
 /** A validated chat deep-link request (SPEC §10.7). */
@@ -256,7 +320,7 @@ export interface ChatConversationsController {
    */
   transcriptEpoch: number;
 
-  /** A turn is in flight: selection and refresh wait. Wire to the engine. */
+  /** This thread's turn is in flight: list refreshes wait. Wire to the engine. */
   busy: boolean;
   setBusy: (busy: boolean) => void;
 
@@ -281,7 +345,7 @@ export interface ChatConversationsController {
    * The engine persisted a turn into `id` (first or later). `title` is the server title,
    * the prompt for a brand-new thread, or '' to keep the row's title.
    */
-  conversationPersisted: (id: string, title: string) => void;
+  conversationPersisted: (id: string, title: string, options?: { rehydrate?: boolean }) => void;
   /**
    * The conversation's draft report is now `reportId` (the first Add to report created
    * it): its row learns the link at once, so "Open report" and the toolbar count
@@ -324,6 +388,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [searchResults, setSearchResults] = React.useState<ChatConversationSearchHit[] | null>(null);
   const [searching, setSearching] = React.useState(false);
   const [searchError, setSearchError] = React.useState<string | null>(null);
+  const { entries: activity } = useChatActivity();
 
   const detailRequestRef = React.useRef(0);
   const listRequestRef = React.useRef(0);
@@ -340,6 +405,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   /** Bumps on every deliberate selection change, so a slow thread check never overrides one. */
   const selectionEpochRef = React.useRef(0);
   const highlightNonceRef = React.useRef(0);
+  /** The rows as shown (live statuses and a running new thread's row included). */
+  const shownRef = React.useRef<ChatConversationSummary[]>([]);
+  const readingRef = React.useRef<string | null>(null);
   const confirmRef = React.useRef(confirmDelete);
   confirmRef.current = confirmDelete;
 
@@ -479,7 +547,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       const response = await listConversations({ limit });
       if (generation !== listRequestRef.current) return;
       const rows = [...response.conversations].sort(newestConversationFirst);
-      const pending = !busyRef.current ? pendingRequestRef.current : null;
+      const pending = pendingRequestRef.current;
       const current = activeIdRef.current;
       const selectedOffPage = !pending && typeof current === 'string' && !rows.some((item) => item.id === current);
       // Keep the selected thread's row while it is checked (no rail flicker).
@@ -508,17 +576,20 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       } else if (selectedOffPage) {
         void confirmBeyondPage(current as string);
       } else {
-        // The first load selects the newest; a deliberate New-chat draft stays a draft.
+        // The first load prefers a thread being answered, waiting on the analyst or
+        // holding an unread answer, then the newest; a deliberate New-chat draft stays
+        // a draft.
+        const shown = overlayActivity(next, getChatActivity().entries);
         setActiveId((selected) => {
-          if (selected && next.some((item) => item.id === selected)) return selected;
+          if (selected && shown.some((item) => item.id === selected)) return selected;
           if (selected === null) return null;
-          return next[0]?.id ?? null;
+          return preferredThread(shown);
         });
       }
     } catch (error) {
       if (generation !== listRequestRef.current) return;
       setListError(errorMessage(error, 'Could not load previous conversations.'));
-      const pending = !busyRef.current ? pendingRequestRef.current : null;
+      const pending = pendingRequestRef.current;
       if (pending) {
         pendingRequestRef.current = null;
         void applyRequest(pending, [], true);
@@ -604,9 +675,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       return;
     }
     pendingRequestRef.current = request;
-    // Before the first load, or while a turn runs, the request waits for that load /
-    // for the turn to settle (`setBusy(false)` reloads).
-    if (busyRef.current || !loadedOnceRef.current) return;
+    // Before the first load the request waits for it. A running turn never holds a
+    // navigation back: its answer keeps streaming in the turn runner (SPEC D13).
+    if (!loadedOnceRef.current) return;
     void loadConversations();
     // Only a new navigation (a new opts object) may apply a request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -636,6 +707,13 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       })
       .catch((error) => {
         if (generation !== detailRequestRef.current) return;
+        // A new thread whose first answer is still being written is not saved yet
+        // (404 until then): open it empty, and the engine joins its running turn.
+        const pending = shownRef.current.find((row) => row.id === activeId);
+        if (error instanceof ApiError && error.status === 404 && pending?.status === 'running') {
+          setConversation({ ...pending, messages: [] });
+          return;
+        }
         setConversation(null);
         setThreadError(errorMessage(error, 'Could not load this conversation.'));
       })
@@ -665,14 +743,14 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     [loadConversations],
   );
 
+  // Never refused while a turn runs: the engine detaches and the answer keeps
+  // streaming in the turn runner (SPEC D13).
   const startNew = React.useCallback(() => {
-    if (busyRef.current) return;
     enterNewDraft();
   }, [enterNewDraft]);
 
   const select = React.useCallback(
     (item: ChatConversationSummary | string) => {
-      if (busyRef.current) return;
       const id = typeof item === 'string' ? item : item.id;
       if (!isSafeChatId(id)) return;
       if (activeIdRef.current === id) return;
@@ -683,7 +761,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   const openSearchHit = React.useCallback(
     (hit: ChatConversationSearchHit) => {
-      if (busyRef.current || !isSafeChatId(hit.id)) return;
+      if (!isSafeChatId(hit.id)) return;
       if (activeIdRef.current !== hit.id) enterSelection(hit.id);
       const messageId = hit.match?.message_id;
       if (messageId) queueHighlight(hit.id, messageId);
@@ -694,7 +772,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const retryThread = React.useCallback(() => setThreadRetryEpoch((epoch) => epoch + 1), []);
 
   const conversationPersisted = React.useCallback(
-    (id: string, rawTitle: string) => {
+    (id: string, rawTitle: string, options?: { rehydrate?: boolean }) => {
       // The engine passes the server title, the exact prompt (a new thread whose title
       // it has not seen yet) or '' (keep the row's title): display text only from here
       // on (BLOCKS.md amendment 4).
@@ -730,6 +808,12 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
         delete next[NEW_DRAFT_KEY];
         return next;
       });
+      // A turn followed after a reload (or lost) has no prompt on screen: load the saved
+      // thread once, which holds both.
+      if (options?.rehydrate && activeIdRef.current === id) {
+        skipDetailIdRef.current = null;
+        setThreadRetryEpoch((epoch) => epoch + 1);
+      }
       // The response is saved before this runs. Refresh metadata in the background
       // without re-hydrating the live transcript that owns the answer.
       refresh();
@@ -802,7 +886,10 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       // the engine abandon the turn: refuse, as select / startNew do (checked again
       // after the dialog, since a turn may have started while it was open).
       const refuseWhileBusy = () => {
-        if (!busyRef.current || activeIdRef.current !== item.id) return false;
+        const running =
+          (busyRef.current && activeIdRef.current === item.id) ||
+          shownRef.current.some((row) => row.id === item.id && row.status === 'running');
+        if (!running) return false;
         setListError('Wait for the current answer to finish before deleting this conversation.');
         return true;
       };
@@ -899,9 +986,12 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   /* -------------------------------------------------------------- derived -- */
 
+  const shown = React.useMemo(() => overlayActivity(conversations, activity), [activity, conversations]);
+  shownRef.current = shown;
+
   const activeSummary = React.useMemo(
-    () => conversations.find((item) => item.id === activeId) ?? null,
-    [activeId, conversations],
+    () => shown.find((item) => item.id === activeId) ?? null,
+    [activeId, shown],
   );
 
   const retention: ChatRetentionInfo = {
@@ -922,9 +1012,39 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       threadLoading ||
       (!!activeId && conversation?.id !== activeId && skipDetailIdRef.current !== activeId));
 
+  // An answer on screen is read: clear its unread mark on the server (and in every
+  // tab's indicators) once the thread has restored and the tab is visible.
+  const activeUnread = activeSummary?.unread === true;
+  const shownThread = enabled && typeof activeId === 'string' && !restoring && !threadError ? activeId : null;
+  React.useEffect(() => {
+    if (!shownThread || !activeUnread || typeof document === 'undefined') return undefined;
+    const read = (): boolean => {
+      if (document.visibilityState === 'hidden') return false;
+      if (readingRef.current === shownThread) return true;
+      readingRef.current = shownThread;
+      markChatActivitySeen(`conv:${shownThread}`);
+      void markConversationRead(shownThread).then((ok) => {
+        if (readingRef.current === shownThread) readingRef.current = null;
+        if (!ok) return;
+        setConversations((current) => {
+          const next = current.map((row) => (row.id === shownThread && row.unread ? { ...row, unread: false } : row));
+          conversationsRef.current = next;
+          return next;
+        });
+      });
+      return true;
+    };
+    if (read()) return undefined;
+    const onVisible = () => {
+      if (read()) document.removeEventListener('visibilitychange', onVisible);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [activeUnread, shownThread]);
+
   return {
     enabled,
-    conversations,
+    conversations: shown,
     activeId,
     activeSummary,
     conversation,

@@ -2,9 +2,11 @@
  * ThreadToolbar — the 44 px band (SPEC §10.1a): History + New chat only when the rail
  * is a Sheet (so exactly one New chat is visible), the title as the `<h2>` with inline
  * rename (focus returns to the title after Enter / Escape, and ⋯ → Rename keeps focus in
- * the field), the conversation total inline from 560 px (else in ⋯), Report · n as a
- * toggle, shortcut hints, and the ⋯ menu (Rename, Pin conversation, Export
- * conversation ▸, Delete) only for a saved thread.
+ * the field), the conversation total inline from 560 px (else in ⋯), Report as a
+ * toggle with the added-item count only when there is one (Round 12: never "· 0"),
+ * shortcut hints, the ⋯ menu (Rename, Pin conversation, Export conversation ▸, Delete)
+ * only for a saved thread, and the viewer's Width submenu (Round 12 SPEC D12) on drafts
+ * too.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -13,7 +15,7 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 import type { ChatConversationSummary } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
-import { ThreadToolbar, conversationTotal, type ThreadToolbarProps } from '../ThreadToolbar';
+import { ThreadToolbar, conversationTotal, reportButtonHint, reportButtonLabel, type ThreadToolbarProps } from '../ThreadToolbar';
 
 expect.extend(toHaveNoViolations);
 
@@ -62,13 +64,57 @@ describe('ThreadToolbar', () => {
     const { props } = renderToolbar();
     expect(screen.getByRole('heading', { level: 2, name: 'Failed sign-in review' })).toBeInTheDocument();
     expect(screen.getByTestId('conversation-total')).toHaveTextContent('12.4k tokens · $0.03');
-    const toggle = screen.getByRole('button', { name: /Report · 2/ });
+    const toggle = screen.getByRole('button', { name: 'Report, 2 items added' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('chat-report-count')).toHaveTextContent('2');
+    expect(toggle).not.toHaveTextContent('·');
     fireEvent.click(toggle);
     expect(props.report?.onToggle).toHaveBeenCalledTimes(1);
     // The rail is docked: neither History nor a second New chat here.
     expect(screen.queryByRole('button', { name: 'History' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'New chat' })).toBeNull();
+  });
+
+  it('names the report count only when something was added, and says what it counts', async () => {
+    expect(reportButtonLabel(0)).toBe('Report');
+    expect(reportButtonLabel(1)).toBe('Report, 1 item added');
+    expect(reportButtonLabel(Number.NaN)).toBe('Report');
+    expect(reportButtonHint(0)).toBe('Collect answers and blocks from this chat into a report');
+    expect(reportButtonHint(3)).toBe('3 items you added from this chat');
+    renderToolbar({ report: { count: 0, open: false, onToggle: vi.fn() } });
+    const toggle = screen.getByRole('button', { name: 'Report' });
+    expect(toggle).toHaveTextContent(/^Report$/);
+    expect(screen.queryByTestId('chat-report-count')).toBeNull();
+    act(() => toggle.focus());
+    await waitFor(() =>
+      expect(screen.getByRole('tooltip')).toHaveTextContent('Collect answers and blocks from this chat into a report'),
+    );
+  });
+
+  it('keeps the count as a badge when the toolbar is narrow', () => {
+    renderToolbar({ narrow: true, report: { count: 4, open: true, onToggle: vi.fn() } });
+    const toggle = screen.getByRole('button', { name: 'Report, 4 items added' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveTextContent(/^4$/);
+  });
+
+  it('offers the conversation width in ⋯, on a draft too, and reports the choice', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderToolbar({ summary: null, title: 'New chat', laneWidth: { value: 'wide', onChange } });
+    // A draft has no thread actions, so the menu is named for what it offers.
+    await user.click(screen.getByRole('button', { name: 'Conversation options' }));
+    expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull();
+    const width = await screen.findByRole('menuitem', { name: 'Width, currently Wide' });
+    await user.click(width);
+    const wide = await screen.findByRole('menuitemradio', { name: /^Wide/ });
+    expect(wide).toHaveAttribute('aria-checked', 'true');
+    const full = screen.getByRole('menuitemradio', { name: /^Full width/ });
+    expect(full).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('menuitemradio', { name: /^Comfortable/ })).toHaveAccessibleName(/A narrower column/);
+    act(() => full.focus());
+    await user.keyboard('{Enter}');
+    expect(onChange).toHaveBeenCalledWith('full');
   });
 
   it('offers History and New chat when the rail is a Sheet', () => {
@@ -143,8 +189,10 @@ describe('ThreadToolbar', () => {
     const user = userEvent.setup();
     const { unmount } = renderToolbar({ summary: null, title: 'New chat' });
     expect(screen.getByRole('heading', { level: 2, name: 'New chat' })).toBeInTheDocument();
-    // A draft has nothing to rename, pin, export or delete: no menu of disabled items.
+    // A draft has nothing to rename, pin, export or delete: no menu of disabled items
+    // (and without a width control there is nothing else to offer).
     expect(screen.queryByRole('button', { name: 'Conversation actions' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Conversation options' })).toBeNull();
     unmount();
     const busyView = renderToolbar({ busy: true });
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));

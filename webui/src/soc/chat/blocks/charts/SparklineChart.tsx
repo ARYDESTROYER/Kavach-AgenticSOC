@@ -11,7 +11,7 @@ import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { token } from '@/soc/components/palette';
 
-import { formatValue, unitLabel, xLabelFull } from '../format';
+import { IN_PROGRESS_SUFFIX, formatValue, unitLabel, xAxisHeader, xPositionLabel } from '../format';
 import type { ChartBlock, ValueUnit } from '../schema';
 import { DataTableFallback, srValue } from './DataTableFallback';
 import { seriesStyles } from './series';
@@ -126,7 +126,9 @@ export function SparklineChart({ block, title, staticMode = false }: { block: Ch
     <div className="min-w-0 max-w-md" data-testid="chart-sparkline">
       <div className="flex items-baseline justify-between gap-3 text-2xs tabular-nums" aria-hidden>
         <span className="min-w-0 truncate text-muted-foreground">
-          {shownIndex >= 0 ? xLabelFull(block.x.values[shownIndex] ?? '', block.x.kind, block.x.bucket) : ''}
+          {shownIndex >= 0
+            ? `${xPositionLabel(block.x, shownIndex)}${block.last_in_progress && shownIndex === values.length - 1 ? IN_PROGRESS_SUFFIX : ''}`
+            : ''}
         </span>
         <span className={cn('shrink-0 font-semibold', isNum(shown) ? 'text-foreground' : 'text-muted-foreground')}>
           {isNum(shown) ? formatValue(shown, block.unit) : 'not measured'}
@@ -145,11 +147,11 @@ export function SparklineChart({ block, title, staticMode = false }: { block: Ch
       ) : null}
       <DataTableFallback
         caption={`${title} (${unitLabel(block.unit)})`}
-        rowHeader={block.x.kind === 'time' ? 'Time (UTC)' : 'Category'}
+        rowHeader={xAxisHeader({ ...block.x, label: undefined })}
         columns={[s?.label ?? 'Value']}
-        rows={block.x.values.map((x, i) => ({
+        rows={block.x.values.map((_, i) => ({
           key: String(i),
-          header: xLabelFull(x, block.x.kind, block.x.bucket),
+          header: `${xPositionLabel(block.x, i)}${block.last_in_progress && i === values.length - 1 ? IN_PROGRESS_SUFFIX : ''}`,
           cells: [srValue(formatValue(values[i] ?? null, block.unit), values[i] ?? null)],
         }))}
         visible={staticMode}

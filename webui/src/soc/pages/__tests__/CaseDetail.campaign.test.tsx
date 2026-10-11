@@ -151,7 +151,13 @@ describe('CaseDetail — campaign membership chip (#51)', () => {
     // Defence against silent re-rot back into dead code (mirrors CaseDetail.live.test).
     const src = readFileSync(path.resolve(__dirname, '..', 'CaseDetail.tsx'), 'utf8');
     expect(src).toMatch(/campaignsApi\.forCase\(id\)/);
-    expect(src).toMatch(/<CampaignChip/);
     expect(src).toMatch(/onNavigate\('campaigns'\)/);
+    // Round 12: the chip renders in the sticky header meta row (its one home).
+    const header = readFileSync(
+      path.resolve(__dirname, '..', 'casedetail', 'CaseHeaderMeta.tsx'),
+      'utf8',
+    );
+    expect(header).toMatch(/<CampaignChip/);
+    expect(src).toMatch(/<CaseHeaderMeta/);
   });
 });

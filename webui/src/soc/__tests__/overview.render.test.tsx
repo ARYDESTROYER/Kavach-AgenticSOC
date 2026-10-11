@@ -234,6 +234,8 @@ function drilldownBands(): { labels: string[]; values: string[] } | null {
 
 describe('Overview — Cyber Defence Center (rebuild)', () => {
   beforeEach(() => {
+    // Deeper analytics remembers its open state per browser (Round 12): start folded.
+    localStorage.removeItem('soc.overview.deeperOpen');
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
     getMetricsMock.mockReset();
@@ -261,14 +263,15 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(screen.queryByText(/^Last polled /)).toBeNull();
     const range = within(controls).getByRole('button', { name: /Time range: Last 24 hours/i });
     expect(range).toHaveTextContent('Last 24h');
-    expect(range).toHaveClass('rounded-[3px]', 'bg-transparent');
+    // 8px like every other button and select (Round 12 concentric radii; was 3px).
+    expect(range).toHaveClass('rounded-md', 'bg-transparent');
     expect(within(controls).getByRole('combobox', { name: /Auto-refresh interval: LIVE/i })).toHaveClass(
-      'rounded-[3px]',
+      'rounded-md',
       'bg-transparent',
     );
     const manualRefresh = within(controls).getByRole('button', { name: 'Refresh dashboard' });
     expect(manualRefresh).toHaveClass(
-      'rounded-[3px]',
+      'rounded-md',
       'bg-transparent',
       'text-success-text',
     );
@@ -375,9 +378,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(inkOf('kpi-auto-closed')).toHaveClass('text-foreground');
     expect(inkOf('kpi-resolved-closed')).toHaveClass('text-foreground');
     expect(inkOf('kpi-auto-closed')).not.toHaveClass('text-success-text');
-    // DENSITY REGRESSION GUARD. The landing strip runs `density="compact"` because it
-    // heads a page that must also seat the flow diagram, the case queue and the timing
-    // pair. `px-3 py-2` is what compact swaps on a strip tile's trigger.
+    // DENSITY REGRESSION GUARD. Round 12: the landing strip runs `density="comfortable"`
+    // (between compact and default — the strip HEADS the page, and compact squeezed six
+    // numerals into 90px cells at every width). Its trigger padding steps with the width:
+    // `px-3 py-3`, `xl:px-4`, and `2xl:px-5 2xl:py-4`.
     //
     // `min-h-0` is asserted on the CELL ROOT rather than the trigger. Every strip tile now
     // has one: the trigger is a <button>, so anything that must sit beside it rather than
@@ -385,7 +389,12 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // wrapper, and the wrapper is then the cell and owns the cell's height. Update these
     // tokens if density changes; never delete them.
     const totalCasesTrigger = screen.getByTestId('kpi-total-cases');
-    expect(totalCasesTrigger).toHaveClass('px-3', 'py-2');
+    expect(totalCasesTrigger).toHaveClass('px-3', 'py-3', 'xl:px-4', '2xl:px-5', '2xl:py-4');
+    // …and the page narrows the trigger's sides back to 12px between xl and 2xl, from
+    // the cell root: the density's 16px cost a 1280 tile its longest context line
+    // (measured live, navigation pinned).
+    expect(totalCasesTrigger.parentElement).toHaveClass('xl:max-2xl:[&>button]:px-3');
+    expect(totalCasesTrigger).not.toHaveClass('py-2');
     expect(totalCasesTrigger.parentElement).toHaveClass('min-h-0');
     // BOTH halves of the strip's rhythm, not just the padding. The second half used to be
     // compact's fixed 4px label→numeral gap (`mt-1`), the one token no gate could see;
@@ -531,7 +540,9 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(openCasesHelp).toContain('this one has no window denominator');
     expect(openCasesHelp).not.toContain('Right now:');
     // FP rate is ALREADY a percent, so its context is the sample size behind it.
-    expect(await readTileHelp('False Positive Rate')).toContain('Right now: 1 of 2 verdicted.');
+    // Round 12: the tile is labelled "AI-verdict FP rate" — the rate counts the AGENT's
+    // verdicts; an analyst's classification is reported separately beside it.
+    expect(await readTileHelp('AI-verdict FP rate')).toContain('Right now: 1 of 2 verdicted.');
     expect(lineOf('kpi-false-positive-rate')).toHaveTextContent(/^1 of 2 verdicted$/);
     // Auto Closed names its OWN denominator on the face too (shortened, same ratio).
     expect(lineOf('kpi-auto-closed')).toHaveTextContent(/^50% of worked closes$/);
@@ -1215,15 +1226,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const openRing = screen.getByRole('img', { name: /Open cases by severity/i });
     expect(resolvedRing).toBeInTheDocument();
     expect(openRing).toBeInTheDocument();
-    // The ring is 112, not the 136 it was while the two cards sat SIDE BY SIDE across
-    // eight columns. Stacked in four they cost twice their own height, so the ring pays
-    // for the stack; the ~58px hole still clears the widest string the centre formatter
-    // can emit ("1.2K"). Update these two tokens together with `fmtSnapshotCenter`'s
-    // doc — never delete them.
-    expect(resolvedRing).toHaveClass('w-28');
-    expect(resolvedRing).toHaveStyle({ height: '112px' });
-    expect(openRing).toHaveClass('w-28');
-    expect(openRing).toHaveStyle({ height: '112px' });
+    // Round 12: the ring is 128 (`SNAPSHOT_RING_PX`) — the two snapshots sit side by side
+    // wherever their cell is 35rem wide, and the larger ring's ~66px hole clears the
+    // widest string the centre formatter can emit ("1.2K") with margin. Update these two
+    // tokens together with `fmtSnapshotCenter`'s doc — never delete them.
+    expect(resolvedRing).toHaveClass('w-32');
+    expect(resolvedRing).toHaveStyle({ height: '128px' });
+    expect(openRing).toHaveClass('w-32');
+    expect(openRing).toHaveStyle({ height: '128px' });
 
     // The parent panel no longer repeats what each snapshot already says.
     expect(screen.queryByText('Resolved & open cases', { exact: true })).toBeNull();
@@ -1292,10 +1302,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(screen.getByText('Demo SIEM')).toBeInTheDocument();
   });
 
-  it('abbreviates a 4+ digit SnapshotCard center total so it never clips the ~58px donut hole (#minor)', async () => {
-    // 1,234 closed cases -> `derived.resolved` = 1234. At the pinned 112px donut
+  it('abbreviates a 4+ digit SnapshotCard center total so it never clips the ~66px donut hole (#minor)', async () => {
+    // 1,234 closed cases -> `derived.resolved` = 1234. At the pinned 128px donut
     // (innerPct=52%, overflow-hidden), the raw thousands-separated "1,234" (fmtInt)
-    // risks crowding the ~58px hole. The center must instead show
+    // risks crowding the ~66px hole. The center must instead show
     // the compact form ("1.2K"); the legend row beside it keeps the exact count.
     const many: Case[] = Array.from({ length: 1234 }, (_, i) => ({
       case_id: `bulk-${i}`,
@@ -1311,9 +1321,9 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const resolvedRing = await screen.findByRole('img', { name: /Resolved cases by severity/i });
 
     // The ring size is asserted HERE too, not only in the mount test: this case's whole
-    // premise is "the hole is ~58px", and a hole is 0.52 × the ring. Without this line the
+    // premise is "the hole is ~66px", and a hole is 0.52 × the ring. Without this line the
     // title's number could go stale against a resized ring and nothing here would notice.
-    expect(resolvedRing).toHaveStyle({ height: '112px' });
+    expect(resolvedRing).toHaveStyle({ height: '128px' });
 
     // The center count-up shows the ABBREVIATED form, never the raw grouped digits.
     expect(within(resolvedRing).getByText('1.2K')).toBeInTheDocument();

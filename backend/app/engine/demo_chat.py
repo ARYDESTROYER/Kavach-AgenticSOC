@@ -40,10 +40,12 @@ Rules, all structural so the planner can never become a back door:
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
 import re
 from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..agents.blocks import display_text
@@ -649,6 +651,15 @@ def _minutes(value: Any) -> str:
     return f"{_dec(number)} min"
 
 
+def _plural_noun(noun: str) -> str:
+    """"severity" -> "severities", "source IP" -> "source IPs", "host" -> "hosts"."""
+    if re.search(r"[^aeiou]y$", noun):
+        return noun[:-1] + "ies"
+    if re.search(r"(?:s|x|ch|sh)$", noun):
+        return noun + "es"
+    return noun + "s"
+
+
 def _plural(n: Any, one: str, many: str | None = None) -> str:
     number = _num(n)
     word = one if number is not None and int(round(number)) == 1 else (many or one + "s")
@@ -703,7 +714,7 @@ def _in(label: str) -> str:
         return f"in the {text}"
     if low.startswith("all time"):
         return f"over {text}"
-    if low.split(" (")[0] in _BARE_PERIODS or low.startswith(("since ", "from ", "between ")):
+    if low.split(" (")[0] in _BARE_PERIODS or low.startswith(("since ", "from ", "between ", "until ")):
         return text
     if " – " in text and not low.startswith("the "):
         return "from " + text.replace(" – ", " to ", 1)
@@ -880,6 +891,13 @@ class Ask:
     subject: str | None = None
     clarify: str | None = None
     entity: tuple[str, str] | None = None         # (kind, value): host | user | ip
+    # A time phrase the planner could not read (said in the answer, never dropped); a
+    # period named without its year that the anchor could not date ("September"); and
+    # whether this ask's window was dated by the anchor lookup (its result is then
+    # planner context, never the answer's data).
+    unread: str | None = None
+    undated: str | None = None
+    anchored: bool = False
 
 
 _IPV4_RE = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)(?!\.\d)")
@@ -991,8 +1009,8 @@ _LOG_SEARCH_RE = re.compile(
 _LOG_SEARCH_FOR_RE = re.compile(
     r"^\s*(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:search|grep|look)\s+for\s+"
     r"(?P<term>.+?)\s+(?:in|across|through)\s+(?:the\s+|our\s+|all\s+(?:the\s+)?)?"
-    rf"{_LOG_NOUN}(?P<rest>(?:\s+(?:in|over|for|during|from|within)\s+(?:the\s+)?(?:last|past|previous)\b"
-    r"[^,;]*|\s+(?:today|yesterday|this week|this month))?)\s*[?.!]*\s*$",
+    rf"{_LOG_NOUN}(?P<rest>(?:\s+(?:in|over|for|during|from|within|since|after|before|until|between|on|this|"
+    r"last|today|yesterday|all)\b[^,;?.!]*)?)\s*[?.!]*\s*$",
     re.IGNORECASE)
 _LOG_COUNT_RE = re.compile(
     r"^\s*(?:how many|count(?: the)?|number of)\s+(?:log\s+)?(?:events?|logs?|log entries|log lines)\s+"
@@ -1083,10 +1101,15 @@ _MONTH_WORD = (r"(?:january|february|march|april|may|june|july|august|september|
                r"december|jan|feb|apr|jun|jul|aug|sept?|oct|nov|dec)")
 _SAFE_MONTH_WORD = (r"(?:january|february|april|june|july|august|september|october|november|december|"
                     r"jan|feb|apr|jun|jul|aug|sept?|oct|nov|dec)")
-_UNIT_LETTER = {"m": "h", "h": "h", "d": "d", "w": "w", "M": "M", "y": "y"}
-_UNIT_WORDS = {"h": ("hour", "hours"), "d": ("day", "days"), "w": ("week", "weeks"),
+_UNIT_LETTER = {"m": "m", "h": "h", "d": "d", "w": "w", "M": "M", "y": "y"}
+_UNIT_WORDS = {"m": ("minute", "minutes"), "h": ("hour", "hours"), "d": ("day", "days"), "w": ("week", "weeks"),
                "M": ("month", "months"), "y": ("year", "years")}
 _UNIT_HOURS = {"h": 1, "d": 24, "w": 168, "M": 720, "y": 8760}
+# A month or quarter word counts only standing alone: "jan-laptop", "dec-web01" and
+# "q3-db01" are names (a host, a user), never periods. A full stop ends a sentence
+# ("in September.") but not a name ("sep.example").
+_ATOM_START = r"(?<![\w.-])"
+_ATOM_END = r"(?![\w-]|\.\w)"
 # Calendar tokens (``engine.time_windows``): their words and an approximate span in
 # hours (used only where a tool takes whole hours, such as the shift snapshot).
 _CALENDAR = {
@@ -1125,18 +1148,46 @@ _BARE_SPAN_RE = re.compile(
 _ISO_DATE = r"(\d{4}-\d{2}-\d{2})"
 _ISO_RANGE_RE = re.compile(
     rf"\b(?:from|between)?\s*{_ISO_DATE}\s*(?:to|until|through|thru|and|-|–|\.\.)\s*{_ISO_DATE}\b")
-_ISO_SINCE_RE = re.compile(rf"\b(?:since|after|from)\s+{_ISO_DATE}\b")
 _ISO_DAY_RE = re.compile(rf"\b(?:on|for)\s+{_ISO_DATE}\b")
-_QUARTER_YEAR_RE = re.compile(r"\bq([1-4])\s*[- ]?\s*(20\d\d)\b|\b(20\d\d)\s*[- ]?\s*q([1-4])\b")
-_QUARTER_ONLY_RE = re.compile(r"\bq([1-4])\b")
-_MONTH_YEAR_RE = re.compile(rf"\b{_MONTH_WORD}\.?\s+(?:of\s+)?(20\d\d)\b")
+_QUARTER_YEAR_RE = re.compile(rf"{_ATOM_START}q([1-4])\s*[- ]?\s*(20\d\d)\b|\b(20\d\d)\s*[- ]?\s*q([1-4]){_ATOM_END}")
+_QUARTER_ONLY_RE = re.compile(rf"{_ATOM_START}q([1-4]){_ATOM_END}")
+_MONTH_YEAR_RE = re.compile(rf"{_ATOM_START}{_MONTH_WORD}\.?\s+(?:of\s+)?(20\d\d)\b")
 _ISO_MONTH_RE = re.compile(r"\b(20\d\d)-(0[1-9]|1[0-2])\b(?!-\d)")
-_SINCE_MONTH_RE = re.compile(rf"\b(?:since|from|after)\s+(?:the\s+(?:start|beginning)\s+of\s+)?({_MONTH_WORD})\b"
-                             r"(?:\s+(20\d\d))?")
 _NAMED_MONTH_RE = re.compile(
-    rf"\b(?:in|for|during|of|over|on)\s+({_MONTH_WORD})\b|\b({_SAFE_MONTH_WORD})\b(?:'s)?")
+    rf"\b(?:in|for|during|of|over|on)\s+({_MONTH_WORD}){_ATOM_END}|{_ATOM_START}({_SAFE_MONTH_WORD}){_ATOM_END}")
 _YEAR_RE = re.compile(r"\b(?:in|for|during|of|year)\s+(20\d\d)\b|\b(20\d\d)\s+(?:report|review|summary|figures|"
                       r"numbers|stats|metrics|posture|performance)\b")
+# Case age ("older than 3 days", "open for over 14 days", "opened more than a month
+# ago"): an upper bound on when the cases were opened, never "opened in the last N
+# days" (the opposite set). Each pattern's groups are (number, unit).
+_AGE_UNIT = r"(minutes?|mins?|hours?|hrs?|days?|weeks?|wks?|months?|mos?|years?|yrs?)"
+_AGE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"\bolder than\s+(\d{{1,4}})\s*[- ]?{_AGE_UNIT}\b"),
+    re.compile(rf"\b(?:more|longer|greater) than\s+(\d{{1,4}})\s*[- ]?{_AGE_UNIT}\s+(?:old|ago)\b"),
+    re.compile(rf"\b(?:over|at least|beyond)\s+(\d{{1,4}})\s*[- ]?{_AGE_UNIT}\s+(?:old|ago)\b"),
+    re.compile(rf"\b(\d{{1,4}})\s*[- ]?{_AGE_UNIT}\s+(?:old|or (?:more|older|longer))\b"),
+    re.compile(rf"\b(?:open|opened|waiting|pending|outstanding|unresolved|unacknowledged|aging|aged|stuck|sitting|"
+               rf"untouched|idle)\b(?:\s+[a-z]+){{0,2}}?\s+(?:for\s+)?(?:over|more than|longer than|at least|"
+               rf"beyond|in excess of|greater than)\s+(\d{{1,4}})\s*[- ]?{_AGE_UNIT}\b"),
+)
+# A bound or a range around named periods: "since March", "before September", "from
+# 1 Sep to 15 Sep", "between August and September", "after 2024".
+_BOUND_WORD_RE = re.compile(r"\b(since|from|after|before|until|till|up to|prior to|earlier than)\s+"
+                            r"(?:the\s+(?:start|beginning|end)\s+of\s+)?")
+_RANGE_LEAD_RE = re.compile(r"\b(between|from)\s+")
+_RANGE_JOIN_RE = re.compile(r"\s+(?:and|to|until|till|through|thru)\s+|\s*(?:–|—)\s*|\s+-\s+")
+_BARE_RANGE_JOIN_RE = re.compile(r"\s+(?:to|until|till|through|thru)\s+|\s*(?:–|—)\s*")
+_ONWARDS_RE = re.compile(r"^\s*(?:on|onwards?|onward|forward|to (?:now|date|today)|until (?:now|today)|"
+                         r"till (?:now|today))\b")
+# A time phrase the planner could not turn into a window ("before the incident week",
+# "since Tuesday"): named in the answer instead of silently dropped (routing.md §5.16).
+_DATE_CUE_RE = re.compile(
+    r"\b(?:before|after|until|till|between|since|prior to|earlier than|later than|older than|newer than|as of)"
+    r"\s+((?:the\s+)?[a-z0-9][a-z0-9 ,/.'-]{0,40}?)(?=\s*[?.!,;]|\s*$|\s+(?:and|or|by|per|with|that|which|"
+    r"please)\b)")
+_DATE_WORD_RE = re.compile(
+    r"\d|\b(?:minutes?|hours?|days?|weeks?|months?|quarters?|years?|today|yesterday|tonight|morning|"
+    r"(?:mon|tues|wednes|thurs|fri|satur|sun)days?|weekend|" + _MONTH_WORD[3:-1] + r")\b")
 _CADENCE: tuple[tuple[str, str], ...] = (
     (r"\bdaily (?:report|summary|brief|digest|review)\b", "now-24h"),
     (r"\bweekly (?:report|summary|brief|digest|review)\b", "now-7d"),
@@ -1149,16 +1200,20 @@ _CADENCE: tuple[tuple[str, str], ...] = (
 @dataclass(frozen=True)
 class Win:
     """One window the question names: ``spec`` is what the tools are sent (``None``
-    only while a month or quarter named without its year waits for the anchor),
-    ``phrase`` the planner's own words for it, ``hours`` its span in whole hours when
-    one is meaningful (a trailing window; an approximation for calendar periods)."""
+    only while a period named without its year waits for the anchor), ``phrase`` the
+    planner's own words for it, ``hours`` its span in whole hours when one is
+    meaningful (a trailing window; an approximation for calendar periods)."""
 
     spec: Any
     phrase: str
     hours: int | None = None
     all_time: bool = False
     unit: str | None = None          # the calendar unit of a calendar period
-    pending: tuple[str, int] | None = None   # ("month"|"since"|"quarter", n): needs the year
+    # A period named without its year, as (kind, payload): ("month", 9), ("since", 3),
+    # ("quarter", 3), ("range", (atom, atom)) or ("bound", (word, atom)); the anchor
+    # lookup dates it (:func:`_anchored`).
+    pending: tuple[str, Any] | None = None
+    older: bool = False              # a case-age bound ("older than 3 days"): oldest first
 
     @property
     def bounded(self) -> bool:
@@ -1166,23 +1221,27 @@ class Win:
 
 
 def _relative(n: int, unit: str) -> Win:
-    """``now-<n><unit>`` with its phrase ("the last 90 days", "the last hour")."""
+    """``now-<n><unit>`` with its phrase ("the last 90 days", "the last 30 minutes")."""
     n = max(1, n)
     one, many = _UNIT_WORDS[unit]
     phrase = f"the last {one}" if n == 1 else f"the last {n} {many}"
-    return Win(spec=f"now-{n}{unit}", phrase=phrase, hours=n * _UNIT_HOURS[unit])
+    # Minutes keep their own spec ("now-30m"); a tool that takes whole hours (the shift
+    # snapshot) rounds up to the next hour.
+    hours = -(-n // 60) if unit == "m" else n * _UNIT_HOURS[unit]
+    return Win(spec=f"now-{n}{unit}", phrase=phrase, hours=hours)
+
+
+def _unit_letter(word: str) -> str:
+    """The window letter of a unit word: "mo"/"months" are M, "min"/"minutes" are m."""
+    if word.startswith(("mo", "month")):
+        return "M"
+    if word.startswith("mi"):
+        return "m"
+    return _UNIT_LETTER.get(word[0], "d")
 
 
 def _relative_from(number: str, word: str) -> Win:
-    n = int(number)
-    letter = word[0]
-    if word.startswith(("mo", "month")):
-        letter = "M"
-    elif letter == "m":
-        # Minutes: the case, metric and cost lookups count whole hours, so a span in
-        # minutes is the last hour (it never reads as months).
-        return _relative(1, "h")
-    return _relative(n, _UNIT_LETTER.get(letter, "d"))
+    return _relative(int(number), _unit_letter(word))
 
 
 def _month_win(year: int, month: int) -> Win:
@@ -1193,8 +1252,13 @@ def _quarter_win(year: int, quarter: int) -> Win:
     return Win(spec=f"{year:04d}-Q{quarter}", phrase=f"Q{quarter} {year}", hours=2160, unit="quarter")
 
 
-def _since_win(year: int, month: int) -> Win:
-    return Win(spec={"from": f"{year:04d}-{month:02d}-01"}, phrase=f"since {_MONTH_SHORT[month - 1]} {year}")
+def _since_win(year: int, month: int, anchor: tuple[int, int] | None = None) -> Win:
+    hours = None
+    if anchor is not None:
+        months = (anchor[0] - year) * 12 + anchor[1] - month + 1
+        hours = max(1, months) * 720
+    return Win(spec={"from": f"{year:04d}-{month:02d}-01"}, phrase=f"since {_MONTH_SHORT[month - 1]} {year}",
+               hours=hours)
 
 
 def _day_phrase(iso: str) -> str:
@@ -1205,16 +1269,333 @@ def _day_phrase(iso: str) -> str:
         return iso
 
 
+def _age_window(low: str) -> Win | None:
+    """A case-age bound ("older than 3 days", "open for over 14 days"): the cases
+    opened before ``now-N``, as ``{"to": "now-N<unit>"}`` (an open start)."""
+    for pattern in _AGE_PATTERNS:
+        match = pattern.search(low)
+        if match:
+            n, word = max(1, int(match.group(1))), match.group(2)
+            letter = _unit_letter(word)
+            one, many = _UNIT_WORDS[letter]
+            span = f"{n} {one if n == 1 else many}"
+            return Win(spec={"from": "all", "to": f"now-{n}{letter}"}, phrase=f"opened more than {span} ago",
+                       older=True)
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Period atoms: one named period inside a bound or a range ("1 Sep", "September
+# 2026", "Q3", "2024", "2026-09-14", "last month"), as (unit, year | None, a, b):
+# ("day", y, month, day), ("month", y, month, 0), ("quarter", y, quarter, 0),
+# ("year", y, 0, 0) or ("token", None, calendar token, 0).
+# --------------------------------------------------------------------------- #
+_Atom = tuple[str, Any, Any, int]
+_ORDINAL = r"(?:st|nd|rd|th)?"
+_ATOM_FORMS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(\d{4})-(\d{2})-(\d{2})"), "iso_day"),
+    (re.compile(r"(\d{4})-(0[1-9]|1[0-2])"), "iso_month"),
+    (re.compile(rf"(\d{{1,2}}){_ORDINAL}\s+(?:of\s+)?({_MONTH_WORD})\.?(?:,?\s+(20\d\d))?"), "day_month"),
+    (re.compile(rf"({_MONTH_WORD})\.?\s+(\d{{1,2}}){_ORDINAL}(?:,?\s+(20\d\d))?"), "month_day"),
+    (re.compile(rf"({_MONTH_WORD})\.?(?:\s+(?:of\s+)?(20\d\d))?"), "month"),
+    (re.compile(r"q([1-4])(?:\s*[- ]?\s*(20\d\d))?"), "quarter"),
+    (re.compile(r"(20\d\d)\s*[- ]?\s*q([1-4])"), "year_quarter"),
+    (re.compile(r"(20\d\d)"), "year"),
+    (re.compile(r"(?:the\s+)?(today|yesterday|(?:this|last|previous) (?:week|month|quarter|year))"), "token"),
+)
+
+
+def _valid_day(year: int | None, month: int, day: int) -> bool:
+    if not 1 <= month <= 12:
+        return False
+    return 1 <= day <= calendar.monthrange(year or 2024, month)[1]
+
+
+def _atom(text: str) -> _Atom | None:
+    """``text`` (the whole of it) as one period atom, else None."""
+    text = re.sub(r"^(?:the\s+)", "", text.strip(" ,.?!;:'\""))
+    for pattern, form in _ATOM_FORMS:
+        match = pattern.fullmatch(text)
+        if not match:
+            continue
+        g = match.groups()
+        if form == "iso_day":
+            y, m, d = int(g[0]), int(g[1]), int(g[2])
+            return ("day", y, m, d) if _valid_day(y, m, d) else None
+        if form == "iso_month":
+            return "month", int(g[0]), int(g[1]), 0
+        if form in ("day_month", "month_day"):
+            day, word = (g[0], g[1]) if form == "day_month" else (g[1], g[0])
+            year = int(g[2]) if g[2] else None
+            month = _MONTH_NUMBERS[word]
+            return ("day", year, month, int(day)) if _valid_day(year, month, int(day)) else None
+        if form == "month":
+            return "month", int(g[1]) if g[1] else None, _MONTH_NUMBERS[g[0]], 0
+        if form == "quarter":
+            return "quarter", int(g[1]) if g[1] else None, int(g[0]), 0
+        if form == "year_quarter":
+            return "quarter", int(g[0]), int(g[1]), 0
+        if form == "year":
+            return "year", int(g[0]), 0, 0
+        token = g[0].replace("previous", "last").replace(" ", "_")
+        return "token", None, token, 0
+    return None
+
+
+def _atom_prefix(text: str, max_words: int = 4) -> _Atom | None:
+    """The longest leading run of up to ``max_words`` words of ``text`` that is one atom."""
+    words = text.strip().split()
+    for size in range(min(max_words, len(words)), 0, -1):
+        found = _atom(" ".join(words[:size]))
+        if found is not None:
+            return found
+    return None
+
+
+def _atom_suffix(text: str, max_words: int = 4) -> _Atom | None:
+    """The longest trailing run of up to ``max_words`` words of ``text`` that is one atom."""
+    words = text.strip().split()
+    for size in range(min(max_words, len(words)), 0, -1):
+        found = _atom(" ".join(words[-size:]))
+        if found is not None:
+            return found
+    return None
+
+
+def _atom_month(atom: _Atom) -> int:
+    """The first calendar month an atom covers (for year inference and ordering)."""
+    unit, _year, a, _b = atom
+    if unit in ("day", "month"):
+        return int(a)
+    if unit == "quarter":
+        return (int(a) - 1) * 3 + 1
+    return 1
+
+
+def _atom_needs_year(atom: _Atom) -> bool:
+    return atom[0] in ("day", "month", "quarter") and atom[1] is None
+
+
+def _with_year(atom: _Atom, year: int) -> _Atom:
+    return atom[0], year, atom[2], atom[3]
+
+
+def _latest_year(atom: _Atom, anchor: tuple[int, int]) -> int:
+    """The year of the most recent such period that has started by the anchor month."""
+    return anchor[0] if _atom_month(atom) <= anchor[1] else anchor[0] - 1
+
+
+def _atom_literal(atom: _Atom) -> str:
+    """A dated atom as the bound the tools take: a day, a month, a quarter or a year
+    literal, or a calendar token (a ``from`` bound takes its start, a ``to`` its end)."""
+    unit, year, a, b = atom
+    if unit == "day":
+        return f"{year:04d}-{a:02d}-{b:02d}"
+    if unit == "month":
+        return f"{year:04d}-{a:02d}"
+    if unit == "quarter":
+        return f"{year:04d}-Q{a}"
+    if unit == "year":
+        return f"{year:04d}"
+    return str(a)
+
+
+def _atom_phrase(atom: _Atom) -> str:
+    unit, year, a, b = atom
+    suffix = f" {year}" if year else ""
+    if unit == "day":
+        return f"{b} {_MONTH_SHORT[a - 1]}{suffix}"
+    if unit == "month":
+        return f"{_MONTH_LONG[a - 1]}{suffix}"
+    if unit == "quarter":
+        return f"Q{a}{suffix}"
+    if unit == "year":
+        return str(year)
+    return str(a).replace("_", " ")
+
+
+def _atom_step(atom: _Atom, step: int) -> _Atom:
+    """The period ``step`` (±1) after a dated atom: the day, month, quarter or year
+    before or after it."""
+    unit, year, a, b = atom
+    if unit == "day":
+        moved = date(year, a, b) + timedelta(days=step)
+        return "day", moved.year, moved.month, moved.day
+    if unit == "month":
+        index = year * 12 + (a - 1) + step
+        return "month", index // 12, index % 12 + 1, 0
+    if unit == "quarter":
+        index = year * 4 + (a - 1) + step
+        return "quarter", index // 4, index % 4 + 1, 0
+    return "year", year + step, 0, 0
+
+
+def _atom_span(start: _Atom, end: _Atom) -> int | None:
+    """Hours from the start of ``start`` to the end of ``end`` (both dated literals)."""
+    def first(atom: _Atom) -> date:
+        unit, year, a, b = atom
+        return date(year, a, b) if unit == "day" else date(year, _atom_month(atom), 1)
+
+    def last(atom: _Atom) -> date:
+        unit, year, a, b = atom
+        if unit == "day":
+            return date(year, a, b)
+        month = {"month": a, "quarter": a * 3, "year": 12}[unit]
+        return date(year, month, calendar.monthrange(year, month)[1])
+
+    if start[0] == "token" or end[0] == "token":
+        return None
+    days = (last(end) - first(start)).days + 1
+    return days * 24 if days > 0 else None
+
+
+def _range_win(lead: str, a: _Atom, b: _Atom, anchor: tuple[int, int] | None) -> Win | None:
+    """"from A to B" / "between A and B" as one range ``{"from", "to"}`` (dated from
+    ``anchor`` when neither end names its year)."""
+    if a[0] == "token" or b[0] == "token":
+        return None
+    if _atom_needs_year(a) and _atom_needs_year(b):
+        if anchor is None:
+            return Win(spec=None, phrase=f"{_atom_phrase(a)} to {_atom_phrase(b)}", pending=("range", (a, b)))
+        a = _with_year(a, _latest_year(a, anchor))
+    if _atom_needs_year(a):
+        a = _with_year(a, b[1] if _atom_month(a) <= _atom_month(b) else b[1] - 1)
+    if _atom_needs_year(b):
+        b = _with_year(b, a[1] if _atom_month(b) >= _atom_month(a) else a[1] + 1)
+    if (a[1], _atom_month(a), a[3]) > (b[1], _atom_month(b), b[3]):
+        a, b = b, a
+    return Win(spec={"from": _atom_literal(a), "to": _atom_literal(b)},
+               phrase=f"{_atom_phrase(a)} to {_atom_phrase(b)}", hours=_atom_span(a, b))
+
+
+def _bound_win(word: str, atom: _Atom, anchor: tuple[int, int] | None, onwards: bool = False) -> Win | None:
+    """One bound around a named period: "since March" (from its start), "after 2024"
+    (from the next period), "before September" (to the end of the period before),
+    "until Q3" (to its end), "from 2024" (that period, unless "onwards" follows)."""
+    if _atom_needs_year(atom):
+        if anchor is None:
+            return Win(spec=None, phrase=f"{word} {_atom_phrase(atom)}", pending=("bound", (word, atom, onwards)))
+        atom = _with_year(atom, _latest_year(atom, anchor))
+    # The tools read a ``from`` that names a period on its own as that whole period, so
+    # an open end is spelled out ("to": "now"), and an open start is "from": "all".
+    if atom[0] == "token":
+        token = str(atom[2])
+        if word in ("since",) or word == "from" and onwards:
+            return Win(spec={"from": token, "to": "now"}, phrase=f"since {_atom_phrase(atom)}")
+        if word == "from":
+            return _token_win(token)
+        if word in ("until", "till", "up to"):
+            return Win(spec={"from": "all", "to": token}, phrase=f"until the end of {_atom_phrase(atom)}")
+        return None
+    if word == "from" and not onwards:
+        if atom[0] == "day":
+            word = "since"
+        else:
+            return _atom_window(atom)
+    if word in ("since", "from") and atom[0] == "month":
+        return _since_win(atom[1], atom[2], anchor)
+    if word in ("since", "from"):
+        hours = None
+        if anchor is not None:
+            hours = _atom_span(atom, ("month", anchor[0], anchor[1], 0))
+        spec: dict[str, Any] = {"from": _atom_literal(atom)}
+        if atom[0] != "day":
+            spec["to"] = "now"   # an ISO date alone already means "since then"
+        return Win(spec=spec, phrase=f"since {_atom_phrase(atom)}", hours=hours)
+    if word == "after":
+        nxt = _atom_step(atom, 1)
+        spec = {"from": _atom_literal(nxt)}
+        if nxt[0] != "day":
+            spec["to"] = "now"
+        return Win(spec=spec, phrase=f"after {_atom_phrase(atom)}")
+    if word in ("until", "till", "up to"):
+        return Win(spec={"from": "all", "to": _atom_literal(atom)}, phrase=f"until the end of {_atom_phrase(atom)}")
+    prev = _atom_step(atom, -1)
+    return Win(spec={"from": "all", "to": _atom_literal(prev)}, phrase=f"before {_atom_phrase(atom)}")
+
+
+def _atom_window(atom: _Atom) -> Win:
+    """A dated atom as its own window ("September 2026", "Q3 2026", "2024", a day)."""
+    unit, year, a, b = atom
+    if unit == "month":
+        return _month_win(year, a)
+    if unit == "quarter":
+        return _quarter_win(year, a)
+    if unit == "year":
+        return Win(spec=str(year), phrase=str(year), hours=8760, unit="year")
+    literal = _atom_literal(atom)
+    return Win(spec=literal, phrase=_day_phrase(literal), hours=24, unit="day")
+
+
+def _named_range(low: str, anchor: tuple[int, int] | None = None) -> Win | None:
+    """A range the question names: "between August and September", "from 1 Sep to
+    15 Sep", "1 Sep to 15 Sep", "from Q2 to Q3 2026"."""
+    for lead in _RANGE_LEAD_RE.finditer(low):
+        rest = low[lead.end():]
+        for join in _RANGE_JOIN_RE.finditer(rest):
+            a = _atom(rest[:join.start()])
+            if a is None:
+                continue
+            b = _atom_prefix(rest[join.end():])
+            if b is not None:
+                win = _range_win(lead.group(1), a, b, anchor)
+                if win is not None:
+                    return win
+    if re.search(r"\bcompar\w*\b|\bvs\.?\b|\bversus\b", low):
+        return None  # "compare August to September" is a comparison, not a range
+    for join in _BARE_RANGE_JOIN_RE.finditer(low):
+        a, b = _atom_suffix(low[:join.start()], 3), _atom_prefix(low[join.end():], 3)
+        if a is not None and b is not None and a[0] in ("day", "month", "quarter") and b[0] == a[0]:
+            win = _range_win("from", a, b, anchor)
+            if win is not None:
+                return win
+    return None
+
+
+def _named_bound(low: str, anchor: tuple[int, int] | None = None) -> Win | None:
+    """A bound the question names ("since March", "before September", "after 2024")."""
+    for bound in _BOUND_WORD_RE.finditer(low):
+        rest = low[bound.end():]
+        words = rest.split()
+        for size in range(min(4, len(words)), 0, -1):
+            atom = _atom(" ".join(words[:size]))
+            if atom is None:
+                continue
+            tail = " ".join(words[size:])
+            onwards = bool(_ONWARDS_RE.match(tail))
+            word = bound.group(1)
+            if "start of" in low[bound.start():bound.end()] or "beginning of" in low[bound.start():bound.end()]:
+                word, onwards = "since", True
+            elif "end of" in low[bound.start():bound.end()] and word in ("before", "until", "till", "up to"):
+                word = "until"
+            win = _bound_win({"prior to": "before", "earlier than": "before"}.get(word, word), atom, anchor,
+                             onwards=onwards)
+            if win is not None:
+                return win
+            break
+    return None
+
+
 def _window_from(lowered: str) -> Win | None:
-    """The window the question names, or None (each lookup's own default applies)."""
+    """The window the question names, or None (each lookup's own default applies).
+
+    Explicit periods come first (a case-age bound, ISO ranges, named ranges and
+    bounds, quarters, months, calendar phrases, rolling spans, all time, years); a
+    report CADENCE word ("monthly report") only sets the window when nothing else
+    does, so "monthly report for this month" covers this month."""
     low = lowered
+    win = _age_window(low)
+    if win is not None:
+        return win
     match = _ISO_RANGE_RE.search(low)
     if match:
         a, b = match.group(1), match.group(2)
-        return Win(spec={"from": a, "to": b}, phrase=f"{_day_phrase(a)} to {_day_phrase(b)}")
-    match = _ISO_SINCE_RE.search(low)
-    if match:
-        return Win(spec={"from": match.group(1)}, phrase=f"since {_day_phrase(match.group(1))}")
+        return Win(spec={"from": a, "to": b}, phrase=f"{_day_phrase(a)} to {_day_phrase(b)}",
+                   hours=_atom_span(_atom(a) or ("token", None, "", 0), _atom(b) or ("token", None, "", 0)))
+    for finder in (_named_range, _named_bound):
+        win = finder(low)
+        if win is not None:
+            return win
     match = _ISO_DAY_RE.search(low)
     if match:
         return Win(spec=match.group(1), phrase=_day_phrase(match.group(1)), hours=24, unit="day")
@@ -1223,13 +1604,6 @@ def _window_from(lowered: str) -> Win | None:
         quarter = int(match.group(1) or match.group(4))
         year = int(match.group(2) or match.group(3))
         return _quarter_win(year, quarter)
-    match = _SINCE_MONTH_RE.search(low)
-    if match:
-        # After "since", "from" or "after", even "May" and "March" are months.
-        month = _MONTH_NUMBERS[match.group(1)]
-        if match.group(2):
-            return _since_win(int(match.group(2)), month)
-        return Win(spec=None, phrase=f"since {_MONTH_LONG[month - 1]}", pending=("since", month))
     match = _MONTH_YEAR_RE.search(low)
     if match:
         word = re.match(_MONTH_WORD, match.group(0)).group(0)  # type: ignore[union-attr]
@@ -1237,9 +1611,6 @@ def _window_from(lowered: str) -> Win | None:
     match = _ISO_MONTH_RE.search(low)
     if match:
         return _month_win(int(match.group(1)), int(match.group(2)))
-    for pattern, token in _CADENCE:
-        if re.search(pattern, low) and not _NAMED_MONTH_RE.search(low):
-            return _token_win(token)
     # "In the last week" and "over the past month" are rolling spans; "last week" and
     # "last month" (no article) are the calendar periods.
     match = re.search(r"\bthe (?:last|past) (week|month|year)\b", low)
@@ -1283,6 +1654,19 @@ def _window_from(lowered: str) -> Win | None:
     match = _BARE_SPAN_RE.search(low)
     if match:
         return _relative_from(match.group(1), match.group(2))
+    for pattern, token in _CADENCE:
+        if re.search(pattern, low):
+            return _token_win(token)
+    return None
+
+
+def _unread_window(lowered: str) -> str | None:
+    """A time phrase the question names that :func:`_window_from` could not read
+    ("before the outage last Tuesday"): said in the answer, never dropped silently."""
+    for match in _DATE_CUE_RE.finditer(lowered):
+        phrase = match.group(0).strip(" ,.;")
+        if _DATE_WORD_RE.search(match.group(1)):
+            return phrase
     return None
 
 
@@ -1290,27 +1674,33 @@ def _token_win(token: str) -> Win:
     if token in _CALENDAR:
         phrase, hours, unit = _CALENDAR[token]
         return Win(spec=token, phrase=phrase, hours=hours, unit=unit)
-    match = re.fullmatch(r"now-(\d+)([hdwMy])", token)
+    match = re.fullmatch(r"now-(\d+)([mhdwMy])", token)
     if match:
         return _relative(int(match.group(1)), match.group(2))
     return Win(spec=token, phrase=token)
 
 
 def _anchored(win: Win | None, anchor: tuple[int, int] | None) -> Win | None:
-    """A named month or quarter given its year from ``anchor`` (the current year and
+    """A period named without its year, dated from ``anchor`` (the current year and
     month, read from the anchor lookup's latest calendar bucket): the most recent one
-    that is not in the future."""
+    that has started (a range starts at its first period; a bound uses its period)."""
     if win is None or win.pending is None:
         return win
     if anchor is None:
         return None
     year, month = anchor
-    kind, number = win.pending
+    kind, payload = win.pending
     if kind == "quarter":
         current = (month - 1) // 3 + 1
-        return _quarter_win(year if number <= current else year - 1, number)
-    target = year if number <= month else year - 1
-    return _since_win(target, number) if kind == "since" else _month_win(target, number)
+        return _quarter_win(year if payload <= current else year - 1, payload)
+    if kind == "range":
+        a, b = payload
+        return _range_win("from", a, b, anchor)
+    if kind == "bound":
+        word, atom, onwards = payload
+        return _bound_win(word, atom, anchor, onwards=onwards)
+    target = year if payload <= month else year - 1
+    return _since_win(target, payload, anchor) if kind == "since" else _month_win(target, payload)
 
 
 def _hours_from(lowered: str) -> int | None:
@@ -1329,14 +1719,25 @@ def _time_from(hours: int) -> str:
 _COMPARE_YOY_RE = re.compile(
     r"\bsame (?:period|time|week|month|quarter|day|days) (?:last|a|the previous|previous|prior) year\b|"
     r"\b(?:year[- ]over[- ]year|yoy|vs\.? (?:the )?same (?:period|time) last year)\b")
+# "The month before", "the week prior", "the one before": the period just before.
+_BEFORE_PERIOD = r"the\s+(?:month|week|quarter|year|day|one|period)\s+(?:before|prior)\b"
 _COMPARE_PREVIOUS_RE = re.compile(
     r"\b(?:vs\.?|versus|compared? (?:to|with)|against|than|relative to)\s+(?:the\s+)?(?:last|previous|prior|"
     r"preceding|earlier|month before|week before|quarter before)\b|"
+    rf"\b(?:vs\.?|versus|compared? (?:to|with)|against|than|relative to|with|to|and)\s+{_BEFORE_PERIOD}|"
     r"\b(?:month|week|quarter|year|day)[- ]over[- ](?:month|week|quarter|year|day)\b|\b(?:mom|wow|qoq)\b|"
     r"\bcompared? (?:this|the current|our)\b|\bchanged? (?:since|from) (?:last|the previous)\b|"
-    r"\bbetter or worse\b|\bimprov(?:ed|ing) (?:since|from|over)\b")
+    r"\bbetter or worse\b|\bimprov(?:ed|ing) (?:since|from|over)\b|"
+    # "Is MTTR improving?", "Are we getting worse?": the current period against the one before.
+    r"\b(?:improv(?:ing|ed)|getting (?:better|worse)|got (?:better|worse)|worsen(?:ing|ed)|"
+    r"declin(?:ing|ed)|regress(?:ing|ed)|deteriorat(?:ing|ed))\b|"
+    r"\bcompar\w*\b.*\b(?:with|to|against)\s+(?:the\s+)?(?:last|previous|prior|preceding)\b")
 _COMPARE_STRIP_RE = re.compile(
-    r"\b(?:vs\.?|versus|compared? (?:to|with)|against|than|relative to)\b.*$")
+    r"\b(?:vs\.?|versus|compared? (?:to|with)|against|than|relative to)\b.*$|"
+    r"\b(?:with|to)\s+(?:the\s+)?(?:last|previous|prior|preceding|same)\b.*$|"
+    rf"\b(?:with|to|and)\s+{_BEFORE_PERIOD}.*$|"
+    # "Changed since last week": the named period is the BASELINE, not the subject.
+    r"\b(?:since|from)\s+(?:the\s+)?(?:last|previous|prior)\b.*$")
 
 
 def _compare_from(lowered: str) -> Any:
@@ -1355,9 +1756,14 @@ def _compare_window(lowered: str) -> Win | None:
     win = _window_from(head) if head else None
     if win is None:
         win = _window_from(lowered)
-    if win is not None and win.spec in ("last_week", "last_month", "last_quarter", "last_year") and re.search(
-            r"\b(?:this|current)\b", lowered):
-        win = _token_win(win.spec.replace("last_", "this_"))
+        # "Better or worse than last month?" and "changed since last week?" compare
+        # THIS period with the named one: the named period is the baseline.
+        spec = win.spec if win is not None else None
+        token = spec if isinstance(spec, str) else (
+            spec.get("from") if isinstance(spec, dict) and set(spec) <= {"from", "to"}
+            and spec.get("to") in (None, "now") else None)
+        if isinstance(token, str) and token.startswith("last_") and token.replace("last_", "this_") in _CALENDAR:
+            win = _token_win(token.replace("last_", "this_"))
     if win is None:
         unit = next((u for u, words in (("this_month", "month"), ("this_week", "week"),
                                          ("this_quarter", "quarter"), ("this_year", "year"))
@@ -1407,7 +1813,11 @@ def _natural_bucket(win: Win | None) -> str:
         return "week"
     if unit in ("quarter", "year"):
         return "month" if unit == "year" else "week"
-    hours = win.hours or 24
+    hours = win.hours
+    if hours is None:
+        # An open or unknown span ("since 2024", "until 31 Aug"): the tool picks the
+        # finest calendar unit that keeps the chart readable.
+        return "auto"
     if hours <= 48:
         return "hour"
     if hours <= 24 * 45:
@@ -1419,10 +1829,12 @@ def _natural_bucket(win: Win | None) -> str:
 
 #: Case groupings (``case_stats group_by``) by the words that ask for them.
 _CASE_GROUP_WORDS: tuple[tuple[str, str], ...] = (
-    (r"\bwho (?:closed|resolved)\b|\bclosed (?:the )?most\b|\b(?:by|per) (?:closer|who closed)\b|"
-     r"\bclosed by (?:analyst|whom|who)\b|\bwhich analysts? (?:closed|resolved)\b", "closed_by"),
+    # A named person is the ASSIGNEE: the case store records who a case is assigned
+    # to, not which analyst pressed close ("closed_by" is the decider type).
     (r"\b(?:by|per|across|for each) (?:assignee|analyst|owner|person)s?\b|\bwho (?:is|are) (?:assigned|working)\b|"
      r"\bassigned to (?:whom|who)\b|\bwhich analysts?\b|\bper analyst\b|\banalyst workload\b", "assignee"),
+    (r"\bwho (?:closed|resolved)\b|\bclosed (?:the )?most\b|\b(?:by|per) (?:closer|who closed)\b|"
+     r"\bclosed by (?:analyst|whom|who)\b", "closed_by"),
     (r"\b(?:by|per|across|for each) severit(?:y|ies)\b|\bseverity (?:breakdown|split|mix)\b", "severity"),
     (r"\b(?:by|per|across|for each) (?:status|state)(?:es)?\b|\bstatus (?:breakdown|split|mix)\b", "status"),
     (r"\b(?:by|per|across|for each) verdicts?\b|\bverdict (?:breakdown|split)\b", "verdict"),
@@ -1535,7 +1947,7 @@ def _help_topic(question: str) -> str:
 #: Words that ask for a report (or one of its forms) in this question.
 _REPORT_NOUN_RE = re.compile(
     r"\b(reports?|brief|briefing|infographics?|one[- ]pager|executive (?:summary|overview|brief)|"
-    r"exec summary)\b")
+    r"exec summary|(?:daily|weekly|monthly|quarterly|annual|yearly) (?:summary|digest|review|recap|rundown))\b")
 #: A request to MAKE one ("create a report", "give me whatever reports you can"):
 #: the header then asks the server to save it to Reports (SPEC D11).
 _SAVE_REPORT_RE = re.compile(
@@ -1562,7 +1974,8 @@ def _report_request(lowered: str, question: str = "") -> tuple[str | None, tuple
             (_MONTH_YEAR_RE.search(lowered) or _NAMED_MONTH_RE.search(lowered) or _ISO_MONTH_RE.search(lowered))
             and re.search(r"\breports?\b", lowered))):
         template = "monthly"
-    elif template is None and re.search(r"\b(performance|lifetime)\b", lowered):
+    elif template is None and re.search(r"\b(performance|lifetime)\b|\b(?:daily|weekly|quarterly|annual|yearly) "
+                                         r"(?:summary|digest|review|recap|rundown)\b", lowered):
         template = "executive"
     if template is None and re.search(r"\b(handoff|hand-off|handover|brief|briefing)\b", lowered):
         template = "shift"
@@ -1596,15 +2009,70 @@ def _log_term_split(term: str) -> tuple[str, str]:
     """``term`` cut where the request goes on past the searched value (a comma, "and",
     "then"): ``(value, rest)``. A quoted value is never cut inside its quotes."""
     quoted = _LOG_TERM_QUOTED_RE.search(term)
-    cut = _LOG_TERM_CLAUSE_RE.search(term, quoted.end() if quoted else 0)
-    if cut is None:
-        return term, ""
-    return term[:cut.start()], term[cut.end():]
+    for cut in _LOG_TERM_CLAUSE_RE.finditer(term, quoted.end() if quoted else 0):
+        between = term.lower().rfind("between", 0, cut.start())
+        if between >= 0 and cut.group(0).strip().lower() == "and" and _is_window_phrase(term[between:]):
+            continue  # "between 1 Sep and 15 Sep" is one window, not two clauses
+        return term[:cut.start()], term[cut.end():]
+    return term, ""
+
+
+#: Words a window phrase is made of (besides month names, quarters, years, ISO dates
+#: and numbers that count a unit or a day of a month).
+_WINDOW_VOCAB = frozenset({
+    "in", "over", "for", "during", "within", "across", "on", "of", "the", "last", "past", "previous", "prior",
+    "trailing", "recent", "this", "current", "since", "from", "after", "before", "until", "till", "up", "to",
+    "between", "and", "through", "thru", "all", "time", "all-time", "alltime", "lifetime", "ever", "entire",
+    "whole", "history", "so", "far", "date", "ytd", "mtd", "qtd", "year", "years", "quarter", "quarters", "month",
+    "months", "week", "weeks", "day", "days", "hour", "hours", "minute", "minutes", "mins", "min", "hrs", "hr",
+    "today", "yesterday", "overnight", "morning", "start", "beginning", "end", "onwards", "onward", "now",
+    "to-date", "a", "an", "one", "few", "older", "than", "more", "ago", "old", "at", "least",
+})
+_UNIT_TOKEN_RE = re.compile(r"^(?:minutes?|mins?|hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?|years?|yrs?|y)$")
+_MONTH_TOKEN_RE = re.compile(rf"^{_MONTH_WORD}\.?$")
+
+
+def _window_token_ok(words: Sequence[str], index: int) -> bool:
+    """``words[index]`` can belong to a window phrase (in its neighbours' context)."""
+    word = words[index].strip(",.?!;:'\"")
+    nxt = words[index + 1].strip(",.?!;:") if index + 1 < len(words) else ""
+    prev = words[index - 1].strip(",.?!;:") if index else ""
+    if word in _WINDOW_VOCAB or _MONTH_TOKEN_RE.match(word) or re.fullmatch(r"q[1-4]|20\d\d", word):
+        return True
+    if re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", word):
+        return True
+    if re.fullmatch(r"\d{1,2}(?:st|nd|rd|th)?", word) and (_MONTH_TOKEN_RE.match(nxt) or nxt == "of"
+                                                           or _MONTH_TOKEN_RE.match(prev)):
+        return True
+    return bool(re.fullmatch(r"\d{1,4}", word) and _UNIT_TOKEN_RE.match(nxt))
+
+
+def _is_window_phrase(text: str) -> bool:
+    """``text`` is a window phrase and nothing else ("in October", "over all time",
+    "since March", "this quarter", "between 1 Sep and 15 Sep")."""
+    words = text.lower().split()
+    if not words or not all(_window_token_ok(words, i) for i in range(len(words))):
+        return False
+    if len(words) == 1 and re.fullmatch(r"(?:jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\.?", words[0]):
+        return False  # a lone "SEP" or "dec" is a value to search for, not a month
+    return _window_from(" ".join(words)) is not None
+
+
+def _strip_window_tail(text: str) -> str:
+    """``text`` without the window phrase it ends with ("mimikatz in September" is
+    "mimikatz"), the longest such phrase first; a value is never stripped to nothing."""
+    words = text.split()
+    for start in range(1, len(words)):
+        if _is_window_phrase(" ".join(words[start:])):
+            return " " + " ".join(words[:start])
+    return text
 
 
 def _log_term_strip(text: str) -> tuple[str, str | None]:
     """``text`` without its trailing window, "by <field>" grouping and "please", in
-    either order: ``(value, group field)``."""
+    either order: ``(value, group field)``. The window is any the planner reads (a
+    rolling span, a named month or quarter, a year, "since X", "all time"), so its
+    words never end up in the searched value."""
     # A leading space lets a bare "by user" or "in the last day" (a clause of its own)
     # match the same trailing patterns.
     text = " " + _LOG_TERM_PLEASE_RE.sub("", re.sub(r"[?!.]+$", "", text.strip())).strip()
@@ -1615,7 +2083,7 @@ def _log_term_strip(text: str) -> tuple[str, str | None]:
         if grouped and fld is not None:
             group = group or fld
             text = text[:grouped.start()]
-        text = _LOG_TERM_WINDOW_RE.sub("", text)
+        text = _strip_window_tail(_LOG_TERM_WINDOW_RE.sub("", text))
     return text.strip(), group
 
 
@@ -1672,13 +2140,16 @@ def _log_search(question: str, *, case_scoped: bool = False) -> tuple[str, _LogF
         match = _LOG_SEARCH_RE.match(question) or _LOG_SEARCH_FOR_RE.match(question)
     if match is None:
         return None
+    rest = (match.groupdict().get("rest") or "").strip()
+    if rest and not _is_window_phrase(rest):
+        return None  # "search for X in the logs <something else>": not a plain log search
     template, _headings = _report_request(question.lower())
     if template not in (None, "custom"):
         return None
     head, tail = _log_term_split(match.group("term").strip())
     head, group = _log_term_strip(head)
     log_filter: _LogFilter | None
-    if not head or _LOG_WINDOW_ONLY_RE.match(head):
+    if not head or _LOG_WINDOW_ONLY_RE.match(head) or _is_window_phrase(head):
         # "Show me the logs for today": the window's events, no value to search for.
         # In the Case Manager chat that question is about the case's own logs.
         log_filter = None if case_scoped else ()
@@ -1692,7 +2163,8 @@ def _log_search(question: str, *, case_scoped: bool = False) -> tuple[str, _LogF
             return None
         value, rest_group = _log_term_strip(rest)
         group = group or rest_group
-        if value and not _LOG_WINDOW_ONLY_RE.match(value) and not _LOG_TAIL_VERB_RE.match(value):
+        if (value and not _LOG_WINDOW_ONLY_RE.match(value) and not _is_window_phrase(value)
+                and not _LOG_TAIL_VERB_RE.match(value)):
             # A second value joins the search only when it names another field ("host
             # web-01 and user bob"); "mimikatz and powershell" is not one text search.
             more = _log_term_filter(value, case_scoped=False)
@@ -1713,12 +2185,44 @@ _ANSWER_VERB_RE = re.compile(
     r"compile|write|give|put together|export)\b")
 
 
+#: Things chat would have to WRITE: a request to create one is a change, whatever
+#: words follow ("Create a review task", "Create a dashboard with the alert trend").
+_WRITE_NOUN_RE = re.compile(
+    r"^(?:tasks?|tickets?|dashboards?|rules?|suppressions?|watchlists?|allowlists?|blocklists?|notes?|comments?|"
+    r"cases?|incidents?|assignments?|playbooks?|runbooks?|polic(?:y|ies)|exceptions?|users?|accounts?|channels?|"
+    r"roles?|webhooks?|integrations?|alerts?|views?|filters?|schedules?|jobs?|sources?|connectors?|keys?|"
+    r"secrets?|tags?|labels?|memor(?:y|ies)|proposals?|approvals?)$")
+#: List-like write objects: "a suppression list", "an allow list", "a watch list".
+_WRITE_LIST_RE = re.compile(r"\b(?:suppression|allow|block|deny|watch|exception|exclusion|ip|domain|hash)[- ]?lists?\b")
+#: Where the verb's direct object ends: "a report OF lifetime performance".
+_OBJECT_END_RE = re.compile(r"\b(?:of|for|on|about|with|from|in|over|by|to|that|which|showing|covering|"
+                            r"listing|comparing|including|across|per|during|since|between|as)\b")
+
+
 def _is_change(low: str) -> bool:
     """A request to change something (chat is read-only). Asking to create, make,
-    build or generate a report, chart, table or breakdown is not one (SPEC D9)."""
+    build or generate a report, chart, table or breakdown is not one (SPEC D9); the
+    answer word must be the head of the verb's direct object ("a PDF report of the
+    cases", "me a chart"), so "Create a review task" and "Create a dashboard with the
+    alert trend" stay changes chat cannot make."""
     if not _CHANGE_RE.match(low) or low.startswith(("show", "list", "summar")):
         return False
-    return not (_ANSWER_VERB_RE.match(low) and _ANSWER_OBJECT_RE.search(low))
+    verb = _ANSWER_VERB_RE.match(low)
+    if verb is None:
+        return True
+    rest = low[verb.end():]
+    cut = _OBJECT_END_RE.search(rest)
+    obj = rest[:cut.start()] if cut else rest
+    if _WRITE_LIST_RE.search(obj):
+        return True
+    words = [w for w in re.findall(r"[a-z][a-z&'-]*", obj)
+             if w not in {"me", "us", "a", "an", "the", "our", "my", "some", "new", "quick", "short", "full"}]
+    if not words:
+        return True
+    head = words[-1]
+    if _ANSWER_OBJECT_RE.fullmatch(head):
+        return False
+    return True
 
 
 #: "Investigate everything about host dc01", "deep dive into user pnair".
@@ -1796,6 +2300,18 @@ _CLARIFY_RESOLVE: dict[tuple[str, str], str] = {
     ("trend", "ai cost"): "Show the AI cost trend for the last 30 days by day",
     ("trend", "fp rate"): "Show the false-positive rate trend for the last 30 days by week",
     ("trend", "false-positive rate"): "Show the false-positive rate trend for the last 30 days by week",
+    ("compare", "this month vs last month"): "Compare this month with last month",
+    ("compare", "this week vs last week"): "Compare this week with last week",
+    ("compare", "this quarter vs last quarter"): "Compare this quarter with last quarter",
+    ("compare", "this month vs the same month last year"): "Compare this month with the same month last year",
+    ("count", "open cases"): "How many cases are open right now?",
+    ("count", "cases this week"): "How many cases did we get this week?",
+    ("count", "alerts in the last 24 hours"): "How many alerts did we get in the last 24 hours?",
+    ("count", "ai spend today"): "What did the AI spend today?",
+    ("breakdown", "cases by month"): "Break down cases by month",
+    ("breakdown", "cases by severity"): "Break down cases by severity",
+    ("breakdown", "alerts by host"): "Which hosts generated the most alerts in the last 7 days?",
+    ("breakdown", "ai spend by model"): "AI spend by model for the last 30 days",
 }
 
 
@@ -1825,11 +2341,36 @@ def _resolve_clarified(question: str, view: PromptView) -> str:
     return _CLARIFY_RESOLVE.get(key, question)
 
 
+def _window_text(question: str, low: str, *, case_scoped: bool = False) -> str:
+    """``low`` with the values the question searches for or names as an entity masked
+    ("host jan-laptop", "logs for SEP", "user dec01"), for reading its window."""
+    values: list[str] = []
+    searched = _log_search(question, case_scoped=case_scoped)
+    if searched is not None:
+        values.extend(value for _key, value in searched[1])
+    for found in _DEEP_ENTITY_RE.finditer(question):
+        value = found.group(2).strip(".,;:")
+        if value.lower() not in _DEEP_STOP and value.lower() not in _LOG_TERM_GENERIC:
+            values.append(value)
+    text = low
+    for value in sorted({v.lower() for v in values if v}, key=len, reverse=True):
+        text = re.sub(rf"(?<![\w.-]){re.escape(value)}(?![\w-]|\.\w)", " \u2063 ", text)
+    return text
+
+
 def _two_periods(low: str) -> tuple[Win, Win] | None:
-    """``(window, other)`` for "Q3 vs Q2", "September vs August", "2026-09 vs 2026-08"."""
-    if not re.search(r"\b(?:vs\.?|versus|compared? (?:to|with)|against|and)\b", low):
+    """``(window, other)`` for "Q3 vs Q2", "September vs August", "2026-09 vs 2026-08":
+    the LATER period is the subject and the earlier one its baseline, whatever the
+    order the analyst named them in ("Compare August and September" is September
+    against August). "Between August and September" is one range, not a comparison."""
+    if re.search(r"\bbetween\b", low):
         return None
-    parts = re.split(r"\b(?:vs\.?|versus|compared? (?:to|with)|against|and)\b", low, maxsplit=1)
+    joins = r"\b(?:vs\.?|versus|compared? (?:to|with)|against|and)\b"
+    if re.search(r"\bcompar\w*\b", low):
+        joins = r"\b(?:vs\.?|versus|compared? (?:to|with)|against|and|to|with)\b"
+    if not re.search(joins, low):
+        return None
+    parts = re.split(joins, low, maxsplit=1)
     if len(parts) != 2:
         return None
     first, second = _window_from(parts[0]), _window_from(parts[1])
@@ -1837,7 +2378,23 @@ def _two_periods(low: str) -> tuple[Win, Win] | None:
         return None
     if first.unit not in ("month", "quarter", "year"):
         return None
-    return first, second
+    return _later_first(first, second)
+
+
+def _period_key(win: Win | None) -> tuple[int, int] | None:
+    """``(year, first month)`` of a dated month, quarter or year window."""
+    spec = win.spec if win is not None else None
+    match = re.fullmatch(r"(\d{4})(?:-(\d{2})|-Q([1-4]))?", spec) if isinstance(spec, str) else None
+    if match is None:
+        return None
+    month = int(match.group(2)) if match.group(2) else (int(match.group(3)) - 1) * 3 + 1 if match.group(3) else 1
+    return int(match.group(1)), month
+
+
+def _later_first(first: Win, second: Win) -> tuple[Win, Win]:
+    """Two compared periods with the later one first (both dated; else as named)."""
+    a, b = _period_key(first), _period_key(second)
+    return (second, first) if a is not None and b is not None and a < b else (first, second)
 
 
 #: A case-store subject ("cases", "incidents", "tickets") for breakdowns and counts.
@@ -1852,17 +2409,21 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     view = view or PromptView()
     q = _resolve_clarified((question or "").strip(), view)
     low = q.lower()
-    compare: Any = _compare_from(low)
+    # Windows are read with the searched values and entity names masked, so a host
+    # "jan-laptop" or a search for "SEP" never becomes a month.
+    wlow = _window_text(q, low, case_scoped=view.case_scoped)
+    compare: Any = _compare_from(wlow)
     compare_win: Win | None = None
     if compare is not None:
-        win: Win | None = _compare_window(low)
+        win: Win | None = _compare_window(wlow)
     else:
-        two = _two_periods(low)
-        win = _window_from(low)
+        two = _two_periods(wlow)
+        win = _window_from(wlow)
         if two is not None:
             win, compare_win = two
             compare = "explicit"
     hours = win.hours if win is not None else None
+    unread = _unread_window(wlow) if win is None else None
     template, headings = _report_request(low, q)
     # A report request is saved to Reports (SPEC D11) unless it is a question ABOUT
     # reports ("how do I export a report?") or a shift brief that names no report.
@@ -1872,11 +2433,20 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     base: dict[str, Any] = {"question": q, "lowered": low, "hours": hours, "topic": _help_topic(q),
                             "report": template, "headings": headings, "win": win, "compare": compare,
                             "compare_win": compare_win, "bucket": _bucket_from(low), "group": _case_group_from(low),
-                            "save": save}
+                            "save": save, "unread": unread}
 
     def ask(intent: str, **extra: Any) -> Ask:
         fields = dict(base)
         fields.update(extra)
+        if intent not in _ANCHOR_INTENTS:
+            # Only a lookup that sends a window needs a period dated: a product question
+            # that mentions "September" runs no anchor lookup (SPEC D9).
+            for key in ("win", "compare_win"):
+                held = fields.get(key)
+                if isinstance(held, Win) and held.pending is not None:
+                    fields[key] = None
+            if fields.get("win") is None:
+                fields["hours"] = None
         return Ask(intent=intent, **fields)
 
     if not q:
@@ -1922,6 +2492,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("case", case_id=case_id)
     if view.case_scoped and template == "investigation_brief":
         return ask("brief", save=False)
+    if template == "investigation_brief" and not re.match(
+            r"^\s*(?:how|where|what|why|when|which|can i|is there|are there|do we|does|did)\b", low):
+        # "An investigation brief for the newest escalated case": the case is found
+        # first (newest with the status named, escalated by default), then briefed.
+        return ask("brief", case_status=_case_status(low) or "escalated", report="investigation_brief")
     # Explicit log-search phrasing that names a value runs a log lookup (wave-6 B5),
     # ahead of the hunt (a typed IP is a log filter here, not a reputation lookup the
     # analyst did not ask for) and of the case-scoped default; a how-to question ("can
@@ -1940,7 +2515,8 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if deep and not view.case_scoped:
         entity = _deep_entity(q)
         if entity is not None:
-            return ask("deep", entity=entity, win=win or _relative(30, "d"))
+            # No window named: the plan defaults to the last 30 days (the chip wins).
+            return ask("deep", entity=entity)
     indicator = _indicator(q, low)
     if indicator:
         return ask("hunt", indicator=indicator)
@@ -1962,28 +2538,56 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         # to that case rather than to a workspace-wide intent.
         return ask("case")
     metric = _metric(low)
-    if metric and _DEFINITION_RE.search(low):
-        return ask("explain_metric", metric=metric[0], topic=metric[1])
-    if help_like or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
-        return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
-                   wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
-    # Period comparisons (SPEC P0-6), each over its own subject.
-    if compare is not None and not template:
+
+    def compare_ask() -> Ask:
+        # Period comparisons (SPEC P0-6), each over its own subject.
         subject = _trend_subject(low)
         if subject == "cost":
             return ask("cost")
         if subject == "alerts" and not _CASE_SUBJECT_RE.search(low):
             return ask("top", field=_group_field(low) or "rule")
         return ask("compare", subject=subject)
+
+    def trend_ask() -> Ask:
+        # Trends over time (SPEC P0-5): of what the question names, else a clarify.
+        subject = _trend_subject(low)
+        if subject is None:
+            return ask("clarify", clarify="trend", save=False)
+        if subject == "cost":
+            return ask("cost", bucket=base["bucket"] or _natural_bucket(win or _relative(30, "d")))
+        return ask("trend", subject=subject)
+
+    # Counts of true or false positives are exact case counts, not a rate (a named
+    # comparison is computed by the count itself).
+    if not help_like and re.search(r"\b(?:how many|number of|count(?: of)?|total)\b", low) and re.search(
+            r"\b(?:true|false)[- ]positives\b", low) and not re.search(r"\brates?\b", low):
+        return ask("breakdown")
+    # "What's the FP rate trend?", "Is MTTR improving?": a trend or a comparison of a
+    # named measure, never its definition (that needs a defining word).
+    defining = bool(re.search(r"\b(?:mean|means|meaning|definition|define[sd]?|explain\w*|calculat\w*|"
+                              r"comput\w*)\b", low))
+    if not help_like and not template and not defining:
+        if compare is not None and (metric or _trend_subject(low)):
+            return compare_ask()
+        if _TREND_RE.search(low) and _trend_subject(low):
+            return trend_ask()
+    if metric and _DEFINITION_RE.search(low):
+        return ask("explain_metric", metric=metric[0], topic=metric[1])
+    if help_like or (_ACCESS_RE.search(low) and not re.search(r"\b(cases?|logs?|alerts?)\b", low)):
+        return ask("help", wants_access=bool(_ACCESS_RE.search(low)),
+                   wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
+    if compare is not None and not template:
+        return compare_ask()
     # Performance, executive, monthly and infographic reports; a report request with no
     # other subject is one too ("Last 90 days or whatever reports you can").
-    if template in ("executive", "monthly", "infographic") or (
-            template in ("custom", "posture") and _PERFORMANCE_RE.search(low)
+    asks_about = bool(re.match(r"^\s*(?:how|where|what|why|when|which|is|are|do|does|can i)\b", low))
+    if template in ("executive", "monthly", "infographic") and not asks_about or (
+            template == "custom" and not asks_about and _PERFORMANCE_RE.search(low)
             and not re.search(r"\bsections?:|\b(?:hunt|ioc|indicator)\b", low)) or (
-            template == "custom" and not _CASE_SUBJECT_RE.search(low) and not _keyword(low)
+            template == "custom" and not asks_about and not _CASE_SUBJECT_RE.search(low) and not _keyword(low)
             and not re.search(r"\b(logs?|events?|hosts?|users?|ips?|rules?|cost|spend|noise|funnel|campaigns?|"
                               r"sources?|mitre|att&ck)\b", low)):
-        chosen = template if template in ("executive", "monthly", "infographic", "posture") else "executive"
+        chosen = template if template in ("executive", "monthly", "infographic") else "executive"
         if chosen == "monthly" and win is None:
             win = _token_win("last_month")
         return ask("perf_report", report=chosen, win=win, hours=win.hours if win else None)
@@ -1991,13 +2595,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if not template and (_TREND_RE.search(low) or base["bucket"] and re.search(
             r"\b(mtt[adr]|response times?|fp rate|false[- ]positive rate|tp rate|automation rate|spend|cost)\b",
             low)):
-        subject = _trend_subject(low)
-        if subject is None:
-            return ask("clarify", clarify="trend", save=False)
-        if subject == "cost":
-            return ask("cost", bucket=base["bucket"] or _natural_bucket(win or _relative(30, "d")))
-        return ask("trend", subject=subject)
-    if metric and not help_like and re.search(r"\b(?:our|ours|we|my)\b", low):
+        return trend_ask()
+    if metric and not help_like and (re.search(r"\b(?:our|ours|we|my)\b", low) or re.match(
+            r"^\s*(?:please\s+)?(?:show|give|display|get|pull|list|plot|chart)\b", low)):
         # "What is our false-positive rate?" asks for our figure, not a definition.
         intent = {"posture": "posture", "noise_funnel": "noise", "cost": "cost"}.get(metric[0], "metric")
         return ask(intent, metric=metric[0] if intent == "metric" else None)
@@ -2016,6 +2616,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("shift", report="shift")
     if re.search(r"\b(noise|funnel)\b|\breduction\b", low):
         return ask("noise")
+    if re.search(r"\bwhat did (?:the )?(?:agents?|analysts?|the ai|people|users?|admins?) do\b|"
+                 r"\bwho (?:did|changed|closed) what\b", low):
+        return ask("audit")
+    if re.search(r"\bsla\b|\bservice[- ]level\b", low) and not help_like:
+        return ask("posture")
     if re.search(r"\b(cost|costs|spend|spent|spending|tokens?|budget|billing|money)\b|\$", low):
         return ask("cost")
     if _BRUTE_RE.search(low):
@@ -2046,17 +2651,32 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if automation:
         return ask("automation", metric=automation)
     # Exact counts and breakdowns over every case (SPEC D8, case_stats).
-    case_subject = bool(_CASE_SUBJECT_RE.search(low))
-    if case_subject and (base["bucket"] or base["group"] or (
-            _COUNT_CUE_RE.search(low) and (win is not None or re.search(
-                r"\b(open|active|closed|resolved|right now|currently|so far|in total|all[- ]time|ever)\b", low)))
-            or re.search(r"\b(?:case|incident) (?:stats|statistics|numbers|counts?|volume|breakdown)\b", low)):
+    # "Weekly breakdown of false positives": verdict nouns are a case subject too.
+    case_subject = bool(_CASE_SUBJECT_RE.search(low)) or bool(
+        re.search(r"\b(?:true|false)[- ]positives\b", low) and (base["bucket"] or base["group"]))
+    if case_subject and (base["bucket"] or base["group"] or (_COUNT_CUE_RE.search(low) and win is not None)
+                         or re.search(r"\b(?:case|incident) (?:stats|statistics|numbers|counts?|volume|breakdown)\b",
+                                      low)):
         return ask("breakdown")
+    # "What happened in the last 2 weeks?", "Give me the Q3 numbers", "Stats for March
+    # 2026": a summary of the period (case volume and mix, posture, true positives).
+    if win is not None and win.spec != "today" and (
+            re.search(r"\bwhat (?:happened|went on|did we see|has happened)\b", low)
+            or re.search(r"\b(?:stats|statistics|numbers|figures)\b", low) and not case_subject):
+        return ask("summary")
+    # "How many alerts did we get today?": an event count by severity, not a case count.
+    if not case_subject and re.search(r"\b(?:how many|number of|count(?: of)?|total|volume of)\b", low) and re.search(
+            r"\b(?:alerts?|events?|detections?)\b", low):
+        return ask("top", field=_group_field(low) or "severity")
     if re.search(r"\b(true positives?|confirmed (?:incidents?|threats?)|what happened today|"
                  r"today'?s (?:cases|incidents|activity)|summari[sz]e (?:today|the day))\b", low):
         return ask("tp")
     if _UNSUPPORTED_RE.search(low) and _LIST_CUE_RE.search(low) and not re.search(r"\b(logs?|events?|cases?)\b", low):
         return ask("unsupported", save=False)
+    log_field = _group_field(low)
+    if log_field and re.search(r"\b(events?|alerts?|logs?|log volume)\b", low) and not _CASE_SUBJECT_RE.search(low):
+        # "Events by severity this week": a log count by that field.
+        return ask("top", field=log_field)
     if re.search(r"\b(top|most|noisiest|busiest|loudest|which)\b", low) and re.search(
             r"\b(hosts?|machines?|servers?|endpoints?|users?|accounts?|ips?|ip addresses|rules?)\b", low):
         fld = next((f for words, f in _GROUP_FIELDS if re.search(rf"\b{words}\b", low)), "host")
@@ -2064,7 +2684,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if re.search(r"\bmost alerts\b|\bnoisiest\b", low):
         return ask("top", field="host")
     if re.search(r"\b(posture|how (?:are|is|'re) (?:we|things|the soc|our)|overview|risk index|"
-                 r"state of|kpis?|metrics|how are we doing|performance)\b", low):
+                 r"state of|kpis?|metrics|how are we doing|performance|"
+                 r"how (?:did|have|has|were) (?:we|things|the soc|our team)(?: been)? (?:do|doing|done|perform\w*|go|"
+                 r"going|gone|fare|fared))\b", low):
         return ask("posture")
     if re.search(r"\b(?:fp|tp|false[- ]positive|true[- ]positive|automation|auto[- ]?close) rates?\b", low):
         return ask("posture")
@@ -2115,6 +2737,10 @@ def _win_args(tool: str, ask: Ask, view: PromptView, default: Win | str | int | 
         win = None if view.analyst_window else _default_win(default)
     if win is None:
         return {}
+    if tool not in _LOG_WINDOW_TOOLS and isinstance(win.spec, str) and re.fullmatch(r"now-\d+m", win.spec):
+        # Case, metric and cost lookups count whole hours (they refuse a minute
+        # window): the next whole hour, said in the answer (:func:`_minutes_note`).
+        win = _relative(win.hours or 1, "h")
     if tool in _LOG_WINDOW_TOOLS:
         if isinstance(win.spec, str) and re.fullmatch(r"now-\d+[hd]", win.spec) and win.hours:
             return {"time_from": _time_from(win.hours)}
@@ -2186,15 +2812,43 @@ def _needs_anchor(ask: Ask) -> bool:
 
 
 def _resolved(view: PromptView, ask: Ask) -> Ask:
-    """``ask`` with a month or quarter named without its year resolved from the anchor
-    (unchanged when nothing waits for it, or when the anchor did not answer: then the
-    named period is dropped and each lookup's own default applies)."""
+    """``ask`` with a period named without its year dated from the anchor (unchanged
+    when nothing waits for it). Two compared periods keep the later one as the
+    subject. When the anchor did not answer, the named period is dropped, each
+    lookup's own default applies, and ``undated`` names it so the answer says so."""
     if not _needs_anchor(ask):
         return ask
     anchor = _anchor(view)
     win, other = _anchored(ask.win, anchor), _anchored(ask.compare_win, anchor)
+    compare = ask.compare if other is not None or ask.compare != "explicit" else None
+    if compare == "explicit" and win is not None and other is not None:
+        win, other = _later_first(win, other)
+    undated = None
+    if anchor is None:
+        undated = _join([w.phrase for w in (ask.win, ask.compare_win) if w is not None and w.pending is not None])
     return replace(ask, win=win, compare_win=other, hours=win.hours if win is not None else None,
-                   compare=ask.compare if other is not None or ask.compare != "explicit" else None)
+                   compare=compare, anchored=anchor is not None, undated=undated or None)
+
+
+def _is_anchor_call(result: Result) -> bool:
+    """The anchor lookup's own shape (a 12-month breakdown by month, nothing else)."""
+    inp = result.input
+    if not inp:
+        return result.tool in ("case_stats", "soc_metrics", "cost_usage")
+    return (inp.get("window") == _ANCHOR_WINDOW and inp.get("bucket") == "month"
+            and set(inp) <= {"window", "bucket", "kind"})
+
+
+def _without_anchor(view: PromptView, ask: Ask) -> PromptView:
+    """The view a final reads: without the anchor round when this ask was dated by one
+    (the anchor is planner context, never the answer's data: its 12 months must not be
+    narrated as "September" or as an entity's cases)."""
+    if not _needs_anchor(ask) or not view.rounds:
+        return view
+    first = view.rounds[0]
+    if len(first) != 1 or not _is_anchor_call(first[0]):
+        return view
+    return replace(view, rounds=view.rounds[1:])
 
 
 def _anchored_plan(planner: Callable[[PromptView, Ask, int], list[Call]]) -> Callable[[PromptView, Ask, int], list[Call]]:
@@ -2398,14 +3052,59 @@ def _plan_simple(build: Callable[[PromptView, Ask], list[Call]]) -> Callable[[Pr
 _INTERVALS = {"hour": "1h", "day": "1d", "week": "1w", "month": "1M", "quarter": "1q", "year": "1y"}
 
 
-def _case_filters_for(ask: Ask) -> dict[str, Any]:
-    """The case filters the question names (status group, severity, verdict, text)."""
+_OPEN_WORDS_RE = re.compile(r"\b(open|active|unresolved|still open|not (?:yet )?closed|outstanding|backlog|pending)\b")
+_CLOSED_WORDS_RE = re.compile(r"\b(closed|resolved|terminal)\b|\bdid (?:we|you|they|the team|analysts?) (?:close|resolve)\b")
+_SPECIFIC_STATUSES = frozenset({"escalated", "on_hold", "investigating", "new"})
+_NOT_AN_ENTITY = frozenset({"we", "you", "they", "i", "the", "our", "analyst", "analysts", "it", "he", "she", "team",
+                            "soc", "people", "anyone", "everyone", "agents", "agent", "ai"})
+
+
+def _case_entity(question: str) -> str | None:
+    """The host, user or IP the cases are about ("cases for user pnair", "cases
+    involving host dc01", "how many cases did pnair have"), else None."""
+    match = _IPV4_RE.search(question)
+    if match:
+        return match.group(0)
+    for found in re.finditer(r"\b(?:host(?:name)?|user(?:name)?|ip)\s+[\"'`]?([A-Za-z0-9][A-Za-z0-9._@\\-]{1,62})",
+                             question, re.IGNORECASE):
+        value = found.group(1).strip(".,;:")
+        if value.lower() not in _DEEP_STOP and value.lower() not in _LOG_TERM_GENERIC:
+            return value
+    match = re.search(r"\bhow many (?:cases|incidents) (?:did|does|has|have) ([A-Za-z][\w.@-]{1,40}) "
+                      r"(?:have|had|get|got|see|generate|trigger)\b", question, re.IGNORECASE)
+    if match and match.group(1).lower() not in _NOT_AN_ENTITY:
+        return match.group(1)
+    return None
+
+
+def _status_filters(ask: Ask) -> dict[str, Any]:
+    """``status`` (escalated, on hold, investigating, new) or ``status_group`` (open or
+    closed) the question names. A question ABOUT open and closed ("open vs closed")
+    filters neither: it groups by them."""
     low = ask.lowered
-    inp: dict[str, Any] = {}
-    if re.search(r"\b(open|active|unresolved|still open|not (?:yet )?closed|outstanding|backlog|pending)\b", low):
-        inp["status_group"] = "active"
-    elif re.search(r"\b(closed|resolved|terminal)\b", low):
-        inp["status_group"] = "terminal"
+    status = _case_status(low)
+    if ask.group not in ("status", "status_group") and status in _SPECIFIC_STATUSES:
+        return {"status": status}
+    if ask.group in ("status", "status_group"):
+        return {}
+    opened, closed = _OPEN_WORDS_RE.search(low), _CLOSED_WORDS_RE.search(low)
+    if opened and closed:
+        return {}
+    if opened:
+        return {"status_group": "active"}
+    if closed:
+        return {"status_group": "terminal"}
+    return {}
+
+
+def _case_filters_for(ask: Ask) -> dict[str, Any]:
+    """The case filters the question names (status, status group, severity, verdict,
+    entity, text)."""
+    low = ask.lowered
+    inp: dict[str, Any] = dict(_status_filters(ask))
+    entity = _case_entity(ask.question)
+    if entity:
+        inp["entity"] = entity
     if ask.group != "severity":
         severity = next((s for s in ("critical", "high", "medium", "low") if re.search(rf"\b{s}\b", low)), None)
         if severity:
@@ -2438,20 +3137,37 @@ def _case_metrics_for(ask: Ask) -> list[str]:
     return metrics[:6]
 
 
+def _case_groups(ask: Ask) -> list[str]:
+    """The ``group_by`` fields a breakdown asks for: one, or "open vs closed" plus a
+    second field ("open vs closed cases by severity")."""
+    if not ask.group:
+        return []
+    named = [fld for pattern, fld in _CASE_GROUP_WORDS if re.search(pattern, ask.lowered)]
+    if "status_group" in named:
+        other = next((fld for fld in named if fld != "status_group"), None)
+        return ["status_group", other] if other else ["status_group"]
+    return [ask.group]
+
+
 def _plan_breakdown(view: PromptView, ask: Ask, done: int) -> list[Call]:
-    """Exact counts over every case (``case_stats``), grouped and bucketed as asked.
-    Open cases broken down by when they were opened also list the oldest of them."""
+    """Exact counts over every case (``case_stats``), grouped and bucketed as asked
+    (and compared with another period when the question asks). Open cases broken
+    down by when they were opened, or by age, also list the oldest of them."""
     if done:
         return []
     filters = _case_filters_for(ask)
     inp: dict[str, Any] = dict(filters)
     stats_only = not ask.group and not ask.bucket
-    if ask.group:
-        inp["group_by"] = [ask.group]
-        if ask.group in ("rule", "assignee", "source", "closed_by", "mitre_technique", "mitre_tactic"):
+    compare = _compare_spec(ask)
+    groups = _case_groups(ask)
+    if groups:
+        inp["group_by"] = groups
+        if set(groups) & {"rule", "assignee", "source", "closed_by", "mitre_technique", "mitre_tactic"}:
             inp["top_n"] = 10
-    elif stats_only:
-        inp["group_by"] = ["verdict"]
+    elif stats_only and compare is None:
+        # A count of one verdict ("how many false positives") splits by severity
+        # instead: a verdict split of one verdict says nothing.
+        inp["group_by"] = [next((f for f in ("verdict", "severity", "status") if f not in filters), "status")]
     if ask.bucket:
         inp["bucket"] = ask.bucket
     metrics = _case_metrics_for(ask)
@@ -2459,14 +3175,19 @@ def _plan_breakdown(view: PromptView, ask: Ask, done: int) -> list[Call]:
         metrics = list(dict.fromkeys(metrics + ["fp_rate", "auto_closed", "human_closed", "open_now", "mttr_p50"]))[:6]
     if metrics != ["count"]:
         inp["metrics"] = metrics
+    if compare is not None:
+        inp["compare"] = compare
     window = _windowed(ask, view)
     inp.update(window)
     calls = [Call("case_stats", inp)]
-    if filters.get("status_group") == "active" and ask.bucket:
-        # "When were they opened?": the oldest cases still open, beside the counts.
+    older = ask.win is not None and ask.win.older
+    if filters.get("status_group") == "active" and (ask.bucket or older):
+        # "When were they opened?" or "older than 14 days": the oldest cases still
+        # open, beside the counts.
         calls.append(Call("search_cases", {**filters, "sort_field": "created_at", "sort_order": "asc", "limit": 5,
                                            **window}))
-    elif stats_only and not filters and _anchor(view) is None:
+    elif stats_only and not filters and compare is None and not (ask.win and (ask.win.hours or 2) <= 1):
+        # The volume over the same window, by its natural calendar unit (context).
         calls.append(Call("case_stats", {"bucket": _natural_bucket(ask.win) if ask.win else "month", **window}))
     return calls
 
@@ -2565,7 +3286,17 @@ def _plan_perf_report(view: PromptView, ask: Ask, done: int) -> list[Call]:
 def _plan_brief(view: PromptView, ask: Ask, done: int) -> list[Call]:
     """An advisory investigation brief (SPEC P1-3): the case and its decision, then
     what its entity did in the logs, the other cases that carry it and its ATT&CK
-    techniques, then the indicator's reputation when the entity is one."""
+    techniques, then the indicator's reputation when the entity is one. Without a case
+    id (outside a case conversation) the newest case with the status named is found
+    first ("the newest escalated case")."""
+    if not ask.case_id and not view.case_scoped:
+        if done == 0:
+            return [Call("search_cases", {"status": ask.case_status or "escalated", "sort_field": "created_at",
+                                          "limit": 5})]
+        case = _newest_case(view.ok("search_cases"))
+        if case is None:
+            return []
+        return _plan_brief(view, replace(ask, case_id=case["case_id"]), done - 1)
     case_input = {"case_id": ask.case_id} if ask.case_id else {}
     if done == 0:
         return [Call("get_case", dict(case_input)), Call("explain_decision", dict(case_input))]
@@ -2716,6 +3447,13 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "logs": lambda v, a: [Call("search_logs", {**dict(a.log_filter), **_log_window(a, v)})],
     "log_count": lambda v, a: [Call("log_stats", {**dict(a.log_filter), "group_by": [a.field or "host"],
                                                   "top_n": 10, **_log_window(a, v)})],
+    "summary": lambda v, a: [
+        Call("case_stats", {"group_by": ["severity"], **_windowed(a, v)}),
+        Call("case_stats", {"bucket": _natural_bucket(a.win), **_windowed(a, v)}),
+        Call("soc_metrics", {"kind": "posture", **_metric_window(a, v)}),
+        Call("search_cases", {"verdict": "TRUE_POSITIVE", "sort_field": "risk_score", "limit": 5,
+                              **_windowed(a, v)}),
+    ],
     "tp": lambda v, a: [
         Call("search_cases", {"verdict": "TRUE_POSITIVE", "limit": 10, **_windowed(a, v, default=24)}),
         Call("soc_metrics", {"kind": "case_mix", **_windowed(a, v, default=24)}),
@@ -2735,7 +3473,7 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
         else {"kind": "list_playbooks"} if re.search(r"\b(list|which|what) playbooks\b", a.lowered)
         else {"query": a.topic or a.question}))],
     "help": lambda v, a: [
-        Call("app_help", {"query": a.topic}),
+        Call("app_help", {"query": _help_query(a)}),
         *([Call("app_status", {"kind": "access"})] if a.wants_access else []),
         *([Call("app_status", {"kind": "overview"})] if a.wants_overview and not a.wants_access else []),
     ],
@@ -2746,9 +3484,12 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     ],
     # A case list counts its matches exactly and breaks them down by verdict and
     # status itself: no unrelated 24-hour case mix beside it (diagnosis/routing.md §5.17).
-    "cases": lambda v, a: [Call("search_cases", _cases_filters(a, v))],
+    "cases": lambda v, a: [Call("search_cases", _cases_filters(a, v)),
+                           *([Call("soc_metrics", {"kind": "timing",
+                                                   **_win_args("soc_metrics", a, v, "now-30d")})]
+                             if _TIMING_CUE_RE.search(a.lowered) else [])],
     "change": lambda v, a: [Call("app_help", {"query": _change_query(a)})],
-    "unsupported": lambda v, a: [Call("app_help", {"query": a.question[:300]})],
+    "unsupported": lambda v, a: [Call("app_help", {"query": _help_hint(a) or a.question[:300]})],
     "clarify": lambda v, a: [],
     "fallback": lambda v, a: [
         # Orientation: what chat can answer, not a keyword search for an unmapped ask.
@@ -2787,8 +3528,13 @@ _INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     "breakdown": ("case_stats",), "trend": ("case_stats", "soc_metrics"), "compare": ("case_stats", "soc_metrics"),
     "perf_report": ("case_stats", "soc_metrics", "cost_usage", "search_cases"),
     "brief": ("get_case", "explain_decision"), "deep": ("log_stats", "search_cases", "search_logs"),
+    "summary": ("case_stats", "soc_metrics", "search_cases"),
 }
 _DATA_INTENTS = frozenset(_INTENT_TOOLS) - {"rerun"}
+#: Intents whose lookups take a window: only they date a period named without its
+#: year (the anchor lookup). A product question, a change request, a clarify or the
+#: fallback never runs a data lookup for a month it mentions (SPEC D9).
+_ANCHOR_INTENTS = (_DATA_INTENTS | {"rerun", "regroup"}) - {"knowledge", "sources", "campaigns", "automation"}
 _TOOL_NAMES = {
     "soc_metrics": "SOC metrics", "shift_report": "the shift snapshot", "cost_usage": "AI cost data",
     "log_stats": "log statistics", "search_logs": "log search", "search_cases": "case search",
@@ -2799,9 +3545,60 @@ _TOOL_NAMES = {
 }
 
 
+#: Help Center queries for questions whose own words search poorly ("How do reports
+#: work?" matches "Work a case"): the product area they are about, in the corpus's
+#: words. The first matching pattern wins; other export questions keep their words.
+_HELP_HINTS: tuple[tuple[str, str], ...] = (
+    ((r"\breports?\b.*\b(?:export\w*|pdf|download\w*|print\w*)\b|"
+      r"\b(?:export\w*|pdf|download\w*|print\w*)\b.*\breports?\b"), "Workspace Chat Export report"),
+    (r"\b(?:export\w*|pdf|download\w*|print\w*)\b", ""),
+    ((r"\b(?:close|resolve|reopen|assign|escalate|delete|remove|edit|update|tag)\b.*\b(?:all|every|bulk)\b.*"
+      r"\b(?:cases|incidents)\b|\b(?:all|every|bulk)\b.*\b(?:close|resolve|reopen|assign|escalate|delete|remove)\b"),
+     "Case Manager select cases and run bulk work"),
+    (r"\b(?:close|resolve|reopen|assign|escalate|delete|remove|edit|update|tag)\b.*\b(?:cases?|incidents?)\b",
+     "Case Manager Take Action single-case actions"),
+    (r"\breports?\b", "Workspace Chat reports"),
+    (r"\bsessions?\b", "Sessions & activity active sessions"),
+    (r"\b(?:users?|accounts?|roles?|analysts? list)\b", "Users and roles user accounts"),
+    (r"\b(?:notifications?|channels?|alerting)\b", "Notifications configure a channel"),
+    (r"\bdashboards?\b", "custom dashboards"),
+    (r"\bjobs?\b", "Analytics Jobs background jobs"),
+    (r"\b(?:secrets?|api keys?|credentials?)\b", "Secret keys"),
+)
+
+
+def _help_hint(ask: Ask) -> str:
+    for pattern, query in _HELP_HINTS:
+        if re.search(pattern, ask.lowered):
+            return query
+    return ""
+
+
+#: Hints for console administration areas: a data how-to that merely mentions a user,
+#: a session or a report ("How do I hunt for a user in the logs?") keeps its own topic.
+_ADMIN_HINTS = frozenset({"Workspace Chat reports", "Sessions & activity active sessions",
+                          "Users and roles user accounts", "Notifications configure a channel", "custom dashboards",
+                          "Analytics Jobs background jobs", "Secret keys"})
+_DATA_HOWTO_RE = re.compile(r"\b(?:logs?|events?|cases?|hunt\w*|search\w*|investigat\w*|alerts?|iocs?|"
+                            r"indicators?|quer(?:y|ies)|sign[- ]?ins?|logins?|activity|suspicious)\b")
+
+
+def _help_query(ask: Ask) -> str:
+    """The Help Center query of a product question: the area hint, else its topic. An
+    administration hint applies only when the question is about that area, not a data
+    how-to that mentions a user or a session."""
+    hint = _help_hint(ask)
+    if hint in _ADMIN_HINTS and _DATA_HOWTO_RE.search(ask.lowered):
+        hint = ""
+    return hint or ask.topic or ask.question[:200]
+
+
 def _change_query(ask: Ask) -> str:
     """The Help Center query for a change request: the action and its object, without
     ids or indicators (they would only add noise to a product-docs search)."""
+    hint = _help_hint(ask)
+    if hint:
+        return hint
     text = _CASE_ID_RE.sub(" ", ask.question)
     for pattern in (_URL_RE, _IPV4_RE, _HASH_RE):
         text = pattern.sub(" ", text)
@@ -2817,13 +3614,18 @@ def _mitre_query(ask: Ask) -> str:
     return " ".join(words[:6]) or "credential access"
 
 
+#: A case question about response times also reads them (over the last 30 days unless
+#: a window is named), so the answer can say how long acknowledgement takes.
+_TIMING_CUE_RE = re.compile(r"\b(acknowledg\w*|mtta|response times?|delay\w*)\b")
+
+
 def _cases_filters(ask: Ask, view: PromptView) -> dict[str, Any]:
     low = ask.lowered
     inp: dict[str, Any] = {"limit": 10}
-    if re.search(r"\b(open|active|unresolved)\b", low):
-        inp["status_group"] = "active"
-    elif re.search(r"\b(closed|resolved|terminal)\b", low):
-        inp["status_group"] = "terminal"
+    inp.update(_status_filters(ask))
+    entity = _case_entity(ask.question)
+    if entity:
+        inp["entity"] = entity
     severity = next((s for s in ("critical", "high", "medium", "low") if s in low), None)
     if severity:
         inp["severity"] = severity
@@ -2833,6 +3635,13 @@ def _cases_filters(ask: Ask, view: PromptView) -> dict[str, Any]:
         inp["verdict"] = verdict
     if re.search(r"\bunassigned\b", low):
         inp["assignee"] = "unassigned"
+    if re.search(r"\b(oldest|longest|waiting|delay\w*|unacknowledged|not (?:yet )?acknowledged|backlog|aging)\b",
+                 low) or (ask.win is not None and ask.win.older):
+        # The cases behind an acknowledgement delay, or older than a given age: the
+        # oldest first (still open unless the question names another status).
+        if "status" not in inp:
+            inp.setdefault("status_group", "active")
+        inp.update({"sort_field": "created_at", "sort_order": "asc"})
     inp.update(_windowed(ask, view))
     return inp
 
@@ -2943,12 +3752,22 @@ def _filter_words(filters: Iterable[tuple[str, Any]]) -> str:
     return _join(parts)
 
 
+def _with_coverage(text: str, coverage: str) -> str:
+    """``text`` plus the source coverage in brackets, merged into a window's own
+    bracket: "in the last 90 days (since 13 Jul 2026; 5 of 5 sources answered)"."""
+    if not coverage:
+        return text
+    if text.endswith(")"):
+        return f"{text[:-1]}; {coverage})"
+    return f"{text} ({coverage})"
+
+
 def _no_log_events(o: Mapping[str, Any], what: str) -> str:
     """The zero-match sentence of a log lookup: "No log events match `x` in the last
     24h (5 of 5 sources answered)." (``what`` empty: no filter, "No log events in …")."""
     coverage = _coverage_phrase(o)
     matched = f" match {what}" if what else ""
-    return f"No log events{matched} {_in(_window(o))}" + (f" ({coverage})." if coverage else ".")
+    return _with_coverage(f"No log events{matched} {_in(_window(o))}", coverage) + "."
 
 
 def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
@@ -2971,9 +3790,7 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
         if not total:
             return _no_log_events(o, what)
         scope = f"matching {what}" if what else ""
-    lead = f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}{_in(window)}"
-    if coverage:
-        lead += f" ({coverage})"
+    lead = _with_coverage(f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}{_in(window)}", coverage)
     if not total or not top:
         return lead + "."
     lead += f"; by {label}, {_ranked(top)}."
@@ -2996,8 +3813,7 @@ def _say_search_logs(r: Result, *, subject: str | None = None) -> str:
     if not total:
         return _no_log_events(o, what)
     matched = f" match {what}" if what else ""
-    text = f"**{_plural(total, 'log event')}**{matched} {_in(_window(o))}"
-    text += f" ({coverage})." if coverage else "."
+    text = _with_coverage(f"**{_plural(total, 'log event')}**{matched} {_in(_window(o))}", coverage) + "."
     tops = o.get("top_values") if isinstance(o.get("top_values"), Mapping) else {}
     parts = []
     for fld in ("host", "user", "rule"):
@@ -3094,13 +3910,19 @@ def _case_noun(filters: Mapping[str, Any], noun: str) -> str:
     return noun
 
 
+def _entity_about(filters: Mapping[str, Any]) -> str:
+    """" involving `pnair`" when the case lookup was filtered to one entity."""
+    entity = filters.get("entity")
+    return f" involving {_code(entity, 60)}" if isinstance(entity, str) and entity.strip() else ""
+
+
 def _say_search_cases(r: Result, *, noun: str = "case") -> str:
     o = r.obs
     count = _num(o.get("count")) or 0
     filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
     window = o.get("window") if isinstance(o.get("window"), str) else "all time"
     when = "" if window == "all time" else f" {_in(display_text(window, 60))}"
-    text = f"**{_plural(count, _case_noun(filters, noun))}**{when}"
+    text = f"**{_plural(count, _case_noun(filters, noun))}**{_entity_about(filters)}{when}"
     bound = _case_lower_bound(o)
     if bound:
         text += f" ({bound})"
@@ -3128,11 +3950,17 @@ def _say_posture(r: Result) -> list[str]:
         + (f", {_count(critical)} of them critical." if critical else ".")
     ]
     quality = o.get("quality") if isinstance(o.get("quality"), Mapping) else {}
-    if quality:
-        out.append(
-            f"False-positive rate **{_pct(quality.get('false_positive_rate'), ratio=True)}**; "
-            f"{_pct(quality.get('automation_rate'), ratio=True)} of closed cases were closed automatically "
-            f"and {_pct(quality.get('escalation_rate'), ratio=True)} were escalated.")
+    if quality and _num(quality.get("false_positive_rate")) is None and _num(quality.get("automation_rate")) is None:
+        out.append("False-positive and automation rates are not measured: no case in this window has a closing "
+                   "verdict yet.")
+    elif quality:
+        rates = [f"{_pct(quality.get('automation_rate'), ratio=True)} of closed cases were closed automatically"
+                 if _num(quality.get("automation_rate")) is not None else "",
+                 f"{_pct(quality.get('escalation_rate'), ratio=True)} were escalated"
+                 if _num(quality.get("escalation_rate")) is not None else ""]
+        rates = [r for r in rates if r]
+        out.append(f"False-positive rate **{_pct(quality.get('false_positive_rate'), ratio=True)}**"
+                   + (f"; {_join(rates)}." if rates else "."))
     parts = [f"{_count(severity[s])} {s}" for s in ("critical", "high", "medium", "low", "info")
              if _num(severity.get(s))]
     if parts:
@@ -3225,7 +4053,9 @@ def _say_trends(r: Result) -> str:
     else:
         where = (f"the latest {size}" if peak_at == len(new) - 1
                  else f"{_plural(len(new) - 1 - peak_at, size)} before the latest")
-    text = (f"Trend {_in(_window(o))} in {kind}s: {_count(sum(measured))} new and "
+    span = _in(_window(o))
+    span = "over the " + span[len("in the "):] if span.startswith("in the ") else span
+    text = (f"Trend {span} in {kind}s: {_count(sum(measured))} new and "
             f"{_count(sum(v for v in closed if v is not None))} closed cases; the peak was {where}, with "
             f"{_plural(peak, 'new case')}.")
     alerts = [v for v in (_num(a) for a in o.get("alerts") or []) if v is not None]
@@ -3259,9 +4089,9 @@ def _say_noise(r: Result) -> list[str]:
     if "auto_cleared" in stages:
         detail.append(f"AI auto-cleared {_count(stages['auto_cleared'])}")
     if "escalated" in stages:
-        detail.append(f"{_count(stages['escalated'])} were escalated")
+        detail.append(f"{_count(stages['escalated'])} {'was' if stages['escalated'] == 1 else 'were'} escalated")
     if "closed" in stages:
-        detail.append(f"{_count(stages['closed'])} were closed by a human")
+        detail.append(f"{_count(stages['closed'])} {'was' if stages['closed'] == 1 else 'were'} closed by a human")
     if stages.get("policy_closed"):
         detail.append(f"{_count(stages['policy_closed'])} were closed by analyst policy")
     if detail:
@@ -3822,6 +4652,8 @@ _FOLLOW_UPS: dict[str, tuple[str, tuple[str, ...]]] = {
     "tp": ("Summarise today's true positives", ("search_cases",)),
     "top": ("Which hosts generated the most events in the last 7 days?", ("log_stats",)),
     "cost": ("What did AI spend look like in the last 24 hours?", ("cost_usage",)),
+    "cost_compare": ("Compare AI spend this month with last month", ("cost_usage",)),
+    "cost_month": ("How much did we spend on AI by month?", ("cost_usage",)),
     "sources": ("Are any log sources silent?", ("source_health",)),
     "campaigns": ("Which campaigns are open?", ("list_campaigns",)),
     "case": ("Investigate the newest escalated case", ("search_cases", "get_case")),
@@ -3841,7 +4673,7 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "noise": ("posture", "explain_metric", "tp", "cost"),
     "metric": ("posture", "noise", "shift"),
     "shift": ("case", "posture", "campaigns", "tp"),
-    "cost": ("posture", "noise", "access"),
+    "cost": ("cost_compare", "cost_month", "posture", "noise"),
     "brute": ("pivot", "mitre", "by_user"),
     "top": ("by_user", "case", "sources"),
     "logs": ("by_user", "week", "top", "sources"),
@@ -4046,7 +4878,11 @@ def _final_posture(view: PromptView, ask: Ask) -> Final | None:
     body = []
     window = _window((post or trend).obs)
     if post:
-        body.extend(_say_posture(post))
+        said = _say_posture(post)
+        if re.search(r"\b(?:fp|false[- ]positive|automation|auto[- ]?close) rates?\b", ask.lowered):
+            # "What is our false-positive rate?": that figure leads, the index follows.
+            said.sort(key=lambda line: 0 if line.startswith("False-positive rate") else 1)
+        body.extend(said)
     if trend:
         sentence = _say_trends(trend)
         if sentence:
@@ -4243,6 +5079,34 @@ _TEMPLATE_HEADINGS: dict[str, tuple[str, ...]] = {
 _INTENT_TEMPLATES = {"case": "investigation", "hunt": "ioc", "pivot": "hunt", "posture": "posture"}
 _TEMPLATE_TITLES = {"posture": "Posture report", "investigation": "Investigation report", "hunt": "Hunt report",
                     "ioc": "IOC report", "custom": "Report"}
+#: What a report without a named template is about, by intent: its title names that
+#: subject and the window ("Cases report, September 2026"), so the Reports library
+#: never fills with identical "Report" names.
+_INTENT_SUBJECTS = {
+    "cases": "Cases", "breakdown": "Cases", "summary": "SOC summary", "trend": "Trend", "compare": "Comparison",
+    "top": "Top {field}", "logs": "Log search", "log_count": "Log counts", "cost": "AI cost", "posture": "Posture",
+    "noise": "Noise reduction", "metric": "SOC metrics", "tp": "True positives", "brute": "Brute force",
+    "mitre": "ATT&CK", "audit": "Audit trail", "deep": "Investigation", "case": "Case", "hunt": "IOC",
+    "pivot": "Hunt", "sources": "Source health", "campaigns": "Campaigns", "knowledge": "Knowledge",
+    "automation": "Automation",
+}
+
+
+def _report_title(view: PromptView, ask: Ask) -> str:
+    """A wrapped report's title: the named template's, else its subject and window."""
+    if ask.report and ask.report != "custom" and ask.report in _TEMPLATE_TITLES:
+        return _TEMPLATE_TITLES[ask.report]
+    subject = _INTENT_SUBJECTS.get(ask.intent, "SOC")
+    if "{field}" in subject:
+        subject = subject.format(field=_plural_noun(_FIELD_LABEL.get(ask.field or "host", ask.field or "host")))
+    window = (_report_window(view, ask) or "").split(" (")[0].strip()
+    if ask.intent in ("cases", "breakdown"):
+        # "Open cases report", "Escalated cases report, this week".
+        noun = _case_noun(_status_filters(ask), "case")
+        subject = _plural_noun(noun)[:1].upper() + _plural_noun(noun)[1:]
+        if noun == "open case" and window.startswith("all time"):
+            window = ""
+    return (f"{subject} report, {window}" if window else f"{subject} report")[:120]
 _ANY_LEAF = ("hbar", "bar", "donut", "table", "line", "area", "stacked_bar", "sparkline", "funnel", "entity",
              "case_list", "timeline", "mitre", "heatmap", "guide")
 # Which leaf views a heading attracts, by its words. Specific headings claim their
@@ -4511,16 +5375,20 @@ def _final_cost(view: PromptView, ask: Ask) -> Final | None:
         body.insert(1, buckets)
     comp = _comparison_of(cost.obs)
     if comp:
-        body[1:1] = _say_comparison(comp, limit=4)
+        body[1:1] = ["Compared with the previous period:", *_say_comparison(comp, limit=4, bullets=True)]
+    skip = {"cost_compare"} if comp else set()
+    if cost.input.get("bucket") == "month":
+        skip.add("cost_month")
     return Final(body=body, blocks=_keep(
         _block_titled(cost, "comparison", view="kpi_group", title="Change versus the previous period"),
         _block(cost, "kpis", view="kpi_group", title="AI cost"),
         # cost_usage has no per-role time series, so §5.5's "stacked bar by role" is
         # spend over time (one series: plain bars) beside the by-role breakdown.
         _block(cost, "series", view="bar", title="AI spend over time"),
-        _block(cost, "categories", view=_first_view(cost, "categories", ("donut", "hbar")), title="Spend by role"),
-        _block(cost, "categories", nth=2, view="hbar", title="Spend by model"),
-    ), follow_ups=_follow_ups(view, "cost", charts=True))
+        # The tool titles each breakdown by what it groups (role, model or surface).
+        _block(cost, "categories", view=_first_view(cost, "categories", ("donut", "hbar"))),
+        _block(cost, "categories", nth=2, view="hbar"),
+    ), follow_ups=_follow_ups(view, "cost", charts=True, skip=skip))
 
 
 def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
@@ -4533,18 +5401,21 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
     body = [_say_log_stats(stats)]
     comp = _comparison_of(stats.obs)
     if comp:
-        body.extend(_say_comparison(comp, limit=2, with_note=False))
+        lines = _say_comparison(comp, limit=2, with_note=False, bullets=True)
+        if lines:
+            body.append("Compared with the previous period:")
+            body.extend(lines)
     tops = _comparison_of(stats.obs, "top_values")
     if tops:
-        lines = _say_comparison(tops, limit=5, plain_labels=False)
+        lines = _say_comparison(tops, limit=5, plain_labels=False, bullets=True)
         if lines:
             body.append(f"By {label}:")
-            body.extend(f"- {line}" if not line.startswith("The latest") else line for line in lines)
+            body.extend(lines)
     if intent == "regroup":
         body.insert(0, f"Re-ran the earlier lookup grouped by {label} (same filters).")
     # One block per figure set: the chart's view switcher already offers the table.
     return Final(body=body, blocks=_keep(
-        _block(stats, "categories", view="hbar", title=f"Top {label}s ({window.split(' (')[0]})"),
+        _block(stats, "categories", view="hbar", title=f"Top {_plural_noun(label)} ({window.split(' (')[0]})"),
         _block_titled(stats, "comparison", view="grouped_bar"),
     ), follow_ups=_follow_ups(view, intent, charts=True, field=fld))
 
@@ -4962,12 +5833,27 @@ def _final_cases(view: PromptView, ask: Ask) -> Final | None:
     if cases is None:
         return None
     mix = view.ok("soc_metrics", "case_mix")
-    body = [_say_search_cases(cases), *_case_bullets(cases)]
+    timing = view.ok("soc_metrics", "timing")
+    body = [_say_search_cases(cases)]
+    count = _num(cases.obs.get("count")) or 0
+    age = _age_lead(ask, cases.obs, count, _case_noun(cases.obs.get("filters") or {}, "case")) if count else None
+    if age:
+        body[0] = age
+    # The plan's own sort (the call echo names only its display keys).
+    oldest = _cases_filters(ask, view).get("sort_order") == "asc"
+    if oldest and count:
+        body.append("Oldest first: these have waited longest for someone to pick them up.")
+    body.extend(_case_bullets(cases))
+    if timing:
+        said = _say_timing(timing)
+        if said:
+            body.append(said)
     if mix:
         body.append("Across the window: " + _say_case_mix(mix))
     return Final(body=body, blocks=_keep(
         _block(cases, "kpis", view="kpi_group", title="Key figures"),
-        _block(cases, "case_list", view="case_list", title="Matching cases"),
+        _block(cases, "case_list", view="case_list", title="Oldest open cases" if oldest else "Matching cases"),
+        _block(timing, "kpis", view="kpi_group", title="Response times"),
         _block(mix, "categories", view=_first_view(mix, "categories", ("donut", "hbar")), title="Cases by verdict"),
     ), follow_ups=_follow_ups(view, "cases", charts=bool(mix)))
 
@@ -5015,7 +5901,13 @@ def _final_help(view: PromptView, ask: Ask, intent: str = "help") -> Final | Non
         version = re.search(r"version=([0-9][0-9A-Za-z.+-]{0,30})", ref.facts.get("product", ""))
         if version:
             demo = "on" if "demo_mode=yes" in ref.facts.get("mode", "") else "off"
-            body.append(f"This deployment runs version {version.group(1)} with Demo Mode {demo}.")
+            sentence = f"This deployment runs version {version.group(1)} with Demo Mode {demo}."
+            if ask.wants_overview and not ask.wants_access and not paragraphs:
+                # "What version is this?": the deployment fact IS the answer; a console
+                # page guessed from the question's words would only distract.
+                body = [sentence]
+            else:
+                body.append(sentence)
     return Final(body=body or ["No product reference was available."], blocks=_keep(
         _block(help_result, "guide", view="guide", title="Help Center"),
         _block(status, "kpis", view="kpi_group", title="Your access" if ask.wants_access else "Deployment"),
@@ -5145,11 +6037,39 @@ def _final_regroup(view: PromptView, ask: Ask) -> Final | None:
 
 
 def _final_rerun(view: PromptView, ask: Ask) -> Final | None:
+    """The earlier lookups re-run (a zero-result suggestion, "the same for all time"):
+    the window or the dropped filter that actually ran leads, then the answer in the
+    earlier answer's own words (a breakdown reads as a breakdown)."""
     results = [r for r in view.results() if r.ok and r.observation is not None]
     if not results:
         return None
-    body = [f"Re-ran the earlier lookups for the last {_plural(ask.hours, 'hour')}:" if ask.hours and ask.hours < 48
-            else f"Re-ran the earlier lookups for the last {_plural((ask.hours or 24) // 24, 'day')}:"]
+    drop = _WITHOUT_FILTER_RE.search(ask.lowered)
+    if ask.win is not None and ask.win.spec is not None:
+        head = f"Re-ran the earlier lookups for {ask.win.phrase}:"
+    elif drop:
+        head = f"Re-ran the earlier lookups without the {drop.group(1).strip()} filter:"
+    else:
+        head = "Re-ran the earlier lookups:"
+    tools = [r.tool for r in results]
+    builder: Callable[[PromptView, Ask], Final | None] | None = None
+    if "case_stats" in tools:
+        builder = _final_breakdown
+    elif "search_cases" in tools:
+        builder = _final_cases
+    elif "log_stats" in tools:
+        builder = _final_top
+    elif "search_logs" in tools:
+        builder = _final_logs
+    elif "cost_usage" in tools:
+        builder = _final_cost
+    elif "soc_metrics" in tools:
+        builder = _final_posture
+    final = builder(view, replace(ask, intent="rerun")) if builder is not None else None
+    if final is not None:
+        final.body.insert(0, head)
+        final.lead = []
+        return final
+    body = [head]
     for r in results:
         body.extend(_say_result(r)[:3])
     return Final(body=body, blocks=_default_blocks(results), follow_ups=_follow_ups(view, "rerun", charts=True))
@@ -5217,11 +6137,12 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
         # Nothing data-bearing ran: the missing access IS the answer, so it leads.
         body.append(f"{lead}, so no data backs this answer. {advice}".strip())
         advice = ""
-    elif data:
-        body.append("Here is what I could read for this question:")
     narration: list[str] = []
     for r in data:
         narration.extend(_say_result(r)[:4])
+    if data and not body and narration and narration[0].startswith(("- ", "1. ")):
+        # A bare list (runbook titles, say) needs a lead-in; a sentence speaks for itself.
+        body.append("These match your question:")
     body.extend(narration)
     # In a degraded answer only excerpts that match the question's topic are worth
     # showing; an unrelated top hit would read as an answer it is not.
@@ -5319,10 +6240,18 @@ def _comparison_of(obs: Mapping[str, Any], part: str = "events") -> Mapping[str,
     return comp if isinstance(comp, Mapping) and isinstance(comp.get("rows"), list) else None
 
 
+def _note_text(note: str) -> str:
+    """A comparison's engine note in reader words: the instruction to the model ("…;
+    say so.") becomes a plain statement."""
+    text = re.sub(r";\s*say so\.?\s*$", ".", note.strip())
+    return _plain(text, 240)
+
+
 def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bool = True,
-                    skip: Iterable[str] = (), with_note: bool = True) -> list[str]:
+                    skip: Iterable[str] = (), with_note: bool = True, bullets: bool = False) -> list[str]:
     """``Cases: **47** in Oct 2026 to date vs 30 in Sep 2026 to date (+17, +56.7%).``
-    per row (the subject against its baseline), then the in-progress note."""
+    per row (the subject against its baseline; a list item with ``bullets``), then the
+    in-progress note as its own paragraph."""
     periods = [display_text(p, 40) for p in comp.get("periods") or [] if isinstance(p, str)]
     subject = display_text(comp.get("subject"), 40) or (periods[-1] if periods else "this period")
     baseline = display_text(comp.get("baseline"), 40) or (periods[-2] if len(periods) > 1 else "the period before")
@@ -5347,9 +6276,11 @@ def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bo
         flags = [_change_text(row)] + (["small sample"] if row.get("small_sample") and unit != "count" else [])
         out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)} vs "
                    f"{_value_text(values[base_at], unit)} {_in(baseline)} ({'; '.join(flags)}).")
+    if bullets:
+        out = [f"- {line}" for line in out]
     note = comp.get("note")
     if with_note and isinstance(note, str) and note.strip() and out:
-        out.append(_plain(note, 240))
+        out.append(_note_text(note))
     return out
 
 
@@ -5406,10 +6337,11 @@ def _stats_lead(o: Mapping[str, Any]) -> str:
     filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
     window = _window(o, "all time")
     exact = "" if o.get("exact", True) is not False else " (a partial count)"
+    about = _entity_about(filters)
     if filters.get("status_group") == "active" and window.lower().startswith("all time"):
         verb = "is" if int(total) == 1 else "are"
-        return f"**{_plural(total, 'case')} {verb} open right now**{exact}"
-    return f"**{_plural(total, _stats_noun(o))}** {_in(window)}{exact}"
+        return f"**{_plural(total, 'case')}{about} {verb} open right now**{exact}"
+    return f"**{_plural(total, _stats_noun(o))}**{about} {_in(window)}{exact}"
 
 
 def _date_text(value: Any) -> str:
@@ -5455,10 +6387,31 @@ def _say_bucket_counts(o: Mapping[str, Any], *, unit_word: str | None = None) ->
     return text
 
 
+def _say_two_field_counts(o: Mapping[str, Any], first: str, second: str) -> str:
+    """"Open: high 5, medium 3; Closed: low 40 and medium 2." for a two-field grouping."""
+    rows = [g for g in _stats_groups(o) if isinstance(g.get("key"), Mapping)]
+    outer: dict[str, list[tuple[str, float]]] = {}
+    for g in rows:
+        head = _group_value(first, _dig(g, "key", first))
+        outer.setdefault(head, []).append((_group_value(second, _dig(g, "key", second)),
+                                           _num(_dig(g, "metrics", "count")) or 0))
+    parts = []
+    for head, inner in list(outer.items())[:6]:
+        total = sum(n for _label, n in inner)
+        shown = sorted(inner, key=lambda item: -item[1])[:5]
+        parts.append(f"{head} {_count(total)} ({_join([f'{label} {_count(n)}' for label, n in shown])})")
+    if not parts:
+        return ""
+    name = {"status_group": "open or closed"}.get(first, first.replace("_", " "))
+    return f"By {name}, then {second.replace('_', ' ')}: " + "; ".join(parts) + "."
+
+
 def _say_group_counts(o: Mapping[str, Any]) -> str:
     fields = [f for f in o.get("group_by") or [] if isinstance(f, str)]
     if not fields or o.get("bucket"):
         return ""
+    if len(fields) >= 2:
+        return _say_two_field_counts(o, fields[0], fields[1])
     field = fields[0]
     rows = [g for g in _stats_groups(o) if isinstance(g.get("key"), Mapping)]
     parts = [f"{_group_value(field, _dig(g, 'key', field))} {_count(_dig(g, 'metrics', 'count'))}" for g in rows[:8]]
@@ -5474,7 +6427,7 @@ def _say_group_counts(o: Mapping[str, Any]) -> str:
         text += f"; {_plural(other, 'more case')} in smaller groups"
     text += "."
     if o.get("multi_valued"):
-        text += f" A case can count under several {name}s, so these add up to more than the total."
+        text += f" A case can count under several {_plural_noun(name)}, so these add up to more than the total."
     return text
 
 
@@ -5509,15 +6462,21 @@ def _zero_suggestions(o: Mapping[str, Any]) -> tuple[str, list[str]]:
     if not labels:
         return "", []
     follow = []
+    ways: list[str] = []
     for label in labels[:3]:
         low = label.lower()
         if low == "all time":
             follow.append("Show the same for all time")
+            ways.append("look over all time")
         elif low.startswith("without the "):
             follow.append(f"Show the same {low}")
+            ways.append(f"drop the {low[len('without the '):]}")
         elif low.startswith(("last ", "this ")):
             follow.append(f"Show the same for the {low}" if low.startswith("last ") else f"Show the same for {low}")
-    return f"To widen it: {_join(labels[:3], 'or')}.", follow
+            ways.append(f"look at the {low}" if low.startswith("last ") else f"look at {low}")
+        else:
+            ways.append(low)
+    return f"To widen it, {_join(ways, 'or')}.", follow
 
 
 def _say_case_stats(r: Result) -> list[str]:
@@ -5533,9 +6492,15 @@ def _say_case_stats(r: Result) -> list[str]:
             out.append(sentence)
     if o.get("partial"):
         out.append(_plain(o.get("partial"), 240))
+    filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
+    if filters.get("status_group") == "terminal" and not _window(o, "all time").lower().startswith("all time"):
+        # The window is creation time: say so, so "closed this month" is read right.
+        out.append("The window counts cases by when they were opened, so these are the cases opened in it that "
+                   "are now closed.")
     comp = _comparison_of(o)
     if comp:
-        out.extend(_say_comparison(comp))
+        out.append("Compared with the previous period:")
+        out.extend(_say_comparison(comp, bullets=True))
     return out
 
 
@@ -5555,13 +6520,43 @@ def _stats_blocks(r: Result | None, *, series_view: str = "bar") -> list[dict[st
     )
 
 
+def _age_lead(ask: Ask, o: Mapping[str, Any], count: Any, noun: str) -> str | None:
+    """"**14 open cases** were opened more than 3 days ago (before 7 Oct 2026 12:00)."
+    for a case-age question (the window is an upper bound on the opening time)."""
+    if ask.win is None or not ask.win.older:
+        return None
+    label = _window(o, "")
+    when = f" ({label.replace('until ', 'before ', 1)})" if label.startswith("until ") else ""
+    verb = "was" if _num(count) == 1 else "were"
+    filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
+    return f"**{_plural(count, noun)}**{_entity_about(filters)} {verb} {ask.win.phrase}{when}."
+
+
+def _closer_caveat(ask: Ask, groups: Sequence[str]) -> str:
+    """What a "who closed" grouping can and cannot say (the case store records the
+    assignee and the kind of decider, never which analyst pressed close)."""
+    if "closed_by" in groups:
+        return ("These count who decided each close (the AI agent, an analyst, the system or an analyst policy); "
+                "chat cannot name the analyst who closed a case.")
+    if "assignee" in groups and re.search(r"\b(?:closed|resolved|close|resolve)\b", ask.lowered):
+        return ("Chat counts closed cases by the analyst they are assigned to; it does not record which analyst "
+                "closed each one.")
+    return ""
+
+
 def _final_breakdown(view: PromptView, ask: Ask) -> Final | None:
-    stats = view.ok("case_stats", where=lambda r: r.input.get("window") != _ANCHOR_WINDOW or not _needs_anchor(ask))
+    stats = view.ok("case_stats")
     if stats is None:
         return None
     o = stats.obs
     total = _num(o.get("total")) or 0
     body = _say_case_stats(stats)
+    age = _age_lead(ask, o, total, _stats_noun(o)) if total else None
+    if age and body:
+        body[0] = age
+    caveat = _closer_caveat(ask, [g for g in o.get("group_by") or [] if isinstance(g, str)])
+    if caveat and total:
+        body.insert(min(2, len(body)), caveat)
     oldest = view.ok("search_cases")
     if oldest is not None and total:
         cases = [c for c in oldest.obs.get("cases") or [] if isinstance(c, Mapping)]
@@ -5570,13 +6565,13 @@ def _final_breakdown(view: PromptView, ask: Ask) -> Final | None:
             created = _date_text(first.get("created_at"))
             body.append(f"The oldest still open is {_code(first.get('case_id'), 60)} ({_case_name(first)}), opened "
                         f"{created}." if created else f"The oldest still open is {_code(first.get('case_id'), 60)}.")
-            body.extend(_case_bullets(oldest, limit=5)[1:])
-    volume = (view.ok("case_stats", where=lambda r: r is not stats and bool(r.obs.get("bucket"))
-                      and r.input.get("window") != _ANCHOR_WINDOW)
-              or view.ok("case_stats", where=lambda r: r is not stats and bool(r.obs.get("bucket"))))
+            rest = _case_bullets(oldest, limit=5)[1:]
+            if rest:
+                body.append("The next oldest:")
+                body.extend(rest)
+    volume = view.ok("case_stats", where=lambda r: r is not stats and bool(r.obs.get("bucket")))
     if volume is not None and volume is not stats:
-        over = f" {_in(_window(volume.obs))}" if volume.input.get("window") == _ANCHOR_WINDOW else ""
-        sentence = _say_bucket_counts(volume.obs, unit_word=f"Cases opened per {volume.obs.get('bucket')}{over}")
+        sentence = _say_bucket_counts(volume.obs, unit_word=f"Cases opened per {volume.obs.get('bucket')}")
         if sentence:
             body.append(sentence)
     blocks = _stats_blocks(stats)
@@ -5596,6 +6591,67 @@ def _final_breakdown(view: PromptView, ask: Ask) -> Final | None:
         follow = ["Show the same cases by month", "Compare this month with last month"]
     follow = [f for f in follow if f] + _follow_ups(view, "cases", charts=bool(blocks))
     return Final(body=body, blocks=blocks[:6], follow_ups=list(dict.fromkeys(follow))[:3])
+
+
+def _default_window_sentence(ask: Ask, covered: str, *, what: str = "this covers", tail: str = "") -> str:
+    """Why the answer covers its default window: no period was named, the named one
+    could not be dated (the anchor lookup did not answer), or a time phrase could not
+    be read. Never claims "no period was named" when one was."""
+    if ask.undated:
+        return (f"{ask.undated} could not be dated (the lookup that reads the current month did not answer), so "
+                f"{what} {covered}.{tail}")
+    if ask.unread:
+        return f"I could not read “{_plain(ask.unread, 60)}” as a period, so {what} {covered}.{tail}"
+    return f"No period was named, so {what} {covered}.{tail}"
+
+
+def _final_summary(view: PromptView, ask: Ask) -> Final | None:
+    """A period summary: how many cases (and their severity), the volume per period,
+    the posture figures and the riskiest true positives of that window."""
+    sev = view.ok("case_stats", where=lambda r: "severity" in (r.obs.get("group_by") or []))
+    vol = view.ok("case_stats", where=lambda r: bool(r.obs.get("bucket")))
+    post, tps = view.ok("soc_metrics", "posture"), view.ok("search_cases")
+    head = sev or vol
+    if head is None and post is None:
+        return None
+    body: list[str] = []
+    window = _window((head or post).obs, "")  # type: ignore[union-attr]
+    if head is not None and not _num(head.obs.get("total")):
+        # Nothing was opened: the rates and lists would only repeat "not measured".
+        hint, follow = _zero_suggestions(head.obs)
+        body = [f"No case was opened {_in(window)}." + (f" {hint}" if hint else "")]
+        return Final(body=body, follow_ups=follow or ["Show the same for all time"])
+    if head is not None:
+        body.append(_stats_lead(head.obs) + ".")
+        groups = _say_group_counts(sev.obs) if sev is not None else ""
+        if groups:
+            body.append(groups)
+    if vol is not None and _num(vol.obs.get("total")):
+        # A bucketed window covers whole periods: name it when it differs.
+        over = _window(vol.obs, "")
+        over = f" {_in(over)}" if over and over != window else ""
+        sentence = _say_bucket_counts(vol.obs, unit_word=f"Opened per {vol.obs.get('bucket') or 'period'}{over}")
+        if sentence:
+            body.append(sentence)
+    if post is not None:
+        body.extend(line for line in _say_posture(post)
+                    if line.startswith(("False-positive", "Timing:", "SLA attainment")))
+    if tps is not None:
+        body.append(_say_search_cases(tps, noun="true positive"))
+        body.extend(_case_bullets(tps))
+    blocks = _keep(
+        _block(vol, "series", view="bar", title="Cases opened"),
+        _block(sev, "categories", view=_first_view(sev, "categories", ("donut", "hbar")), title="Cases by severity"),
+        _block(post, "kpis", view="kpi_group", title=f"Security posture ({window.split(' (')[0]})" if window
+               else "Security posture"),
+        _block(tps, "case_list", view="case_list", title="Riskiest true positives") if tps and _num(
+            tps.obs.get("count")) else None,
+    )
+    period = ask.win.phrase if ask.win is not None and ask.win.spec is not None else "this month"
+    follow = [f"Compare {period} with the period before" if period != "this month"
+              else "Compare this month with last month",
+              f"Create a report for {period}", "Which hosts generated the most alerts this week?"]
+    return Final(body=body, blocks=blocks, follow_ups=follow)
 
 
 _TREND_WORDS = {"timing": "Response times", "rates": "False-positive and true-positive rates",
@@ -5631,9 +6687,6 @@ def _final_trend(view: PromptView, ask: Ask) -> Final | None:
     subject = ask.subject or "cases"
     body: list[str] = []
     window = _window((stats or trends or timing).obs)  # type: ignore[union-attr]
-    if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
-        body.append(f"No period was named, so this shows {_in(window)}; ask for another window (all time, this "
-                    "quarter, the last 6 months) to change it.")
     if subject == "timing" and stats is not None:
         o = stats.obs
         body.insert(0, f"**{_TREND_WORDS['timing']} {_in(window)}**, by {o.get('bucket') or 'period'} "
@@ -5669,6 +6722,10 @@ def _final_trend(view: PromptView, ask: Ask) -> Final | None:
                 body.append(f"By severity, the cases are split as the stacked chart shows ({_plural(stats.obs.get('total'), 'case')}).")
         if logs is not None:
             body.append("Alert volume: " + _say_log_stats(logs, subject=""))
+    if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
+        covered = f"the {window}" if window.startswith("last ") else window
+        body.append(_default_window_sentence(ask, covered, tail=" Name another (all time, this quarter, the last "
+                                                                "6 months) to change it."))
     blocks = _keep(
         _block_titled(stats, "series", "response times", view="line"),
         _block_titled(stats, "series", "rates", view="line"),
@@ -5682,6 +6739,46 @@ def _final_trend(view: PromptView, ask: Ask) -> Final | None:
     )
     follow = ["Compare this month with last month", "Show the same trend for the last 6 months by month"]
     return Final(body=body, blocks=blocks[:6], follow_ups=(follow + _follow_ups(view, "posture", charts=True))[:3])
+
+
+#: "Is our FP rate better or worse?": the measure the question names, the comparison
+#: row that carries it, and which direction is the better one.
+_DIRECTION_MEASURES = (
+    (r"\b(?:fp|false[- ]positive) rate\b", ("false-positive rate",), "lower"),
+    (r"\bmttr\b|\btime to resolve\b|\bresolution time\b", ("mttr (median)", "mttr"), "lower"),
+    (r"\bmtta\b|\btime to acknowledge\b", ("mtta (median)", "mtta"), "lower"),
+    (r"\bmttd\b|\btime to detect\b", ("mttd (median)", "mttd"), "lower"),
+    (r"\bautomation\b|\bauto[- ]?clos\w*", ("automation rate",), "higher"),
+)
+_BETTER_WORSE_RE = re.compile(r"\b(better|worse|improv\w*|getting|declin\w*|regress\w*)\b")
+
+
+def _direction_answer(ask: Ask, comps: Sequence[Mapping[str, Any] | None]) -> str:
+    """"**Worse**: the false-positive rate went from 40% to 75.6% (+35.6 points)." when
+    the question asks whether a named measure got better or worse; "" otherwise."""
+    if not _BETTER_WORSE_RE.search(ask.lowered):
+        return ""
+    for pattern, labels, better in _DIRECTION_MEASURES:
+        if not re.search(pattern, ask.lowered):
+            continue
+        for comp in comps:
+            for row in (comp or {}).get("rows") or []:
+                if not isinstance(row, Mapping) or display_text(row.get("label"), 60).lower() not in labels:
+                    continue
+                values = row.get("values") if isinstance(row.get("values"), list) else []
+                name = display_text(row.get("label"), 60).split(" (")[0]
+                name = name if name.isupper() else name[:1].lower() + name[1:]
+                change = _num(row.get("change"))
+                if len(values) < 2 or change is None or _num(values[-2]) is None:
+                    return (f"There is no direction to report: the {name} was not measured in "
+                            f"{display_text(comp.get('baseline'), 40) or 'the earlier period'}.")  # type: ignore[union-attr]
+                unit = row.get("unit")
+                verdict = "No change" if change == 0 else (
+                    "Better" if (change < 0) == (better == "lower") else "Worse")
+                caveat = " The sample is small, so read the change with care." if row.get("small_sample") else ""
+                return (f"**{verdict}**: the {name} went from {_value_text(values[-2], unit)} to "
+                        f"{_value_text(values[-1], unit)} ({_change_text(row)}).{caveat}")
+    return ""
 
 
 def _final_compare(view: PromptView, ask: Ask) -> Final | None:
@@ -5701,7 +6798,7 @@ def _final_compare(view: PromptView, ask: Ask) -> Final | None:
         body.extend(f"- {line}" for line in _say_comparison(comp, limit=6, with_note=False))
         note = comp.get("note")
         if isinstance(note, str) and note.strip():
-            body.append(_plain(note, 240))
+            body.append(_note_text(note))
     elif head is not None:
         body.extend(_say_case_stats(head))
     if post is not None and _comparison_of(post.obs):
@@ -5720,6 +6817,10 @@ def _final_compare(view: PromptView, ask: Ask) -> Final | None:
         lines = _say_comparison(_comparison_of(timing.obs), limit=3, skip=said, with_note=False)  # type: ignore[arg-type]
         if lines:
             body.append("Response times: " + " ".join(lines))
+    direction = _direction_answer(ask, [comp, _comparison_of(post.obs) if post else None,
+                                        _comparison_of(timing.obs) if timing else None])
+    if direction:
+        body.insert(0, direction)
     blocks = _keep(
         _block_titled(head, "comparison", view="kpi_group", title="Change versus the previous period"),
         _block_titled(mix, "comparison", view="grouped_bar", title="By severity"),
@@ -5771,9 +6872,11 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
     o = (vol or post).obs  # type: ignore[union-attr]
     label = _window(o, "")
     all_time = label.lower().startswith("all time")
-    title = _perf_title(template, "" if all_time else label, all_time)
+    # The title names the period only ("last 30 days"); the subtitle keeps its dates.
+    short = label.split(" (")[0]
+    title = _perf_title(template, "" if all_time else short, all_time)
     if template == "executive" and re.search(r"\bexec(?:utive)? (?:summary|overview|brief)\b", ask.lowered):
-        title = f"Executive summary, {label}" if label and not all_time else "Executive summary"
+        title = f"Executive summary, {short}" if short and not all_time else "Executive summary"
     p = post.obs if post else {}
     quality = p.get("quality") if isinstance(p.get("quality"), Mapping) else {}
     totals = o.get("totals") if isinstance(o.get("totals"), Mapping) else {}
@@ -5791,8 +6894,8 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
         facts.append(f"MTTR median {_minutes(mttr)}")
     if _num(open_now) is not None:
         facts.append(f"**{_count(open_now)} open now**")
-    span = (f" ({label.split(' (')[0]}, {label.split(' (', 1)[1].rstrip(')')})" if all_time and " (" in label
-            else "")
+    detail = label.split(" (", 1)[1].rstrip(")") if " (" in label else ""
+    span = (f" ({short}, {detail})" if all_time and detail else f" ({detail})" if detail else "")
     lead = f"**{title}**{span}: {_join(facts)}."
     summary_bits = [f"{_plural(cases, 'case')} {_in(label) if label else ''}".strip()]
     if _num(fp) is not None:
@@ -5850,9 +6953,15 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
     if template == "infographic":
         envelope["layout"] = "infographic"
     body = [lead]
+    if comp and re.search(r"\bcompar\w*|\bvs\.?\b|\bversus\b|\bprevious\b", ask.lowered):
+        # "Compare this report with the previous 30 days": the change leads the answer.
+        lines = _say_comparison(comp, limit=3, bullets=True)
+        if lines:
+            body.append("Compared with the previous period:")
+            body.extend(lines)
     if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
-        body.append("No period was named, so the report covers the last 30 days; ask for a lifetime report to cover "
-                    "all time.")
+        body.append(_default_window_sentence(ask, "the last 30 days", what="the report covers",
+                                             tail=" Ask for a lifetime report to cover all time."))
     follow = ["Create the same report for all time" if not all_time else "Create the same report for the last 90 days",
               "Compare this month with last month", "Make an infographic of our posture this quarter"]
     if template == "infographic":
@@ -5889,6 +6998,12 @@ def _final_brief(view: PromptView, ask: Ask) -> Final | None:
     if missing is not None:
         return missing
     got, decision = view.ok("get_case"), view.ok("explain_decision")
+    found = view.ok("search_cases")
+    if got is None and not ask.case_id and found is not None and not _newest_case(found):
+        status = (ask.case_status or "escalated").replace("_", " ")
+        return Final(body=[f"No {status} case was found to brief. Name a case id, or ask for the open cases first."],
+                     follow_ups=["List the open cases", "Show me the newest escalated case",
+                                 "Which cases were escalated this week?"])
     if got is None:
         return None
     case = _dig(got.obs, "case")
@@ -5990,7 +7105,8 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
     said_total = False
     for r in log_results:
         group = (r.obs.get("group_by") or [""])[0]
-        if group not in ("user", "host", "ip", "rule"):
+        if group not in ("user", "host", "ip", "rule") or not _num(r.obs.get("total")):
+            # Zero matches: the event search below says so once.
             continue
         sentence = _say_log_stats(r, subject=f"for {_code(value)}")
         if said_total:
@@ -6001,7 +7117,8 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
             body.append(f"- {sentence}")
             said_total = True
     logs = view.ok("search_logs")
-    if logs is not None:
+    if logs is not None and not said_total:
+        # The rankings above already gave the total and who/what it involves.
         body.append(_say_search_logs(logs, subject=_code(value)))
     cases = view.ok("search_cases")
     stats = view.ok("case_stats")
@@ -6027,7 +7144,7 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
     if audit is not None:
         body.append("Audit trail of that case: " + _say_audit(audit))
     if not (ask.win and ask.win.spec is not None) and not view.analyst_window:
-        body.append("No period was named, so the logs and cases cover the last 30 days.")
+        body.append(_default_window_sentence(ask, "the last 30 days", what="the logs and cases cover"))
     blocks = _keep(
         _block(lookup, "entity", view="entity", title="Indicator reputation"),
         *[_block(r, "categories", view="hbar") for r in log_results[:3]],
@@ -6070,6 +7187,7 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
     "breakdown": _final_breakdown, "trend": _final_trend, "compare": _final_compare,
     "perf_report": _final_perf_report, "brief": _final_brief, "deep": _final_deep, "clarify": _final_clarify,
+    "summary": _final_summary,
 }
 
 
@@ -6129,6 +7247,34 @@ def _window_note(view: PromptView, ask: Ask) -> str:
     return f"Window: the {chip} you selected applies to the windowed lookups above."
 
 
+def _minutes_note(view: PromptView, ask: Ask) -> str:
+    """A window in minutes reaches case, metric and cost lookups as whole hours."""
+    if ask.win is None or not isinstance(ask.win.spec, str) or not re.fullmatch(r"now-\d+m", ask.win.spec):
+        return ""
+    if not any(r.ok and r.tool not in _LOG_WINDOW_TOOLS and r.tool not in _REFERENCE_TOOLS for r in view.results()):
+        return ""
+    hours = ask.win.hours or 1
+    span = "hour" if hours == 1 else f"{hours} hours"
+    logs = any(r.ok and r.tool in _LOG_WINDOW_TOOLS for r in view.results())
+    return (f"Case, metric and cost lookups count whole hours, so they cover the last {span} rather than "
+            f"{ask.win.phrase}" + (f"; log lookups use {ask.win.phrase} exactly." if logs else "."))
+
+
+def _period_note(final: Final, ask: Ask) -> str:
+    """A period the question named that the lookups could not use (one that could not
+    be dated, or a time phrase the planner could not read): said once, never dropped
+    silently (routing.md §5.16)."""
+    if ask.intent not in _ANCHOR_INTENTS or not (ask.undated or ask.unread):
+        return ""
+    if any("could not be dated" in line or "as a period" in line for line in final.body):
+        return ""
+    if ask.undated:
+        return (f"{ask.undated} could not be dated (the lookup that reads the current month did not answer), so "
+                "each figure covers the window its lookup states.")
+    return (f"I could not read “{_plain(ask.unread, 60)}” as a period, so each figure covers the window its lookup "
+            "states.")
+
+
 def _pending_note(view: PromptView, ask: Ask) -> str:
     """Planned lookups the turn's round limit left unrun (the parallel bound split a
     plan over more rounds than the turn allows), named instead of dropped silently."""
@@ -6164,6 +7310,13 @@ def _report_window(view: PromptView, ask: Ask) -> str | None:
     return next((w for w in windows if w), view.analyst_window)
 
 
+#: Intents whose answer is never wrapped into a report envelope: the shift brief
+#: builds its own, and a question ABOUT reports ("How do reports work?"), a change
+#: request, a clarify or an unsupported ask carries no findings to report on.
+_NO_REPORT_INTENTS = frozenset({"shift", "help", "explain_metric", "change", "unsupported", "remember", "empty",
+                                "clarify"})
+
+
 def _compose_final(view: PromptView, ask: Ask) -> Final:
     if view.legacy is not None:
         return _final_legacy(view, ask)
@@ -6174,8 +7327,8 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
     generic = final is None
     if final is None:
         final = _final_generic(view, ask)
-    if (not view.case_scoped and ask.report and ask.intent != "shift" and any("ref" in b for b in final.blocks)
-            and not any(b.get("type") == "report" for b in final.blocks)):
+    if (not view.case_scoped and ask.report and ask.intent not in _NO_REPORT_INTENTS
+            and any("ref" in b for b in final.blocks) and not any(b.get("type") == "report" for b in final.blocks)):
         # Wrapped first, so the report's lead replaces the narration while the notes
         # (what is missing, what failed, the window) still follow it. A generic final
         # carries its own notes (:attr:`Final.notes`); for the others they are added
@@ -6184,7 +7337,7 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
             # "a report on case X" names no template: the intent's own one fits best.
             ask = replace(ask, report=_INTENT_TEMPLATES.get(ask.intent, "custom"))
         final = _as_report(
-            final, view, ask, title=_TEMPLATE_TITLES.get(ask.report or "", "Report"),
+            final, view, ask, title=_report_title(view, ask),
             subtitle=_report_window(view, ask),
             summary=_report_summary(final, view, ask), steps=_report_steps(view, ask))
     if not generic:
@@ -6219,6 +7372,12 @@ def _compose_final(view: PromptView, ask: Ask) -> Final:
     window_note = _window_note(view, ask)
     if window_note:
         final.body.append(window_note)
+    period_note = _period_note(final, ask)
+    if period_note:
+        final.body.append(period_note)
+    minutes_note = _minutes_note(view, ask)
+    if minutes_note:
+        final.body.append(minutes_note)
     envelope = next((b for b in final.blocks if b.get("type") == "report"), None)
     if ask.save and not view.case_scoped and envelope is not None:
         # SPEC D11: "create/make/build … a report" asks the SERVER to save it to
@@ -6293,7 +7452,9 @@ def plan_turn(messages: Sequence[Mapping[str, Any]]) -> str:
         calls = _next_calls(view, ask)
         if calls:
             return _render_calls(calls)
-        final = _compose_final(view, ask)
+        # The final reads the DATED ask (a named month or quarter with its year) and a
+        # view without the anchor lookup that dated it.
+        final = _compose_final(_without_anchor(view, ask), _resolved(view, ask))
         if view.legacy is not None:
             # The legacy aggregate carries no header manifest, so no ref can be named:
             # a header-less prose final lets the engine show the turn's artifacts in

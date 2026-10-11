@@ -222,13 +222,11 @@ describe('NoiseFunnel', () => {
     expect(screen.queryByTestId('noise-reduction-summary')).toBeNull();
 
     const svg = graph(view.container);
-    // 216, moved together with the wrapper's `h-[216px]`. The two MUST agree: the height
-    // flows into this viewBox and the drawing is fitted with `preserveAspectRatio`, so a
-    // class-only change letterboxes the band (dead space top and bottom) and drifts the
-    // percentage-positioned HTML label overlay off the nodes it labels, while a
-    // constant-only change overflows the SVG past its box. The line below is therefore not
-    // decoration — the pair is the only guard against a silent letterbox regression.
-    expect(svg).toHaveAttribute('viewBox', '0 0 800 216');
+    // Round 12: the inline band scales (`h-[clamp(240px,18dvw,340px)]`) and the drawing
+    // follows the MEASURED box height, so the viewBox can never letterbox inside it. jsdom
+    // lays nothing out, so this is the pre-measurement fallback — the clamp's floor. The
+    // measured path is pinned in "draws the inline flow at the measured band height".
+    expect(svg).toHaveAttribute('viewBox', '0 0 800 240');
     expect(svg).toHaveAttribute('preserveAspectRatio', 'xMidYMid meet');
     expect(svg.querySelector('[data-context-node-key="ingested"]')).toHaveAttribute('x', '10');
     expect(svg.querySelector('[data-node-key="closed"]')).toHaveAttribute('x', '788');
@@ -475,7 +473,11 @@ describe('NoiseFunnel', () => {
       'true',
     );
 
-    await user.click(screen.getByRole('button', { name: 'Expand noise reduction flow' }));
+    // ONE label in both modes (Round 12): Detailed used to say "Expand" for the same
+    // full-screen inspection Simple calls "Full screen".
+    const fullScreen = screen.getByRole('button', { name: 'Open full-screen noise reduction flow' });
+    expect(fullScreen).toHaveTextContent('Full screen');
+    await user.click(fullScreen);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveClass('h-[min(92dvh,960px)]', 'w-[min(96dvw,1800px)]');
     const expanded = within(dialog).getByRole('group', {
@@ -694,6 +696,76 @@ describe('NoiseFunnel', () => {
     await user.click(screen.getByRole('radio', { name: 'Detailed' }));
     expect(screen.getByRole('button', { name: /^Awaiting review: 120 candidates/i }))
       .toBeInTheDocument();
+  });
+
+  it('draws the inline flow at the measured band height, in the inline padding rhythm', () => {
+    // Round 12: the band's CSS height is a clamp, so the drawing must follow the box it
+    // resolved to. A 300px band used to flip to the full-screen padding (`height >= 300`)
+    // and draw a SMALLER pipeline than a 296px one; the rhythm is now explicit.
+    const spy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'noise-flow-band'
+          ? DOMRect.fromRect({ width: 900, height: 300 })
+          : DOMRect.fromRect({ width: 0, height: 0 });
+      });
+    try {
+      const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      const svg = graph(view.container);
+      expect(svg).toHaveAttribute('viewBox', '0 0 900 300');
+      // Inline rhythm: plotTop 34, plotBottom 290, node padding 24 → a 232px pipeline,
+      // which the full ingested context node spans (the inspection rhythm would give 180).
+      expect(svg.querySelector('[data-context-node-key="ingested"]')).toHaveAttribute('height', '232');
+      expect(screen.getByTestId('noise-flow-band')).toHaveClass('h-[clamp(240px,18dvw,340px)]');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('states alert reduction only over one fully measured window', () => {
+    // 1 − cases ÷ alerts over the same window: the fixture opens 40 cases from 1000 alerts.
+    const { unmount } = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+    const measured = screen.getByTestId('noise-alert-reduction');
+    expect(measured).toHaveAttribute('data-measured', 'true');
+    expect(measured).toHaveTextContent('Alert reduction96%');
+    expect(measured).toHaveTextContent('1,000 alerts became 40 cases');
+    unmount();
+
+    // Counters that cover only part of the window cannot carry the ratio: an em dash and
+    // the reason, never a percentage computed across two different populations.
+    render(
+      <NoiseFunnel
+        data={fixture({ counters: { available: true, since: '2026-07-05T00:00:00Z', incomplete: true } })}
+        animate={false}
+        variant="flat"
+      />,
+    );
+    const partial = screen.getByTestId('noise-alert-reduction');
+    expect(partial).toHaveAttribute('data-measured', 'false');
+    expect(partial).toHaveTextContent('Alert reduction—');
+    expect(partial).toHaveTextContent(/Not measured: partial coverage\./);
+  });
+
+  it('withholds alert reduction while counters warm up or the case tally is partial', () => {
+    const { unmount } = render(
+      <NoiseFunnel
+        data={fixture({ counters: { available: false, since: null, incomplete: true } })}
+        animate={false}
+      />,
+    );
+    expect(screen.getByTestId('noise-alert-reduction')).toHaveTextContent(
+      /—Not measured: alert counters are still warming up\./,
+    );
+    unmount();
+    render(
+      <NoiseFunnel
+        data={fixture({ cases_meta: { truncated: true, store_total: 900, fetched: 500 } })}
+        animate={false}
+      />,
+    );
+    expect(screen.getByTestId('noise-alert-reduction')).toHaveTextContent(
+      /Not measured: case counts are partial for this window\./,
+    );
   });
 
   it('discloses partial coverage without requiring Detailed or full screen', () => {

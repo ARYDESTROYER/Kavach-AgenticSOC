@@ -5,13 +5,15 @@ import { humanizeAge, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import {
   StatusBadge,
-  VerdictBadge,
   RiskBadge,
   ConfidenceBadge,
   SeverityBadge,
   AutoClosedBadge,
+  AiVerdictChip,
+  OutcomeBadge,
   severityBand,
 } from './badges';
+import { caseOutcome } from './outcome';
 import { ProvenanceTag, severityProvenance } from './ProvenanceTag';
 import { InlineCode } from './CodeBlock';
 
@@ -84,6 +86,11 @@ export function CaseHoverCard({
   // behaviour-identical to the uncontrolled card: Radix still drives every hover, focus
   // and dismiss transition through `onOpenChange`.
   const [open, setOpen] = React.useState(false);
+  // Round 12 (D15): the outcome of record — the analyst's classification once a human
+  // classified the case, the attributed AI assessment otherwise.
+  const outcome = caseOutcome(c);
+  const humanOutcome = outcome.source === 'analyst' || outcome.source === 'analyst_policy' ||
+    outcome.source === 'analyst_unrecorded';
   React.useEffect(() => {
     if (forceClosed) setOpen(false);
   }, [forceClosed]);
@@ -107,11 +114,19 @@ export function CaseHoverCard({
         className={cn('w-96', className)}
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="font-mono text-xs text-muted-foreground">{c.case_id}</span>
+          {/* The full display id (the queue row may middle-ellipsise it). */}
+          <span className="min-w-0 break-all font-mono text-xs text-muted-foreground">
+            {c.case_number || c.case_id}
+          </span>
           <StatusBadge status={c.status} />
         </div>
         {c.title ? (
           <div className="mt-1.5 line-clamp-2 text-sm font-semibold leading-snug">{c.title}</div>
+        ) : null}
+        {humanOutcome ? (
+          <p data-testid="case-hover-outcome" className="mt-1 text-xs font-medium text-foreground">
+            {outcome.headline}
+          </p>
         ) : null}
 
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -121,7 +136,8 @@ export function CaseHoverCard({
               <ProvenanceTag kind={severityProvenance(c.severity_source)} variant="icon" />
             </span>
           ) : null}
-          {c.verdict ? <VerdictBadge verdict={c.verdict} /> : null}
+          {humanOutcome ? <OutcomeBadge outcome={outcome} /> : null}
+          {c.verdict ? <AiVerdictChip verdict={c.verdict} labelled={humanOutcome} /> : null}
           {typeof c.risk_score === 'number' ? <RiskBadge score={c.risk_score} /> : null}
           {typeof c.confidence === 'number' ? <ConfidenceBadge confidence={c.confidence} /> : null}
           {/* Self-hiding: renders null unless the AI auto-closed the case (terminal +
@@ -135,7 +151,7 @@ export function CaseHoverCard({
 
         {c.entity?.value ? (
           <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="uppercase tracking-wide">{humanizeToken(c.entity.type)}</span>
+            <span>{humanizeToken(c.entity.type)}</span>
             <InlineCode>{c.entity.value}</InlineCode>
           </div>
         ) : null}
@@ -144,7 +160,7 @@ export function CaseHoverCard({
           <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-muted-foreground">{c.summary}</p>
         ) : null}
 
-        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-2 text-2xs text-muted-foreground">
           <span className="min-w-0 truncate">{c.source_name ? c.source_name : 'Case'}</span>
           <span className="shrink-0 whitespace-nowrap">
             Updated {humanizeAge(c.updated_at || c.created_at)}

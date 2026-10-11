@@ -29,6 +29,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 import { OverviewPanel, riskFactorBarColor } from '../OverviewPanel';
+import { SignalProfile } from '../SignalProfile';
 import type { Case } from '@/lib/types';
 
 function render(ui: ReactElement) {
@@ -56,6 +57,10 @@ const CASE = {
 
 function renderOverview(c: Case) {
   return render(<OverviewPanel c={c} fpPolicy={null} triage={null} triageLoading={false} />);
+}
+
+function renderSignalProfile(c: Case = CASE) {
+  return render(<SignalProfile c={c} triage={null} />);
 }
 
 function renderCaseManager(c: Case = CASE) {
@@ -138,10 +143,12 @@ describe('OverviewPanel — decision brief (task 7c)', () => {
       expected: true,
     },
     {
+      // Round 12 (D15): once a PERSON resolved it, the auto-close policy is irrelevant to
+      // this case, so its note is hidden rather than implying the policy was in play.
       label: 'a manually resolved false positive',
       status: 'resolved',
       decisionBy: 'analyst',
-      expected: true,
+      expected: false,
     },
     {
       label: 'an AI-resolved false positive',
@@ -176,7 +183,8 @@ describe('OverviewPanel — decision brief (task 7c)', () => {
       if (expected) expect(note).toBeInTheDocument();
       else {
         expect(note).toBeNull();
-        expect(screen.getByText('Auto-closed by AI')).toBeInTheDocument();
+        if (decisionBy === 'agent') expect(screen.getByText('Auto-closed by AI')).toBeInTheDocument();
+        else expect(screen.queryByText('Auto-closed by AI')).toBeNull();
       }
     },
   );
@@ -206,9 +214,12 @@ describe('OverviewPanel — decision brief (task 7c)', () => {
       status: 'escalated',
       escalation_level: 3,
     } as unknown as Case);
+    // Round 12: the sticky header meta row carries the status; the outcome band names it
+    // at most once (here only inside the headline, "… — escalated").
     expect(
-      within(screen.getByTestId('case-manager-decision-summary')).getAllByText('Escalated'),
-    ).toHaveLength(1);
+      within(screen.getByTestId('case-manager-decision-summary')).queryAllByText('Escalated').length,
+    ).toBeLessThanOrEqual(1);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/escalated$/);
   });
 });
 
@@ -322,7 +333,9 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
       expect(section).toHaveClass('border-t', 'border-border/60', 'pt-6');
     });
     const flatColumns = panel?.querySelectorAll('[data-overview-surface="flat-column"]');
-    expect(flatColumns).toHaveLength(8);
+    // Round 12: the Entity-relationship column's facts moved to the rail's Primary entity
+    // block ("Seen by <rule> on <surface>"), leaving seven flat columns.
+    expect(flatColumns).toHaveLength(7);
     flatColumns?.forEach((column) => {
       expect(column).toHaveClass('rounded-none', 'border-0', 'bg-transparent', 'p-0');
     });
@@ -338,17 +351,18 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(screen.getByText('Deterministic decision authority')).toBeInTheDocument();
     expect(screen.getByText('case_manager')).toBeInTheDocument();
     expect(screen.getByText('System')).toBeInTheDocument();
-    expect(screen.getByText('Impact')).toBeInTheDocument();
-    expect(screen.getByText('Low')).toBeInTheDocument();
-    expect(screen.getByText('Priority')).toBeInTheDocument();
-    expect(screen.getByText('P4')).toBeInTheDocument();
-    expect(
-      screen.getByText(/close \/ escalate call is made by deterministic code/i),
-    ).toBeInTheDocument();
+    // The authority sentence is said ONCE, in the outcome band (it used to repeat in four
+    // places: recommended action, Code decided, the inputs footnote and the decision band).
+    expect(screen.getByTestId('overview-authority')).toHaveTextContent(
+      /close or escalate decision is made by deterministic code/i,
+    );
+    expect(screen.getAllByText(/made by deterministic code/i)).toHaveLength(1);
 
-    // Risk and confidence are each presented once instead of being echoed in three cards.
-    expect(screen.getAllByText('40/100')).toHaveLength(1);
-    expect(screen.getAllByText('90%')).toHaveLength(1);
+    // Round 12 (CM-6): impact, priority, risk and confidence each have ONE home — the
+    // facts rail (see FactsRail.test.tsx) — so the Overview no longer repeats them.
+    expect(within(panel as HTMLElement).queryByText('Impact')).toBeNull();
+    expect(within(panel as HTMLElement).queryByText('Priority')).toBeNull();
+    expect(within(panel as HTMLElement).queryByTestId('case-signal-profile')).toBeNull();
   });
 
   it('keeps the embedded decision heading neutral, and below the case title, across verdict outcomes', () => {
@@ -372,15 +386,12 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
     expect(screen.getByRole('heading', { level: 2 })).not.toHaveClass('text-warning-text');
   });
 
+  // Round 12 (CM-6): the signal profile moved from the Overview aside to the facts rail,
+  // where it is the ONE home for risk and confidence. These pin the same behaviour there.
   it('renders honest, text-equivalent risk and confidence visuals from existing case data', () => {
-    renderCaseManager();
-    const profile = screen.getByRole('complementary', { name: 'Case signal profile' });
-    expect(profile).toHaveClass(
-      'border-t',
-      '@[44rem]/overview:border-l',
-      '@[44rem]/overview:border-t-0',
-    );
-    expect(profile).not.toHaveClass('bg-muted/20', 'rounded-sm');
+    renderSignalProfile();
+    const profile = screen.getByRole('region', { name: 'Case signal profile' });
+    expect(profile).toHaveAttribute('data-testid', 'case-signal-profile');
 
     const risk = within(profile).getByRole('progressbar', { name: 'Risk score: 40/100' });
     expect(risk).toHaveAttribute('aria-valuenow', '40');
@@ -431,7 +442,7 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
 
   it('explains a factor on hover using the recorded score without inventing provider data', async () => {
     const user = userEvent.setup();
-    renderCaseManager();
+    renderSignalProfile();
     await user.hover(
       screen.getByRole('button', {
         name: 'Explain Reputation risk factor, recorded 0 out of 100',
@@ -448,7 +459,7 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
 
   it('opens factor help on keyboard focus and names the case data behind the value', async () => {
     const user = userEvent.setup();
-    renderCaseManager({
+    renderSignalProfile({
       ...CASE,
       member_event_ids: ['event-1', 'event-2'],
     } as unknown as Case);
@@ -508,10 +519,9 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
         'text-foreground',
       );
     }
+    // Impact, priority, the risk factors and the risk/confidence meters now live once in
+    // the facts rail (Round 12, CM-6); the overview keeps its own labels sentence case.
     for (const label of [
-      'Impact',
-      'Priority',
-      'Recorded risk factors',
       'Reported severity',
       'Detection rule',
       'Why it fired',
@@ -526,9 +536,6 @@ describe('OverviewPanel — embedded Case Manager composition', () => {
         'text-muted-foreground',
       );
     }
-    // The signal labels are sentence case, and the score itself is not set in code type.
-    expect(within(panel).getByText('Risk score')).not.toHaveClass('uppercase');
-    expect(within(panel).getByText('40/100')).not.toHaveClass('font-mono');
 
     // A product/source NAME reads in the sans face; true identifiers stay mono.
     for (const name of within(panel).getAllByText('IBM QRadar SIEM')) {
@@ -689,5 +696,72 @@ describe('riskFactorBarColor (#29 — shares the ONE palette scoreBand ladder 74
     expect(riskFactorBarColor(25)).toBe('bg-medium'); // >=22
     expect(riskFactorBarColor(50)).toBe('bg-high'); // >=48
     expect(riskFactorBarColor(80)).toBe('bg-critical'); // >=74
+  });
+});
+
+describe('OverviewPanel — the case outcome (Round 12, D15)', () => {
+  const closedAsFp = {
+    ...CASE,
+    verdict: 'NEEDS_HUMAN',
+    confidence: 0.75,
+    status: 'closed',
+    decision_by: 'analyst',
+    disposition: 'false_positive',
+    recommended_action: 'Benign baseline activity; no action required.',
+    history: [
+      {
+        event: 'analyst_action',
+        action: 'close',
+        analyst: 'aryan',
+        ts: '2026-10-09T10:00:00Z',
+        classified_disposition: 'false_positive',
+      },
+    ],
+  } as unknown as Case;
+
+  it('the analyst bug: a NEEDS_HUMAN case closed as FP leads with the analyst outcome', () => {
+    renderCaseManager(closedAsFp);
+    const heading = screen.getByRole('heading', { level: 2 });
+    expect(heading).toHaveTextContent(/^Closed as false positive$/);
+    expect(heading).not.toHaveTextContent(/needs human/i);
+    expect(screen.getByTestId('overview-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
+    // "Code decided" becomes "Analyst resolved" — the code did not close this case.
+    expect(screen.getByRole('heading', { level: 3, name: 'Analyst resolved' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 3, name: 'Code decided' })).toBeNull();
+    expect(screen.getByTestId('overview-authority')).toHaveTextContent(/closed by an analyst/i);
+    // The AI's triage recommendation is kept but demoted, never the next step.
+    expect(screen.queryByRole('heading', { name: 'Recommended action' })).toBeNull();
+    expect(screen.getByTestId('overview-triage-recommendation')).toHaveTextContent(
+      'AI recommendation at triage',
+    );
+    // No auto-close note on a human close.
+    expect(screen.queryByText(/auto-close/i)).toBeNull();
+  });
+
+  it('an undeclared analyst close says the outcome was not recorded', () => {
+    renderCaseManager({
+      ...closedAsFp,
+      verdict: 'TRUE_POSITIVE',
+      disposition: 'true_positive',
+      history: [{ event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z' }],
+    } as unknown as Case);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
+      /^Closed by analyst: outcome not recorded$/,
+    );
+  });
+
+  it('an AI auto-close keeps the code lane and says so', () => {
+    renderCaseManager({ ...CASE, verdict: 'FALSE_POSITIVE', status: 'closed', decision_by: 'agent' } as unknown as Case);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/^Auto-closed as false positive$/);
+    expect(screen.getByRole('heading', { level: 3, name: 'Code decided' })).toBeInTheDocument();
+  });
+
+  it('an analyst-policy close is attributed to the policy, not to a person', () => {
+    renderCaseManager({ ...CASE, verdict: 'NONE', status: 'closed', decision_by: 'analyst_policy' } as unknown as Case);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
+      /^Closed by analyst policy \(declared benign\)$/,
+    );
+    expect(screen.getByRole('heading', { level: 3, name: 'Analyst policy' })).toBeInTheDocument();
+    expect(screen.getByTestId('overview-authority')).toHaveTextContent(/operator rule/i);
   });
 });

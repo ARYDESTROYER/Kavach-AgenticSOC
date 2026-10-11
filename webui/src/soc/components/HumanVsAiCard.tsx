@@ -238,7 +238,9 @@ export function HumanVsAiCard({
       // an `sr-only` node INSIDE the section, never at the help popover: that popover is a
       // Radix portal with no `forceMount`, so while it is closed the IDREF would dangle.
       aria-describedby={describedById}
-      className={cn('flex h-full min-w-0 flex-col p-3', className)}
+      // Flat (Round 12): no inner padding — the dashboard band's gutters separate it from
+      // its neighbour, and a padded cell started its heading 12px off the band's rail.
+      className={cn('flex h-full min-w-0 flex-col', className)}
     >
       <p id={describedById} className="sr-only">
         How this window&rsquo;s cases were closed.
@@ -247,7 +249,7 @@ export function HumanVsAiCard({
         <div className="min-w-0">
           {/* Sentence case at the section-title size (spec principle 2): the tracked
               capitals read as chrome and competed with the numbers below. */}
-          <h2 className="text-sm font-semibold text-foreground">Human vs AI</h2>
+          <h2 className="text-base font-semibold text-foreground">Human vs AI</h2>
         </div>
         <HelpTip
           text={HUMAN_VS_AI_HELP}
@@ -262,7 +264,7 @@ export function HumanVsAiCard({
         />
       </div>
 
-      <ul className="mt-2.5 grid grid-cols-3 gap-2" data-testid="human-vs-ai-totals">
+      <ul className="mt-3 grid grid-cols-3 gap-3" data-testid="human-vs-ai-totals">
         {BANDS.map((band, i) => {
           const count = shown ? fmtNumber(shown[band.key]) : DASH;
           const pct = shares ? `${shares[i]}%` : DASH;
@@ -276,15 +278,16 @@ export function HumanVsAiCard({
                   style={{ backgroundColor: band.color }}
                   aria-hidden
                 />
-                <span className="min-w-0 truncate text-2xs text-muted-foreground" title={band.title}>
+                <span className="min-w-0 truncate text-sm text-muted-foreground" title={band.title}>
                   {band.label}
                 </span>
               </div>
-              <div className="mt-0.5 flex min-w-0 items-baseline gap-1.5">
-                <span className="font-mono text-xl font-semibold leading-none tabular-nums text-foreground">
+              {/* 24px instrument numerals with 13px labels (Round 12 type ladder). */}
+              <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+                <span className="text-3xl font-semibold leading-none tabular-nums text-foreground">
                   {count}
                 </span>
-                <span className="font-mono text-2xs tabular-nums text-muted-foreground">{pct}</span>
+                <span className="text-xs tabular-nums text-muted-foreground">{pct}</span>
               </div>
             </li>
           );
@@ -326,18 +329,18 @@ export function HumanVsAiCard({
         /* No `flex-1` here: one line of text stretched to fill the cell opened a gap three
            times the size of the one the chart used to leave. The footer below closes the
            card instead. */
-        <p className="mt-2 text-2xs text-muted-foreground" data-testid="human-vs-ai-no-series">
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="human-vs-ai-no-series">
           No close-attribution trend for this window yet.
         </p>
       )}
 
-      <div className="mt-1.5 space-y-0.5">
+      <div className="mt-2 space-y-0.5">
         {shown ? null : stale ? (
-          <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-stale">
+          <p className="text-xs text-muted-foreground" data-testid="human-vs-ai-stale">
             Loading this window — the previous window&rsquo;s counts are withheld.
           </p>
         ) : (
-          <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-unavailable">
+          <p className="text-xs text-muted-foreground" data-testid="human-vs-ai-unavailable">
             {unavailableReason}
           </p>
         )}
@@ -354,7 +357,7 @@ export function HumanVsAiCard({
 
             The bucket times on the axis and in the hover are UTC, said ONCE here. The
             label keeps its own node so it still reads as exactly the window it names. */}
-        <p className="text-2xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           <span>{windowLabel}</span>
           {hasChart ? ' · times in UTC' : ''}
           {truncated && !stale ? ' · bounded sample, shares unavailable' : ''}
@@ -363,7 +366,7 @@ export function HumanVsAiCard({
           // The numeral keeps a POPULATION word ("alerts"), because a bare count beside a
           // case cohort would be read as part of it. The rest of the disclaimer — that this
           // is an ingest-hour tally rather than a slice of these cases — is in the help.
-          <p className="text-2xs text-muted-foreground" data-testid="human-vs-ai-alerts">
+          <p className="text-xs text-muted-foreground" data-testid="human-vs-ai-alerts">
             {fmtNumber(alertsIngested)} alerts ingested
           </p>
         ) : null}

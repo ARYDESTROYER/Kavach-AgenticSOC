@@ -283,6 +283,15 @@ export const PrefsProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   return <PrefsContext.Provider value={value}>{children}</PrefsContext.Provider>;
 };
 
+/**
+ * The customization context, or `null` outside a <PrefsProvider> (a lazy chunk that is
+ * also rendered on its own, e.g. the chat workspace in tests, falls back to its local
+ * mirror instead of throwing).
+ */
+export function useOptionalPrefs(): PrefsContextValue | null {
+  return React.useContext(PrefsContext);
+}
+
 /** Access the customization context. Throws if used outside <PrefsProvider>. */
 export function usePrefs(): PrefsContextValue {
   const ctx = React.useContext(PrefsContext);

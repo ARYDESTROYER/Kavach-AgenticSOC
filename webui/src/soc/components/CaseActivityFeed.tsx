@@ -216,11 +216,58 @@ const LiveAgentSteps: React.FC<{ steps: AgentStep[] }> = ({ steps }) => {
   );
 };
 
+type ActivityActor = 'all' | 'human' | 'ai' | 'system';
+
+const AI_ACTOR_RE = /\b(agent|assistant|ai|llm|model|investigator|router|copilot)\b/i;
+
+/** Who produced an activity row — a person, the AI, or the system (no actor). */
+export function activityActorKind(item: Pick<CaseActivityItem, 'actor' | 'kind'>): Exclude<ActivityActor, 'all'> {
+  const actor = String(item.actor || '').trim();
+  if (!actor || /^(system|scheduler|poller|case_manager)$/i.test(actor)) return 'system';
+  if (AI_ACTOR_RE.test(actor.replace(/[_-]+/g, ' ')) || /\b(llm|model)[_ ]call\b/i.test(String(item.kind || ''))) {
+    return 'ai';
+  }
+  return 'human';
+}
+
+const ACTOR_FILTERS: Array<{ value: ActivityActor; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'human', label: 'Human' },
+  { value: 'ai', label: 'AI' },
+  { value: 'system', label: 'System' },
+];
+
 /** The persisted, authoritative timeline: newest-first. */
 const ActivityTimeline: React.FC<{ items: CaseActivityItem[] }> = ({ items }) => {
+  const [actor, setActor] = React.useState<ActivityActor>('all');
+  const shown = actor === 'all' ? items : items.filter((it) => activityActorKind(it) === actor);
   return (
+    <div className="space-y-3">
+      {/* Who-did-what filter (CM-8): a plain button group, one press per view. */}
+      <div role="group" aria-label="Show activity by" className="flex flex-wrap gap-1">
+        {ACTOR_FILTERS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={actor === option.value}
+            onClick={() => setActor(option.value)}
+            className={cn(
+              'h-7 rounded-md border px-2.5 text-xs transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              actor === option.value
+                ? 'border-border-strong bg-secondary font-medium text-foreground'
+                : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {shown.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No activity of this kind yet.</p>
+      ) : (
     <ol className="relative space-y-3 border-l border-border pl-5">
-      {items.map((it, i) => {
+      {shown.map((it, i) => {
         const meta = kindMeta(it.kind);
         const Icon = meta.icon;
         const refStr = summariseRef(it.ref);
@@ -256,13 +303,21 @@ const ActivityTimeline: React.FC<{ items: CaseActivityItem[] }> = ({ items }) =>
               </p>
             ) : null}
             {refStr ? (
-              /* UNTRUSTED ref bits — plain text, mono. */
-              <p className="mt-0.5 font-mono text-2xs text-muted-foreground/80">{refStr}</p>
+              /* UNTRUSTED ref bits — plain text, mono — kept, but under a disclosure so the
+                 row reads as a sentence first (CM-8). */
+              <details className="mt-0.5 text-2xs text-muted-foreground/80">
+                <summary className="w-fit cursor-pointer rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  Details
+                </summary>
+                <p className="mt-0.5 break-all font-mono">{refStr}</p>
+              </details>
             ) : null}
           </li>
         );
       })}
     </ol>
+      )}
+    </div>
   );
 };
 

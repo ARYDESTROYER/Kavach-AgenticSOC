@@ -367,7 +367,9 @@ describe('Workspace Chat page', () => {
   it('owns a full-height frame that bleeds the shell inset, with one h1 and one visible New chat', async () => {
     renderChat();
     const frame = screen.getByTestId('workspace-chat-page');
-    expect(frame).toHaveClass('-my-6', 'h-[calc(100dvh-3.5rem)]', 'min-h-0', 'overflow-hidden');
+    // The whole shell inset (no canvas strips) and a clipped, never-scrollable frame.
+    expect(frame).toHaveClass('-mx-4', '-my-6', 'sm:-mx-6', 'w-auto', 'h-[calc(100dvh-3.5rem)]', 'min-h-0', 'overflow-clip');
+    expect(frame).not.toHaveClass('overflow-hidden');
     expect(frame).toHaveAttribute('data-rail', 'docked');
     const h1 = screen.getAllByRole('heading', { level: 1 });
     expect(h1).toHaveLength(1);
@@ -375,6 +377,36 @@ describe('Workspace Chat page', () => {
     expect(h1[0]).toHaveClass('sr-only');
     await screen.findByText('Newest sign-in review answer');
     expect(screen.getAllByRole('button', { name: 'New chat' })).toHaveLength(1);
+  });
+
+  it('shares one lane between the transcript and the composer, sized by the viewer\'s width preference (D12)', async () => {
+    window.localStorage.removeItem('soc.chat.laneWidth');
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const frame = screen.getByTestId('workspace-chat-page');
+    expect(frame).toHaveAttribute('data-lane-width', 'wide');
+    const section = screen.getByRole('region', { name: 'Conversation' });
+    // The conversation zone is the size container the gutter's cqi resolves against.
+    expect(section).toHaveClass('@container');
+    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('88rem');
+    expect(section.style.getPropertyValue('--chat-gutter')).toBe('clamp(1rem, 2.5cqi, 2.5rem)');
+    // The composer column spans the lane (both edges), not the 48rem prose measure.
+    const composerCol = screen.getByTestId('composer').closest('.col-start-2') as HTMLElement;
+    expect(composerCol).toHaveClass('col-start-2', 'col-end-3');
+    expect(composerCol.className).not.toContain('max-w-[48rem]');
+    // Thread ⋯ → Width → Full width removes the cap and is remembered.
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    const width = await screen.findByRole('menuitem', { name: 'Width, currently Wide' });
+    await user.click(width);
+    const full = await screen.findByRole('menuitemradio', { name: /^Full width/ });
+    act(() => full.focus());
+    await user.keyboard('{Enter}');
+    await settle();
+    expect(frame).toHaveAttribute('data-lane-width', 'full');
+    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('100%');
+    expect(window.localStorage.getItem('soc.chat.laneWidth')).toBe('full');
+    window.localStorage.removeItem('soc.chat.laneWidth');
   });
 
   it('restores the newest thread, marks it current, and switches threads', async () => {
@@ -604,7 +636,7 @@ describe('Workspace Chat page', () => {
     expect(screen.getByRole('separator', { name: 'Resize report panel' })).toHaveAttribute('aria-valuenow', '360');
     expect(document.activeElement).toBe(composer);
     expect(screen.getByRole('button', { name: 'Add answer to report' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: /Report · 1/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Report, 1 item added' })).toHaveAttribute('aria-pressed', 'true');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
@@ -729,7 +761,7 @@ describe('Workspace Chat page', () => {
     renderChat({ caseId: 'case-9' });
     expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-rail', 'none');
     expect(screen.getByRole('heading', { level: 2, name: 'Case case-9' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Report ·/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Report/ })).toBeNull();
     expect(screen.getByTestId('composer')).toHaveAttribute('data-variant', 'case');
     await send('Summarize this case');
     expect(streamCalls()[0].body).toMatchObject({ case_id: 'case-9', message: 'Summarize this case' });
@@ -770,7 +802,8 @@ describe('Workspace Chat page — accessibility', () => {
     await screen.findByText('Yes: 1,284 failed logins.');
     await axeClean(container);
 
-    fireEvent.click(screen.getByRole('button', { name: /Report · 0/ }));
+    // No count while nothing was added: never "Report · 0".
+    fireEvent.click(screen.getByRole('button', { name: 'Report' }));
     expect(await screen.findByTestId('report-panel')).toBeInTheDocument();
     await axeClean(container);
   }, 60_000);

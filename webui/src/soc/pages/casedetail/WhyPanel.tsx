@@ -206,7 +206,7 @@ export const WhyPanel: React.FC<{
           <div className="divide-y divide-border/60 border-y border-border/60">
             {procedurePersona?.selected_id ? (
               <div className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
-                <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                <div className="text-xs font-medium text-muted-foreground">
                   Persona
                 </div>
                 <div className="min-w-0">
@@ -235,7 +235,7 @@ export const WhyPanel: React.FC<{
 
             {procedurePlaybook?.selected_id ? (
               <div className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
-                <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                <div className="text-xs font-medium text-muted-foreground">
                   Playbook
                 </div>
                 <div className="min-w-0">
@@ -264,7 +264,7 @@ export const WhyPanel: React.FC<{
 
             {procedure?.consultation_path ? (
               <div className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
-                <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                <div className="text-xs font-medium text-muted-foreground">
                   Execution path
                 </div>
                 <div className="font-mono text-sm text-foreground">
@@ -276,7 +276,7 @@ export const WhyPanel: React.FC<{
 
           {procedure?.retrieval_query_groups?.length ? (
             <div className="mt-4 space-y-3">
-              <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+              <h4 className="text-xs font-medium text-muted-foreground">
                 Retrieval queries issued
               </h4>
               {procedure.retrieval_query_groups.map((queryGroup, index) => (
@@ -354,7 +354,7 @@ export const WhyPanel: React.FC<{
             ].map((group) =>
               group.items.length ? (
                 <div key={group.label} className="space-y-3">
-                  <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  <h4 className="text-xs font-medium text-muted-foreground">
                     {group.label}
                   </h4>
                   {group.items.map((k, i) => (

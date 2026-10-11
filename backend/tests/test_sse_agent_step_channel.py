@@ -26,6 +26,7 @@ import pytest
 from app.realtime import (
     AGENT_STEP_EVENT,
     CASE_ACTIVITY_EVENT,
+    CASE_CHANGED_EVENT,
     CHAT_TURN_EVENT,
     INAPP_EVENT,
     JOB_EVENT,
@@ -37,8 +38,11 @@ from app.realtime import (
 
 def test_registry_lists_exactly_the_channels_the_backend_publishes() -> None:
     assert SSE_EVENT_TYPES == {
-        AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, CHAT_TURN_EVENT, OVERFLOW_EVENT,
+        AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, CHAT_TURN_EVENT,
+        CASE_CHANGED_EVENT, OVERFLOW_EVENT,
     }
+    # Round 12 (WP-CM): the live Case Manager queue nudge on topic ``cases``.
+    assert CASE_CHANGED_EVENT == "case.changed"
     assert CHAT_TURN_EVENT == "chat.turn"
     # The exact wire tokens. Changing one of these is a client-visible break.
     assert AGENT_STEP_EVENT == "agent.step"

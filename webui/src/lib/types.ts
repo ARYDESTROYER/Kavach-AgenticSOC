@@ -3431,6 +3431,8 @@ export interface ChatContextBounds {
   max_indicator_lookups: number;
   default_stream_mode: ChatStreamMode;
   allow_text_streaming: boolean;
+  /** Round 12 (SPEC D13): animate the brand ring while chat works (`ChatAgentConfig.animated_brand`). */
+  animated_brand?: boolean;
 }
 
 /** Effective per-million rates (present only with `models:read`). */

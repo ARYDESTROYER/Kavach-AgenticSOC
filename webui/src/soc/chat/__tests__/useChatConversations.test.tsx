@@ -13,12 +13,18 @@ import { ApiError } from '@/lib/api';
 import type { ChatConversation, ChatConversationSummary } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
 
-const { listMock, getMock, updateMock, deleteMock } = vi.hoisted(() => ({
+const { listMock, getMock, updateMock, deleteMock, readMock } = vi.hoisted(() => ({
   listMock: vi.fn(),
   getMock: vi.fn(),
   updateMock: vi.fn(),
   deleteMock: vi.fn(),
+  readMock: vi.fn(),
 }));
+
+vi.mock('../turn-runner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turn-runner')>();
+  return { ...actual, markConversationRead: readMock };
+});
 
 vi.mock('../chat-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../chat-api')>();
@@ -31,10 +37,13 @@ vi.mock('../chat-api', async (importOriginal) => {
   };
 });
 
+import { clearChatActivity, putChatActivity, settleChatActivity, type ChatActivity } from '../../chat-activity/activity';
 import {
   HISTORY_CHANNEL,
   NEW_DRAFT_KEY,
+  overlayActivity,
   parseChatNavRequest,
+  preferredThread,
   threadRetentionInfo,
   useChatConversations,
   type UseChatConversationsOptions,
@@ -94,7 +103,47 @@ async function mount(options: UseChatConversationsOptions = {}) {
   return hook;
 }
 
+function activity(patch: Partial<ChatActivity> & { scope: string }): ChatActivity {
+  return {
+    kind: 'workspace',
+    conversationId: null,
+    caseId: null,
+    turnId: null,
+    requestKey: null,
+    title: '',
+    label: null,
+    lookups: 0,
+    status: 'running',
+    startedAt: Date.parse('2026-07-26T10:00:00Z'),
+    source: 'local',
+    ...patch,
+  };
+}
+
+/**
+ * Node's BroadcastChannel crosses test workers, so another suite's "history changed"
+ * would refresh these rails at random: a same-realm channel keeps the signals here.
+ */
+class RealmChannel {
+  static open: RealmChannel[] = [];
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  constructor(public name: string) {
+    RealmChannel.open.push(this);
+  }
+  postMessage(data: unknown) {
+    for (const other of RealmChannel.open) if (other !== this && other.name === this.name) other.onmessage?.({ data } as MessageEvent);
+  }
+  close() {
+    RealmChannel.open = RealmChannel.open.filter((item) => item !== this);
+  }
+}
+
 beforeEach(() => {
+  RealmChannel.open = [];
+  vi.stubGlobal('BroadcastChannel', RealmChannel);
+  clearChatActivity();
+  readMock.mockReset();
+  readMock.mockResolvedValue(true);
   listMock.mockReset();
   getMock.mockReset();
   updateMock.mockReset();
@@ -112,6 +161,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('useChatConversations — list and selection', () => {
@@ -319,12 +369,14 @@ describe('useChatConversations — persistence and actions', () => {
     await settle();
   });
 
-  it('refuses selection and New chat while a turn is in flight', async () => {
+  it('never refuses selection or New chat while a turn is in flight (the answer keeps streaming)', async () => {
     const { result } = await mount();
     act(() => result.current.setBusy(true));
     act(() => result.current.select(OLDER));
+    expect(result.current.activeId).toBe(OLDER.id);
     act(() => result.current.startNew());
-    expect(result.current.activeId).toBe(NEWEST.id);
+    expect(result.current.activeId).toBeNull();
+    await settle();
   });
 });
 
@@ -561,13 +613,10 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
     expect(result.current.activeId).toBe(NEWEST.id);
   });
 
-  it('waits for a running turn before applying a navigation', async () => {
+  it('applies a navigation at once, even while a turn runs (an "Answer ready — Open" toast)', async () => {
     const { result, rerender } = await mount();
     act(() => result.current.setBusy(true));
     rerender({ requested: { conversationId: OLDER.id } });
-    await settle();
-    expect(result.current.activeId).toBe(NEWEST.id);
-    act(() => result.current.setBusy(false));
     await waitFor(() => expect(result.current.activeId).toBe(OLDER.id));
   });
 });
@@ -675,5 +724,98 @@ describe('useChatConversations — threads beyond the loaded page', () => {
       expect(await result.current.remove(OLDER)).toBe(true);
     });
     expect(deleteMock).toHaveBeenCalledWith(OLDER.id);
+  });
+});
+
+describe('useChatConversations — live statuses (Round 12, SPEC D13)', () => {
+  it('overlays the activity store on the server rows and adds a row for a new thread being answered', () => {
+    const rows = [{ ...NEWEST, status: 'running' as const }, OLDER];
+    const out = overlayActivity(rows, [
+      activity({ scope: `conv:${NEWEST.id}`, conversationId: NEWEST.id, status: 'unread' }),
+      activity({ scope: `conv:${OLDER.id}`, conversationId: OLDER.id, status: 'failed' }),
+      activity({ scope: 'conv:conversation-fresh', conversationId: 'conversation-fresh', title: 'Investigate host X' }),
+      activity({ scope: 'case:case-1', kind: 'case', caseId: 'case-1' }),
+    ]);
+    expect(out.map((row) => [row.id, row.status ?? 'idle', row.unread === true])).toEqual([
+      ['conversation-fresh', 'running', false],
+      [NEWEST.id, 'idle', true],
+      [OLDER.id, 'failed', false],
+    ]);
+    expect(out[0]).toMatchObject({ title: 'Investigate host X', message_count: 0 });
+    // Nothing live: the very same array (no re-render churn).
+    expect(overlayActivity(rows, [])).toBe(rows);
+  });
+
+  it('prefers a running thread, then one waiting on the analyst or unread, then the newest', () => {
+    expect(preferredThread([NEWEST, { ...OLDER, status: 'running' }])).toBe(OLDER.id);
+    expect(preferredThread([NEWEST, { ...OLDER, unread: true }])).toBe(OLDER.id);
+    expect(preferredThread([NEWEST, { ...OLDER, status: 'needs_input' }])).toBe(OLDER.id);
+    expect(preferredThread([NEWEST, OLDER])).toBe(NEWEST.id);
+    expect(preferredThread([])).toBeNull();
+  });
+
+  it('opens the thread a turn is running in rather than the newest on a fresh visit', async () => {
+    putChatActivity(activity({ scope: `conv:${OLDER.id}`, conversationId: OLDER.id, title: OLDER.title }));
+    const { result } = await mount();
+    expect(result.current.activeId).toBe(OLDER.id);
+    expect(result.current.conversations.find((row) => row.id === OLDER.id)?.status).toBe('running');
+  });
+
+  it('opens an unread answer the server reports over the newest', async () => {
+    listMock.mockResolvedValue({ conversations: [NEWEST, { ...OLDER, unread: true }] });
+    const { result } = await mount();
+    expect(result.current.activeId).toBe(OLDER.id);
+    await waitFor(() => expect(readMock).toHaveBeenCalledWith(OLDER.id));
+    await waitFor(() => expect(result.current.conversations.find((row) => row.id === OLDER.id)?.unread).toBe(false));
+  });
+
+  it('marks an answer read only while the tab is visible', async () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      listMock.mockResolvedValue({ conversations: [{ ...NEWEST, unread: true }, OLDER] });
+      await mount();
+      await settle();
+      expect(readMock).not.toHaveBeenCalled();
+      visibility.mockReturnValue('visible');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await waitFor(() => expect(readMock).toHaveBeenCalledWith(NEWEST.id));
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it('opens a new thread whose first answer is still being written (the detail is 404 until saved)', async () => {
+    putChatActivity(activity({ scope: 'conv:conversation-fresh', conversationId: 'conversation-fresh', title: 'Investigate host X' }));
+    const { result } = await mount();
+    expect(result.current.activeId).toBe('conversation-fresh');
+    await waitFor(() => expect(result.current.conversation).toMatchObject({ id: 'conversation-fresh', messages: [] }));
+    expect(result.current.threadError).toBeNull();
+    expect(result.current.restoring).toBe(false);
+  });
+
+  it('refuses to delete any thread whose answer is still being written', async () => {
+    const confirmDelete = vi.fn(() => Promise.resolve(true));
+    putChatActivity(activity({ scope: `conv:${OLDER.id}`, conversationId: OLDER.id }));
+    const { result } = await mount({ confirmDelete });
+    act(() => result.current.select(NEWEST));
+    await act(async () => {
+      expect(await result.current.remove(OLDER)).toBe(false);
+    });
+    expect(deleteMock).not.toHaveBeenCalled();
+    // Once it finished it can go.
+    act(() => settleChatActivity(`conv:${OLDER.id}`, 'done'));
+    await act(async () => {
+      expect(await result.current.remove(OLDER)).toBe(true);
+    });
+  });
+
+  it('reloads the open thread when a followed turn asks for it (rehydrate)', async () => {
+    const { result } = await mount();
+    await waitFor(() => expect(result.current.conversation?.id).toBe(NEWEST.id));
+    const calls = getMock.mock.calls.length;
+    act(() => result.current.conversationPersisted(NEWEST.id, '', { rehydrate: true }));
+    await waitFor(() => expect(getMock.mock.calls.length).toBe(calls + 1));
   });
 });

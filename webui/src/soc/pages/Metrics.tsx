@@ -512,8 +512,20 @@ export default function MetricsPage({
     ? [
         {
           key: 'total',
-          label: `Total cases (${windowLabel})`,
+          // ALL TIME, not the selected window (Round 12): `total_cases` is the store-wide
+          // count, so the old "(7d)" suffix put a window on a number that has none. When the
+          // server could not count it exactly it falls back to the cases it analysed, and
+          // the sub says so rather than presenting a floor as the total.
+          label: 'Total cases (all time)',
           value: fmtNumber(data.total_cases),
+          sub:
+            data.counts_exact === false
+              ? typeof data.fetched === 'number' && typeof data.store_total === 'number'
+                ? `Lower bound · counted from the newest ${fmtNumber(data.fetched)} of ${fmtNumber(data.store_total)}`
+                : 'Lower bound · not every case could be counted'
+              : data.counts_exact === true
+                ? 'Every case in the store'
+                : undefined,
           icon: ShieldCheck,
           accent: 'primary',
           onClick: onNavigate ? () => onNavigate('cases') : undefined,

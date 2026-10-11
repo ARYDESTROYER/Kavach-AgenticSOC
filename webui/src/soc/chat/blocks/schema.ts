@@ -205,6 +205,26 @@ export type XKind = (typeof X_KINDS)[number];
 /** `1M`/`1q`/`1y` are calendar months, quarters and years in the operator timezone (Round 12). */
 export const TIME_BUCKETS = ['1m', '5m', '15m', '1h', '6h', '1d', '1w', '1M', '1q', '1y'] as const;
 export type TimeBucket = (typeof TIME_BUCKETS)[number];
+/**
+ * Which coarser calendar buckets each bucket NESTS in (every fine bucket lies wholly
+ * inside one coarse bucket, so a re-binned sum equals a server query at the coarse unit).
+ * ISO weeks straddle month, quarter and year boundaries: a weekly series never re-bins.
+ * Mirrors `blocks.py` `_REBIN_NESTS`.
+ */
+export const REBIN_NESTS: Readonly<Partial<Record<TimeBucket, readonly TimeBucket[]>>> = {
+  '1h': ['1d', '1w', '1M', '1q', '1y'],
+  '1d': ['1w', '1M', '1q', '1y'],
+  '1w': [],
+  '1M': ['1q', '1y'],
+  '1q': ['1y'],
+  '1y': [],
+};
+/**
+ * Units whose values sum to a meaningful total (contract `chart_honesty.additive_units`):
+ * a stack height, a donut centre, a re-binned bucket. A sum of rates, medians, scores or
+ * durations is not a total.
+ */
+export const ADDITIVE_UNITS: readonly ValueUnit[] = ['count', 'tokens', 'bytes', 'usd'];
 export const GOOD_DIRECTIONS = ['up', 'down', 'none'] as const;
 export type GoodDirection = (typeof GOOD_DIRECTIONS)[number];
 export const REPORT_TEMPLATES = [
@@ -344,6 +364,7 @@ const KEY_RE = new RegExp(PATTERN_SOURCES.key);
 const DOC_REF_RE = new RegExp(PATTERN_SOURCES.doc_ref);
 const TECHNIQUE_RE = new RegExp(PATTERN_SOURCES.technique);
 const SECTION_ID_RE = new RegExp(PATTERN_SOURCES.section_id);
+const TZ_RE = new RegExp(PATTERN_SOURCES.tz);
 
 export const FALLBACK_TEXT = 'This part of the answer could not be displayed';
 export const EXPIRED_TEXT = 'Expired from saved history';
@@ -432,16 +453,36 @@ export interface ChartSeries {
   values: Array<number | null>;
 }
 export type ChartReference = { axis: 'y'; value: number; label: string } | { axis: 'x'; value: string; label: string };
+export interface ChartX {
+  kind: XKind;
+  values: string[];
+  label?: string;
+  bucket?: TimeBucket;
+  /**
+   * Round 12 (P0-5): the calendar label of each x value ("Mar 2026", "W14 2026",
+   * "Q3 2026"), aligned with `values` (`''` where the server sent none). Display only;
+   * absent when no label was sent.
+   */
+  labels?: string[];
+  /** The IANA zone the calendar buckets were cut in (validated name; display only). */
+  tz?: string;
+}
 export interface ChartBlock extends BlockBase {
   type: 'chart';
   kind: ChartKind;
   unit: ValueUnit;
   y_label?: string;
-  x: { kind: XKind; values: string[]; label?: string; bucket?: TimeBucket };
+  x: ChartX;
   series: ChartSeries[];
   reference?: ChartReference;
   last_in_progress: boolean;
   drill?: Array<InternalRef | null>;
+  /**
+   * Round 12 (P0-8): the coarser calendar buckets the client may re-bin this time series
+   * into by summing — additive units of a complete calendar series only, and only units
+   * the current bucket nests in (`REBIN_NESTS`, the backend rule). Never a re-query.
+   */
+  allowed_rebin: TimeBucket[];
 }
 
 export interface HeatmapBlock extends BlockBase {
@@ -580,6 +621,11 @@ export interface ReportBlock extends BlockBase {
   title: string;
   subtitle?: string;
   template?: ReportTemplate;
+  /**
+   * Round 12 (SPEC §3.4): `infographic` lays the Brief out as a hero KPI row, a 2-up
+   * chart grid and highlight callouts; `document` (or absent) is section by section.
+   */
+  layout?: ReportLayout;
   scope: { window_label?: string; sources: string[]; generated_at: string };
   sections: ReportSection[];
 }
@@ -895,6 +941,23 @@ function categoryLabel(value: unknown, limit: number): string {
 
 type Base = Omit<BlockBase, 'id'> & { id: string };
 
+/**
+ * The coarser buckets a client may re-bin a series into (the backend `ChartBlock._shape`
+ * rule): a calendar TIME axis of ADDITIVE values only, and only buckets the axis's own
+ * bucket nests in. Anything else (a weekly axis, a rate, a category axis) gets none.
+ */
+export function allowedRebin(raw: unknown, x: Pick<ChartX, 'kind' | 'bucket'>, chartUnit: ValueUnit): TimeBucket[] {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  if (x.kind !== 'time' || !x.bucket || !ADDITIVE_UNITS.includes(chartUnit)) return [];
+  const nests = REBIN_NESTS[x.bucket] ?? [];
+  const out: TimeBucket[] = [];
+  for (const v of raw) {
+    const b = enumOr(v, TIME_BUCKETS, null);
+    if (b && nests.includes(b) && !out.includes(b)) out.push(b);
+  }
+  return out;
+}
+
 function parseChart(raw: Obj, base: Base): ChartBlock {
   const kind = enumOr(raw.kind, CHART_KINDS, null) ?? fail('literal_error:kind');
   if (!isObj(raw.x)) fail('missing:x');
@@ -914,6 +977,17 @@ function parseChart(raw: Obj, base: Base): ChartBlock {
   if (xLabel) x.label = xLabel;
   const bucket = enumOr(raw.x.bucket, TIME_BUCKETS, undefined);
   if (bucket) x.bucket = bucket;
+  // Calendar labels, aligned with the kept values exactly like the backend (`ChartX`):
+  // the same clip when they arrive aligned, else re-aligned (time keeps the newest,
+  // categories the first) and padded with ''. All-blank labels are no labels.
+  if (Array.isArray(raw.x.labels) && raw.x.labels.length) {
+    let labels = raw.x.labels.map((v) => categoryLabel(v, LIMITS.category_chars));
+    if (labels.length === n) labels = labels.slice(start, stop);
+    else if (labels.length !== width) labels = xKind === 'time' ? (width ? labels.slice(-width) : []) : labels.slice(0, width);
+    while (labels.length < width) labels.push('');
+    if (labels.some(Boolean)) x.labels = labels;
+  }
+  if (typeof raw.x.tz === 'string' && TZ_RE.test(raw.x.tz)) x.tz = raw.x.tz;
   const seriesRaw = clip(raw.series, LIMITS.series);
   truncated ||= seriesRaw.clipped;
   const series = keepValid(
@@ -936,15 +1010,19 @@ function parseChart(raw: Obj, base: Base): ChartBlock {
     fail('value_error:series');
   }
   if (kind === 'donut' && x.values.length > LIMITS.donut_segments) fail('value_error:x');
+  const chartUnit = unit(raw.unit);
   const block: ChartBlock = {
     ...base,
     truncated,
     type: 'chart',
     kind,
-    unit: unit(raw.unit),
+    unit: chartUnit,
     x,
     series,
     last_in_progress: raw.last_in_progress === true,
+    // A series the parser had to clip, or saved history cut to its newest points, lost
+    // its oldest buckets: a re-bin would no longer equal a query over the same window.
+    allowed_rebin: n > LIMITS.points || base.downsampled_for_storage ? [] : allowedRebin(raw.allowed_rebin, x, chartUnit),
   };
   const yLabel = optText(raw.y_label, LIMITS.label);
   if (yLabel) block.y_label = yLabel;
@@ -1534,6 +1612,10 @@ function parseReport(raw: Obj, id: string, path: string, used: Set<string>, drop
   if (raw.template !== undefined && raw.template !== null) {
     block.template = enumOr(raw.template, REPORT_TEMPLATES, 'custom' as const);
   }
+  // An unknown layout is no layout (the document); the `infographic` template implies
+  // its layout, as the backend's envelope does.
+  const layout = enumOr(raw.layout, REPORT_LAYOUTS, undefined) ?? (block.template === 'infographic' ? 'infographic' : undefined);
+  if (layout) block.layout = layout;
   return cohereViews(block);
 }
 

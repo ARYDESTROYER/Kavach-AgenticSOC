@@ -490,3 +490,20 @@ def test_case_topics_need_cases_read(client, monkeypatch) -> None:
     monkeypatch.setattr(deps, "resolve_access", resolve)
     res = client.get("/api/events", params={"topics": "cases,cases:case-1"})
     assert res.status_code == 204
+
+
+def test_title_sort_never_reaches_a_store_sort(client, now, monkeypatch) -> None:
+    """``title`` is answered by the route's scan; no store ever receives it as a key."""
+    _seed(client, [_case(1, now, title="b"), _case(2, now, title="a")])
+    state = client.app.state.tlsoc
+    seen: list[dict[str, Any]] = []
+    original = state._real_cases.list
+
+    async def recording_list(**kw):  # noqa: ANN003
+        seen.append(kw)
+        return await original(**kw)
+
+    monkeypatch.setattr(state._real_cases, "list", recording_list)
+    body = _queue(client, sort_field="title", sort_order="asc")
+    assert [c["title"] for c in body["cases"]] == ["a", "b"]
+    assert all(call.get("sort_field") != "title" for call in seen)

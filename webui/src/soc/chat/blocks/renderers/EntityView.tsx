@@ -56,6 +56,8 @@ function CopyValue({ value }: { value: string }) {
     <button
       type="button"
       aria-label={copied ? 'Copied' : 'Copy value'}
+      // Paper has nothing to copy with (Round 12 WP-REP rule: controls are print-hidden).
+      data-print-hide=""
       className={cn('inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}
       onClick={() => {
         void copyText(value).then((ok) => {

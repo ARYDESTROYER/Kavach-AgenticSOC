@@ -239,12 +239,14 @@ function normaliseTool(raw: unknown): ChatToolInfo | null {
 function normaliseBounds(raw: unknown): ChatContextBounds {
   const src = isObj(raw) ? raw : {};
   const out: ChatContextBounds = { ...DEFAULT_CHAT_BOUNDS };
-  for (const key of Object.keys(DEFAULT_CHAT_BOUNDS) as Array<keyof ChatContextBounds>) {
+  for (const key of Object.keys(DEFAULT_CHAT_BOUNDS) as Array<Exclude<keyof ChatContextBounds, 'animated_brand'>>) {
     const value = src[key];
     if (key === 'default_stream_mode') out.default_stream_mode = enumOr(value, CHAT_STREAM_MODES, 'steps');
     else if (key === 'allow_text_streaming') out.allow_text_streaming = value !== false;
     else if (typeof value === 'number' && Number.isInteger(value) && value > 0) out[key] = value;
   }
+  // Round 12 (SPEC D13): only an explicit `false` turns the brand ring off.
+  if (src.animated_brand === false) out.animated_brand = false;
   return out;
 }
 
@@ -315,7 +317,7 @@ export function normaliseChatContext(raw: unknown): ChatContextInfo {
       if (starters.length >= CHAT_STARTER_LIMITS.starters) break;
     }
   }
-  return {
+  const out: ChatContextInfo = {
     model: optText(src.model, 120),
     context_window: optCount(src.context_window),
     max_output_tokens: count(src.max_output_tokens, 0),
@@ -338,6 +340,12 @@ export function normaliseChatContext(raw: unknown): ChatContextInfo {
     remaining,
     starters,
   };
+  // Round 12 (SPEC §3.1, D1/D7): the limits mode drives the composer meter's context note
+  // (unlimited: summarised near the limit, no hard cap); absent on an older backend.
+  if (src.limits_mode === 'unlimited' || src.limits_mode === 'bounded') out.limits_mode = src.limits_mode;
+  const timezone = optText(src.timezone, 64);
+  if (timezone) out.timezone = timezone;
+  return out;
 }
 
 export interface ChatContextQuery {
@@ -502,6 +510,7 @@ export async function deleteSavedPrompt(promptId: string): Promise<ChatPrompt[]>
 
 /** The rail's fallback title for a row whose stored title is unusable. */
 export const UNTITLED_CONVERSATION = 'Untitled conversation';
+const CONVERSATION_STATUSES = ['idle', 'running', 'needs_input', 'failed'] as const;
 
 /** A summary row (or a search hit), display-sanitised; `null` when it has no usable id. */
 export function normaliseConversationSummary(raw: unknown): ChatConversationSearchHit | null {
@@ -531,6 +540,10 @@ export function normaliseConversationSummary(raw: unknown): ChatConversationSear
     total_cost: amount(raw.total_cost),
     usage_turns: optCount(raw.usage_turns),
   };
+  // Round 12 (SPEC D13): the row's live state for the history rail and the nav glyph.
+  const status = enumOr(raw.status, CONVERSATION_STATUSES, null);
+  if (status) out.status = status;
+  if (raw.unread === true) out.unread = true;
   if (isObj(raw.match)) {
     const snippet = text(raw.match.snippet, 160);
     if (snippet) out.match = { message_id: safeId(raw.match.message_id), snippet };

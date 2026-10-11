@@ -93,6 +93,7 @@ import {
   StatusBadge,
   VerdictBadge,
   DispositionBadge,
+  OutcomeBadge,
   RiskBadge,
   SeverityBadge,
   ConfidenceBadge,
@@ -103,6 +104,12 @@ import {
   SEVERITY_BAND_ORDER,
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
+import { caseOutcome } from '@/soc/components/outcome';
+import {
+  BulkCloseDialog,
+  type BulkCloseInput,
+  type BulkTerminalAction,
+} from './casedetail/BulkCloseDialog';
 
 import type { Navigate } from '@/soc/router';
 import { useRoute } from '@/soc/router';
@@ -136,7 +143,9 @@ const CASES_VIEW_SCOPE = 'cases';
  * any column their explicit stored state wins verbatim (this default no longer applies).
  */
 const CASES_DEFAULT_HIDDEN = [
-  'disposition',
+  // Round 12 (SPEC D15): the Outcome column (id `disposition`, kept so stored column
+  // states still address it) is VISIBLE by default — an analyst's classification is the
+  // case's outcome of record and must not hide behind the Columns menu.
   'alerts',
   'playbooks',
   'enrichments',
@@ -198,10 +207,16 @@ function isTerminalCase(c: Case): boolean {
   return TERMINAL_STATUSES.has((c.status || '').toLowerCase());
 }
 
+/**
+ * Work the agent handed to an analyst that is STILL open. Round 12 (SPEC D15): a case an
+ * analyst already closed or resolved is no longer waiting for a human, whatever the AI
+ * verdict said, so the "Needs human" tile and filter count ACTIVE cases only.
+ */
 function needsHumanCase(c: Case): boolean {
   return (
-    (c.status || '').toLowerCase() === 'needs_human' ||
-    (c.verdict || '').toUpperCase() === 'NEEDS_HUMAN'
+    isActiveCase(c) &&
+    ((c.status || '').toLowerCase() === 'needs_human' ||
+      (c.verdict || '').toUpperCase() === 'NEEDS_HUMAN')
   );
 }
 
@@ -786,6 +801,8 @@ export default function Cases({
   // ConfirmDialog. The close still posts through the SAME analyst action endpoint
   // (server-side decide()), never a client-side status write (#3).
   const [closeTarget, setCloseTarget] = React.useState<Case | null>(null);
+  // Round 12 (SPEC D15): every bulk Close / Resolve captures the analyst's disposition.
+  const [bulkTerminal, setBulkTerminal] = React.useState<BulkTerminalAction | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -984,19 +1001,28 @@ export default function Cases({
 
   // Perform the confirmed row-close. Posts the SAME `close` analyst action as the
   // bulk bar / CaseDetail close dialog — the backend's decide() adjudicates (#3).
-  const confirmClose = React.useCallback(async () => {
-    const target = closeTarget;
-    if (!target) return;
-    try {
-      await api.caseActionExec(target.case_id, {
-        action: 'close',
-        resolution: 'Closed by analyst',
-      });
-      await load();
-    } catch {
-      setBulkError(`Could not close ${target.case_id}.`);
-    }
-  }, [closeTarget, load]);
+  const confirmClose = React.useCallback(
+    async (input: BulkCloseInput) => {
+      const target = closeTarget;
+      if (!target) return;
+      setCloseTarget(null);
+      try {
+        // Round 12 (SPEC D15): the one-click row close records the outcome the analyst
+        // chose, declared, exactly like the case's own Close dialog (G1).
+        await api.caseActionExec(target.case_id, {
+          action: 'close',
+          disposition: input.disposition,
+          disposition_declared: true,
+          resolution: input.resolution || 'Closed by analyst',
+          ...(input.note ? { note: input.note } : {}),
+        });
+        await load();
+      } catch {
+        setBulkError(`Could not close ${target.case_id}.`);
+      }
+    },
+    [closeTarget, load],
+  );
 
   const setFilter = <K extends keyof CaseFilters>(key: K, value: CaseFilters[K]) =>
     setFilters((f) => ({ ...f, [key]: value }));
@@ -1131,11 +1157,24 @@ export default function Cases({
       },
     },
     {
+      // Round 12 (SPEC D15): the OUTCOME of record. Once an analyst classified the case
+      // it shows their disposition with an Analyst tag; an AI auto-close says so; until
+      // then the recorded disposition is shown as what it is — the value triage mapped
+      // from the AI verdict (AI tag), never presented as a person's call.
       id: 'disposition',
-      header: 'Disposition',
+      header: 'Outcome',
       sortable: true,
-      width: '8rem',
-      cell: (c) => <DispositionBadge disposition={c.disposition ?? null} />,
+      width: '11rem',
+      cell: (c) => {
+        const outcome = caseOutcome(c);
+        if (outcome.source !== 'pending') return <OutcomeBadge outcome={outcome} />;
+        return (
+          <span className="inline-flex items-center gap-1" data-outcome-source="pending">
+            <DispositionBadge disposition={c.disposition ?? null} />
+            <ProvenanceTag kind="ai" variant="icon" />
+          </span>
+        );
+      },
     },
     {
       id: 'alerts',
@@ -1791,10 +1830,8 @@ export default function Cases({
         count={selectedCases.length}
         busy={bulkBusy}
         onAcknowledge={() => void runBulk({ action: 'acknowledge' }, 'are being acknowledged')}
-        onClose={() => void runBulk({ action: 'close', resolution: 'Bulk-closed by analyst' }, 'are being closed')}
-        onResolve={(reason) =>
-          void runBulk({ action: 'resolve', reason: reason || 'Bulk-resolved by analyst' }, 'are being resolved')
-        }
+        onClose={() => setBulkTerminal('close')}
+        onResolve={() => setBulkTerminal('resolve')}
         onAssign={(assignee) =>
           void submitCaseJob('case_assign', { assignee }, `are being assigned to ${assignee}`)
         }
@@ -1814,20 +1851,35 @@ export default function Cases({
       {/* One-click row-close confirmation. Close is a REVERSIBLE lifecycle move, so
           this is a plain (non-destructive) confirm — it still posts through the
           analyst `close` action (server-side decide(), #3). */}
-      <ConfirmDialog
-        open={closeTarget !== null}
-        onOpenChange={(next) => {
-          if (!next) setCloseTarget(null);
+      <BulkCloseDialog
+        action={closeTarget !== null ? 'close' : null}
+        count={1}
+        verdict={closeTarget?.verdict ?? null}
+        currentDisposition={closeTarget?.disposition ?? null}
+        onCancel={() => setCloseTarget(null)}
+        onSubmit={(input) => {
+          void confirmClose(input);
         }}
-        title="Close this case?"
-        description={
-          closeTarget
-            ? `Case ${closeTarget.case_number || closeTarget.case_id} will be closed. This is an analyst action; the resolution is adjudicated server-side.`
-            : undefined
-        }
-        confirmLabel="Close case"
-        onConfirm={() => {
-          void confirmClose();
+      />
+
+      {/* Bulk Close / Resolve — the disposition is required on every terminal path. */}
+      <BulkCloseDialog
+        action={bulkTerminal}
+        count={selectedCases.length}
+        busy={bulkBusy}
+        onCancel={() => setBulkTerminal(null)}
+        onSubmit={(input) => {
+          setBulkTerminal(null);
+          const { action, ...rest } = input;
+          void runBulk(
+            {
+              action,
+              ...rest,
+              ...(action === 'close' && !rest.resolution ? { resolution: 'Bulk-closed by analyst' } : {}),
+              ...(action === 'resolve' && !rest.reason ? { reason: 'Bulk-resolved by analyst' } : {}),
+            },
+            action === 'close' ? 'are being closed' : 'are being resolved',
+          );
         }}
       />
 

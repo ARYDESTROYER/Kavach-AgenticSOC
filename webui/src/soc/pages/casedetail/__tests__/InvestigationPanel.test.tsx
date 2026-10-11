@@ -10,7 +10,7 @@
  * parent hasn't fetched it yet.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 import { InvestigationPanel, type InvestigationPanelProps } from '../InvestigationPanel';
@@ -135,6 +135,120 @@ describe('InvestigationPanel — the AI-assessment + decision story', () => {
 
   it('has no axe violations', async () => {
     const { container } = render(<InvestigationPanel {...props()} />);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('InvestigationPanel — Case Manager presentation (Round 12, CM-6)', () => {
+  const toolSpan: TraceSpan = {
+    step_index: 2,
+    kind: 'execute_tool',
+    name: 'es_query',
+    ts: '2026-07-05T00:00:00Z',
+    latency_ms: 12,
+    cost: 0.0012,
+    tokens: 340,
+    trusted: false,
+    summary: 'hits=3',
+    payload_ref: { tool_name: 'es_query', model: 'gpt-5.6-luna' },
+  };
+  const agentSpan: TraceSpan = { ...toolSpan, step_index: 1, kind: 'invoke_agent', name: 'investigator', trusted: true, summary: 'Thinking', payload_ref: null };
+  const FULL: TimelineResponse = {
+    case_id: 'c1',
+    total: 3,
+    totals: { cost: 0.0012, tokens: 340 },
+    spans: [agentSpan, toolSpan, decisionSpan],
+  };
+
+  function renderCm(over: Partial<InvestigationPanelProps> = {}) {
+    return render(
+      <InvestigationPanel {...props({ timeline: FULL, ...over })} presentation="case-manager" />,
+    );
+  }
+
+  it('leads with the decision, then the AI assessment, with the trace collapsed and counted', () => {
+    const { container } = renderCm();
+    const decision = screen.getByTestId('investigation-decision');
+    const assessment = screen.getByTestId('investigation-assessment');
+    const trace = screen.getByTestId('investigation-trace');
+    expect(decision.compareDocumentPosition(assessment) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(assessment.compareDocumentPosition(trace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(decision).getByRole('heading', { name: 'Decision' })).toBeInTheDocument();
+    expect(within(decision).getByText('Escalated')).toBeInTheDocument();
+
+    // Sentence case, never tracked capitals.
+    expect(screen.getByRole('heading', { name: 'AI assessment' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Investigation trace' })).toBeInTheDocument();
+    expect(container.querySelectorAll('.uppercase')).toHaveLength(0);
+
+    // Collapsed by default, with the counts visible before opening.
+    expect(screen.getByTestId('investigation-trace-counts')).toHaveTextContent('3 steps · 1 tool');
+    expect(screen.queryByText('hits=3')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
+    expect(screen.getByText('hits=3')).toBeInTheDocument();
+    // Per-step tool, model, cost and tokens are kept in the compact trace.
+    expect(screen.getAllByText('es_query').length).toBeGreaterThan(0);
+    expect(screen.getByText('gpt-5.6-luna')).toBeInTheDocument();
+  });
+
+  it('filters the trace by actor and jumps to the decision step', async () => {
+    renderCm();
+    fireEvent.click(screen.getByRole('button', { name: 'Show trace' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Tool' }));
+    expect(screen.getByText('hits=3')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Code' }));
+    expect(screen.queryByText('hits=3')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to decision' }));
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute('data-trace-kind')).toBe('decision'),
+    );
+  });
+
+  it('colours risk by its own band: Risk 7 is never red', () => {
+    renderCm({ c: { ...CASE, risk_score: 7, severity_band: 'critical' } as Case });
+    const assessment = screen.getByTestId('investigation-assessment');
+    expect(assessment).toHaveAttribute('data-risk-band', 'low');
+    expect(assessment.className).not.toContain('critical');
+    expect(screen.getByTestId('investigation-risk')).toHaveClass('text-low-text');
+    expect(screen.getByTestId('investigation-risk')).not.toHaveClass('text-critical-text');
+  });
+
+  it('a human close reads "Analyst resolved" and demotes the AI recommendation', () => {
+    renderCm({
+      c: {
+        ...CASE,
+        verdict: 'NEEDS_HUMAN',
+        confidence: 0.75,
+        status: 'closed',
+        decision_by: 'analyst',
+        disposition: 'false_positive',
+        recommended_action: 'Benign baseline activity; no action required.',
+        history: [
+          { event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z', classified_disposition: 'false_positive' },
+        ],
+      } as unknown as Case,
+    });
+    const decision = screen.getByTestId('investigation-decision');
+    expect(within(decision).getByRole('heading', { name: 'Analyst resolved' })).toBeInTheDocument();
+    expect(decision).toHaveTextContent('Closed as false positive by aryan.');
+    expect(screen.getByTestId('investigation-ai-line')).toHaveTextContent('AI verdict: Needs human review (75%)');
+    expect(screen.getByText('AI recommendation at triage')).toBeInTheDocument();
+    expect(screen.queryByText('Recommended action')).toBeNull();
+    expect(screen.getByText('AI confidence at assessment')).toBeInTheDocument();
+  });
+
+  it('keeps every earlier datum one disclosure away (evidence, policy inputs, grading)', () => {
+    renderCm();
+    fireEvent.click(screen.getByRole('button', { name: /show full assessment evidence/i }));
+    expect(screen.getByText('Agent reasoning')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /show policy inputs/i }));
+    expect(screen.getByText('Policy clause evaluated')).toBeInTheDocument();
+  });
+
+  it('has no axe violations', async () => {
+    const { container } = renderCm();
     expect(await axe(container)).toHaveNoViolations();
   });
 });

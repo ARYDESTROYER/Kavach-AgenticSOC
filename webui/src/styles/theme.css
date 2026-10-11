@@ -1654,3 +1654,66 @@ select:-webkit-autofill:focus {
     display: none !important;
   }
 }
+
+/* ---- Printing a console page (Round 12, WP-OV) ---------------------------------------
+   Ctrl/Cmd+P on any console route prints the page's CONTENT, not the console around it:
+   the primary navigation, the top bar, the skip link and toasts are hidden; sticky and
+   translucent bars print as plain flow; and the shell's viewport-locked heights and
+   horizontal clips are released so a dashboard or a long list is not cut to one screen.
+   Colours print as shown (`print-color-adjust: exact`) so a dark-theme page stays
+   legible on paper instead of losing its background under light text.
+
+   The report print path (`#agentic-soc-report-print`) carries its own stylesheet, which
+   hides every other child of <body>; nothing here targets it or competes with it. */
+@media print {
+  html,
+  body {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: hsl(var(--background)) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* Console chrome: navigation, the top bar (the header beside <main>), the skip link,
+     toasts. */
+  aside[aria-label='Primary navigation'],
+  header:has(~ #socMain),
+  a[href='#socMain'],
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+  /* The shell: viewport-locked heights and horizontal clips released. */
+  .min-h-dvh,
+  .h-dvh,
+  #socMain,
+  #socMain > * {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  /* Floating chrome prints in flow, on no material. */
+  .material-surface,
+  .glass-surface,
+  .sticky {
+    position: static !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .material-surface::after {
+    display: none !important;
+  }
+  /* Entrance motion would otherwise freeze mid-fade in the printout. */
+  .animate-rise-in,
+  .animate-fade-in {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  #socMain tr,
+  #socMain li,
+  #socMain [data-testid='kpi-strip'] {
+    break-inside: avoid;
+  }
+}

@@ -9,20 +9,23 @@
  *   │             slot, i.e. BESIDE the title on the left. The right half is deliberately
  *   │             empty: the page's search lives in the app shell's top bar, one band up.
  *   ├ KPI STRIP ── five borderless, SERVER-FED telemetry cells separated by hairlines:
- *   │             Total Cases · Total Critical · Open Cases · False Positive Rate ·
- *   │             Resolved / Closed, at `density="compact"` because the strip HEADS this
- *   │             page rather than being all of it. Four are cohort numbers scoped to the
+ *   │             Total Cases · Total Critical · Open Cases · AI-verdict FP rate ·
+ *   │             Resolved / Closed · Auto Closed, at `density="comfortable"` with fluid
+ *   │             numerals (Round 12). Four are cohort numbers scoped to the
  *   │             selected window; "Open Cases" is a window-EXEMPT stock and says so, so
  *   │             it is never read as a fifth summand. Each cell OPENS its own drill-down
  *   │             modal (see "Drill-down" further down).
- *   ├ LATTICE ──── ONE twelve-column `xl` band, two rows (see the block comment on it):
- *   │               row 1  Noise-Reduction flow (8)  · Human-vs-AI attribution (4)
- *   │               row 2  case snapshots (4) · MTTD / response (4) · live queue (4)
+ *   ├ BANDS ────── Round 12: flat TITLED bands separated by whitespace (32px between,
+ *   │             24px gutters; no cards, no per-cell rules):
+ *   │               "Alert flow"          Noise-Reduction flow (8) · Human vs AI (4)
+ *   │               "Cases and response"  case state (5) · response time (3) · queue (4)
  *   │             The flow leads because it is the page's widest instrument and its own
- *   │             container query needs 608px of cell width to draw a graph at all.
- *   └ DEEPER ───── a COLLAPSED "Deeper analytics" group folding the secondary bands
- *                  (spend tripwire, full response timing, autonomy split, connectors,
- *                  case-volume, workload, top signatures/entities).
+ *   │             container query needs 608px of cell width to draw a graph at all. At
+ *   │             `4xl` (≥2200px) both bands share a main column + a 460px rail.
+ *   └ DEEPER ───── ONE persisted "Deeper analytics" disclosure (flat inside: a second
+ *                  strip — MTTA · MTTR · Dwell · LLM spend — then coverage, volume,
+ *                  workload, outcomes, top signatures/entities), with a one-line summary
+ *                  of what it holds while collapsed.
  *
  * Opening a case from the latest-case queue or from a drill-down row does NOT navigate:
  * it mounts the shared <CaseDetail> in its right-hand sheet over this page, so the
@@ -89,6 +92,7 @@ import * as React from 'react';
 import {
   ArrowDownRight,
   ArrowUpRight,
+  ChevronDown,
   ChevronRight,
   CircleDollarSign,
   Clock3,
@@ -135,8 +139,12 @@ import {
   type TimeRange,
   type RefreshValue,
 } from '@/soc/components/TimeRangePicker';
-import { DashboardGroup } from '@/soc/components/DashboardGroup';
-import { KpiTile, type KpiAccent, type KpiBreakdownRow } from '@/soc/components/KpiTile';
+import {
+  KpiTile,
+  KpiTileGrid,
+  type KpiAccent,
+  type KpiBreakdownRow,
+} from '@/soc/components/KpiTile';
 import { kpiTopic } from '@/soc/components/ask-topics';
 import {
   MetricHoverTrend,
@@ -159,7 +167,7 @@ import { NoiseFunnel } from '@/soc/components/NoiseFunnel';
 import { Reveal } from '@/soc/components/Reveal';
 import { CountUp } from '@/soc/components/CountUp';
 import { Stagger } from '@/soc/components/Stagger';
-import { DonutChart, TrendArea, type DonutSegment } from '@/soc/components/charts';
+import { DonutChart, type DonutSegment } from '@/soc/components/charts';
 import { token, VERDICT_COLOR, type VerdictKey } from '@/soc/components/palette';
 import {
   SEVERITY_BAND_ORDER,
@@ -174,7 +182,8 @@ import { AutomationNudge } from './AutomationNudge';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { usePosture } from '@/soc/hooks/usePosture';
-import { Card, CardContent } from '@/ui/card';
+import { caseOutcome } from '@/soc/components/outcome';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/ui/collapsible';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 
@@ -383,18 +392,17 @@ const fmtInt = (n: number): string => fmtNumber(n);
 
 /**
  * Format the SnapshotCard donut CENTER number only. The center hole is pinned to
- * ~58px (innerPct=52% of the 112px ring) with `overflow-hidden` as a
+ * ~66px (innerPct=52% of the 128px ring) with `overflow-hidden` as a
  * deliberate anti-overlap guardrail — a 4+ digit total in `fmtInt`'s
  * thousands-separated form (e.g. "1,234") is wider than the hole and gets
  * clipped rather than overlapping the ring. Abbreviate >=1000 (e.g. "1.2K") so
  * the center always fits; the legend rows beside it keep their exact,
  * unabbreviated counts via `fmtNumber`.
  *
- * The ring was 136px while the two cards sat SIDE BY SIDE across eight columns. Stacked
- * in four they cost twice their own height, so the ring is 112 and the hole 0.52 × 112 =
- * 58px. The widest string REACHABLE here is four characters ("1.2K") at `text-2xl` —
- * ~48px of JetBrains Mono — so the hard floor is ~93px (48 / 0.52) and 112 keeps a
- * deliberate margin above it.
+ * The ring is 128 (`SNAPSHOT_RING_PX`, Round 12) and the hole 0.52 × 128 ≈ 66px. The
+ * widest string REACHABLE here is four characters ("1.2K") at `text-2xl` — ~48px of
+ * tabular Inter — so the hard floor is ~93px (48 / 0.52) and 128 keeps a deliberate
+ * margin above it.
  *
  * Two things that margin is carrying, so do not spend it:
  *   - `fmtTokens` itself is not bounded at four characters: at >= 10,000 it drops the
@@ -409,6 +417,21 @@ const fmtInt = (n: number): string => fmtNumber(n);
  *     since the centre is `overflow-hidden` and centred.
  */
 const fmtSnapshotCenter = (n: number): string => fmtTokens(n);
+
+/**
+ * The snapshot donut's ring, in px (Round 12: 112 → 128 now that the two snapshots sit
+ * side by side wherever their cell is at least 35rem wide). The hole is 0.52 × 128 ≈ 66px,
+ * which clears the widest centre string ("1.2K" at `text-2xl`) with the margin the note
+ * above asks for.
+ */
+const SNAPSHOT_RING_PX = 128;
+
+/**
+ * The Case outcomes donut (Deeper analytics). 160px at a 0.3 ring leaves a ~78px hole —
+ * room for the total over a 12px sentence-case "AI verdicts" caption, which the old
+ * 150px ring with tracked uppercase "VERDICTS" overflowed onto the ring.
+ */
+const VERDICT_RING_PX = 160;
 
 /** Round a resolved range down to whole hours (min 1) for the window-scoped fetches. */
 function rangeHours(range: TimeRange): number {
@@ -651,11 +674,12 @@ function TrendChip({
         improved ? 'improved' : 'worse'
       }`}
       title={delta.detail}
+      // Borderless tinted text (Round 12): a bordered pill per snapshot was one of the
+      // competing boxes around the case-state cell. The colour still carries judgement and
+      // the accessible name still states it in words.
       className={cn(
-        'inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-2xs font-semibold tabular-nums',
-        improved
-          ? 'border-success/30 bg-success/10 text-success-text'
-          : 'border-critical/30 bg-critical/10 text-critical-text',
+        'inline-flex shrink-0 items-center gap-0.5 text-xs font-semibold tabular-nums',
+        improved ? 'text-success-text' : 'text-critical-text',
       )}
     >
       <Arrow className="h-3 w-3" aria-hidden />
@@ -680,6 +704,7 @@ function SnapshotCard({
   ctaLabel,
   onClick,
   trend,
+  footnote,
   className,
 }: {
   title: string;
@@ -694,17 +719,11 @@ function SnapshotCard({
   /** Optional honest hover trendline for the snapshot total. */
   trend?: MetricTrendSeries;
   /**
-   * Layout-only overrides for the card's own root. NO caller passes one today, and that
-   * is the point: the root's `border-b … last:border-b-0` is STACKING logic expressed as
-   * a DOM-order selector, and the cards are stacked at every width now that their column
-   * is four wide rather than eight.
-   *
-   * If a future layout ever lays them out side by side again, the first card would keep a
-   * hairline under it that separates nothing, and the fix is a BREAKPOINT-PREFIXED
-   * `xl:border-b-0` from the caller — never a bare `border-b-0`, which `cn` (twMerge)
-   * would resolve by deleting the base `border-b` outright, taking the stacked rule with
-   * it at every other width.
+   * One quiet cross-reference line under the snapshot (Round 12) — plain text that ties
+   * this cohort figure to the strip figure it is easily confused with.
    */
+  footnote?: React.ReactNode;
+  /** Layout-only overrides for the card's own root. */
   className?: string;
 }) {
   const segments = sevSegments(counts);
@@ -714,17 +733,17 @@ function SnapshotCard({
       {segments.length ? (
         <DonutChart
           segments={segments}
-          height={112}
+          height={SNAPSHOT_RING_PX}
           thickness={0.26}
           showTooltip={false}
-          className="w-28 shrink-0"
+          className="w-32 shrink-0"
           ariaLabel={ariaLabel}
           center={
             <CountUp
               value={total}
               format={fmtSnapshotCenter}
               className={cn(
-                'font-mono font-semibold tabular-nums text-foreground',
+                'font-semibold tabular-nums text-foreground',
                 total >= 1000 ? 'text-2xl' : 'text-3xl',
                 'leading-none',
               )}
@@ -735,38 +754,41 @@ function SnapshotCard({
         <div
           role="img"
           aria-label={`${ariaLabel} (none)`}
-          className="flex h-[112px] w-28 shrink-0 items-center justify-center"
+          className="flex h-32 w-32 shrink-0 items-center justify-center"
         >
-          <span className="font-mono text-2xl font-semibold tabular-nums text-muted-foreground">
-            0
-          </span>
+          <span className="text-3xl font-semibold tabular-nums text-muted-foreground">0</span>
         </div>
       )}
-      <ul className="min-w-0 flex-1 space-y-1">
+      {/*
+       * The legend is CAPPED at 15rem with each count and share immediately after its
+       * label (Round 12). Uncapped and `flex-1`, a 2560px viewport put "Critical" ~470px
+       * from its own count, which read as two unrelated columns.
+       */}
+      <ul className="min-w-0 max-w-[15rem] flex-1 space-y-1.5">
         {legend.length ? (
           legend.map((r) => {
             const pct = total > 0 ? Math.round((r.value / total) * 100) : 0;
             return (
-              <li key={r.key} className="flex items-center gap-2">
+              <li key={r.key} className="flex items-center gap-2 text-sm">
                 <span
                   className="h-2 w-2 shrink-0 rounded-full"
                   style={{ backgroundColor: token(r.key) }}
                   aria-hidden
                 />
-                <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
                   {SEV_LABEL[r.key]}
                 </span>
-                <span className="font-mono text-xs font-semibold tabular-nums text-foreground">
+                <span className="font-semibold tabular-nums text-foreground">
                   {fmtNumber(r.value)}
                 </span>
-                <span className="w-8 text-right font-mono text-2xs tabular-nums text-muted-foreground">
+                <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
                   {pct}%
                 </span>
               </li>
             );
           })
         ) : (
-          <li className="text-xs text-muted-foreground">No cases in this window.</li>
+          <li className="text-sm text-muted-foreground">No cases in this window.</li>
         )}
       </ul>
       {onClick ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
@@ -778,34 +800,51 @@ function SnapshotCard({
       type="button"
       onClick={onClick}
       aria-label={ctaLabel}
-      className="mt-1.5 flex w-full min-w-0 items-center gap-3 py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="-mx-1 mt-3 flex w-full min-w-0 items-center gap-4 rounded-md px-1 py-1 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {content}
     </button>
   ) : (
-    <div className="mt-1.5 flex items-center gap-3 p-0.5">{content}</div>
+    <div className="mt-3 flex items-center gap-4 py-1">{content}</div>
   );
 
   return (
-    <section className={cn('min-w-0 border-b border-border/70 py-3 last:border-b-0', className)}>
+    <section className={cn('min-w-0', className)}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-          <p className="text-xs text-muted-foreground">{caption}</p>
+          <h2 className="text-base font-semibold text-foreground">{title}</h2>
+          <p className="text-sm text-muted-foreground">{caption}</p>
         </div>
         <TrendChip delta={delta} goodDirection={goodDirection} />
       </div>
       {trend ? (
         // The CTA button (when present) is the focus stop; the wrapper only adds the
         // hover/focus-reachable trend card (WCAG 1.4.13 via MetricHoverTrend).
-        <MetricHoverTrend {...trend} focusable={!onClick} side="top">
+        // `h-auto`: the wrapper's default `h-full` would take the whole (stretched) card
+        // and push the footnote below it.
+        <MetricHoverTrend {...trend} focusable={!onClick} side="top" className="h-auto">
           {body}
         </MetricHoverTrend>
       ) : (
         body
       )}
+      {footnote ? (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="snapshot-footnote">
+          {footnote}
+        </p>
+      ) : null}
     </section>
   );
+}
+
+/**
+ * The p90 of a timing block, or null when the server did not measure one. A DASH string
+ * (the backend's "not measured") and a non-finite number are both "not reported".
+ */
+function p90Of(block: StatBlock | undefined): number | null {
+  if (!block || block.available !== true) return null;
+  const v = block.p90;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
 /** One p50 lifecycle-timing stat block: value or an honest "not measured" DASH + reason. */
@@ -815,41 +854,36 @@ function TimingStat({
   block,
   dotClass,
   help,
-  compact = false,
 }: {
   label: string;
   sub: string;
   block: StatBlock | undefined;
   dotClass: string;
   help?: string;
-  compact?: boolean;
 }) {
   const available = block?.available === true;
   const value = available ? humanizeMins(block!.p50) : DASH;
+  // p90 beside p50 when the posture rollup reports it (Round 12, additive): the tail is
+  // what an operator is paged about, and the server already computes it.
+  const p90 = p90Of(block);
   const detail = available
-    ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}`
+    ? `p50 · ${fmtNumber(block!.count)} sample${block!.count === 1 ? '' : 's'}${
+        p90 != null ? ` · p90 ${humanizeMins(p90)}` : ''
+      }`
     : block?.reason || 'not measured (n/a)';
   return (
-    <div
-      className={cn(
-        compact ? 'min-w-0 py-1' : 'rounded-md border border-border bg-muted/20 px-3 py-2.5',
-      )}
-      title={help}
-    >
-      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+    <div className="min-w-0 py-0.5" title={help}>
+      <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
         <span className={cn('h-1.5 w-1.5 rounded-full', dotClass)} aria-hidden />
         {label}
       </div>
-      <div
-        className={cn(
-          'mt-1 font-mono font-semibold leading-none tabular-nums text-foreground',
-          compact ? 'text-3xl' : 'text-2xl',
-        )}
-      >
+      <div className="mt-1.5 text-3xl font-semibold leading-none tabular-nums text-foreground">
         {value}
       </div>
-      <div className="mt-1 text-2xs text-muted-foreground">{sub}</div>
-      <div className="text-2xs text-muted-foreground">{detail}</div>
+      <div className="mt-1.5 text-sm text-muted-foreground">{sub}</div>
+      <div className="text-xs tabular-nums text-muted-foreground" data-timing-detail="">
+        {detail}
+      </div>
     </div>
   );
 }
@@ -873,7 +907,56 @@ function latestCaseStatus(status: string | null | undefined): {
   return { label: humanizeToken(key), variant: 'secondary' };
 }
 
-/** Compact real-time work queue adapted directly from the supplied Stitch prototype. */
+/**
+ * How many latest-case rows the queue shows: at least five (the count it always showed)
+ * and at most eight. Between the two it FILLS the band's height — the snapshots and the
+ * timing pair beside it set that height, and the queue grows into it rather than leaving
+ * dead space or driving the band taller.
+ */
+const LATEST_MIN_ROWS = 5;
+const LATEST_MAX_ROWS = 8;
+/** Pre-measurement estimate of one queue row (title 20 + 2 gap + metadata 16 + 2 × 8
+ *  padding), rounded up so the in-flow floor never undershoots. */
+const LATEST_ROW_ESTIMATE_PX = 56;
+/** The space between two latest-case rows (`gap-1`). */
+const LATEST_ROW_GAP_PX = 4;
+
+/**
+ * Measure how many queue rows fit the box the band gives the list (see LATEST_*).
+ *
+ * The list is laid out OUT OF FLOW (absolutely, inside a `flex-1` box with a five-row
+ * floor), so its own length can never make the band taller — which is what would turn
+ * "fill the height" into a feedback loop. jsdom lays nothing out and keeps the floor.
+ */
+function useFittingRows(
+  boxRef: React.RefObject<HTMLElement | null>,
+  listRef: React.RefObject<HTMLElement | null>,
+): number {
+  const [rows, setRows] = React.useState(LATEST_MIN_ROWS);
+  React.useEffect(() => {
+    const box = boxRef.current;
+    if (!box || typeof window === 'undefined' || typeof window.ResizeObserver !== 'function') {
+      return undefined;
+    }
+    const measure = () => {
+      const height = box.getBoundingClientRect().height;
+      if (!(height > 0)) return;
+      const first = listRef.current?.querySelector('li');
+      const rowHeight = first?.getBoundingClientRect().height || LATEST_ROW_ESTIMATE_PX;
+      // + the 4px gap between rows (`gap-1`): n rows need n·row + (n−1)·gap.
+      const fit = Math.floor((height + LATEST_ROW_GAP_PX) / (rowHeight + LATEST_ROW_GAP_PX));
+      const next = Math.max(LATEST_MIN_ROWS, Math.min(LATEST_MAX_ROWS, fit));
+      setRows((current) => (current === next ? current : next));
+    };
+    measure();
+    const observer = new window.ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [boxRef, listRef]);
+  return rows;
+}
+
+/** The real-time work queue: the newest cases, filling the band's height. */
 function TopCasesPanel({
   cases,
   navigate,
@@ -881,6 +964,7 @@ function TopCasesPanel({
   onOpenCase,
   caseOpen = false,
 }: {
+  /** Newest first, at most LATEST_MAX_ROWS; the panel shows as many as fit. */
   cases: Case[];
   navigate?: Navigate;
   navWindow: number;
@@ -892,25 +976,28 @@ function TopCasesPanel({
   /**
    * True while a case sheet is open over this page. It suppresses the row hover previews,
    * which would otherwise stack a dismissable layer above the sheet and eat the operator's
-   * first Escape — see `CaseHoverCard`'s `forceClosed`. This mattered less when the row
-   * NAVIGATED away, because the stray preview opened onto a page that was being replaced;
-   * now the dashboard stays put behind the sheet and it is plainly visible.
+   * first Escape — see `CaseHoverCard`'s `forceClosed`.
    */
   caseOpen?: boolean;
 }) {
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  const listRef = React.useRef<HTMLUListElement>(null);
+  const fit = useFittingRows(boxRef, listRef);
+  const shown = cases.slice(0, fit);
+  // The out-of-flow list needs a floor in flow: the rows it will hold before measuring
+  // (never more than five, so a short queue does not reserve empty rows).
+  const floorRows = Math.min(cases.length, LATEST_MIN_ROWS);
   return (
-    <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col p-3">
+    <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-foreground">
-            Latest cases
-          </h2>
-          <p className="text-xs text-muted-foreground">Real-time triage queue</p>
+          <h2 className="text-base font-semibold text-foreground">Latest cases</h2>
+          <p className="text-sm text-muted-foreground">Real-time triage queue</p>
         </div>
         {navigate ? (
           <button
             type="button"
-            className="shrink-0 rounded-sm px-1 py-0.5 text-xs font-medium text-primary transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="shrink-0 rounded-sm px-1 py-0.5 text-sm font-medium text-primary transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => navigate('cases', { window: navWindow })}
           >
             View all
@@ -919,79 +1006,103 @@ function TopCasesPanel({
       </div>
 
       {cases.length ? (
-        // A flat list with hairlines between rows, not five bordered boxes: the cell is
-        // already a bordered region, and a card per row inside it was the busiest texture
-        // on the page for the least information.
-        <ul className="-mx-2 mt-1 flex min-h-0 flex-1 flex-col divide-y divide-border/60">
-          {cases.map((k) => {
-            const displayId = (k.case_number || k.case_id || DASH).trim() || DASH;
-            const displayTitle =
-              (k.title || k.cluster_signature || k.rule_ids?.[0] || '').trim() ||
-              'Untitled case';
-            const age = humanizeAge(k.updated_at || k.created_at);
-            const status = latestCaseStatus(k.status);
-            return (
-              <li key={k.case_id} className="min-w-0">
-                <CaseHoverCard
-                  case={k}
-                  forceClosed={caseOpen}
-                  openDelay={320}
-                  closeDelay={220}
-                  side="left"
-                  align="start"
-                  sideOffset={12}
-                  collisionPadding={12}
-                  className="w-80 max-w-[calc(100vw-2rem)]"
-                >
-                  <button
-                    type="button"
-                    // Opens the case OVER this page instead of routing away to the Cases
-                    // list: the operator keeps the numerals that made them click.
-                    onClick={onOpenCase ? () => onOpenCase(k.case_id) : undefined}
-                    aria-disabled={!onOpenCase}
-                    className={cn(
-                      'flex w-full items-center justify-between gap-3 rounded-sm px-2 py-2 text-left',
-                      onOpenCase
-                        ? 'transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
-                        : 'cursor-default',
-                    )}
-                    // WCAG 2.5.3 (Label in Name): the row's visible label includes the
-                    // case IDENTIFIER, so the accessible name has to contain it too —
-                    // otherwise a speech-input user cannot say what they can see. The id
-                    // trails the title so the name still reads as a sentence.
-                    aria-label={
-                      onOpenCase
-                        ? `Open case ${displayTitle} (${displayId})`
-                        : `Preview case ${displayTitle} (${displayId})`
-                    }
+        <div
+          ref={boxRef}
+          className="relative mt-2 min-h-0 flex-1"
+          style={{
+            minHeight: `${floorRows * (LATEST_ROW_ESTIMATE_PX + LATEST_ROW_GAP_PX) - LATEST_ROW_GAP_PX}px`,
+          }}
+          data-testid="latest-cases-box"
+        >
+          {/* A flat list: rows separated by space, not hairlines and not bordered boxes
+              (Round 12 — one rule per band at most; each row's hover fill and its status
+              badge already mark where one case ends and the next begins). */}
+          <ul ref={listRef} className="absolute inset-x-0 top-0 -mx-2 flex flex-col gap-1">
+            {shown.map((k) => {
+              const displayId = (k.case_number || k.case_id || DASH).trim() || DASH;
+              const displayTitle =
+                (k.title || k.cluster_signature || k.rule_ids?.[0] || '').trim() ||
+                'Untitled case';
+              const age = humanizeAge(k.updated_at || k.created_at);
+              const status = latestCaseStatus(k.status);
+              // A TERMINAL row states the outcome of record (Round 12, D15): the analyst's
+              // classification once a human made one, otherwise how it was closed. One
+              // shared helper decides it, so this row cannot disagree with the case header.
+              const outcome = caseOutcome(k);
+              const outcomeWord = outcome.terminal ? outcome.shortLabel : null;
+              return (
+                <li key={k.case_id} className="min-w-0">
+                  <CaseHoverCard
+                    case={k}
+                    forceClosed={caseOpen}
+                    openDelay={320}
+                    closeDelay={220}
+                    side="left"
+                    align="start"
+                    sideOffset={12}
+                    collisionPadding={12}
+                    className="w-80 max-w-[calc(100vw-2rem)]"
                   >
-                    {/* The TITLE leads, in the reading face, because it is what the operator
-                        scans for; the identifier and age sit under it as metadata. The id
-                        keeps the mono face it has everywhere else in the console. */}
-                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate text-sm text-foreground" title={displayTitle}>
-                        {displayTitle}
-                      </span>
-                      <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                        <span className="min-w-0 max-w-40 truncate font-mono text-primary" title={displayId}>
-                          {displayId}
-                        </span>
-                        <span aria-hidden>·</span>
-                        <span className="shrink-0 tabular-nums">{age || 'Just now'}</span>
-                      </span>
-                    </span>
-                    <Badge
-                      variant={status.variant}
-                      className="shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium"
+                    <button
+                      type="button"
+                      // Opens the case OVER this page instead of routing away to the Cases
+                      // list: the operator keeps the numerals that made them click.
+                      onClick={onOpenCase ? () => onOpenCase(k.case_id) : undefined}
+                      aria-disabled={!onOpenCase}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-3 rounded-sm px-2 py-2 text-left',
+                        onOpenCase
+                          ? 'transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                          : 'cursor-default',
+                      )}
+                      // WCAG 2.5.3 (Label in Name): the row's visible label includes the
+                      // case IDENTIFIER, so the accessible name has to contain it too.
+                      aria-label={
+                        onOpenCase
+                          ? `Open case ${displayTitle} (${displayId})`
+                          : `Preview case ${displayTitle} (${displayId})`
+                      }
                     >
-                      {status.label}
-                    </Badge>
-                  </button>
-                </CaseHoverCard>
-              </li>
-            );
-          })}
-        </ul>
+                      {/* The TITLE leads (14px), because it is what the operator scans for;
+                          the identifier, age and outcome sit under it as 12px metadata. The
+                          id keeps its mono face and truncates only against the real space —
+                          the old 160px cap cut it at every width. */}
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="truncate text-base text-foreground" title={displayTitle}>
+                          {displayTitle}
+                        </span>
+                        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="min-w-0 truncate font-mono text-primary" title={displayId}>
+                            {displayId}
+                          </span>
+                          <span aria-hidden>·</span>
+                          <span className="shrink-0 tabular-nums">{age || 'Just now'}</span>
+                          {outcomeWord ? (
+                            <>
+                              <span aria-hidden>·</span>
+                              <span
+                                className="shrink-0 text-foreground"
+                                data-testid="latest-case-outcome"
+                              >
+                                {outcomeWord}
+                              </span>
+                            </>
+                          ) : null}
+                        </span>
+                      </span>
+                      <Badge
+                        variant={status.variant}
+                        className="shrink-0 rounded-sm px-1.5 py-0.5 text-2xs font-medium"
+                      >
+                        {status.label}
+                      </Badge>
+                    </button>
+                  </CaseHoverCard>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       ) : (
         <div className="flex flex-1 items-center justify-center py-6">
           <EmptyState compact icon={Inbox} title="Queue clear" description="No recent cases in this window." />
@@ -1001,26 +1112,22 @@ function TopCasesPanel({
   );
 }
 
-/** One big-number signal inside the {@link CoverageTile}. */
+/** One big-number signal inside the {@link CoverageTile}. Flat: no box of its own. */
 const CoverageMetric: React.FC<{
   icon: LucideIcon;
   label: string;
   value: string;
   tone?: 'default' | 'warning';
 }> = ({ icon: Icon, label, value, tone = 'default' }) => (
-  <div
-    className={cn(
-      'rounded-md border px-2.5 py-2',
-      tone === 'warning' ? 'border-warning/30 bg-warning/5' : 'border-border bg-muted/20',
-    )}
-  >
-    <div className="flex items-center gap-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+  <div className="min-w-0">
+    {/* Sentence case at 13px (Round 12) — tracked capitals at 11px read as chrome. */}
+    <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span className="truncate">{label}</span>
     </div>
     <div
       className={cn(
-        'mt-1 font-mono text-xl font-semibold leading-none tabular-nums',
+        'mt-1 text-2xl font-semibold leading-none tabular-nums',
         tone === 'warning' ? 'text-warning-text' : 'text-foreground',
       )}
     >
@@ -1034,10 +1141,8 @@ const CoverageMetric: React.FC<{
  * big-number model over `GET /api/sources/coverage`. Reports how many enabled sources are
  * actually REPORTING (enabled − silent), the live event throughput, alerts triaged in the
  * last day, and — loudly, when nonzero — how many sources have gone SILENT (with a jump to
- * the Sources page to fix them). This REPLACES the old cases-per-source "Connector health"
- * bar list, which was blind to a source that stopped sending or was suppressed before a
- * case ever formed. Advisory only (#3); every value is a server aggregate rendered as plain
- * text (#9); no secrets (#10).
+ * the Sources page to fix them). Advisory only (#3); every value is a server aggregate
+ * rendered as plain text (#9); no secrets (#10).
  */
 function CoverageTile({
   coverage,
@@ -1053,18 +1158,18 @@ function CoverageTile({
   const worstMins = Math.round((coverage.worst_last_event_seconds || 0) / 60);
 
   return (
-    <div className="space-y-4" data-testid="coverage-tile">
+    <div className="flex h-full flex-col gap-4" data-testid="coverage-tile">
       {/* Hero — enabled sources actually reporting. */}
       <div>
         <div className="flex items-baseline gap-2">
-          <span className="font-mono text-4xl font-semibold leading-none tabular-nums text-foreground">
+          <span className="text-4xl font-semibold leading-none tabular-nums text-foreground">
             <CountUp value={reporting} />
           </span>
           <span className="text-lg tabular-nums text-muted-foreground">
             / {fmtNumber(coverage.sources_enabled)}
           </span>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="mt-1 text-sm text-muted-foreground">
           sources reporting
           {coverage.sources_total !== coverage.sources_enabled
             ? ` · ${fmtNumber(coverage.sources_total)} configured`
@@ -1073,13 +1178,13 @@ function CoverageTile({
       </div>
 
       {/* Completeness bar (green reporting · amber silent remainder). */}
-      <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden>
+      <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted" aria-hidden>
         <div className="h-full bg-success" style={{ width: `${pctReporting}%` }} />
         {hasSilent ? <div className="h-full flex-1 bg-warning" /> : null}
       </div>
 
-      {/* Three big signals. */}
-      <div className="grid grid-cols-3 gap-2">
+      {/* Three big signals, in one row. */}
+      <div className="grid grid-cols-3 gap-4">
         <CoverageMetric
           icon={Gauge}
           label="Events / min"
@@ -1098,16 +1203,17 @@ function CoverageTile({
         />
       </div>
 
-      {/* Honest footer — the silent-source alarm, or an all-clear. */}
+      {/* Honest footer — the silent-source alarm (it carries meaning, so it keeps its one
+          left rule), or an all-clear. */}
       {hasSilent ? (
         <button
           type="button"
           disabled={!onNavigate}
           onClick={onNavigate ? () => onNavigate('sources') : undefined}
           className={cn(
-            'flex w-full items-center gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-left text-xs text-warning-text',
+            'mt-auto flex w-full items-center gap-2 border-l-2 border-warning py-1 pl-2.5 text-left text-sm text-warning-text',
             onNavigate &&
-              'transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'rounded-r-sm transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           )}
         >
           <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden />
@@ -1118,13 +1224,249 @@ function CoverageTile({
           {onNavigate ? <ChevronRight className="h-4 w-4 shrink-0" aria-hidden /> : null}
         </button>
       ) : (
-        <p className="text-2xs text-muted-foreground">
+        <p className="mt-auto text-sm text-muted-foreground">
           All enabled sources are reporting
           {worstMins > 0 ? ` · oldest last event ${humanizeMins(worstMins)} ago` : ''}.
         </p>
       )}
     </div>
   );
+}
+
+/**
+ * Case volume as COLUMNS PER UTC DAY (Round 12), per the hover-trend rule: one column per
+ * bucket in its real time slot, never a smoothed area that implies values between days.
+ *
+ * `cases_per_day` lists only the days that HAVE cases, so the days between its first and
+ * last entry are zero-filled here as measured zeros (a floor tick, not a gap) — the case
+ * population the server analysed spans them. Days outside that span are not drawn. A
+ * readout names the pointed (or latest) day, and the same values ship in a visually hidden
+ * table. Plain SVG, no chart dependency. Every label is a formatted date or number (#9).
+ */
+function VolumeColumns({ data }: { data: Array<{ x: string; y: number }> }) {
+  const series = React.useMemo(() => {
+    const rows = data
+      .map((d) => ({ day: String(d.x ?? ''), n: Number.isFinite(d.y) ? Math.max(0, d.y) : 0 }))
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.day))
+      .sort((a, b) => a.day.localeCompare(b.day));
+    if (!rows.length) return [];
+    const byDay = new Map(rows.map((r) => [r.day, r.n]));
+    const out: Array<{ day: string; n: number }> = [];
+    const start = Date.parse(`${rows[0].day}T00:00:00Z`);
+    const end = Date.parse(`${rows[rows.length - 1].day}T00:00:00Z`);
+    // A hostile/huge span would allocate without bound; the server sends at most a month.
+    for (let t = start, i = 0; t <= end && i < 400; t += 86_400_000, i += 1) {
+      const day = new Date(t).toISOString().slice(0, 10);
+      out.push({ day, n: byDay.get(day) ?? 0 });
+    }
+    return out;
+  }, [data]);
+  const [pointed, setPointed] = React.useState<number | null>(null);
+
+  if (!series.length) {
+    return (
+      <div
+        role="img"
+        aria-label="Case volume over time (no data)"
+        className="flex min-h-[180px] flex-1 items-center justify-center text-sm text-muted-foreground"
+      >
+        No data
+      </div>
+    );
+  }
+  const peak = series.reduce((m, d) => Math.max(m, d.n), 0) || 1;
+  const shownIdx = pointed ?? series.length - 1;
+  const shown = series[shownIdx];
+  const tickEvery = Math.max(1, Math.ceil(series.length / 8));
+  const total = series.reduce((a, d) => a + d.n, 0);
+
+  return (
+    <div className="flex min-h-[180px] flex-1 flex-col" data-testid="case-volume-columns">
+      <div className="flex items-baseline justify-between gap-3 text-sm tabular-nums">
+        <span className="text-muted-foreground">{shown.day.slice(5)}</span>
+        <span className="font-semibold text-foreground">
+          {fmtNumber(shown.n)} case{shown.n === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div className="relative mt-2 min-h-0 flex-1">
+        <svg
+          role="img"
+          aria-label={`Case volume over time: ${fmtNumber(total)} cases over ${series.length} day${series.length === 1 ? '' : 's'}, peak ${fmtNumber(peak)} in a day`}
+          viewBox={`0 0 ${series.length * 10} 100`}
+          preserveAspectRatio="none"
+          className="absolute inset-0 h-full w-full"
+          onPointerMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            if (r.width <= 0) return;
+            const i = Math.floor(((e.clientX - r.left) / r.width) * series.length);
+            if (Number.isFinite(i)) setPointed(Math.max(0, Math.min(series.length - 1, i)));
+          }}
+          onPointerLeave={() => setPointed(null)}
+        >
+          {series.map((d, i) => {
+            const h = d.n > 0 ? Math.max(2, (d.n / peak) * 96) : 0;
+            return d.n > 0 ? (
+              <rect
+                key={d.day}
+                x={i * 10 + 1.5}
+                y={100 - h}
+                width={7}
+                height={h}
+                fill={token('primary', i === shownIdx ? 1 : 0.75)}
+              />
+            ) : (
+              // A measured zero is a floor tick, never an empty slot.
+              <rect key={d.day} x={i * 10 + 1.5} y={99} width={7} height={1} fill={token('muted-foreground', 0.4)} />
+            );
+          })}
+        </svg>
+      </div>
+      <div className="mt-1.5 flex justify-between text-2xs tabular-nums text-muted-foreground" aria-hidden>
+        {series.map((d, i) =>
+          i % tickEvery === 0 || i === series.length - 1 ? (
+            <span key={d.day}>{d.day.slice(5)}</span>
+          ) : null,
+        )}
+      </div>
+      <table className="sr-only">
+        <caption>Cases opened per UTC day</caption>
+        <thead>
+          <tr>
+            <th scope="col">Day</th>
+            <th scope="col">Cases</th>
+          </tr>
+        </thead>
+        <tbody>
+          {series.map((d) => (
+            <tr key={d.day}>
+              <td>{d.day}</td>
+              <td>{d.n}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Re-render on an interval so relative stamps ("Updated 2m ago") stay true. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+/**
+ * A quiet per-section freshness stamp (Round 12, additive; Sentinel shows "the last
+ * refresh time at the top of each section"). The slices load independently, so one
+ * global stamp would claim a freshness some of them do not have.
+ */
+function Freshness({ at, label = 'Updated' }: { at: string | null | undefined; label?: string }) {
+  useNow(15_000);
+  if (!at) return null;
+  const age = humanizeAge(at);
+  if (!age || age === DASH) return null;
+  return (
+    <span className="whitespace-nowrap tabular-nums" data-testid="freshness">
+      {label} {age}
+    </span>
+  );
+}
+
+/**
+ * One titled dashboard BAND (Round 12, SYNTHESIS-ux §2.3): a flat section on the canvas
+ * with a 15px sentence-case title, an optional 13px caption, and an optional right-hand
+ * aside (freshness, links). No card, no rule: whitespace between bands does the grouping.
+ */
+function Band({
+  id,
+  title,
+  caption,
+  aside,
+  className,
+  children,
+  'data-testid': testId,
+}: {
+  id: string;
+  title: string;
+  caption?: React.ReactNode;
+  aside?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+  'data-testid'?: string;
+}) {
+  return (
+    <section aria-labelledby={id} className={cn('min-w-0', className)} data-testid={testId}>
+      <header className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
+        <div className="min-w-0">
+          <h2
+            id={id}
+            className="text-md font-semibold leading-5 text-foreground"
+          >
+            {title}
+          </h2>
+          {caption ? <p className="mt-0.5 text-sm text-muted-foreground">{caption}</p> : null}
+        </div>
+        {aside ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+            {aside}
+          </div>
+        ) : null}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+/** A sub-band title inside Deeper analytics (h3 under its h2). */
+function SubBandTitle({ id, children }: { id: string; children: React.ReactNode }) {
+  return (
+    <h3 id={id} className="mb-4 text-base font-semibold text-foreground">
+      {children}
+    </h3>
+  );
+}
+
+/** One flat titled instrument inside a band (h3 + optional 13px caption). */
+function Instrument({
+  title,
+  caption,
+  count,
+  className,
+  children,
+}: {
+  title: string;
+  caption?: string;
+  count?: number;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section aria-label={title} className={cn('flex h-full min-w-0 flex-col', className)}>
+      <div className="mb-3 flex items-baseline gap-2">
+        <h3 className="text-base font-semibold text-foreground">{title}</h3>
+        {count != null ? (
+          <span className="text-sm tabular-nums text-muted-foreground">{fmtNumber(count)}</span>
+        ) : null}
+        {caption ? <span className="min-w-0 truncate text-sm text-muted-foreground">{caption}</span> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Per-browser open/closed state of the Deeper analytics disclosure (Round 12). */
+const DEEPER_OPEN_KEY = 'soc.overview.deeperOpen';
+
+function readDeeperOpen(): boolean {
+  try {
+    return localStorage.getItem(DEEPER_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
 }
 
 export default function Overview({ onNavigate }: OverviewProps) {
@@ -1136,6 +1478,17 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // ----- Time range + auto-refresh (the CONTROL BAR state) ---------------- //
   const [range, setRange] = React.useState<TimeRange>(DEFAULT_RANGE);
   const [refresh, setRefresh] = React.useState<RefreshValue>('live');
+  /**
+   * Whether the strip's numerals ROLL (count up) when their value changes (Round 12). They
+   * roll on the first load and on a window change — moments the operator caused — and
+   * never on a refresh: a LIVE tick that re-rolls six numbers every few seconds is motion
+   * that implies something happened when nothing did.
+   */
+  const [rollKpis, setRollKpis] = React.useState(true);
+  const changeRange = React.useCallback((next: TimeRange) => {
+    setRollKpis(true);
+    setRange(next);
+  }, []);
   const hours = React.useMemo(() => rangeHours(range), [range]);
   /** The `window` (hours) carried on every drill-through so the case list matches. */
   const navWindow = hours;
@@ -1172,6 +1525,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
   }));
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
+  /** When the last dashboard batch settled with data (the dashbar's "Updated …"). */
+  const [loadedAt, setLoadedAt] = React.useState<string | null>(null);
 
   // Monotonic batch token: a window change (or manual refresh) supersedes any batch
   // still in flight, so a late-settling previous-window response can never repaint
@@ -1263,6 +1618,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
       // Only surface a page-level error if the load is wholly empty.
       if (c.status === 'rejected' && m.status === 'rejected') {
         setError(c.reason ?? m.reason ?? new Error('Failed to load dashboard data.'));
+      } else {
+        setLoadedAt(new Date().toISOString());
       }
     } catch (e) {
       if (seq === loadSeqRef.current) setError(e);
@@ -1313,6 +1670,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * partially-covered one, and its zeros are not lower bounds.
    */
   const postureUnmeasured = postureUnmeasuredReason(posture);
+  /**
+   * `quality.analyst_confirmed_fp` (Round 12, additive): false positives an ANALYST
+   * confirmed over the window. Shown beside the AI-verdict figures it must never be read
+   * as. Absent on an older server ("not reported"), and withheld on an uncovered or
+   * unmeasured window like every other share-bearing figure.
+   */
+  const analystConfirmedFp = React.useMemo<number | undefined>(() => {
+    const raw = (posture?.quality as { analyst_confirmed_fp?: unknown } | undefined)
+      ?.analyst_confirmed_fp;
+    return !postureUnmeasured && postureCovered && typeof raw === 'number' && Number.isFinite(raw)
+      ? raw
+      : undefined;
+  }, [posture, postureCovered, postureUnmeasured]);
 
   /** Retry only the LLM spend slice; healthy dashboard siblings never reload or blank. */
   const retryUsage = React.useCallback(async () => {
@@ -1342,6 +1712,22 @@ export default function Overview({ onNavigate }: OverviewProps) {
     void load();
     void reloadPosture();
   }, [load, reloadPosture]);
+  /** A refresh the operator did not just ask for a new window with: numerals do not roll. */
+  const refreshQuietly = React.useCallback(() => {
+    setRollKpis(false);
+    refreshAll();
+  }, [refreshAll]);
+
+  // ----- Deeper analytics: one persisted disclosure (Round 12) ------------- //
+  const [deeperOpen, setDeeperOpen] = React.useState<boolean>(readDeeperOpen);
+  const onDeeperOpenChange = React.useCallback((next: boolean) => {
+    setDeeperOpen(next);
+    try {
+      localStorage.setItem(DEEPER_OPEN_KEY, next ? '1' : '0');
+    } catch {
+      /* storage blocked: the choice simply lasts for this visit */
+    }
+  }, []);
 
   // ----- Noise-Reduction funnel: per-user hide toggle (persisted) --------- //
   const [noiseHidden, setNoiseHidden] = React.useState<boolean>(() => {
@@ -1497,14 +1883,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const respondBlock = posture?.lifecycle?.mtta_minutes;
 
   /*
-   * The five most-recent cases — the compact live instrument queue.
-   *
-   * It was four while the queue shared a row with a pair of side-by-side snapshot cards
-   * and matched their height. With the snapshots stacked into four columns the row is
-   * taller, and a fourth row left ~85px of the cell empty. A fifth row is real content in
-   * space that was blank, and it is FREE: five rows measure ~316px against a row the
-   * stacked snapshots already set to ~349px, so the queue still does not drive the row.
-   * Do not raise it further without re-measuring — six would.
+   * The newest cases for the live queue — up to LATEST_MAX_ROWS (Round 12). The panel
+   * shows as many as FIT the band's height, never fewer than five: the queue is laid out
+   * out of flow, so it fills the space the snapshots and the timing pair set rather than
+   * driving the band taller (see `useFittingRows`). This adds rows and removes none.
    */
   const latestCases = React.useMemo(
     () =>
@@ -1514,7 +1896,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           const aTime = Date.parse(a.updated_at || a.created_at || '') || 0;
           return bTime - aTime || (b.risk_score ?? 0) - (a.risk_score ?? 0);
         })
-        .slice(0, 5),
+        .slice(0, LATEST_MAX_ROWS),
     [cases],
   );
 
@@ -2051,6 +2433,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
       quality.verdicted_cases > 0
         ? `${fmtNumber(quality.false_positive_cases)} of ${fmtNumber(quality.verdicted_cases)} verdicted`
         : DASH;
+    /**
+     * The ANALYST-confirmed false positives over the same window (Round 12, additive;
+     * `quality.analyst_confirmed_fp`). A count, never a rate: most cases are never graded,
+     * so a rate over it would describe grading coverage. It sits BESIDE the AI-verdict
+     * rate — in the help and at the top of the tile's drill-down — so an analyst's call
+     * and the model's call are never read as one number. Absent on an older server, which
+     * is "not reported", never zero; withheld with every other share on an uncovered window.
+     */
+    const analystFp = analystConfirmedFp;
+    const fpPartition: KpiBreakdownRow[] | undefined =
+      typeof analystFp === 'number' && fpSample !== DASH
+        ? [
+            {
+              label: 'AI verdict: false positive',
+              value: fmtNumber(quality!.false_positive_cases),
+              title: 'Cases the agent verdicted false positive (the rate’s numerator)',
+            },
+            {
+              label: 'Confirmed false positive by an analyst',
+              value: fmtNumber(analystFp),
+              title:
+                'Cases an analyst independently confirmed as false positive — graded feedback or an explicit classification',
+            },
+          ]
+        : undefined;
     const terminalShare = (covered ? shareContext(terminalCases, caseCount) : undefined) ?? DASH;
     const automationShare =
       typeof automationPercent === 'number'
@@ -2076,7 +2483,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // This IS the denominator the cohort tiles are shares of, so its context line
         // names the window rather than a share: a dash here would read as "a
         // denominator we could not measure", which is the opposite of true.
-        context: covered ? `arrivals, last ${hours < 48 ? `${hours}h` : windowLabel(hours)}` : undefined,
+        // One window wording on the whole page (Round 12): "last 24 hours" here, in the
+        // snapshot captions and in the trend labels — the caption used to say "last 1 day"
+        // two inches from a tile that said "24h".
+        context: covered ? `arrivals, last ${trendSpanLabel(hours)}` : undefined,
         sub: postureSub,
         bound: boundSub(),
         help:
@@ -2184,7 +2594,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
         format: fmtInt,
         // A stock has no window denominator, and inventing one would invite reading it
         // as a fifth summand of the cohort tiles. The context line says what it IS
-        // instead, so nobody reads it as a share of Total Cases.
+        // instead. The two cohort "open" figures below it say "from this window" /
+        // "arrived in the last …", and the open snapshot links back here (Round 12).
         context: 'any arrival date',
         sub: postureSub,
         // This tile's completeness has its OWN predicate: `open_now.complete`, not the
@@ -2238,7 +2649,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
       },
       {
-        label: 'False Positive Rate',
+        // "AI-verdict" (Round 12): the rate is the AGENT's verdicts, and an analyst's
+        // classification is a different, separately reported count (see `analystFp`).
+        label: 'AI-verdict FP rate',
         testId: 'false-positive-rate',
         value: typeof fpPercent === 'number' ? `${fpPercent}%` : DASH,
         countTo: fpPercent,
@@ -2257,7 +2670,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
         help: scaleAside(
           'The share of VERDICTED cases the agent closed as a false positive. The ' +
             'denominator is verdicted cases, not every case in the window, so a window with ' +
-            'few verdicts moves this number a long way on very little evidence.',
+            'few verdicts moves this number a long way on very little evidence. It counts ' +
+            'the AI verdict only: a false positive an analyst classified is reported ' +
+            'separately, beside it.' +
+            (typeof analystFp === 'number'
+              ? ` Analysts confirmed ${fmtNumber(analystFp)} case${analystFp === 1 ? '' : 's'} in this window as false positive.`
+              : ''),
           fpSample,
         ),
         icon: Percent,
@@ -2276,13 +2694,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
         },
         drilldown: {
           key: 'false-positive-rate',
-          title: 'False Positive Rate',
+          title: 'AI-verdict FP rate',
           // A RATE has no list. What a list can honestly show is its NUMERATOR, so the
           // panel says which half of the ratio it is showing rather than implying the
           // rows below add up to a percentage.
           population:
             'The rate\u2019s numerator: cases the agent verdicted false positive, ' +
             'excluding operator policy closes exactly as the rate itself does.',
+          // The analyst-confirmed count BESIDE the AI-verdict numerator, at the top of the
+          // panel — the face's one context line has no room for a second number at 1280.
+          partition: fpPartition,
+          partitionCaption:
+            'Over the whole window, from the server rollup — not the cases listed below. ' +
+            'The two are different judgements of the same cases, so they need not match and ' +
+            'do not sum to anything.',
           // The SAME population the server's rate counts. Its numerator and denominator
           // are both taken AFTER policy-closed cases are stripped — a case closed by an
           // operator's rule declaration never reached the agent, so no verdict of the
@@ -2462,6 +2887,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
     navigate,
     bucketTrends,
     trendFallbackLabel,
+    analystConfirmedFp,
   ]);
 
   // ----- KPI drill-down disclosure ---------------------------------------- //
@@ -2498,6 +2924,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
    * addressable by URL — it is a peek, and "View all" is still the route.
    */
   const [openCaseId, setOpenCaseId] = React.useState<string | null>(null);
+  /** Where the drill-down grows from: the centre of the tile that opened it (Round 12). */
+  const [kpiOrigin, setKpiOrigin] = React.useState<{ x: number; y: number } | null>(null);
   const tileEls = React.useRef(new Map<string, HTMLElement | null>());
   const tileRefSetters = React.useRef(new Map<string, (el: HTMLElement | null) => void>());
   /** A STABLE ref callback per tile id, so a re-render never detaches the trigger. */
@@ -2540,6 +2968,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
         closeKpiPanel();
         return;
       }
+      // Read the tile's centre at the moment it is opened, so the dialog scales out of the
+      // control that asked for it (spatial consistency) instead of from the screen centre.
+      const rect = tileEls.current.get(key)?.getBoundingClientRect();
+      setKpiOrigin(
+        rect && rect.width > 0 && rect.height > 0
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+          : null,
+      );
       setOpenKpi(key);
       announce(`${kpiLabel(key)} details opened`);
     },
@@ -2625,26 +3061,50 @@ export default function Overview({ onNavigate }: OverviewProps) {
     navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow });
   }, [navigate, navWindow]);
 
+  // ----- Collapsed Deeper analytics: an inline summary (Round 12) --------- //
+  /**
+   * What the fold holds, stated in one line while it is closed, so nothing hides behind an
+   * unlabelled disclosure: the timing trio, spend, silent sources and the top signature.
+   * Built only from values already on the page; an unmeasured value is left out rather
+   * than shown as a dash in a sentence.
+   */
+  const deeperSummary = React.useMemo(() => {
+    const parts: string[] = [];
+    for (const t of timing) if (t.value !== DASH) parts.push(`${t.label} ${t.value}`);
+    if (usageLoad.availability !== 'unavailable' && typeof usage?.total_cost === 'number') {
+      parts.push(`${fmtMoney(usage.total_cost, usage.currency)} spend`);
+    }
+    if (coverage) {
+      parts.push(
+        `${fmtNumber(coverage.sources_silent)} silent source${coverage.sources_silent === 1 ? '' : 's'}`,
+      );
+    }
+    const topSignature = signatureItems[0]?.label;
+    if (topSignature) parts.push(`top signature: ${topSignature}`);
+    return parts.join(' · ');
+  }, [timing, usage, usageLoad.availability, coverage, signatureItems]);
+
   // ----- The header control cluster --------------------------------------- //
   const headerControls = (
     <>
       <TimeRangePicker
         value={range}
-        onChange={setRange}
+        onChange={changeRange}
         refresh={refresh}
         onRefreshChange={setRefresh}
-        onRefreshTick={refreshAll}
+        onRefreshTick={refreshQuietly}
         size="sm"
         chrome="command"
       />
       <Button
         variant="outline"
         size="icon"
-        onClick={refreshAll}
+        onClick={refreshQuietly}
         aria-label="Refresh dashboard"
         title="Refresh"
         className={cn(
-          'h-8 w-8 rounded-[3px] border-border/70 bg-transparent text-muted-foreground shadow-none hover:border-border-strong hover:bg-hover hover:text-foreground',
+          // 8px like every other button and select (Round 12 concentric radii).
+          'h-8 w-8 rounded-md border-border/70 bg-transparent text-muted-foreground shadow-none hover:border-border-strong hover:bg-hover hover:text-foreground',
           refresh === 'live' && 'text-success-text hover:text-success-text',
         )}
       >
@@ -2656,10 +3116,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
     </>
   );
 
+  /**
+   * The page's width (Round 12): `wide` — `max-w-[1760px] 2xl:max-w-[1920px]`, centred —
+   * rising to 2400px at `4xl`, where the bands switch to a main column plus a 460px rail.
+   * `PageContainer` has always prescribed `wide` for this page ("widen by COLUMN COUNT on
+   * ultrawide, not by stretching rows"); `fluid` stretched a 7.5:1 flow strip across a
+   * 2560px screen and left 30% of it empty. The blocking load uses the SAME classes, or
+   * the page would change width when data lands.
+   */
+  const containerClass = 'space-y-8 3xl:space-y-10 4xl:max-w-[2400px]';
+
   // ----- Blocking load uses the Console's one centered motion grammar. ---- //
   if (loading && !cases.length && !metrics) {
     return (
-      <PageContainer variant="fluid" className="w-auto sm:-mx-2">
+      <PageContainer variant="wide" className={containerClass}>
         <LoadingState label="Loading dashboard" layout="page" shape="page" />
       </PageContainer>
     );
@@ -2672,44 +3142,35 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const usageFailureSub = usage
     ? `Last loaded ${fmtMoney(usage.total_cost, usage.currency)} · Retry spend telemetry`
     : 'Retry spend telemetry';
+  /** "last 24 hours" / "last 7 days" — the ONE window wording on this page. */
+  const windowPhrase = `last ${trendSpanLabel(hours)}`;
+  // The most recent of the two independently loaded halves (case/metric batch, posture).
+  const pageFreshness = [loadedAt, posture?.generated_at ?? null]
+    .filter((v): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+  const openNowCount =
+    !postureUnmeasured && typeof posture?.open_now?.count === 'number'
+      ? posture.open_now.count
+      : null;
 
   return (
-    /*
-     * `fluid` + a bounded negative gutter, not a wider `wide`.
-     *
-     * The page cap is `max-w-[1760px] 2xl:max-w-[1920px]`, and it does not BIND until a
-     * viewport around 2218px: below that the limit is the shell (a 240px rail plus a 48px
-     * inset), so raising the cap would move nothing at 1440 or 1920 and would regress the
-     * 21 prose-heavy pages that share it. This reclaims the inset itself, 8px a side, on
-     * THIS page only. `w-auto` is load-bearing: `cn` is `twMerge`, so without it the
-     * container's base `w-full` survives and the margin shifts the box left instead of
-     * widening it. Both containers take it, or the page changes width when data lands.
-     *
-     * 24px a side is the hard ceiling: the shell's scroll containers are
-     * `overflow-x-hidden`, so a bigger bleed would clip silently — no scrollbar, no
-     * failing test. The honest gain is +16px; the real reclaim on this page is the
-     * caption row the strip gave back to its numerals.
-     */
-    <PageContainer variant="fluid" className="w-auto space-y-4 sm:-mx-2">
-      {/* ---- MASTHEAD: a PLAIN, dense header (the big title sits flush on the page
-             background, like the Sources page) with the time-range + refresh controls in
-             its `meta` slot — BESIDE the title, not opposite it.
+    <PageContainer variant="wide" className={containerClass}>
+      {/* ---- BAND 0 — MASTHEAD + DASHBAR ----------------------------------------------
+          The title, the time-range and refresh controls in the `meta` slot BESIDE it, and
+          the page's freshness on the right. Sticky on the Console's one translucent
+          material (Round 12): the controls that scope every number stay in reach while the
+          bands scroll under them, with a scroll-edge fade instead of a hard rule. It is
+          NOT a card — `page-hero` carries no `bg-card` (the material is floating chrome,
+          not a surface for data).
 
-             `meta` rather than `actions` is the whole of requirement 1. `actions` renders
-             into a wrapper that is a SIBLING of the left cluster inside the header's
-             `sm:justify-between` row, which is what pushed the controls to the far right;
-             `meta` renders inside the title row itself. With `actions` now absent that row
-             has a single non-growing child, so the title and its controls pack left as one
-             cluster and the masthead's right half is deliberately empty. Nothing else about
-             the header changes, and no other PageHeader caller is touched.
-
-             The controls keep their own `role="group"` wrapper verbatim: it is the labelled
-             landmark the Console's tests and screen-reader users both resolve the cluster
-             by. No width or grow utility is added — `w-full sm:w-auto` is `actions`-slot
-             behaviour and inside `meta` it would force the title onto its own line. ---- */}
+          The title steps up to the 30/36 display step at `2xl` (24/30 below; the type
+          scale's nearest step to the 28px the synthesis sketched) — the page's one display
+          size; band titles are 15px and instrument titles 14px under it. */}
       <PageHeader
         data-testid="page-hero"
         title={PAGE_TITLE}
+        sticky
+        className="py-2 2xl:[&_h1]:text-4xl"
         meta={
           <div
             role="group"
@@ -2718,6 +3179,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
           >
             {headerControls}
           </div>
+        }
+        actions={
+          pageFreshness ? (
+            <span className="text-sm text-muted-foreground">
+              <Freshness at={pageFreshness} />
+            </span>
+          ) : undefined
         }
       />
 
@@ -2734,10 +3202,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
         />
       ) : null}
 
-      {/* Agent health no longer lives on this page. It moved into the notification bell
-          (AppShell -> NotificationBell), where a degradation is visible from EVERY route
-          instead of only this one, and where a healthy deployment spends no dashboard
-          space at all. The dashboard must not re-derive it: there is exactly one reader. */}
+      {/* Agent health lives in the notification bell (AppShell -> NotificationBell), where
+          a degradation is visible from EVERY route. The dashboard must not re-derive it. */}
 
       {error ? (
         <LoadError error={error} title="Could not load the dashboard" onRetry={refreshAll} />
@@ -2758,19 +3224,19 @@ export default function Overview({ onNavigate }: OverviewProps) {
           }
         />
       ) : (
-        /*
-         * NO vertical gap between the strip and the lattice, and no top rule on the
-         * lattice. They used to be separated by 16px of `space-y-4` with a hairline on
-         * each side of it: two rules framing empty space read as a seam between two
-         * unrelated widgets. Now the strip's own bottom rule IS the lattice's top edge,
-         * so the KPIs and the instruments read as one panel. The collapsed group below
-         * keeps its breathing room with an explicit `mt-4`.
-         */
-        <div>
-          {/* ---- KPI STRIP — flat, un-nested, responsive by COLUMN COUNT ---- */}
+        <>
+          {/* ---- BAND 1 — THE KPI STRIP ---------------------------------------------
+              One continuous six-cell strip (no title: the page title introduces it), its
+              own outer rules, and the exact per-breakpoint divider math below. A 32px
+              band gap now separates it from the flow band (Round 12): the strip's bottom
+              rule used to BE the lattice's top edge, and with no gap anywhere the page
+              read as one undifferentiated slab. */}
           <div>
             <Stagger
               data-testid="kpi-strip"
+              // First load only, and quick: 40ms a tile, ≤200ms in all (Round 12 motion).
+              step={40}
+              maxDelay={200}
               className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6"
               /*
                * Exact divider math for SIX tiles at 1 / 2 / 3 / 6 columns. A cell may
@@ -2781,23 +3247,17 @@ export default function Overview({ onNavigate }: OverviewProps) {
                *
                * SIX is easier than five, not harder: 6 % {1,2,3,6} === 0, so every
                * breakpoint fills whole rows and "last column" coincides with "last child"
-               * at each of them. Five left orphans — a cell whose row simply stops — which
-               * is why the old string drew a bottom rule under cell 4 at two columns and
-               * under cell 3 at three, in both cases into empty space.
+               * at each of them.
                *
                * VERIFIED, not reasoned: these classes were compiled with this repo's own
-               * Tailwind 3.4.19 and the resulting borders read back from computed styles in
-               * a real browser at 500 / 700 / 900 / 1400px, against the geometric oracle
-               * (`right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`). All four
-               * breakpoints match. The same harness shows the FIVE-cell string failing at
-               * exactly two cells once a sixth tile is added — `sm` bottom on cell 5 and
-               * `xl` right on cell 6 — which is what the two new rules below fix.
+               * Tailwind and the resulting borders read back from computed styles in a real
+               * browser at 500 / 700 / 900 / 1400px, against the geometric oracle
+               * (`right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`).
                *
                * ⚠️ Do not "simplify" the `:not()`s away. Tailwind emits arbitrary-variant
                * rules in ONE trailing block whose internal order is not by breakpoint, so
                * at `md` the `2n` ON rule beat the `3n` OFF rule on cell 6 only by emission
-               * order, at equal (0,2,0) specificity. `:not()` lifts it to (0,3,0) and makes
-               * the outcome a property of the selectors rather than of the build. At `xl`,
+               * order, at equal (0,2,0) specificity. `:not()` lifts it to (0,3,0). At `xl`,
                * `:not(:nth-child(6n))` is strictly required. (jsdom's nwsapi THROWS on
                * `:not(:nth-child(3n))` — harmless here, but a future test that queries with
                * that selector will error rather than fail.)
@@ -2816,14 +3276,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     label={kpi.label}
                     testId={kpi.testId}
                     value={kpi.value}
-                    /*
-                     * The scale context rides on its OWN line under the numeral, never
-                     * beside it. Beside it, both shared one shrinkable flex row and at six
-                     * columns on a 1280px viewport flex shrank the NUMERAL first ("72%"
-                     * rendered as "7…"). On its own line the numeral keeps its full width
-                     * and only the context truncates, with the whole string in `title` and
-                     * still appended to the tile's help by `scaleAside()`.
-                     */
+                    // The scale context rides on its OWN line under the numeral, never
+                    // beside it (flex shrank the numeral first: "72%" read as "7…").
                     context={kpi.context}
                     sub={kpi.sub}
                     bound={kpi.bound}
@@ -2833,51 +3287,42 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     icon={kpi.icon}
                     accent={kpi.accent}
                     variant="strip"
-                    // The strip HEADS this page rather than being all of it: a flow
-                    // diagram, a case queue and a timing pair have to sit below it in the
-                    // same view. Compact swaps the tile's existing padding tokens
-                    // (min-h-28→min-h-0, px-4 py-5→px-3 py-2); it does not touch the cell
-                    // COUNT, which the grid's nth-child divider math is hand-tuned to.
-                    // See ui-standard, "Operational summaries".
-                    density="compact"
-                    // …and `hero` buys the numeral back the 24px→30px step that compact
-                    // otherwise spends, because this strip has given up its caption row for
-                    // it. Opt-in, never blanket: `density="compact"` is a shared console
-                    // rhythm passed at nine other call sites across six other pages, and
-                    // enlarging their numerals is not this page's decision to make.
+                    // Round 12: the strip that HEADS this page is `comfortable` — between
+                    // compact and default (~120px, 13px label and context lines) — with a
+                    // FLUID numeral that grows with its own tile (24 → 44px). Compact
+                    // squeezed six numerals into 90px cells at every width. Density changes
+                    // padding and type only; the cell COUNT, which the divider math above
+                    // is tuned to, is untouched.
+                    density="comfortable"
+                    size="fluid"
                     numeral="hero"
+                    // Roll on the first load and on a window change; a refresh (LIVE or
+                    // manual) shows the new value without motion.
+                    roll={rollKpis}
                     goodDirection={kpi.goodDirection}
                     countTo={kpi.countTo}
                     format={kpi.format}
                     formatCompact={fmtSnapshotCenter}
                     onClick={() => toggleKpiPanel(kpi.testId)}
                     // The tile opens a MODAL, so it announces a popup — not an expanded
-                    // state. `aria-expanded` is a disclosure semantic and would be wrong
-                    // here, and `aria-controls` could only ever dangle: the dialog is
-                    // portalled and is not in the DOM at all while it is closed.
+                    // state; the dialog is portalled and absent while closed.
                     ariaHasPopup="dialog"
+                    // `className` lands on the tile's CELL ROOT (the help button sits beside
+                    // the trigger), so the trigger's inset is reached as its child: 12px
+                    // sides between xl and 2xl instead of the density's 16px. At 1280 with
+                    // the navigation pinned a tile is ~165px, and 16px cost the longest
+                    // context ("96% of worked closes") its last word.
+                    className="press-scale xl:max-2xl:[&>button]:px-3"
                   />
                 );
                 // Hover/focus reveals the metric's honest trend; the tile is itself the
-                // focus stop, so the wrapper adds no second tab stop. Every card is FORCED
-                // closed while ANY drill-down is open — not just this tile's. Behind a modal
-                // scrim no tile is hoverable, so a per-tile suppression would leave four
-                // cards that can never open but still arm their timers; and the card opens
-                // on FOCUS, so the focus return on close would otherwise pop one straight
-                // back over the strip. The panel restates the same series, so nothing is lost.
-                //
-                // Every card is likewise closed while ANY tile's help popover is open: the
-                // help trigger lives inside this wrapper, so the card is already up by the
-                // time it is clicked, and two stacked explanations of one numeral is worse
-                // than either alone.
+                // focus stop. Every card is FORCED closed while ANY drill-down or help
+                // popover is open (two stacked explanations of one numeral is worse than
+                // either alone, and the focus return would otherwise pop one back open).
                 return kpi.trend ? (
                   <MetricHoverTrend
                     key={kpi.testId}
                     {...kpi.trend}
-                    // The preview says WHAT the numeral counts and what a click will do.
-                    // Both are restated from data the tile already declares — the
-                    // drill-down's own population sentence, and a fixed affordance line —
-                    // so the card can never disagree with the panel it points at.
                     preview={{
                       eyebrow: kpi.label,
                       population: kpi.drilldown.population,
@@ -2894,26 +3339,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 );
               })}
             </Stagger>
-            {/* The strip's affordance line is GONE, and its two halves went to different
-                places rather than to one shorter sentence.
 
-                The SELECT half became a per-tile mark (`kpi-<id>-affordance`) rendered by
-                `KpiTile` from the same `ariaHasPopup` prop that carries the claim to
-                assistive tech — so the visible promise and the announced one can never
-                disagree, and the promise is now ON the control instead of in a caption
-                under a metric row that is read once and then becomes furniture.
-
-                The TREND half was device-honest copy ("hover or focus" / "tap") for a card
-                only some of the tiles have. It is redundant with the mark: every tile is
-                selectable, the panel restates the same series, and the copy could not be
-                made true of all of them without saying "some of these". */}
-
-            {/* The drill-down. It PORTALS to `document.body` (Radix Dialog), so it is no
-                longer a sibling of the grid in the rendered DOM at all — which permanently
-                settles the old hazard that it might become an extra child of a strip whose
-                hand-tuned `nth-child` divider math counts its cells. It is still mounted
-                from here, and only while open, so the fetch it owns starts and stops with
-                the operator's intent. */}
+            {/* The drill-down PORTALS to `document.body` (Radix Dialog), so it is never a
+                child of the strip whose `nth-child` math counts cells. It grows out of the
+                tile that opened it (Round 12). */}
             {openKpiSpec ? (
               <KpiDrilldownPanel
                 spec={openKpiSpec}
@@ -2921,262 +3350,226 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 headingId={KPI_PANEL_HEADING_ID}
                 onClose={closeKpiPanel}
                 metrics={kpiMetrics}
-                // Switching metric re-points the SAME disclosure rather than closing it,
-                // so the expanded tile moves with it and `aria-expanded`/`aria-controls`
-                // stay truthful on exactly one tile.
                 onSelectMetric={selectKpiPanel}
-                // Read at close time, from the ref map the strip owns — the panel cannot
-                // know which tile opened it, and Radix cannot know either (there is no
-                // DialogTrigger; the panel opens from state).
+                origin={kpiOrigin}
                 restoreFocusTo={() => (openKpi ? (tileEls.current.get(openKpi) ?? null) : null)}
               />
             ) : null}
           </div>
 
-          {/* ---- THE COMMAND LATTICE ----------------------------------------------
-               ONE band, two rows, all on the SAME twelve-column xl grid:
+          {/* ---- BANDS 2 + 3 — the instrument bands ---------------------------------
+              Flat titled sections on the canvas, separated by whitespace: 32px between
+              bands, 24px gutters inside one (32 / 40 from 1920px). No per-cell rules and
+              no cell padding — the gutters do the separating (Round 12, replacing the
+              gutterless hairline lattice that read as one slab).
 
-                 row 1  noise-reduction flow (8)  · close attribution (4)
-                 row 2  case snapshots (4) · MTTD / response (4) · live queue (4)
+              ⚠️ THE FLOW GRID IS `xl:`, NEVER `lg:`. The flow's own container query hides
+              its graph below 38rem (608px) of CONTAINER width. At the tightest supported
+              desktop — 1280px, sidebar pinned — the content is ~982px; with no cell padding
+              and a 24px gutter the flow's eight columns are (982 − 24) × 8/12 ≈ 638px, which
+              clears 608. Do NOT add padding to the flow cell at `xl`.
 
-               Row 2 used to be snapshots (8) + queue (4) with the timing pair below it as
-               a third, FULL-WIDTH row. That row was two small stats spread across the whole
-               console, and the snapshot cell's own dead space sat beside it; folding the
-               timing pair into row 2 as its middle cell spends both at once and retires a
-               row of the lattice. The snapshots stack VERTICALLY inside their four columns —
-               which is also what the operator asked for — so the cell reads as one
-               open/resolved instrument rather than two half-width ones.
-
-               This used to be two sibling bands — an INSTRUMENT grid at `lg:` and an
-               OPERATIONS grid at `xl:` — which cost a duplicated `border-y` pair and a
-               16px gap between two things that read as one instrument panel.
-
-               ⚠️ THE GRID IS `xl:`, NEVER `lg:`. The flow diagram's own container query
-               hides its graph below 38rem (608px) of CONTAINER width and silently falls
-               back to a text rail. The tightest supported desktop is a 1280px viewport
-               with the sidebar pinned (its default), and the margin there is thin enough
-               that the arithmetic has to be exact:
-
-                 layout width   = 1280 − S (the ROOT SCROLLBAR: media queries still match
-                                  at 1280 while the scrollbar has already taken its width
-                                  out of layout. theme.css pins it — `scrollbar-width:
-                                  thin` plus a 10px `::-webkit-scrollbar` — so S ≈ 10,
-                                  but it is NOT zero, which is what an earlier version of
-                                  this comment assumed)
-                 − 240 (sidebar, in flow) − 48 (content inset at the FLAT sm:px-6) = 982
-                 × 8/12 = 654, − 24 (px-3) − 1 (border) = 629px.
-
-               That clears 608 by ~21px (it was ~11px before the Round-12 width reclaim
-               flattened the shell gutter — see AppShell.CONTENT_INSET), and still clears
-               it (~625px) even on a UA that ignores both scrollbar rules and draws a
-               classic 17px bar. The horizontal padding is still `px-3` rather than `p-4`:
-               the 8px it returns was most of the safety margin before the reclaim, and it
-               also puts both rows of this band on ONE 12px left rail, matching the
-               4-column cells beside them.
-
-               On an `lg:` grid the same cell at a 1024px viewport would be ~459px and the
-               graph would silently vanish on every laptop. Below `xl` the rows stack
-               full-width, which is far wider still. Four columns can never carry the flow:
-               even at the 1920px cap that is 608px BEFORE padding. Hence 8/4, not 6/6.
-               (Every figure here is derived from class tokens, not measured.) ---- */}
+              At `4xl` (≥2200px) the page widens to 2400px by COLUMN COUNT: both bands share
+              one track template whose last column is a 460px rail, so Human vs AI stacks
+              over Latest cases beside the main column (flow; case state + timing). */}
           <Reveal
             variant="rise"
             delay={40}
             data-testid="hero-row"
-            className="min-w-0 border-b border-border"
+            className="min-w-0 space-y-8 3xl:space-y-10"
           >
-            {/* ---- ROW 1 — the flow, and who closed what ----
-                The flow cell is `py-3`, not `py-4`: it governs this row's height, and its
-                sibling card is `p-3`, so the extra 4px both cost the page 8px and started
-                the two cells' headings 4px apart. ---- */}
-            <div className="grid min-w-0 items-stretch border-b border-border/70 xl:grid-cols-12">
-              {noiseCellVisible ? (
-                <div className="min-w-0 border-b border-border/70 px-3 py-3 xl:col-span-8 xl:border-b-0 xl:border-r">
-                  {noiseUnavailable ? (
-                    <EmptyState
-                      data-testid="noise-reduction-unavailable"
-                      icon={Workflow}
-                      variant="error"
-                      compact
-                      title="Noise reduction unavailable"
-                      description={
-                        noise
-                          ? 'Refresh failed. Showing the last loaded flow.'
-                          : "The selected window's noise-reduction flow could not be loaded."
-                      }
-                      action={
-                        <Button size="sm" variant="outline" onClick={() => void retryNoise()}>
-                          <RefreshCw aria-hidden />
-                          Retry noise reduction
-                        </Button>
-                      }
-                      className={cn(
-                        'rounded-md border border-critical/30 bg-transparent',
-                        noise && 'mb-3',
-                      )}
-                    />
-                  ) : null}
-                  {noise ? (
-                    <NoiseFunnel
-                      data={noise}
-                      onStageClick={onStageClick}
-                      openCases={{
-                        count: posture?.aging.queue_depth ?? derived.open,
-                        // `queue_depth` is COHORT-scoped (open cases that arrived in the
-                        // window), so its completeness is the window's: `#103`'s
-                        // `window_covered`, not the permanent `truncated` flag. Without a
-                        // posture rollup the fallback count is the fetched page, whose
-                        // completeness the store now proves via `window_total_exact` —
-                        // replacing a `cases.length >= 200` guess that disagreed with the
-                        // posture branch a few lines up.
-                        partial: posture
-                          ? !postureCovered
-                          : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
-                      }}
-                      onOpenCasesClick={onOpenCasesClick}
-                      hidden={noiseHidden}
-                      onToggleHidden={toggleNoiseHidden}
-                      expandable
-                      variant="flat"
-                      className="w-full"
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* Close attribution — the lattice's lead instrument (it replaced the Active
-                  Risk Index, whose gauge duplicated risk the page already states in the
-                  severity donuts, the risk-ordered queue, and every case row).
-
-                  The widen-fallback keys on `noiseSupported`, NOT `noiseCellVisible`: the
-                  former is a `typeof api.noiseReduction === 'function'` probe that is
-                  settled on the first render, while the latter is false for the loading
-                  tick and would paint this card twelve columns wide and then snap it to
-                  four. A backend that cannot serve the funnel at all is the case this
-                  actually covers, and there the card takes the whole row rather than
-                  leaving eight columns of dead space beside it. */}
-              <div className={cn('min-w-0', noiseSupported ? 'xl:col-span-4' : 'xl:col-span-12')}>
-                <HumanVsAiCard
-                  totals={humanVsAi.totals}
-                  unavailableReason={humanVsAi.reason}
-                  series={humanVsAi.series}
-                  windowLabel={bucketTrends?.label ?? trendFallbackLabel}
-                  truncated={humanVsAi.truncated}
-                  stale={humanVsAi.stale}
-                  alertsIngested={humanVsAi.alerts}
-                  className="h-full w-full"
-                />
-              </div>
-            </div>
-
-            {/* ---- ROW 2 — case state, timing, and the live queue ----
-                No `border-b` of its own: this is the LAST row of the lattice now, and the
-                band's `border-y` already closes it. Keeping one would paint a second
-                hairline 0px above that one. */}
-            <div className="grid min-w-0 items-stretch xl:grid-cols-12">
-              {/* ONE labelled region holding both snapshots, STACKED at every width.
-                  Promoting the cards to independent grid children would delete this
-                  landmark and the h2 order that is read from it. They used to sit side by
-                  side across eight columns; at four they stack, which is what the card's
-                  own `border-b … last:border-b-0` was written for — so neither card carries
-                  a layout override any more, and the severity legend gets the full cell
-                  width instead of half of it. */}
-              <section
-                aria-label="Resolved and open cases"
-                className="min-w-0 border-b border-border/70 px-3 xl:col-span-4 xl:border-b-0 xl:border-r"
+            <Band
+              id="overview-band-flow"
+              title="Alert flow"
+              caption={`How the ${windowPhrase} of alerts became cases, and who closed them`}
+              aside={<Freshness at={noise?.generated_at ?? null} />}
+            >
+              <div
+                className={cn(
+                  'grid min-w-0 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:gap-x-8',
+                  '4xl:grid-cols-[minmax(0,1fr)_460px]',
+                )}
               >
-                <SnapshotCard
-                  title="Open cases"
-                  caption={`Still open from the last ${windowLabel(hours)}`}
-                  total={derived.open}
-                  delta={countDelta(derived.open, prev?.open ?? null)}
-                  goodDirection="down"
-                  counts={derived.openSev}
-                  ariaLabel="Open cases by severity"
-                  ctaLabel="View open cases"
-                  trend={{
-                    metric: 'New cases opened',
-                    points: bucketTrends?.newCases,
-                    windowLabel: bucketTrends?.label ?? trendFallbackLabel,
-                    caption: 'case arrivals per bucket',
-                    format: fmtInt,
-                    colorToken: 'primary',
-                  }}
-                  onClick={navigate
-                    ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
-                    : undefined}
-                />
-                <SnapshotCard
-                  title="Cases resolved"
-                  caption={`Closed in the last ${windowLabel(hours)}`}
-                  total={derived.resolved}
-                  delta={countDelta(derived.resolved, prev?.resolved ?? null)}
-                  goodDirection="up"
-                  counts={derived.resolvedSev}
-                  ariaLabel="Resolved cases by severity"
-                  ctaLabel="View resolved cases"
-                  trend={{
-                    metric: 'Cases now closed',
-                    points: bucketTrends?.closed,
-                    windowLabel: bucketTrends?.label ?? trendFallbackLabel,
-                    caption: 'by case-arrival bucket',
-                    format: fmtInt,
-                    colorToken: 'success',
-                  }}
-                  // `derived.resolved` counts BOTH terminal statuses (`CLOSED_STATUSES`),
-                  // so the deep link must too: the Cases status filter applies exactly
-                  // one status, and `status: 'closed'` silently dropped every RESOLVED
-                  // case — a card reading 1 landing on an empty list. Same `__terminal__`
-                  // facet the Resolved / Closed KPI drill-through uses.
-                  onClick={
-                    navigate
-                      ? () =>
-                          navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow })
-                      : undefined
-                  }
-                />
-              </section>
-
-              {/* The timing pair, now the MIDDLE cell of row 2 rather than a full-width
-                  row of its own. `py-3` (not `py-4`) because the cell beside it has no
-                  vertical padding of its own — SnapshotCard supplies `py-3` — so anything
-                  taller would start the two adjacent h2s at different heights.
-
-                  The two stats stack ONLY at `xl`, where this cell is four columns (~302px
-                  of content at the tightest supported desktop) and two columns of ~143px
-                  would wrap "First human action e.g. assignment / ack" onto three or four
-                  lines. BELOW `xl` every cell is full width — stacking there would cost
-                  ~107px in the regime that is already the tallest — so the pair keeps its
-                  two columns. `divide-x-0` is mandatory in the `xl` arm: `divide-x` and
-                  `divide-y` write different border edges and do not cancel each other, so
-                  without the reset the rows would carry an L-shaped hairline. */}
-              <section
-                aria-label="Mean time to detect / respond"
-                className="min-w-0 border-b border-border/70 px-3 py-3 xl:col-span-4 xl:flex xl:flex-col xl:border-b-0 xl:border-r"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-semibold text-foreground">
-                      MTTD / response
-                    </h2>
-                    <p className="text-xs text-muted-foreground">p50 · server-computed</p>
+                {noiseCellVisible ? (
+                  <div className="min-w-0 xl:col-span-8 4xl:col-span-1">
+                    {noiseUnavailable ? (
+                      <EmptyState
+                        data-testid="noise-reduction-unavailable"
+                        icon={Workflow}
+                        variant="error"
+                        compact
+                        title="Noise reduction unavailable"
+                        description={
+                          noise
+                            ? 'Refresh failed. Showing the last loaded flow.'
+                            : "The selected window's noise-reduction flow could not be loaded."
+                        }
+                        action={
+                          <Button size="sm" variant="outline" onClick={() => void retryNoise()}>
+                            <RefreshCw aria-hidden />
+                            Retry noise reduction
+                          </Button>
+                        }
+                        className={cn(
+                          'rounded-md border border-critical/30 bg-transparent',
+                          noise && 'mb-3',
+                        )}
+                      />
+                    ) : null}
+                    {noise ? (
+                      <NoiseFunnel
+                        data={noise}
+                        onStageClick={onStageClick}
+                        openCases={{
+                          count: posture?.aging.queue_depth ?? derived.open,
+                          // `queue_depth` is COHORT-scoped (open cases that arrived in the
+                          // window), so its completeness is the window's (`#103`
+                          // `window_covered`). Without a posture rollup the fallback count is
+                          // the fetched page, whose completeness the store proves via
+                          // `window_total_exact`.
+                          partial: posture
+                            ? !postureCovered
+                            : !(caseWindow?.exact === true && caseWindow.total <= cases.length),
+                        }}
+                        onOpenCasesClick={onOpenCasesClick}
+                        hidden={noiseHidden}
+                        onToggleHidden={toggleNoiseHidden}
+                        expandable
+                        variant="flat"
+                        className="w-full"
+                      />
+                    ) : null}
                   </div>
-                  {navigate ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs font-medium text-primary hover:text-primary/80"
-                      onClick={() => navigate('metrics', { tab: 'posture' })}
-                    >
-                      Detail →
-                    </Button>
-                  ) : null}
+                ) : null}
+
+                {/* Close attribution. The widen-fallback keys on `noiseSupported` (settled
+                    on the first render), not `noiseCellVisible` (false for the loading
+                    tick), so the card never paints full width and then snaps to four. */}
+                <div
+                  className={cn(
+                    'min-w-0',
+                    noiseSupported ? 'xl:col-span-4 4xl:col-span-1' : 'xl:col-span-12 4xl:col-span-2',
+                  )}
+                >
+                  <HumanVsAiCard
+                    totals={humanVsAi.totals}
+                    unavailableReason={humanVsAi.reason}
+                    series={humanVsAi.series}
+                    windowLabel={bucketTrends?.label ?? trendFallbackLabel}
+                    truncated={humanVsAi.truncated}
+                    stale={humanVsAi.stale}
+                    alertsIngested={humanVsAi.alerts}
+                    className="h-full w-full"
+                  />
                 </div>
-                {/* At `xl` the pair splits the cell's full height in two, each stat centred in
-                    its half: the snapshots beside it set the row's height, and two stats
-                    stacked at the top left the bottom third of this cell empty. */}
-                <div className="mt-3 grid grid-cols-2 divide-x divide-border/70 xl:flex-1 xl:grid-cols-1 xl:grid-rows-2 xl:divide-x-0 xl:divide-y">
-                  <div className="pr-4 xl:flex xl:flex-col xl:justify-center xl:pb-3 xl:pr-0">
+              </div>
+            </Band>
+
+            <Band
+              id="overview-band-cases"
+              title="Cases and response"
+              caption={`Cases that arrived in the ${windowPhrase} · response timing is p50, computed on the server`}
+              aside={<Freshness at={posture?.generated_at ?? null} />}
+            >
+              <div
+                className={cn(
+                  'grid min-w-0 items-stretch gap-x-6 gap-y-8 md:grid-cols-2 xl:grid-cols-12 3xl:gap-x-8',
+                  '4xl:grid-cols-[minmax(0,5fr)_minmax(0,3fr)_460px]',
+                )}
+              >
+                {/* Case state: ONE labelled region holding both snapshots. They sit side by
+                    side whenever the cell is at least 35rem (560px) wide and stack below
+                    that — a container query, so it follows the cell, not the viewport. */}
+                <section
+                  aria-label="Resolved and open cases"
+                  className="@container min-w-0 xl:col-span-5 4xl:col-span-1"
+                >
+                  {/* `content-start`: the band stretches this cell, and a grid's auto rows
+                      would otherwise share that stretch and push each snapshot's footnote
+                      away from its own donut. */}
+                  <div className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2">
+                    <SnapshotCard
+                      title="Open cases"
+                      caption={`Arrived in the ${windowPhrase}, still open`}
+                      total={derived.open}
+                      delta={countDelta(derived.open, prev?.open ?? null)}
+                      goodDirection="down"
+                      counts={derived.openSev}
+                      ariaLabel="Open cases by severity"
+                      ctaLabel="View open cases"
+                      trend={{
+                        metric: 'New cases opened',
+                        points: bucketTrends?.newCases,
+                        windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                        caption: 'case arrivals per bucket',
+                        format: fmtInt,
+                        colorToken: 'primary',
+                      }}
+                      onClick={navigate
+                        ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
+                        : undefined}
+                      // The visual link between the three "open" figures (Round 12): this
+                      // cohort is part of the strip's window-exempt Open Cases stock, and
+                      // the flow's "open cases from this window" action is this same cohort.
+                      footnote={
+                        openNowCount != null
+                          ? `Part of the ${fmtNumber(openNowCount)} open now, any arrival date (Open Cases above).`
+                          : undefined
+                      }
+                    />
+                    <SnapshotCard
+                      title="Cases resolved"
+                      caption={`Arrived in the ${windowPhrase}, now resolved or closed`}
+                      total={derived.resolved}
+                      delta={countDelta(derived.resolved, prev?.resolved ?? null)}
+                      goodDirection="up"
+                      counts={derived.resolvedSev}
+                      ariaLabel="Resolved cases by severity"
+                      ctaLabel="View resolved cases"
+                      trend={{
+                        metric: 'Cases now closed',
+                        points: bucketTrends?.closed,
+                        windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                        caption: 'by case-arrival bucket',
+                        format: fmtInt,
+                        colorToken: 'success',
+                      }}
+                      // `derived.resolved` counts BOTH terminal statuses, so the deep link
+                      // uses the `__terminal__` facet (a `status: 'closed'` link silently
+                      // dropped every RESOLVED case).
+                      onClick={
+                        navigate
+                          ? () =>
+                              navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow })
+                          : undefined
+                      }
+                    />
+                  </div>
+                </section>
+
+                {/* Response time: the detect / first-response pair, TOP-aligned with 24px
+                    between them (the old `justify-center` halves left a ~110px void). */}
+                <section
+                  aria-label="Mean time to detect / respond"
+                  className="flex min-w-0 flex-col xl:col-span-3 4xl:col-span-1"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h2 className="text-base font-semibold text-foreground">Response time</h2>
+                      <p className="text-sm text-muted-foreground">p50 · server-computed</p>
+                    </div>
+                    {navigate ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary/80"
+                        onClick={() => navigate('metrics', { tab: 'posture' })}
+                      >
+                        Detail →
+                      </Button>
+                    ) : null}
+                  </div>
+                  <div className="mt-4 grid gap-6 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-1">
                     <MetricHoverTrend
                       metric="MTTD · daily mean"
                       points={timingTrends?.mttd}
@@ -3184,18 +3577,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       format={humanizeMins}
                       colorToken="info"
                       side="top"
+                      className="h-auto"
                     >
                       <TimingStat
                         label="MTTD"
                         sub="Detect · log arrival → case"
                         block={mttdBlock}
                         dotClass="bg-info"
-                        compact
                         help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
                       />
                     </MetricHoverTrend>
-                  </div>
-                  <div className="pl-4 xl:flex xl:flex-col xl:justify-center xl:pl-0 xl:pt-3">
                     <MetricHoverTrend
                       metric="Respond · daily mean"
                       points={timingTrends?.respond}
@@ -3203,338 +3594,399 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       format={humanizeMins}
                       colorToken="success"
                       side="top"
+                      className="h-auto"
                     >
-                      {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes` —
-                          see the derivation above. The label stays "Respond" deliberately:
+                      {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
                           calling it MTTR would present time-to-first-human-action as
-                          time-to-resolve. True MTTR is in Deeper analytics. */}
+                          time-to-resolve. True MTTR is in Deeper analytics, and the MTTA
+                          there reads this same clock — said so here, so the two equal
+                          figures read as one measurement shown twice, not a coincidence. */}
                       <TimingStat
                         label="Respond"
-                        sub="First human action e.g. assignment / ack"
+                        sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
                         block={respondBlock}
                         dotClass="bg-success"
-                        compact
                         help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
                       />
                     </MetricHoverTrend>
                   </div>
-                </div>
-              </section>
+                </section>
 
-              <div className="min-w-0 xl:col-span-4">
-                <TopCasesPanel
-                  cases={latestCases}
-                  navigate={navigate}
-                  navWindow={navWindow}
-                  onOpenCase={setOpenCaseId}
-                  caseOpen={openCaseId !== null}
-                />
+                <div className="min-w-0 md:col-span-2 xl:col-span-4 4xl:col-span-1">
+                  <TopCasesPanel
+                    cases={latestCases}
+                    navigate={navigate}
+                    navWindow={navWindow}
+                    onOpenCase={setOpenCaseId}
+                    caseOpen={openCaseId !== null}
+                  />
+                </div>
               </div>
-            </div>
+            </Band>
           </Reveal>
 
-          {/* ---- DEEPER ANALYTICS (collapsed by default) ---- */}
-          <DashboardGroup
-            title="Deeper analytics"
-            defaultOpen={false}
-            description="timing, autonomy, cost, volume, connectors & workload"
-            className="mt-4"
-            contentClassName="space-y-4"
-          >
-            {/* Full response timing (MTTA · MTTR · Dwell) + spend tripwire */}
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {timing.map((s) => {
-                // Honest per-metric series: MTTA reuses the ACK-based `respond` daily
-                // series, MTTR the `resolve` series. Dwell has NO server series at all,
-                // so its tile carries no trend affordance — never a borrowed trend.
-                const timingSeries =
-                  s.key === 'mtta'
-                    ? timingTrends?.respond
-                    : s.key === 'mttr'
-                      ? timingTrends?.resolve
-                      : undefined;
-                const tile = (
-                  <KpiTile
-                    variant="bar"
-                    label={s.label}
-                    value={s.value}
-                    sub={s.sub}
-                    accent={s.accent}
-                    icon={Clock3}
-                    goodDirection="down"
-                    help={s.help}
-                    askTopic={kpiTopic(s.key)}
-                  />
-                );
-                if (s.key === 'dwell') {
-                  return <React.Fragment key={s.label}>{tile}</React.Fragment>;
-                }
-                return (
-                  <MetricHoverTrend
-                    key={s.label}
-                    metric={`${s.label} · daily mean`}
-                    points={timingSeries}
-                    windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                    format={humanizeMins}
-                    colorToken={s.accent}
-                    side="top"
-                    // The tile's HelpTip (?) button is already a tab stop and focus
-                    // bubbles to the trigger (Radix opens the card on trigger focus),
-                    // so the wrapper must not add a second stop; the tile itself is
-                    // not clickable, so a press explicitly toggles the card (touch).
-                    focusable={false}
-                    toggleOnClick={true}
+          {/* ---- BAND 4 — DEEPER ANALYTICS -------------------------------------------
+              ONE disclosure (Round 12): no cards, no accent bars, no nested collapsibles.
+              Collapsed on a first visit; the operator's choice is remembered. While closed,
+              its header states what is inside in one line. Its single top rule is the only
+              hairline this band draws. */}
+          <Collapsible open={deeperOpen} onOpenChange={onDeeperOpenChange} asChild>
+            <section aria-label="Deeper analytics" className="min-w-0 border-t border-border pt-4">
+              <h2 className="m-0">
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    aria-expanded={deeperOpen}
+                    aria-controls="overview-deeper-region"
+                    className="group/deeper flex w-full min-w-0 items-baseline gap-2 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {tile}
-                  </MetricHoverTrend>
-                );
-              })}
-              <MetricHoverTrend
-                metric="LLM spend"
-                points={spendTrend}
-                windowLabel={trendFallbackLabel}
-                format={(n) => fmtMoney(n, usage?.currency)}
-                colorToken="primary"
-                // The tile is itself a button (retry / drill-through) whenever an
-                // action exists; only a nav-less static tile needs the wrapper stop.
-                focusable={!(usageUnavailable || Boolean(navigate))}
-                side="top"
-              >
-                <KpiTile
-                  variant="bar"
-                  testId="llm-spend-detail"
-                  label="LLM spend"
-                  value={usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)}
-                  sub={
-                    usageUnavailable
-                      ? usageFailureSub
-                      : typeof usage?.total_tokens === 'number'
-                      ? `${fmtTokens(usage.total_tokens)} tokens · ${fmtNumber(usage.call_count)} calls`
-                      : 'No spend recorded'
-                  }
-                  icon={CircleDollarSign}
-                  accent={usageUnavailable ? 'critical' : 'primary'}
-                  goodDirection="down"
-                  onClick={
-                    usageUnavailable
-                      ? () => void retryUsage()
-                      : navigate
-                        ? () => navigate('metrics', { tab: 'cost' })
-                        : undefined
-                  }
-                  className={usageUnavailable ? 'border-critical/30' : undefined}
-                />
-              </MetricHoverTrend>
-            </div>
-
-            {/* Connector health. The former "Autonomous vs human" card that sat beside
-                it was REMOVED: it re-stated the Human-vs-AI instrument's story with a
-                third denominator (auto / (auto + escalated)) that matched neither the
-                server's `automation_rate` nor the closed-case partition. Its #3
-                advisory now lives on that one instrument. */}
-            <Reveal variant="rise" className="grid gap-4">
-              <DashboardGroup title="Ingest coverage" description="am I seeing everything?">
-                <Card>
-                  <CardContent className="py-4">
-                    {coverage ? (
-                      <CoverageTile coverage={coverage} onNavigate={navigate} />
-                    ) : (
-                      <EmptyState
-                        compact
-                        icon={Plug}
-                        title="Coverage not yet reported"
-                        description="Per-source ingest coverage appears once the poller reports its first tick."
-                      />
-                    )}
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
-            </Reveal>
-
-            {/* Case-volume trend · workload state */}
-            <Reveal variant="rise" className="grid gap-4 xl:grid-cols-2">
-              <DashboardGroup title="Case volume" description="cases opened over time">
-                <Card>
-                  <CardContent className="py-4">
-                    <TrendArea
-                      data={caseVolume}
-                      height={180}
-                      colorToken="primary"
-                      format={(n) => fmtNumber(n)}
-                      ariaLabel="Case volume over time"
+                    <ChevronDown
+                      aria-hidden
+                      className={cn(
+                        'h-4 w-4 shrink-0 self-center text-muted-foreground transition-transform motion-reduce:transition-none',
+                        deeperOpen ? 'rotate-0' : '-rotate-90',
+                      )}
                     />
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
+                    <span className="shrink-0 whitespace-nowrap text-md font-semibold leading-5 text-foreground">
+                      Deeper analytics
+                    </span>
+                    <span
+                      className="min-w-0 truncate text-sm font-normal text-muted-foreground"
+                      data-testid="deeper-summary"
+                    >
+                      {deeperOpen || !deeperSummary
+                        ? 'Timing, spend, ingest coverage, volume, workload and outcomes'
+                        : deeperSummary}
+                    </span>
+                  </button>
+                </CollapsibleTrigger>
+              </h2>
 
-              <DashboardGroup title="Case workload state" count={workloadItems.length}>
-                <Card>
-                  <CardContent className="py-4">
-                    {workloadItems.length ? (
-                      <ul className="flex flex-col gap-3.5">
-                        {workloadItems.map(({ status, value }) => {
-                          const total = workloadItems.reduce((a, w) => a + w.value, 0) || 1;
-                          const pct = Math.round((value / total) * 100);
-                          const clickable = !!navigate;
-                          return (
-                            <li key={status}>
-                              <button
-                                type="button"
-                                disabled={!clickable}
-                                onClick={
-                                  clickable
-                                    ? () => navigate?.('cases', { status, window: navWindow })
-                                    : undefined
-                                }
-                                className={cn(
-                                  'block w-full rounded-md text-left',
-                                  clickable &&
-                                    '-mx-1 px-1 py-0.5 transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                                )}
-                                aria-label={clickable ? `View ${humanizeToken(status)} cases` : undefined}
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <span className="truncate text-sm font-medium text-foreground">
-                                    {humanizeToken(status)}
-                                  </span>
-                                  <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
-                                    {fmtNumber(value)}
-                                  </span>
-                                </div>
-                                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                                  <div
-                                    className={cn('h-full rounded-full', statusBar(status))}
-                                    style={{ width: `${Math.min(100, pct)}%` }}
-                                    role="progressbar"
-                                    aria-valuenow={pct}
-                                    aria-valuemin={0}
-                                    aria-valuemax={100}
-                                    aria-label={humanizeToken(status)}
-                                  />
-                                </div>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : (
-                      <EmptyState
-                        compact
-                        icon={Workflow}
-                        title="No workload"
-                        description="Case lifecycle distribution will appear here."
-                      />
-                    )}
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
-            </Reveal>
-
-            {/* Case outcomes (verdict mix) · top signatures · top entities */}
-            <Reveal variant="rise" className="grid gap-4 xl:grid-cols-3">
-              <DashboardGroup title="Case outcomes" count={verdictMix.total} description="verdict mix">
-                <Card>
-                  <CardContent className="py-4">
-                    {verdictMix.total > 0 ? (
-                      <div className="flex flex-col items-center gap-4 sm:flex-row">
-                        <DonutChart
-                          segments={verdictMix.segments}
-                          height={150}
-                          className="w-full shrink-0 sm:w-36"
-                          ariaLabel="Case outcomes by verdict"
-                          center={
-                            <>
-                              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
-                                {fmtNumber(verdictMix.total)}
-                              </span>
-                              <span className="text-2xs uppercase tracking-wide text-muted-foreground">
-                                verdicts
-                              </span>
-                            </>
+              <CollapsibleContent id="overview-deeper-region" className="pt-6">
+                <div
+                  className={cn(
+                    'grid min-w-0 items-stretch gap-x-6 gap-y-10 3xl:grid-cols-12 3xl:gap-x-10',
+                  )}
+                >
+                  {/* -- Sub-band: Efficiency and cost -------------------------------- */}
+                  <section
+                    aria-labelledby="overview-deeper-efficiency"
+                    className="flex min-w-0 flex-col 3xl:col-span-5"
+                  >
+                    <SubBandTitle id="overview-deeper-efficiency">Efficiency and cost</SubBandTitle>
+                    {/* A second continuous strip — the same KpiTile strip grammar as the
+                        page's strip, four cells, its own dividers (KpiTileGrid draws one
+                        hairline grammar at every column count, with no empty tracks). */}
+                    <KpiTileGrid
+                      count={4}
+                      framed={false}
+                      containerClassName="border-y border-border"
+                      data-testid="deeper-timing-strip"
+                    >
+                      {timing.map((s) => {
+                        // Honest per-metric series: MTTA reuses the ACK-based `respond`
+                        // daily series, MTTR the `resolve` series. Dwell has NO server
+                        // series, so its tile carries no trend affordance.
+                        const timingSeries =
+                          s.key === 'mtta'
+                            ? timingTrends?.respond
+                            : s.key === 'mttr'
+                              ? timingTrends?.resolve
+                              : undefined;
+                        const measured = s.value !== DASH;
+                        const tile = (
+                          <KpiTile
+                            variant="strip"
+                            density="comfortable"
+                            numeral="hero"
+                            size="fluid"
+                            label={s.label}
+                            value={s.value}
+                            context={measured ? s.sub : undefined}
+                            sub={measured ? undefined : s.sub}
+                            accent={s.accent}
+                            icon={Clock3}
+                            goodDirection="down"
+                            help={
+                              s.key === 'mtta'
+                                ? `${s.help} The Respond figure under Cases and response reads this same clock.`
+                                : s.help
+                            }
+                            askTopic={kpiTopic(s.key)}
+                          />
+                        );
+                        if (s.key === 'dwell') {
+                          return <React.Fragment key={s.label}>{tile}</React.Fragment>;
+                        }
+                        return (
+                          <MetricHoverTrend
+                            key={s.label}
+                            metric={`${s.label} · daily mean`}
+                            points={timingSeries}
+                            windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                            format={humanizeMins}
+                            colorToken={s.accent}
+                            side="top"
+                            // The tile's HelpTip (?) is already a tab stop and focus bubbles
+                            // to the trigger, so the wrapper adds no second stop; the tile is
+                            // not clickable, so a press toggles the card (touch).
+                            focusable={false}
+                            toggleOnClick={true}
+                          >
+                            {tile}
+                          </MetricHoverTrend>
+                        );
+                      })}
+                      <MetricHoverTrend
+                        metric="LLM spend"
+                        points={spendTrend}
+                        windowLabel={trendFallbackLabel}
+                        format={(n) => fmtMoney(n, usage?.currency)}
+                        colorToken="primary"
+                        // The tile is itself a button (retry / drill-through) whenever an
+                        // action exists; only a nav-less static tile needs the wrapper stop.
+                        focusable={!(usageUnavailable || Boolean(navigate))}
+                        side="top"
+                      >
+                        <KpiTile
+                          variant="strip"
+                          density="comfortable"
+                          numeral="hero"
+                          size="fluid"
+                          testId="llm-spend-detail"
+                          label="LLM spend"
+                          value={
+                            usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)
+                          }
+                          sub={usageUnavailable ? usageFailureSub : undefined}
+                          context={
+                            usageUnavailable
+                              ? undefined
+                              : typeof usage?.total_tokens === 'number'
+                                ? `${fmtTokens(usage.total_tokens)} tokens · ${fmtNumber(usage.call_count)} calls`
+                                : 'No spend recorded'
+                          }
+                          icon={CircleDollarSign}
+                          accent={usageUnavailable ? 'critical' : 'primary'}
+                          goodDirection="down"
+                          onClick={
+                            usageUnavailable
+                              ? () => void retryUsage()
+                              : navigate
+                                ? () => navigate('metrics', { tab: 'cost' })
+                                : undefined
                           }
                         />
-                        <ul className="w-full space-y-2">
-                          {verdictMix.segments.map((s) => {
-                            const pct = Math.round((s.value / verdictMix.total) * 100);
-                            return (
-                              <li key={s.label} className="flex items-center gap-2">
-                                <span
-                                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                                  style={{ backgroundColor: s.color }}
-                                  aria-hidden
-                                />
-                                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                                  {s.label}
-                                </span>
-                                <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
-                                  {fmtNumber(s.value)}
-                                </span>
-                                <span className="w-9 text-right font-mono text-2xs tabular-nums text-muted-foreground">
-                                  {pct}%
-                                </span>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    ) : (
-                      <EmptyState
-                        compact
-                        icon={ShieldCheck}
-                        title="No verdicts yet"
-                        description="The agent's verdict mix will appear here as cases are triaged."
-                      />
-                    )}
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
+                      </MetricHoverTrend>
+                    </KpiTileGrid>
 
-              <DashboardGroup
-                title="Top signatures"
-                count={signatureItems.length}
-                description="most frequent detections"
-              >
-                <Card>
-                  <CardContent className="py-4">
-                    <BarList items={signatureItems} showRank showPercent emptyLabel="No signatures yet" />
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
+                    <div className="mt-8 grid flex-1 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:grid-cols-1">
+                      <Instrument
+                        title="Ingest coverage"
+                        caption="Am I seeing everything?"
+                        className="xl:col-span-4 3xl:col-span-1"
+                      >
+                        {coverage ? (
+                          <CoverageTile coverage={coverage} onNavigate={navigate} />
+                        ) : (
+                          <EmptyState
+                            compact
+                            icon={Plug}
+                            title="Coverage not yet reported"
+                            description="Per-source ingest coverage appears once the poller reports its first tick."
+                          />
+                        )}
+                      </Instrument>
+                      <Instrument
+                        title="Case volume"
+                        caption="Cases opened per UTC day"
+                        className="xl:col-span-8 3xl:col-span-1"
+                      >
+                        <VolumeColumns data={caseVolume} />
+                      </Instrument>
+                    </div>
+                  </section>
 
-              <DashboardGroup
-                title="Top entities"
-                count={entityItems.length}
-                description="most-implicated assets"
-              >
-                <Card>
-                  <CardContent className="py-4">
-                    <BarList items={entityItems} showRank showPercent emptyLabel="No entities yet" />
-                  </CardContent>
-                </Card>
-              </DashboardGroup>
-            </Reveal>
-          </DashboardGroup>
-        </div>
+                  {/* -- Sub-band: What's driving volume ------------------------------ */}
+                  <section
+                    aria-labelledby="overview-deeper-volume"
+                    className="flex min-w-0 flex-col 3xl:col-span-7"
+                  >
+                    <SubBandTitle id="overview-deeper-volume">What&rsquo;s driving volume</SubBandTitle>
+                    <div className="grid flex-1 items-stretch gap-x-6 gap-y-8 md:grid-cols-2">
+                      <Instrument title="Case workload state" count={workloadItems.length}>
+                        {workloadItems.length ? (
+                          <ul className="flex flex-col gap-3">
+                            {workloadItems.map(({ status, value }) => {
+                              const total = workloadItems.reduce((a, w) => a + w.value, 0) || 1;
+                              const pct = Math.round((value / total) * 100);
+                              const clickable = !!navigate;
+                              return (
+                                <li key={status}>
+                                  <button
+                                    type="button"
+                                    disabled={!clickable}
+                                    onClick={
+                                      clickable
+                                        ? () => navigate?.('cases', { status, window: navWindow })
+                                        : undefined
+                                    }
+                                    className={cn(
+                                      'block w-full rounded-md text-left',
+                                      clickable &&
+                                        '-mx-1 px-1 py-0.5 transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                    )}
+                                    aria-label={clickable ? `View ${humanizeToken(status)} cases` : undefined}
+                                  >
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="truncate text-sm font-medium text-foreground">
+                                        {humanizeToken(status)}
+                                      </span>
+                                      <span className="text-sm font-semibold tabular-nums text-foreground">
+                                        {fmtNumber(value)}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                                      <div
+                                        className={cn('h-full rounded-full', statusBar(status))}
+                                        style={{ width: `${Math.min(100, pct)}%` }}
+                                        role="progressbar"
+                                        aria-valuenow={pct}
+                                        aria-valuemin={0}
+                                        aria-valuemax={100}
+                                        aria-label={humanizeToken(status)}
+                                      />
+                                    </div>
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <EmptyState
+                            compact
+                            icon={Workflow}
+                            title="No workload"
+                            description="Case lifecycle distribution will appear here."
+                          />
+                        )}
+                      </Instrument>
+
+                      <Instrument
+                        title="Case outcomes"
+                        count={verdictMix.total}
+                        caption="AI-verdict mix"
+                      >
+                        {verdictMix.total > 0 ? (
+                          <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
+                            {/* The centre states the numeral with a sentence-case "AI verdicts"
+                                at 12px BELOW it, inside a hole sized for both (Round 12): the
+                                tracked uppercase "VERDICTS" ran over the ring ("ERDICTS"). */}
+                            <DonutChart
+                              segments={verdictMix.segments}
+                              height={VERDICT_RING_PX}
+                              thickness={0.3}
+                              className="w-40 shrink-0"
+                              ariaLabel="Case outcomes by AI verdict"
+                              center={
+                                <>
+                                  <span className="text-2xl font-semibold leading-none tabular-nums text-foreground">
+                                    {fmtNumber(verdictMix.total)}
+                                  </span>
+                                  <span className="text-xs leading-tight text-muted-foreground">
+                                    AI verdicts
+                                  </span>
+                                </>
+                              }
+                            />
+                            <ul className="w-full max-w-[15rem] space-y-2">
+                              {verdictMix.segments.map((seg) => {
+                                const pct = Math.round((seg.value / verdictMix.total) * 100);
+                                return (
+                                  <li key={seg.label} className="flex items-center gap-2 text-sm">
+                                    <span
+                                      className="h-2 w-2 shrink-0 rounded-full"
+                                      style={{ backgroundColor: seg.color }}
+                                      aria-hidden
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                                      {seg.label}
+                                    </span>
+                                    <span className="font-semibold tabular-nums text-foreground">
+                                      {fmtNumber(seg.value)}
+                                    </span>
+                                    <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
+                                      {pct}%
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                              {typeof analystConfirmedFp === 'number' ? (
+                                <li
+                                  className="flex items-center gap-2 pt-1 text-sm"
+                                  data-testid="analyst-confirmed-fp"
+                                >
+                                  <span className="h-2 w-2 shrink-0" aria-hidden />
+                                  <span className="min-w-0 flex-1 text-muted-foreground">
+                                    Confirmed false positive by an analyst
+                                  </span>
+                                  <span className="font-semibold tabular-nums text-foreground">
+                                    {fmtNumber(analystConfirmedFp)}
+                                  </span>
+                                  <span className="w-9" aria-hidden />
+                                </li>
+                              ) : null}
+                            </ul>
+                          </div>
+                        ) : (
+                          <EmptyState
+                            compact
+                            icon={ShieldCheck}
+                            title="No verdicts yet"
+                            description="The agent's verdict mix will appear here as cases are triaged."
+                          />
+                        )}
+                      </Instrument>
+
+                      <Instrument
+                        title="Top signatures"
+                        count={signatureItems.length}
+                        caption="Most frequent detections"
+                      >
+                        <BarList items={signatureItems} showRank showPercent emptyLabel="No signatures yet" />
+                      </Instrument>
+
+                      <Instrument
+                        title="Top entities"
+                        count={entityItems.length}
+                        caption="Most-implicated assets"
+                      >
+                        <BarList items={entityItems} showRank showPercent emptyLabel="No entities yet" />
+                      </Instrument>
+                    </div>
+                  </section>
+                </div>
+              </CollapsibleContent>
+            </section>
+          </Collapsible>
+        </>
       )}
 
-      {/* The case, opened OVER the dashboard. This is the SHARED <CaseDetail> — the same
-          component the Scans and Investigate boards mount — so its RBAC gates, lifecycle
-          actions and untrusted-text handling are the ones already reviewed there. A
-          second case surface would fork all three.
+      {/* The case, opened OVER the dashboard: the SHARED <CaseDetail> (the same component
+          the Scans and Investigate boards mount), so its RBAC gates, lifecycle actions and
+          untrusted-text handling are the ones already reviewed there.
 
           Mounted CONDITIONALLY, which is not a style choice: CaseDetail calls `useAuth()`
-          unconditionally, ABOVE its own empty-state return, and `useAuth` throws outside
-          an <AuthProvider>. This page uses no auth hook of its own and none of its specs
-          supplies a provider, so an always-mounted CaseDetail would throw on every render
-          of the dashboard under test. The honest cost is the sheet's exit animation: an
-          unmount cannot play one. */}
+          unconditionally, and `useAuth` throws outside an <AuthProvider>. This page uses no
+          auth hook of its own and none of its specs supplies a provider. The honest cost
+          is the sheet's exit animation: an unmount cannot play one. */}
       {openCaseId ? (
         <CaseDetail
           caseId={openCaseId}
           onClose={() => {
             setOpenCaseId(null);
             // A lifecycle action inside the sheet (close, escalate, assign) changes the
-            // very numerals the strip and the lattice are showing behind it.
+            // very numerals the strip and the bands are showing behind it.
             refreshAll();
           }}
           onNavigate={navigate}

@@ -32,7 +32,7 @@ import { legacyTableBlock, parseBlocks, type AnswerBlock } from '../blocks/schem
 import { isUnsavedTurn, type ChatAssistantItem, type ChatEngine } from '../useChatEngine';
 import { FollowUps } from './FollowUps';
 import { compactTokens } from './format';
-import { CONTENT_COL, LANE_SUBGRID, WIDE_COL } from './lane';
+import { CONTENT_COL, LANE_COL, LANE_SUBGRID, META_COL, WIDE_COL } from './lane';
 import { MemoryLine, hasMemoryLine } from './MemoryLine';
 import { MetaRow, type TurnOutcomeWord } from './MetaRow';
 import { CALLOUT_NOTICE_KINDS, NoticeCallout } from './NoticeCallout';
@@ -379,7 +379,7 @@ function MessageView({
       ) : null}
 
       {!running && response ? (
-        <div className={cn(CONTENT_COL, 'space-y-1.5')}>
+        <div className={cn(blocks.length && !compact ? META_COL : CONTENT_COL, 'space-y-1.5')}>
           <MetaRow
             response={response}
             steps={steps}
@@ -419,7 +419,7 @@ function MessageView({
 
       {!running && latest && response?.follow_ups?.length ? (
         <FollowUps
-          className={CONTENT_COL}
+          className={compact ? CONTENT_COL : LANE_COL}
           items={response.follow_ups}
           disabled={busy}
           onPick={(text) => engine.send(text, { origin: 'follow_up' })}

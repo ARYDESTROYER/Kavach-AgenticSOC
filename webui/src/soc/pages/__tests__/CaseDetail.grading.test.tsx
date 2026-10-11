@@ -99,10 +99,8 @@ async function openCloseDialogAndPick(disposition: RegExp): Promise<HTMLElement>
   );
   fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
   const dialog = await screen.findByRole('dialog');
-  // Disposition select is the first combobox in the dialog.
-  const combos = within(dialog).getAllByRole('combobox');
-  fireEvent.click(combos[0]);
-  fireEvent.click(await screen.findByRole('option', { name: disposition }));
+  // Round 12: the disposition picker is a radio-card group (with definitions).
+  fireEvent.click(within(dialog).getByRole('radio', { name: disposition }));
   return dialog;
 }
 
@@ -194,9 +192,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
 
     // Flip the disposition to an OVERRIDE (false_positive of a TP verdict). The section
     // is unmounted, so the stale-effect model can't re-derive.
-    const combos = within(dialog).getAllByRole('combobox');
-    fireEvent.click(combos[0]);
-    fireEvent.click(await screen.findByRole('option', { name: /False positive/i }));
+    fireEvent.click(within(dialog).getByRole('radio', { name: /False positive/i }));
 
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -377,10 +373,9 @@ describe('CaseDetail — the disposition picker never answers for the analyst (G
     fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
     const dialog = await screen.findByRole('dialog');
 
-    // The picker shows its placeholder, NOT the model's answer.
-    const picker = within(dialog).getByLabelText(/disposition \(required\)/i);
-    expect(picker).toHaveTextContent(/select an outcome/i);
-    expect(picker).not.toHaveTextContent(/true positive/i);
+    // The picker opens with NOTHING chosen, NOT the model's answer.
+    const picker = within(dialog).getByRole('radiogroup', { name: /disposition \(required\)/i });
+    for (const radio of within(picker).getAllByRole('radio')) expect(radio).not.toBeChecked();
 
     // …so the mandatory-choice guard is real.
     expect(within(dialog).getByRole('button', { name: /^close case/i })).toBeDisabled();

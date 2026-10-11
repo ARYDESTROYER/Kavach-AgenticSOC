@@ -25,6 +25,13 @@ import {
   scoreBand,
   type ScoreBand,
 } from './palette';
+import { ProvenanceTag } from './ProvenanceTag';
+import {
+  canonicalVerdict,
+  confidencePercent,
+  verdictWords,
+  type CaseOutcome,
+} from './outcome';
 
 type Variant = NonNullable<BadgeProps['variant']>;
 
@@ -688,6 +695,115 @@ export function AutoClosedBadge({
       <Bot className="size-3 shrink-0" aria-hidden />
       Auto-closed by AI
       {objection}
+    </Badge>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Case outcome (Round 12, SPEC D15) — the analyst's classification once a human
+// classifies, an attributed AI verdict otherwise. Three grammars, never mixed:
+// STATUS = glyph + text (StatusBadge), OUTCOME = filled disposition badge with an
+// `Analyst` provenance tag (OutcomeBadge), AI VERDICT = outline badge with the Bot
+// glyph (AiVerdictChip). All copy is controlled; `outcome.by` is never rendered here.
+// --------------------------------------------------------------------------- //
+
+export interface OutcomeBadgeProps {
+  outcome: CaseOutcome;
+  className?: string;
+  /** Render the `Analyst` provenance tag beside a human outcome. Default true. */
+  showProvenance?: boolean;
+}
+
+/**
+ * The outcome of record as a badge. Renders NOTHING while the outcome is pending —
+ * an open case has no outcome yet, and the AI verdict has its own chip.
+ */
+export function OutcomeBadge({ outcome, className, showProvenance = true }: OutcomeBadgeProps) {
+  if (outcome.source === 'pending') return null;
+  if (outcome.source === 'analyst') {
+    return (
+      <span
+        data-testid="case-outcome"
+        data-outcome-source="analyst"
+        className={cn('inline-flex items-center gap-1', className)}
+      >
+        <DispositionBadge disposition={outcome.disposition} />
+        {showProvenance ? <ProvenanceTag kind="analyst" /> : null}
+      </span>
+    );
+  }
+  if (outcome.source === 'analyst_policy') {
+    return (
+      <span
+        data-testid="case-outcome"
+        data-outcome-source="analyst_policy"
+        className={cn('inline-flex items-center gap-1', className)}
+      >
+        <Badge variant="info">
+          <SemanticGlyph iconKey="benign" show />
+          Declared benign
+        </Badge>
+        {showProvenance ? <ProvenanceTag kind="analyst" /> : null}
+      </span>
+    );
+  }
+  if (outcome.source === 'analyst_unrecorded') {
+    return (
+      <Badge
+        variant="outline"
+        data-testid="case-outcome"
+        data-outcome-source="analyst_unrecorded"
+        className={cn('text-muted-foreground', className)}
+      >
+        <SemanticGlyph iconKey="undetermined" show />
+        Outcome not recorded
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      variant="info"
+      data-testid="case-outcome"
+      data-outcome-source="agent_auto"
+      className={className}
+    >
+      <Bot className="size-3 shrink-0" aria-hidden />
+      {outcome.aiVerdict === 'FALSE_POSITIVE'
+        ? 'Auto-closed as false positive'
+        : outcome.aiVerdict === 'TRUE_POSITIVE'
+          ? 'Auto-closed as true positive'
+          : 'Auto-closed'}
+    </Badge>
+  );
+}
+
+export interface AiVerdictChipProps {
+  verdict: string | null | undefined;
+  confidence?: number | null;
+  className?: string;
+  /** Prefix the words with "AI verdict" (default) — keeps the attribution explicit. */
+  labelled?: boolean;
+}
+
+/**
+ * The AI verdict as an OUTLINE chip with the Bot glyph — visibly a machine
+ * recommendation, never styled like the analyst's filled outcome badge.
+ */
+export function AiVerdictChip({ verdict, confidence, className, labelled = true }: AiVerdictChipProps) {
+  const words = verdictWords(verdict);
+  const pct = confidencePercent(confidence);
+  const hasVerdict = Boolean(canonicalVerdict(verdict));
+  return (
+    <Badge
+      variant="outline"
+      data-testid="case-ai-verdict"
+      className={cn('gap-1 font-normal text-foreground/85', className)}
+      title={hasVerdict ? 'The AI verdict is a recommendation; a person or the deterministic policy decides.' : undefined}
+    >
+      <Bot className="size-3 shrink-0 text-primary" aria-hidden />
+      {labelled ? <span className="text-muted-foreground">AI verdict</span> : null}
+      <span className="font-medium">{words}</span>
+      {hasVerdict && pct !== null ? <span className="tabular-nums text-muted-foreground">{pct}%</span> : null}
     </Badge>
   );
 }

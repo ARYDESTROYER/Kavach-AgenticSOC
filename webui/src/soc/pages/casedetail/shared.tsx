@@ -265,9 +265,12 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     icon: CheckCircle2,
     variant: 'default',
     confirmTitle: 'Mark this case resolved?',
-    confirmBody: 'Mark the case RESOLVED — worked to completion, pending final close / audit.',
-    help: 'RESOLVED — worked to completion, pending final close.',
-    fields: ['reason', 'tags', 'grading'],
+    confirmBody:
+      'Mark the case resolved: worked to completion and pending final close. Record the outcome you confirmed.',
+    help: 'Resolved: worked to completion, pending final close.',
+    // Round 12 (SPEC D15): resolving is a terminal move, so it captures the outcome like
+    // a close does — required, opened empty, sent with `disposition_declared` (G1).
+    fields: ['disposition', 'reason', 'tags', 'grading'],
   },
   deescalate: {
     key: 'deescalate',
@@ -488,7 +491,7 @@ export const HeadlinePanel: React.FC<{
       aria-hidden="true"
       className={cn('absolute inset-x-0 top-0 h-0.5', TONE_ACCENT[tone])}
     />
-    <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+    <span className="text-xs font-medium text-muted-foreground">
       {label}
     </span>
     <span

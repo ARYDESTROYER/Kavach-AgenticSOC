@@ -24,6 +24,17 @@
  * block still says "Values stated by the model"), no `content-visibility` (a skipped
  * subtree can print blank), a title that wraps instead of truncating, and every control
  * that could still render is marked `data-print-hide`.
+ *
+ * Round 12 chart and block upgrades (WP-BLK, SYNTHESIS-chat P0-6/P0-8), all client-side
+ * and read-only (never a re-query, never a model call):
+ *   - "Group by" re-bins a calendar series into a coarser unit the server allowed; the
+ *     table, Copy data and the downloads follow the grouping shown;
+ *   - Download PNG / SVG draws the chart AS SHOWN (grouping, zoom, hidden series) in the
+ *     card's theme (`charts/export-image.ts`);
+ *   - Full width takes a card out of the conversation lane to the conversation's gutters
+ *     (`renderers/full-bleed.ts`), offered only inside a chat lane with room to gain;
+ *   - a comparison's tile view reads absolute and relative change per metric
+ *     (`renderers/ComparisonView.tsx`).
  */
 import * as React from 'react';
 import {
@@ -34,6 +45,7 @@ import {
   ExternalLink,
   FileCheck2,
   FilePlus2,
+  ImageDown,
   Maximize2,
   MoreHorizontal,
   Table2,
@@ -64,10 +76,15 @@ import { navLabel } from '@/soc/nav';
 
 import { BlockBoundary } from './BlockBoundary';
 import { ChartBlockView } from './charts/ChartBlockView';
+import { ChartViewContext, type ChartView } from './charts/export-context';
+import { downloadChartPng, downloadChartSvg } from './charts/export-image';
+import { RebinControl } from './charts/RebinControl';
+import { rebinChart, rebinChoices } from './charts/rebin';
 import { BlocksContext, leafAnchorKey, useBlocks } from './context';
 import { blockTabular, downloadText, toCSV, toJSON, toTSV } from './export-helpers';
 import { captionStatesCount, fileStamp, formatUtc, slug, truncationNote } from './format';
 import { CaseListView } from './renderers/CaseListView';
+import { ComparisonTiles } from './renderers/ComparisonView';
 import { EntityView } from './renderers/EntityView';
 import { HeatmapView } from './renderers/HeatmapView';
 import { KpiGroupView } from './renderers/KpiGroupView';
@@ -76,7 +93,8 @@ import { ReportView, reportScopeLine } from './renderers/ReportView';
 import { CalloutView, CitationsView, GuideView, MarkdownView, QueryView } from './renderers/SimpleViews';
 import { TableView } from './renderers/TableView';
 import { TimelineView } from './renderers/TimelineView';
-import type { AnswerBlock, BlockView, InternalRef, LeafBlock } from './schema';
+import { useFullBleed } from './renderers/full-bleed';
+import type { AnswerBlock, BlockView, InternalRef, LeafBlock, TimeBucket } from './schema';
 import { AI_AUTHORED_TYPES, blockView } from './schema';
 import { VIEW_LABEL, canShowTable, honestBlock, switchableViews, tableBlockOf, viewAs } from './views';
 
@@ -226,7 +244,11 @@ export function BlockBody({
     case 'markdown':
       return <MarkdownView block={block} />;
     case 'kpi_group':
-      return <KpiGroupView items={block.items} idPrefix={`chat-${index}`} />;
+      // A period comparison's tiles read absolute AND relative change (Round 12 P0-6).
+      if (block.artifact_kind === 'comparison') {
+        return <ComparisonTiles items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} />;
+      }
+      return <KpiGroupView items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} />;
     case 'chart':
       return <ChartBlockView block={block} title={title} compact={compact} expanded={expanded} staticMode={staticMode} />;
     case 'heatmap':
@@ -302,6 +324,10 @@ export interface BlockCardProps {
 }
 
 const HEADINGS = { 4: 'h4', 5: 'h5', 6: 'h6' } as const;
+
+/** Blocks that may break out of the conversation lane ("Full width"). */
+const BLEED_TYPES: ReadonlyArray<AnswerBlock['type']> = ['chart', 'table', 'heatmap', 'timeline', 'case_list', 'kpi_group', 'mitre', 'report'];
+const BUCKET_NAME: Partial<Record<TimeBucket, string>> = { '1h': 'hour', '1d': 'day', '1w': 'week', '1M': 'month', '1q': 'quarter', '1y': 'year' };
 
 /**
  * A block's Add to report toggle. ONE stable name (an APG toggle must not also flip its
@@ -388,6 +414,17 @@ export function BlockCard({
   const [showTable, setShowTable] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
   const [defangCopy, setDefangCopy] = React.useState(true);
+  // Round 12 (P0-8): the client-side grouping, the chart as shown (for its image), and
+  // the full-width breakout. All display only; the block's data never changes.
+  const [rebin, setRebin] = React.useState<TimeBucket | null>(null);
+  const figureRef = React.useRef<HTMLElement>(null);
+  const chartView = React.useRef<ChartView | null>(null);
+  const bleed = useFullBleed(figureRef, !nested && !staticMode && !bare && !ctx.compact && BLEED_TYPES.includes(block.type));
+  const rebinOptions = React.useMemo(() => (block.type === 'chart' && !staticMode ? rebinChoices(block) : []), [block, staticMode]);
+  const grouped = React.useMemo(
+    () => (block.type === 'chart' && rebin && rebinOptions.includes(rebin) ? rebinChart(block, rebin) : block),
+    [block, rebin, rebinOptions],
+  );
 
   // Bare blocks: prose and notes carry no chrome of their own.
   if (block.type === 'markdown' || block.type === 'callout') {
@@ -399,7 +436,7 @@ export function BlockCard({
   }
 
   // Charts are always drawn in a kind their data can honestly support (views.ts).
-  const displayed = view ? viewAs(block, view) : honestBlock(block);
+  const displayed = view ? viewAs(grouped, view) : honestBlock(grouped);
   const title = blockTitle(block);
   const isBrief = block.type === 'report';
   const Heading = HEADINGS[headingLevel];
@@ -428,13 +465,27 @@ export function BlockCard({
       announce(ok ? `Copied ${tabular.rows.length} rows${defangCopy ? ', indicators defanged' : ''}` : 'Copy failed');
     });
   };
+  const onDownloadImage = async (format: 'png' | 'svg') => {
+    if (displayed.type !== 'chart') return;
+    // The chart as SHOWN: its grouping, its zoom and the series its legend shows.
+    const shownView = chartView.current;
+    const req = {
+      block: shownView?.block ?? displayed,
+      hidden: shownView?.hidden,
+      title,
+      subtitle: captionParts.join(' · ') || undefined,
+      host: figureRef.current,
+    };
+    const ok = format === 'svg' ? downloadChartSvg(req) : await downloadChartPng(req);
+    announce(ok ? `${format.toUpperCase()} downloaded` : 'Could not create the image');
+  };
   const onCopyQuery = () => {
     if (!query) return;
     void copyText(query).then((ok) => announce(ok ? 'Query copied' : 'Copy failed'));
   };
 
   const menu = (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => (open ? bleed.check() : undefined)}>
       <DropdownMenuTrigger
         aria-label={`More actions for ${title}`}
         className={cn('inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}
@@ -447,6 +498,18 @@ export function BlockCard({
           <Maximize2 className="size-3.5" aria-hidden />
           Expand
         </DropdownMenuItem>
+        {bleed.available || bleed.on ? (
+          <DropdownMenuCheckboxItem
+            checked={bleed.on}
+            onCheckedChange={() => {
+              bleed.toggle();
+              announce(bleed.on ? 'Back to the conversation width' : 'Showing full width');
+            }}
+            data-testid="block-full-width"
+          >
+            Full width
+          </DropdownMenuCheckboxItem>
+        ) : null}
         {views.length >= 2 ? (
           <>
             <DropdownMenuSeparator />
@@ -503,6 +566,18 @@ export function BlockCard({
             </DropdownMenuItem>
           </>
         ) : null}
+        {displayed.type === 'chart' && !showTable ? (
+          <>
+            <DropdownMenuItem onSelect={() => void onDownloadImage('png')}>
+              <ImageDown className="size-3.5" aria-hidden />
+              Download PNG
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void onDownloadImage('svg')}>
+              <ImageDown className="size-3.5" aria-hidden />
+              Download SVG
+            </DropdownMenuItem>
+          </>
+        ) : null}
         <DropdownMenuItem
           onSelect={() => {
             if (downloadText(`${stamp()}.json`, 'application/json', toJSON(block))) announce('JSON downloaded');
@@ -531,8 +606,11 @@ export function BlockCard({
 
   return (
     <figure
+      ref={figureRef}
       aria-labelledby={isBrief ? `${eyebrowId} ${titleId}` : titleId}
       data-block-type={block.type}
+      data-full-bleed={bleed.on || undefined}
+      style={bleed.style}
       className={cn(
         'min-w-0',
         !staticMode && '[contain-intrinsic-size:auto_320px] [content-visibility:auto]',
@@ -577,15 +655,29 @@ export function BlockCard({
         </p>
       ) : null}
 
-      <BlockBody
-        block={displayed}
-        title={title}
-        index={index}
-        showTable={showTable}
-        nested={nested}
-        leafKey={leafKey}
-        staticMode={staticMode}
-      />
+      {rebinOptions.length ? (
+        <RebinControl
+          choices={rebinOptions}
+          value={rebin && rebinOptions.includes(rebin) ? rebin : rebinOptions[0]}
+          onChange={(b) => {
+            setRebin(b === rebinOptions[0] ? null : b);
+            announce(`Grouped by ${BUCKET_NAME[b] ?? b}`);
+          }}
+          title={title}
+        />
+      ) : null}
+
+      <ChartViewContext.Provider value={chartView}>
+        <BlockBody
+          block={displayed}
+          title={title}
+          index={index}
+          showTable={showTable}
+          nested={nested}
+          leafKey={leafKey}
+          staticMode={staticMode}
+        />
+      </ChartViewContext.Provider>
 
       {truncNote || block.downsampled_for_storage ? (
         <p className="mt-1.5 text-xs text-muted-foreground" data-testid="block-truncation">

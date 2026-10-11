@@ -5,9 +5,10 @@
  * accessible name, `aria-current` and an exact-date tooltip, roving arrow-key focus
  * (only from rows, with a tab stop that survives a shorter list), inline rename
  * (IME-safe, focus returns to the row), the row menu (Pin, Open report only with a
- * report and not while another thread runs, Export, Delete locked for the running
- * thread), shortcut hints, server search with snippets, the retention footer, honest
- * loading / retryable error / empty states, and axe.
+ * report, Export, Delete locked for a running thread), live row statuses (Round 12:
+ * a ring while answering, dots for unread / needs input / failed; rows never locked by
+ * a running turn), shortcut hints, server search with snippets, the retention footer,
+ * honest loading / retryable error / empty states, and axe.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -16,6 +17,7 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 import type { ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
+import { clearChatActivity, putChatActivity, viewChatActivity } from '@/soc/chat-activity/activity';
 import {
   HistoryRail,
   HistoryStrip,
@@ -212,17 +214,83 @@ describe('HistoryRail', () => {
     expect(props.onDelete).toHaveBeenCalledWith(ROWS[3]);
   });
 
-  it('locks selection and the running thread’s Delete while a turn runs', async () => {
+  it('keeps every row and New chat open while a turn runs, and locks only the running thread’s Delete', async () => {
     const user = userEvent.setup();
     renderRail({ busy: true });
-    expect(screen.getByRole('button', { name: /^Review endpoint alert/ })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'New chat' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Review endpoint alert/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Actions for Investigate sign-ins' }));
     expect(await screen.findByRole('menuitem', { name: /Delete \(answer in progress\)/ })).toHaveAttribute('data-disabled');
     await user.keyboard('{Escape}');
-    // Another thread's report cannot open while selection is refused: said, not ignored.
+    // Another thread's report opens: selecting it no longer stops anything.
     await user.click(screen.getByRole('button', { name: 'Actions for Phishing wave' }));
-    expect(await screen.findByRole('menuitem', { name: 'Open report (answer in progress)' })).toHaveAttribute('data-disabled');
+    expect(await screen.findByRole('menuitem', { name: 'Open report' })).not.toHaveAttribute('data-disabled');
+  });
+
+  it('shows each row’s live state in place of (or before) its time, and names it', async () => {
+    const user = userEvent.setup();
+    const rows = [
+      summary('a', 'Answering thread', daysAgo(0), { status: 'running' }),
+      summary('b', 'Unread thread', daysAgo(0), { unread: true }),
+      summary('c', 'Waiting thread', daysAgo(0), { status: 'needs_input' }),
+      summary('d', 'Failed thread', daysAgo(0), { status: 'failed' }),
+      summary('e', 'Quiet thread', daysAgo(0)),
+    ];
+    const { container } = renderRail({ conversations: rows, activeId: 'e' });
+    expect(screen.getByRole('button', { name: /^Answering thread, answering — / })).toHaveAttribute('data-status', 'running');
+    expect(screen.getByRole('button', { name: /^Unread thread, new answer — / })).toHaveAttribute('data-status', 'unread');
+    expect(screen.getByRole('button', { name: /^Waiting thread, needs your input — / })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Failed thread, answer failed — / })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Quiet thread — / })).not.toHaveAttribute('data-status');
+    const answering = screen.getByRole('button', { name: /^Answering thread/ });
+    expect(answering.querySelector('[data-activity="running"]')).not.toBeNull();
+    // The ring replaces the time; a dot sits before it.
+    expect(answering.textContent).toBe('Answering thread');
+    expect(screen.getByRole('button', { name: /^Unread thread/ }).querySelector('[data-activity="unread"]')).not.toBeNull();
+    expect(container.querySelector('[data-activity="needs_input"]')).not.toBeNull();
+    expect(container.querySelector('[data-activity="failed"]')).not.toBeNull();
+    // A running row cannot be deleted even when it is not the open one.
+    await user.click(screen.getByRole('button', { name: 'Actions for Answering thread' }));
+    expect(await screen.findByRole('menuitem', { name: /Delete \(answer in progress\)/ })).toHaveAttribute('data-disabled');
+    await user.keyboard('{Escape}');
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('marks “Show history” on the strip while a thread off screen is working', () => {
+    clearChatActivity();
+    const strip = { onNewChat: vi.fn(), onSearch: vi.fn(), onExpand: vi.fn() };
+    const view = render(
+      <TooltipProvider>
+        <HistoryStrip {...strip} />
+      </TooltipProvider>,
+    );
+    const show = () => screen.getByRole('button', { name: 'Show history' });
+    expect(show().querySelector('[data-activity]')).toBeNull();
+    const release = viewChatActivity('conv:on-screen');
+    act(() =>
+      putChatActivity({
+        scope: 'conv:on-screen', kind: 'workspace', conversationId: 'on-screen', caseId: null, turnId: null, requestKey: null,
+        title: 'Shown', label: null, lookups: 0, status: 'running', startedAt: 1, source: 'local',
+      }),
+    );
+    view.rerender(
+      <TooltipProvider>
+        <HistoryStrip {...strip} />
+      </TooltipProvider>,
+    );
+    // The one on screen does not count.
+    expect(show().querySelector('[data-activity]')).toBeNull();
+    act(() =>
+      putChatActivity({
+        scope: 'conv:elsewhere', kind: 'workspace', conversationId: 'elsewhere', caseId: null, turnId: null, requestKey: null,
+        title: 'Elsewhere', label: null, lookups: 0, status: 'running', startedAt: 2, source: 'local',
+      }),
+    );
+    expect(show().querySelector('[data-activity="running"]')).not.toBeNull();
+    expect(show()).toHaveAttribute('aria-description', 'An answer is being written in another chat');
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeEnabled();
+    release();
+    clearChatActivity();
   });
 
   it('searches server-side and opens a hit with its snippet', () => {

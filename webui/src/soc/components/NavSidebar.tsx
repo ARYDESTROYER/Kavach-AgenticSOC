@@ -33,6 +33,18 @@
  * SECURITY: every label is a STATIC, in-repo string (nav.ts) — not user data — so
  * there is no #9 surface here; we still render everything as plain text.
  *
+ * AGENT ACTIVITY (Round 12, SPEC D13): the chat destinations carry the activity glyph
+ * on every form (collapsed rail badge, expanded parent and child rows, flyout, mobile
+ * drawer): a small turning ring while an answer is being written, an accent dot for an
+ * unread answer, amber when a question waits on the analyst, red when one failed. The
+ * state is also text: a tooltip / flyout line and `aria-describedby` ("Chat: 1 answer in
+ * progress: <title>", one hidden description per item, `nav-activity-<id>`); never
+ * `aria-busy` on a nav button. Case-scoped turns mark Case
+ * Manager the same way. With reduced motion the ring stands still and the text starts
+ * with "Working". While any answer is being written a thin ring turns around the brand
+ * tile (`ChatAgentConfig.animated_brand`); an operator's logo itself never moves.
+ * Titles in that text are prompt- or model-derived and render as text only (#9).
+ *
  * PERSISTENCE: the `{nav_collapsed, nav_open_groups}` state lives in the shell via
  * `useNavPrefs` (exported here): it hydrates SYNCHRONOUSLY from a localStorage mirror
  * (mirroring the theme pre-hydration approach to avoid a collapse flash on first
@@ -47,6 +59,12 @@ import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
 import { useAuth } from '../auth';
 import { usePrefs } from '../prefs';
+import {
+  ActivityGlyph,
+  BrandActivityRing,
+  useChatActivitySummary,
+  type ChatActivitySummary,
+} from '../chat-activity/glyph';
 import {
   NAV_FOOTER_ITEMS,
   NAV_GROUPS,
@@ -237,6 +255,34 @@ function filterItems(items: NavItem[], has: HasPerm): NavItem[] {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Agent activity (SPEC D13).                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** Nav item id → its chat activity (`chat`: Workspace chat; `case_manager`: case chat). */
+type NavActivity = Partial<Record<string, ChatActivitySummary>>;
+
+/** The visible state line: with reduced motion the ring stands still, so say "Working". */
+function activityText(activity: ChatActivitySummary, reducedMotion: boolean): string {
+  return reducedMotion && activity.status === 'running' ? `Working. ${activity.text}` : activity.text;
+}
+
+/**
+ * The visually hidden description an item's buttons point at (`aria-describedby`; the
+ * buttons keep their plain label as their name), or null when idle.
+ */
+const describe = (id: string, activity: ChatActivitySummary | undefined) =>
+  activity?.text ? (
+    <span id={`nav-activity-${id}`} className="sr-only">
+      {activity.text}
+    </span>
+  ) : null;
+const describedBy = (id: string, activity: ChatActivitySummary | undefined) =>
+  activity?.text ? `nav-activity-${id}` : undefined;
+/** The trailing glyph of a labelled row. */
+const mark = (activity: ChatActivitySummary | undefined) =>
+  activity?.status ? <ActivityGlyph status={activity.status} className="ml-auto" /> : null;
+
+/* -------------------------------------------------------------------------- */
 /* Leaf link primitives.                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -245,7 +291,10 @@ const ChildLink: React.FC<{
   child: NavChild;
   active: boolean;
   onSelect: () => void;
-}> = ({ child, active, onSelect }) => {
+  /** The parent item's activity (its description element is the parent's). */
+  activity?: ChatActivitySummary;
+  parentId: string;
+}> = ({ child, active, onSelect, activity, parentId }) => {
   const Icon = child.icon;
   return (
     <li>
@@ -253,6 +302,7 @@ const ChildLink: React.FC<{
         type="button"
         onClick={onSelect}
         aria-current={active ? 'page' : undefined}
+        aria-describedby={describedBy(parentId, activity)}
         data-testid={`nav-${child.id}`}
         className={cn(
           // min-h-8 (32px) keeps the leaf row ≥24px for WCAG 2.2 §2.5.8 (target size).
@@ -267,6 +317,7 @@ const ChildLink: React.FC<{
       >
         {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
         <span className="truncate">{child.label}</span>
+        {mark(activity)}
       </button>
     </li>
   );
@@ -283,8 +334,12 @@ const ExpandedItem: React.FC<{
   onNavigate: (id: PageId) => void;
   onToggleGroup: (id: string) => void;
   reducedMotion?: boolean;
-}> = ({ item, page, open, onNavigate, onToggleGroup, reducedMotion = false }) => {
+  activity?: NavActivity;
+}> = ({ item, page, open, onNavigate, onToggleGroup, reducedMotion = false, activity }) => {
   const Icon = item.icon as LucideIcon;
+  const own = activity?.[item.id];
+  // The row's tooltip while it has activity (assistive tech reads the description).
+  const tip = own?.text ? activityText(own, reducedMotion) : undefined;
   const children = item.children ?? [];
   const hasChildren = children.length > 0;
   // Active when this item or any of its children is the current page.
@@ -305,10 +360,13 @@ const ExpandedItem: React.FC<{
   if (!hasChildren) {
     return (
       <li>
+        {describe(item.id, own)}
         <button
           type="button"
           onClick={() => onNavigate(item.id)}
           aria-current={selfActive ? 'page' : undefined}
+          aria-describedby={describedBy(item.id, own)}
+          title={tip}
           data-testid={`nav-${item.id}`}
           className={cn(
             'relative flex w-full items-center gap-2.5 overflow-hidden rounded-md px-2.5 py-2 text-left text-sm',
@@ -325,6 +383,7 @@ const ExpandedItem: React.FC<{
           ) : null}
           <Icon className="h-4 w-4 shrink-0" aria-hidden />
           <span className="truncate">{item.label}</span>
+          {mark(own)}
         </button>
       </li>
     );
@@ -344,10 +403,13 @@ const ExpandedItem: React.FC<{
         ) : null}
         {/* Primary destination — navigating ALSO opens the group (destinations are
             never hidden behind the disclosure). */}
+        {describe(item.id, own)}
         <button
           type="button"
           onClick={() => onNavigate(item.id)}
           aria-current={selfActive && !(idIsAlsoChild && open) ? 'page' : undefined}
+          aria-describedby={describedBy(item.id, own)}
+          title={tip}
           data-active-trail={trailActive || undefined}
           data-testid={`nav-${item.id}`}
           className={cn(
@@ -363,6 +425,7 @@ const ExpandedItem: React.FC<{
             aria-hidden
           />
           <span className="truncate">{item.label}</span>
+          {mark(own)}
         </button>
         {/* Disclosure toggle (WAI-ARIA): aria-expanded + aria-controls + rotating chevron. */}
         <button
@@ -395,6 +458,8 @@ const ExpandedItem: React.FC<{
               child={c}
               active={page === c.id}
               onSelect={() => onNavigate(c.id)}
+              activity={activity?.[c.id]}
+              parentId={item.id}
             />
           ))}
         </ul>
@@ -449,8 +514,10 @@ const CollapsedItem: React.FC<{
   onOpen: () => void;
   onClose: () => void;
   reducedMotion?: boolean;
-}> = ({ item, page, onNavigate, open, onOpen, onClose, reducedMotion = false }) => {
+  activity?: NavActivity;
+}> = ({ item, page, onNavigate, open, onOpen, onClose, reducedMotion = false, activity }) => {
   const Icon = item.icon as LucideIcon;
+  const own = activity?.[item.id];
   const children = item.children ?? [];
   const hasChildren = children.length > 0;
   const childActive = children.some((c) => c.id === page);
@@ -568,6 +635,7 @@ const CollapsedItem: React.FC<{
       aria-expanded={hasChildren ? open : undefined}
       aria-controls={hasChildren ? panelId : undefined}
       aria-haspopup={hasChildren ? 'true' : undefined}
+      aria-describedby={describedBy(item.id, own)}
       data-active-trail={trailActive ? 'true' : undefined}
       data-testid={`nav-${item.id}`}
       className={cn(
@@ -589,16 +657,24 @@ const CollapsedItem: React.FC<{
           aria-hidden
         />
       ) : null}
+      {/* Agent activity badge: top-right, knocked out of the rail surface. */}
+      <ActivityGlyph status={own?.status ?? null} className="chat-activity-badge" />
     </button>
   );
 
   // Childless item → a simple tooltip'd icon button.
   if (!hasChildren) {
     return (
-      <Tooltip>
-        <TooltipTrigger asChild>{railButton}</TooltipTrigger>
-        <TooltipContent side="right">{item.label}</TooltipContent>
-      </Tooltip>
+      <>
+        {describe(item.id, own)}
+        <Tooltip>
+          <TooltipTrigger asChild>{railButton}</TooltipTrigger>
+          <TooltipContent side="right" className="max-w-xs break-words">
+            {item.label}
+            {own?.text ? <span className="block text-muted-foreground">{activityText(own, reducedMotion)}</span> : null}
+          </TooltipContent>
+        </Tooltip>
+      </>
     );
   }
 
@@ -638,6 +714,7 @@ const CollapsedItem: React.FC<{
         }
       }}
     >
+      {describe(item.id, own)}
       {railButton}
       {open ? (
         <div
@@ -664,15 +741,20 @@ const CollapsedItem: React.FC<{
             <p className="px-2.5 py-1.5 text-xs font-semibold text-muted-foreground">
               {item.label}
             </p>
+            {own?.text ? (
+              <p className="break-words px-2.5 pb-1.5 text-xs text-muted-foreground">{activityText(own, reducedMotion)}</p>
+            ) : null}
             <ul className="space-y-1">
               {children.map((c) => {
                 const active = page === c.id;
+                const childActivity = activity?.[c.id];
                 return (
                   <li key={`fly-${item.id}-${c.id}`}>
                     <button
                       type="button"
                       onClick={() => onNavigate(c.id)}
                       aria-current={active ? 'page' : undefined}
+                      aria-describedby={describedBy(item.id, childActivity)}
                       className={cn(
                         'flex h-9 w-full items-center rounded-sm px-2.5 text-left text-sm transition-colors',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -682,6 +764,7 @@ const CollapsedItem: React.FC<{
                       )}
                     >
                       <span className="truncate">{c.label}</span>
+                      {mark(childActivity)}
                     </button>
                   </li>
                 );
@@ -751,6 +834,12 @@ export function NavSidebar({
     [hasPermission],
   );
   const [openFlyoutId, setOpenFlyoutId] = React.useState<string | null>(null);
+  // Workspace chat marks the Workspace parent and its Chat leaf (both id `chat`); case
+  // chat marks Case Manager.
+  const activity: NavActivity = {
+    chat: useChatActivitySummary('workspace'),
+    case_manager: useChatActivitySummary('case'),
+  };
 
   React.useEffect(() => {
     if (!collapsed) setOpenFlyoutId(null);
@@ -801,12 +890,14 @@ export function NavSidebar({
           collapsed ? 'w-full justify-center px-2' : 'gap-2 px-3',
         )}
       >
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary dark:bg-accent">
+        <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary dark:bg-accent">
           {logoUrl ? (
             <img src={logoUrl} alt="" className="h-6 w-6 rounded object-contain" />
           ) : (
             <Shield className="h-5 w-5" aria-hidden />
           )}
+          {/* Turns while any answer is being written; the logo itself never moves. */}
+          <BrandActivityRing />
         </span>
         {!collapsed ? (
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
@@ -843,6 +934,7 @@ export function NavSidebar({
                     onOpen={() => setOpenFlyoutId(item.id)}
                     onClose={() => closeFlyout(item.id)}
                     reducedMotion={reducedMotion}
+                    activity={activity}
                   />
                 ))}
               </React.Fragment>
@@ -861,6 +953,7 @@ export function NavSidebar({
                       onNavigate={navigate}
                       onToggleGroup={onToggleGroup}
                       reducedMotion={reducedMotion}
+                      activity={activity}
                     />
                   ))}
                 </ul>
@@ -889,6 +982,7 @@ export function NavSidebar({
                   onOpen={() => setOpenFlyoutId(item.id)}
                   onClose={() => closeFlyout(item.id)}
                   reducedMotion={reducedMotion}
+                  activity={activity}
                 />
               ))
             ) : (

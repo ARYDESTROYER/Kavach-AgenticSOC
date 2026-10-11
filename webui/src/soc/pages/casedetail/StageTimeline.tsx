@@ -36,6 +36,7 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Markdown } from '@/soc/components/Markdown';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
+import { scoreBand, type ScoreBand } from '@/soc/components/palette';
 
 import type {
   StageRiskFactor,
@@ -81,7 +82,7 @@ function stageMeta(kind: string): StageMeta {
 
 /* --------------------------------------------------------------- state chips -- */
 
-const StateChips: React.FC<{ state: StageState }> = ({ state }) => {
+const StateChips: React.FC<{ state: StageState; omitRisk?: boolean }> = ({ state, omitRisk = false }) => {
   const chips: React.ReactNode[] = [];
   if (state.severity_band) {
     const src = state.severity_source === 'source_asserted' ? 'SIEM' : state.severity_source === 'derived' ? 'derived' : '';
@@ -92,8 +93,9 @@ const StateChips: React.FC<{ state: StageState }> = ({ state }) => {
       </Badge>,
     );
   }
-  if (typeof state.risk_score === 'number') {
-    chips.push(<Badge key="risk" variant="medium">risk {Math.round(state.risk_score)}/100</Badge>);
+  // Neutral chip: a fixed amber here read as "medium" for every score (CM-6).
+  if (typeof state.risk_score === 'number' && !omitRisk) {
+    chips.push(<Badge key="risk" variant="outline">risk {Math.round(state.risk_score)}/100</Badge>);
   }
   if (state.verdict) {
     chips.push(<Badge key="verdict" variant="info">{humanizeToken(state.verdict)}</Badge>);
@@ -121,7 +123,7 @@ const StepItem: React.FC<{ step: StageStep }> = ({ step }) => {
           {step.label || humanizeToken(step.kind) || 'Step'}
         </Badge>
         {step.trusted ? null : (
-          <span className="text-2xs uppercase tracking-wide text-muted-foreground">untrusted</span>
+          <span className="text-2xs text-muted-foreground">untrusted</span>
         )}
       </div>
       {step.body ? (
@@ -238,31 +240,43 @@ function storyTime(ts?: string | null): string {
   }
 }
 
-const STORY_TONE: Record<string, { dot: string; title: string }> = {
-  input: { dot: 'bg-primary shadow-glow', title: 'text-primary' },
-  correlate: { dot: 'bg-muted-foreground', title: 'text-foreground' },
-  risk: { dot: 'bg-critical shadow-[0_0_12px_hsl(var(--critical)/0.45)]', title: 'text-critical-text' },
-  triage: { dot: 'bg-medium', title: 'text-medium-text' },
-  investigate: { dot: 'bg-info', title: 'text-info-text' },
-  decide: { dot: 'bg-primary shadow-glow', title: 'text-primary' },
+// Colour carries VALUE, never the stage kind (CM-6): every stage marker is neutral except
+// the risk stage, which takes the band of its own score — so a Risk 7 case is never red.
+// No glow shadows; sentence-case titles in the foreground colour.
+const BAND_DOT: Record<ScoreBand, string> = {
+  low: 'bg-low',
+  medium: 'bg-medium',
+  high: 'bg-high',
+  critical: 'bg-critical',
+};
+const BAND_SEGMENT: Record<ScoreBand, { on: string; last: string }> = {
+  low: { on: 'bg-low/60', last: 'bg-low' },
+  medium: { on: 'bg-medium/60', last: 'bg-medium' },
+  high: { on: 'bg-high/60', last: 'bg-high' },
+  critical: { on: 'bg-critical/70', last: 'bg-critical' },
 };
 
 function storyTone(stage: TimelineStage): { dot: string; title: string } {
   if (stage.status === 'skipped' || stage.status === 'pending') {
     return { dot: 'bg-muted-foreground/60', title: 'text-muted-foreground' };
   }
-  return STORY_TONE[stage.kind] || STORY_TONE.correlate;
+  if (stage.kind === 'risk' && typeof stage.state.risk_score === 'number') {
+    return { dot: BAND_DOT[scoreBand(stage.state.risk_score)], title: 'text-foreground' };
+  }
+  if (stage.kind === 'decide') return { dot: 'bg-primary', title: 'text-foreground' };
+  return { dot: 'bg-muted-foreground', title: 'text-foreground' };
 }
 
 const RiskMicrochart: React.FC<{ score: number }> = ({ score }) => {
   const bounded = Math.max(0, Math.min(100, score));
   const segments = 7;
   const active = Math.round((bounded / 100) * segments);
+  const band = scoreBand(bounded);
   return (
-    <figure className="mt-3 w-48">
-      <figcaption className="mb-1 flex items-center justify-between font-mono text-2xs uppercase tracking-wider text-muted-foreground">
+    <figure className="mt-3 w-48" data-risk-band={band}>
+      <figcaption className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground">
         <span>Risk score</span>
-        <span>{Math.round(bounded)}/100</span>
+        <span className="tabular-nums">{Math.round(bounded)}/100</span>
       </figcaption>
       <div
         className="flex h-12 items-stretch gap-1 border border-border bg-surface-sunken p-1"
@@ -274,8 +288,8 @@ const RiskMicrochart: React.FC<{ score: number }> = ({ score }) => {
             key={index}
             className={cn(
               'min-w-0 flex-1',
-              index < active ? 'bg-critical/75' : 'bg-primary/15',
-              index === active - 1 && 'bg-critical',
+              index < active ? BAND_SEGMENT[band].on : 'bg-muted',
+              index === active - 1 && BAND_SEGMENT[band].last,
             )}
             aria-hidden
           />
@@ -361,7 +375,7 @@ const RiskDerivation: React.FC<{ stage: TimelineStage }> = ({ stage }) => {
           <table className="w-full border-collapse text-left text-xs">
             <caption className="sr-only">Risk score factor calculation</caption>
             <thead>
-              <tr className="border-b border-border font-mono uppercase tracking-wider text-muted-foreground">
+              <tr className="border-b border-border text-xs font-medium text-muted-foreground">
                 <th scope="col" className="px-2 py-2 font-medium">Factor</th>
                 <th scope="col" className="px-2 py-2 font-medium">Value</th>
                 <th scope="col" className="px-2 py-2 font-medium">Weight</th>
@@ -436,8 +450,14 @@ const RiskDerivation: React.FC<{ stage: TimelineStage }> = ({ stage }) => {
 /** Keep source/log material fenced while reproducing the prototype's recessed block. */
 const StoryStep: React.FC<{ step: StageStep }> = ({ step }) => (
   <div className="mt-3 max-w-3xl border border-border bg-surface-sunken p-3">
-    <div className="mb-1 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
+    <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
       {step.label || humanizeToken(step.kind) || 'Detail'}
+      {step.trusted ? null : (
+        <span className="inline-flex items-center gap-1 font-normal">
+          <Lock className="h-3 w-3" aria-hidden />
+          Untrusted source data
+        </span>
+      )}
     </div>
     {step.body ? (
       step.trusted ? (
@@ -522,12 +542,27 @@ const StoryStageRow: React.FC<{
         aria-hidden
       />
       <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-4">
-        <time className="w-24 shrink-0 font-mono text-xs text-muted-foreground">
+        <time
+          className="w-24 shrink-0 font-mono text-xs text-muted-foreground"
+          dateTime={stage.ts || undefined}
+          title={stage.ts ? formatTimestamp(stage.ts) : undefined}
+        >
           {storyTime(stage.ts)}
         </time>
-        <h3 className={cn('text-sm font-semibold uppercase tracking-wider', tone.title)}>
+        <h3 className={cn('text-sm font-semibold', tone.title)}>
           {storyStageTitle(stage)}
         </h3>
+        {/* The stage's provenance and state, kept from the full layout. */}
+        <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {stage.deterministic ? (
+            <span className="inline-flex items-center gap-1" data-testid="story-stage-deterministic">
+              <GitBranch className="h-3 w-3" aria-hidden />
+              Deterministic
+            </span>
+          ) : null}
+          {stage.status === 'skipped' ? <span>Skipped</span> : null}
+          {stage.status === 'pending' ? <span>Pending</span> : null}
+        </span>
       </div>
       <div className="mt-1 sm:ml-28">
         {showHeadline ? (
@@ -535,7 +570,11 @@ const StoryStageRow: React.FC<{
             {stage.headline || DASH}
           </p>
         ) : null}
-        <StateChips state={stage.state} />
+        {/* The risk stage shows its score ONCE, as the meter below. */}
+        <StateChips
+          state={stage.state}
+          omitRisk={stage.kind === 'risk' && typeof stage.state.risk_score === 'number'}
+        />
 
         {stage.kind === 'risk' && typeof stage.state.risk_score === 'number' ? (
           <RiskMicrochart score={stage.state.risk_score} />
@@ -568,7 +607,7 @@ const StoryStageRow: React.FC<{
             type="button"
             size="sm"
             variant="outline"
-            className="mt-3 h-8 rounded-full border-primary/40 bg-primary/10 px-3 text-xs text-primary hover:bg-primary/15"
+            className="mt-3 h-8 px-3 text-xs"
             onClick={onOpenInvestigation}
           >
             View deterministic trace <ArrowRight className="h-3.5 w-3.5" />

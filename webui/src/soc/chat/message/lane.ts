@@ -1,19 +1,33 @@
 /**
- * The conversation lane's column grid (chat revamp SPEC §10.1: "Blocks widen to
- * min(64rem, conversation width); prose stays ≤ 48rem").
+ * The conversation lane: "one lane, two edges" (Round 12 SPEC D12, diagnosis/layout.md
+ * §3). Replaces the chat revamp's five-track 48rem/64rem breakout (SPEC §10.1).
  *
- * One five-track "breakout" grid: a centred content track of min(48rem, 100%) for
- * prose, the user bubble, the meta row and the composer, flanked by two tracks of up
- * to 8rem that let answer blocks widen to 64rem, then free space. Grid sizing fills
- * the bounded tracks before the `fr` ones, so prose keeps its full measure until the
- * lane is narrower than 48rem, and blocks stop widening first. Exchanges and messages
- * repeat the lane tracks (messages subgrid their exchange), so every row of every turn
- * shares the same edges as the composer below (which uses the same grid).
+ *   gutter │◀──────────── lane L = min(conversation − 2·gutter, cap) ────────────▶│ gutter
+ *          │ prose, notices, run log (≤ 48rem, on the lane's LEFT edge)           │
+ *          │ answer blocks (the whole lane; the card frame hangs into the gutter  │
+ *          │   by its padding, so card text starts on the prose edge)            │
+ *          │                                  user bubble (on the RIGHT edge) ▶│
+ *          │ meta row (with blocks) · follow-ups · composer (the whole lane)      │
+ *
+ * Three tracks: two side tracks of at least the gutter that share any free space (so the
+ * lane is centred once it reaches its cap), and the lane itself, which grows to the cap.
+ * The cap is the viewer's width preference (`--chat-lane-max`: Comfortable 64rem, Wide
+ * 88rem, Full 100%) and the gutter is `--chat-gutter` (`clamp(1rem, 2.5cqi, 2.5rem)`
+ * of the conversation zone), both set by the host (ChatWorkspace). Without a host
+ * (the Case Manager embed) the lane is the whole width with no gutter: the embed brings
+ * its own 4 px inset.
+ *
+ * Exchanges and messages repeat the lane tracks (messages subgrid their exchange), so
+ * every row of every turn shares the same edges as the composer below (which uses the
+ * same grid).
  */
 
+/** The three tracks (shared by the lane grid and every exchange). */
+const LANE_TRACKS =
+  'grid-cols-[minmax(var(--chat-gutter,0px),1fr)_minmax(0,var(--chat-lane-max,100%))_minmax(var(--chat-gutter,0px),1fr)]';
+
 /** The lane grid (transcript and composer area). */
-export const LANE_GRID =
-  'grid grid-cols-[minmax(0,1fr)_minmax(0,8rem)_min(48rem,100%)_minmax(0,8rem)_minmax(0,1fr)]';
+export const LANE_GRID = `grid ${LANE_TRACKS}`;
 
 /** A message (or the log): spans its grid and reuses that grid's columns. */
 export const LANE_SUBGRID = 'col-span-full grid grid-cols-subgrid';
@@ -26,11 +40,79 @@ export const LANE_SUBGRID = 'col-span-full grid grid-cols-subgrid';
  * resolves to the same edges, so its children (the user bubble, and the message as a
  * subgrid OF THE EXCHANGE) still line up with the composer.
  */
-export const LANE_EXCHANGE =
-  'col-span-full grid grid-cols-[minmax(0,1fr)_minmax(0,8rem)_min(48rem,100%)_minmax(0,8rem)_minmax(0,1fr)]';
+export const LANE_EXCHANGE = `col-span-full grid ${LANE_TRACKS}`;
 
-/** Prose measure (≤ 48rem). */
-export const CONTENT_COL = 'col-start-3 col-end-4 min-w-0';
+/** The whole lane, edge to edge: composer, follow-ups, a meta row under blocks, the user turn. */
+export const LANE_COL = 'col-start-2 col-end-3 min-w-0';
 
-/** Block measure (≤ 64rem). */
-export const WIDE_COL = 'col-start-2 col-end-5 min-w-0';
+/**
+ * Prose measure: at most 48rem, on the lane's LEFT edge (never centred), so prose,
+ * blocks and the composer share one left edge. Notices and the run log use it too.
+ */
+export const CONTENT_COL = 'col-start-2 col-end-3 min-w-0 w-full max-w-[48rem] justify-self-start';
+
+/**
+ * The block hang: `[&>*>*]` = the answer-blocks list's children (the block column's only
+ * child is the lazy AnswerBlocks root, or its placeholder). A FRAMED card (anything but
+ * the bare prose blocks, `markdown` and `callout`) hangs into the gutter by its border
+ * and padding (1px + BlockCard's 0.75rem `px-3`), so its title, table and chart text
+ * start exactly on the prose edge and end on the user bubble's edge (optical
+ * alignment). The gutter is always at least 1rem, so the hang never leaves the lane's
+ * scroll box. A literal, so Tailwind's compiler sees it.
+ */
+export const BLOCK_HANG =
+  '[&>*>*:not([data-block-type=markdown]):not([data-block-type=callout])]:-mx-[calc(0.75rem+1px)]';
+
+/** Answer blocks: the whole lane, framed cards hanging into the gutter (above). */
+export const WIDE_COL = `${LANE_COL} ${BLOCK_HANG}`;
+
+/**
+ * The meta row under an answer WITH blocks: the whole lane, so its actions end on the
+ * blocks' right edge. What follows it in the same column (the run log, Sources, the
+ * memory line) keeps the prose measure. Without blocks the meta row uses CONTENT_COL,
+ * so its actions stay next to the prose they act on.
+ */
+export const META_COL = `${LANE_COL} [&>*+*]:max-w-[48rem]`;
+
+/** The lane gutter (the host sets it as `--chat-gutter`). */
+export const LANE_GUTTER = 'clamp(1rem, 2.5cqi, 2.5rem)';
+
+/* -------------------------------------------------------------------------- */
+/* The per-viewer width preference.                                            */
+/* -------------------------------------------------------------------------- */
+
+export type ChatLaneWidth = 'comfortable' | 'wide' | 'full';
+
+export const LANE_WIDTHS: readonly ChatLaneWidth[] = ['comfortable', 'wide', 'full'];
+
+/** Wide is the default (diagnosis/layout.md §3). */
+export const DEFAULT_LANE_WIDTH: ChatLaneWidth = 'wide';
+
+/** The lane cap per preference (`--chat-lane-max`). Full = the whole conversation. */
+export const LANE_MAX: Record<ChatLaneWidth, string> = {
+  comfortable: '64rem',
+  wide: '88rem',
+  full: '100%',
+};
+
+/** Menu labels and one-line descriptions (sentence case). */
+export const LANE_WIDTH_LABEL: Record<ChatLaneWidth, string> = {
+  comfortable: 'Comfortable',
+  wide: 'Wide',
+  full: 'Full width',
+};
+
+export const LANE_WIDTH_HINT: Record<ChatLaneWidth, string> = {
+  comfortable: 'A narrower column',
+  wide: 'Room for tables and charts',
+  full: 'Use the whole window',
+};
+
+export function isLaneWidth(value: unknown): value is ChatLaneWidth {
+  return value === 'comfortable' || value === 'wide' || value === 'full';
+}
+
+/** The CSS variables a host sets on the conversation zone (an `@container`). */
+export function laneVars(width: ChatLaneWidth): Record<string, string> {
+  return { '--chat-gutter': LANE_GUTTER, '--chat-lane-max': LANE_MAX[width] };
+}

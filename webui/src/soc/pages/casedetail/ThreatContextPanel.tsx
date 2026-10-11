@@ -35,7 +35,7 @@ import { LoadingState } from '@/design-system';
 
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { VerdictBadge, RiskBadge } from '@/soc/components/badges';
+import { AiVerdictChip, VerdictBadge, RiskBadge } from '@/soc/components/badges';
 import type { Navigate } from '@/soc/router';
 
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
@@ -84,6 +84,68 @@ function scalarLabel(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return String(value ?? '—');
 }
+
+export type IocVerdictKind = 'malicious' | 'no_detections' | 'not_checked';
+
+/**
+ * The indicator verdict, TRI-STATE (CM-8). "Clean" was shown whenever `is_malicious`
+ * was false — even when no provider answered and the confidence was 0, which reads as a
+ * clean bill of health nobody issued. Now: Malicious when a provider flagged it; No
+ * detections only when a named provider was actually consulted; otherwise Not checked.
+ */
+export function iocVerdict(ioc: IocReputation): {
+  kind: IocVerdictKind;
+  label: string;
+  variant: 'critical' | 'secondary' | 'outline';
+  detail: string;
+} {
+  if (ioc.is_malicious === true) {
+    return {
+      kind: 'malicious',
+      label: 'Malicious',
+      variant: 'critical',
+      detail: 'A reputation provider flagged this indicator as malicious.',
+    };
+  }
+  const source = iocSource(ioc);
+  if (ioc.is_malicious === false && source) {
+    return {
+      kind: 'no_detections',
+      label: 'No detections',
+      variant: 'secondary',
+      detail: `${humanizeToken(source)} was checked and reported no detections. That is not proof the indicator is safe.`,
+    };
+  }
+  return {
+    kind: 'not_checked',
+    label: 'Not checked',
+    variant: 'outline',
+    detail: 'No reputation provider answered for this indicator, so it was not checked.',
+  };
+}
+
+/** A tactic token as sentence-case words ("initial-access" → "Initial access"). */
+function tacticWords(tactic: string): string {
+  const words = String(tactic || '').replace(/[_-]+/g, ' ').trim().toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '—';
+}
+
+const FlatHeading: React.FC<{
+  id: string;
+  icon: React.ComponentType<{ className?: string }>;
+  count?: number;
+  children: React.ReactNode;
+}> = ({ id, icon: Icon, count, children }) => (
+  <div className="mb-3 flex items-center gap-2">
+    <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
+    <h2 id={id} className="text-sm font-semibold text-foreground">
+      {children}
+    </h2>
+    {typeof count === 'number' && count > 0 ? (
+      <span className="text-xs tabular-nums text-muted-foreground">{count}</span>
+    ) : null}
+  </div>
+);
 
 export const ThreatContextPanel: React.FC<{
   c: Case;
@@ -161,232 +223,211 @@ export const ThreatContextPanel: React.FC<{
     !!panel.summary || iocs.length > 0 || techniques.length > 0 || !!asset || !!clustering?.available;
 
   if (presentation === 'case-manager') {
+    const assetEmpty =
+      !asset ||
+      (!asset.entity &&
+        asset.criticality === undefined &&
+        asset.is_internal === undefined &&
+        assetNetworks.length === 0 &&
+        assetAttrs.length === 0);
     return (
-      <div className={cn('space-y-5', CASE_MANAGER_PANEL_PADDING)} data-case-panel="threat-context" data-presentation="case-manager">
-        {/* Screenshot-first row: the ZIP's two equal threat-intelligence cards. */}
-        <div className="grid gap-6 md:grid-cols-2">
-          <PanelCard className="rounded-[8px] p-6">
-            <div className="mb-5 flex items-center gap-2.5">
-              <Shield className="h-5 w-5 text-primary" aria-hidden />
-              <h2 className="text-lg font-semibold tracking-tight text-foreground">
-                MITRE ATT&amp;CK® Mapping
-              </h2>
-            </div>
-            {techniques.length === 0 ? (
-              <EmptyState
-                icon={Shield}
-                compact
-                title="No techniques mapped"
-                description="No MITRE ATT&CK techniques were resolved for this case."
-              />
-            ) : (
-              <div className="space-y-3">
-                {techniques.map((technique, index) => (
-                  <div
-                    key={`${technique.id}-${index}`}
-                    className="rounded-[4px] border border-border bg-surface-sunken p-3"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-xs font-semibold text-primary">
-                        {technique.id}
-                      </span>
-                      {technique.tactics?.[0] ? (
-                        <span className="ml-auto text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          {humanizeToken(technique.tactics[0])}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-1 flex items-center gap-2">
-                      <span className="min-w-0 flex-1 text-sm font-semibold text-foreground">
-                        {technique.name || 'Unknown technique'}
-                      </span>
-                      <a
-                        href={mitreUrl(technique.id, technique.url)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label={`Open MITRE ATT&CK ${technique.id} in a new tab`}
-                        className="rounded p-1 text-muted-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <Link2 className="h-3.5 w-3.5" aria-hidden />
-                      </a>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </PanelCard>
+      <div
+        className={cn('divide-y divide-border', CASE_MANAGER_PANEL_PADDING)}
+        data-case-panel="threat-context"
+        data-presentation="case-manager"
+      >
+        {/* Flat, divider-led sections (CM-8): no card-in-card. Every field of both earlier
+            layouts is kept — summary, AI verdict, risk, malicious-indicator flag, the
+            assembled time, each technique's id/name/every tactic/description/link, each
+            indicator's value/type/verdict/score/source/country, the clustering story and
+            the asset context. Log-derived values stay plain text nodes (#9). */}
+        <section aria-labelledby="threat-summary-title" className="pb-5">
+          <FlatHeading id="threat-summary-title" icon={Shield}>
+            Threat summary
+          </FlatHeading>
+          {panel.summary ? (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{panel.summary}</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">No threat summary was assembled for this case.</p>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <AiVerdictChip verdict={c.verdict} confidence={c.confidence} />
+            <RiskBadge score={c.risk_score} />
+            {iocs.some((i) => i.is_malicious) ? (
+              <Badge variant="critical" className="gap-1">
+                <AlertTriangle className="h-3 w-3" />
+                Malicious indicator present
+              </Badge>
+            ) : null}
+            {panel.generated_at ? (
+              <span className="ml-auto text-xs text-muted-foreground">
+                Assembled {humanizeAge(panel.generated_at)}
+              </span>
+            ) : null}
+          </div>
+        </section>
 
-          <PanelCard className="rounded-[8px] p-6">
-            <div className="mb-5 flex items-center gap-2.5">
-              <Target className="h-5 w-5 text-critical-text" aria-hidden />
-              <h2 className="text-lg font-semibold tracking-tight text-foreground">
-                IOC Reputation
-              </h2>
-            </div>
-            {iocs.length === 0 ? (
-              <EmptyState
-                icon={Target}
-                compact
-                title="No indicator reputation"
-                description="No IOC reputation was available for this case."
-              />
-            ) : (
-              <div className="space-y-3">
-                {iocs.map((ioc, index) => {
-                  const score = iocScore(ioc);
-                  const source = iocSource(ioc);
-                  return (
-                    <div
-                      key={`${ioc.indicator}-${index}`}
-                      className={cn(
-                        'rounded-[4px] border bg-surface-sunken p-4',
-                        ioc.is_malicious ? 'border-critical/30' : 'border-border',
-                      )}
+        <section aria-labelledby="threat-mitre-title" className="py-5" data-testid="threat-mitre">
+          <FlatHeading id="threat-mitre-title" icon={Shield} count={techniques.length}>
+            MITRE ATT&amp;CK techniques
+          </FlatHeading>
+          {techniques.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No MITRE ATT&amp;CK techniques were resolved for this case.</p>
+          ) : (
+            <ul className="divide-y divide-border/70">
+              {techniques.map((technique, index) => (
+                <li key={`${technique.id}-${index}`} className="py-2.5 first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="font-mono text-xs font-semibold text-foreground">{technique.id}</span>
+                    {/* Name is from the curated MITRE corpus (TRUSTED) — still a plain text node. */}
+                    <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+                      {technique.name || 'Unknown technique'}
+                    </span>
+                    <a
+                      href={mitreUrl(technique.id, technique.url)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`Open MITRE ATT&CK ${technique.id} in a new tab`}
+                      className="inline-flex items-center gap-1 rounded text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold text-foreground">
-                          {ioc.indicator}
-                        </span>
-                        {typeof ioc.is_malicious === 'boolean' ? (
-                          <Badge variant={ioc.is_malicious ? 'critical' : 'success'}>
-                            {ioc.is_malicious ? 'Malicious' : 'Clean'}
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <dl className="mt-4 space-y-2 text-xs">
-                        <div className="flex items-center justify-between gap-3">
-                          <dt className="text-muted-foreground">Source</dt>
-                          <dd className="text-right text-foreground">
-                            {source ? humanizeToken(source) : 'Unavailable'}
-                          </dd>
-                        </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <dt className="text-muted-foreground">Confidence score</dt>
-                          <dd
-                            className={cn(
-                              'font-mono font-semibold',
-                              typeof score === 'number' && score >= 50
-                                ? 'text-critical-text'
-                                : 'text-foreground',
-                            )}
-                          >
-                            {typeof score === 'number' ? `${Math.round(score)}%` : 'Unavailable'}
-                          </dd>
-                        </div>
-                        {panel.generated_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <dt className="text-muted-foreground">Assembled</dt>
-                            <dd className="text-right text-foreground">
-                              {humanizeAge(panel.generated_at)}
-                            </dd>
-                          </div>
-                        ) : null}
-                      </dl>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </PanelCard>
-        </div>
+                      <Link2 className="h-3 w-3" aria-hidden /> MITRE
+                    </a>
+                  </div>
+                  {technique.tactics && technique.tactics.length ? (
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {technique.tactics.length === 1 ? 'Tactic: ' : 'Tactics: '}
+                      {technique.tactics.map((tactic) => tacticWords(tactic)).join(', ')}
+                    </p>
+                  ) : null}
+                  {technique.description ? (
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{technique.description}</p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
-        <ClusterFormationDiagram data={clustering} />
-
-        {/* Production-only context remains available below the exact reference row. */}
-        <div className="grid gap-6 md:grid-cols-2">
-          <PanelCard className="rounded-[8px]">
-            <SectionHeading icon={Shield}>Threat summary</SectionHeading>
-            {panel.summary ? (
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                {panel.summary}
-              </p>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No threat summary was assembled for this case.
-              </p>
-            )}
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <VerdictBadge verdict={c.verdict} />
-              <RiskBadge score={c.risk_score} />
-            </div>
-          </PanelCard>
-
-          <PanelCard className="rounded-[8px]">
-            <SectionHeading icon={Crosshair}>Asset context</SectionHeading>
-            {!asset ||
-            (!asset.entity &&
-              asset.criticality === undefined &&
-              asset.is_internal === undefined &&
-              assetNetworks.length === 0 &&
-              assetAttrs.length === 0) ? (
-              <EmptyState
-                icon={Crosshair}
-                compact
-                title="No asset context"
-                description="No additional context was recorded for the case's primary entity."
-              />
-            ) : (
-              <dl className="divide-y divide-border">
-                {asset.entity ? (
-                  <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      {humanizeToken(asset.entity_type || 'Entity')}
-                    </dt>
-                    <dd className="truncate text-right font-mono text-sm text-foreground">
-                      {asset.entity}
-                    </dd>
-                  </div>
-                ) : null}
-                {asset.criticality !== undefined ? (
-                  <div className="flex items-center justify-between gap-3 py-2.5">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Criticality
-                    </dt>
-                    <dd className="text-right font-mono text-sm text-foreground">
-                      {scalarLabel(asset.criticality)}
-                    </dd>
-                  </div>
-                ) : null}
-                {asset.is_internal !== undefined ? (
-                  <div className="flex items-center justify-between gap-3 py-2.5">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Internal asset
-                    </dt>
-                    <dd className="text-right text-sm text-foreground">
-                      {asset.is_internal ? 'Yes' : 'No'}
-                    </dd>
-                  </div>
-                ) : null}
-                {assetNetworks.length ? (
-                  <div className="flex items-start justify-between gap-3 py-2.5">
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Networks
-                    </dt>
-                    <dd className="max-w-[70%] text-right font-mono text-sm text-foreground">
-                      {assetNetworks.map(String).join(', ')}
-                    </dd>
-                  </div>
-                ) : null}
-                {assetAttrs.map(([key, value], index) => (
-                  <div
-                    key={`${key}-${index}`}
-                    className="flex items-center justify-between gap-3 py-2.5 last:pb-0"
+        <section aria-labelledby="threat-ioc-title" className="py-5" data-testid="threat-ioc">
+          <FlatHeading id="threat-ioc-title" icon={Target} count={iocs.length}>
+            Indicator reputation
+          </FlatHeading>
+          {iocs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No indicator reputation was available. Enrichment may be off or uncached, or the indicators are internal.
+            </p>
+          ) : (
+            <ul className="divide-y divide-border/70">
+              {iocs.map((ioc, index) => {
+                const score = iocScore(ioc);
+                const source = iocSource(ioc);
+                const verdict = iocVerdict(ioc);
+                return (
+                  <li
+                    key={`${ioc.indicator}-${index}`}
+                    className="grid gap-x-4 gap-y-1 py-2.5 first:pt-0 last:pb-0 @[40rem]/case:grid-cols-[minmax(0,1fr)_auto]"
+                    data-testid="threat-ioc-row"
+                    data-ioc-verdict={verdict.kind}
                   >
-                    <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                      {humanizeToken(key)}
-                    </dt>
-                    <dd className="truncate text-right font-mono text-sm text-foreground">
-                      {scalarLabel(value)}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-          </PanelCard>
-        </div>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      {/* UNTRUSTED indicator — plain text, mono. */}
+                      <span className="min-w-0 truncate font-mono text-sm text-foreground" title={ioc.indicator}>
+                        {ioc.indicator}
+                      </span>
+                      {ioc.type ? <span className="text-xs text-muted-foreground">{humanizeToken(ioc.type)}</span> : null}
+                      <Badge variant={verdict.variant} title={verdict.detail}>
+                        {verdict.label}
+                      </Badge>
+                    </div>
+                    <dl className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs @[40rem]/case:justify-end">
+                      <div className="flex gap-1">
+                        <dt className="text-muted-foreground">Source</dt>
+                        <dd className="text-foreground">{source ? humanizeToken(source) : 'Unavailable'}</dd>
+                      </div>
+                      <div className="flex gap-1">
+                        <dt className="text-muted-foreground">Confidence</dt>
+                        <dd
+                          className={cn(
+                            'tabular-nums',
+                            typeof score === 'number' && score >= 50 ? 'font-medium text-critical-text' : 'text-foreground',
+                          )}
+                        >
+                          {typeof score === 'number' ? `${Math.round(score)}%` : 'Unavailable'}
+                        </dd>
+                      </div>
+                      {ioc.country ? (
+                        <div className="flex gap-1">
+                          <dt className="text-muted-foreground">Country</dt>
+                          {/* UNTRUSTED — plain text. */}
+                          <dd className="max-w-[10rem] truncate text-foreground">{ioc.country}</dd>
+                        </div>
+                      ) : null}
+                    </dl>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {clustering?.available ? (
+          // The diagram draws its own top/bottom rules; inside this divider-led stack the
+          // dividers already separate it, so its own rules are dropped here.
+          <div className="py-5 [&>section]:border-y-0 [&>section]:py-0">
+            <ClusterFormationDiagram data={clustering} />
+          </div>
+        ) : null}
+
+        <section aria-labelledby="threat-asset-title" className="pt-5">
+          <FlatHeading id="threat-asset-title" icon={Crosshair}>
+            Asset context
+          </FlatHeading>
+          {assetEmpty || !asset ? (
+            <p className="text-sm text-muted-foreground">
+              No additional context was recorded for the case&apos;s primary entity.
+            </p>
+          ) : (
+            <dl className="grid gap-x-6 gap-y-2 text-sm @[40rem]/case:grid-cols-2">
+              {asset.entity ? (
+                <div className="flex min-w-0 items-baseline justify-between gap-3">
+                  <dt className="text-xs text-muted-foreground">{humanizeToken(asset.entity_type || 'Entity')}</dt>
+                  {/* UNTRUSTED — plain text, mono. */}
+                  <dd className="truncate text-right font-mono text-foreground">{asset.entity}</dd>
+                </div>
+              ) : null}
+              {asset.criticality !== undefined ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-xs text-muted-foreground">Criticality</dt>
+                  <dd className="text-right font-mono text-foreground">{scalarLabel(asset.criticality)}</dd>
+                </div>
+              ) : null}
+              {asset.is_internal !== undefined ? (
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-xs text-muted-foreground">Internal asset</dt>
+                  <dd className="text-right text-foreground">{asset.is_internal ? 'Yes' : 'No'}</dd>
+                </div>
+              ) : null}
+              {assetNetworks.length ? (
+                <div className="flex items-start justify-between gap-3">
+                  <dt className="text-xs text-muted-foreground">Networks</dt>
+                  <dd className="max-w-[70%] text-right font-mono text-foreground">
+                    {assetNetworks.map(String).join(', ')}
+                  </dd>
+                </div>
+              ) : null}
+              {assetAttrs.map(([key, value], index) => (
+                <div key={`${key}-${index}`} className="flex min-w-0 items-baseline justify-between gap-3">
+                  <dt className="text-xs text-muted-foreground">{humanizeToken(key)}</dt>
+                  {/* UNTRUSTED — plain text. */}
+                  <dd className="truncate text-right font-mono text-foreground">{scalarLabel(value)}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </section>
 
         {!anySection ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="pt-5 text-xs text-muted-foreground">
             Threat context is enabled but produced no sections for this case.
           </p>
         ) : null}
@@ -463,11 +504,14 @@ export const ThreatContextPanel: React.FC<{
                       score {Math.round(score)}
                     </Badge>
                   ) : null}
-                  {typeof ioc.is_malicious === 'boolean' ? (
-                    <Badge variant={ioc.is_malicious ? 'critical' : 'success'}>
-                      {ioc.is_malicious ? 'Malicious' : 'Clean'}
-                    </Badge>
-                  ) : null}
+                  {(() => {
+                    const verdict = iocVerdict(ioc);
+                    return (
+                      <Badge variant={verdict.variant} title={verdict.detail}>
+                        {verdict.label}
+                      </Badge>
+                    );
+                  })()}
                   {ioc.country ? (
                     /* UNTRUSTED — plain text. */
                     <Badge variant="outline" className="gap-1">
@@ -560,7 +604,7 @@ export const ThreatContextPanel: React.FC<{
           <dl className="divide-y divide-border">
             {asset.entity ? (
               <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium text-muted-foreground">
                   {humanizeToken(asset.entity_type || 'Entity')}
                 </dt>
                 {/* UNTRUSTED — plain text, mono. */}
@@ -571,7 +615,7 @@ export const ThreatContextPanel: React.FC<{
             ) : null}
             {asset.criticality !== undefined ? (
               <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium text-muted-foreground">
                   Criticality
                 </dt>
                 <dd className="text-right text-sm text-foreground">
@@ -581,7 +625,7 @@ export const ThreatContextPanel: React.FC<{
             ) : null}
             {asset.is_internal !== undefined ? (
               <div className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium text-muted-foreground">
                   Internal asset
                 </dt>
                 <dd className="text-right text-sm text-foreground">
@@ -591,7 +635,7 @@ export const ThreatContextPanel: React.FC<{
             ) : null}
             {assetNetworks.length ? (
               <div className="flex items-start justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium text-muted-foreground">
                   Networks
                 </dt>
                 <dd className="max-w-[70%] text-right font-mono text-sm text-foreground">
@@ -604,7 +648,7 @@ export const ThreatContextPanel: React.FC<{
                 key={`${k}-${i}`}
                 className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
               >
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium text-muted-foreground">
                   {humanizeToken(k)}
                 </dt>
                 {/* UNTRUSTED — plain text. */}

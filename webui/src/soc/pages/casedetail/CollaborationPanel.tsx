@@ -65,7 +65,7 @@ export function assigneeSelectValue(current: string, users: PickableUser[]): str
 /** An assignee picker over the known users (with a free-text fallback when the user
  *  store is empty / auth is off). Saves via api.caseAssign + bubbles the updated case
  *  through `onAssigned`. The assignee string is UNTRUSTED → rendered plain. */
-const AssigneePicker: React.FC<{
+export const AssigneePicker: React.FC<{
   c: Case;
   users: PickableUser[];
   canWrite: boolean;
@@ -339,7 +339,7 @@ export const CollaborationThreadTab: React.FC<{
           <SectionHeading icon={Users}>
             Ownership
           </SectionHeading>
-          <Label className="mb-1.5 block text-xs uppercase tracking-wide text-muted-foreground">
+          <Label className="mb-1.5 block text-xs font-medium text-muted-foreground">
             Assignee
           </Label>
           <AssigneePicker c={c} users={users} canWrite={canWrite} onAssigned={onAssigned} />

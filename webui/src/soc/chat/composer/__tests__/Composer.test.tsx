@@ -404,25 +404,31 @@ describe('Composer — meter', () => {
     expect(screen.queryByText(/Today's AI spend/)).toBeNull();
   });
 
-  it('shows money only when the context carries it, and the ring as a real meter', async () => {
+  it('shows money only when the context carries it; the ring is context use, the budget lives in the card', async () => {
     const context = makeContext({
       rates: { input_per_million: 3, output_per_million: 15 },
       budget: { enabled: true, daily_limit: 10, soft_warn_pct: 0.8, on_exceed: 'block' },
       spent_today: 4.2,
       simulated: false,
+      context_window: 4_000,
     });
     const { user } = setup({ context, conversationTotals: { tokens: 12_400, cost: 0.03 } });
-    const meter = screen.getByRole('meter', { name: "Today's AI budget" });
-    expect(meter).toHaveAttribute('aria-valuenow', '42');
-    expect(meter).toHaveAttribute('aria-valuetext', "42% of today's AI budget used, $4.20 of $10.00.");
-    expect(meter).toHaveTextContent('42%');
+    // Round 12: the bar's ring is CONTEXT-WINDOW use (1,200 of 4,000), never today's spend.
+    const ring = screen.getByRole('meter', { name: 'Context window used' });
+    expect(ring).toHaveAttribute('aria-valuenow', '30');
+    expect(ring).toHaveTextContent('30%');
+    expect(screen.queryByRole('meter', { name: 'Daily AI budget' })).toBeNull();
     await user.click(screen.getByRole('button', { name: /Estimated next request/ }));
     expect(await screen.findByText('Projected cost')).toBeInTheDocument();
-    expect(screen.getByText("Today's AI spend")).toBeInTheDocument();
+    // The daily budget moved into the card, with its own bar and an honest note (D5).
+    const budget = screen.getByRole('meter', { name: 'Daily AI budget' });
+    expect(budget).toHaveAttribute('aria-valuetext', "42% of today's AI budget used, $4.20 of $10.00.");
+    expect(screen.getByText('Spent today')).toBeInTheDocument();
     expect(screen.getByText('$4.20 of $10.00')).toBeInTheDocument();
     // The same grammar as the thread toolbar and the run log.
     expect(screen.getByText('12.4k tokens · $0.03')).toBeInTheDocument();
-    expect(screen.getByText(/Chat shares this budget with automatic investigations/)).toBeInTheDocument();
+    expect(screen.getByText(/Chat is recorded in the cost ledger but is not paused by it/)).toBeInTheDocument();
+    expect(screen.queryByText(/Chat shares this budget/)).toBeNull();
   });
 
   it('counts a case chat\'s own history (the context cannot see it, SPEC §4.3)', async () => {
@@ -438,11 +444,13 @@ describe('Composer — meter', () => {
     expect(screen.getByText('2,000')).toBeInTheDocument();
   });
 
-  it('hides the ring without a budget and the whole meter until the context loads', () => {
-    setup();
+  it('hides the ring without a context window and the whole meter until the context loads', () => {
+    const { view } = setup({ context: makeContext({ context_window: null }) });
     expect(screen.queryByRole('meter')).toBeNull();
+    expect(screen.getByRole('button', { name: /Estimated next request/ })).toBeInTheDocument();
+    view.unmount();
     render(<Harness spies={spies} context={null} />);
-    expect(screen.getAllByRole('button', { name: /Estimated next request/ })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /Estimated next request/ })).toBeNull();
   });
 });
 
@@ -847,7 +855,7 @@ describe('Composer — accessibility', () => {
     });
     const { user } = setup({ context, conversationTotals: { tokens: 12_400, cost: 0.03 } });
     await user.click(screen.getByRole('button', { name: /Estimated next request/ }));
-    await screen.findByRole('dialog', { name: 'Token estimate' });
+    await screen.findByRole('dialog', { name: 'Context and usage' });
     expect(await bodyAxe()).toHaveNoViolations();
   });
 });
