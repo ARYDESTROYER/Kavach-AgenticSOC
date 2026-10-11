@@ -3234,10 +3234,11 @@ export type ReportItemKind = 'block' | 'section';
 
 /**
  * The composer time window (backend `TimeRange`). Each bound is `now`,
- * `now-<n>[m|h|d|w|M|y]` (lower-case `m` is minutes, `M` months) or ISO-8601, and
- * `from` may also be `"all"` (the "All time" chip, which never clamps); `from < to`
- * (else HTTP 422). Round 12 (SPEC D7a): chat scope windows have no span limit. No range
- * at all is the composer's **Auto** default: no outer limit, each lookup's own default.
+ * `now-<n>[m|h|d|w|M|y]` (lower-case `m` is minutes, `M` months, `y` years, so `now-6M`
+ * is six months) or ISO-8601, and `from` may also be `"all"` (`{ from: 'all' }`, the
+ * "All time" chip, which never clamps); `from < to` (else HTTP 422). Round 12 (SPEC
+ * D7a): chat scope windows have no span limit. No range at all is the composer's
+ * **Auto** default: no outer limit, each lookup's own default.
  * Named `ChatTimeRange` to stay distinct from `TimeRangePicker`'s own `TimeRange`.
  */
 export interface ChatTimeRange {

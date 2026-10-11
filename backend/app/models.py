@@ -2247,8 +2247,9 @@ def _months_before(moment: datetime, months: int) -> datetime | None:
 
 def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None:
     """Resolve one composer time expression to an aware UTC datetime, else ``None``.
-    The grammar is deliberately narrow (SPEC §3.1): ``now``, ``now-<n>[mhdw]`` or an
-    ISO-8601 timestamp (a naive one is read as UTC). No ``now+``, no epoch numbers."""
+    The grammar is deliberately narrow (SPEC §3.1): ``now``, ``now-<n>[m|h|d|w]``
+    (``m`` = minutes), ``now-<n>[M|y]`` (calendar months and years) or an ISO-8601
+    timestamp (a naive one is read as UTC). No ``now+``, no epoch numbers."""
     if not isinstance(expr, str):
         return None
     reference = now or datetime.now(timezone.utc)
@@ -2304,10 +2305,12 @@ def humanise_relative_window(amount: int, unit: str) -> str:
 class TimeRange(BaseModel):
     """The composer time window ``{from, to}`` (SPEC §3.1).
 
-    Each bound is ``now``, ``now-<n>[mhdw]`` or ISO-8601, and ``from`` may also be
-    ``all`` (the "All time" chip, Round 12); ``from`` must be strictly before ``to``,
-    else 422. Round 12 (SPEC D7a): chat scope windows have no span limit
-    (:attr:`MAX_SPAN_DAYS` is ``None``). It applies to every windowed chat tool;
+    Each bound is ``now``, ``now-<n>[m|h|d|w|M|y]`` (lower-case ``m`` is minutes,
+    ``M`` months, ``y`` years) or ISO-8601, and ``from`` may also be ``all``
+    (``{"from": "all"}``, the "All time" chip, Round 12, which never clamps); ``from``
+    must be strictly before ``to``, else 422. Round 12 (SPEC D7a): chat scope windows
+    have no span limit (:attr:`MAX_SPAN_DAYS` is ``None``). It applies to every
+    windowed chat tool;
     precedence is the model's explicit window from the user's words, then this, then
     ``context.time_range``, then the tool's own default. Serialises as ``{"from",
     "to"}`` (both keys, always) regardless of ``by_alias`` or ``exclude_defaults``, so
