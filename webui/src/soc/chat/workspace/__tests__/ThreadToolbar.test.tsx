@@ -8,7 +8,7 @@
  * only for a saved thread, and the viewer's Width submenu (Round 12 SPEC D12) on drafts
  * too.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
@@ -16,8 +16,50 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 import type { ChatConversationSummary } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { ThreadToolbar, conversationTotal, reportButtonHint, reportButtonLabel, type ThreadToolbarProps } from '../ThreadToolbar';
+import { onReportChanged } from '../../report/report-sync';
+
+const toastSpy = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock('sonner', () => ({ toast: toastSpy }));
+const navigate = vi.hoisted(() => vi.fn());
+vi.mock('@/soc/router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/soc/router')>();
+  return { ...actual, useNavigateOptional: () => navigate };
+});
 
 expect.extend(toHaveNoViolations);
+
+/** A stub `fetch` answering `POST /api/reports/from-conversation` with `replies` in order. */
+function stubSave(replies: Array<{ status: number; body: unknown }>) {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) });
+      const reply = replies.shift() ?? { status: 500, body: { detail: 'no reply' } };
+      return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'Content-Type': 'application/json' } });
+    }),
+  );
+  return calls;
+}
+
+const SAVED_REPORT = {
+  id: 'rpt-1',
+  title: 'Failed sign-in review',
+  template: 'custom',
+  conversation_id: null,
+  items: [],
+  summary: null,
+  created_at: '2026-10-08T09:06:00Z',
+  updated_at: '2026-10-08T09:06:00Z',
+  version: 1,
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  toastSpy.success.mockReset();
+  toastSpy.error.mockReset();
+  navigate.mockReset();
+});
 
 const SUMMARY: ChatConversationSummary = {
   id: 'c-1',
@@ -202,6 +244,81 @@ describe('ThreadToolbar', () => {
     renderToolbar({ caseScoped: true, summary: null, title: 'Case case-9', report: null });
     expect(screen.queryByRole('button', { name: /Report/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Conversation actions' })).toBeNull();
+  });
+
+  it('saves the whole conversation as a new report and links to it (Round 12 D11)', async () => {
+    const user = userEvent.setup();
+    const calls = stubSave([{ status: 200, body: { report: SAVED_REPORT, items: 3, skipped: 1, created: true } }]);
+    const changed = vi.fn();
+    const off = onReportChanged(changed);
+    renderToolbar();
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Save conversation as report' }));
+    await waitFor(() => expect(toastSpy.success).toHaveBeenCalledTimes(1));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/reports/from-conversation');
+    // Only the id and a key: the server resolves every item from the saved conversation.
+    expect(Object.keys(calls[0].body).sort()).toEqual(['conversation_id', 'idempotency_key']);
+    expect(calls[0].body.conversation_id).toBe('c-1');
+    const [title, options] = toastSpy.success.mock.calls[0];
+    expect(title).toBe('Saved to Reports');
+    expect(options.description).toBe('Failed sign-in review · 3 sections · 1 answer did not fit');
+    expect(options.action.label).toBe('Open report');
+    options.action.onClick();
+    expect(navigate).toHaveBeenCalledWith('reports', { reportId: 'rpt-1' });
+    // A standalone report: the conversation's own draft is never replaced by it.
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ reportId: 'rpt-1', conversationId: null }));
+    off();
+  });
+
+  it('says a running answer is not included, and that a replay was already saved', async () => {
+    const user = userEvent.setup();
+    stubSave([{ status: 200, body: { report: SAVED_REPORT, items: 1, skipped: 0, created: false } }]);
+    renderToolbar({ busy: true });
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Save conversation as report' }));
+    await waitFor(() => expect(toastSpy.success).toHaveBeenCalledTimes(1));
+    const [title, options] = toastSpy.success.mock.calls[0];
+    expect(title).toBe('Already saved to Reports');
+    expect(options.description).toBe('Failed sign-in review · 1 section. The answer still being written is not included.');
+  });
+
+  it('retries a failed save with the SAME key, and explains a conversation with no answers', async () => {
+    const user = userEvent.setup();
+    const calls = stubSave([
+      { status: 503, body: { detail: { code: 'chat_history_unavailable', message: 'Chat history is temporarily unavailable.' } } },
+      { status: 200, body: { report: SAVED_REPORT, items: 2, skipped: 0, created: true } },
+    ]);
+    renderToolbar();
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Save conversation as report' }));
+    await waitFor(() => expect(toastSpy.error).toHaveBeenCalledTimes(1));
+    const [message, options] = toastSpy.error.mock.calls[0];
+    expect(message).toBe('Chat history is temporarily unavailable. Try again in a moment.');
+    expect(options.action.label).toBe('Try again');
+    await act(async () => {
+      options.action.onClick();
+    });
+    await waitFor(() => expect(toastSpy.success).toHaveBeenCalledTimes(1));
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.idempotency_key).toBe(calls[0].body.idempotency_key);
+
+    // A deliberate second save is a new report: a new key.
+    stubSave([{ status: 409, body: { detail: { code: 'report_empty', message: 'This conversation has no answers to save.' } } }]);
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Save conversation as report' }));
+    await waitFor(() => expect(toastSpy.error).toHaveBeenCalledTimes(2));
+    const [emptyMessage, emptyOptions] = toastSpy.error.mock.calls[1];
+    expect(emptyMessage).toBe('This conversation has no answers to save yet.');
+    expect(emptyOptions.action).toBeUndefined();
+  });
+
+  it('never offers the save on a draft or in case chat', async () => {
+    const user = userEvent.setup();
+    renderToolbar({ summary: null, title: 'New chat', laneWidth: { value: 'wide', onChange: vi.fn() } });
+    await user.click(screen.getByRole('button', { name: 'Conversation options' }));
+    await screen.findByRole('menuitem', { name: 'Width, currently Wide' });
+    expect(screen.queryByRole('menuitem', { name: 'Save conversation as report' })).toBeNull();
   });
 
   it('has no detectable accessibility violations', async () => {

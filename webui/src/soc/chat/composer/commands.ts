@@ -8,7 +8,9 @@
  * they fill the composer with the question and select the placeholder, so the value
  * the analyst types is their own text and is sent with `origin: "user"` — the only
  * origin the indicator taint rule accepts (SPEC §4.8). `/report <template>` inserts the
- * template's section request the same way.
+ * template's section request the same way; it asks to CREATE the report, so the answer
+ * is also saved to the Reports library (Round 12 SPEC D11). `/compact` sends the literal
+ * command the engine recognises (D4): it summarises the earlier exchanges now.
  */
 import type { ChatContextInfo, ChatPrompt, ChatScope, ChatToolInfo, ReportTemplateName } from '@/lib/types';
 import { CHAT_SCOPES } from '../stream-events';
@@ -101,6 +103,9 @@ export interface SlashCommand {
   template: string;
 }
 
+/** `/compact` (Round 12 SPEC D4): the engine folds the earlier exchanges into a summary. */
+export const COMPACT_COMMAND_ID = 'compact';
+
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     id: 'shift-brief',
@@ -154,6 +159,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     argument: { placeholder: '<topic>' },
     template: 'What is {arg} in this console, and how do I use it?',
   },
+  {
+    id: COMPACT_COMMAND_ID,
+    description: 'Summarise earlier messages to make room',
+    tools: [],
+    template: '/compact',
+  },
 ];
 
 export interface ReportTemplateSpec {
@@ -164,6 +175,8 @@ export interface ReportTemplateSpec {
   tools: readonly string[];
   /** The report's subject, when the template needs one. */
   argument?: SlashArgument;
+  /** The word before the subject: "on" (default) or "for" (a period). */
+  preposition?: 'on' | 'for';
 }
 
 /** `/report <template>`: the section request each template inserts. */
@@ -202,6 +215,37 @@ export const REPORT_TEMPLATE_SPECS: readonly ReportTemplateSpec[] = [
     argument: { placeholder: '<indicator>' },
   },
   {
+    template: 'executive',
+    noun: 'an executive summary report',
+    sections: ['Summary', 'Volume', 'Quality', 'Response times', 'Noise reduction', 'Next steps'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<period>' },
+    preposition: 'for',
+  },
+  {
+    template: 'monthly',
+    noun: 'a monthly SOC report',
+    sections: ['Summary', 'Volume by week', 'Quality', 'Response times', 'Noise reduction', 'Top cases', 'Next steps'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<month>' },
+    preposition: 'for',
+  },
+  {
+    template: 'infographic',
+    noun: 'an infographic report',
+    sections: ['Key figures', 'Volume', 'Quality', 'Response times', 'Noise reduction'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<period>' },
+    preposition: 'for',
+  },
+  {
+    template: 'investigation_brief',
+    noun: 'an investigation brief',
+    sections: ['Assessment', 'Key findings', 'Affected entities', 'ATT&CK', 'Next steps', 'What could not be checked'],
+    tools: ['get_case'],
+    argument: { placeholder: '<case id>' },
+  },
+  {
     template: 'custom',
     noun: 'a report',
     sections: ['Summary', 'Findings', 'Next steps'],
@@ -209,10 +253,14 @@ export const REPORT_TEMPLATE_SPECS: readonly ReportTemplateSpec[] = [
   },
 ];
 
-/** The report request text, with `{arg}` where the subject goes (when it has one). */
+/**
+ * The report request text, with `{arg}` where the subject goes (when it has one). It asks
+ * to CREATE the report, so the finished answer is also saved to the Reports library
+ * (Round 12 SPEC D11: the server saves it from the persisted answer).
+ */
 export function reportTemplateText(spec: ReportTemplateSpec): string {
-  const subject = spec.argument ? ' on {arg}' : '';
-  return `Build ${spec.noun}${subject} with these sections: ${spec.sections.join(', ')}.`;
+  const subject = spec.argument ? ` ${spec.preposition ?? 'on'} {arg}` : '';
+  return `Create ${spec.noun}${subject} with these sections: ${spec.sections.join(', ')}.`;
 }
 
 /** What `/` typed so far: the command word and its argument (single line only). */
@@ -271,9 +319,12 @@ export function slashMenuGroups(
 ): ComposerMenuGroup[] {
   const groups: ComposerMenuGroup[] = [];
   const allowedTemplates = REPORT_TEMPLATE_SPECS.filter((spec) => toolsAllowed(context, spec.tools));
-  const available = SLASH_COMMANDS.filter((command) =>
-    command.id === 'report' ? Boolean(context) && allowedTemplates.length > 0 : toolsAllowed(context, command.tools),
-  );
+  const available = SLASH_COMMANDS.filter((command) => {
+    if (command.id === 'report') return Boolean(context) && allowedTemplates.length > 0;
+    // Bounded chat keeps no conversation summary: /compact would only say so.
+    if (command.id === COMPACT_COMMAND_ID && context?.limits_mode === 'bounded') return false;
+    return toolsAllowed(context, command.tools);
+  });
 
   if (query.hasSpace) {
     const command = available.find((c) => c.id === query.command);

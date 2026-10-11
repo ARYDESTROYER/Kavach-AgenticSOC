@@ -1,26 +1,60 @@
 /**
- * Saved prompts (SPEC §10.4): `UserPrefs.chat_prompts` — at most 50, title ≤ 60,
- * text ≤ 2,000 — read and written through the existing personal prefs routes.
+ * Saved prompts (SPEC §10.4; Round 12 prompt library, SPEC §3.1): `UserPrefs.chat_prompts`
+ * — at most 50, title ≤ 60, text ≤ 2,000, an optional category and a favorite star —
+ * read and written through the existing personal prefs routes. No new store or endpoint.
  *
  * `useSavedPrompts()` loads lazily (the first composer focus or menu open), never at
  * mount, and keeps the server's answer as the truth: a save that the server did not
- * store reports an error instead of showing a prompt that is not there. Prompts are
- * the analyst's own words; they render as text and are inserted into the composer
- * (sent later as an ordinary user message), never sent on selection.
+ * store reports an error instead of showing a prompt that is not there. Every write
+ * re-reads the list first so another tab's change is not overwritten by a stale copy.
+ * Prompts are the analyst's own words; they render as text and are inserted into the
+ * composer (sent later as an ordinary user message), never sent on selection — a prompt
+ * with `{placeholders}` or a promptbook first asks for its values (`PromptRunner`).
  */
 import * as React from 'react';
-import { Trash2 } from 'lucide-react';
-import type { ChatPrompt } from '@/lib/types';
+
+import { ApiError } from '@/lib/api';
+import type { ChatPrompt, ChatPromptCategory } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 import { Textarea } from '@/ui/textarea';
+import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { useAnnouncer } from '@/soc/components/announcer';
-import { addSavedPrompt, deleteSavedPrompt, getSavedPrompts, SAVED_PROMPT_LIMITS } from '../chat-api';
+import {
+  SAVED_PROMPTS_UNSUPPORTED,
+  SAVED_PROMPT_LIMITS,
+  getSavedPrompts,
+  normaliseSavedPrompts,
+  putSavedPrompts,
+} from '../chat-api';
 import { displayText } from '../stream-events';
+import {
+  PROMPTBOOK_SEPARATOR,
+  PROMPT_CATEGORIES,
+  isPromptCategory,
+  isPromptbook,
+  newPromptId,
+  paramLabel,
+  promptParams,
+  promptbookProblem,
+  promptbookSteps,
+} from './prompt-library';
 
 export type SavedPromptsState = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface SavedPromptInput {
+  title: string;
+  text: string;
+  category?: ChatPromptCategory | null;
+  favorite?: boolean;
+  /** Save as a promptbook (steps separated by `---` lines). */
+  book?: boolean;
+}
+
+export type SavedPromptPatch = Partial<Pick<ChatPrompt, 'title' | 'text' | 'category' | 'favorite'>>;
 
 export interface SavedPromptsController {
   prompts: ChatPrompt[];
@@ -29,13 +63,70 @@ export interface SavedPromptsController {
   /** Load once (later calls are no-ops unless the last load failed). */
   load: () => void;
   /** Save a new prompt; resolves false (and sets `error`) on failure. */
-  save: (input: { title: string; text: string }) => Promise<boolean>;
+  save: (input: SavedPromptInput) => Promise<boolean>;
+  /** Change one prompt (favorite, category, title or text). */
+  update: (id: string, patch: SavedPromptPatch) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
   saving: boolean;
 }
 
 const message = (error: unknown, fallback: string) =>
   error instanceof Error && error.message ? error.message : fallback;
+
+/** One prompt as the backend stores it, or null when its text is unusable. */
+function shaped(prompt: ChatPrompt): ChatPrompt | null {
+  return normaliseSavedPrompts([prompt])[0] ?? null;
+}
+
+/** The server kept what was written (an older server drops unknown fields silently). */
+function stored(list: readonly ChatPrompt[], wanted: ChatPrompt): boolean {
+  const got = list.find((p) => p.id === wanted.id);
+  if (!got) return false;
+  return (got.category ?? null) === (wanted.category ?? null) && Boolean(got.favorite) === Boolean(wanted.favorite);
+}
+
+/** Add one prompt (a promptbook gets its id prefix). Refuses a 51st. */
+export async function addLibraryPrompt(input: SavedPromptInput): Promise<{ prompt: ChatPrompt; prompts: ChatPrompt[] }> {
+  const prompt = shaped({
+    id: newPromptId(Boolean(input.book)),
+    title: input.title ?? '',
+    text: input.text,
+    ...(input.category ? { category: input.category } : {}),
+    ...(input.favorite ? { favorite: true } : {}),
+  });
+  if (!prompt) throw new ApiError(422, 'Write the prompt text first.', null);
+  const current = await getSavedPrompts();
+  if (current.length >= SAVED_PROMPT_LIMITS.prompts) {
+    throw new ApiError(409, `You have ${SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.`, null);
+  }
+  const list = await putSavedPrompts([...current, prompt]);
+  if (!stored(list, prompt)) throw new ApiError(501, SAVED_PROMPTS_UNSUPPORTED, null);
+  return { prompt, prompts: list };
+}
+
+/** Change one prompt in place (its position and id stay). */
+export async function updateLibraryPrompt(id: string, patch: SavedPromptPatch): Promise<ChatPrompt[]> {
+  const current = await getSavedPrompts();
+  const target = current.find((p) => p.id === id);
+  if (!target) throw new ApiError(404, 'That prompt no longer exists.', null);
+  const merged: ChatPrompt = { ...target, ...patch };
+  if (!merged.category) delete merged.category;
+  if (!merged.favorite) delete merged.favorite;
+  const next = shaped(merged);
+  if (!next) throw new ApiError(422, 'Write the prompt text first.', null);
+  const list = await putSavedPrompts(current.map((p) => (p.id === id ? next : p)));
+  if (!stored(list, next)) throw new ApiError(501, SAVED_PROMPTS_UNSUPPORTED, null);
+  return list;
+}
+
+/** Delete one prompt by id. */
+export async function removeLibraryPrompt(id: string): Promise<ChatPrompt[]> {
+  const current = await getSavedPrompts();
+  if (!current.some((p) => p.id === id)) return current;
+  const list = await putSavedPrompts(current.filter((p) => p.id !== id));
+  if (list.some((p) => p.id === id)) throw new ApiError(501, SAVED_PROMPTS_UNSUPPORTED, null);
+  return list;
+}
 
 export function useSavedPrompts(): SavedPromptsController {
   const [prompts, setPrompts] = React.useState<ChatPrompt[]>([]);
@@ -71,48 +162,57 @@ export function useSavedPrompts(): SavedPromptsController {
       });
   }, []);
 
-  const save = React.useCallback(async (input: { title: string; text: string }) => {
+  /** Run one write; the server's list replaces ours on success. */
+  const write = React.useCallback(async (run: () => Promise<ChatPrompt[]>, fallback: string) => {
     setSaving(true);
     try {
-      const result = await addSavedPrompt(input);
+      const list = await run();
       if (alive.current) {
-        setPrompts(result.prompts);
+        setPrompts(list);
         setState('ready');
         setError(null);
       }
       return true;
     } catch (err) {
-      if (alive.current) setError(message(err, 'The prompt could not be saved.'));
+      if (alive.current) setError(message(err, fallback));
       return false;
     } finally {
       if (alive.current) setSaving(false);
     }
   }, []);
 
-  const remove = React.useCallback(async (id: string) => {
-    setSaving(true);
-    try {
-      const next = await deleteSavedPrompt(id);
-      if (alive.current) {
-        setPrompts(next);
-        setError(null);
-      }
-      return true;
-    } catch (err) {
-      if (alive.current) setError(message(err, 'The prompt could not be deleted.'));
-      return false;
-    } finally {
-      if (alive.current) setSaving(false);
-    }
-  }, []);
+  const save = React.useCallback(
+    (input: SavedPromptInput) => write(async () => (await addLibraryPrompt(input)).prompts, 'The prompt could not be saved.'),
+    [write],
+  );
+  const update = React.useCallback(
+    (id: string, patch: SavedPromptPatch) => write(() => updateLibraryPrompt(id, patch), 'The prompt could not be changed.'),
+    [write],
+  );
+  const remove = React.useCallback(
+    (id: string) => write(() => removeLibraryPrompt(id), 'The prompt could not be deleted.'),
+    [write],
+  );
 
-  return { prompts, state, error, load, save, remove, saving };
+  return { prompts, state, error, load, save, update, remove, saving };
 }
 
 /** First line of a prompt, bounded to the title limit. */
 export function defaultPromptTitle(text: string): string {
-  const firstLine = text.split('\n').find((line) => line.trim()) ?? '';
+  const firstLine = text.split('\n').find((line) => line.trim() && !/^\s*-{3,}\s*$/.test(line)) ?? '';
   return displayText(firstLine, SAVED_PROMPT_LIMITS.title_chars);
+}
+
+const NO_CATEGORY = '__none__';
+
+/** What the Save dialog starts from: a draft to save, a copy of a starter, or a prompt to edit. */
+export interface PromptDraft {
+  title?: string;
+  text: string;
+  category?: ChatPromptCategory | null;
+  book?: boolean;
+  /** Edit this saved prompt instead of adding a new one. */
+  editId?: string | null;
 }
 
 export interface SavePromptDialogProps {
@@ -120,127 +220,54 @@ export interface SavePromptDialogProps {
   onOpenChange: (open: boolean) => void;
   /** The text to save (the current draft or a past user turn). */
   initialText: string;
+  /** Round 12: a fuller starting point (title, category, kind, or a prompt to edit). */
+  initial?: PromptDraft | null;
   controller: SavedPromptsController;
   /** Where focus returns when the dialog closes (the composer). */
   onCloseFocus?: () => void;
 }
 
-export function SavePromptDialog({ open, onOpenChange, initialText, controller, onCloseFocus }: SavePromptDialogProps) {
+export function SavePromptDialog({ open, onOpenChange, initialText, initial = null, controller, onCloseFocus }: SavePromptDialogProps) {
   const announce = useAnnouncer();
   const [title, setTitle] = React.useState('');
   const [text, setText] = React.useState('');
+  const [category, setCategory] = React.useState<ChatPromptCategory | null>(null);
+  const [book, setBook] = React.useState(false);
   const titleId = React.useId();
   const textId = React.useId();
+  const categoryId = React.useId();
+  const textHelpId = React.useId();
   const { load } = controller;
+  const editing = Boolean(initial?.editId);
 
   React.useEffect(() => {
     if (!open) return;
-    setTitle(defaultPromptTitle(initialText));
-    setText(initialText.slice(0, SAVED_PROMPT_LIMITS.text_chars));
+    const startText = initial?.text ?? initialText;
+    setTitle(initial?.title ? displayText(initial.title, SAVED_PROMPT_LIMITS.title_chars) : defaultPromptTitle(startText));
+    setText(startText.slice(0, SAVED_PROMPT_LIMITS.text_chars));
+    setCategory(isPromptCategory(initial?.category) ? initial.category : null);
+    setBook(Boolean(initial?.book));
     load();
-  }, [open, initialText, load]);
+  }, [open, initialText, initial, load]);
 
-  const full = controller.state === 'ready' && controller.prompts.length >= SAVED_PROMPT_LIMITS.prompts;
-  const canSave = !controller.saving && !full && text.trim().length > 0;
+  const full = !editing && controller.state === 'ready' && controller.prompts.length >= SAVED_PROMPT_LIMITS.prompts;
+  const bookProblem = book && text.trim() ? promptbookProblem(text) : null;
+  const params = React.useMemo(() => (book ? promptParams(...promptbookSteps(text)) : promptParams(text)), [book, text]);
+  const canSave = !controller.saving && !full && text.trim().length > 0 && !bookProblem;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canSave) return;
-    const ok = await controller.save({ title: title.trim(), text });
+    const ok = initial?.editId
+      ? await controller.update(initial.editId, { title: title.trim() || defaultPromptTitle(text), text, category })
+      : await controller.save({ title: title.trim(), text, category, book });
     if (ok) {
-      announce('Prompt saved');
+      announce(editing ? 'Prompt updated' : book ? 'Promptbook saved' : 'Prompt saved');
       onOpenChange(false);
     }
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="max-w-md"
-        onCloseAutoFocus={(event) => {
-          if (onCloseFocus) {
-            event.preventDefault();
-            onCloseFocus();
-          }
-        }}
-      >
-        <form onSubmit={submit} className="grid gap-4">
-          <DialogHeader>
-            <DialogTitle>Save prompt</DialogTitle>
-            <DialogDescription>
-              Saved prompts appear in Options and when you type / in the composer.
-              {controller.state === 'ready'
-                ? ` ${controller.prompts.length} of ${SAVED_PROMPT_LIMITS.prompts} used.`
-                : ''}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-1.5">
-            <Label htmlFor={titleId}>Title</Label>
-            <Input
-              id={titleId}
-              value={title}
-              maxLength={SAVED_PROMPT_LIMITS.title_chars}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Taken from the first line when empty"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={textId}>Prompt</Label>
-            <Textarea
-              id={textId}
-              value={text}
-              maxLength={SAVED_PROMPT_LIMITS.text_chars}
-              onChange={(event) => setText(event.target.value)}
-              className="min-h-28"
-            />
-            <p className="text-right text-2xs text-muted-foreground tabular-nums">
-              {Array.from(text).length} / {SAVED_PROMPT_LIMITS.text_chars}
-            </p>
-          </div>
-          {full ? (
-            <p className="text-xs text-warning-text">
-              You have {SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.
-            </p>
-          ) : null}
-          {controller.error ? <p className="text-xs text-critical-text">{controller.error}</p> : null}
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!canSave} aria-busy={controller.saving || undefined}>
-              Save prompt
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-export interface ManagePromptsDialogProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  controller: SavedPromptsController;
-  /** Put a prompt's text into the composer. */
-  onUse: (prompt: ChatPrompt) => void;
-  onCloseFocus?: () => void;
-}
-
-export function ManagePromptsDialog({ open, onOpenChange, controller, onUse, onCloseFocus }: ManagePromptsDialogProps) {
-  const announce = useAnnouncer();
-  const [confirming, setConfirming] = React.useState<string | null>(null);
-  const { load } = controller;
-
-  React.useEffect(() => {
-    if (open) load();
-    else setConfirming(null);
-  }, [open, load]);
-
-  const remove = async (prompt: ChatPrompt) => {
-    const ok = await controller.remove(prompt.id);
-    setConfirming(null);
-    if (ok) announce(`Deleted ${prompt.title}`);
-  };
+  const heading = editing ? (book ? 'Edit promptbook' : 'Edit prompt') : 'Save prompt';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -253,75 +280,111 @@ export function ManagePromptsDialog({ open, onOpenChange, controller, onUse, onC
           }
         }}
       >
-        <DialogHeader>
-          <DialogTitle>Saved prompts</DialogTitle>
-          <DialogDescription>
-            {controller.state === 'ready'
-              ? `${controller.prompts.length} of ${SAVED_PROMPT_LIMITS.prompts} saved. Use one to put it in the composer.`
-              : 'Your personal prompts, kept with your preferences.'}
-          </DialogDescription>
-        </DialogHeader>
-        {controller.state === 'loading' ? <p className="text-sm text-muted-foreground">Loading saved prompts…</p> : null}
-        {controller.state === 'ready' && controller.prompts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No saved prompts yet. Use Options → Saved prompts → Save current prompt.
-          </p>
-        ) : null}
-        {controller.prompts.length ? (
-          <ul className="max-h-[50dvh] divide-y divide-border overflow-y-auto rounded-md border border-border">
-            {controller.prompts.map((prompt) => (
-              <li key={prompt.id} className="flex items-start gap-3 px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-foreground">{prompt.title}</p>
-                  <p className="line-clamp-2 whitespace-pre-line text-xs text-muted-foreground">{prompt.text}</p>
-                </div>
-                {confirming === prompt.id ? (
-                  <div className="flex shrink-0 items-center gap-1">
-                    {/* Names carry the prompt: a list of identical "Delete"/"Keep"/"Use"
-                        buttons is unusable by name in a screen reader's control list. */}
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      disabled={controller.saving}
-                      aria-label={`Delete ${prompt.title}`}
-                      onClick={() => void remove(prompt)}
-                    >
-                      Delete
-                    </Button>
-                    <Button size="sm" variant="ghost" aria-label={`Keep ${prompt.title}`} onClick={() => setConfirming(null)}>
-                      Keep
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      aria-label={`Use ${prompt.title}`}
-                      onClick={() => {
-                        onUse(prompt);
-                        onOpenChange(false);
-                      }}
-                    >
-                      Use
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="w-8 px-0"
-                      aria-label={`Delete ${prompt.title}…`}
-                      onClick={() => setConfirming(prompt.id)}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </Button>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {controller.error ? <p className="text-xs text-critical-text">{controller.error}</p> : null}
+        <form onSubmit={submit} className="grid gap-4">
+          <DialogHeader>
+            <DialogTitle>{heading}</DialogTitle>
+            <DialogDescription>
+              Your prompts appear in the prompt library and when you type / in the composer.
+              {controller.state === 'ready' && !editing
+                ? ` ${controller.prompts.length} of ${SAVED_PROMPT_LIMITS.prompts} used.`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          {editing ? null : (
+            <div className="grid gap-1.5">
+              <p className="text-sm font-medium leading-none text-foreground">Kind</p>
+              <SegmentedControl
+                aria-label="Kind"
+                size="sm"
+                options={[
+                  { value: 'prompt', label: 'Prompt' },
+                  { value: 'book', label: 'Promptbook' },
+                ]}
+                value={book ? 'book' : 'prompt'}
+                onValueChange={(value) => setBook(value === 'book')}
+              />
+            </div>
+          )}
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
+            <div className="grid gap-1.5">
+              <Label htmlFor={titleId}>Title</Label>
+              <Input
+                id={titleId}
+                value={title}
+                maxLength={SAVED_PROMPT_LIMITS.title_chars}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Taken from the first line when empty"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor={categoryId}>Category</Label>
+              <Select value={category ?? NO_CATEGORY} onValueChange={(value) => setCategory(isPromptCategory(value) ? value : null)}>
+                <SelectTrigger id={categoryId}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_CATEGORY}>No category</SelectItem>
+                  {PROMPT_CATEGORIES.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor={textId}>{book ? 'Steps' : 'Prompt'}</Label>
+            <Textarea
+              id={textId}
+              value={text}
+              maxLength={SAVED_PROMPT_LIMITS.text_chars}
+              onChange={(event) => setText(event.target.value)}
+              aria-describedby={textHelpId}
+              aria-invalid={bookProblem ? true : undefined}
+              className="min-h-28"
+            />
+            <div className="flex items-start justify-between gap-3 text-2xs text-muted-foreground">
+              <p id={textHelpId} className="min-w-0">
+                {book
+                  ? `One step per block, with ${PROMPTBOOK_SEPARATOR} on its own line between steps. Each step is sent after the previous answer finishes. `
+                  : ''}
+                Write {'{name}'} for a value you fill in each time, for example {'{indicator}'}.
+              </p>
+              <span className="shrink-0 tabular-nums">
+                {Array.from(text).length} / {SAVED_PROMPT_LIMITS.text_chars}
+              </span>
+            </div>
+            {params.length ? (
+              <p className="text-xs text-muted-foreground" data-testid="save-prompt-params">
+                Asks for: {params.map(paramLabel).join(', ')}
+              </p>
+            ) : null}
+            {bookProblem ? <p className="text-xs text-critical-text">{bookProblem}</p> : null}
+          </div>
+          {full ? (
+            <p className="text-xs text-warning-text">
+              You have {SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.
+            </p>
+          ) : null}
+          {controller.error ? <p className="text-xs text-critical-text">{controller.error}</p> : null}
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!canSave} aria-busy={controller.saving || undefined}>
+              {editing ? 'Save changes' : book ? 'Save promptbook' : 'Save prompt'}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );
+}
+
+/** "Promptbook · 3 steps" / null for an ordinary prompt. */
+export function promptKindLabel(prompt: Pick<ChatPrompt, 'id' | 'text'>): string | null {
+  if (!isPromptbook(prompt)) return null;
+  const n = promptbookSteps(prompt.text).length;
+  return `Promptbook · ${n} ${n === 1 ? 'step' : 'steps'}`;
 }

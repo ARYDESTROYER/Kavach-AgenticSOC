@@ -6,6 +6,8 @@
  *
  * - Ctrl/Cmd+Shift+O — new chat
  * - Ctrl/Cmd+Shift+S — show or hide the history rail
+ * - Ctrl/Cmd+Shift+C — copy the last answer (Round 12; the host passes the handler,
+ *                      and without one the key is left to the browser)
  * - Shift+Esc        — focus the composer
  * - Ctrl/Cmd+/       — the shortcut sheet
  *
@@ -26,6 +28,11 @@ export interface ChatShortcutHandlers {
   focusComposer: () => void;
   /** Ctrl/Cmd+/ */
   openShortcuts: () => void;
+  /**
+   * Ctrl/Cmd+Shift+C (Round 12): copy the last answer. Optional: a host without it
+   * leaves the key to the browser (nothing is prevented).
+   */
+  copyLastAnswer?: () => void;
 }
 
 /** `aria-keyshortcuts` values for the controls that own these actions. */
@@ -34,6 +41,7 @@ export const CHAT_KEYSHORTCUTS = {
   toggleHistory: 'Control+Shift+S Meta+Shift+S',
   focusComposer: 'Shift+Escape',
   openShortcuts: 'Control+/ Meta+/',
+  copyLastAnswer: 'Control+Shift+C Meta+Shift+C',
 } as const;
 
 export type ChatShortcutAction = keyof ChatShortcutHandlers;
@@ -97,6 +105,7 @@ export function matchChatShortcut(event: Pick<
   if (mod && (code === 'KeyK' || code === 'KeyB')) return null;
   if (mod && event.shiftKey && (key === 'o' || code === 'KeyO')) return 'newChat';
   if (mod && event.shiftKey && (key === 's' || code === 'KeyS')) return 'toggleHistory';
+  if (mod && event.shiftKey && (key === 'c' || code === 'KeyC')) return 'copyLastAnswer';
   if (mod && (key === '/' || code === 'Slash')) return 'openShortcuts';
   if (!mod && event.shiftKey && key === 'escape') return 'focusComposer';
   return null;
@@ -110,8 +119,11 @@ export function useChatShortcuts(handlers: ChatShortcutHandlers, enabled = true)
     const onKey = (event: KeyboardEvent) => {
       const action = matchChatShortcut(event);
       if (!action || modalLayerOpen()) return;
+      const handler = ref.current[action];
+      // An optional shortcut the host did not wire stays the browser's.
+      if (!handler) return;
       event.preventDefault();
-      ref.current[action]();
+      handler();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

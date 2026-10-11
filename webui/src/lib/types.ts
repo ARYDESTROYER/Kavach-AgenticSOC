@@ -3522,7 +3522,25 @@ export interface ChatAgentConfig {
   allow_email_lookup: boolean;
   /** Round 12 (SPEC D13): the turning ring around the console logo while chat works (default on). */
   animated_brand?: boolean;
+  /**
+   * Round 12 (SPEC D1): `unlimited` (default) — the per-question knobs above
+   * (`max_model_calls`, `max_tool_calls`, `turn_token_ceiling`, `final_reserve_tokens`,
+   * `turn_timeout_s`, `final_max_tokens`, `observation_chars`) do not apply and a
+   * question runs until it answers or the analyst presses Stop (the engine's loop
+   * guards still apply); `bounded` keeps those knobs as caps.
+   */
+  limits_mode?: ChatLimitsMode;
+  /**
+   * Round 12 (SPEC D5): optional daily chat spending limit in US dollars; `null` / absent
+   * = off (the default). The daily AI budget never pauses chat.
+   */
+  chat_daily_cap_usd?: number | null;
+  /** Round 12: internal marker of the chat limits migration the block adopted (pass through). */
+  chat_limits_version?: number;
 }
+
+/** `ChatAgentConfig.limits_mode` (Round 12 SPEC D1). */
+export type ChatLimitsMode = 'unlimited' | 'bounded';
 
 /** Declaration-merges the chat agent bounds onto `Preferences`. */
 export interface Preferences {

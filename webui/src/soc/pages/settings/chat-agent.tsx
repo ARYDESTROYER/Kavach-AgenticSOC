@@ -2,13 +2,18 @@
  * Chat assistant settings section (chat revamp SPEC §4.2): the curated editor for
  * `Preferences.chat_agent`.
  *
- * Three compact groups on the shared single-card surface: how answers arrive (the
- * org's default live mode and whether "Type out answers" is allowed at all), how much
- * one question may use (model calls, lookups, tokens, time; the rarely-touched knobs sit
- * behind "More limits"), and which indicators chat may send to enrichment providers.
- * The section is the ONE editor for this block: `advanced-schema.tsx` lists
+ * Compact groups on the shared single-card surface, the limits mode first (Round 12
+ * SPEC D1): Question limits (Unlimited — the default: a question runs until it answers
+ * or the analyst presses Stop, guarded only by the engine's loop guards — or Bounded,
+ * which shows the per-question knobs, the rarely-touched ones behind "More limits"),
+ * Spending (the optional chat daily limit, SPEC D5), Answers (the org's default live
+ * mode, whether "Type out answers" is allowed, the animated logo), Timeouts and capacity
+ * (the knobs that apply in both modes) and which indicators chat may send to enrichment
+ * providers. The section is the ONE editor for this block: `advanced-schema.tsx` lists
  * `chat_agent` in `CURATED_SECTIONS`, so every knob of the block must be reachable here
- * (that is why "More limits" exists rather than leaving the long tail to All settings).
+ * (that is why the disclosures exist rather than leaving the long tail to All settings).
+ * The bounded-only knobs are reachable by switching to Bounded; their stored values are
+ * kept either way, so switching back and forth is lossless.
  *
  * Validation mirrors the backend instead of inventing rules: the numeric ranges are
  * `ChatAgentConfig`'s `ge`/`le` (pinned by a test that reads `config.py`), the domain
@@ -19,12 +24,13 @@
  * server would silently change.
  *
  * None of these knobs can widen what chat may DO: the assistant is read-only by
- * construction, and these only bound spend, time and third-party egress.
+ * construction, and these only bound spend, time and third-party egress. Every chat
+ * model call is metered in the cost ledger whatever the mode (#6).
  */
 import * as React from 'react';
 import { ChevronDown } from 'lucide-react';
 
-import type { ChatAgentConfig, ChatStreamMode } from '@/lib/types';
+import type { ChatAgentConfig, ChatLimitsMode, ChatStreamMode } from '@/lib/types';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
@@ -58,7 +64,44 @@ export const CHAT_AGENT_DEFAULTS: Readonly<ChatAgentConfig> = Object.freeze({
   internal_domains: [],
   allow_email_lookup: false,
   animated_brand: true,
+  limits_mode: 'unlimited',
+  chat_daily_cap_usd: null,
 });
+
+/**
+ * The knobs that are caps only in `bounded` mode (backend `ChatAgentConfig` docstring,
+ * SPEC D1). The rest — lookups at once, the lookup and model-call timeouts, how many
+ * questions run at once, indicator lookups — apply in both modes.
+ */
+export const BOUNDED_ONLY_KNOBS: readonly ChatAgentNumericKey[] = [
+  'max_model_calls',
+  'max_tool_calls',
+  'turn_token_ceiling',
+  'final_reserve_tokens',
+  'turn_timeout_s',
+  'final_max_tokens',
+  'observation_chars',
+];
+
+/** The editor's first value for the chat daily limit when it is switched on. */
+export const CHAT_CAP_STARTING_USD = 5;
+/** The smallest limit the editor offers (the backend keeps any positive amount). */
+export const CHAT_CAP_MIN_USD = 0.01;
+
+/**
+ * `config._repair_chat_cap`: a positive finite number, else `null` (off). The editor
+ * shows what the server will store.
+ */
+export function repairChatCap(raw: unknown): number | null {
+  if (raw === null || raw === undefined || typeof raw === 'boolean') return null;
+  const value = typeof raw === 'string' ? Number(raw.trim()) : typeof raw === 'number' ? raw : NaN;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** `limits_mode` as the backend reads it: anything but `bounded` is unlimited. */
+export function limitsMode(cfg: Pick<ChatAgentConfig, 'limits_mode'> | null | undefined): ChatLimitsMode {
+  return cfg?.limits_mode === 'bounded' ? 'bounded' : 'unlimited';
+}
 
 /** The numeric knobs of the block. */
 export type ChatAgentNumericKey = {
@@ -119,6 +162,8 @@ export function coherentChatAgent(stored: Partial<ChatAgentConfig> | null | unde
     cfg.final_reserve_tokens = Math.max(1_000, Math.floor(cfg.turn_token_ceiling / 5));
   }
   if (cfg.max_parallel > cfg.max_tool_calls) cfg.max_parallel = cfg.max_tool_calls;
+  cfg.limits_mode = limitsMode(cfg);
+  cfg.chat_daily_cap_usd = repairChatCap(cfg.chat_daily_cap_usd);
   return cfg;
 }
 
@@ -129,6 +174,28 @@ const MODE_OPTIONS: { value: ChatStreamMode; label: string }[] = [
   { value: 'text', label: 'Type out answers' },
 ];
 
+const LIMITS_OPTIONS: { value: ChatLimitsMode; label: string }[] = [
+  { value: 'unlimited', label: 'Unlimited' },
+  { value: 'bounded', label: 'Bounded' },
+];
+
+/** What each limits mode means, shown under the switch (SPEC D1, D2). */
+export const LIMITS_MODE_HELP: Readonly<Record<ChatLimitsMode, string>> = {
+  unlimited:
+    'Chat keeps working until it has answered or someone presses Stop, and answers are never cut short. ' +
+    'Loop guards still apply: the same lookup never runs twice, a question that stops making progress is ' +
+    'asked to answer, a model call that goes silent is retried once, and a very long investigation wraps ' +
+    'up with what it found.',
+  bounded:
+    'Each question stops looking things up at the limits below, answers from what it found and says so.',
+};
+
+/** The spending limit's help (SPEC D5). */
+export const CHAT_CAP_HELP =
+  'Off by default: the daily AI budget covers automatic investigations and never pauses chat. With a ' +
+  'limit, chat stops starting model calls once its spending since 00:00 UTC reaches the amount, and the ' +
+  'answer says so. Every chat call is still recorded in the cost ledger.';
+
 interface LimitSpec {
   key: ChatAgentNumericKey;
   label: string;
@@ -137,11 +204,10 @@ interface LimitSpec {
   step?: number;
 }
 
-/** The limits operators actually tune. */
+/** The bounded-mode limits operators actually tune. */
 const MAIN_LIMITS: readonly LimitSpec[] = [
   { key: 'max_model_calls', label: 'Model calls', description: 'Including the final answer.' },
   { key: 'max_tool_calls', label: 'Lookups', description: 'Log searches, case counts, metrics and other reads.' },
-  { key: 'max_parallel', label: 'Lookups at once', description: 'Run side by side in one step.' },
   {
     key: 'turn_token_ceiling',
     label: 'Token ceiling',
@@ -157,10 +223,8 @@ const MAIN_LIMITS: readonly LimitSpec[] = [
   },
 ];
 
-/** The long tail, behind "More limits". */
+/** The bounded-mode long tail, behind "More limits". */
 const MORE_LIMITS: readonly LimitSpec[] = [
-  { key: 'tool_timeout_s', label: 'Lookup timeout', description: 'Per lookup.', unit: 's' },
-  { key: 'model_step_timeout_s', label: 'Model call timeout', description: 'Per model call.', unit: 's' },
   {
     key: 'final_reserve_tokens',
     label: 'Answer reserve',
@@ -176,6 +240,18 @@ const MORE_LIMITS: readonly LimitSpec[] = [
     unit: 'chars',
     step: 500,
   },
+];
+
+/** Knobs that apply in both modes, behind "Timeouts and capacity". */
+const CAPACITY_LIMITS: readonly LimitSpec[] = [
+  { key: 'max_parallel', label: 'Lookups at once', description: 'Run side by side in one step.' },
+  { key: 'tool_timeout_s', label: 'Lookup timeout', description: 'Per lookup.', unit: 's' },
+  {
+    key: 'model_step_timeout_s',
+    label: 'Model call timeout',
+    description: 'How long one model call may go silent before it is retried once.',
+    unit: 's',
+  },
   { key: 'max_concurrent_turns_per_user', label: 'Questions at once per user', description: 'Workspace and case chat together.' },
   { key: 'max_concurrent_turns_global', label: 'Questions at once in total', description: 'For this backend process.' },
 ];
@@ -185,9 +261,29 @@ const LOOKUP_LIMITS: readonly LimitSpec[] = [
   { key: 'max_indicator_lookups_per_conversation', label: 'Per conversation', description: 'Counts every lookup sent.' },
 ];
 
+function Disclosure({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" className="-ml-2 gap-1.5 text-muted-foreground">
+          <ChevronDown
+            className={cn('h-4 w-4 transition-transform motion-reduce:transition-none', open && 'rotate-180')}
+            aria-hidden
+          />
+          {label}
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>{children}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function ChatAgentSection({ prefs, update }: SecProps) {
   const cfg = React.useMemo(() => coherentChatAgent(prefs.chat_agent), [prefs.chat_agent]);
-  const [moreOpen, setMoreOpen] = React.useState(false);
+  const mode = limitsMode(cfg);
+  const bounded = mode === 'bounded';
+  const capOn = cfg.chat_daily_cap_usd !== null && cfg.chat_daily_cap_usd !== undefined;
 
   const set = (patch: Partial<ChatAgentConfig>) => update({ chat_agent: coherentChatAgent({ ...cfg, ...patch }) });
 
@@ -219,14 +315,63 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
     <div className="space-y-6">
       <SectionTitle
         title="Chat assistant"
-        sub="How the read-only assistant answers in Workspace and Case Manager chat: the live mode, how much one question may use, and which indicators it may send to enrichment providers."
+        sub="How the read-only assistant answers in Workspace and Case Manager chat: whether a question has limits, what chat may spend, the live mode, and which indicators it may send to enrichment providers."
       />
 
       <section className="space-y-4">
-        <SubHeader title="Answers" />
+        <SubHeader title="Question limits" />
         <div className="space-y-1.5">
           {/* SegmentedControl names itself with aria-label only, so the visible label is
               plain text beside it (a <label> would point at no control). */}
+          <p className="text-sm font-medium leading-none text-foreground">Limits per question</p>
+          <SegmentedControl
+            aria-label="Limits per question"
+            size="sm"
+            options={LIMITS_OPTIONS}
+            value={mode}
+            onValueChange={(value) => set({ limits_mode: value })}
+          />
+          <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground" data-testid="chat-limits-help">
+            {LIMITS_MODE_HELP[mode]}
+          </p>
+        </div>
+        {bounded ? (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="chat-bounded-limits">
+              {MAIN_LIMITS.map(numberField)}
+            </div>
+            <Disclosure label="More limits">
+              <div className="grid gap-4 pt-3 sm:grid-cols-2 xl:grid-cols-3">{MORE_LIMITS.map(numberField)}</div>
+            </Disclosure>
+          </>
+        ) : null}
+      </section>
+
+      <section className="space-y-4 border-t border-border/70 pt-4">
+        <SubHeader title="Spending" />
+        <SwitchPref
+          label="Daily chat spending limit"
+          help={CHAT_CAP_HELP}
+          checked={capOn}
+          onChange={(on) => set({ chat_daily_cap_usd: on ? (cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD) : null })}
+        />
+        {capOn ? (
+          <NumberField
+            label="Limit per day"
+            description="US dollars of chat spending per day (UTC)."
+            value={cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD}
+            min={CHAT_CAP_MIN_USD}
+            step={0.01}
+            unit="USD"
+            onChange={(value) => set({ chat_daily_cap_usd: value })}
+            className="max-w-xs"
+          />
+        ) : null}
+      </section>
+
+      <section className="space-y-4 border-t border-border/70 pt-4">
+        <SubHeader title="Answers" />
+        <div className="space-y-1.5">
           <p className="text-sm font-medium leading-none text-foreground">Default live mode</p>
           <SegmentedControl
             aria-label="Default live mode"
@@ -255,26 +400,15 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
         />
       </section>
 
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Per-question limits" />
+      <section className="space-y-3 border-t border-border/70 pt-4">
+        <SubHeader title="Timeouts and capacity" />
         <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-          A question that reaches a limit stops looking things up, answers from what it found and says so.
+          These apply in both modes: how many lookups run side by side, how long a lookup or a silent model call
+          may take, and how many questions can run at the same time.
         </p>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{MAIN_LIMITS.map(numberField)}</div>
-        <Collapsible open={moreOpen} onOpenChange={setMoreOpen}>
-          <CollapsibleTrigger asChild>
-            <Button type="button" variant="ghost" size="sm" className="-ml-2 gap-1.5 text-muted-foreground">
-              <ChevronDown
-                className={cn('h-4 w-4 transition-transform motion-reduce:transition-none', moreOpen && 'rotate-180')}
-                aria-hidden
-              />
-              More limits
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="grid gap-4 pt-3 sm:grid-cols-2 xl:grid-cols-3">{MORE_LIMITS.map(numberField)}</div>
-          </CollapsibleContent>
-        </Collapsible>
+        <Disclosure label="Show timeouts and capacity">
+          <div className="grid gap-4 pt-3 sm:grid-cols-2 xl:grid-cols-3">{CAPACITY_LIMITS.map(numberField)}</div>
+        </Disclosure>
       </section>
 
       <section className="space-y-4 border-t border-border/70 pt-4">

@@ -5,8 +5,16 @@
  * page's `<h2>` (inline rename, full text in a tooltip) · the conversation total
  * "12.4k tokens · $0.03" (only when the toolbar is ≥ 560 px; otherwise inside ⋯) ·
  * [Report n] (Workspace only) · [New chat] (only when the rail is a Sheet, so exactly
- * one New chat is ever visible) · ⋯ (Rename, Pin conversation, Export conversation ▸ —
- * once the thread is saved —, Width ▸, then Delete once saved).
+ * one New chat is ever visible) · ⋯ (Rename, Pin conversation, Export conversation ▸,
+ * Save conversation as report — once the thread is saved —, Width ▸, then Delete once
+ * saved).
+ *
+ * Save conversation as report (Round 12 SPEC D11, SYNTHESIS-chat P0-7): every answer of
+ * this saved Workspace thread becomes one section of a NEW report, resolved on the server
+ * from the persisted conversation (`POST /api/reports/from-conversation`; the client sends
+ * only the id). A toast links to the report; a failed save that may succeed again offers
+ * "Try again" with the same idempotency key, so a retry never makes a duplicate. Case
+ * chat has no thread actions, so a case conversation can never be saved this way.
  *
  * Report (Round 12, diagnosis/layout.md (f1)): the count of items the analyst ADDED from
  * this chat shows only when there are any, as a badge, never "Report · 0"; the tooltip
@@ -20,7 +28,8 @@
  * Escape); a blur commit leaves focus wherever the reader moved it.
  */
 import * as React from 'react';
-import { Download, FileText, History, MoreHorizontal, MoveHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
+import { Download, FilePlus2, FileText, History, MoreHorizontal, MoveHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { cn } from '@/lib/cn';
 import type { ChatConversationSummary } from '@/lib/types';
@@ -40,7 +49,16 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
+import { useNavigateOptional } from '@/soc/router';
 import { shortcutLabel } from '../shortcuts/shortcut-list';
+import {
+  conversationReportErrorMessage,
+  conversationReportRetryable,
+  conversationReportSummary,
+  newConversationReportKey,
+  saveConversationAsReport,
+} from '../report/from-conversation';
+import { emitReportChanged } from '../report/report-sync';
 import { compactTokens, formatCost } from '../message/format';
 import { LANE_WIDTHS, LANE_WIDTH_HINT, LANE_WIDTH_LABEL, isLaneWidth, type ChatLaneWidth } from '../message/lane';
 import { EXPORT_FORMATS, HintedIconButton, SHORTCUT_HINT_KEYS, type ConversationExportFormat } from './HistoryRail';
@@ -64,6 +82,64 @@ export function reportButtonHint(count: number): string {
   const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
   if (n === 0) return 'Collect answers and blocks from this chat into a report';
   return `${n} ${n === 1 ? 'item' : 'items'} you added from this chat`;
+}
+
+/** The note under the toast when an answer was still being written during the save. */
+export const SAVE_REPORT_RUNNING_NOTE = 'The answer still being written is not included.';
+
+/**
+ * Save one Workspace conversation as a new report, with a toast that opens it. One save
+ * runs at a time; a retryable failure offers "Try again" with the same key.
+ */
+export function useSaveConversationAsReport(conversationId: string | null) {
+  const navigate = useNavigateOptional();
+  const [saving, setSaving] = React.useState(false);
+  const inFlight = React.useRef(false);
+  const alive = React.useRef(true);
+  React.useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const run = React.useCallback(
+    async (id: string, key: string, running: boolean) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setSaving(true);
+      try {
+        const result = await saveConversationAsReport({ conversationId: id, idempotencyKey: key });
+        // A standalone report (no conversation draft): the Reports library refreshes, the
+        // conversation's own draft report is untouched.
+        emitReportChanged({ reportId: result.report.id, conversationId: null, report: result.report, origin: 'thread-menu' });
+        const summary = conversationReportSummary(result);
+        toast.success(result.created ? 'Saved to Reports' : 'Already saved to Reports', {
+          description: `${result.report.title} · ${summary}${running ? `. ${SAVE_REPORT_RUNNING_NOTE}` : ''}`,
+          action: { label: 'Open report', onClick: () => navigate('reports', { reportId: result.report.id }) },
+        });
+      } catch (error) {
+        const retry = conversationReportRetryable(error);
+        toast.error(conversationReportErrorMessage(error), {
+          action: retry ? { label: 'Try again', onClick: () => void run(id, key, running) } : undefined,
+        });
+      } finally {
+        inFlight.current = false;
+        if (alive.current) setSaving(false);
+      }
+    },
+    [navigate],
+  );
+
+  const save = React.useCallback(
+    (running = false) => {
+      if (!conversationId) return;
+      void run(conversationId, newConversationReportKey(), running);
+    },
+    [conversationId, run],
+  );
+
+  return { save, saving };
 }
 
 /** How an inline rename ended: from the keyboard (refocus the title) or by blur. */
@@ -172,6 +248,7 @@ export function ThreadToolbar({
   const hintId = `${React.useId().replace(/[^A-Za-z0-9_-]/g, '')}-rename-hint`;
   const total = conversationTotal(summary);
   const saved = !!summary;
+  const saveReport = useSaveConversationAsReport(caseScoped ? null : (summary?.id ?? null));
   const threadActions = !caseScoped && saved;
   const showMenu = threadActions || !!laneWidth;
 
@@ -355,6 +432,14 @@ export function ThreadToolbar({
                     ))}
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
+                <DropdownMenuItem
+                  disabled={saveReport.saving}
+                  onSelect={() => saveReport.save(busy)}
+                  data-testid="save-conversation-report"
+                >
+                  <FilePlus2 aria-hidden />
+                  {saveReport.saving ? 'Saving as report…' : 'Save conversation as report'}
+                </DropdownMenuItem>
               </>
             ) : null}
             {laneWidth ? (

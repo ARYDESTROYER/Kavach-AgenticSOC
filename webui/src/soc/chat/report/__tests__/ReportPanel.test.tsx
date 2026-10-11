@@ -82,6 +82,32 @@ describe('ReportPanel', () => {
     expect(within(items[0]).getByText('1. Who is failing logins against vpn-gw-2?')).toBeInTheDocument();
   });
 
+  it('says "Report" once: the eyebrow only sits above a report\'s own title (Round 12)', async () => {
+    const { unmount } = show({ reportId: null });
+    expect(screen.getByRole('heading', { level: 2, name: 'Report' })).toBeInTheDocument();
+    expect(screen.queryByTestId('report-panel-eyebrow')).toBeNull();
+    expect(screen.getAllByText(/^report$/i)).toHaveLength(1);
+    unmount();
+
+    api.getReport.mockResolvedValue(sampleReport({ title: 'Report' }));
+    const second = show();
+    expect(await second.findByRole('button', { name: /Report, rename report/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('report-panel-eyebrow')).toBeNull();
+    second.unmount();
+
+    api.getReport.mockResolvedValue(sampleReport());
+    show();
+    expect(await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ })).toBeInTheDocument();
+    expect(screen.getByTestId('report-panel-eyebrow')).toHaveTextContent('Report');
+  });
+
+  it('shows a Round 12 template in the template picker (never an empty value)', async () => {
+    api.getReport.mockResolvedValue(sampleReport({ template: 'monthly' }));
+    show();
+    const picker = await screen.findByRole('combobox', { name: 'Report template' });
+    expect(picker).toHaveTextContent('Monthly SOC report');
+  });
+
   it('shows the empty state before the first add and picks up the draft from the change event', async () => {
     const { onCountChange } = show({ reportId: null });
     expect(screen.getByTestId('report-empty')).toHaveTextContent('No report yet');

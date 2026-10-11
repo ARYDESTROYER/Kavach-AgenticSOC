@@ -108,6 +108,11 @@ const MENU_TRIGGER = cn(
 
 type NoteState = 'saving' | 'saved' | 'unsaved' | 'error';
 
+/** A title that is just the word "Report" (an untitled draft): no eyebrow above it. */
+export function isGenericReportTitle(title: string): boolean {
+  return title.trim().toLowerCase() === 'report';
+}
+
 function newKey(): string {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -613,7 +618,13 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
   const header = (
     <div className="flex items-start gap-1 border-b border-border px-3 pb-2 pt-3">
       <div className="min-w-0 flex-1">
-        <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">Report</p>
+        {/* The eyebrow names the panel only above a report's own title: over the bare
+            heading "Report" it would say the same word twice (Round 12 follow-up). */}
+        {report && !isGenericReportTitle(title) ? (
+          <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground" data-testid="report-panel-eyebrow">
+            Report
+          </p>
+        ) : null}
         <h2 ref={headingRef} id={ids.heading} tabIndex={-1} className="min-w-0 text-sm font-semibold text-foreground focus:outline-none">
           {editingTitle !== null ? (
             <Input

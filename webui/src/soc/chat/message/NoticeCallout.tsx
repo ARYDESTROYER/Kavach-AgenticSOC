@@ -1,11 +1,13 @@
 /**
  * NoticeCallout — the one callout at the top of an answer that explains why it is
- * partial, refused, stopped or failed (chat revamp SPEC §4.5, §10.3 notice placement).
+ * partial, refused, stopped or failed (chat revamp SPEC §4.5, §10.3 notice placement;
+ * Round 12 copy in `notice-copy.ts`).
  *
- * `cap` is not a callout: it becomes the "Continue where this stopped" chip under the
- * answer, and `not_saved` is the quiet "Not saved · Run again to save" line under the meta
- * row (see `MemoryLine`). The callout is `role="note"`, never a live region: the page
- * announces errors once through the shell announcer (SPEC §10.9).
+ * `not_saved` is the quiet "Not saved · Run again to save" line under the meta row (see
+ * `MemoryLine`) and `compacted` is a quiet run-log row, so neither is a callout. Chat
+ * has no Continue chip (Round 12 SPEC D2/D3): a capped answer in the operator's bounded
+ * mode says so here, without an action. The callout is `role="note"`, never a live
+ * region: the page announces errors once through the shell announcer (SPEC §10.9).
  */
 import * as React from 'react';
 import { CircleAlert, CircleStop, Info, RotateCcw, TriangleAlert } from 'lucide-react';
@@ -13,54 +15,11 @@ import { CircleAlert, CircleStop, Info, RotateCcw, TriangleAlert } from 'lucide-
 import { cn } from '@/lib/cn';
 import type { TurnNoticeKind } from '@/lib/types';
 import { Button } from '@/ui/button';
+import { CALLOUT_NOTICE_KINDS, NOTICE_TITLE, NOTICE_TONE, noticeBody, type NoticeTone } from './notice-copy';
 
-/** Notice kinds that render as the top-of-answer callout. */
-export const CALLOUT_NOTICE_KINDS: ReadonlySet<TurnNoticeKind> = new Set([
-  'partial',
-  'denied',
-  'timeout',
-  'provider',
-  'breaker',
-  'cancelled',
-  'unsupported',
-  'budget',
-]);
+export { CALLOUT_NOTICE_KINDS };
 
-type Tone = 'warning' | 'critical' | 'info' | 'neutral';
-
-const NOTICE_TITLE: Record<TurnNoticeKind, string> = {
-  partial: 'Partial answer',
-  cap: 'Answer limit reached',
-  budget: 'AI budget reached',
-  provider: 'The model could not answer',
-  breaker: 'The model is paused after repeated failures',
-  denied: 'Some lookups were not allowed',
-  timeout: 'The answer ran out of time',
-  cancelled: 'Stopped',
-  unsupported: 'Not something this assistant can do',
-  not_saved: 'Not saved',
-  limited: 'Answered with what chat can read',
-  stopped_repeating: 'Stopped repeating the same lookup',
-  compacted: 'Earlier messages were summarised',
-};
-
-const NOTICE_TONE: Record<TurnNoticeKind, Tone> = {
-  partial: 'warning',
-  cap: 'warning',
-  budget: 'critical',
-  provider: 'critical',
-  breaker: 'critical',
-  denied: 'info',
-  timeout: 'warning',
-  cancelled: 'neutral',
-  unsupported: 'info',
-  not_saved: 'warning',
-  limited: 'info',
-  stopped_repeating: 'info',
-  compacted: 'neutral',
-};
-
-const TONE_CLASS: Record<Tone, { box: string; icon: string; Icon: React.ComponentType<{ className?: string }> }> = {
+const TONE_CLASS: Record<NoticeTone, { box: string; icon: string; Icon: React.ComponentType<{ className?: string }> }> = {
   warning: { box: 'border-l-warning', icon: 'text-warning-text', Icon: TriangleAlert },
   critical: { box: 'border-l-critical', icon: 'text-critical-text', Icon: CircleAlert },
   info: { box: 'border-l-info', icon: 'text-info-text', Icon: Info },
@@ -72,12 +31,19 @@ export interface NoticeCalloutProps {
   title?: string;
   /** The engine-template message (display text). */
   message: string;
+  /**
+   * The sentence under the title. Default: `message` without a repeat of the title
+   * (`noticeBody`); `null` shows the title alone.
+   */
+  body?: string | null;
   kind?: TurnNoticeKind;
   /** Force a tone (an error turn without a notice reads as critical). */
-  tone?: Tone;
+  tone?: NoticeTone;
   /** Shown only when the notice (or failure) is retryable. */
   actionLabel?: string;
   onAction?: () => void;
+  /** The action's icon (default: the retry arrow). */
+  actionIcon?: React.ReactNode;
   actionDisabled?: boolean;
   /** A second, quieter action (e.g. "Ask again" on a non-retryable failure). */
   secondaryLabel?: string;
@@ -88,10 +54,12 @@ export interface NoticeCalloutProps {
 export function NoticeCallout({
   title,
   message,
+  body,
   kind = 'partial',
   tone,
   actionLabel,
   onAction,
+  actionIcon,
   actionDisabled = false,
   secondaryLabel,
   onSecondary,
@@ -99,6 +67,7 @@ export function NoticeCallout({
 }: NoticeCalloutProps) {
   const style = TONE_CLASS[tone ?? NOTICE_TONE[kind]];
   const heading = title ?? NOTICE_TITLE[kind];
+  const text = body === undefined ? noticeBody(heading, message) : body;
   const Icon = style.Icon;
   return (
     <div
@@ -110,12 +79,12 @@ export function NoticeCallout({
       <Icon className={cn('mt-0.5 size-4 shrink-0', style.icon)} aria-hidden />
       <div className="min-w-0 flex-1 text-sm">
         <p className="font-medium text-foreground">{heading}</p>
-        {message && message !== heading ? <p className="mt-0.5 text-muted-foreground">{message}</p> : null}
+        {text ? <p className="mt-0.5 text-muted-foreground">{text}</p> : null}
         {(actionLabel && onAction) || (secondaryLabel && onSecondary) ? (
           <div className="mt-2 flex flex-wrap gap-2">
             {actionLabel && onAction ? (
               <Button type="button" size="sm" variant="outline" className="h-7" onClick={onAction} disabled={actionDisabled}>
-                <RotateCcw aria-hidden />
+                {actionIcon ?? <RotateCcw aria-hidden />}
                 {actionLabel}
               </Button>
             ) : null}

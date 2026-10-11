@@ -47,8 +47,23 @@ export const TEMPLATE_LABEL: Readonly<Record<ReportTemplateName, string>> = {
   investigation_brief: 'Investigation brief',
 };
 
-/** The order the template picker offers. */
-export const TEMPLATE_ORDER: readonly ReportTemplateName[] = ['investigation', 'hunt', 'ioc', 'shift', 'posture', 'custom'];
+/**
+ * The order the template picker offers: every template (Round 12 D11 added executive,
+ * monthly, infographic and investigation brief), so a report made from any of them
+ * shows its template in the picker instead of an empty value.
+ */
+export const TEMPLATE_ORDER: readonly ReportTemplateName[] = [
+  'investigation',
+  'investigation_brief',
+  'hunt',
+  'ioc',
+  'shift',
+  'posture',
+  'executive',
+  'monthly',
+  'infographic',
+  'custom',
+];
 
 /** A block type's human name when the block has no title of its own. */
 export const BLOCK_TYPE_LABEL: Readonly<Record<AnswerBlock['type'], string>> = {

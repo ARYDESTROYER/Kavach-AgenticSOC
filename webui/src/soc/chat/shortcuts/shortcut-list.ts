@@ -6,7 +6,7 @@
  */
 
 /** A key token: `Mod` is Ctrl on Windows/Linux and ⌘ on macOS. */
-export type ShortcutKey = 'Mod' | 'Shift' | 'Enter' | 'Esc' | '↑' | '/' | '@' | 'O' | 'S';
+export type ShortcutKey = 'Mod' | 'Shift' | 'Enter' | 'Esc' | '↑' | '/' | '@' | 'C' | 'O' | 'S';
 
 export interface ChatShortcut {
   id: string;
@@ -29,6 +29,7 @@ export const CHAT_SHORTCUTS: readonly ChatShortcut[] = [
   { id: 'focus', label: 'Focus the composer', keys: ['Shift', 'Esc'], where: 'chat' },
   { id: 'new-chat', label: 'New chat', keys: ['Mod', 'Shift', 'O'], where: 'chat' },
   { id: 'toggle-history', label: 'Show or hide history', keys: ['Mod', 'Shift', 'S'], where: 'chat' },
+  { id: 'copy-last', label: 'Copy the last answer', keys: ['Mod', 'Shift', 'C'], where: 'chat' },
   { id: 'shortcuts', label: 'Show keyboard shortcuts', keys: ['Mod', '/'], where: 'chat' },
 ];
 

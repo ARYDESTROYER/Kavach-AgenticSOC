@@ -718,7 +718,60 @@ export function normaliseChatResponse(raw: unknown): ChatResponse | null {
   out.case_saved = typeof raw.case_saved === 'boolean' ? raw.case_saved : null;
   out.case_save_notice = normaliseNotice(raw.case_save_notice);
   out.cost = out.usage ? out.usage.cost : amount(raw.cost, 0);
+  // Round 12 (SPEC §3.1, D3, D4, D10, D11).
+  out.clarify = normaliseClarify(raw.clarify);
+  out.saved_report = normaliseSavedReport(raw.saved_report);
+  out.saved_report_error = normaliseReportSaveError(raw.saved_report_error);
+  out.continued = count(raw.continued, 0);
+  out.compacted = raw.compacted === true;
   return out;
+}
+
+/** Bounds of a clarifying question (SPEC §3.1): ≤ 200 chars, ≤ 4 options of ≤ 80. */
+export const CLARIFY_LIMITS = { question_chars: 200, options: 4, option_chars: 80 } as const;
+
+/**
+ * A clarifying question (SPEC D10), or `null`. The question and the options are
+ * MODEL-authored and may echo log values (#9): display-sanitised here and rendered as
+ * text nodes; a pick is sent with `origin: "clarify"`. Options are deduplicated.
+ */
+export function normaliseClarify(raw: unknown): ChatResponse['clarify'] {
+  if (!isObj(raw)) return null;
+  const question = displayText(raw.question, CLARIFY_LIMITS.question_chars);
+  if (!question) return null;
+  const options: string[] = [];
+  if (Array.isArray(raw.options)) {
+    for (const option of raw.options) {
+      const text = displayText(option, CLARIFY_LIMITS.option_chars);
+      if (text && !options.includes(text)) options.push(text);
+      if (options.length >= CLARIFY_LIMITS.options) break;
+    }
+  }
+  return { question, options, allow_custom: raw.allow_custom !== false };
+}
+
+/**
+ * The report the server saved from this answer (SPEC D11), or `null` without a valid
+ * id. The title came from the model's header (#9: taint-ruled text, shown as text).
+ */
+export function normaliseSavedReport(raw: unknown): ChatResponse['saved_report'] {
+  if (!isObj(raw) || typeof raw.id !== 'string' || !SAFE_ID_RE.test(raw.id)) return null;
+  return {
+    id: raw.id,
+    title: displayText(raw.title, 200),
+    items: count(raw.items, 0),
+    skipped: count(raw.skipped, 0),
+  };
+}
+
+const REPORT_SAVE_ERROR_CODES = ['report_limit', 'report_unavailable', 'report_empty'] as const;
+
+/** Why the report an answer asked for was not saved (a server template), or `null`. */
+export function normaliseReportSaveError(raw: unknown): ChatResponse['saved_report_error'] {
+  if (!isObj(raw)) return null;
+  const code = enumOr(raw.code, REPORT_SAVE_ERROR_CODES, null);
+  if (code === null) return null;
+  return { code, message: displayText(raw.message, 300), retryable: raw.retryable === true };
 }
 
 function normaliseStepStart(raw: unknown): StepStartInfo | null {

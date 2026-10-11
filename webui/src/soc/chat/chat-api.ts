@@ -24,8 +24,12 @@ import type {
   ChatConversationSummary,
   ChatConversationsResponse,
   ChatConversationUpdateRequest,
+  ChatFeedbackRating,
+  ChatFeedbackReason,
+  ChatFeedbackRequest,
   ChatRates,
   ChatPrompt,
+  ChatPromptCategory,
   ChatRequest,
   ChatResponse,
   ChatScope,
@@ -422,17 +426,25 @@ export const SAVED_PROMPT_LIMITS = {
   text_chars: CHAT_LIMITS.chat_prompt_text_chars,
 } as const;
 
+/** Backend `CHAT_PROMPT_CATEGORIES` (Round 12 prompt library, SPEC §3.1). */
+export const SAVED_PROMPT_CATEGORIES: readonly ChatPromptCategory[] = ['triage', 'hunt', 'ioc', 'posture', 'reporting', 'app_help'];
+
 /**
  * One saved prompt shaped the way the backend repairs it (`_repair_chat_prompts`):
  * multiline text clamped to 2,000, a single-line title clamped to 60 (derived from
- * the text when blank), `null` when the id or text is unusable.
+ * the text when blank), `null` when the id or text is unusable. Round 12 keeps a known
+ * `category` and `favorite: true` (anything else is dropped, like the backend does).
  */
 function normaliseSavedPrompt(raw: unknown): ChatPrompt | null {
   if (!isObj(raw) || typeof raw.id !== 'string' || !SAVED_PROMPT_ID_RE.test(raw.id)) return null;
   const body = text(raw.text, SAVED_PROMPT_LIMITS.text_chars, true).trim();
   if (!body) return null;
   const title = text(raw.title, SAVED_PROMPT_LIMITS.title_chars) || text(body, SAVED_PROMPT_LIMITS.title_chars);
-  return { id: raw.id, title, text: body };
+  const prompt: ChatPrompt = { id: raw.id, title, text: body };
+  const category = enumOr<ChatPromptCategory, null>(raw.category, SAVED_PROMPT_CATEGORIES, null);
+  if (category) prompt.category = category;
+  if (raw.favorite === true) prompt.favorite = true;
+  return prompt;
 }
 
 /** The stored list, de-duplicated by id and bounded to 50 (render as text, #9). */
@@ -896,4 +908,208 @@ export async function generateReportSummary(
   const summary =
     report?.summary ?? normaliseReportSummary(isObj(raw) && isObj(raw.summary) ? raw.summary : raw);
   return { report, summary };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Round 12 answer-level features (SPEC §3.2, WP-FEAT-A).                      */
+/* -------------------------------------------------------------------------- */
+
+export const CHAT_FEEDBACK_REASONS = ['wrong', 'incomplete', 'slow', 'other'] as const satisfies readonly ChatFeedbackReason[];
+/** `ChatFeedbackRequest.comment` bound (backend `max_length`). */
+export const CHAT_FEEDBACK_COMMENT_CHARS = 1000;
+
+/** One of the caller's stored ratings (`GET /api/chat/feedback`). */
+export interface ChatFeedbackEntry {
+  conversation_id: string;
+  message_id: string;
+  rating: ChatFeedbackRating;
+  reason: ChatFeedbackReason | null;
+  /** The analyst's own words (shown back to them as text). */
+  comment: string;
+  updated_at: string;
+}
+
+function normaliseFeedbackEntry(raw: unknown): ChatFeedbackEntry | null {
+  if (!isObj(raw)) return null;
+  const conversationId = safeId(raw.conversation_id);
+  const messageId = safeId(raw.message_id);
+  const rating = enumOr(raw.rating, ['up', 'down'] as const, null);
+  if (!conversationId || !messageId || rating === null) return null;
+  return {
+    conversation_id: conversationId,
+    message_id: messageId,
+    rating,
+    reason: enumOr(raw.reason, CHAT_FEEDBACK_REASONS, null),
+    comment: text(raw.comment, CHAT_FEEDBACK_COMMENT_CHARS, true),
+    updated_at: str(raw.updated_at).slice(0, 40),
+  };
+}
+
+/**
+ * `POST /api/chat/feedback` (204): rate one of the caller's own Workspace answers.
+ * Rating the same answer again replaces the earlier rating. Stored and audited, never
+ * used to train a model.
+ */
+export async function postChatFeedback(body: ChatFeedbackRequest): Promise<void> {
+  const payload: ChatFeedbackRequest = {
+    conversation_id: body.conversation_id,
+    message_id: body.message_id,
+    rating: body.rating,
+  };
+  if (body.reason) payload.reason = body.reason;
+  const comment = typeof body.comment === 'string' ? Array.from(body.comment.trim()).slice(0, CHAT_FEEDBACK_COMMENT_CHARS).join('') : '';
+  if (comment) payload.comment = comment;
+  await request<unknown>('POST', 'chat/feedback', { body: payload });
+}
+
+/** `GET /api/chat/feedback?conversation_id=`: the caller's ratings of one conversation. */
+export async function listChatFeedback(conversationId: string, signal?: AbortSignal): Promise<ChatFeedbackEntry[]> {
+  const raw = await request<unknown>('GET', 'chat/feedback', { query: { conversation_id: conversationId }, signal });
+  const rows = isObj(raw) && Array.isArray(raw.feedback) ? raw.feedback : [];
+  const out: ChatFeedbackEntry[] = [];
+  for (const row of rows) {
+    const entry = normaliseFeedbackEntry(row);
+    if (entry && entry.conversation_id === conversationId) out.push(entry);
+    if (out.length >= 500) break;
+  }
+  return out;
+}
+
+/** An engine-built next lookup for a zero-match result (SPEC D10). `label` is an engine template. */
+export interface ChatZeroSuggestion {
+  label: string;
+  tool: string | null;
+}
+
+/** `GET …/steps/{index}`: what the model saw for one lookup (#7 aggregates; #9 untrusted). */
+export interface ChatStepObservation {
+  conversation_id: string;
+  message_id: string;
+  index: number;
+  tool: string | null;
+  status: string | null;
+  label: string;
+  /** The engine's one-line result summary. */
+  summary: string | null;
+  /**
+   * The stored observation exactly as the model saw it (aggregate JSON). Every value
+   * may be log- or model-derived: render it ONLY as text (a code block), never as markup.
+   */
+  observation: Record<string, unknown>;
+  /** Model- or log-derived input values (untrusted, shown as text). */
+  params: Record<string, string>;
+  /** The stored copy was shortened structurally to fit its storage bound. */
+  truncated: boolean;
+  stored_at: string | null;
+  /** Engine-built widen-the-search suggestions of a zero-match result. */
+  suggestions: ChatZeroSuggestion[];
+}
+
+/** Engine-built zero-match suggestions of an observation (at most 4). */
+export function observationSuggestions(observation: unknown): ChatZeroSuggestion[] {
+  if (!isObj(observation) || !Array.isArray(observation.suggestions)) return [];
+  const out: ChatZeroSuggestion[] = [];
+  for (const raw of observation.suggestions) {
+    if (!isObj(raw)) continue;
+    const label = text(raw.label, 60);
+    if (!label || out.some((s) => s.label === label)) continue;
+    out.push({ label, tool: typeof raw.tool === 'string' && TOOL_NAME_RE.test(raw.tool) ? raw.tool : null });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/** The step inspector's read (`GET /api/chat/conversations/{id}/messages/{mid}/steps/{index}`). */
+export async function getStepObservation(
+  conversationId: string,
+  messageId: string,
+  index: number,
+  signal?: AbortSignal,
+): Promise<ChatStepObservation> {
+  const raw = await request<unknown>(
+    'GET',
+    `chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/steps/${Math.trunc(index)}`,
+    { signal },
+  );
+  if (!isObj(raw)) throw new ApiError(502, 'This lookup could not be read.', raw);
+  const observation = isObj(raw.observation) ? raw.observation : {};
+  const params: Record<string, string> = {};
+  if (isObj(raw.params)) {
+    for (const [key, value] of Object.entries(raw.params)) {
+      if (Object.keys(params).length >= CHAT_LIMITS.step_params) break;
+      if (/^[A-Za-z0-9_.:-]{1,40}$/.test(key) && typeof value === 'string') params[key] = text(value, 200);
+    }
+  }
+  return {
+    conversation_id: conversationId,
+    message_id: messageId,
+    index: count(raw.index, index),
+    tool: typeof raw.tool === 'string' && TOOL_NAME_RE.test(raw.tool) ? raw.tool : null,
+    status: optText(raw.status, 20),
+    label: text(raw.label, CHAT_LIMITS.step_label_chars),
+    summary: optText(raw.summary, CHAT_LIMITS.step_summary_chars),
+    observation,
+    params,
+    truncated: raw.truncated === true,
+    stored_at: optStr(raw.stored_at, 40),
+    suggestions: observationSuggestions(observation),
+  };
+}
+
+/** One row of the "Add to case" picker (plain display data, #9). */
+export interface CasePickerEntry {
+  case_id: string;
+  /** The human-facing id (template number, else the raw id). */
+  display_id: string;
+  /** The queue's title chain (title → summary → number → id). */
+  title: string;
+  status: string | null;
+  severity: string | null;
+}
+
+const CASE_ID_RE = /^[A-Za-z0-9_.:@ /-]{1,128}$/;
+
+function normaliseCasePickerEntry(raw: unknown): CasePickerEntry | null {
+  if (!isObj(raw) || typeof raw.case_id !== 'string' || !CASE_ID_RE.test(raw.case_id)) return null;
+  const number = text(raw.case_number, 80);
+  const title = text(raw.title, 160) || text(raw.summary, 160) || number || raw.case_id;
+  return {
+    case_id: raw.case_id,
+    display_id: number || raw.case_id,
+    title,
+    status: optText(raw.status, 40),
+    severity: optText(raw.severity, 20),
+  };
+}
+
+/** `GET /api/cases?q=` (newest first, at most `limit`): the "Add to case" picker. */
+export async function searchCasesForPicker(query: string, signal?: AbortSignal, limit = 8): Promise<CasePickerEntry[]> {
+  const q = Array.from(query.trim()).slice(0, 120).join('');
+  const raw = await request<unknown>('GET', 'cases', {
+    query: { q: q || undefined, limit, sort_field: 'created_at', sort_order: 'desc' },
+    signal,
+  });
+  const rows = isObj(raw) && Array.isArray(raw.cases) ? raw.cases : [];
+  const out: CasePickerEntry[] = [];
+  for (const row of rows) {
+    const entry = normaliseCasePickerEntry(row);
+    if (entry && !out.some((e) => e.case_id === entry.case_id)) out.push(entry);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** The case thread's body bound (`routes_cases_collab._BODY_MAX`). */
+export const CASE_COMMENT_MAX_CHARS = 8000;
+
+/**
+ * `POST /api/cases/{id}/thread` as the analyst's OWN comment (`author_type: human`,
+ * `cases:comment`). Posting never reads or changes the case's status, verdict or
+ * disposition (#3). Returns the new message id when the server names one.
+ */
+export async function postCaseComment(caseId: string, body: string): Promise<{ id: string | null }> {
+  const raw = await request<unknown>('POST', `cases/${encodeURIComponent(caseId)}/thread`, {
+    body: { body, author_type: 'human', kind: 'comment' },
+  });
+  return { id: isObj(raw) ? safeId(raw.id) : null };
 }
