@@ -403,8 +403,10 @@ def test_step_sanitises_display_fields() -> None:
     assert step.tool is None
     assert len(step.label) == 120 and step.label.endswith("…")
     assert step.params == {"ok": "v", "num": 3}
-    assert step.untrusted_params == {"value": "42", "q": "abc"}
-    assert step.query == "a\nb"
+    # Model/log-derived values keep their invisible characters as visible escapes
+    # (Round 12 P1-1): the step inspector shows exactly what was sent.
+    assert step.untrusted_params == {"value": "42", "q": "abc\\u202e"}
+    assert step.query == "a\nb\\u0000"
     assert step.sources == ["Primary"]
     assert step.duration_ms == 0 and step.rows is None and step.ordinal is None
 
@@ -571,7 +573,8 @@ def test_out_of_range_chat_agent_never_resets_preferences(stored: Any) -> None:
     for name, (lo, hi) in CHAT_AGENT_BOUNDS.items():
         assert lo <= getattr(agent, name) <= hi, name
     assert agent.final_reserve_tokens < agent.turn_token_ceiling
-    assert agent.max_parallel <= agent.max_tool_calls
+    assert agent.effective_parallel <= agent.max_parallel
+    assert agent.unlimited or agent.effective_parallel <= agent.max_tool_calls
 
 
 def test_chat_agent_clamp_details() -> None:

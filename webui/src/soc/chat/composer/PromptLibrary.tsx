@@ -18,6 +18,11 @@
  *
  * Prompt text is the analyst's own words or the console's starter copy: it renders as
  * text only.
+ *
+ * Focus never falls out of the dialog: the favorite star and the inline Delete stay
+ * focusable while a save runs (`aria-disabled`), the star keeps focus when its row moves
+ * (favorites sort first), "Delete…" focuses Keep, Keep returns to the row's ⋯, and a
+ * delete moves on to the next row's Use (or the search field when none is left).
  */
 import * as React from 'react';
 import { BookCopy, ListOrdered, MoreHorizontal, Pencil, Plus, Search, Star, Trash2 } from 'lucide-react';
@@ -57,6 +62,8 @@ export interface PromptLibraryDialogProps {
   controller: SavedPromptsController;
   /** The tool catalogue: starters are listed only when their tools are allowed. */
   context: ChatContextInfo | null;
+  /** `/chat/context` failed and nothing is cached: starters cannot be listed. */
+  contextError?: string | null;
   /** Use a prompt (the composer asks for its values, or inserts it). */
   onUse: (prompt: LibraryPrompt) => void;
   /** Open the Save dialog: a new prompt, a copy of a starter, or an edit. */
@@ -91,24 +98,85 @@ function PromptMeta({ prompt }: { prompt: LibraryPrompt }) {
   );
 }
 
+/** "Run <title>" for a promptbook, "Use <title>" otherwise: the name starts with the visible label. */
+export function promptActionLabel(prompt: LibraryPrompt): string {
+  return `${isPromptbook(prompt) ? 'Run' : 'Use'} ${prompt.title}`;
+}
+
+/** Where focus goes once the list has re-rendered after a write. */
+type PendingFocus =
+  | { kind: 'more' | 'keep'; id: string }
+  /** `fallback`: the neighbouring row, for when the row leaves the list (the Favorites filter). */
+  | { kind: 'star'; id: string; fallback: string | null }
+  | { kind: 'use'; id: string | null };
+
 function PromptPreview({ prompt }: { prompt: LibraryPrompt }) {
   const plan = planPrompt(prompt);
   const text = plan.book ? plan.steps.map((step, i) => `${i + 1}. ${step}`).join('\n') : prompt.text;
   return <p className="mt-1 line-clamp-2 whitespace-pre-line break-words text-xs text-muted-foreground">{text}</p>;
 }
 
-export function PromptLibraryDialog({ open, onOpenChange, controller, context, onUse, onCompose, onCloseFocus }: PromptLibraryDialogProps) {
+export function PromptLibraryDialog({
+  open,
+  onOpenChange,
+  controller,
+  context,
+  contextError = null,
+  onUse,
+  onCompose,
+  onCloseFocus,
+}: PromptLibraryDialogProps) {
   const announce = useAnnouncer();
   const [query, setQuery] = React.useState('');
   const [filter, setFilter] = React.useState<LibraryFilter>('all');
   const [confirming, setConfirming] = React.useState<string | null>(null);
   const searchId = React.useId();
-  const { load } = controller;
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const pendingFocus = React.useRef<PendingFocus | null>(null);
+  const { load, clearError } = controller;
 
   React.useEffect(() => {
-    if (open) load();
-    else setConfirming(null);
-  }, [open, load]);
+    if (open) {
+      // Start clean: an earlier action's failure belongs to that action.
+      clearError();
+      load();
+    } else {
+      setConfirming(null);
+    }
+  }, [open, load, clearError]);
+
+  /** Focus one control of a row (rows move and re-render, so look them up by id). */
+  const focusRowControl = React.useCallback((id: string, selector: string): boolean => {
+    const row = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-prompt-id]') ?? []).find(
+      (el) => el.dataset.promptId === id,
+    );
+    const target = row?.querySelector<HTMLElement>(selector);
+    if (!target) return false;
+    target.focus();
+    return true;
+  }, []);
+
+  // Apply a pending focus once the list reflects the write (and the save has finished).
+  React.useLayoutEffect(() => {
+    const next = pendingFocus.current;
+    if (!next || controller.saving) return;
+    if (next.kind === 'keep') {
+      // Kept until the menu's own close-focus runs too (it would return to the gone ⋯).
+      if (confirming === next.id) focusRowControl(next.id, '[data-confirm="keep"]');
+      return;
+    }
+    pendingFocus.current = null;
+    if (next.kind === 'star') {
+      // An un-starred row leaves the Favorites list: on to its neighbour, else to search.
+      if (focusRowControl(next.id, 'button[aria-pressed]')) return;
+      const moved =
+        next.fallback !== null &&
+        (focusRowControl(next.fallback, 'button[aria-pressed]') || focusRowControl(next.fallback, '[data-row-use]'));
+      if (!moved) searchRef.current?.focus();
+    } else if (next.kind === 'more') focusRowControl(next.id, '[data-row-more]');
+    else if (!next.id || !focusRowControl(next.id, '[data-row-use]')) searchRef.current?.focus();
+  }, [controller.prompts, controller.saving, confirming, focusRowControl]);
 
   const own = React.useMemo(() => filterPrompts(orderPrompts(controller.prompts), filter, query), [controller.prompts, filter, query]);
   const starters = React.useMemo(
@@ -123,15 +191,37 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
   };
 
   const toggleFavorite = async (prompt: ChatPrompt) => {
+    // Never natively disabled while a save runs: that would drop focus out of the dialog.
+    if (controller.saving) return;
     const next = !prompt.favorite;
+    // The row moves (favorites sort first): its star keeps focus wherever it lands. Under
+    // the Favorites filter an un-starred row leaves the list, so remember a neighbour.
+    const at = own.findIndex((p) => p.id === prompt.id);
+    const neighbour = own[at + 1] ?? own[at - 1] ?? null;
+    pendingFocus.current = { kind: 'star', id: prompt.id, fallback: neighbour?.id ?? null };
     const ok = await controller.update(prompt.id, { favorite: next });
     if (ok) announce(next ? `Added ${prompt.title} to favorites` : `Removed ${prompt.title} from favorites`);
   };
 
   const remove = async (prompt: ChatPrompt) => {
+    if (controller.saving) return;
+    // Where focus goes after the row leaves: the next row's Use, else the previous one's.
+    const at = own.findIndex((p) => p.id === prompt.id);
+    const neighbour = own[at + 1] ?? own[at - 1] ?? null;
+    pendingFocus.current = { kind: 'use', id: neighbour?.id ?? null };
     const ok = await controller.remove(prompt.id);
     setConfirming(null);
-    if (ok) announce(`Deleted ${prompt.title}`);
+    if (ok) {
+      announce(`Deleted ${prompt.title}`);
+    } else {
+      // Not deleted: back to the row's ⋯ (the error shows under the list).
+      pendingFocus.current = { kind: 'more', id: prompt.id };
+    }
+  };
+
+  const keep = (prompt: ChatPrompt) => {
+    pendingFocus.current = { kind: 'more', id: prompt.id };
+    setConfirming(null);
   };
 
   const compose = (draft: PromptDraft) => {
@@ -167,6 +257,7 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
               Search prompts
             </label>
             <Input
+              ref={searchRef}
               id={searchId}
               type="search"
               value={query}
@@ -200,7 +291,7 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
           </div>
         </div>
 
-        <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1" data-testid="prompt-library-list">
+        <div ref={listRef} className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1" data-testid="prompt-library-list">
           <section aria-labelledby={`${searchId}-own`} className="space-y-1.5">
             <div className="flex items-baseline justify-between gap-2">
               <h3 id={`${searchId}-own`} className="text-xs font-medium text-muted-foreground">
@@ -229,9 +320,13 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
                       type="button"
                       aria-pressed={Boolean(prompt.favorite)}
                       aria-label={`Favorite ${prompt.title}`}
-                      disabled={controller.saving}
+                      aria-disabled={controller.saving || undefined}
                       onClick={() => void toggleFavorite(prompt)}
-                      className={cn(ROW_BUTTON, 'size-7', prompt.favorite && 'text-warning-text hover:text-warning-text')}
+                      className={cn(
+                        ROW_BUTTON,
+                        'size-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                        prompt.favorite && 'text-warning-text hover:text-warning-text',
+                      )}
                     >
                       <Star className={cn('size-4', prompt.favorite && 'fill-current')} aria-hidden />
                     </button>
@@ -245,26 +340,44 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
                         <Button
                           size="sm"
                           variant="destructive"
-                          disabled={controller.saving}
+                          aria-disabled={controller.saving || undefined}
                           aria-label={`Delete ${prompt.title}`}
+                          data-confirm="delete"
+                          className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                           onClick={() => void remove(prompt)}
                         >
                           Delete
                         </Button>
-                        <Button size="sm" variant="ghost" aria-label={`Keep ${prompt.title}`} onClick={() => setConfirming(null)}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Keep ${prompt.title}`}
+                          data-confirm="keep"
+                          onClick={() => keep(prompt)}
+                        >
                           Keep
                         </Button>
                       </div>
                     ) : (
                       <div className="flex shrink-0 items-center gap-1">
-                        <Button size="sm" variant="outline" aria-label={`Use ${prompt.title}`} onClick={() => use(prompt)}>
+                        <Button size="sm" variant="outline" aria-label={promptActionLabel(prompt)} data-row-use="" onClick={() => use(prompt)}>
                           {isPromptbook(prompt) ? 'Run' : 'Use'}
                         </Button>
                         <DropdownMenu>
-                          <DropdownMenuTrigger aria-label={`More actions for ${prompt.title}`} className={ROW_BUTTON}>
+                          <DropdownMenuTrigger aria-label={`More actions for ${prompt.title}`} data-row-more="" className={ROW_BUTTON}>
                             <MoreHorizontal className="size-4" aria-hidden />
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuContent
+                            align="end"
+                            className="w-44"
+                            onCloseAutoFocus={(event) => {
+                              // "Delete…" replaced ⋯ with the confirmation: focus its Keep.
+                              if (pendingFocus.current?.kind !== 'keep') return;
+                              event.preventDefault();
+                              pendingFocus.current = null;
+                              focusRowControl(prompt.id, '[data-confirm="keep"]');
+                            }}
+                          >
                             <DropdownMenuItem
                               onSelect={() =>
                                 compose({
@@ -282,7 +395,10 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               className="text-critical-text focus:text-critical-text"
-                              onSelect={() => setConfirming(prompt.id)}
+                              onSelect={() => {
+                                pendingFocus.current = { kind: 'keep', id: prompt.id };
+                                setConfirming(prompt.id);
+                              }}
                             >
                               <Trash2 aria-hidden />
                               Delete…
@@ -304,7 +420,13 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
               </h3>
               {starters.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  {searching ? 'No starter prompts match.' : 'No starter prompts are available to you.'}
+                  {context === null
+                    ? contextError
+                      ? 'Starter prompts could not be loaded.'
+                      : 'Loading starter prompts…'
+                    : searching
+                      ? 'No starter prompts match.'
+                      : 'No starter prompts are available to you.'}
                 </p>
               ) : (
                 <ul className="divide-y divide-border rounded-md border border-border bg-muted/20">
@@ -316,7 +438,7 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
                         <PromptPreview prompt={prompt} />
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        <Button size="sm" variant="outline" aria-label={`Use ${prompt.title}`} onClick={() => use(prompt)}>
+                        <Button size="sm" variant="outline" aria-label={promptActionLabel(prompt)} data-row-use="" onClick={() => use(prompt)}>
                           {isPromptbook(prompt) ? 'Run' : 'Use'}
                         </Button>
                         <Button
@@ -341,7 +463,11 @@ export function PromptLibraryDialog({ open, onOpenChange, controller, context, o
           )}
         </div>
 
-        {controller.error ? <p className="text-xs text-critical-text">{controller.error}</p> : null}
+        {controller.error ? (
+          <p role="alert" className="text-xs text-critical-text">
+            {controller.error}
+          </p>
+        ) : null}
         <div className="flex justify-end border-t border-border pt-3">
           <Button type="button" variant="outline" size="sm" disabled={full} onClick={() => compose({ text: '' })}>
             <Plus aria-hidden />

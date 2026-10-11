@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, renderHook, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { CHAT_SHORTCUTS, keyLabel, shortcutLabel } from '../shortcut-list';
+import { COPY_LAST_ANSWER_KEYS, isCopyLastAnswer } from '../../message/useCopyLastAnswer';
 import { ShortcutSheet } from '../ShortcutSheet';
 import {
   anyLayerOpen,
@@ -174,35 +175,28 @@ describe('useChatShortcuts', () => {
       toggleHistory: 'Control+Shift+S Meta+Shift+S',
       focusComposer: 'Shift+Escape',
       openShortcuts: 'Control+/ Meta+/',
-      copyLastAnswer: 'Control+Shift+C Meta+Shift+C',
     });
   });
 
-  it('copies the last answer with Ctrl/Cmd+Shift+C when the host wires it (Round 12)', () => {
-    const copy = vi.fn();
-    const h = { ...handlers(), copyLastAnswer: copy };
-    renderHook(() => useChatShortcuts(h));
-    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
-      const event = new KeyboardEvent('keydown', { key: 'C', ...mod, shiftKey: true, bubbles: true, cancelable: true });
-      window.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(true);
-    }
-    expect(copy).toHaveBeenCalledTimes(2);
-    // Plain Ctrl/Cmd+C stays the browser's copy.
-    const plain = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
-    window.dispatchEvent(plain);
-    expect(plain.defaultPrevented).toBe(false);
-    expect(copy).toHaveBeenCalledTimes(2);
-  });
-
-  it('leaves Ctrl/Cmd+Shift+C to the browser when the host has no copy handler', () => {
+  it('matches Ctrl/Cmd+Shift+C under the shared rules but leaves it to the answer that registers it (Round 12)', () => {
     renderHook(() => useChatShortcuts(handlers()));
     const event = new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
-    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c' }))).toBe('copyLastAnswer');
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(matchChatShortcut(key({ ...mod, shiftKey: true, key: 'c' }))).toBe('copyLastAnswer');
+    }
+    // A non-Latin layout's physical C still matches.
     expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'С', code: 'KeyC' }))).toBe('copyLastAnswer');
-    expect(matchChatShortcut(key({ ctrlKey: true, key: 'c' }))).toBeNull();
+    // Dvorak types "j" on the physical C: Ctrl+Shift+J stays the browser's (console/downloads).
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'J', code: 'KeyC' }))).toBeNull();
+    // Plain Ctrl/Cmd+C stays the browser's copy; composing, repeats, Alt and consumed events are ignored.
+    expect(matchChatShortcut(key({ ctrlKey: true, key: 'c', code: 'KeyC' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', isComposing: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', keyCode: 229 }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', repeat: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, altKey: true, key: 'c' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', defaultPrevented: true }))).toBeNull();
   });
 });
 
@@ -215,6 +209,15 @@ describe('shortcut list', () => {
     for (const s of CHAT_SHORTCUTS) {
       expect(s.keys.includes('Mod') && s.keys.some((k) => k === ('K' as never) || k === ('B' as never))).toBe(false);
     }
+  });
+
+  it('documents Ctrl/Cmd+Shift+C exactly as the answer registers it', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'copy-last');
+    expect(entry).toMatchObject({ label: 'Copy the last answer', keys: ['Mod', 'Shift', 'C'], where: 'chat' });
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(isCopyLastAnswer({ key: 'C', code: 'KeyC', shiftKey: true, altKey: false, ctrlKey: false, metaKey: false, ...mod })).toBe(true);
+    }
+    expect(COPY_LAST_ANSWER_KEYS).toBe('Control+Shift+C Meta+Shift+C');
   });
 
   it('labels keys per platform', () => {

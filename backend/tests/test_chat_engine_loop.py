@@ -389,6 +389,21 @@ async def test_system_prompt_lists_only_granted_tools_and_marks_the_question() -
     assert live.startswith(f"{USER_TURN_MARKER}\nhi ") and live.count(USER_TURN_MARKER) == 1
 
 
+async def test_system_prompt_offers_the_effective_lookups_at_once() -> None:
+    """Bounded mode tells the model the lookups it can really run at once (never more
+    than the per-question budget); the stored ``max_parallel`` itself is never rewritten,
+    so Unlimited still offers the operator's value (SPEC D1: lossless mode switches)."""
+    stored = ChatAgentConfig.model_validate({"limits_mode": "bounded", "max_tool_calls": 3, "max_parallel": 8})
+    assert stored.max_parallel == 8
+    for mode, expected in (("bounded", 3), ("unlimited", 8)):
+        gateway = FakeGateway([final()])
+        prefs = Preferences().model_copy(update={
+            "chat_agent": stored.model_copy(update={"limits_mode": mode})})
+        await run(make_engine(gateway), "q", prefs, make_ctx(prefs))
+        system = gateway.calls[0]["messages"][0]["content"]
+        assert f"in parallel (at most {expected})" in system, mode
+
+
 async def test_parallel_batch_groups_ordinals_and_timeouts() -> None:
     started = {"a": asyncio.Event(), "b": asyncio.Event()}
 

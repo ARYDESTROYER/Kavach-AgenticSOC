@@ -32,6 +32,7 @@ import type {
   ChatPromptCategory,
   ChatRequest,
   ChatResponse,
+  ChatSavedReport,
   ChatScope,
   ChatStarter,
   ChatTimeRange,
@@ -58,6 +59,7 @@ import {
   TEXT_STREAMING_REASONS,
   displayText,
   normaliseChatResponse,
+  normaliseSavedReport,
   normaliseTurnUsage,
   type ChatStreamEvent,
 } from './stream-events';
@@ -838,6 +840,22 @@ export async function deleteReport(reportId: string, expectedVersion: number): P
   await request<unknown>('DELETE', `reports/${encodeURIComponent(reportId)}`, {
     body: { expected_version: expectedVersion },
   });
+}
+
+/**
+ * `POST /api/reports/from-answer` — "Save as report" for one Workspace answer whose
+ * header-requested report could not be saved (Round 12 D11). Idempotent PER ANSWER on
+ * the server (a second click or a click after a reload returns the same report), saved
+ * with the title and template the answer asked for (read server-side from the stored
+ * answer), and recorded on the answer so a reopened thread shows the saved line.
+ */
+export async function saveAnswerAsReport(conversationId: string, messageId: string): Promise<ChatSavedReport> {
+  const raw = await request<unknown>('POST', 'reports/from-answer', {
+    body: { conversation_id: conversationId, message_id: messageId },
+  });
+  const saved = normaliseSavedReport(raw);
+  if (!saved) throw new Error('The report could not be read.');
+  return saved;
 }
 
 /** What `POST /api/reports/add` returns, read leniently. */

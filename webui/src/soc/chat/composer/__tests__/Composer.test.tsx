@@ -77,7 +77,7 @@ describe('Composer — layout and copy', () => {
     expect(within(dialog).getByText('Search logs')).toBeInTheDocument();
     expect(within(dialog).queryByText('Searched logs')).toBeNull();
     expect(within(dialog).getByText('Needs cost:view')).toBeInTheDocument();
-    expect(within(dialog).getByText('10 of 11 lookups are available to you.')).toBeInTheDocument();
+    expect(within(dialog).getByText('11 of 12 lookups are available to you.')).toBeInTheDocument();
   });
 });
 
@@ -248,7 +248,9 @@ describe('Composer — / commands', () => {
     expect(textarea.getAttribute('aria-activedescendant')).not.toBe(first.id);
 
     await user.type(textarea, 'pos');
-    await waitFor(() => expect(within(list).getAllByRole('option')).toHaveLength(1));
+    // The command first; posture starter prompts follow once three letters are typed.
+    await waitFor(() => expect(within(list).getAllByRole('option')[0]).toHaveTextContent(/^\/posture/));
+    expect(within(list).getAllByRole('option').slice(1).every((o) => !o.textContent?.startsWith('/'))).toBe(true);
     await user.keyboard('{Enter}');
     expect(spies.send).toHaveBeenCalledWith(
       'How is our security posture right now? Show the key metrics and how they are trending.',
@@ -289,6 +291,22 @@ describe('Composer — / commands', () => {
     expect(spies.send).not.toHaveBeenCalled();
     await user.keyboard('{Enter}');
     expect(spies.send).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('offers /compact only in a saved conversation, and sends the bare command', async () => {
+    const fresh = setup();
+    await fresh.user.type(fresh.textarea, '/comp');
+    // A new chat: nothing to summarise, and no thread named "/compact" is created.
+    await waitFor(() => expect(screen.queryByRole('option', { name: /^\/compact/ })).toBeNull());
+    fresh.view.unmount();
+
+    const saved = setup({ conversationId: 'c-1' });
+    await saved.user.type(saved.textarea, '/compact the hosts');
+    const option = await screen.findByRole('option', { name: /^\/compact/ });
+    expect(option).toHaveTextContent('Text after /compact is not sent.');
+    await saved.user.keyboard('{Enter}');
+    expect(spies.send).toHaveBeenCalledWith('/compact', { origin: 'command' });
+    expect(saved.textarea.value).toBe('');
   });
 
   it('lists saved prompts after the commands and inserts the chosen one', async () => {
@@ -517,7 +535,7 @@ describe('Composer — Options', () => {
     const user = userEvent.setup();
     render(<Harness spies={spies} context={makeContext()} draft={'Weekly phishing review\nSummarise phishing.'} />);
     await user.click(screen.getByRole('button', { name: 'Composer options' }));
-    await user.click(await screen.findByRole('menuitem', { name: /Saved prompts/ }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Prompts' }));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Save current prompt' }));
     const dialog = await screen.findByRole('dialog', { name: 'Save prompt' });
     expect(within(dialog).getByRole('textbox', { name: 'Title' })).toHaveValue('Weekly phishing review');
@@ -747,7 +765,7 @@ describe('Composer — chat models', () => {
   });
 });
 
-describe('Composer — managing saved prompts', () => {
+describe('Composer — the prompt library: your prompts', () => {
   const PROMPTS = [
     { id: 'p1', title: 'VPN anomalies', text: 'Any odd VPN logins this week?' },
     { id: 'p2', title: 'Phishing review', text: 'Summarise phishing cases.' },
@@ -759,18 +777,23 @@ describe('Composer — managing saved prompts', () => {
     const view = render(<Harness spies={spies} context={makeContext()} />);
     const textarea = screen.getByRole('textbox', { name: 'Message the assistant' }) as HTMLTextAreaElement;
     await user.click(screen.getByRole('button', { name: 'Composer options' }));
-    await user.click(await screen.findByRole('menuitem', { name: /Saved prompts/ }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Manage saved prompts/ }));
-    const dialog = await screen.findByRole('dialog', { name: 'Saved prompts' });
+    await user.click(await screen.findByRole('menuitem', { name: 'Prompts' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Prompt library/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Prompt library' });
     await within(dialog).findByText('VPN anomalies');
     return { server, user, view, textarea, dialog };
   }
 
+  async function askDelete(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement, title: string) {
+    await user.click(within(dialog).getByRole('button', { name: `More actions for ${title}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete…' }));
+  }
+
   it('uses a prompt: fills the composer, closes and returns focus there', async () => {
     const { user, textarea, dialog } = await openManage();
-    expect(within(dialog).getByText('2 of 50 saved. Use one to put it in the composer.')).toBeInTheDocument();
+    expect(within(dialog).getByText('2 of 50')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Use VPN anomalies' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Saved prompts' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Prompt library' })).toBeNull());
     expect(textarea.value).toBe('Any odd VPN logins this week?');
     await waitFor(() => expect(document.activeElement).toBe(textarea));
     expect(spies.send).not.toHaveBeenCalled();
@@ -778,10 +801,10 @@ describe('Composer — managing saved prompts', () => {
 
   it('asks before deleting: Keep cancels, Delete removes through the prefs route', async () => {
     const { user, server, dialog } = await openManage();
-    await user.click(within(dialog).getByRole('button', { name: 'Delete Phishing review…' }));
+    await askDelete(user, dialog, 'Phishing review');
     await user.click(within(dialog).getByRole('button', { name: 'Keep Phishing review' }));
     expect(server.calls.some((c) => c.method === 'PUT')).toBe(false);
-    await user.click(within(dialog).getByRole('button', { name: 'Delete Phishing review…' }));
+    await askDelete(user, dialog, 'Phishing review');
     await user.click(within(dialog).getByRole('button', { name: 'Delete Phishing review' }));
     await waitFor(() => expect(within(dialog).queryByText('Phishing review')).toBeNull());
     const put = server.calls.find((c) => c.method === 'PUT');
@@ -791,7 +814,7 @@ describe('Composer — managing saved prompts', () => {
 
   it('keeps the prompt and says so when the server refuses the delete', async () => {
     const { user, dialog } = await openManage(503);
-    await user.click(within(dialog).getByRole('button', { name: 'Delete VPN anomalies…' }));
+    await askDelete(user, dialog, 'VPN anomalies');
     await user.click(within(dialog).getByRole('button', { name: 'Delete VPN anomalies' }));
     expect(await within(dialog).findByText(/unavailable|could not be deleted/i)).toBeInTheDocument();
     expect(within(dialog).getByText('VPN anomalies')).toBeInTheDocument();

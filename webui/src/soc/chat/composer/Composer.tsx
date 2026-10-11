@@ -16,7 +16,17 @@
  * Enter does nothing and Send becomes Stop; Esc stops the turn only when focus is in
  * the composer and no menu, popover, sheet or dialog is open (a Radix layer closing on
  * Esc marks the event handled first). ↑ in an empty composer brings back the last
- * prompt. `/` at the start opens commands and saved prompts; `@` opens the scopes.
+ * prompt. `/` at the start opens commands, the analyst's prompts, starter prompts and
+ * the prompt library; `@` opens the scopes.
+ *
+ * Prompt library (Round 12 SPEC §3.1): a prompt with `{placeholders}` or a promptbook
+ * opens an inline card above the field that asks for the values before anything is
+ * sent; a promptbook then runs its steps as consecutive turns with a step counter and
+ * Stop (Send is paused while it runs; the book outlives this component, so leaving the
+ * chat page and coming back carries on). The card waits, and says why, while an answer
+ * is being written or sending is blocked. A prompt with nothing to ask goes straight
+ * into the field, as before; chosen from Options ⋯ it takes focus there (or into its
+ * card) instead of back to ⋯.
  * In those menus only Enter chooses: Tab keeps its focus-navigation meaning, so it can
  * never send a command turn or add a scope by accident. The case variant has no menus
  * and its placeholder does not mention them.
@@ -48,7 +58,11 @@ import {
 import { ComposerMenu } from './ComposerMenu';
 import { ComposerOptions, ModelChip } from './ComposerOptions';
 import { SCOPE_LABELS, withClientHistory } from './format';
-import { ManagePromptsDialog, SavePromptDialog, useSavedPrompts } from './SavedPrompts';
+import { onOpenPromptLibrary } from './library-events';
+import { PromptLibraryDialog } from './PromptLibrary';
+import { planIsDirect, planPrompt, type LibraryPrompt, type PromptPlan } from './prompt-library';
+import { PROMPTBOOK_RUNNING_REASON, PromptParamsCard, PromptbookBar, usePromptbookRunner } from './PromptRunner';
+import { SavePromptDialog, useSavedPrompts, type PromptDraft } from './SavedPrompts';
 import { ScopeControls } from './ScopeControls';
 import { TokenMeter, type ConversationTotals } from './TokenMeter';
 import { useAutoGrow } from './useAutoGrow';
@@ -162,6 +176,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     [defaultModel, setEngineModel],
   );
   const prompts = useSavedPrompts();
+  const loadPrompts = prompts.load;
   const inputId = React.useId();
   const hintId = React.useId();
   const reasonId = React.useId();
@@ -173,15 +188,20 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const [listId, setListId] = React.useState<string | undefined>(undefined);
   const [activeId, setActiveId] = React.useState<string | undefined>(undefined);
   const [accessOpen, setAccessOpen] = React.useState(false);
-  const [saveText, setSaveText] = React.useState<string | null>(null);
-  const [manageOpen, setManageOpen] = React.useState(false);
+  const [saveDraft, setSaveDraft] = React.useState<PromptDraft | null>(null);
+  const [libraryOpen, setLibraryOpen] = React.useState(false);
+  const [plan, setPlan] = React.useState<PromptPlan | null>(null);
   const pendingSelection = React.useRef<[number, number] | null>(null);
+  /** Where focus goes when Options ⋯ closes after choosing a prompt (Radix would return it to ⋯). */
+  const optionsCloseFocus = React.useRef<'card' | 'composer' | null>(null);
+  // Promptbooks are Workspace-only; the book waits while the host restores a thread.
+  const book = usePromptbookRunner(engine, announce, { enabled: !isCase, hostBlocked: Boolean(disabledReason) });
 
   const draft = engine.draft;
   const running = engine.busy;
-  // Only the host blocks Send. A spent AI budget never does: it limits automatic
-  // investigations, not chat (SPEC D5).
-  const blockReason = disabledReason || null;
+  // Only the host (or a running promptbook) blocks Send. A spent AI budget never does:
+  // it limits automatic investigations, not chat (SPEC D5).
+  const blockReason = disabledReason || (book.running ? PROMPTBOOK_RUNNING_REASON : null);
   const canSend = !running && !blockReason && draft.trim().length > 0;
   const canChooseModel =
     props.canChooseModel ?? Boolean(context && (context.rates || context.budget || context.simulated !== null));
@@ -196,13 +216,15 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const slash = isCase ? null : parseSlashQuery(draft);
   // Without a catalogue every scope would read as denied: the @ menu waits for it.
   const at = isCase || slash || !context ? null : parseAtQuery(draft, caret);
+  // `/compact` folds a SAVED conversation's history: a new chat has nothing to fold.
+  const canCompact = engine.persist && Boolean(engine.conversationId);
   const groups = React.useMemo(() => {
-    if (slash) return slashMenuGroups(slash, context, prompts.prompts);
+    if (slash) return slashMenuGroups(slash, context, prompts.prompts, { canCompact });
     if (at) return atMenuGroups(at, context, engine.scopes);
     return [];
     // `slash`/`at` are re-derived from draft/caret each render; key on their inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, caret, context, prompts.prompts, engine.scopes, isCase]);
+  }, [draft, caret, context, prompts.prompts, engine.scopes, isCase, canCompact]);
   const items = React.useMemo(() => groups.flatMap((g) => g.items), [groups]);
   const enabled = React.useMemo(
     () => items.filter((item) => !(item.kind === 'scope' && item.disabled)).map((item) => item.value),
@@ -219,7 +241,6 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
 
   // Load saved prompts the first time `/` is typed (never at mount).
   const slashActive = Boolean(slash);
-  const loadPrompts = prompts.load;
   React.useEffect(() => {
     if (slashActive) loadPrompts();
   }, [slashActive, loadPrompts]);
@@ -263,10 +284,19 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     () => ({
       focus: focusTextarea,
       setText: (text: string) => replaceDraft(text),
-      savePrompt: (text: string) => setSaveText(text),
+      savePrompt: (text: string) => setSaveDraft({ text }),
     }),
     [focusTextarea, replaceDraft],
   );
+
+  // The new-chat empty state's "Prompt library" link (Workspace only).
+  React.useEffect(() => {
+    if (isCase) return undefined;
+    return onOpenPromptLibrary(() => {
+      loadPrompts();
+      setLibraryOpen(true);
+    });
+  }, [isCase, loadPrompts]);
 
   /* -------------------------------------------------------------- actions -- */
   const submit = () => {
@@ -275,7 +305,62 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     focusTextarea();
   };
 
+  /**
+   * Use a library prompt: one with nothing to ask goes into the field; one with values
+   * to fill, or a promptbook, opens the values card (the `/` query it came from is
+   * cleared).
+   */
+  const pickPrompt = (prompt: LibraryPrompt, fromSlash = false): 'card' | 'composer' => {
+    const next = planPrompt(prompt);
+    if (planIsDirect(next)) {
+      replaceDraft(prompt.text);
+      return 'composer';
+    }
+    if (fromSlash) engine.setDraft('');
+    setPlan(next);
+    return 'card';
+  };
+
+  /** Focus the values card's first value (or Run), else the composer. */
+  const focusCard = React.useCallback(() => {
+    const card = rootRef.current?.querySelector<HTMLElement>(
+      '[data-testid="prompt-params"] input, [data-testid="prompt-params"] button[type="submit"]',
+    );
+    if (card) card.focus();
+    else focusTextarea();
+  }, [focusTextarea]);
+
+  /** The values card was submitted with the filled steps (only while sending is possible). */
+  const runPlan = (current: PromptPlan, steps: string[]) => {
+    if (current.book) {
+      if (book.start(current.prompt.title, steps)) {
+        setPlan(null);
+        focusTextarea();
+      }
+      return;
+    }
+    const text = steps[0];
+    setPlan(null);
+    if (engine.send(text, { origin: 'user' })) {
+      focusTextarea();
+      return;
+    }
+    // The engine refused it after all: keep the filled prompt in the field.
+    replaceDraft(text);
+    announce('Added to the composer.');
+  };
+
   const choose = (item: ComposerMenuItem) => {
+    if (item.kind === 'prompt') {
+      pickPrompt(item.prompt, true);
+      return;
+    }
+    if (item.kind === 'library') {
+      engine.setDraft('');
+      prompts.load();
+      setLibraryOpen(true);
+      return;
+    }
     if (item.kind === 'scope') {
       if (item.disabled || !at) return;
       const next = removeAtToken(draft, at);
@@ -285,7 +370,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
       return;
     }
     const action = slashAction(item);
-    if (!action) return;
+    if (!action || action.type === 'library') return;
     if (action.type === 'send') {
       if (!running && !blockReason && engine.send(action.text, { origin: 'command' })) {
         engine.setDraft('');
@@ -299,7 +384,6 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     replaceDraft(action.expansion.text, action.expansion.selection);
   };
 
-  const insertPrompt = (prompt: ChatPrompt) => replaceDraft(prompt.text);
 
   const moveActive = (delta: number) => {
     if (!enabled.length) return;
@@ -337,6 +421,9 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
       // sending is blocked. A blocked Enter on a real draft says why, so the key is
       // never silently dead (the reason is also the field's description).
       event.preventDefault();
+      // A held key's auto-repeat never sends: the press that brought focus here (the
+      // palette's "Ask AI" hand-off prefills and focuses this field) may still be down.
+      if (event.repeat) return;
       if (!running && blockReason && draft.trim()) announce(blockReason);
       submit();
       return;
@@ -426,10 +513,22 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
       loadModels={catalog.loadModels}
       prompts={prompts}
       draft={draft}
-      onUsePrompt={insertPrompt}
-      onSaveCurrent={() => setSaveText(draft)}
-      onManagePrompts={() => setManageOpen(true)}
+      onUsePrompt={(prompt: ChatPrompt) => {
+        optionsCloseFocus.current = pickPrompt(prompt);
+      }}
+      onSaveCurrent={() => setSaveDraft({ text: draft })}
+      onOpenLibrary={() => setLibraryOpen(true)}
       onOpenShortcuts={onOpenShortcuts}
+      onCloseAutoFocus={(event) => {
+        // A chosen prompt hands focus to its values card (or the field it filled);
+        // anything else returns it to ⋯ as usual.
+        const target = optionsCloseFocus.current;
+        optionsCloseFocus.current = null;
+        if (!target) return;
+        event.preventDefault();
+        if (target === 'card') focusCard();
+        else focusTextarea();
+      }}
     />
   );
 
@@ -482,21 +581,54 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const dialogs = (
     <>
       <SavePromptDialog
-        open={saveText !== null}
+        open={saveDraft !== null}
         onOpenChange={(open) => {
-          if (!open) setSaveText(null);
+          if (!open) setSaveDraft(null);
         }}
-        initialText={saveText ?? ''}
+        initialText={saveDraft?.text ?? ''}
+        initial={saveDraft}
         controller={prompts}
         onCloseFocus={focusTextarea}
       />
-      <ManagePromptsDialog
-        open={manageOpen}
-        onOpenChange={setManageOpen}
-        controller={prompts}
-        onUse={insertPrompt}
-        onCloseFocus={focusTextarea}
-      />
+      {isCase ? null : (
+        <PromptLibraryDialog
+          open={libraryOpen}
+          onOpenChange={setLibraryOpen}
+          controller={prompts}
+          context={context}
+          contextError={contextError}
+          onUse={(prompt) => void pickPrompt(prompt)}
+          onCompose={(next) => setSaveDraft(next)}
+          // A chosen prompt with values moves focus into its card (its first value, or
+          // Run for a promptbook without values); otherwise back to the field.
+          onCloseFocus={focusCard}
+        />
+      )}
+    </>
+  );
+
+  // The values card (a prompt with placeholders, or a promptbook) and the promptbook's
+  // step counter sit above the field.
+  const promptCards = isCase ? null : (
+    <>
+      <PromptbookBar runner={book} onClosed={focusTextarea} />
+      {plan ? (
+        <PromptParamsCard
+          key={plan.prompt.id}
+          plan={plan}
+          // A prompt and a promptbook alike wait for the current answer, a running
+          // promptbook or whatever else blocks sending, and say which. The longer-lived
+          // reason wins: a running book keeps the engine busy step after step, so
+          // "wait for the current answer" would be wrong until the whole book ends.
+          canRun={!running && !blockReason}
+          blockedReason={blockReason ?? (running ? 'Wait for the current answer to finish.' : null)}
+          onSubmit={(steps) => runPlan(plan, steps)}
+          onCancel={() => {
+            setPlan(null);
+            focusTextarea();
+          }}
+        />
+      ) : null}
     </>
   );
 
@@ -529,6 +661,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- delegated Esc-to-stop for the composer's own native controls
     <div ref={rootRef} className={cn('w-full', className)} onKeyDown={onRootKeyDown} data-chat-composer="workspace">
+      {promptCards}
       <label className="sr-only" htmlFor={inputId}>
         Message the assistant
       </label>

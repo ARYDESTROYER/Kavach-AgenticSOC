@@ -11,6 +11,11 @@
  * Modes: `screen` renders items through the lazy `AnswerBlocks` (interactive charts);
  * `print` receives a synchronous block renderer (the preloaded static `BlockCard`) so
  * the portal is complete before `window.print()` runs. The live UI is never defanged.
+ *
+ * Round 12: on screen, a report whose template is `infographic` draws its findings as
+ * ONE infographic Brief re-assembled from its items (`InfographicFindings`: hero KPI row,
+ * highlights, 2-up chart grid), with every note and source link listed under it. Print
+ * and the file exports keep the document layout.
  */
 import * as React from 'react';
 import { ExternalLink } from 'lucide-react';
@@ -21,6 +26,7 @@ import { focusRing } from '@/lib/ui-recipes';
 import { EMPTY_LOOKUP_TEXT, SOURCE_UNAVAILABLE, itemKindLabel, type DocItem, type ReportDoc } from './model';
 import { NodesView } from './NodesView';
 import { ItemBlocks } from './ItemBlocks';
+import { InfographicFindings, infographicBrief, wantsInfographic } from './InfographicFindings';
 import { formatUtc } from '../blocks/format';
 import { sectionNodes, type WalkOptions } from './export/walker';
 
@@ -65,6 +71,11 @@ export function ReportDocument({
     };
   }, [doc, defangOn, showTitle, mode]);
   const { header, summary, methodology, appendix } = nodes;
+  // The on-screen infographic layout (never in print, never with a caller's renderer).
+  const brief = React.useMemo(
+    () => (mode === 'screen' && !renderBlocks && wantsInfographic(doc) ? infographicBrief(doc) : null),
+    [doc, mode, renderBlocks],
+  );
   const H2 = `h${Math.min(6, 2 + headingShift)}` as 'h2' | 'h3';
   const H3 = `h${Math.min(6, 3 + headingShift)}` as 'h3' | 'h4';
 
@@ -83,7 +94,16 @@ export function ReportDocument({
           {doc.kind === 'conversation' ? 'Conversation' : 'Findings'}
         </H2>
         {doc.items.length === 0 ? <p className="text-sm text-muted-foreground">This report has no items yet.</p> : null}
-        {doc.items.map((item, index) => {
+        {brief ? (
+          <InfographicFindings
+            doc={doc}
+            brief={brief}
+            headingShift={headingShift}
+            onOpenSource={onOpenSource}
+            unavailableConversations={unavailableConversations}
+          />
+        ) : null}
+        {brief ? null : doc.items.map((item, index) => {
           const gone = unavailableConversations?.has(item.source.conversation_id) ?? false;
           const meta: string[] = [itemKindLabel(item)];
           if (item.scope.window) meta.push(`Window: ${item.scope.window}`);

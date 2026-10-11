@@ -20,7 +20,16 @@
  */
 import { maybeDefang } from '@/lib/defang';
 
-import { formatDelta, formatUtc, formatValue, plainDocTitle, truncationNote, unitLabel } from '../../blocks/format';
+import {
+  INVESTIGATION_BRIEF_ADVISORY,
+  INVESTIGATION_BRIEF_ADVISORY_NOTE,
+  formatDelta,
+  formatUtc,
+  formatValue,
+  plainDocTitle,
+  truncationNote,
+  unitLabel,
+} from '../../blocks/format';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
 import type { AnswerBlock, Cell, ColumnType, KpiItem, LeafBlock, TableBlock, ToneKey, ValueUnit } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
@@ -159,6 +168,11 @@ class Walker {
 
   para(text: string, muted = false): void {
     if (text) this.push({ k: 'para', line: [{ text: this.f(text) }], muted });
+  }
+
+  /** The investigation brief's advisory label (engine text: never defanged). */
+  advisory(): void {
+    this.push({ k: 'callout', tone: 'info', label: INVESTIGATION_BRIEF_ADVISORY, text: INVESTIGATION_BRIEF_ADVISORY_NOTE });
   }
 
   table(
@@ -433,6 +447,8 @@ class Walker {
           scope.push(`Generated ${formatUtc(block.scope.generated_at)}`);
           this.push({ k: 'meta', text: this.f(scope.join(' · ')) });
         }
+        // P1-3 (#3): a brief recommends; the case decision is the policy's.
+        if (block.template === 'investigation_brief') this.advisory();
         for (const section of block.sections) {
           this.heading(level + 1, section.heading);
           if (section.summary) this.para(section.summary);
@@ -508,6 +524,13 @@ const utc = (iso: string | null | undefined): string => formatUtc(iso ?? undefin
 
 /** The header block: title, then engine-written metadata lines. */
 export function headerNodes(doc: ReportDoc, w: Walker): void {
+  headerLines(doc, w);
+  // P1-3 (#3): a saved or exported investigation brief keeps its advisory label on
+  // screen (the library draws this header), in Print and in every file export.
+  if (doc.template === 'investigation_brief') w.advisory();
+}
+
+function headerLines(doc: ReportDoc, w: Walker): void {
   w.heading(1, doc.title);
   const first: string[] = [w.screen ? `Updated ${utc(doc.updatedAt)}` : `Generated ${utc(doc.generatedAt)}`];
   if (doc.author) first.push(`Author: ${doc.author}`);

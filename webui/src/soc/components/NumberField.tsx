@@ -11,7 +11,9 @@
  *  - out-of-range / non-numeric text sets `aria-invalid` until blur clamps it.
  *  - `unit` renders as a muted suffix inside the field (e.g. "min", "%").
  *  - `defaultValue` (+ `onChange` back to it) powers an inline reset affordance.
- *  - stepper +/- buttons are IconButtons (≥24px target) and respect min/max.
+ *  - stepper +/- buttons are IconButtons (≥24px target) and respect min/max. They move
+ *    by `stepperStep` when given (a money field snaps typed values to the cent but steps
+ *    by whole dollars), else by `step`.
  *
  * The clamp math is the load-bearing behavior (tested): a value below `min`
  * commits `min`, above `max` commits `max`, and empty/NaN commits `min` (or
@@ -39,6 +41,8 @@ export interface NumberFieldProps {
   max?: number;
   /** Step granularity for the +/- buttons AND blur snapping. Default 1. */
   step?: number;
+  /** How far one +/- press (or ↑/↓) moves, when it should differ from `step`. */
+  stepperStep?: number;
   /** Muted suffix inside the field (e.g. "min", "%", "events"). */
   unit?: string;
   /** Default value; shows a reset button when the current value differs. */
@@ -78,6 +82,7 @@ export const NumberField = React.forwardRef<HTMLInputElement, NumberFieldProps>(
       min,
       max,
       step = 1,
+      stepperStep,
       unit,
       defaultValue,
       required,
@@ -113,15 +118,16 @@ export const NumberField = React.forwardRef<HTMLInputElement, NumberFieldProps>(
       [defaultValue, min, max, step, value, onChange],
     );
 
+    const increment = stepperStep && stepperStep > 0 ? stepperStep : step;
     const bump = React.useCallback(
       (dir: 1 | -1) => {
         const base = Number.isNaN(parsed) ? value : parsed;
-        const next = clampNumber(base + dir * step, { min, max, step });
+        const next = clampNumber(base + dir * increment, { min, max, step });
         setEditing(false);
         setText(String(next));
         if (next !== value) onChange(next);
       },
-      [parsed, value, step, min, max, onChange],
+      [parsed, value, increment, step, min, max, onChange],
     );
 
     const canReset = defaultValue != null && value !== defaultValue;

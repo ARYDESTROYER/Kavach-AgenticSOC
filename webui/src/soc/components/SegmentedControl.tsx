@@ -36,6 +36,8 @@ export interface SegmentedControlProps<T extends string = string> {
   onValueChange: (value: T) => void;
   /** Accessible name for the group. */
   'aria-label'?: string;
+  /** Id(s) of the text that explains the choice (read after the group's name). */
+  'aria-describedby'?: string;
   size?: 'sm' | 'md';
   /** Equal-width segments filling the container. Default false. */
   fitted?: boolean;
@@ -60,6 +62,7 @@ export function SegmentedControl<T extends string = string>({
       onValueChange={(v) => onValueChange(v as T)}
       disabled={disabled}
       aria-label={rest['aria-label']}
+      aria-describedby={rest['aria-describedby']}
       // Horizontal layout → Left/Right arrows move the roving selection (matching the
       // visual order), not the default Up/Down.
       orientation="horizontal"

@@ -457,9 +457,11 @@ starts. A finished turn reads answer → blocks → meta row → follow-ups (lat
 The meta row is one 28 px `text-xs` line: a disclosure that reopens the run log in place
 ("4 lookups · 6.2 s"; "Answered in 1.1 s" without lookups), the token figure that opens
 the usage details (a popover: click, tap, Enter, or hover with a mouse), **Sources n**,
-and the Copy / Add to report / Ask again icon actions — always visible on the latest
-turn and revealed on hover or focus-within on older ones by opacity, never
-`visibility: hidden` (a hidden control cannot take focus), with their space reserved.
+and the Copy / Good answer / Bad answer / Add to report / Add to case / Ask again icon
+actions — always visible on the latest turn and revealed on hover or focus-within on
+older ones by opacity, never `visibility: hidden` (a hidden control cannot take focus),
+with their space reserved. Below a 30rem meta row the thumbs stay and the other actions
+move into one ⋯ menu, so the row's figures stay whole.
 A turn without recorded usage reads "Usage not recorded · —", never 0, followed by the
 model and source it ran on when known; Demo Mode appends "simulated". Quiet lines
 follow when relevant: a memory echo or proposal (confirmable only with
@@ -476,11 +478,46 @@ turn.
 `aria-disabled` with the reason ("Report is full (40 items)") in its tooltip, a new add
 is refused with that reason, and an item already in the report stays removable.
 
-**Notices.** Partial, denied, timeout, provider, breaker, cancelled, unsupported and
-budget notices are one callout at the top of the answer, with Retry only when the
-notice is retryable. A capped answer offers "Continue where this stopped (≈ +N tokens)"
-when it is the latest turn; an answer stopped by the time limit offers Retry instead.
-A failed turn offers **Retry same request** (same idempotency key) or, when retrying
+**Answer features (Round 12).** A clarify answer shows its question in a card with up
+to four option chips and "Something else…" (a pick is `origin: clarify`, typed words are
+the analyst's own); the card says "Needs input" on the latest turn and becomes a quiet
+"Asked: …" line once answered. A lookup that matched nothing offers the engine's
+widen-the-search chips LAST, below the follow-ups: they load after the answer, so they
+only append (nothing above them moves, and a chip a shown follow-up already asks is left
+out instead of removing that follow-up). Every settled lookup in the run log has
+**Inspect**, a side sheet that opens on its title, with what was sent (an input shown as
+untrusted is not repeated as a plain value), its time, rows and tokens, and the stored
+observation the model saw as untrusted text. In both halves (untrusted inputs, the query
+as run, and the observation) invisible and bidi characters are written as visible `\uXXXX`
+escapes as the model read them; a copy cut for storage says the model saw the full result.
+**Explain this step** and, for a failed lookup, **Retry step** name the answer by quoting
+its question (step numbers restart in every answer) and, when several answers replied to
+the same question, by its recency ("your second most recent answer to …"). The thumbs are
+one single-choice group ("Rate this answer", radios, one tab stop): a rating can be
+changed, not withdrawn. Thumbs down opens a reason panel (Wrong, Incomplete, Slow, Other,
+an optional comment, "never used to train a model"), scrolled clear of the transcript's
+bottom band; **Add details** beside a down rating reopens it. The stored rating shows on
+reload. A report the server saved reads "Saved to Reports · title · Open · Export"; when
+that save failed and may work later, **Save as report** saves the same report once per
+answer and records it on the answer. **Add to case** previews the exact comment as plain
+text (no Markdown syntax; a cited `[D1]` marker is kept and resolved by a "Sources:" list
+at the end, an uncited one is dropped), picks the case from a single-choice list with a
+result count, and posts only after a case is picked; chart and table blocks stay in chat.
+A long answer gets a one-line contents row and **Jump to end** (an in-flow end marker, so
+it lands where the answer ends), and Ctrl/⌘+Shift+C copies the latest answer under the
+chat shortcut rules (the typed character decides, never during IME composition or on
+repeat, and never while a dialog or sheet owns the keyboard). An investigation brief is
+labelled "Advisory — the case decision is made by policy (decide())" in chat, in the
+Reports library, in Print and in every export.
+
+**Notices.** Partial, denied, timeout, provider, breaker, cancelled, unsupported, limited,
+stopped-repeating and budget notices are one callout at the top of the answer, with
+Retry only when the notice is retryable. Chat has no answer limits (Round 12 SPEC D2/D3):
+there is no Continue chip, and a limit never earns a "Partial" label (that word is kept
+for a real failure); in the operator's bounded mode a capped answer says so in its
+callout. A summary of earlier messages is a quiet line and a run-log note, never a
+callout; continuation and a very long investigation's wrap-up are run-log notes. An
+unsupported answer names a console page only when one resolved. A failed turn offers **Retry same request** (same idempotency key) or, when retrying
 cannot help, **Ask again** (a new key). A locally stopped turn says "Stopped. The saved
 version appears after refresh." The daily AI budget never limits chat (Round 12 SPEC D5):
 it bounds automatic investigations, and chat's spend is recorded in the cost ledger without

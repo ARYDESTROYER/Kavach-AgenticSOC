@@ -387,7 +387,8 @@ export function ThreadToolbar({
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
-            className="w-56"
+            // Wide enough that "Save conversation as report" stays on one line.
+            className="w-64"
             onCloseAutoFocus={(event) => {
               if (!renamingRef.current) return;
               renamingRef.current = false;

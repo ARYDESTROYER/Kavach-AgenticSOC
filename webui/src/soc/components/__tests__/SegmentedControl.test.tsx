@@ -39,6 +39,16 @@ describe('SegmentedControl — radiogroup semantics', () => {
     expect(onValueChange).toHaveBeenCalledWith('b');
   });
 
+  it('passes a description through to the radio group', () => {
+    render(
+      <>
+        <SegmentedControl aria-label="Pick one" aria-describedby="seg-help" value="a" onValueChange={() => {}} options={options} />
+        <p id="seg-help">What each option means.</p>
+      </>,
+    );
+    expect(screen.getByRole('radiogroup', { name: 'Pick one' })).toHaveAccessibleDescription('What each option means.');
+  });
+
   it('marks a disabled option as disabled', () => {
     render(
       <SegmentedControl

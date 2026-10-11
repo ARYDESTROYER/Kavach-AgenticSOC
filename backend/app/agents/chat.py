@@ -1640,7 +1640,7 @@ class _AgentTurn:
         # turn offers tools at all (a one-call turn lists none).
         disabled = [n for n in (getattr(self.toolbox, "disabled", ()) or ()) if isinstance(n, str)]
         system = render_chat_agent_system(
-            signatures, max_parallel=self.cfg.max_parallel, time_window=window,
+            signatures, max_parallel=self.cfg.effective_parallel, time_window=window,
             case_scoped=bool(self.case_id), scopes=sorted(self.ctx.scopes),
             disabled_tools=disabled if (self.unlimited or self.cfg.max_model_calls > 1) else (),
             # SPEC D7: calendar periods resolve in the operator timezone; the model is

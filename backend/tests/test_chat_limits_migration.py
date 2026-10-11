@@ -102,6 +102,41 @@ def test_programmatic_constructions() -> None:
     assert ChatAgentConfig(limits_mode=" BOUNDED ").limits_mode == "bounded"
 
 
+def test_lookups_at_once_is_capped_by_the_lookup_budget_only_in_bounded_mode() -> None:
+    # Unlimited (D1): max_tool_calls is not a cap, so it never limits parallelism.
+    unlimited = ChatAgentConfig(limits_mode="unlimited", max_tool_calls=3, max_parallel=8)
+    assert unlimited.limits_mode == "unlimited"
+    assert (unlimited.max_tool_calls, unlimited.max_parallel) == (3, 8)
+    assert unlimited.effective_parallel == 8
+    # Bounded: one batch can never be larger than the per-question lookup budget, but
+    # that limit is applied at use, never written back over the operator's value.
+    bounded = ChatAgentConfig(limits_mode="bounded", max_tool_calls=3, max_parallel=8)
+    assert (bounded.max_tool_calls, bounded.max_parallel) == (3, 8)
+    assert bounded.effective_parallel == 3
+    # A stored unlimited block keeps its parallelism through Preferences too.
+    prefs = Preferences.model_validate(
+        _stored(limits_mode="unlimited", chat_limits_version=CURRENT_CHAT_LIMITS_VERSION,
+                max_tool_calls=3, max_parallel=8))
+    assert prefs.chat_agent.max_parallel == 8
+
+
+def test_a_mode_round_trip_keeps_lookups_at_once() -> None:
+    """Bounded → Unlimited (and a save while Bounded) never lowers the stored
+    ``max_parallel``: switching modes is lossless (SPEC D1)."""
+    stored = _stored(limits_mode="unlimited", chat_limits_version=CURRENT_CHAT_LIMITS_VERSION,
+                     max_tool_calls=3, max_parallel=8)
+    as_bounded = Preferences.model_validate(stored).chat_agent.model_dump(mode="json")
+    as_bounded["limits_mode"] = "bounded"
+    saved_bounded = Preferences.model_validate(_stored(**as_bounded)).chat_agent
+    assert (saved_bounded.limits_mode, saved_bounded.max_parallel) == ("bounded", 8)
+    assert saved_bounded.effective_parallel == 3
+    back = saved_bounded.model_dump(mode="json")
+    back["limits_mode"] = "unlimited"
+    saved_unlimited = Preferences.model_validate(_stored(**back)).chat_agent
+    assert (saved_unlimited.limits_mode, saved_unlimited.max_parallel) == ("unlimited", 8)
+    assert saved_unlimited.effective_parallel == 8
+
+
 @pytest.mark.parametrize("raw,expected", [
     (None, None), (0, None), (-5, None), ("nan", None), (float("inf"), None), ("abc", None),
     (True, None), ("2.5", 2.5), (10, 10.0),

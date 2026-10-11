@@ -483,3 +483,12 @@ export function truncationNote(shown: number, total: number | null): string {
   if (total !== null && total > shown) return `Showing top ${num(shown, 0)} of ${num(total, 0)}`;
   return `Showing the first ${num(shown, 0)}; more exist`;
 }
+
+/**
+ * The investigation brief's label (Round 12 SYNTHESIS-chat P1-3, #3): the brief is the
+ * model's advisory assessment; the close/escalate decision is the deterministic policy's.
+ * ONE string for the in-chat Brief, the Reports library, Print and every file export.
+ */
+export const INVESTIGATION_BRIEF_ADVISORY = 'Advisory — the case decision is made by policy (decide())';
+/** The sentence that follows the label wherever it is a callout (documents, exports). */
+export const INVESTIGATION_BRIEF_ADVISORY_NOTE = 'This brief is the model’s assessment. It never closes or escalates a case.';

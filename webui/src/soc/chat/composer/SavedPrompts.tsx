@@ -68,6 +68,24 @@ export interface SavedPromptsController {
   update: (id: string, patch: SavedPromptPatch) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
   saving: boolean;
+  /** Forget the last write's error (a dialog that opens starts clean). */
+  clearError: () => void;
+}
+
+/**
+ * A write refused because the list changed in another tab (the prompt is gone, or the
+ * list is full). It carries the list as the server has it now, so the view shows that
+ * instead of a row every later action would fail on.
+ */
+export class StalePromptsError extends ApiError {
+  constructor(
+    status: number,
+    message: string,
+    readonly prompts: ChatPrompt[],
+  ) {
+    super(status, message, null);
+    this.name = 'StalePromptsError';
+  }
 }
 
 const message = (error: unknown, fallback: string) =>
@@ -85,11 +103,15 @@ function stored(list: readonly ChatPrompt[], wanted: ChatPrompt): boolean {
   return (got.category ?? null) === (wanted.category ?? null) && Boolean(got.favorite) === Boolean(wanted.favorite);
 }
 
-/** Add one prompt (a promptbook gets its id prefix). Refuses a 51st. */
+/**
+ * Add one prompt (a promptbook gets its id prefix). Refuses a 51st. A blank title is
+ * taken from the first line (a promptbook's first step), never from the whole text with
+ * its `---` step separators flattened into it.
+ */
 export async function addLibraryPrompt(input: SavedPromptInput): Promise<{ prompt: ChatPrompt; prompts: ChatPrompt[] }> {
   const prompt = shaped({
     id: newPromptId(Boolean(input.book)),
-    title: input.title ?? '',
+    title: input.title?.trim() || defaultPromptTitle(input.text),
     text: input.text,
     ...(input.category ? { category: input.category } : {}),
     ...(input.favorite ? { favorite: true } : {}),
@@ -97,7 +119,7 @@ export async function addLibraryPrompt(input: SavedPromptInput): Promise<{ promp
   if (!prompt) throw new ApiError(422, 'Write the prompt text first.', null);
   const current = await getSavedPrompts();
   if (current.length >= SAVED_PROMPT_LIMITS.prompts) {
-    throw new ApiError(409, `You have ${SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.`, null);
+    throw new StalePromptsError(409, `You have ${SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.`, current);
   }
   const list = await putSavedPrompts([...current, prompt]);
   if (!stored(list, prompt)) throw new ApiError(501, SAVED_PROMPTS_UNSUPPORTED, null);
@@ -108,7 +130,7 @@ export async function addLibraryPrompt(input: SavedPromptInput): Promise<{ promp
 export async function updateLibraryPrompt(id: string, patch: SavedPromptPatch): Promise<ChatPrompt[]> {
   const current = await getSavedPrompts();
   const target = current.find((p) => p.id === id);
-  if (!target) throw new ApiError(404, 'That prompt no longer exists.', null);
+  if (!target) throw new StalePromptsError(404, 'That prompt no longer exists.', current);
   const merged: ChatPrompt = { ...target, ...patch };
   if (!merged.category) delete merged.category;
   if (!merged.favorite) delete merged.favorite;
@@ -174,7 +196,14 @@ export function useSavedPrompts(): SavedPromptsController {
       }
       return true;
     } catch (err) {
-      if (alive.current) setError(message(err, fallback));
+      if (alive.current) {
+        setError(message(err, fallback));
+        // The list changed elsewhere: show it as it is now.
+        if (err instanceof StalePromptsError) {
+          setPrompts(err.prompts);
+          setState('ready');
+        }
+      }
       return false;
     } finally {
       if (alive.current) setSaving(false);
@@ -194,7 +223,12 @@ export function useSavedPrompts(): SavedPromptsController {
     [write],
   );
 
-  return { prompts, state, error, load, save, update, remove, saving };
+  const clearError = React.useCallback(() => {
+    // A failed LOAD keeps its message until the next load (the dialogs retry it).
+    setError((prev) => (prev !== null && loadStarted.current ? null : prev));
+  }, []);
+
+  return { prompts, state, error, load, save, update, remove, saving, clearError };
 }
 
 /** First line of a prompt, bounded to the title limit. */
@@ -237,7 +271,9 @@ export function SavePromptDialog({ open, onOpenChange, initialText, initial = nu
   const textId = React.useId();
   const categoryId = React.useId();
   const textHelpId = React.useId();
-  const { load } = controller;
+  const problemId = React.useId();
+  const fullId = React.useId();
+  const { load, clearError } = controller;
   const editing = Boolean(initial?.editId);
 
   React.useEffect(() => {
@@ -247,20 +283,24 @@ export function SavePromptDialog({ open, onOpenChange, initialText, initial = nu
     setText(startText.slice(0, SAVED_PROMPT_LIMITS.text_chars));
     setCategory(isPromptCategory(initial?.category) ? initial.category : null);
     setBook(Boolean(initial?.book));
+    // Another action's failure (a delete in the library) is not this dialog's.
+    clearError();
     load();
-  }, [open, initialText, initial, load]);
+  }, [open, initialText, initial, load, clearError]);
 
   const full = !editing && controller.state === 'ready' && controller.prompts.length >= SAVED_PROMPT_LIMITS.prompts;
   const bookProblem = book && text.trim() ? promptbookProblem(text) : null;
   const params = React.useMemo(() => (book ? promptParams(...promptbookSteps(text)) : promptParams(text)), [book, text]);
   const canSave = !controller.saving && !full && text.trim().length > 0 && !bookProblem;
+  // Why Save cannot be used, as the button's description (it stays focusable).
+  const blockedBy = [bookProblem ? problemId : null, full ? fullId : null].filter(Boolean).join(' ') || undefined;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canSave) return;
     const ok = initial?.editId
       ? await controller.update(initial.editId, { title: title.trim() || defaultPromptTitle(text), text, category })
-      : await controller.save({ title: title.trim(), text, category, book });
+      : await controller.save({ title: title.trim() || defaultPromptTitle(text), text, category, book });
     if (ok) {
       announce(editing ? 'Prompt updated' : book ? 'Promptbook saved' : 'Prompt saved');
       onOpenChange(false);
@@ -340,7 +380,7 @@ export function SavePromptDialog({ open, onOpenChange, initialText, initial = nu
               value={text}
               maxLength={SAVED_PROMPT_LIMITS.text_chars}
               onChange={(event) => setText(event.target.value)}
-              aria-describedby={textHelpId}
+              aria-describedby={bookProblem ? `${textHelpId} ${problemId}` : textHelpId}
               aria-invalid={bookProblem ? true : undefined}
               className="min-h-28"
             />
@@ -360,19 +400,33 @@ export function SavePromptDialog({ open, onOpenChange, initialText, initial = nu
                 Asks for: {params.map(paramLabel).join(', ')}
               </p>
             ) : null}
-            {bookProblem ? <p className="text-xs text-critical-text">{bookProblem}</p> : null}
+            {bookProblem ? (
+              <p id={problemId} className="text-xs text-critical-text">
+                {bookProblem}
+              </p>
+            ) : null}
           </div>
           {full ? (
-            <p className="text-xs text-warning-text">
+            <p id={fullId} className="text-xs text-warning-text">
               You have {SAVED_PROMPT_LIMITS.prompts} saved prompts. Delete one to save another.
             </p>
           ) : null}
-          {controller.error ? <p className="text-xs text-critical-text">{controller.error}</p> : null}
+          {controller.error ? (
+            <p role="alert" className="text-xs text-critical-text">
+              {controller.error}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!canSave} aria-busy={controller.saving || undefined}>
+            <Button
+              type="submit"
+              aria-disabled={!canSave || undefined}
+              aria-describedby={blockedBy}
+              aria-busy={controller.saving || undefined}
+              className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+            >
               {editing ? 'Save changes' : book ? 'Save promptbook' : 'Save prompt'}
             </Button>
           </DialogFooter>

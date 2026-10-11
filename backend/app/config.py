@@ -1807,15 +1807,25 @@ class ChatAgentConfig(BaseModel):
         """True when the per-question knobs do not apply (SPEC D1)."""
         return self.limits_mode != "bounded"
 
+    @property
+    def effective_parallel(self) -> int:
+        """Lookups that may run side by side in one step: ``max_parallel``, and in
+        ``bounded`` mode never more than the per-question lookup budget. Computed, never
+        stored: rewriting ``max_parallel`` would make a Bounded → Unlimited round trip
+        lose the operator's value, and the engine stops lookups at ``max_tool_calls``
+        anyway (SPEC D1: switching modes is lossless)."""
+        if self.unlimited:
+            return self.max_parallel
+        return max(1, min(self.max_parallel, self.max_tool_calls))
+
     @model_validator(mode="after")
     def _coherent(self) -> "ChatAgentConfig":
         """Repair cross-field incoherence instead of rejecting it: the final reserve
-        must leave room for tool rounds inside the ceiling, and a batch can never be
-        larger than the per-turn tool budget."""
+        must leave room for tool rounds inside the ceiling. ``max_parallel`` is never
+        rewritten against ``max_tool_calls`` (that would not survive a mode round trip);
+        :attr:`effective_parallel` applies the bounded-mode limit at use."""
         if self.final_reserve_tokens >= self.turn_token_ceiling:
             self.final_reserve_tokens = max(1_000, self.turn_token_ceiling // 5)
-        if self.max_parallel > self.max_tool_calls:
-            self.max_parallel = self.max_tool_calls
         return self
 
     @classmethod

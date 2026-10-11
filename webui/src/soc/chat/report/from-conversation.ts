@@ -17,11 +17,15 @@ import type { Report } from '@/lib/types';
 import { isSafeChatId, normaliseReport } from '../chat-api';
 import { reportErrorCode, reportErrorMessage } from './report-sync';
 
-/** What a save returns: the report, how many items it holds and how many answers did not fit. */
+/** What a save returns: the report, how many items it holds and how many parts did not fit. */
 export interface ConversationReportResult {
   report: Report;
   items: number;
-  /** Answers that did not fit in the report (its item limit). */
+  /**
+   * Parts of the conversation that did not fit the report's item limit. The server
+   * counts whole answers AND the extra sections of a long answer it split, so this is a
+   * count of parts, not of answers.
+   */
   skipped: number;
   /** False when the same save was already done (an idempotent replay). */
   created: boolean;
@@ -94,11 +98,14 @@ export function conversationReportErrorMessage(error: unknown): string {
   }
 }
 
-/** "4 sections" / "1 section" plus the answers that did not fit, for the toast. */
+/**
+ * "4 sections" / "1 section" plus what did not fit, for the toast. Unit-neutral ("parts"):
+ * the server's count mixes whole answers with the continued sections of a long one.
+ */
 export function conversationReportSummary(result: Pick<ConversationReportResult, 'items' | 'skipped'>): string {
   const parts = [`${result.items} ${result.items === 1 ? 'section' : 'sections'}`];
   if (result.skipped > 0) {
-    parts.push(`${result.skipped} ${result.skipped === 1 ? 'answer' : 'answers'} did not fit`);
+    parts.push(`${result.skipped} more ${result.skipped === 1 ? 'part' : 'parts'} did not fit`);
   }
   return parts.join(' · ');
 }

@@ -85,8 +85,18 @@ export const BOUNDED_ONLY_KNOBS: readonly ChatAgentNumericKey[] = [
 
 /** The editor's first value for the chat daily limit when it is switched on. */
 export const CHAT_CAP_STARTING_USD = 5;
-/** The smallest limit the editor offers (the backend keeps any positive amount). */
-export const CHAT_CAP_MIN_USD = 0.01;
+/** Typed amounts keep cents; the +/- buttons move by whole dollars. */
+export const CHAT_CAP_STEP_USD = 0.01;
+export const CHAT_CAP_STEPPER_USD = 1;
+
+/**
+ * What the "Limit per day" field stores: a positive amount, else `null` (off). 0 is the
+ * backend's "no limit" (`_repair_chat_cap`), never a one-cent limit that would block
+ * almost every chat model call.
+ */
+export function chatCapFromField(value: number): number | null {
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
 
 /**
  * `config._repair_chat_cap`: a positive finite number, else `null` (off). The editor
@@ -149,8 +159,10 @@ export function normaliseInternalDomain(raw: string): string | null {
 /**
  * The block as the editor shows it: stored values over the defaults, then the same
  * cross-field repair `ChatAgentConfig._coherent` applies on save — the final-answer
- * reserve must leave room for lookups inside the ceiling, and one batch can never be
- * larger than the per-question lookup budget.
+ * reserve must leave room for lookups inside the ceiling. Lookups at once is never
+ * rewritten here: in Bounded mode one batch is limited by the per-question lookup budget
+ * at run time ({@link effectiveParallel}, the backend's `effective_parallel`), so a
+ * Bounded → Unlimited round trip keeps the operator's value.
  */
 export function coherentChatAgent(stored: Partial<ChatAgentConfig> | null | undefined): ChatAgentConfig {
   const cfg: ChatAgentConfig = {
@@ -161,10 +173,18 @@ export function coherentChatAgent(stored: Partial<ChatAgentConfig> | null | unde
   if (cfg.final_reserve_tokens >= cfg.turn_token_ceiling) {
     cfg.final_reserve_tokens = Math.max(1_000, Math.floor(cfg.turn_token_ceiling / 5));
   }
-  if (cfg.max_parallel > cfg.max_tool_calls) cfg.max_parallel = cfg.max_tool_calls;
   cfg.limits_mode = limitsMode(cfg);
   cfg.chat_daily_cap_usd = repairChatCap(cfg.chat_daily_cap_usd);
   return cfg;
+}
+
+/**
+ * Lookups that really run side by side in one step (backend
+ * `ChatAgentConfig.effective_parallel`): the stored value, and in Bounded mode never more
+ * than Lookups per question. Display only — never written back.
+ */
+export function effectiveParallel(cfg: Pick<ChatAgentConfig, 'limits_mode' | 'max_parallel' | 'max_tool_calls'>): number {
+  return cfg.limits_mode === 'bounded' ? Math.max(1, Math.min(cfg.max_parallel, cfg.max_tool_calls)) : cfg.max_parallel;
 }
 
 /* -------------------------------------------------------------- rendering --- */
@@ -284,29 +304,49 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
   const mode = limitsMode(cfg);
   const bounded = mode === 'bounded';
   const capOn = cfg.chat_daily_cap_usd !== null && cfg.chat_daily_cap_usd !== undefined;
+  const limitsHelpId = React.useId();
+  const liveHelpId = React.useId();
+  const capSwitchRef = React.useRef<HTMLDivElement>(null);
 
   const set = (patch: Partial<ChatAgentConfig>) => update({ chat_agent: coherentChatAgent({ ...cfg, ...patch }) });
 
+  const focusCapSwitch = () => {
+    const active = document.activeElement;
+    if (active && active !== document.body && document.contains(active)) return;
+    capSwitchRef.current?.querySelector<HTMLElement>('[role="switch"]')?.focus();
+  };
+
   // A field's upper bound also respects the other knob it must stay coherent with, so
-  // the stepper never offers a value the server would repair.
+  // the stepper never offers a value the server would repair. Lookups at once is
+  // bounded by Lookups per question only where that is a cap (Bounded mode), and there
+  // the field shows the value that really applies; the stored value is kept as is, so
+  // switching back to Unlimited shows it again (display only, never saved).
   const maxFor = (key: ChatAgentNumericKey): number => {
     const [, hi] = CHAT_AGENT_BOUNDS[key];
-    if (key === 'max_parallel') return Math.min(hi, cfg.max_tool_calls);
+    if (key === 'max_parallel' && bounded) return Math.min(hi, cfg.max_tool_calls);
     if (key === 'final_reserve_tokens') return Math.min(hi, cfg.turn_token_ceiling - 1);
     return hi;
   };
+  const shown = (key: ChatAgentNumericKey): number => (key === 'max_parallel' ? effectiveParallel(cfg) : cfg[key]);
+  const defaultFor = (key: ChatAgentNumericKey): number =>
+    key === 'max_parallel' ? effectiveParallel({ ...cfg, max_parallel: CHAT_AGENT_DEFAULTS.max_parallel }) : CHAT_AGENT_DEFAULTS[key];
+
+  const describe = (spec: LimitSpec): string =>
+    spec.key === 'max_parallel' && bounded
+      ? `${spec.description} At most Lookups per question (${cfg.max_tool_calls}) in Bounded mode.`
+      : spec.description;
 
   const numberField = (spec: LimitSpec) => (
     <NumberField
       key={spec.key}
       label={spec.label}
-      description={spec.description}
-      value={cfg[spec.key]}
+      description={describe(spec)}
+      value={shown(spec.key)}
       min={CHAT_AGENT_BOUNDS[spec.key][0]}
       max={maxFor(spec.key)}
       step={spec.step}
       unit={spec.unit}
-      defaultValue={CHAT_AGENT_DEFAULTS[spec.key]}
+      defaultValue={defaultFor(spec.key)}
       onChange={(value) => set({ [spec.key]: value } as Partial<ChatAgentConfig>)}
     />
   );
@@ -326,12 +366,19 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
           <p className="text-sm font-medium leading-none text-foreground">Limits per question</p>
           <SegmentedControl
             aria-label="Limits per question"
+            aria-describedby={limitsHelpId}
             size="sm"
             options={LIMITS_OPTIONS}
             value={mode}
             onValueChange={(value) => set({ limits_mode: value })}
           />
-          <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground" data-testid="chat-limits-help">
+          {/* Linked to the switch and polite: a mode change reads what the mode means. */}
+          <p
+            id={limitsHelpId}
+            aria-live="polite"
+            className="max-w-3xl text-xs leading-relaxed text-muted-foreground"
+            data-testid="chat-limits-help"
+          >
             {LIMITS_MODE_HELP[mode]}
           </p>
         </div>
@@ -349,21 +396,32 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
 
       <section className="space-y-4 border-t border-border/70 pt-4">
         <SubHeader title="Spending" />
-        <SwitchPref
-          label="Daily chat spending limit"
-          help={CHAT_CAP_HELP}
-          checked={capOn}
-          onChange={(on) => set({ chat_daily_cap_usd: on ? (cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD) : null })}
-        />
+        <div ref={capSwitchRef}>
+          <SwitchPref
+            label="Daily chat spending limit"
+            help={CHAT_CAP_HELP}
+            checked={capOn}
+            onChange={(on) => set({ chat_daily_cap_usd: on ? (cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD) : null })}
+          />
+        </div>
         {capOn ? (
           <NumberField
             label="Limit per day"
-            description="US dollars of chat spending per day (UTC)."
+            description="US dollars of chat spending per day (UTC). 0 turns the limit off."
             value={cfg.chat_daily_cap_usd ?? CHAT_CAP_STARTING_USD}
-            min={CHAT_CAP_MIN_USD}
-            step={0.01}
+            min={0}
+            step={CHAT_CAP_STEP_USD}
+            stepperStep={CHAT_CAP_STEPPER_USD}
+            // A cleared field goes back to the starting amount, never to one cent.
+            defaultValue={CHAT_CAP_STARTING_USD}
             unit="USD"
-            onChange={(value) => set({ chat_daily_cap_usd: value })}
+            onChange={(value) => {
+              const cap = chatCapFromField(value);
+              set({ chat_daily_cap_usd: cap });
+              // 0 switched the limit off and this field goes away: if focus went with it,
+              // put it on the switch (never away from a control the operator moved to).
+              if (cap === null) window.setTimeout(focusCapSwitch, 0);
+            }}
             className="max-w-xs"
           />
         ) : null}
@@ -375,12 +433,13 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
           <p className="text-sm font-medium leading-none text-foreground">Default live mode</p>
           <SegmentedControl
             aria-label="Default live mode"
+            aria-describedby={liveHelpId}
             size="sm"
             options={MODE_OPTIONS.map((o) => ({ ...o, disabled: o.value === 'text' && !cfg.allow_text_streaming }))}
             value={cfg.allow_text_streaming ? cfg.default_stream_mode : 'steps'}
             onValueChange={(value) => set({ default_stream_mode: value })}
           />
-          <p className="text-xs text-muted-foreground">
+          <p id={liveHelpId} aria-live="polite" className="text-xs text-muted-foreground">
             {cfg.allow_text_streaming
               ? 'Applies until a viewer picks their own mode in the composer options.'
               : 'Answers arrive whole while typed-out answers are not allowed.'}

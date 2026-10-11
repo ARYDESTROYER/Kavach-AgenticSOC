@@ -262,7 +262,7 @@ describe('ThreadToolbar', () => {
     expect(calls[0].body.conversation_id).toBe('c-1');
     const [title, options] = toastSpy.success.mock.calls[0];
     expect(title).toBe('Saved to Reports');
-    expect(options.description).toBe('Failed sign-in review · 3 sections · 1 answer did not fit');
+    expect(options.description).toBe('Failed sign-in review · 3 sections · 1 more part did not fit');
     expect(options.action.label).toBe('Open report');
     options.action.onClick();
     expect(navigate).toHaveBeenCalledWith('reports', { reportId: 'rpt-1' });

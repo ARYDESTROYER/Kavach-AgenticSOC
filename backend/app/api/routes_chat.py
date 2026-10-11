@@ -1765,6 +1765,12 @@ async def _save_report_from_turn(
     except Exception as exc:  # noqa: BLE001 -- the answer stands; the error is reported
         logger.warning("chat report not saved (%s)", type(exc).__name__)
         error = _report_error("report_unavailable")
+    if error is not None and error.retryable:
+        # "Save as report" (POST /api/reports/from-answer) saves the report this answer
+        # asked for: its title and template travel on the stored error, server-side.
+        error = ChatReportSaveError.model_validate({
+            **error.model_dump(), "title": request.get("title"), "template": request.get("template"),
+        })
     updater = getattr(plan.store, "update_message_response", None)
     if callable(updater):
         record = (

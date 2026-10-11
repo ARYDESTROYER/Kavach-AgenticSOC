@@ -12,6 +12,9 @@
                                             token/cost estimate, no call).
 * ``POST   /api/reports/from-conversation`` — Round 12: save a whole Workspace
                                             conversation as a new report (D11).
+* ``POST   /api/reports/from-answer``     — Round 12: "Save as report" for one answer
+                                            whose header-requested save failed (D11);
+                                            idempotent per answer, recorded on it.
 
 Round 12 (SPEC D11) also saves a chat answer as a report when the final header asked
 for one: :func:`save_answer_as_report` (called by the chat turn route after the answer
@@ -804,6 +807,79 @@ async def report_from_conversation(
         skipped=max(0, len(items) - len(report.items)) + beyond,
         created=created,
     )
+
+
+class ReportFromAnswerRequest(BaseModel):
+    """``POST /api/reports/from-answer``: "Save as report" for one caller-owned
+    Workspace answer whose header-requested report could not be saved (D11). Nothing
+    else is client-supplied: the title and template the answer asked for are read
+    from the stored answer, and the content is resolved from it like every add."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    message_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _recorded_saved_report(value: Any) -> ChatSavedReport | None:
+    if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"]:
+        return None
+    try:
+        return ChatSavedReport.model_validate(value)
+    except ValueError:
+        return None
+
+
+@router.post("/reports/from-answer", response_model=ChatSavedReport)
+async def report_from_answer(
+    body: ReportFromAnswerRequest,
+    request: Request,
+    state: AppState = Depends(get_state),
+    _=Depends(require_permission("cases", "read")),
+) -> ChatSavedReport:
+    """Save one answer as the report its header asked for, after the server-side save
+    failed with a retryable error (``saved_report_error``). Idempotent PER ANSWER: the
+    report id derives from the owner, the conversation and the answer, so a second
+    click, another tab or a click after a reload returns the same report; an answer
+    already carrying ``saved_report`` returns that report without writing. The stored
+    answer then records ``saved_report`` and drops ``saved_report_error``, so a
+    reopened thread shows the saved line, never the offer again. Workspace answers
+    only (case-scoped turns never enter Workspace history, #5); audited (#2)."""
+    owner = current_username(request)
+    store = state.chat_conversations
+    try:
+        message = await store.message(owner, body.conversation_id, body.message_id)
+    except ChatHistoryUnavailable as exc:
+        raise _http(503, "chat_history_unavailable", "Chat history is temporarily unavailable.") from exc
+    if message is None or message.role != "assistant":
+        raise _not_found("message_not_found", "That answer is not in this conversation.")
+    response = message.response if isinstance(message.response, dict) else {}
+    recorded = _recorded_saved_report(response.get("saved_report"))
+    if recorded is not None:
+        return recorded
+    requested = response.get("saved_report_error") if isinstance(response.get("saved_report_error"), dict) else {}
+    try:
+        saved = await save_answer_as_report(
+            state, owner, conversation_id=body.conversation_id, message_id=body.message_id,
+            title=requested.get("title"), template=requested.get("template"),
+            # One key per answer: the same answer always resolves to the same report.
+            idempotency_key=f"save-as-report:{body.message_id}",
+        )
+    except ChatHistoryUnavailable as exc:
+        raise _http(503, "chat_history_unavailable", "Chat history is temporarily unavailable.") from exc
+    except _STORE_ERRORS as exc:
+        raise _map_store_error(exc) from exc
+    if saved is None:
+        raise _http(409, "report_empty", "This answer had nothing that could be saved to Reports.")
+    updater = getattr(store, "update_message_response", None)
+    if callable(updater):
+        try:
+            await updater(owner, body.conversation_id, body.message_id, {
+                "saved_report": saved.model_dump(mode="json"), "saved_report_error": None,
+            })
+        except Exception as exc:  # noqa: BLE001 -- the report stands; the derived id still dedupes
+            logger.info("saved report not recorded on the answer (%s)", type(exc).__name__)
+    return saved
 
 
 # --------------------------------------------------------------------------- #

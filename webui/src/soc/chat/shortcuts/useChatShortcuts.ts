@@ -6,10 +6,12 @@
  *
  * - Ctrl/Cmd+Shift+O — new chat
  * - Ctrl/Cmd+Shift+S — show or hide the history rail
- * - Ctrl/Cmd+Shift+C — copy the last answer (Round 12; the host passes the handler,
- *                      and without one the key is left to the browser)
  * - Shift+Esc        — focus the composer
  * - Ctrl/Cmd+/       — the shortcut sheet
+ *
+ * Ctrl/Cmd+Shift+C (copy the last answer, Round 12) is matched HERE too, under the same
+ * rules (`'copyLastAnswer'`), but handled by the newest settled answer itself
+ * (`message/useCopyLastAnswer.ts`): this hook leaves it alone.
  *
  * Never Ctrl/Cmd+K or Ctrl/Cmd+B in any combination (the console owns them). Events
  * are ignored while an input method is composing (`isComposing` / keyCode 229), when
@@ -28,11 +30,6 @@ export interface ChatShortcutHandlers {
   focusComposer: () => void;
   /** Ctrl/Cmd+/ */
   openShortcuts: () => void;
-  /**
-   * Ctrl/Cmd+Shift+C (Round 12): copy the last answer. Optional: a host without it
-   * leaves the key to the browser (nothing is prevented).
-   */
-  copyLastAnswer?: () => void;
 }
 
 /** `aria-keyshortcuts` values for the controls that own these actions. */
@@ -41,10 +38,11 @@ export const CHAT_KEYSHORTCUTS = {
   toggleHistory: 'Control+Shift+S Meta+Shift+S',
   focusComposer: 'Shift+Escape',
   openShortcuts: 'Control+/ Meta+/',
-  copyLastAnswer: 'Control+Shift+C Meta+Shift+C',
 } as const;
 
 export type ChatShortcutAction = keyof ChatShortcutHandlers;
+/** What a keydown can mean: a hook action, or copy-the-last-answer (handled by the answer). */
+export type ChatShortcutMatch = ChatShortcutAction | 'copyLastAnswer';
 
 const OPEN_DIALOGS = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 const OPEN_LAYERS = `${OPEN_DIALOGS}, [role="menu"][data-state="open"], [role="listbox"][data-state="open"]`;
@@ -94,7 +92,7 @@ function nonLatinCharacter(key: string): boolean {
 export function matchChatShortcut(event: Pick<
   KeyboardEvent,
   'key' | 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey' | 'isComposing' | 'keyCode' | 'repeat' | 'defaultPrevented'
->): ChatShortcutAction | null {
+>): ChatShortcutMatch | null {
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.altKey) return null;
   const mod = event.ctrlKey || event.metaKey;
   const raw = event.key || '';
@@ -118,12 +116,10 @@ export function useChatShortcuts(handlers: ChatShortcutHandlers, enabled = true)
     if (!enabled) return undefined;
     const onKey = (event: KeyboardEvent) => {
       const action = matchChatShortcut(event);
-      if (!action || modalLayerOpen()) return;
-      const handler = ref.current[action];
-      // An optional shortcut the host did not wire stays the browser's.
-      if (!handler) return;
+      // Copy-the-last-answer belongs to the newest answer (useCopyLastAnswer).
+      if (!action || action === 'copyLastAnswer' || modalLayerOpen()) return;
       event.preventDefault();
-      handler();
+      ref.current[action]();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

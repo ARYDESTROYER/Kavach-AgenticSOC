@@ -3141,6 +3141,12 @@ export interface ChatReportSaveError {
   message: string;
   /** The same save may work later (offer "Save as report"). */
   retryable: boolean;
+  /**
+   * What the answer's header asked for (server-side: `POST /api/reports/from-answer`
+   * reads them from the stored answer). Model-derived; the console never shows them.
+   */
+  title?: string | null;
+  template?: ReportTemplateName | null;
 }
 
 /** `GET /api/chat/turns/active` (SPEC D13). `label` is an engine template. */

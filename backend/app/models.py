@@ -38,6 +38,7 @@ from .config import Preferences
 if TYPE_CHECKING:  # avoid an import cycle (ocsf imports config/constants, not models)
     from .ocsf import OCSFEvent
 from .constants import (
+    INVISIBLE_TEXT_CLASS,
     MAX_REPORT_ITEMS,
     MAX_REPORT_NEXT_STEPS,
     MAX_REPORT_NOTE_CHARS,
@@ -2792,14 +2793,62 @@ class TurnUsage(BaseModel):
 
 
 # --- §3.3 steps --------------------------------------------------------------- #
+# Every invisible, bidi, tag and control character (``INVISIBLE_TEXT_RANGES``) and
+# every lone surrogate half: what ``visible_display_text`` writes as an escape.
+_VISIBLE_ESCAPE_RE = re.compile(f"[{INVISIBLE_TEXT_CLASS}]|[\ud800-\udfff]")
+# A ``\uXXXX`` escape (or the high half of an astral pair) a length bound cut.
+_PARTIAL_ESCAPE_RE = re.compile(r"(?:\\ud[89ab][0-9a-f]{2})?(?:\\(?:u[0-9a-f]{0,3})?)?$")
+
+
+def _escape_char(match: "re.Match[str]") -> str:
+    """``\\uXXXX``; an astral code point as its UTF-16 pair, as ``ensure_ascii``
+    (and the step inspector's JSON view) writes it."""
+    code = ord(match.group())
+    if code > 0xFFFF:
+        code -= 0x10000
+        return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
+    return f"\\u{code:04x}"
+
+
+def visible_display_text(value: Any, limit: int, *, multiline: bool = False) -> str:
+    """:func:`display_text` for a model- or log-derived value a person must read
+    EXACTLY (a run-log step's ``untrusted_params`` and ``query``, Round 12 P1-1): every
+    invisible, bidi, tag or control character and lone surrogate is WRITTEN as visible
+    ``\\uXXXX`` escape text instead of being deleted. Deleting it would show "admin" +
+    ZWSP as "admin" (the real account) and let a right-to-left override reorder what
+    the analyst reads, while the stored observation shows the escape (the model read
+    it through ``fence_block``'s ``ensure_ascii``). The escapes are ASCII, so the web
+    normalisers keep them. Line breaks fold to a space unless ``multiline``; the bound
+    never cuts an escape in half. Never raises."""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, bool) or (isinstance(value, (int, float)) and math.isfinite(value)):
+        return display_text(value, limit)
+    else:
+        return ""
+    text = display_text(_VISIBLE_ESCAPE_RE.sub(_escape_char, text), 0, multiline=multiline)
+    if limit > 0 and len(text) > limit:
+        text = _PARTIAL_ESCAPE_RE.sub("", text[: max(0, limit - 1)]).rstrip() + "…"
+    return text
+
+
 def display_params(
-    value: Any, *, chars: int = _STEP_PARAM_CHARS, strings_only: bool = False
+    value: Any,
+    *,
+    chars: int = _STEP_PARAM_CHARS,
+    strings_only: bool = False,
+    visible: bool = False,
 ) -> dict[str, Any]:
     """Whitelist-shaped display chips: safe keys (``[A-Za-z0-9_.:-]{1,40}``), scalar
     values, display-sanitised text, at most 12 entries. ``strings_only`` renders
-    numbers as text (``untrusted_params`` is ``dict[str, str]``). Never raises."""
+    numbers as text (``untrusted_params`` is ``dict[str, str]``); ``visible`` writes
+    invisible characters as escapes (:func:`visible_display_text`) instead of deleting
+    them. Never raises."""
     if not isinstance(value, dict):
         return {}
+    def text_of(raw: str) -> str:
+        return visible_display_text(raw, chars) if visible else display_text(raw, chars)
+
     out: dict[str, Any] = {}
     for key, raw in value.items():
         if len(out) >= _STEP_MAX_PARAMS:
@@ -2807,10 +2856,10 @@ def display_params(
         if not isinstance(key, str) or not _PARAM_KEY_RE.match(key):
             continue
         if isinstance(raw, str):
-            out[key] = display_text(raw, chars)
+            out[key] = text_of(raw)
         elif strings_only:
             if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw):
-                out[key] = display_text(str(raw), chars)
+                out[key] = text_of(str(raw))
         elif raw is None or isinstance(raw, bool) or isinstance(raw, int):
             out[key] = raw
         elif isinstance(raw, float) and math.isfinite(raw):
@@ -2861,12 +2910,16 @@ class ChatStep(BaseModel):
         out["label"] = display_text(out.get("label"), _STEP_LABEL_CHARS)
         out["summary"] = display_text(out.get("summary"), _STEP_SUMMARY_CHARS)
         out["params"] = display_params(out.get("params"), chars=_STEP_PARAM_CHARS, strings_only=False)
+        # Model- or log-derived values: invisible and bidi characters are written as
+        # visible escapes, never deleted, so the run log and the step inspector show
+        # exactly what was sent ("admin" + ZWSP never reads as "admin", #9, P1-1).
         out["untrusted_params"] = display_params(
-            out.get("untrusted_params"), chars=_STEP_UNTRUSTED_PARAM_CHARS, strings_only=True,
+            out.get("untrusted_params"), chars=_STEP_UNTRUSTED_PARAM_CHARS,
+            strings_only=True, visible=True,
         )
         query = out.get("query")
         out["query"] = (
-            (display_text(query, _STEP_QUERY_CHARS, multiline=True) or None)
+            (visible_display_text(query, _STEP_QUERY_CHARS, multiline=True) or None)
             if isinstance(query, str) else None
         )
         coverage = out.get("coverage")
@@ -3346,11 +3399,28 @@ class ChatReportSaveError(BaseModel):
     """Why the report a chat answer asked for was NOT saved (SPEC D11; additive). The
     answer itself is saved; ``message`` is a server template, never model text.
     ``retryable``: the same save may work later (a store outage), so the UI can offer
-    "Save as report"; a full library or an answer with nothing to save cannot."""
+    "Save as report"; a full library or an answer with nothing to save cannot.
+
+    ``title`` and ``template`` (additive) record what the answer's header asked for, so
+    "Save as report" (``POST /api/reports/from-answer``) saves the SAME report the server
+    could not; the server reads them from the stored answer, never from the client.
+    ``title`` is model-derived display text (#9); both are lenient on replay."""
 
     code: ChatReportSaveErrorCode
     message: str = Field(default="", max_length=300)
     retryable: bool = False
+    title: str | None = Field(default=None, max_length=MAX_REPORT_TITLE_CHARS)
+    template: ReportTemplateName | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _requested_title(cls, value: Any) -> str | None:
+        return (display_text(value, MAX_REPORT_TITLE_CHARS) or None) if isinstance(value, str) else None
+
+    @field_validator("template", mode="before")
+    @classmethod
+    def _requested_template(cls, value: Any) -> Any:
+        return _lenient_enum(value, REPORT_TEMPLATE_NAMES, None)
 
 
 class ChatActiveTurn(BaseModel):
