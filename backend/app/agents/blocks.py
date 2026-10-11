@@ -2361,7 +2361,10 @@ def _caption(
         parts.append(basis)
     window = getattr(artifact, "window", None)
     if isinstance(window, str) and window.strip():
-        parts.append(display_text(window, 80))
+        # The tool's whole scope statement ("95 cases · exact · all time (since 28 Mar
+        # 2026) (Asia/Kolkata) · a case can count under several rules"): only the
+        # caption's own bound applies, so a disclosure is never cut mid-word.
+        parts.append(display_text(window, MAX_CAPTION))
     text = " · ".join(p for p in parts if p)
     return display_text(text, MAX_CAPTION) or None
 
@@ -2448,8 +2451,14 @@ def _with_truncation(
     available: int, noun: str | None = "Top",
 ) -> dict[str, Any]:
     """Set ``truncated``/``total`` and the caption from what is shown vs. what the
-    artifact (or the tool's population) holds."""
-    population = getattr(artifact, "total", None)
+    artifact (or the tool's population) holds.
+
+    "Top N of M" counts ONE thing: ``M`` is the population of what is shown. A
+    truncated artifact's ``total`` is that population (G4: it holds the top N of M);
+    a complete artifact holds its whole population, so a view or ``top_n`` clip is N
+    of what it holds, never of its ``total`` (which may count something else, such
+    as the cases behind a complete severity breakdown)."""
+    population = getattr(artifact, "total", None) if getattr(artifact, "truncated", False) else None
     population = population if isinstance(population, int) and not isinstance(population, bool) and population >= 0 else None
     clipped = shown < available
     truncated = bool(block.get("truncated")) or bool(getattr(artifact, "truncated", False)) or clipped
@@ -2927,6 +2936,18 @@ def _comparison_parts(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[
     return periods, rows, shared
 
 
+def _fit_label(head: str, name: str, tail: str, limit: int = MAX_LABEL) -> str:
+    """``head + name + tail`` within ``limit``: when it is too long only ``name`` (a
+    period's name) is shortened, never the figures in ``head``/``tail``."""
+    text = f"{head}{name}{tail}"
+    if len(text) <= limit:
+        return text
+    room = limit - len(head) - len(tail)
+    if room >= 2:
+        return f"{head}{display_text(name, room)}{tail}"
+    return display_text(text, limit)
+
+
 def _build_comparison(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
     data = artifact.data
     periods, rows, shared = _comparison_parts(data)
@@ -2942,19 +2963,21 @@ def _build_comparison(artifact: Any, options: MaterialiseOptions, view: str, vie
             item: dict[str, Any] = {"key": row["key"], "label": _label_text(row["label"], MAX_LABEL),
                                     "value": row["values"][-1] if row["values"] else None, "unit": row["unit"]}
             if baseline is not None and row["delta"] is not None:
-                item["delta"] = {"value": row["delta"], "period_label": f"vs {baseline}",
+                item["delta"] = {"value": row["delta"], "period_label": _fit_label("vs ", baseline, ""),
                                  "good_direction": row["good_direction"]}
             if baseline is not None:
-                context = f"{baseline}: {format_unit_value(row['values'][-2], row['unit'])}"
+                # The figures go in whole: only the period's name gives way, so the
+                # baseline value, the change and the small-sample flag always survive.
+                tail = f": {format_unit_value(row['values'][-2], row['unit'])}"
                 change = format_change_pct(row["delta_pct"], row["new"])
                 if change != "—":
-                    context += f" · {change}"
+                    tail += f" · {change}"
                 if row["small_sample"]:
-                    context += f" · n < {SMALL_SAMPLE_N}"
-                item["context"] = context
+                    tail += f" · n < {SMALL_SAMPLE_N}"
+                item["context"] = _fit_label("", baseline, tail)
             if len(periods) >= 3 and any(v is not None for v in row["values"]):
                 item["trend"] = {"points": row["values"],
-                                 "window_label": f"{periods[0]['label']} – {periods[-1]['label']}"}
+                                 "window_label": _fit_label(f"{periods[0]['label']} – ", periods[-1]["label"], "")}
             items.append(item)
         block.update({"type": "kpi_group", "items": items})
         # A tile row cannot be read back into the periods it compares: a stored block

@@ -138,10 +138,14 @@ def live_session_limits(state: AppState, user: Any):
     ``remember_me.excluded_roles`` on every evaluation, so excluding a role (or
     promoting someone into an excluded role) takes effect on their next request —
     a remembered row of an excluded principal is judged by the standard limits,
-    exactly as when Remember me is turned off."""
-    from ..auth.session_limits import limits_for_principal
+    exactly as when Remember me is turned off. The standard access-token lifetime
+    caps such a row too, so it ends where an ordinary sign-in would."""
+    from ..auth.session_limits import limits_for_principal, standard_token_seconds
 
-    return limits_for_principal(getattr(state, "prefs", None), getattr(user, "role", ""))
+    return limits_for_principal(
+        getattr(state, "prefs", None), getattr(user, "role", ""),
+        token_seconds=standard_token_seconds(state),
+    )
 
 
 @dataclass

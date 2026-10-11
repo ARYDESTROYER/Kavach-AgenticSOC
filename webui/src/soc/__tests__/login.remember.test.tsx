@@ -11,7 +11,9 @@
  *     checks it. The warning is skipped only for the account this device already
  *     remembers (or whoever accepted it on this page): an acknowledgement is stored
  *     only after a successful remembered sign-in and removed with the username, so
- *     the next person on a shared device always sees it. Enter on the box signs in.
+ *     the next person on a shared device always sees it. The box is checked for ONE
+ *     account: another name typed after Back (or after the second factor's Back to
+ *     sign in) reads unchecked and gets its own warning. Enter on the box signs in.
  *  3. The login body and the SSO authorize call carry `remember`.
  *  4. Only a SUCCESSFUL remembered sign-in keeps the username; an unchecked success
  *     or a server refusal removes it (refusal → a one-line toast); a failure never
@@ -412,14 +414,78 @@ describe('Login — Remember me', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
     await waitFor(() => expect(ssoAuthorizeMock).toHaveBeenCalledWith('g', { remember: true }));
 
-    // The password step keeps the same choice and sends it.
+    // A typed username is an account the warning did not name: the box reads unchecked
+    // until it is accepted for that account, then the sign-in sends it.
     const pw = await toPasswordStep('alice');
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(rememberBox());
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(/as alice/);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep me signed in' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
     expect(rememberBox()).toHaveAttribute('aria-checked', 'true');
     fireEvent.change(pw, { target: { value: PASSWORD } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     await waitFor(() =>
       expect(loginMock).toHaveBeenCalledWith('alice', PASSWORD, { remember: true }),
     );
+  });
+
+  it('a box accepted for one account is unchecked for another typed after Back', async () => {
+    loginMock.mockResolvedValue({ token: 't', user: { username: 'bob' }, remembered: false });
+    renderLogin();
+    await toPasswordStep('alice');
+    await acceptWarning();
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'true');
+    // Back to the identity step, and someone else's name.
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    const pw = await toPasswordStep('bob');
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'false');
+    // Signing in now never asks the server to remember bob …
+    fireEvent.change(pw, { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('bob', PASSWORD, undefined));
+  });
+
+  it('checking the box for the other account shows that account its own warning', async () => {
+    renderLogin();
+    await toPasswordStep('alice');
+    await acceptWarning();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await toPasswordStep('bob');
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'false');
+    // Back to the account it was accepted for (any case): checked again, same person.
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await toPasswordStep('Alice');
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await toPasswordStep('bob');
+    fireEvent.click(rememberBox());
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent(/as bob/);
+  });
+
+  it('a remembered device does not carry its box to another account after the second factor’s Back', async () => {
+    window.localStorage.setItem(REMEMBERED_USERNAME_KEY, 'alice');
+    window.localStorage.setItem(REMEMBER_ACK_KEY, '1');
+    loginMock.mockResolvedValueOnce({ requires_mfa: true, pending_token: 'pending' });
+    renderLogin();
+    const pw = await screen.findByLabelText('Password');
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'true');
+    fireEvent.change(pw, { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await screen.findByRole('group', { name: 'Authentication code' });
+    expect(loginMock).toHaveBeenLastCalledWith('alice', PASSWORD, { remember: true });
+    // alice walks away at the second factor; bob goes back and types his name.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to sign in' }));
+    loginMock.mockResolvedValueOnce({ token: 't', user: { username: 'bob' }, remembered: false });
+    const bobPw = await toPasswordStep('bob');
+    expect(rememberBox()).toHaveAttribute('aria-checked', 'false');
+    // bob's chip is a plain Back: it does not offer to forget alice's device.
+    expect(document.querySelector('[data-login-identity-chip="typed"]')).toHaveTextContent('bob');
+    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Use a different account' })).not.toBeInTheDocument();
+    fireEvent.change(bobPw, { target: { value: PASSWORD } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(loginMock).toHaveBeenLastCalledWith('bob', PASSWORD, undefined));
   });
 
   it('does not ask for remember when the box is unchecked', async () => {

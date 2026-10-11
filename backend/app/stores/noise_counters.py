@@ -264,6 +264,38 @@ def _parse_iso_ts(value: Any) -> float | None:
         return None
 
 
+def _coverage_start_ts(since: Any, buckets: dict[str, Any]) -> float | None:
+    """The earliest instant the RETAINED counters still describe (epoch seconds), or
+    ``None`` when nothing is known.
+
+    ``since`` is the first-ever observation and deliberately survives retention
+    pruning, so on its own it overstates coverage once the oldest hours have been
+    pruned. The floor is therefore bounded by the oldest hour the retained document
+    could still hold, derived from the NEWEST retained bucket (quiet, missing hours
+    never move it later). Every reader (the window sums, the hourly trend projection
+    and their consumers) uses this one rule."""
+    since_ts = _parse_iso_ts(since)
+    valid_hours = [hour for key in buckets if (hour := _safe_int(key)) is not None]
+    retention_floor_ts = (
+        (max(valid_hours) - _RETENTION_HOURS) * 3600.0 if valid_hours else None
+    )
+    if since_ts is None:
+        return retention_floor_ts
+    if retention_floor_ts is None:
+        return since_ts
+    return max(since_ts, retention_floor_ts)
+
+
+def _iso_ts(ts: float | None) -> str | None:
+    """An epoch-seconds instant as a UTC ISO string (``None`` passes through)."""
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 class NoiseCounterStore:
     """Durable per-hour raw-alert-by-severity counters, persisted as ONE KV document.
 

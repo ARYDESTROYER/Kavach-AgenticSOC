@@ -738,6 +738,120 @@ def test_9e_deferred_and_refresh_paths_resolve_the_live_role() -> None:
         assert not _is_persistent(_session_cookie(out))
 
 
+def test_9f_a_no_longer_remembered_session_ends_where_a_standard_sign_in_would() -> None:
+    """Round 12 final review (L1): turning Remember me off, or excluding the role,
+    judges a live remembered session as a STANDARD sign-in — which ends with its 12 h
+    access token — instead of letting its 24 h token run on under the looser 30-day
+    registry pair."""
+    from datetime import datetime
+
+    with _build(rbac=True) as c:
+        state = _STATE["state"]
+        assert state.auth.token_seconds == 12 * 3600
+        for change in ("disable", "exclude"):
+            state.prefs.session_policy.remember_me.enabled = True
+            state.prefs.session_policy.remember_me.excluded_roles = []
+            r = _login(c, "alice", "alice-password", remember=True)
+            assert r.json()["remembered"] is True
+            token = r.json()["token"]
+            claims = decode(token, SECRET)
+            assert claims["exp"] - claims["iat"] == _DAY
+            hdr = {"Authorization": f"Bearer {token}"}
+            _age_row(claims["sid"], created_hours=13, idle_hours=0)
+            # Still remembered: 13 h into a 24 h session is fine.
+            assert c.get("/api/cases", headers=hdr).status_code == 200
+            if change == "disable":
+                state.prefs.session_policy.remember_me.enabled = False
+            else:
+                state.prefs.session_policy.remember_me.excluded_roles = ["analyst_tier1"]
+            out = c.get("/api/cases", headers=hdr)
+            assert out.status_code == 401, change
+            assert out.json()["detail"] == {"code": "session_expired", "reason": "absolute_expired"}
+            me = c.get("/api/auth/me", headers=hdr).json()
+            assert me["authenticated"] is False and me["reason"] == "absolute_expired"
+        # Younger than the standard token lifetime: it keeps working, as a standard
+        # session (its listing shows it ends at the 12 h mark, not the 24 h one).
+        state.prefs.session_policy.remember_me.enabled = True
+        state.prefs.session_policy.remember_me.excluded_roles = []
+        r = _login(c, "alice", "alice-password", remember=True)
+        assert r.json()["remembered"] is True
+        token = r.json()["token"]
+        sid = decode(token, SECRET)["sid"]
+        _age_row(sid, created_hours=2, idle_hours=0)
+        state.prefs.session_policy.remember_me.enabled = False
+        hdr = {"Authorization": f"Bearer {token}"}
+        assert c.get("/api/cases", headers=hdr).status_code == 200
+        row = next(r for r in c.get("/api/sessions", headers=hdr).json()["sessions"] if r["sid"] == sid)
+        created = datetime.fromisoformat(row["created_at"])
+        hard = datetime.fromisoformat(row["effective_absolute_expires_at"])
+        assert abs((hard - created).total_seconds() - 12 * 3600) < 5
+        assert row["remember"] is False
+
+
+def test_9g_turning_remember_me_off_never_loosens_its_own_inactivity_limit() -> None:
+    """The administrator's explicit remembered inactivity limit (1 h, stricter than
+    the 12 h standard one) still ends an idle session after the feature is turned
+    off, and for an excluded role."""
+    for change in ("disable", "exclude"):
+        with _build(rbac=True, remember={"idle_seconds": 3600}) as c:
+            state = _STATE["state"]
+            r = _login(c, "alice", "alice-password", remember=True)
+            token = r.json()["token"]
+            sid = decode(token, SECRET)["sid"]
+            hdr = {"Authorization": f"Bearer {token}"}
+            _age_row(sid, created_hours=3, idle_hours=2)
+            assert c.get("/api/cases", headers=hdr).json()["detail"]["reason"] == "idle_expired"
+            r = _login(c, "alice", "alice-password", remember=True)
+            token = r.json()["token"]
+            sid = decode(token, SECRET)["sid"]
+            hdr = {"Authorization": f"Bearer {token}"}
+            _age_row(sid, created_hours=3, idle_hours=2)
+            if change == "disable":
+                state.prefs.session_policy.remember_me.enabled = False
+            else:
+                state.prefs.session_policy.remember_me.excluded_roles = ["analyst_tier1"]
+            out = c.get("/api/cases", headers=hdr)
+            assert out.status_code == 401, change
+            assert out.json()["detail"]["reason"] == "idle_expired"
+
+
+def test_9h_the_fallback_rule_is_the_same_in_the_builder_and_the_store() -> None:
+    from datetime import datetime, timedelta
+
+    policy = SessionPolicyConfig()                         # 12 h idle, 30-day absolute
+    policy.remember_me.idle_seconds = 3600
+    policy.remember_me.enabled = False
+    lim = session_limits(policy, roles=None, token_seconds=12 * 3600)
+    assert (lim.fallback_idle, lim.fallback_absolute) == (3600, 12 * 3600)
+    remembered = {"remember": True}
+    standard = {"remember": False}
+    assert lim.for_row(remembered) == (3600, 12 * 3600)
+    assert lim.for_row(standard) == (12 * 3600, 30 * _DAY)
+    assert SessionStore.limits_for_row(remembered, **lim.kwargs()) == lim.for_row(remembered)
+    assert SessionStore.limits_for_row(standard, **lim.kwargs()) == lim.for_row(standard)
+    # A stricter standard limit still wins; an unset one never loosens the other.
+    tight = SessionPolicyConfig(idle_timeout=900, absolute_lifetime=8 * 3600)
+    tight.remember_me.enabled = False
+    lim_tight = session_limits(tight, roles=None, token_seconds=12 * 3600)
+    assert lim_tight.for_row(remembered) == (900, 8 * 3600)
+    # Excluded by role: the same fallback (the remembered pair is dropped).
+    policy.remember_me.enabled = True
+    policy.remember_me.excluded_roles = ["analyst_tier1"]
+    excluded = session_limits(policy, roles=["analyst_tier1"], token_seconds=12 * 3600)
+    assert not excluded.remember_enabled and excluded.for_row(remembered) == (3600, 12 * 3600)
+    # Still remembered: the fallback never applies.
+    kept = session_limits(policy, roles=["responder"], token_seconds=12 * 3600)
+    assert kept.for_row(remembered) == (3600, _DAY)
+    now = now_utc()
+    row = {"sid": "s", "remember": True, "created_at": (now - timedelta(hours=13)).isoformat(),
+           "last_active_at": now.isoformat()}
+    assert SessionStore.is_active(row, **kept.kwargs()) is None
+    assert SessionStore.is_active(row, **excluded.kwargs()) == "absolute_expired"
+    assert SessionStore.effective_expiry(row, **excluded.kwargs())[0] == (
+        datetime.fromisoformat(row["created_at"]) + timedelta(hours=12)
+    ).isoformat()
+
+
 def test_10_strict_paths_honour_the_remembered_limits() -> None:
     from datetime import timedelta
 

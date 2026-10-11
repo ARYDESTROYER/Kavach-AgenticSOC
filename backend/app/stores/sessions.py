@@ -224,6 +224,8 @@ class SessionStore:
         sudo_window: int,
         remember_idle: int = 0,
         remember_absolute: int = 0,
+        remember_fallback_idle: int = 0,
+        remember_fallback_absolute: int = 0,
     ) -> bool:
         """Fail-closed one-snapshot authority check for deferred privileged work.
 
@@ -243,6 +245,8 @@ class SessionStore:
                 sudo_window=sudo_window,
                 remember_idle=remember_idle,
                 remember_absolute=remember_absolute,
+                remember_fallback_idle=remember_fallback_idle,
+                remember_fallback_absolute=remember_fallback_absolute,
             )
             is not None
         )
@@ -258,6 +262,8 @@ class SessionStore:
         sudo_window: int,
         remember_idle: int = 0,
         remember_absolute: int = 0,
+        remember_fallback_idle: int = 0,
+        remember_fallback_absolute: int = 0,
     ) -> int | None:
         """Return the exact live step-up expiry in epoch milliseconds.
 
@@ -286,6 +292,8 @@ class SessionStore:
             absolute_lifetime=max(0, int(absolute_lifetime)),
             remember_idle=max(0, int(remember_idle)),
             remember_absolute=max(0, int(remember_absolute)),
+            remember_fallback_idle=max(0, int(remember_fallback_idle)),
+            remember_fallback_absolute=max(0, int(remember_fallback_absolute)),
         ) is not None:
             return None
         last_authn = _to_epoch(row.get("last_authn_at")) or _to_epoch(
@@ -308,6 +316,8 @@ class SessionStore:
         absolute_lifetime: int,
         remember_idle: int = 0,
         remember_absolute: int = 0,
+        remember_fallback_idle: int = 0,
+        remember_fallback_absolute: int = 0,
     ) -> str | None:
         """Validate one request session from a strict, read-only KV snapshot.
 
@@ -341,6 +351,8 @@ class SessionStore:
             absolute_lifetime=max(0, int(absolute_lifetime)),
             remember_idle=max(0, int(remember_idle)),
             remember_absolute=max(0, int(remember_absolute)),
+            remember_fallback_idle=max(0, int(remember_fallback_idle)),
+            remember_fallback_absolute=max(0, int(remember_fallback_absolute)),
         )
 
     @staticmethod
@@ -637,20 +649,37 @@ class SessionStore:
     @staticmethod
     def limits_for_row(row: dict[str, Any] | None, *, idle_timeout: int = 0,
                        absolute_lifetime: int = 0, remember_idle: int = 0,
-                       remember_absolute: int = 0) -> tuple[int, int]:
+                       remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                       remember_fallback_absolute: int = 0) -> tuple[int, int]:
         """``(idle, absolute)`` that apply to ``row``: the remembered pair for a row
         created by a "Remember me" sign-in while remembered limits are supplied
-        (``remember_absolute > 0``), else the standard pair."""
-        if row is not None and bool(row.get("remember")) and int(remember_absolute or 0) > 0:
-            absolute = int(remember_absolute)
-            idle = int(remember_idle or 0)
-            return (idle if 0 < idle <= absolute else absolute, absolute)
+        (``remember_absolute > 0``), else the standard pair.
+
+        A remembered row whose principal is no longer remembered (Remember me turned
+        off, or the role excluded: ``remember_absolute == 0``) is judged as a
+        standard sign-in and never looser than one (Round 12 final review, L1): its
+        absolute limit is also capped at the standard access-token lifetime
+        (``remember_fallback_absolute``, from ``created_at``) and an explicit
+        remembered inactivity limit (``remember_fallback_idle``) keeps applying when
+        it is stricter than the standard one."""
+        from ..auth.session_limits import strictest
+
+        if row is not None and bool(row.get("remember")):
+            if int(remember_absolute or 0) > 0:
+                absolute = int(remember_absolute)
+                idle = int(remember_idle or 0)
+                return (idle if 0 < idle <= absolute else absolute, absolute)
+            return (
+                strictest(int(idle_timeout or 0), int(remember_fallback_idle or 0)),
+                strictest(int(absolute_lifetime or 0), int(remember_fallback_absolute or 0)),
+            )
         return (int(idle_timeout or 0), int(absolute_lifetime or 0))
 
     @staticmethod
     def is_active(row: dict[str, Any] | None, *, idle_timeout: int = 0,
                   absolute_lifetime: int = 0, remember_idle: int = 0,
-                  remember_absolute: int = 0) -> str | None:
+                  remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                  remember_fallback_absolute: int = 0) -> str | None:
         """Return a rejection REASON string if the session is NOT usable, else None.
 
         Pure (no I/O) so the deps layer can call it after a single ``get``. Rejects
@@ -665,8 +694,10 @@ class SessionStore:
         ``remember_absolute`` when ``remember_absolute > 0`` (build both pairs with
         :func:`app.auth.session_limits.session_limits`); otherwise — Remember me
         turned off, or a caller without remembered limits — the standard pair
-        applies. Shortening the remembered duration therefore expires older
-        remembered sessions on their next request."""
+        applies, tightened as :meth:`limits_for_row` describes so the row ends where a
+        standard sign-in would. Shortening the remembered duration, turning
+        Remember me off or excluding the role therefore only ever shortens older
+        remembered sessions, from their next request."""
         if row is None:
             return None  # caller decides (lazy-register an unknown sid)
         if row.get("revoked"):
@@ -674,6 +705,8 @@ class SessionStore:
         idle_timeout, absolute_lifetime = SessionStore.limits_for_row(
             row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
             remember_idle=remember_idle, remember_absolute=remember_absolute,
+            remember_fallback_idle=remember_fallback_idle,
+            remember_fallback_absolute=remember_fallback_absolute,
         )
         now = now_utc().timestamp()
         # Absolute lifetime: created_at + policy, else the stamped timestamp.
@@ -699,7 +732,8 @@ class SessionStore:
     @staticmethod
     def effective_expiry(row: dict[str, Any] | None, *, idle_timeout: int = 0,
                          absolute_lifetime: int = 0, remember_idle: int = 0,
-                         remember_absolute: int = 0) -> tuple[str, str]:
+                         remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                         remember_fallback_absolute: int = 0) -> tuple[str, str]:
         """``(expires_at, idle_expires_at)`` ISO timestamps for ``row`` under the LIVE
         policy — the same arithmetic :meth:`is_active` applies, so the UI never shows
         an expiry the server does not enforce. ``expires_at`` is the earlier of the
@@ -710,19 +744,24 @@ class SessionStore:
         hard, soft = SessionStore._expiry_epochs(
             row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
             remember_idle=remember_idle, remember_absolute=remember_absolute,
+            remember_fallback_idle=remember_fallback_idle,
+            remember_fallback_absolute=remember_fallback_absolute,
         )
         return (_iso_epoch(hard), _iso_epoch(soft))
 
     @staticmethod
     def _expiry_epochs(row: dict[str, Any], *, idle_timeout: int = 0,
                        absolute_lifetime: int = 0, remember_idle: int = 0,
-                       remember_absolute: int = 0) -> tuple[float | None, float | None]:
+                       remember_absolute: int = 0, remember_fallback_idle: int = 0,
+                       remember_fallback_absolute: int = 0) -> tuple[float | None, float | None]:
         """``(hard, soft)`` epoch seconds behind :meth:`effective_expiry`: the hard
         limit (absolute lifetime or the access token's ``exp``, whichever is earlier)
         and the inactivity deadline. ``None`` when unknown."""
         idle, absolute = SessionStore.limits_for_row(
             row, idle_timeout=idle_timeout, absolute_lifetime=absolute_lifetime,
             remember_idle=remember_idle, remember_absolute=remember_absolute,
+            remember_fallback_idle=remember_fallback_idle,
+            remember_fallback_absolute=remember_fallback_absolute,
         )
         created = _to_epoch(row.get("created_at"))
         if absolute > 0 and created is not None:

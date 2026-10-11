@@ -96,6 +96,9 @@ import { LoadingState } from '@/design-system';
 const loadRememberControls = () => import('@/soc/components/auth/RememberMeControls');
 const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
 type RememberUi = Awaited<ReturnType<typeof loadRememberControls>>;
+/** The quiet text-link buttons under a form ("Back to sign in", recovery codes). */
+const LINK_BUTTON =
+  'h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline';
 /** The username a previous remembered sign-in left on this device (not a secret). */
 function rememberedUsernameOnDevice(): string | null {
   try {
@@ -282,6 +285,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // failed-attempt count). Kept separate from `error` so the primary line stays the
   // backend/validation message and the count is visually subordinate.
   const [errorDetail, setErrorDetail] = React.useState<string | null>(null);
+  const clearError = () => {
+    setError(null);
+    setErrorDetail(null);
+  };
   const [busy, setBusy] = React.useState(false);
   // How many times sign-in has failed IN THIS BROWSER SESSION. This is an honest
   // client-side tally (the backend rate-limiter is per-IP and returns no count), used
@@ -459,6 +466,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
     void loadRememberDevice().then((m) => m.afterSignIn(res, opts), () => undefined);
   };
 
+  // "Back to sign in" from the second factor or a mandated enrollment: the identity step
+  // again (the Remember me box is checked only for the account it was confirmed for).
+  const backToSignIn = () => {
+    setMode('signin');
+    setSigninStep('identity');
+    setPendingToken('');
+    setPassword('');
+    clearError();
+  };
+
   // "Use a different account": drop what this device keeps and start over.
   const forgetThisDevice = () => {
     void loadRememberDevice().then((m) => m.forgetDevice(), () => undefined);
@@ -466,8 +483,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setRememberFor(undefined);
     setUsername('');
     setPassword('');
-    setError(null);
-    setErrorDetail(null);
+    clearError();
     setSigninStep('identity');
     window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
   };
@@ -475,8 +491,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const startSso = async (providerId: string) => {
     if (ssoBusy) return;
     setSsoBusy(providerId);
-    setError(null);
-    setErrorDetail(null);
+    clearError();
     try {
       const res = await api.auth.sso.authorize(
         providerId,
@@ -497,8 +512,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const continueSignin = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (busy || username.trim().length === 0) return;
-    setError(null);
-    setErrorDetail(null);
+    clearError();
     setSigninStep('password');
     window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
   };
@@ -545,8 +559,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     e?.preventDefault();
     if (busy) return;
     setBusy(true);
-    setError(null);
-    setErrorDetail(null);
+    clearError();
     rememberRequestedRef.current = rememberChecked;
     try {
       const res: LoginResult = await api.auth.login(
@@ -947,15 +960,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                      onClick={() => {
-                        setMode('signin');
-                        setSigninStep('identity');
-                        setPendingToken('');
-                        setPassword('');
-                        setError(null);
-                        setErrorDetail(null);
-                      }}
+                      className={LINK_BUTTON}
+                      onClick={backToSignIn}
                     >
                       Back to sign in
                     </Button>
@@ -1023,8 +1029,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                           }
                           setSigninStep('identity');
                           setPassword('');
-                          setError(null);
-                          setErrorDetail(null);
+                          clearError();
                           window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
                         }}
                         disabled={busy}
@@ -1128,8 +1133,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     onClick={() => {
                       setUsername('Admin');
                       setPassword('Admin@123');
-                      setError(null);
-                      setErrorDetail(null);
+                      clearError();
                       setSigninStep('password');
                       window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
                     }}
@@ -1203,12 +1207,11 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      className={LINK_BUTTON}
                       onClick={() => {
                         setUseRecovery((v) => !v);
                         setMfaCode('');
-                        setError(null);
-                        setErrorDetail(null);
+                        clearError();
                         setShowRecoveryHelp(false);
                       }}
                       disabled={busy}
@@ -1218,15 +1221,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      className={LINK_BUTTON}
                       onClick={() => {
-                        setMode('signin');
-                        setSigninStep('identity');
+                        backToSignIn();
                         setMfaCode('');
-                        setPendingToken('');
-                        setPassword('');
-                        setError(null);
-                        setErrorDetail(null);
                         setShowRecoveryHelp(false);
                       }}
                       disabled={busy}
