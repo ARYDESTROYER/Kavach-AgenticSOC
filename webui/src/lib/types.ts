@@ -3805,8 +3805,12 @@ export interface Branding {
 export interface FeedbackStats {
   graded_cases: number;
   feedback_count: number;
-  /** 0..1 fraction of cases where the analyst agreed with the agent. */
-  agreement_rate: number;
+  /** 0..1 agreement over grades that carry an assessment (agree/partial/disagree).
+   *  `null` when graded cases exist but none carries an agreement signal (a grade on
+   *  a settled Needs-human hand-off compares nothing) — render it as not measured. */
+  agreement_rate: number | null;
+  /** How many grades carry an agreement signal (the agreement denominator). */
+  agreement_signals?: number;
   /** 0..1 averages of the per-case quality scores. */
   avg_accuracy: number;
   avg_reasoning_quality: number;

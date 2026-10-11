@@ -114,6 +114,11 @@ def _stat_block(samples: list[float], *, missing_reason: str) -> dict[str, Any]:
     }
 
 
+#: Assessments that compare the analyst's judgement with the agent's verdict. An
+#: empty assessment is a grade with nothing to compare (see ``feedback_stats``).
+_AGREEMENT_ASSESSMENTS = frozenset({"agree", "partial", "disagree"})
+
+
 def feedback_stats(cases: list[Case]) -> dict:
     """Aggregate analyst feedback across cases (the eval/quality loop).
 
@@ -122,6 +127,14 @@ def feedback_stats(cases: list[Case]) -> dict:
     never made says nothing about the agent's quality. The grade itself is still real
     ground truth and is counted as such by the tuner and the precedent projection — it
     is only this AGREEMENT-WITH-THE-AGENT view it must stay out of.
+
+    ``agreement_rate`` is computed over AGREEMENT SIGNALS only — entries whose
+    assessment is ``agree``/``partial``/``disagree``. A grade with no assessment (an
+    analyst settling a NEEDS_HUMAN hand-off, a duplicate close, a case with no AI
+    verdict) compares nothing, so it must neither inflate nor deflate agreement; it
+    still counts toward ``feedback_count`` and the star averages. When there is no
+    agreement signal at all the rate is ``None`` (honest, never a fake 0%) and
+    ``agreement_signals`` says so explicitly.
     """
     cases = [c for c in cases if not is_policy_closed(c)]
     entries = [fb for c in cases for fb in (c.feedback or [])]
@@ -129,17 +142,21 @@ def feedback_stats(cases: list[Case]) -> dict:
     if not entries:
         return {
             "graded_cases": 0, "feedback_count": 0, "agreement_rate": 0.0,
+            "agreement_signals": 0,
             "avg_accuracy": 0.0, "avg_reasoning_quality": 0.0,
             "avg_action_appropriateness": 0.0, "time_saved_minutes": 0,
             "outcome_distribution": {},
         }
     n = len(entries)
-    agree = sum(1 for e in entries if e.assessment == "agree")
-    partial = sum(0.5 for e in entries if e.assessment == "partial")
+    assessments = [(e.assessment or "").strip().lower() for e in entries]
+    signals = [a for a in assessments if a in _AGREEMENT_ASSESSMENTS]
+    agree = sum(1 for a in signals if a == "agree")
+    partial = sum(0.5 for a in signals if a == "partial")
     return {
         "graded_cases": graded_cases,
         "feedback_count": n,
-        "agreement_rate": round((agree + partial) / n, 4),
+        "agreement_signals": len(signals),
+        "agreement_rate": round((agree + partial) / len(signals), 4) if signals else None,
         "avg_accuracy": round(sum(e.accuracy for e in entries) / n, 4),
         "avg_reasoning_quality": round(sum(e.reasoning_quality for e in entries) / n, 4),
         "avg_action_appropriateness": round(sum(e.action_appropriateness for e in entries) / n, 4),

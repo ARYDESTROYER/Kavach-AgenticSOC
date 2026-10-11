@@ -605,3 +605,94 @@ def test_title_sort_never_reaches_a_store_sort(client, now, monkeypatch) -> None
     body = _queue(client, sort_field="title", sort_order="asc")
     assert [c["title"] for c in body["cases"]] == ["a", "b"]
     assert all(call.get("sort_field") != "title" for call in seen)
+
+
+# --------------------------------------------------------------------------- #
+# Final fixer — the Needs human count is STRUCTURED (exact verdict filter), and a
+# grade with no assessment never moves the Agreement metric.
+# --------------------------------------------------------------------------- #
+def test_queue_verdict_values_match_the_verdict_enum() -> None:
+    from app.api.routes import CASE_QUEUE_VERDICTS
+
+    assert set(CASE_QUEUE_VERDICTS) == {v.value for v in Verdict}
+
+
+def test_needs_human_count_uses_structured_filters_not_text_search(client, now) -> None:
+    """The analyst's reproduction: an FP case assigned to 'needs_human_rota' (and one
+    whose summary says "(NEEDS_HUMAN)") matched ``q=needs_human`` and inflated the
+    tile. The structured union counts only cases whose status or verdict IS needs_human."""
+    rota = _case(1, now, verdict=Verdict.FALSE_POSITIVE, assignee="needs_human_rota")
+    worded = _case(2, now, verdict=Verdict.TRUE_POSITIVE)
+    worded.summary = "Escalated to an analyst (NEEDS_HUMAN)"
+    by_verdict = _case(3, now, verdict=Verdict.NEEDS_HUMAN)
+    by_status = _case(4, now, status=CaseStatus.NEEDS_HUMAN, verdict=Verdict.TRUE_POSITIVE)
+    both = _case(5, now, status=CaseStatus.NEEDS_HUMAN, verdict=Verdict.NEEDS_HUMAN)
+    settled = _case(6, now, status=CaseStatus.CLOSED, verdict=Verdict.NEEDS_HUMAN)
+    _seed(client, [rota, worded, by_verdict, by_status, both, settled])
+
+    # The text search over-counts (the defect the tile used to read).
+    assert _queue(client, status_group="active", q="needs_human", limit=1)["total"] == 5
+
+    by_status_n = _queue(client, status="needs_human", limit=1)["total"]
+    active_verdict = _queue(client, status_group="active", verdict="NEEDS_HUMAN", limit=1)
+    overlap = _queue(client, status="needs_human", verdict="needs_human", limit=1)
+    assert active_verdict["verdict_applied"] == "NEEDS_HUMAN"
+    assert overlap["verdict_applied"] == "NEEDS_HUMAN"  # case-insensitive input
+    assert (by_status_n, active_verdict["total"], overlap["total"]) == (2, 2, 1)
+    # case-0003 (verdict), case-0004 (status), case-0005 (both) — the closed one and the
+    # two text-only matches are not awaiting an analyst.
+    assert by_status_n + active_verdict["total"] - overlap["total"] == 3
+    assert {c["case_id"] for c in active_verdict["cases"]} <= {"case-0003", "case-0005"}
+
+
+def test_queue_rejects_an_unknown_verdict(client) -> None:
+    res = client.get("/api/cases", params={"verdict": "maybe"})
+    assert res.status_code == 400
+    assert "unknown verdict" in res.json()["detail"]
+
+
+def test_a_grade_without_an_assessment_does_not_move_agreement() -> None:
+    """Settling a NEEDS_HUMAN hand-off (or a duplicate close, or a case with no AI
+    verdict) posts stars only: it compares nothing, so it must not deflate Agreement."""
+    from app.engine.metrics import feedback_stats
+    from app.models import FeedbackEntry
+
+    now = datetime.now(timezone.utc)
+    agreed = _case(1, now, verdict=Verdict.TRUE_POSITIVE)
+    agreed.feedback = [FeedbackEntry(assessment="agree", accuracy=1.0)]
+    handoff = _case(2, now, status=CaseStatus.CLOSED, verdict=Verdict.NEEDS_HUMAN)
+    handoff.feedback = [FeedbackEntry(accuracy=0.8, analyst="Admin")]
+
+    with_handoff = feedback_stats([agreed, handoff])
+    assert with_handoff["agreement_rate"] == feedback_stats([agreed])["agreement_rate"] == 1.0
+    assert with_handoff["agreement_signals"] == 1
+    # The grade still counts as feedback and in the star averages.
+    assert with_handoff["feedback_count"] == 2 and with_handoff["graded_cases"] == 2
+    assert with_handoff["avg_accuracy"] == pytest.approx(0.9)
+
+    only_handoff = feedback_stats([handoff])
+    # Nothing to compare: not measured, never a fake 0%.
+    assert only_handoff["agreement_rate"] is None
+    assert only_handoff["agreement_signals"] == 0
+    assert only_handoff["feedback_count"] == 1
+
+    partial = _case(3, now, verdict=Verdict.FALSE_POSITIVE)
+    partial.feedback = [FeedbackEntry(assessment=" Partial ")]
+    disagree = _case(4, now, verdict=Verdict.FALSE_POSITIVE)
+    disagree.feedback = [FeedbackEntry(assessment="disagree")]
+    mixed = feedback_stats([agreed, handoff, partial, disagree])
+    assert mixed["agreement_signals"] == 3
+    assert mixed["agreement_rate"] == pytest.approx((1 + 0.5) / 3, abs=1e-4)
+
+
+def test_metrics_endpoint_agreement_ignores_a_star_only_grade(client, now) -> None:
+    """End to end: the reviewer's reproduction read ``agreement_rate: 0`` after one
+    star-only grade on a settled hand-off."""
+    from app.models import FeedbackEntry
+
+    handoff = _case(1, now, status=CaseStatus.CLOSED, verdict=Verdict.NEEDS_HUMAN)
+    handoff.feedback = [FeedbackEntry(accuracy=0.8, analyst="Admin")]
+    _seed(client, [handoff])
+    fb = client.get("/api/feedback/stats").json()
+    assert fb["feedback_count"] == 1
+    assert fb["agreement_rate"] is None and fb["agreement_signals"] == 0

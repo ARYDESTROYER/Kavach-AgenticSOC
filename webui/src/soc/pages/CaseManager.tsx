@@ -634,6 +634,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
   const anchorIdRef = React.useRef<string | null>(null);
   const [focusId, setFocusId] = React.useState<string | null>(null);
+  /** Where the roving stop landed when the open case left the view (see `onListKeyDown`). */
+  const gapStopRef = React.useRef<{ id: string; side: 'after' | 'before' } | null>(null);
   const buttonsRef = React.useRef(new Map<string, HTMLButtonElement>());
   const searchRef = React.useRef<HTMLInputElement | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
@@ -755,6 +757,15 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const refreshLoaded = React.useCallback(() => {
     void resyncWindow(rowsRef.current.length, false);
   }, [resyncWindow]);
+
+  /**
+   * "N new cases · Show": re-read the window GROWN by the new cases, so they join the top
+   * and every row the analyst already loaded (with Load more) stays — the open case, its
+   * row and their place in the queue are never dropped back to the first page.
+   */
+  const showNewCases = React.useCallback(() => {
+    void resyncWindow(rowsRef.current.length + newCount, false);
+  }, [newCount, resyncWindow]);
 
   // A quiet re-read, coalesced: several live changes in a burst cost one request.
   const resyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -967,9 +978,13 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         if (focus && removedIds.has(focus)) {
           const list = visibleRef.current;
           const at = list.findIndex((row) => row.case_id === focus);
-          const neighbour = list.slice(at + 1).find((row) => !removedIds.has(row.case_id)) ??
+          const after = list.slice(at + 1).find((row) => !removedIds.has(row.case_id));
+          const neighbour = after ??
             list.slice(0, Math.max(0, at)).reverse().find((row) => !removedIds.has(row.case_id));
           setFocusId(neighbour?.case_id ?? null);
+          // Which side of the gap the stop now sits on, so the next J/K steps INTO the
+          // gap's neighbour instead of past it (see `onListKeyDown`).
+          gapStopRef.current = neighbour ? { id: neighbour.case_id, side: after ? 'after' : 'before' } : null;
         }
         commitRows(
           current.flatMap((row) => {
@@ -1492,14 +1507,33 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         visibleRef.current.find((row) => row.case_id === effectiveFocusId);
       // Space on a focused checkbox is that checkbox's own toggle; let it through.
       if (key === ' ' && target?.getAttribute('role') === 'checkbox') return;
-      if (key === 'ArrowDown' || key === 'j' || key === 'J') {
+      // The open case has left the view (a plain Close, or a live change took it out of
+      // the queue) and the roving stop sits on the row that took its place, which is not
+      // open yet. The first step toward that row OPENS it rather than moving past it, so
+      // Close → J never skips the case right after the one just closed: J/↓ when the stop
+      // is the row after the gap (or there is no gap to measure from, e.g. a deep-linked
+      // case outside the list), K/↑ when it is the row before (the last row was closed).
+      const down = key === 'ArrowDown' || key === 'j' || key === 'J';
+      const up = key === 'ArrowUp' || key === 'k' || key === 'K';
+      if ((down || up) && !event.shiftKey && focused && selectedCaseId && focused.case_id !== selectedCaseId) {
+        const openGone = !visibleRef.current.some((row) => row.case_id === selectedCaseId);
+        const gap = gapStopRef.current;
+        const side = gap && gap.id === focused.case_id ? gap.side : 'after';
+        if (openGone && ((down && side === 'after') || (up && side === 'before'))) {
+          event.preventDefault();
+          gapStopRef.current = null;
+          selectCase(focused.case_id, { focusRow: true });
+          return;
+        }
+      }
+      if (down) {
         event.preventDefault();
         if (event.shiftKey && focused) {
           anchorIdRef.current = anchorIdRef.current ?? focused.case_id;
           toggleCaseSelection(focused.case_id, true);
         }
         moveFocus(1, { extend: event.shiftKey, fromId: focused?.case_id });
-      } else if (key === 'ArrowUp' || key === 'k' || key === 'K') {
+      } else if (up) {
         event.preventDefault();
         if (event.shiftKey && focused) {
           anchorIdRef.current = anchorIdRef.current ?? focused.case_id;
@@ -2027,7 +2061,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     variant="secondary"
                     size="sm"
                     className="h-7 w-full text-xs"
-                    onClick={() => void fetchPage(0, 'replace')}
+                    onClick={showNewCases}
+                    data-testid="case-queue-show-new"
                   >
                     {newCount} new case{newCount === 1 ? '' : 's'} · Show
                   </Button>
@@ -2042,7 +2077,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     <LoadError
                       error={error}
                       title="Could not load cases"
-                      onRetry={() => void fetchPage(0, 'replace')}
+                      onRetry={refreshLoaded}
                     />
                   </div>
                 ) : visibleCases.length === 0 ? (

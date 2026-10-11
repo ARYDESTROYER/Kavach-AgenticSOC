@@ -5301,6 +5301,10 @@ def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
 # --------------------------------------------------------------------------- #
 CASE_QUEUE_SEARCH_MAX_CHARS = 200
 CASE_QUEUE_SEVERITIES: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
+# The AI verdict values (``constants.Verdict``) the queue's exact ``verdict`` filter
+# accepts — a STRUCTURED match on the stored field, never the free-text search, so a
+# title/summary/entity value that merely contains "needs_human" can never be counted.
+CASE_QUEUE_VERDICTS: tuple[str, ...] = ("FALSE_POSITIVE", "TRUE_POSITIVE", "NEEDS_HUMAN")
 CASE_QUEUE_SCAN_SORTS: tuple[str, ...] = ("title",)
 CASE_QUEUE_SCAN_PAGE = 1000
 
@@ -5401,6 +5405,7 @@ async def _scan_case_queue(
     sort_order: str,
     limit: int,
     offset: int,
+    verdict: str | None = None,
 ) -> tuple[list[Case], int]:
     """One exact pass over the case store for the queue filters → (page, total)."""
     from ..stores.base import case_in_created_window
@@ -5428,6 +5433,8 @@ async def _scan_case_queue(
                 if entity and _queue_entity(row)[1] != entity:
                     continue
                 if assignee_key and str(_queue_value(row, "assignee") or "").strip().casefold() != assignee_key:
+                    continue
+                if verdict and str(_queue_value(row, "verdict") or "").strip().upper() != verdict:
                     continue
                 if terms:
                     hay = _queue_search_haystack(row)
@@ -5485,6 +5492,9 @@ async def list_cases(
     q: str | None = None,
     assignee: str | None = None,
     severity: str | None = None,
+    # Round 12 (WP-CM) — an exact AI-verdict filter (``CASE_QUEUE_VERDICTS``), so a
+    # "needs an analyst" count is a structured match rather than a text search.
+    verdict: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> CaseListResponse | JSONResponse:
@@ -5531,8 +5541,17 @@ async def list_cases(
                 f"expected one of {list(CASE_QUEUE_SEVERITIES)}"
             ),
         )
+    verdict_filter = str(verdict or "").strip().upper() or None
+    if verdict_filter and verdict_filter not in CASE_QUEUE_VERDICTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown verdict '{verdict_filter}'; "
+                f"expected one of {list(CASE_QUEUE_VERDICTS)}"
+            ),
+        )
     queue_scan = bool(
-        search_terms or assignee_filter or severity_filter
+        search_terms or assignee_filter or severity_filter or verdict_filter
         or sort_field in CASE_QUEUE_SCAN_SORTS
     )
     extended = (
@@ -5608,6 +5627,7 @@ async def list_cases(
             terms=search_terms,
             assignee=assignee_filter,
             severity=severity_filter,
+            verdict=verdict_filter,
             lo=lo,
             hi=hi,
             sort_field=applied_sort_field,
@@ -5668,6 +5688,8 @@ async def list_cases(
         body["assignee_applied"] = assignee_filter
     if severity_filter:
         body["severity_applied"] = severity_filter
+    if verdict_filter:
+        body["verdict_applied"] = verdict_filter
     return JSONResponse(body)
 
 

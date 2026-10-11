@@ -851,15 +851,27 @@ export default function Cases({
       setTotal(res.total);
       if (res.total > res.cases.length) {
         // Best effort, never blocking the list: a failed count falls back to the
-        // loaded-slice count, labelled as such. Needs human = active cases whose status
-        // or AI verdict is needs_human — the server's queue search matches both fields.
+        // loaded-slice count, labelled as such. Needs human is the SAME rule as
+        // `needsHumanCase` — an active case whose status OR AI verdict is needs_human —
+        // counted with STRUCTURED filters (exact status + exact verdict), never the free
+        // text search, whose haystack also matches titles, summaries, entity values and
+        // assignees. The union is |status| + |active ∧ verdict| − |status ∧ verdict|
+        // (a needs_human status is always active), so each case counts once.
         const count = (query: Record<string, string | number>) =>
           api.listCases({ ...query, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
         void Promise.all([
           count({ status_group: 'active' }),
           count({ status_group: 'terminal' }),
-          count({ status_group: 'active', q: 'needs_human' }),
-        ]).then(([active, terminal, needsHuman]) => setServerCounts({ active, terminal, needsHuman }));
+          count({ status: 'needs_human' }),
+          count({ status_group: 'active', verdict: 'NEEDS_HUMAN' }),
+          count({ status: 'needs_human', verdict: 'NEEDS_HUMAN' }),
+        ]).then(([active, terminal, byStatus, byVerdict, both]) => {
+          const needsHuman =
+            byStatus !== null && byVerdict !== null && both !== null
+              ? Math.max(0, byStatus + byVerdict - both)
+              : null;
+          setServerCounts({ active, terminal, needsHuman });
+        });
       } else {
         setServerCounts(null);
       }
@@ -992,17 +1004,30 @@ export default function Cases({
   // A truncated list: the lifecycle tiles show the exact server total (with how many of
   // them the loaded list can show); the severity tiles count the loaded slice and say so.
   const loadedNote = truncated ? `of ${cases.length.toLocaleString()} loaded` : undefined;
-  const lifecycleTile = (loadedCount: number, server: number | null | undefined, noun: string) =>
+  const lifecycleTile = (
+    loadedCount: number,
+    server: number | null | undefined,
+    noun: readonly [singular: string, plural: string],
+  ) =>
     truncated && typeof server === 'number'
       ? {
           count: server,
           note: `${loadedCount.toLocaleString()} loaded`,
-          title: `${server.toLocaleString()} ${noun} in total; ${loadedCount.toLocaleString()} of them are among the ${cases.length.toLocaleString()} loaded cases this list filters`,
+          title:
+            `${server.toLocaleString()} ${server === 1 ? noun[0] : noun[1]} in total; ` +
+            `${loadedCount.toLocaleString()} of them ${loadedCount === 1 ? 'is' : 'are'} among the ` +
+            `${cases.length.toLocaleString()} loaded cases this list filters`,
         }
       : { count: loadedCount, note: loadedNote, title: loadedScopeTitle };
-  const activeTile = lifecycleTile(counts.active, serverCounts?.active, 'active cases');
-  const terminalTile = lifecycleTile(counts.terminal, serverCounts?.terminal, 'resolved or closed cases');
-  const needsHumanTile = lifecycleTile(counts.needsHuman, serverCounts?.needsHuman, 'active cases awaiting an analyst');
+  const activeTile = lifecycleTile(counts.active, serverCounts?.active, ['active case', 'active cases']);
+  const terminalTile = lifecycleTile(counts.terminal, serverCounts?.terminal, [
+    'resolved or closed case',
+    'resolved or closed cases',
+  ]);
+  const needsHumanTile = lifecycleTile(counts.needsHuman, serverCounts?.needsHuman, [
+    'active case awaiting an analyst',
+    'active cases awaiting an analyst',
+  ]);
 
   // Drop any selection no longer visible so the bulk bar can't act on hidden rows.
   React.useEffect(() => {

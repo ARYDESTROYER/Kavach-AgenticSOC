@@ -260,7 +260,11 @@ describe('Cases — summary strip', () => {
     // The analyst's deployment: the newest cases are mostly closed, so the loaded slice
     // read "Active 1 · Needs human 0" while hundreds of open cases waited.
     listCasesMock.mockImplementation(async (query: Record<string, unknown> = {}) => {
-      if (query.limit === 1 && query.status_group === 'active' && query.q === 'needs_human') return { cases: [], total: 67 };
+      // Needs human = |status needs_human| + |active ∧ verdict NEEDS_HUMAN| − |both|
+      // = 40 + 60 − 33 = 67, every half a STRUCTURED filter (never the text search).
+      if (query.limit === 1 && query.status === 'needs_human' && query.verdict === 'NEEDS_HUMAN') return { cases: [], total: 33 };
+      if (query.limit === 1 && query.status === 'needs_human') return { cases: [], total: 40 };
+      if (query.limit === 1 && query.status_group === 'active' && query.verdict === 'NEEDS_HUMAN') return { cases: [], total: 60 };
       if (query.limit === 1 && query.status_group === 'active') return { cases: [], total: 68 };
       if (query.limit === 1 && query.status_group === 'terminal') return { cases: [], total: 252 };
       return { cases: CASES, total: 320 };
@@ -276,7 +280,36 @@ describe('Cases — summary strip', () => {
     expect(screen.getByTestId('cases-summary-needs-human-note')).toHaveTextContent('1 loaded');
     // Severity tiles still count the loaded slice, and now say so on the tile itself.
     expect(screen.getByTestId('cases-summary-critical-note')).toHaveTextContent('of 5 loaded');
-    expect(listCasesMock).toHaveBeenCalledWith(expect.objectContaining({ status_group: 'active', q: 'needs_human', limit: 1 }));
+    expect(listCasesMock).toHaveBeenCalledWith(expect.objectContaining({ status_group: 'active', verdict: 'NEEDS_HUMAN', limit: 1 }));
+    // The free-text search is never used for a count: its haystack also matches titles,
+    // summaries, entity values and assignees ("needs_human_rota"), so it over-counts.
+    expect(listCasesMock).not.toHaveBeenCalledWith(expect.objectContaining({ q: expect.anything() }));
+    // The tooltip agrees in number with what it counts.
+    expect(tile('cases-summary-needs-human')).toHaveAttribute(
+      'title',
+      '67 active cases awaiting an analyst in total; 1 of them is among the 5 loaded cases this list filters',
+    );
+  });
+
+  it('the Needs human server total falls back to the loaded count when any structured count fails', async () => {
+    listCasesMock.mockImplementation(async (query: Record<string, unknown> = {}) => {
+      if (query.limit === 1 && query.verdict === 'NEEDS_HUMAN' && query.status === 'needs_human') throw new Error('down');
+      if (query.limit === 1 && query.status === 'needs_human') return { cases: [], total: 40 };
+      if (query.limit === 1 && query.verdict === 'NEEDS_HUMAN') return { cases: [], total: 60 };
+      if (query.limit === 1 && query.status_group === 'active') return { cases: [], total: 1 };
+      if (query.limit === 1 && query.status_group === 'terminal') return { cases: [], total: 252 };
+      return { cases: CASES, total: 320 };
+    });
+    renderCases();
+    await waitFor(() => expect(within(tile('cases-summary-open')).getByText('1')).toBeInTheDocument());
+    // Singular noun for a total of one.
+    expect(tile('cases-summary-open')).toHaveAttribute(
+      'title',
+      '1 active case in total; 3 of them are among the 5 loaded cases this list filters',
+    );
+    // No exact total is claimed: the tile shows the loaded count and says it is loaded-only.
+    expect(within(tile('cases-summary-needs-human')).getByText('1')).toBeInTheDocument();
+    expect(screen.getByTestId('cases-summary-needs-human-note')).toHaveTextContent('of 5 loaded');
   });
 
   it('a complete list keeps exact loaded counts and asks the server nothing more', async () => {
